@@ -61,6 +61,34 @@ def init_db() -> None:
     _write_engine = make_engine()
     Base.metadata.create_all(_write_engine)
     _WriteSession = sessionmaker(bind=_write_engine, future=True, expire_on_commit=False)
+    _grant_api_group_read()
+
+
+def _grant_api_group_read() -> None:
+    """forgehost-api needs group-read on the DB (+ -wal/-shm, WAL mode
+    creates both) to open it via read_session() -- a fresh install's first
+    `CREATE TABLE` otherwise leaves these owned root:root from the
+    process's own umask, and forgehost-api gets a bare PermissionError with
+    no obvious cause until someone manually chowns it (found while writing
+    the install instructions for this project, not by code review)."""
+    import grp
+    import os
+
+    if os.geteuid() != 0:
+        return  # tests and other non-root callers leave ownership alone
+    try:
+        gid = grp.getgrnam("forgehost-api").gr_gid
+    except KeyError:
+        return
+    base = Path(settings.db_path)
+    for suffix in ("", "-wal", "-shm"):
+        path = base.with_name(base.name + suffix)
+        if path.exists():
+            os.chown(path, 0, gid)
+            os.chmod(path, 0o640)
+    if base.parent.exists():
+        os.chown(base.parent, 0, gid)
+        os.chmod(base.parent, 0o750)
 
 
 @contextmanager

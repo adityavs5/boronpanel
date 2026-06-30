@@ -1,0 +1,19 @@
+[Unit]
+Description=Forgehost provisioning daemon (root, Unix-socket RPC only)
+After=network.target mariadb.service
+Wants=mariadb.service
+
+[Service]
+Type=simple
+ExecStart=/opt/forgehost/.venv/bin/python -m daemon.server
+WorkingDirectory=/opt/forgehost
+Environment=PYTHONPATH=/opt/forgehost
+Environment=FORGEHOST_CONFIG=/etc/forgehost/forgehost.toml
+Environment=FORGEHOST_SECRETS=/etc/forgehost/secrets.env
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=forgehost
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

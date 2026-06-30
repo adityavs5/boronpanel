@@ -1,0 +1,22 @@
+[Unit]
+Description=Forgehost REST API + admin UI (unprivileged)
+After=network.target forgehost-provisiond.service
+Wants=forgehost-provisiond.service
+
+[Service]
+Type=simple
+User=forgehost-api
+Group=forgehost-api
+ExecStart=/opt/forgehost/.venv/bin/uvicorn api.main:app --host 0.0.0.0 --port 9443 --ssl-keyfile /etc/forgehost/ssl/api/panel.key --ssl-certfile /etc/forgehost/ssl/api/panel.crt
+WorkingDirectory=/opt/forgehost
+Environment=PYTHONPATH=/opt/forgehost
+Environment=FORGEHOST_CONFIG=/etc/forgehost/forgehost.toml
+Environment=FORGEHOST_SECRETS=/etc/forgehost/secrets.env
+Environment=FORGEHOST_API_SECRETS=/etc/forgehost/api-secrets.env
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
