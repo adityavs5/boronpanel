@@ -7,7 +7,7 @@ from sqlalchemy import select
 from starlette.requests import Request
 
 from shared.db import read_session
-from shared.models import MailDomain
+from shared.models import Account, Domain, MailDomain
 
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_account_access, require_domain_access
@@ -29,11 +29,28 @@ class CreateMailboxBody(BaseModel):
 
 
 @api_router.post("/domains")
-def create_mail_domain(username: str, body: CreateMailDomainBody, identity: Identity = Depends(get_identity)):
-    require_account_access(identity, username)
-    return call_daemon(
-        "mail.create_domain", identity, username=username, **body.model_dump()
-    )
+def create_mail_domain(body: CreateMailDomainBody, identity: Identity = Depends(get_identity)):
+    # This route has no {username} in its path (it's prefixed /api/v1/mail,
+    # not /api/v1/accounts/{username}/mail) -- an earlier version declared
+    # a bare `username: str` parameter anyway, which FastAPI silently
+    # turned into a *required query parameter* instead of erroring at
+    # startup, since nothing here binds it to the URL path. The first real
+    # call (during final E2E validation) failed with a confusing
+    # "Field required" for a "username" nobody was meant to pass.
+    # Fixed the same way as dns.create_zone's analogous bug: authorize and
+    # attribute ownership from the domain's existing Domain row (set by
+    # domain.add), not from a parameter that was never wired to anything.
+    require_domain_access(identity, body.domain)
+    with read_session() as db:
+        domain_row = db.scalar(select(Domain).where(Domain.domain == body.domain))
+        owner_username = None
+        if domain_row is not None:
+            account = db.get(Account, domain_row.account_id)
+            owner_username = account.username if account else None
+    params = body.model_dump()
+    if owner_username:
+        params["username"] = owner_username
+    return call_daemon("mail.create_domain", identity, **params)
 
 
 @api_router.post("/mailboxes")
