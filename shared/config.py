@@ -61,6 +61,11 @@ class Settings:
     # powerdns
     powerdns_api_url: str = "http://127.0.0.1:8081/api/v1"
     powerdns_server_id: str = "localhost"
+    # This server's own public IP, used as the default A/NS-glue target when
+    # Forgehost creates a new zone. Set explicitly in forgehost.toml --
+    # deliberately not auto-detected at import time (a network call as a
+    # config-loading side effect is surprising and fragile).
+    server_public_ip: str = ""
 
     secrets: dict[str, str] = field(default_factory=dict)
 

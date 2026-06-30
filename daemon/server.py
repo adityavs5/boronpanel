@@ -19,7 +19,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, handlers_account, handlers_domain, ols
+from daemon import audit, handlers_account, handlers_dns, handlers_domain, ols
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +41,11 @@ OP_TABLE = {
     "domain.add": handlers_domain.add_domain,
     "domain.list": handlers_domain.list_domains,
     "system.bootstrap_ols": lambda params: (ols.bootstrap_baseline(), {"status": "ok"})[1],
+    "dns.create_zone": handlers_dns.create_zone,
+    "dns.delete_zone": handlers_dns.delete_zone,
+    "dns.list_records": handlers_dns.list_records,
+    "dns.set_record": handlers_dns.set_record,
+    "dns.delete_record": handlers_dns.delete_record,
 }
 
 # Each phase wires its own account-scoped teardown/suspend behavior here
@@ -50,6 +55,7 @@ OP_TABLE = {
 handlers_account.SUSPEND_HOOKS.append(lambda account: ols.suspend_vhost(account))
 handlers_account.UNSUSPEND_HOOKS.append(lambda account: ols.unsuspend_vhost(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ols.terminate_vhost(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_dns.terminate_account_zones(account))
 
 
 def register_op(name: str, handler) -> None:
