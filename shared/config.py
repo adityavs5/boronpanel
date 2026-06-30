@@ -1,9 +1,22 @@
 """Forgehost configuration loading.
 
-Non-secret config lives in /etc/forgehost/forgehost.toml. Secrets (MariaDB
-admin credentials, PowerDNS API key, session signing key) live in
-/etc/forgehost/secrets.env, a 0600 root-owned file, loaded as plain
-KEY=VALUE lines (no shell expansion, no execution).
+Non-secret config lives in /etc/forgehost/forgehost.toml. Secrets are split
+across two files by who needs them (privilege separation applies to secrets
+storage too, not just to runtime process boundaries):
+
+  - /etc/forgehost/secrets.env (0600, root-only) -- MariaDB admin
+    credentials, PowerDNS API key. Only forgehostd (root) ever reads this.
+  - /etc/forgehost/api-secrets.env (0640, root:forgehost-api) --
+    SESSION_SECRET only, the one secret forgehost-api genuinely needs (to
+    verify signed session cookies). Phase h originally had forgehost-api
+    try to read the root-only secrets.env directly for this and would have
+    hit a PermissionError at startup; split into its own file instead of
+    loosening secrets.env's permissions.
+
+Both are loaded as plain KEY=VALUE lines (no shell expansion, no
+execution); either file missing or unreadable is silently treated as
+"no secrets from this source" rather than an error, since which file(s) a
+given process can see is exactly the point.
 """
 from __future__ import annotations
 
@@ -14,13 +27,18 @@ from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get("FORGEHOST_CONFIG", "/etc/forgehost/forgehost.toml"))
 SECRETS_PATH = Path(os.environ.get("FORGEHOST_SECRETS", "/etc/forgehost/secrets.env"))
+API_SECRETS_PATH = Path(os.environ.get("FORGEHOST_API_SECRETS", "/etc/forgehost/api-secrets.env"))
 
 
 def _load_secrets(path: Path) -> dict[str, str]:
     secrets: dict[str, str] = {}
     if not path.exists():
         return secrets
-    for line in path.read_text().splitlines():
+    try:
+        text = path.read_text()
+    except PermissionError:
+        return secrets
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -45,7 +63,14 @@ class Settings:
     mail_base: str = "/var/vmail"
 
     # network
-    api_bind_host: str = "127.0.0.1"
+    # 0.0.0.0, not 127.0.0.1: this is the panel an operator actually logs
+    # into from their own browser (ARCHITECTURE.md SS2 originally said
+    # 127.0.0.1 "reachable externally", which is self-contradictory --
+    # corrected here during Phase h once an actual login flow needed to
+    # work end-to-end). It's still not proxied through OLS (avoids the
+    # bootstrap circularity of the panel managing the vhost that serves
+    # itself) and still terminates its own TLS.
+    api_bind_host: str = "0.0.0.0"
     api_bind_port: int = 9443
 
     # accounts
@@ -101,7 +126,7 @@ def load_settings() -> Settings:
         with CONFIG_PATH.open("rb") as f:
             overrides = tomllib.load(f)
     settings = Settings(**overrides)
-    settings.secrets = _load_secrets(SECRETS_PATH)
+    settings.secrets = {**_load_secrets(API_SECRETS_PATH), **_load_secrets(SECRETS_PATH)}
     return settings
 
 

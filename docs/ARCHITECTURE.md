@@ -47,10 +47,14 @@ Two long-running processes, enforced at the OS level (not just convention):
   `CREATE DATABASE`/`CREATE USER` for hosted accounts, which needs MariaDB
   admin rights) it sends an RPC request to `forgehostd` over the Unix socket;
   `forgehostd` is the only process holding the MariaDB admin credential.
-  Listens on `127.0.0.1:9443` (TLS, own cert — see §8.4) for HTTP, reachable
-  externally because nothing else binds that port; not proxied through OLS
-  (avoids the circular dependency of the panel managing the OLS vhost that
-  serves itself).
+  Listens on `0.0.0.0:9443` (TLS, own cert — see §8.4) — **corrected during
+  Phase h**: this doc originally said `127.0.0.1:9443` "reachable
+  externally", which is self-contradictory (a loopback-only bind is, by
+  definition, not externally reachable). The panel has to actually be
+  reachable from the operator's own browser to be useful, so it binds all
+  interfaces like any other admin panel (cPanel/WHM's own ports work the
+  same way); not proxied through OLS (avoids the circular dependency of the
+  panel managing the OLS vhost that serves itself).
 
 **RPC protocol** (`forgehost-api` → `forgehostd`): length-prefixed JSON over
 the Unix socket — 4-byte big-endian length, then a UTF-8 JSON object

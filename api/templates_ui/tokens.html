@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}API tokens - Forgehost{% endblock %}
+{% block content %}
+<h1>API tokens</h1>
+<p class="muted">Bearer tokens for machine-to-machine REST API access (e.g. a billing system).
+  Send as <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+
+{% if new_token %}
+<div class="card">
+  <h2>New token created</h2>
+  <p>Copy this now -- it will not be shown again:</p>
+  <p><code>{{ new_token }}</code></p>
+</div>
+{% endif %}
+
+<table>
+  <thead><tr><th>Label</th><th>Role</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+    {% for t in tokens %}
+    <tr>
+      <td>{{ t.label }}</td>
+      <td>{{ t.role }}</td>
+      <td>{{ "revoked" if t.revoked_at else "active" }}</td>
+      <td>
+        {% if not t.revoked_at %}
+        <form class="inline" method="post" action="/ui/tokens/{{ t.id }}/revoke">
+          <button type="submit" class="danger">Revoke</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">No tokens yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="card">
+  <h2>Create token</h2>
+  <form method="post" action="/ui/tokens">
+    <input type="text" name="label" placeholder="label (e.g. billing-system)" required>
+    <button type="submit">Create</button>
+  </form>
+</div>
+{% endblock %}

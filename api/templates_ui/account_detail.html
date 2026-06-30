@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}{{ account.username }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts">&larr; all accounts</a></p>
+<h1>{{ account.username }} <span class="status {{ account.status }}">{{ account.status }}</span></h1>
+<p class="muted">uid {{ account.uid }} &middot; PHP {{ account.php_version }} &middot; quota {{ account.quota_soft_mb }}/{{ account.quota_hard_mb }} MB</p>
+
+{% if identity.role == "admin" %}
+<div class="card">
+  <h2>Account actions</h2>
+  {% if account.status == "active" %}
+  <form class="inline" method="post" action="/ui/accounts/{{ account.username }}/suspend">
+    <button type="submit" class="warn">Suspend</button>
+  </form>
+  {% elif account.status == "suspended" %}
+  <form class="inline" method="post" action="/ui/accounts/{{ account.username }}/unsuspend">
+    <button type="submit">Unsuspend</button>
+  </form>
+  {% endif %}
+  {% if account.status in ("active", "suspended", "error") %}
+  <form class="inline" method="post" action="/ui/accounts/{{ account.username }}/terminate"
+        onsubmit="return confirm('Terminate {{ account.username }}? This removes the Linux user, vhost, databases, mail, and DNS zones. This cannot be undone.');">
+    <button type="submit" class="danger">Terminate</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Domains</h2>
+  <table>
+    <thead><tr><th>Domain</th><th>Kind</th><th>SSL</th><th></th></tr></thead>
+    <tbody>
+      {% for d in domains %}
+      <tr>
+        <td>{{ d.domain }}</td>
+        <td>{{ d.kind }}</td>
+        <td>{{ d.ssl_status }}</td>
+        <td>
+          <a href="/ui/accounts/{{ account.username }}/dns/{{ d.domain }}">DNS</a> &middot;
+          <a href="/ui/accounts/{{ account.username }}/mail/{{ d.domain }}">Mail</a>
+          {% if d.ssl_status != "active" %}
+          &middot;
+          <form class="inline" method="post" action="/ui/accounts/{{ account.username }}/ssl/{{ d.domain }}/issue">
+            <button type="submit">Issue SSL</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">No domains yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="/ui/accounts/{{ account.username }}/domains">
+    <input type="text" name="domain" placeholder="example.com" required>
+    <select name="kind">
+      <option value="primary">primary</option>
+      <option value="addon">addon</option>
+      <option value="subdomain">subdomain</option>
+    </select>
+    <button type="submit">Add domain</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Databases</h2>
+  <table>
+    <thead><tr><th>Database</th><th>User</th><th></th></tr></thead>
+    <tbody>
+      {% for d in databases %}
+      <tr>
+        <td><code>{{ d.db_name }}</code></td>
+        <td><code>{{ d.db_user }}</code></td>
+        <td>
+          <form class="inline" method="post" action="/ui/accounts/{{ account.username }}/databases/{{ d.suffix }}/delete"
+                onsubmit="return confirm('Drop database {{ d.db_name }}? This cannot be undone.');">
+            <button type="submit" class="danger">Drop</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" class="muted">No databases yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="/ui/accounts/{{ account.username }}/databases">
+    <input type="text" name="name" placeholder="db suffix (e.g. shop)" required>
+    <button type="submit">Create database</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Files</h2>
+  <p><a href="/ui/accounts/{{ account.username }}/files">Open file manager &rarr;</a></p>
+</div>
+{% endblock %}

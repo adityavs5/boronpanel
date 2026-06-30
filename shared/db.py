@@ -12,18 +12,38 @@ from shared.models import Base
 
 def make_engine(db_path: str | None = None, read_only: bool = False):
     path = db_path or settings.db_path
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    uri = f"sqlite:///{path}"
-    if read_only:
-        uri = f"file:{path}?mode=ro"
-        engine = create_engine(uri, connect_args={"uri": True}, future=True)
-    else:
-        engine = create_engine(uri, future=True)
+    if not read_only:
+        # forgehost-api (the read_only=True caller) must never create this
+        # file/directory -- only forgehostd, running as root, owns that.
+        # mkdir here unconditionally would have silently given forgehost-api
+        # write access to the parent dir the first time it ran before the
+        # daemon had, which defeats the whole point of the OS-level
+        # permission split below.
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+    # SQLAlchemy's create_engine() takes a SQLAlchemy URL, not a raw sqlite3
+    # "file:...?mode=ro" URI passed as connect_args={"uri": True} -- that
+    # combination doesn't parse (caught by real testing: the first time
+    # forgehost-api actually exercised this read-only path, not by
+    # reasoning about it). Read-only enforcement instead comes from the
+    # actual filesystem permissions (the DB file is 0640 root:forgehost-api
+    # -- ARCHITECTURE.md SS4), which is simpler and was already the
+    # documented design; SQLite raises "attempt to write a readonly
+    # database" if this process ever tried to write through a connection
+    # that genuinely can't open the file for writing at the OS level.
+    engine = create_engine(f"sqlite:///{path}", future=True)
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, _record):
         cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
+        if not read_only:
+            # WAL mode is a property of the file itself, set once by
+            # whichever connection creates/opens it for writing -- forcing
+            # it again on a read-only connection would itself require a
+            # write to the DB header, which the read-only OS permissions
+            # correctly refuse. The writer (forgehostd) always connects
+            # first in practice, but don't depend on ordering: only the
+            # writer ever issues this pragma.
+            cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()

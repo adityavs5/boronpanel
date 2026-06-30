@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Mail: {{ domain }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
+<h1>Mailboxes: {{ domain }}</h1>
+<p class="muted">Webmail isn't built into Forgehost -- point customers at your own Roundcube install
+  (set <code>webmail_url</code> in <code>forgehost.toml</code>) or any IMAP client using these mailboxes.</p>
+
+{% if not mail_enabled %}
+<div class="card">
+  <p>Mail isn't enabled for <strong>{{ domain }}</strong> yet.</p>
+  <form method="post" action="/ui/accounts/{{ username }}/mail/{{ domain }}/enable">
+    <button type="submit">Enable mail for this domain</button>
+  </form>
+</div>
+{% endif %}
+
+<table>
+  <thead><tr><th>Mailbox</th><th>Quota (MB)</th><th>Active</th></tr></thead>
+  <tbody>
+    {% for m in mailboxes %}
+    <tr>
+      <td>{{ m.local_part }}@{{ domain }}</td>
+      <td>{{ m.quota_mb }}</td>
+      <td>{{ "yes" if m.active else "no" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3" class="muted">No mailboxes yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if mail_enabled %}
+<div class="card">
+  <h2>Create mailbox</h2>
+  <form method="post" action="/ui/accounts/{{ username }}/mail/{{ domain }}">
+    <input type="text" name="local_part" placeholder="local part (e.g. john)" required>
+    <input type="password" name="password" placeholder="password" required>
+    <button type="submit">Create mailbox</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

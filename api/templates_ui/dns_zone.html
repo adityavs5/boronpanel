@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}DNS: {{ domain }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
+<h1>DNS records: {{ domain }}</h1>
+
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>TTL</th><th>Value(s)</th></tr></thead>
+  <tbody>
+    {% for r in records %}
+    <tr>
+      <td>{{ r.name }}</td>
+      <td>{{ r.type }}</td>
+      <td>{{ r.ttl }}</td>
+      <td>{% for v in r.values %}<code>{{ v }}</code><br>{% endfor %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">No records.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="card">
+  <h2>Add / replace a record</h2>
+  <form method="post" action="/ui/accounts/{{ username }}/dns/{{ domain }}">
+    <input type="text" name="subdomain" placeholder="@ (apex) or e.g. www" value="@">
+    <select name="type">
+      <option>A</option>
+      <option>AAAA</option>
+      <option>CNAME</option>
+      <option>MX</option>
+      <option>TXT</option>
+    </select>
+    <input type="text" name="value" placeholder="value (e.g. 1.2.3.4)" required>
+    <input type="number" name="ttl" value="3600" min="60">
+    <button type="submit">Save record</button>
+  </form>
+  <p class="muted">MX value format: "&lt;priority&gt; &lt;host&gt;", e.g. "10 mail.example.com"</p>
+</div>
+{% endblock %}

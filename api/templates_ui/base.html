@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Forgehost{% endblock %}</title>
+  <link rel="stylesheet" href="/static/forgehost.css">
+</head>
+<body>
+  <header class="topbar">
+    <a href="/ui/accounts">Forgehost</a>
+    {% if identity %}
+    <nav>
+      <span class="muted">{{ identity.username }} ({{ identity.role }})</span>
+      {% if identity.role == "admin" %}
+      <a href="/ui/tokens" style="margin-left:1rem;">API tokens</a>
+      {% endif %}
+      <form class="inline" method="post" action="/logout" style="margin-left:1rem;">
+        <button type="submit" class="secondary">Log out</button>
+      </form>
+    </nav>
+    {% endif %}
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -19,7 +19,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, filemanager, handlers_account, handlers_database, handlers_dns, handlers_domain, handlers_mail, ols, ssl
+from daemon import audit, filemanager, handlers_account, handlers_auth, handlers_database, handlers_dns, handlers_domain, handlers_mail, ols, ssl
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +64,12 @@ OP_TABLE = {
     "file.mkdir": filemanager.mkdir,
     "file.delete": filemanager.delete,
     "file.move": filemanager.move,
+    "panel_user.create": handlers_auth.create_panel_user,
+    "panel_user.set_password": handlers_auth.set_panel_user_password,
+    "auth.create_session": handlers_auth.create_session,
+    "auth.revoke_session": handlers_auth.revoke_session,
+    "auth.create_api_token": handlers_auth.create_api_token,
+    "auth.revoke_api_token": handlers_auth.revoke_api_token,
 }
 
 # Each phase wires its own account-scoped teardown/suspend behavior here
@@ -147,8 +153,22 @@ async def amain() -> None:
     try:
         gid = grp.getgrnam("forgehost-api").gr_gid
         os.chown(socket_path, 0, gid)
+        # The socket's own group bit means nothing if the directory
+        # containing it isn't traversable by that group too -- systemd's
+        # RuntimeDirectory= creates /run/forgehost as root:root (this
+        # service runs as root, no Group= override), so forgehost-api could
+        # see the socket file's permissions but never reach it, getting a
+        # generic "Permission denied" with no indication why. Caught by the
+        # first real login attempt through forgehost-api, not by reasoning
+        # about systemd's RuntimeDirectory semantics in advance.
+        socket_dir = str(Path(socket_path).parent)
+        os.chown(socket_dir, 0, gid)
+        os.chmod(socket_dir, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
+        logger.info("socket dir %s now group=%s mode=%o", socket_dir, gid, stat.S_IMODE(os.stat(socket_dir).st_mode))
     except KeyError:
         logger.warning("forgehost-api group not found; socket left root-only")
+    except OSError:
+        logger.exception("failed to chown/chmod %s for forgehost-api access", socket_path)
 
     logger.info("forgehostd listening on %s", socket_path)
     async with server:

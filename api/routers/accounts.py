@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Form
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
+from sqlalchemy import select
+from starlette.requests import Request
+
+from shared.db import read_session
+from shared.models import Account
+
+from api.rpc import call_daemon
+from api.security import Identity, get_identity, require_account_access, require_admin
+from api.templates import templates
+
+api_router = APIRouter(prefix="/api/v1/accounts", tags=["accounts"])
+ui_router = APIRouter(prefix="/ui/accounts", tags=["ui:accounts"])
+
+
+class CreateAccountBody(BaseModel):
+    username: str
+    primary_domain: str | None = None
+    php_version: str | None = None
+    quota_soft_mb: int | None = None
+    quota_hard_mb: int | None = None
+    password: str | None = None
+
+
+@api_router.post("")
+def create_account(body: CreateAccountBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("account.create", identity, **body.model_dump(exclude_none=True))
+
+
+@api_router.get("")
+def list_accounts(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    with read_session() as db:
+        accounts = db.scalars(select(Account).order_by(Account.username)).all()
+        return [
+            {"id": a.id, "username": a.username, "status": a.status, "primary_domain": a.primary_domain}
+            for a in accounts
+        ]
+
+
+@api_router.get("/{username}")
+def get_account(username: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("account.get", identity, username=username)
+
+
+@api_router.post("/{username}/suspend")
+def suspend_account(username: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("account.suspend", identity, username=username)
+
+
+@api_router.post("/{username}/unsuspend")
+def unsuspend_account(username: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("account.unsuspend", identity, username=username)
+
+
+@api_router.post("/{username}/terminate")
+def terminate_account(username: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("account.terminate", identity, username=username)
+
+
+# --- server-rendered UI (ARCHITECTURE.md SS1: Jinja2 + htmx, forms POST-Redirect-GET) ---
+
+
+@ui_router.get("")
+def ui_dashboard(request: Request, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    with read_session() as db:
+        accounts = db.scalars(select(Account).order_by(Account.username)).all()
+    return templates.TemplateResponse(request, "dashboard.html", {"identity": identity, "accounts": accounts})
+
+
+@ui_router.post("")
+def ui_create_account(
+    request: Request,
+    username: str = Form(...),
+    primary_domain: str = Form(""),
+    identity: Identity = Depends(get_identity),
+):
+    require_admin(identity)
+    call_daemon(
+        "account.create",
+        identity,
+        username=username,
+        **({"primary_domain": primary_domain} if primary_domain else {}),
+    )
+    return RedirectResponse(f"/ui/accounts/{username}", status_code=303)
+
+
+@ui_router.get("/{username}")
+def ui_account_detail(request: Request, username: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    account = call_daemon("account.get", identity, username=username)
+    domains = call_daemon("domain.list", identity, username=username)["domains"]
+    databases = call_daemon("db.list", identity, username=username)["databases"]
+    # db_name is "<username>_<suffix>" (daemon/handlers_database.py); the UI
+    # delete route takes just the suffix, so strip the prefix here in code
+    # rather than string-slicing inside the Jinja template.
+    for db in databases:
+        db["suffix"] = db["db_name"][len(username) + 1 :]
+    return templates.TemplateResponse(
+        request,
+        "account_detail.html",
+        {
+            "identity": identity,
+            "account": account,
+            "domains": domains,
+            "databases": databases,
+        },
+    )
+
+
+@ui_router.post("/{username}/suspend")
+def ui_suspend(username: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    call_daemon("account.suspend", identity, username=username)
+    return RedirectResponse(f"/ui/accounts/{username}", status_code=303)
+
+
+@ui_router.post("/{username}/unsuspend")
+def ui_unsuspend(username: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    call_daemon("account.unsuspend", identity, username=username)
+    return RedirectResponse(f"/ui/accounts/{username}", status_code=303)
+
+
+@ui_router.post("/{username}/terminate")
+def ui_terminate(username: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    call_daemon("account.terminate", identity, username=username)
+    return RedirectResponse("/ui/accounts", status_code=303)
