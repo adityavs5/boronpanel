@@ -4,8 +4,22 @@ from shared.db import write_session
 from shared.models import AuditLog
 
 
+MAX_PARAM_VALUE_LEN = 500
+
+
+def _sanitize(key: str, value):
+    if "password" in key.lower() or "secret" in key.lower():
+        return "***"
+    if isinstance(value, str) and len(value) > MAX_PARAM_VALUE_LEN:
+        # File contents (file.read/file.write) and similarly bulky values
+        # don't belong verbatim in the audit log -- truncate rather than
+        # let one file.write of a 10MB file bloat every audit row forever.
+        return f"{value[:MAX_PARAM_VALUE_LEN]}... ({len(value)} chars total)"
+    return value
+
+
 def record(actor: str, role: str, op: str, target: str | None, params: dict, result: str, detail: str = "") -> None:
-    redacted = {k: ("***" if "password" in k.lower() or "secret" in k.lower() else v) for k, v in params.items()}
+    redacted = {k: _sanitize(k, v) for k, v in params.items()}
     with write_session() as session:
         session.add(
             AuditLog(

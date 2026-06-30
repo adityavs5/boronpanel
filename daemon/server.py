@@ -19,7 +19,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, handlers_account, handlers_database, handlers_dns, handlers_domain, handlers_mail, ols, ssl
+from daemon import audit, filemanager, handlers_account, handlers_database, handlers_dns, handlers_domain, handlers_mail, ols, ssl
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,6 +58,12 @@ OP_TABLE = {
     "mail.change_password": handlers_mail.change_mailbox_password,
     "ssl.issue": ssl.issue_certificate,
     "ssl.status": ssl.certificate_status,
+    "file.list": filemanager.list_dir,
+    "file.read": filemanager.read_file,
+    "file.write": filemanager.write_file,
+    "file.mkdir": filemanager.mkdir,
+    "file.delete": filemanager.delete,
+    "file.move": filemanager.move,
 }
 
 # Each phase wires its own account-scoped teardown/suspend behavior here
