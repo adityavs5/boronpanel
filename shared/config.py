@@ -56,7 +56,10 @@ class Settings:
 
     # mariadb (control DB for hosted accounts + forgehost_mail schema)
     mariadb_socket: str = "/run/mysqld/mysqld.sock"
-    mariadb_admin_user: str = "root"
+    # Deliberately not the bare MySQL "root" account (ARCHITECTURE.md SS4) --
+    # a dedicated admin-equivalent user the daemon authenticates as, so root
+    # itself can keep a password nobody but the operator knows.
+    mariadb_admin_user: str = "forgehost_daemon"
 
     # powerdns
     powerdns_api_url: str = "http://127.0.0.1:8081/api/v1"
@@ -75,7 +78,7 @@ class Settings:
 
     @property
     def mariadb_admin_password(self) -> str:
-        return self.secrets.get("MARIADB_ADMIN_PASSWORD", "")
+        return self.secrets.get("MARIADB_DAEMON_PASSWORD", "")
 
     @property
     def powerdns_api_key(self) -> str:
