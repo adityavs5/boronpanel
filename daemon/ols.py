@@ -52,7 +52,33 @@ def _vhost_conf_path(username: str) -> str:
     return VHOST_CONF_TEMPLATE.format(base=OLS_SERVER_BASE, name=username)
 
 
-def render_vhost_conf(account: Account, domains: list[str], suspended: bool) -> str:
+DEFAULT_SSL_KEY = "/etc/forgehost/ssl/default.key"
+DEFAULT_SSL_CERT = "/etc/forgehost/ssl/default.crt"
+
+
+def letsencrypt_cert_paths(cert_name: str) -> tuple[str, str]:
+    """Predictable certbot storage layout -- no need to track literal paths
+    in our own DB, they're deterministic from the cert's lineage name
+    (the primary domain it was requested for)."""
+    base = f"/etc/letsencrypt/live/{cert_name}"
+    return f"{base}/privkey.pem", f"{base}/fullchain.pem"
+
+
+def _ssl_paths_for_account(account: Account, session) -> tuple[str, str]:
+    """Phase f: one cert per vhost in v1, keyed to the account's primary
+    domain. Falls back to the bootstrap self-signed cert until/unless a
+    real one has been issued (Domain.ssl_status == 'active')."""
+    primary = session.scalar(
+        select(Domain).where(Domain.account_id == account.id, Domain.kind == "primary")
+    )
+    if primary is not None and primary.ssl_status == "active":
+        key, cert = letsencrypt_cert_paths(primary.domain)
+        if Path(key).exists() and Path(cert).exists():
+            return key, cert
+    return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
+
+
+def render_vhost_conf(account: Account, domains: list[str], suspended: bool, ssl_key_file: str = DEFAULT_SSL_KEY, ssl_cert_file: str = DEFAULT_SSL_CERT) -> str:
     home_dir = f"{settings.home_base}/{account.username}"
     docroot = f"{home_dir}/public_html"
     template = _env.get_template("vhost.conf.j2")
@@ -64,8 +90,8 @@ def render_vhost_conf(account: Account, domains: list[str], suspended: bool) -> 
         lsphp_path=_lsphp_path(account.php_version),
         suspended=suspended,
         suspended_page_root=settings.suspended_page_root,
-        ssl_key_file="/etc/forgehost/ssl/default.key",
-        ssl_cert_file="/etc/forgehost/ssl/default.crt",
+        ssl_key_file=ssl_key_file,
+        ssl_cert_file=ssl_cert_file,
         **RESOURCE_DEFAULTS,
     )
 
@@ -149,8 +175,9 @@ def _verify() -> StepResult:
 def _apply_vhost_set(account: Account, domains: list[str], suspended: bool) -> None:
     with write_session() as session:
         vhosts = _all_active_vhosts(session)
+        ssl_key_file, ssl_cert_file = _ssl_paths_for_account(account, session)
 
-    vhost_content = render_vhost_conf(account, domains, suspended)
+    vhost_content = render_vhost_conf(account, domains, suspended, ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file)
     httpd_content = render_httpd_config(vhosts)
 
     writer = ConfigWriterMulti(
@@ -171,6 +198,20 @@ def _apply_vhost_set(account: Account, domains: list[str], suspended: bool) -> N
 
 def provision_vhost(account: Account, domains: list[str]) -> None:
     _apply_vhost_set(account, domains, suspended=False)
+
+
+def refresh_vhost(account: Account) -> None:
+    """Re-render and re-apply this account's vhost from current DB state
+    (domains, suspend status, SSL status) with no content changes of its
+    own -- used by the certbot deploy-hook (Phase f) after marking a
+    domain's ssl_status active, so the new cert path actually gets picked
+    up by a real OLS reload rather than just sitting in the database."""
+    with write_session() as session:
+        domains = list(session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all())
+        suspended = account.status == "suspended"
+    if not domains:
+        return
+    _apply_vhost_set(account, domains, suspended=suspended)
 
 
 def suspend_vhost(account: Account) -> None:

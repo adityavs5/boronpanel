@@ -19,7 +19,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, handlers_account, handlers_database, handlers_dns, handlers_domain, handlers_mail, ols
+from daemon import audit, handlers_account, handlers_database, handlers_dns, handlers_domain, handlers_mail, ols, ssl
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +56,8 @@ OP_TABLE = {
     "mail.delete_mailbox": handlers_mail.delete_mailbox,
     "mail.list_mailboxes": handlers_mail.list_mailboxes,
     "mail.change_password": handlers_mail.change_mailbox_password,
+    "ssl.issue": ssl.issue_certificate,
+    "ssl.status": ssl.certificate_status,
 }
 
 # Each phase wires its own account-scoped teardown/suspend behavior here
@@ -68,6 +70,7 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: ols.terminate_vhost(acco
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_dns.terminate_account_zones(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_database.terminate_account_databases(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_mail.terminate_account_mail(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: ssl.terminate_account_certs(account))
 
 
 def register_op(name: str, handler) -> None:

@@ -75,6 +75,11 @@ class Settings:
     # install the operator runs separately), not something Forgehost serves.
     webmail_url: str = ""
 
+    # ssl (Phase f)
+    certbot_bin: str = "/opt/forgehost/.venv/bin/certbot"
+    letsencrypt_email: str = ""
+    powerdns_credentials_file: str = "/etc/forgehost/ssl/powerdns-credentials.ini"
+
     secrets: dict[str, str] = field(default_factory=dict)
 
     @property
