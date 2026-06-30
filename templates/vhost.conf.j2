@@ -1,0 +1,81 @@
+docRoot                   {{ docroot }}
+allowSymbolLink           1
+enableGzip                1
+enableIpGeo               0
+
+extprocessor {{ php_app_name }} {
+  type                    lsapi
+  address                 uds://tmp/lshttpd/{{ username }}.sock
+  maxConns                10
+  env                     PHP_LSAPI_CHILDREN=10
+  initTimeout             60
+  retryTimeout            0
+  persistConn             1
+  respBuffer              0
+  autoStart               1
+  path                    {{ lsphp_path }}
+  backlog                 100
+  instances               1
+  extUser                 {{ username }}
+  extGroup                {{ username }}
+  memSoftLimit            {{ mem_soft_limit }}
+  memHardLimit            {{ mem_hard_limit }}
+  procSoftLimit           {{ proc_soft_limit }}
+  procHardLimit           {{ proc_hard_limit }}
+}
+
+scripthandler {
+  add                     lsapi:{{ php_app_name }} php
+}
+
+context / {
+{% if suspended %}
+  location                {{ suspended_page_root }}
+  allowBrowse             1
+{% else %}
+  location                {{ docroot }}
+  allowBrowse             1
+  rewrite {
+    enable                1
+    RewriteFile           .htaccess
+  }
+  addDefaultCharset       off
+
+  phpIniOverride  {
+    php_admin_value open_basedir "{{ docroot }}:{{ home_dir }}/tmp:/tmp"
+  }
+{% endif %}
+}
+
+context /.well-known/acme-challenge/ {
+  location                {{ docroot }}/.well-known/acme-challenge/
+  allowBrowse             1
+}
+
+rewrite {
+  enable                  1
+  autoLoadHtaccess        {{ 0 if suspended else 1 }}
+{% if suspended %}
+  rules                   <<<END_forgehost_rules
+RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+RewriteRule ^(.*)$ /index.html [L]
+END_forgehost_rules
+{% endif %}
+}
+
+errorlog {{ home_dir }}/logs/error.log {
+  useServer               0
+  logLevel                WARN
+  rollingSize             10M
+}
+
+accessLog {{ home_dir }}/logs/access.log {
+  useServer               0
+  rollingSize             10M
+  keepDays                30
+}
+
+vhssl {
+  keyFile                 {{ ssl_key_file }}
+  certFile                {{ ssl_cert_file }}
+}

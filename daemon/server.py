@@ -11,7 +11,6 @@ import asyncio
 import grp
 import logging
 import os
-import pwd
 import stat
 from pathlib import Path
 
@@ -20,7 +19,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, handlers_account
+from daemon import audit, handlers_account, handlers_domain, ols
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +38,18 @@ OP_TABLE = {
     "account.suspend": handlers_account.suspend_account,
     "account.unsuspend": handlers_account.unsuspend_account,
     "account.terminate": handlers_account.terminate_account,
+    "domain.add": handlers_domain.add_domain,
+    "domain.list": handlers_domain.list_domains,
+    "system.bootstrap_ols": lambda params: (ols.bootstrap_baseline(), {"status": "ok"})[1],
 }
+
+# Each phase wires its own account-scoped teardown/suspend behavior here
+# instead of handlers_account.py importing every phase directly (avoids an
+# import cycle: ols/dns/db/mail modules all need handlers_account's Account
+# type, not the other way around).
+handlers_account.SUSPEND_HOOKS.append(lambda account: ols.suspend_vhost(account))
+handlers_account.UNSUSPEND_HOOKS.append(lambda account: ols.unsuspend_vhost(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: ols.terminate_vhost(account))
 
 
 def register_op(name: str, handler) -> None:

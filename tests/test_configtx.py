@@ -1,4 +1,4 @@
-from daemon.configtx import ConfigWriter, StepResult
+from daemon.configtx import ConfigWriter, ConfigWriterMulti, StepResult
 
 
 def test_apply_success(tmp_path):
@@ -98,3 +98,55 @@ def test_validator_exception_is_treated_as_failure(tmp_path):
     result = writer.apply("config\n")
     assert not result.applied
     assert not target.exists()
+
+
+def test_multi_apply_success(tmp_path):
+    writer = ConfigWriterMulti(
+        targets={"vhost": str(tmp_path / "vhost.conf"), "main": str(tmp_path / "httpd.conf")},
+        validate=lambda paths: StepResult(True),
+        reload=lambda: StepResult(True),
+        verify=lambda: StepResult(True),
+        backup_dir=str(tmp_path / "backups"),
+        subsystem="ols",
+    )
+    result = writer.apply({"vhost": "vhost body\n", "main": "main body\n"})
+    assert result.ok
+    assert (tmp_path / "vhost.conf").read_text() == "vhost body\n"
+    assert (tmp_path / "httpd.conf").read_text() == "main body\n"
+
+
+def test_multi_rollback_restores_all_files(tmp_path):
+    (tmp_path / "vhost.conf").write_text("old vhost\n")
+    (tmp_path / "httpd.conf").write_text("old main\n")
+
+    # simulate OLS: "validate" is a cheap static check, the real check lives
+    # in reload() and fails here -- exactly the pattern ols.py uses since
+    # `openlitespeed -t` only validates the live tree, not a candidate path.
+    writer = ConfigWriterMulti(
+        targets={"vhost": str(tmp_path / "vhost.conf"), "main": str(tmp_path / "httpd.conf")},
+        validate=lambda paths: StepResult(True),
+        reload=lambda: StepResult(False, "openlitespeed -t failed on live tree"),
+        verify=lambda: StepResult(True),
+        backup_dir=str(tmp_path / "backups"),
+        subsystem="ols",
+    )
+    result = writer.apply({"vhost": "broken vhost\n", "main": "broken main\n"})
+    assert result.rolled_back
+    assert (tmp_path / "vhost.conf").read_text() == "old vhost\n"
+    assert (tmp_path / "httpd.conf").read_text() == "old main\n"
+
+
+def test_multi_validate_failure_leaves_everything_untouched(tmp_path):
+    (tmp_path / "vhost.conf").write_text("old vhost\n")
+    writer = ConfigWriterMulti(
+        targets={"vhost": str(tmp_path / "vhost.conf"), "main": str(tmp_path / "httpd.conf")},
+        validate=lambda paths: StepResult(False, "static check failed"),
+        reload=lambda: StepResult(True),
+        verify=lambda: StepResult(True),
+        backup_dir=str(tmp_path / "backups"),
+        subsystem="ols",
+    )
+    result = writer.apply({"vhost": "x\n", "main": "y\n"})
+    assert not result.applied
+    assert (tmp_path / "vhost.conf").read_text() == "old vhost\n"
+    assert not (tmp_path / "httpd.conf").exists()

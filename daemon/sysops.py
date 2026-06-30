@@ -58,8 +58,18 @@ def create_linux_user(username: str) -> tuple[int, int]:
         ],
         check=True,
     )
-    # home dir mode 750: owner rwx, group rx (own private group only), world none
-    run(["chmod", "750", home_dir], check=True)
+    # 711: owner rwx, group/other execute-only (traverse but not list/read).
+    # OLS's worker process resolves the path to the vhost docroot while still
+    # running as the shared "nobody" user *before* handing off to the
+    # account's own uid (suEXEC-equivalent only kicks in for the LSAPI PHP
+    # child and DocRoot-UID file serving, not the initial path lookup) --
+    # confirmed empirically in Phase b testing: mode 750 produced a 403 on
+    # every request because "nobody" couldn't even traverse into the home
+    # dir. 711 is the same pattern cPanel/DirectAdmin use for this reason:
+    # traversal without listing or reading still protects file contents,
+    # since opening a file or listing a directory both require the read bit
+    # this intentionally omits.
+    run(["chmod", "711", home_dir], check=True)
 
     pw = pwd.getpwnam(username)
     return pw.pw_uid, pw.pw_gid

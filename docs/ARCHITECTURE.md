@@ -231,15 +231,38 @@ scripthandler {
 }
 ```
 
-- Account's docroot and all files under `/home/<user>` are owned `<user>:<user>`,
-  mode `750` on the home dir itself (group-readable only by the owning user's
-  own group, which has no other members — equivalent isolation to mode 700
-  but matches what OLS's own docs assume for the "DocRoot UID" set-uid mode).
-- `setUID 1` + `extUser`/`extGroup` = the account's own uid/gid is the actual
-  isolation mechanism (RESEARCH.md §3) — every `lsphp` worker for this
-  account's vhost runs as that Linux user, so Linux DAC permissions are the
-  real enforcement boundary between accounts, not anything Forgehost itself
-  polices at runtime.
+- Account's docroot and all files under `/home/<user>` are owned `<user>:<user>`.
+  **Corrected during Phase b's real end-to-end testing** (the assumption
+  below this paragraph was wrong and is kept here, struck through in spirit,
+  specifically so the mistake doesn't get re-made): real-world testing on
+  this server found that "DocRoot UID" (`setUIDMode 2`) only governs the
+  uid the LSAPI/PHP external app runs as (already covered by `extUser`/
+  `extGroup` below) — it does **not** make OLS's main worker process switch
+  uid per request for static-file serving or for locating the script to
+  hand off to LSAPI in the first place. That worker keeps running as the
+  server-wide `nobody` user the entire time. A mode-750 home dir (no
+  "other" access) therefore produced a 403 on every request, because
+  `nobody` couldn't even traverse into it. Making the docroot
+  world-readable (755) to fix that was tried next and is the **wrong**
+  fix — it lets every Linux account on the box `cat` every other account's
+  files, confirmed by a real cross-account read test. **The actual fix**,
+  the same pattern cPanel/DirectAdmin use: home dir mode `711` (owner full
+  access, group/other execute-only — traversal without listing), docroot
+  mode `750` (owner + private group only, no "other" access), plus a POSIX
+  ACL granting the `nobody` user specifically `rX` (read, execute-if-dir),
+  applied recursively with a default ACL so files created later (uploads,
+  file manager, deploys) inherit it automatically. This passed both
+  functional testing (page serves, HTTP 200) and isolation testing (a
+  second unrelated Linux account gets `Permission denied`) on this VM.
+- `extUser`/`extGroup` set to the account's own uid/gid in the LSAPI
+  external app is the actual PHP-execution isolation mechanism
+  (RESEARCH.md §3) — every `lsphp` worker for this account's vhost runs as
+  that Linux user, confirmed by a live request whose PHP output reported
+  its own `posix_geteuid()` identity back as the account's username, not
+  `nobody` or `root`. Linux DAC permissions are the real enforcement
+  boundary between accounts for PHP execution; the ACL above is the
+  separate, necessary mechanism for the *static-serving* path, which runs
+  under a different, shared identity.
 - One `extprocessor` block is rendered **per (account × PHP version actually
   selected for that account)** — not one per installed PHP version
   server-wide. An account on PHP 8.3 gets exactly one `<user>_php83` external
@@ -312,6 +335,33 @@ the response status and only writes the corresponding SQLite cache row after
 a 2xx — so the "rollback" here is simply "never commit the local cache row
 on a non-2xx," with no compensating action needed since PowerDNS's own write
 was never partially applied in the first place.
+
+**OLS-specific adaptation, discovered empirically while building Phase b**:
+`openlitespeed -t` only ever validates the *live, installed* config tree —
+passing `-c <path>` to point it at a candidate config is silently ignored.
+That makes the generic "validate the temp file before touching the live
+path" step impossible to do literally for OLS's two files (a per-account
+`vhconf.conf` plus the shared, fully-regenerated `httpd_config.conf` — see
+§6). The adaptation: `daemon/configtx.ConfigWriterMulti`'s `validate`
+callable does only a cheap static pre-check (balanced braces, non-empty);
+the real `openlitespeed -t` call happens as the *first action inside*
+`reload()`, gated before the actual `systemctl reload lshttpd` is issued. A
+real OLS validation failure is therefore reported as a reload failure,
+which `ConfigWriterMulti` already knows how to roll back from — no special
+casing needed, and "validate before reload" still holds in spirit: lshttpd
+is never told to reload a config that hasn't passed `-t`, the gate just
+moved from before the file write to before the service is told to apply it.
+One consequence worth flagging explicitly: this server's stock OpenLiteSpeed
+install bundles an "Example" vhost whose docroot is owned by root with a
+uid/gid below OLS's own configured minimum (`CGIRLimit.minUID`/`minGID`),
+which makes `openlitespeed -t` exit non-zero *even on an untouched, valid
+install* — confirmed by testing the exact stock config. Forgehost's
+regenerated `httpd_config.conf` never includes that vhost (it's rendered
+from the DB's accounts/domains only), and a one-time `system.bootstrap_ols`
+RPC op replaces the stock config with a clean, Example-free baseline before
+the first real account is provisioned — without that, every rollback target
+would itself look like a validation failure, since rollback restores
+whatever config was live before the failed change.
 
 ## 8. SSL automation
 

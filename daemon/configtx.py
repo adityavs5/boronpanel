@@ -44,6 +44,7 @@ class ConfigTxResult:
 
 
 ValidateFn = Callable[[Path], StepResult]
+MultiValidateFn = Callable[[dict[str, Path]], StepResult]
 ReloadFn = Callable[[], StepResult]
 VerifyFn = Callable[[], StepResult]
 
@@ -122,3 +123,96 @@ class ConfigWriter:
         return ConfigTxResult(applied=True, rolled_back=True, steps=steps) if rollback_ok else ConfigTxResult(
             applied=True, rolled_back=True, steps=steps
         )
+
+
+class ConfigWriterMulti:
+    """Same validate -> backup -> apply -> reload -> verify -> rollback
+    contract as ConfigWriter, but across several files that must land
+    together as one transaction.
+
+    Built for OLS specifically (ARCHITECTURE.md SS6/SS7): a per-account
+    vhconf.conf plus the shared, fully-regenerated httpd_config.conf must
+    both be in place before `openlitespeed -t` can validate either of them,
+    because httpd_config.conf references vhconf.conf by path and OLS's own
+    `-t` flag only ever validates the live installed config tree (confirmed
+    empirically -- `-c <path>` is silently ignored). Because of that,
+    "validate" here is intentionally a cheap static pre-check (e.g. balanced
+    braces); the authoritative `openlitespeed -t` check runs as the first
+    action inside `reload()`, gated *before* the reload command is actually
+    issued -- so a real OLS validation failure is reported as a reload
+    failure and triggers this class's normal rollback path, with no special
+    casing needed. Reused as-is by Phase b; not needed by Phase e, where
+    Postfix/Dovecot's own `check`/`-n` tools accept an arbitrary path and
+    the simpler single-file ConfigWriter applies directly.
+    """
+
+    def __init__(
+        self,
+        targets: dict[str, str],
+        validate: MultiValidateFn,
+        reload: ReloadFn,
+        verify: VerifyFn,
+        backup_dir: str,
+        subsystem: str,
+    ):
+        self.targets = {name: Path(path) for name, path in targets.items()}
+        self.validate = validate
+        self.reload = reload
+        self.verify = verify
+        self.backup_dir = Path(backup_dir) / subsystem
+        self.subsystem = subsystem
+
+    def apply(self, contents: dict[str, str]) -> ConfigTxResult:
+        steps: list[tuple[str, StepResult]] = []
+        tmp_paths: dict[str, Path] = {}
+        for name, target_path in self.targets.items():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = target_path.with_suffix(target_path.suffix + f".tmp.{os.getpid()}")
+            tmp_path.write_text(contents[name])
+            tmp_paths[name] = tmp_path
+
+        try:
+            validate_result = self.validate(tmp_paths)
+        except Exception as exc:  # noqa: BLE001
+            validate_result = StepResult(False, f"validator raised: {exc}")
+        steps.append(("validate", validate_result))
+        if not validate_result.ok:
+            for tmp_path in tmp_paths.values():
+                tmp_path.unlink(missing_ok=True)
+            return ConfigTxResult(applied=False, rolled_back=False, steps=steps)
+
+        backups: dict[str, Path] = {}
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        for name, target_path in self.targets.items():
+            if target_path.exists():
+                backup_path = self.backup_dir / f"{name}-{target_path.name}.{int(time.time())}"
+                shutil.copy2(target_path, backup_path)
+                backups[name] = backup_path
+        steps.append(("backup", StepResult(True, ", ".join(str(p) for p in backups.values()) or "no prior files")))
+
+        for name, target_path in self.targets.items():
+            os.replace(tmp_paths[name], target_path)
+        steps.append(("apply", StepResult(True)))
+
+        reload_result = self.reload()
+        steps.append(("reload", reload_result))
+
+        if reload_result.ok:
+            verify_result = self.verify()
+        else:
+            verify_result = StepResult(False, "skipped: reload failed")
+        steps.append(("verify", verify_result))
+
+        if reload_result.ok and verify_result.ok:
+            return ConfigTxResult(applied=True, rolled_back=False, steps=steps)
+
+        for name, target_path in self.targets.items():
+            if name in backups:
+                shutil.copy2(backups[name], target_path)
+            else:
+                target_path.unlink(missing_ok=True)
+        rb_reload = self.reload()
+        steps.append(("rollback_reload", rb_reload))
+
+        logger.error("configtx (multi) rollback for %s: %s", self.subsystem, steps)
+        return ConfigTxResult(applied=True, rolled_back=True, steps=steps)
