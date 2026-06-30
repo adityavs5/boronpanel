@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/var/
+*.sock
+.env
+.claude/
