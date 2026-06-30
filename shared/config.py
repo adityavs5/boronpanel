@@ -70,6 +70,11 @@ class Settings:
     # config-loading side effect is surprising and fragile).
     server_public_ip: str = ""
 
+    # mail (Phase e) -- webmail is explicitly out of v1 scope; this is a
+    # link-out URL the admin UI points customers at (e.g. a Roundcube
+    # install the operator runs separately), not something Forgehost serves.
+    webmail_url: str = ""
+
     secrets: dict[str, str] = field(default_factory=dict)
 
     @property
