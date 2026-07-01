@@ -1,0 +1,34 @@
+docRoot                   {{ docroot }}
+allowSymbolLink           1
+enableGzip                1
+
+context / {
+  location                {{ docroot }}
+  allowBrowse             1
+}
+
+context /.well-known/acme-challenge/ {
+  location                {{ docroot }}/.well-known/acme-challenge/
+  allowBrowse             1
+}
+
+scripthandler {
+  add                     lsapi:roundcube_php php
+}
+
+errorlog {{ log_dir }}/roundcube-error.log {
+  useServer               0
+  logLevel                WARN
+  rollingSize             10M
+}
+
+accessLog {{ log_dir }}/roundcube-access.log {
+  useServer               0
+  rollingSize             10M
+  keepDays                30
+}
+
+vhssl {
+  keyFile                 {{ ssl_key_file }}
+  certFile                {{ ssl_cert_file }}
+}

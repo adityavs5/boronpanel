@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select  # noqa: E402
 
+from shared.config import settings  # noqa: E402
 from shared.db import write_session  # noqa: E402
 from shared.models import Account, Domain  # noqa: E402
 
@@ -50,6 +51,13 @@ def main() -> int:
 
 
 def _apply_for_domain(domain_name: str) -> None:
+    # Phase 2 feature 3: the static webmail hostname isn't a Domain row --
+    # same reasoning as ssl.py's _challenge_plan special case.
+    if domain_name == settings.webmail_hostname:
+        ols.refresh_webmail_vhost()
+        logger.info("applied new certificate for webmail host %s", domain_name)
+        return
+
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain_name))
         if domain_row is None:

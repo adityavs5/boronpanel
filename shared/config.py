@@ -105,10 +105,20 @@ class Settings:
     # config-loading side effect is surprising and fragile).
     server_public_ip: str = ""
 
-    # mail (Phase e) -- webmail is explicitly out of v1 scope; this is a
-    # link-out URL the admin UI points customers at (e.g. a Roundcube
-    # install the operator runs separately), not something Forgehost serves.
+    # mail (Phase e) -- Phase e v1 explicitly did not build webmail, this
+    # was a link-out placeholder. Phase 2 feature 3 now deploys Roundcube
+    # server-wide, so this is set to that real URL (forgehost.toml);
+    # left blank it still degrades gracefully to "no webmail configured".
     webmail_url: str = ""
+
+    # Phase 2 feature 3: the single hostname Roundcube's own OLS vhost
+    # answers on -- one shared webmail install for every hosted mail
+    # domain, not one per account (RESEARCH.md/goal: "deploy once
+    # server-wide"). Login itself needs no per-account wiring at all: it's
+    # plain IMAP/SMTP auth against Dovecot/Postfix, so any existing
+    # Forgehost mailbox's address+password already works.
+    webmail_hostname: str = ""
+    webmail_docroot: str = "/var/lib/roundcube/public_html"
 
     # ssl (Phase f)
     certbot_bin: str = "/opt/forgehost/.venv/bin/certbot"

@@ -119,6 +119,22 @@ def _all_active_vhosts(session) -> list[dict]:
     return vhosts
 
 
+WEBMAIL_VHOST_NAME = "roundcube"
+
+
+def _webmail_ssl_paths(session) -> tuple[str, str]:
+    """Same pattern as _ssl_paths_for_account, keyed to the static webmail
+    hostname instead of an account's primary domain -- Roundcube gets a
+    real cert the same way any other vhost does (see ssl.issue's
+    challenge-plan; it just isn't tied to a Domain row's account)."""
+    if not settings.webmail_hostname:
+        return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
+    key, cert = letsencrypt_cert_paths(settings.webmail_hostname)
+    if Path(key).exists() and Path(cert).exists():
+        return key, cert
+    return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
+
+
 def render_httpd_config(vhosts: list[dict]) -> str:
     template = _env.get_template("httpd_config.conf.j2")
     return template.render(
@@ -130,7 +146,60 @@ def render_httpd_config(vhosts: list[dict]) -> str:
         default_ssl_key="/etc/forgehost/ssl/default.key",
         default_ssl_cert="/etc/forgehost/ssl/default.crt",
         vhosts=vhosts,
+        webmail_hostname=settings.webmail_hostname,
+        webmail_docroot=settings.webmail_docroot,
+        webmail_lsphp_path=_lsphp_path(settings.default_php_version),
     )
+
+
+def _webmail_vhost_conf_path() -> str:
+    return VHOST_CONF_TEMPLATE.format(base=OLS_SERVER_BASE, name=WEBMAIL_VHOST_NAME)
+
+
+def render_webmail_vhost_conf(ssl_key_file: str, ssl_cert_file: str) -> str:
+    template = _env.get_template("roundcube_vhost.conf.j2")
+    return template.render(
+        docroot=settings.webmail_docroot,
+        log_dir=settings.log_dir,
+        ssl_key_file=ssl_key_file,
+        ssl_cert_file=ssl_cert_file,
+    )
+
+
+def bootstrap_webmail() -> None:
+    """One-time (well, idempotent -- safe to re-run) infra setup, same
+    category as bootstrap_baseline: Roundcube isn't an account resource, so
+    nothing in the normal account.create/domain.add flow ever triggers
+    this. Run explicitly after Roundcube itself is installed and
+    configured (README/CHECKPOINT-phase2-3.md)."""
+    if not settings.webmail_hostname:
+        raise RuntimeError("webmail_hostname is not set in forgehost.toml")
+
+    with write_session() as session:
+        vhosts = _all_active_vhosts(session)
+        ssl_key_file, ssl_cert_file = _webmail_ssl_paths(session)
+
+    httpd_content = render_httpd_config(vhosts)
+    webmail_content = render_webmail_vhost_conf(ssl_key_file, ssl_cert_file)
+
+    writer = ConfigWriterMulti(
+        targets={"main": HTTPD_CONFIG_PATH, "webmail": _webmail_vhost_conf_path()},
+        validate=_validate_multi,
+        reload=_reload,
+        verify=_verify,
+        backup_dir=settings.backup_dir,
+        subsystem="ols",
+    )
+    result = writer.apply({"main": httpd_content, "webmail": webmail_content})
+    if not result.ok:
+        raise RuntimeError(f"OLS config transaction failed during bootstrap_webmail: {result.summary()}")
+
+
+def refresh_webmail_vhost() -> None:
+    """Re-apply webmail's vhost with current SSL status -- used by the
+    certbot deploy-hook once a real cert for webmail_hostname is issued,
+    same role refresh_vhost() plays for account domains."""
+    bootstrap_webmail()
 
 
 def _static_precheck(content: str) -> StepResult:

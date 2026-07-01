@@ -129,3 +129,13 @@ def test_terminate_account_certs_deletes_active_cert(isolated_db, stub_sysops, s
     assert len(calls) == 1
     assert "delete" in calls[0]
     assert "demo1.example" in calls[0]
+
+
+def test_challenge_plan_webmail_hostname_uses_http01_with_webmail_docroot(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    monkeypatch.setattr(fssl.settings, "webmail_hostname", "webmail.example.com")
+    monkeypatch.setattr(fssl.settings, "webmail_docroot", "/var/lib/roundcube/public_html")
+
+    mode, args = fssl._challenge_plan("webmail.example.com")
+    assert mode == "http-01"
+    assert "--webroot" in args
+    assert "/var/lib/roundcube/public_html" in args

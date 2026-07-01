@@ -35,6 +35,13 @@ class SslError(Exception):
 def _challenge_plan(domain: str) -> tuple[str, list[str]]:
     """Returns (mode, certbot_args). mode is "dns-01" or "http-01", purely
     for logging/the RPC response -- the actual behavior is in the args."""
+    # Phase 2 feature 3: Roundcube's static webmail hostname isn't a
+    # per-account Domain row -- it's server infrastructure, same category
+    # as the panel's own TLS cert. Its webroot is settings.webmail_docroot,
+    # not something looked up from the accounts/domains tables.
+    if domain == settings.webmail_hostname:
+        return "http-01", ["--webroot", "-w", settings.webmail_docroot]
+
     with write_session() as session:
         zone_managed = session.scalar(select(DnsZone).where(DnsZone.zone == domain)) is not None
 
@@ -78,6 +85,12 @@ def issue_certificate(params: dict) -> dict:
 
 def certificate_status(params: dict) -> dict:
     domain = validate_domain(params["domain"])
+    if domain == settings.webmail_hostname:
+        from daemon.ols import letsencrypt_cert_paths
+
+        key, cert = letsencrypt_cert_paths(domain)
+        exists = Path(key).exists() and Path(cert).exists()
+        return {"domain": domain, "ssl_status": "active" if exists else "none"}
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain))
         if domain_row is None:

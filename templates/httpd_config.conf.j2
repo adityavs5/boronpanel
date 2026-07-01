@@ -148,6 +148,53 @@ scriptHandler{
     add lsapi:lsphp  php
 }
 
+{% if webmail_hostname %}
+# Phase 2 feature 3: Roundcube, deployed once server-wide (not a
+# per-account resource -- infrastructure like the extProcessor/vhost
+# blocks above it, so it's static template content rather than generated
+# from the accounts/domains loop below).
+extProcessor roundcube_php{
+    type                            lsapi
+    address                         uds://tmp/lshttpd/roundcube_php.sock
+    maxConns                        10
+    env                              PHP_LSAPI_CHILDREN=10
+    initTimeout                     60
+    retryTimeout                    0
+    persistConn                     1
+    respBuffer                      0
+    autoStart                       1
+    path                            {{ webmail_lsphp_path }}
+    backlog                         100
+    instances                       1
+    priority                        0
+    extUser                         www-data
+    extGroup                        www-data
+    memSoftLimit                    256M
+    memHardLimit                    512M
+    procSoftLimit                   50
+    procHardLimit                   75
+}
+
+virtualHost roundcube{
+    vhRoot                   {{ webmail_docroot }}/
+    allowSymbolLink          1
+    enableScript             1
+    restrained                1
+    {# setUIDMode 0 (server uid), not 2 (DocRoot UID): Roundcube is one
+       shared app, not a multi-tenant hosting account, so there's no
+       per-tenant uid isolation to derive from docroot ownership --
+       isolation here comes entirely from the roundcube_php extProcessor's
+       extUser/extGroup=www-data above. Mode 2 additionally requires the
+       docroot's own uid/gid to clear CGIRLimit's minUID/minGID, which the
+       package-owned (root:root) directory doesn't -- confirmed live: the
+       first bootstrap attempt failed openlitespeed -t on exactly that
+       check, the same failure class Phase 1 hit with OLS's stock Example
+       vhost. #}
+    setUIDMode               0
+    configFile               conf/vhosts/roundcube/vhconf.conf
+}
+{% endif %}
+
 {% for vh in vhosts %}
 virtualHost {{ vh.name }}{
     vhRoot                   {{ vh.home_dir }}/
@@ -162,6 +209,9 @@ virtualHost {{ vh.name }}{
 listener HTTP{
     address                  *:80
     secure                   0
+{% if webmail_hostname %}
+    map                      roundcube {{ webmail_hostname }}
+{% endif %}
 {% for vh in vhosts %}
     map                      {{ vh.name }} {{ vh.domains | join(', ') }}
 {% endfor %}
@@ -172,6 +222,9 @@ listener HTTPS{
     secure                   1
     keyFile                  {{ default_ssl_key }}
     certFile                 {{ default_ssl_cert }}
+{% if webmail_hostname %}
+    map                      roundcube {{ webmail_hostname }}
+{% endif %}
 {% for vh in vhosts %}
     map                      {{ vh.name }} {{ vh.domains | join(', ') }}
 {% endfor %}

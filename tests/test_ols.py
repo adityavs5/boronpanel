@@ -39,7 +39,16 @@ def test_render_vhost_conf_php_version_selects_correct_app_name():
     assert "/usr/local/lsws/lsphp81/bin/lsphp" in content
 
 
-def test_render_httpd_config_empty_vhosts_has_no_virtualhost_block():
+def test_render_httpd_config_empty_vhosts_has_no_virtualhost_block(monkeypatch):
+    # Explicit, not incidental: this test's whole point is "no vhosts in ->
+    # no virtualHost block out", so it must not depend on whatever
+    # webmail_hostname happens to be set to in this environment's real
+    # /etc/forgehost/forgehost.toml (shared.config.settings is a
+    # module-level singleton loaded from the live system config, not
+    # reset between tests) -- caught when Phase 2 feature 3 configured a
+    # real webmail_hostname on this deployment and this test started
+    # failing for a reason that had nothing to do with what it's testing.
+    monkeypatch.setattr(ols.settings, "webmail_hostname", "")
     content = ols.render_httpd_config([])
     assert "virtualHost" not in content
     assert "listener HTTP{" in content
@@ -72,3 +81,31 @@ def test_static_precheck_rejects_empty():
 
 def test_static_precheck_accepts_balanced():
     assert ols._static_precheck("context / { allowBrowse 1 }").ok
+
+
+def test_render_httpd_config_includes_webmail_block_when_configured(monkeypatch):
+    monkeypatch.setattr(ols.settings, "webmail_hostname", "webmail.example.com")
+    content = ols.render_httpd_config([])
+    assert "virtualHost roundcube{" in content
+    assert "extProcessor roundcube_php{" in content
+    assert "map                      roundcube webmail.example.com" in content
+
+
+def test_render_httpd_config_omits_webmail_block_when_not_configured(monkeypatch):
+    monkeypatch.setattr(ols.settings, "webmail_hostname", "")
+    content = ols.render_httpd_config([])
+    assert "virtualHost roundcube{" not in content
+    assert "extProcessor roundcube_php{" not in content
+
+
+def test_render_webmail_vhost_conf_uses_configured_docroot(monkeypatch):
+    monkeypatch.setattr(ols.settings, "webmail_docroot", "/var/lib/roundcube/public_html")
+    content = ols.render_webmail_vhost_conf("/etc/forgehost/ssl/default.key", "/etc/forgehost/ssl/default.crt")
+    assert "docRoot                   /var/lib/roundcube/public_html" in content
+    assert "lsapi:roundcube_php php" in content
+
+
+def test_bootstrap_webmail_requires_hostname_configured(monkeypatch):
+    monkeypatch.setattr(ols.settings, "webmail_hostname", "")
+    with pytest.raises(RuntimeError):
+        ols.bootstrap_webmail()

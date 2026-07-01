@@ -46,6 +46,7 @@ OP_TABLE = {
     "domain.add": handlers_domain.add_domain,
     "domain.list": handlers_domain.list_domains,
     "system.bootstrap_ols": lambda params: (ols.bootstrap_baseline(), {"status": "ok"})[1],
+    "system.bootstrap_webmail": lambda params: (ols.bootstrap_webmail(), {"status": "ok"})[1],
     "dns.create_zone": handlers_dns.create_zone,
     "dns.delete_zone": handlers_dns.delete_zone,
     "dns.list_records": handlers_dns.list_records,
