@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.routers import accounts, auth, cron, databases, dns, domains, files, mail, ssl_router, tokens, usage
+from api.routers import account_backups, accounts, auth, backups, cron, databases, dns, domains, files, mail, ssl_router, tokens, usage
 
 app = FastAPI(title="Forgehost", docs_url="/api/docs", redoc_url=None)
 
@@ -21,7 +21,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 app.include_router(auth.router)
-for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, tokens):
+for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, backups, account_backups, tokens):
     app.include_router(module.api_router)
     app.include_router(module.ui_router)
 

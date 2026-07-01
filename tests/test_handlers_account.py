@@ -1,6 +1,8 @@
 import pytest
+from sqlalchemy import select
 
 from daemon import handlers_account as ha
+from shared.db import write_session
 from shared.validation import ValidationError
 
 
@@ -248,3 +250,42 @@ def test_set_limits_rejects_terminated_account(isolated_db, stub_sysops):
     ha.terminate_account({"username": "demo1"})
     with pytest.raises(RuntimeError):
         ha.set_limits({"username": "demo1", "cpu_pct": 50})
+
+
+def test_reactivate_account_recreates_linux_user_and_flips_status(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo1"})
+
+    result = ha.reactivate_account({"username": "demo1", "php_version": "8.2", "cpu_pct": 40})
+    assert result["status"] == "active"
+    assert result["php_version"] == "8.2"
+    assert result["cpu_pct"] == 40
+    assert ("create_linux_user", "demo1") in stub_sysops
+
+    with write_session() as session:
+        account = session.scalar(select(ha.Account).where(ha.Account.username == "demo1"))
+        assert account.status == "active"
+        assert account.terminated_at is None
+
+
+def test_reactivate_account_fires_create_hooks(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo1"})
+    calls = []
+    ha.CREATE_HOOKS.append(lambda account: calls.append(account.username))
+    try:
+        ha.reactivate_account({"username": "demo1"})
+        assert calls == ["demo1"]
+    finally:
+        ha.CREATE_HOOKS.clear()
+
+
+def test_reactivate_account_rejects_unknown_account(isolated_db, stub_sysops):
+    with pytest.raises(RuntimeError):
+        ha.reactivate_account({"username": "ghost"})
+
+
+def test_reactivate_account_rejects_active_account(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    with pytest.raises(RuntimeError):
+        ha.reactivate_account({"username": "demo1"})

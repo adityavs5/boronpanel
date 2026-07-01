@@ -6,6 +6,165 @@ Ubuntu 24.04. Every phase has its own `docs/CHECKPOINT-{a..h}.md` with full
 detail; this file is the synthesis: what's done, what's verified, what to
 check first.
 
+---
+
+## Phase 2 update (2026-07-01): 7 features added, all built and verified
+live on this same server
+
+Built autonomously per a second project goal, in the exact order
+specified. Every feature has its own `docs/CHECKPOINT-phase2-{1..7}.md`
+with full detail (what was built, real bugs found by live testing and
+fixed, what's untested); this section is the synthesis for Phase 2
+specifically. Phase 1's content below this point is unchanged and still
+accurate for everything it covers.
+
+### Phase 2 Definition of Done — checklist
+
+- [x] **PHP version switch tested**: created a real account, switched
+  through 8.1→8.2→8.4→8.5, confirmed via real `phpversion()` HTTP requests
+  each time, confirmed a second untouched account stayed on 8.3 throughout.
+  Found and fixed a real bug: the LSAPI socket path was keyed only by
+  username, not version, so OLS kept routing to the previous version's
+  backend after a switch (CHECKPOINT-phase2-1.md).
+- [x] **Cron**: added a job via the REST API, confirmed it appears
+  correctly in the real `crontab -l` for that Linux user, never root
+  (CHECKPOINT-phase2-2.md).
+- [x] **Roundcube**: accessible in a real browser at
+  `webmail.104-234-179-64.sslip.io` with a real trusted Let's Encrypt
+  cert, logged in with a mailbox created via Forgehost's own mail API —
+  no Roundcube-specific integration code needed at all, since it
+  authenticates directly against Dovecot (CHECKPOINT-phase2-3.md).
+- [x] **Resource usage numbers match `du`/`mysql` independently**:
+  compared the API's reported disk/database/inode/process/bandwidth
+  figures against direct `du -sb`/`information_schema`/`ps`/`du --inodes`
+  checks on the same live account — database size and bandwidth matched
+  exactly, disk within ~420 bytes (explained by log growth between the
+  two measurements a few seconds apart), inodes and process count exact
+  (CHECKPOINT-phase2-5.md).
+- [x] **cgroups stress test**: sustained a real 5-second CPU-bound PHP
+  loop on one account (confirmed throttled via `cpu.stat`:
+  `nr_throttled`/`throttled_usec`) while measuring a second account's
+  response time to a plain request — 33ms, completely unaffected. Also
+  independently confirmed real OOM-kill under memory pressure
+  (`memory.events: oom_kill=1`) and real `pids.max` enforcement (fork()
+  failing with `EAGAIN`) (CHECKPOINT-phase2-6.md).
+- [x] **Backup: full backup → terminate account → full restore → site
+  serves again.** Ran this exact sequence live, repeatedly, while finding
+  and fixing four related bugs (all variants of the same root cause: DB
+  rows that survive termination, like Account/Domain rows, don't have
+  on-disk state — Linux user, docroot, OLS vhost, ACL grant — that
+  survives it too). Confirmed on the final clean run: `HTTP 200` with the
+  exact original page content, database row restored, mail message
+  restored, cron job restored. Also verified granular file/database/
+  mailbox backup and restore against a still-active account, with no
+  termination involved at all (CHECKPOINT-phase2-7.md).
+- [x] **All 161 existing tests still passing, plus new tests per
+  feature** — 306 total at the end of Phase 2 (up from 161), zero
+  regressions in any Phase 1 test at any point.
+- [x] **This section.**
+
+### What was built (one line each — see CHECKPOINT-phase2-{1..7}.md for
+detail)
+
+- **Feature 1**: per-account PHP version selector (8.1–8.5; 7.4/8.0
+  requested in the goal but unavailable as free LiteSpeed packages for
+  Ubuntu 24.04, substituted and documented why), self-service REST/UI.
+- **Feature 2**: per-account cron job UI, operating on the real system
+  crontab as the account's own Linux user, marker-comment-based job
+  identification, human-readable schedule builder + raw expression
+  override.
+- **Feature 3**: Roundcube webmail, deployed once server-wide (not
+  per-account), folded into the existing OLS config-regeneration pipeline
+  as always-present static template content.
+- **Feature 4**: subdomain management — found and fixed a real Phase 1
+  gap (every domain under an account silently served the same
+  `public_html` content regardless of its own docroot) by refactoring OLS
+  from one-vhost-per-account to one-vhost-per-domain, with a shared
+  server-level PHP extprocessor per account.
+- **Feature 5**: per-account resource usage reporting (disk/inodes/
+  bandwidth/database size/process count), all computed from the same real
+  sources an operator would check by hand, with historical snapshots for
+  trend display.
+- **Feature 6**: per-account resource limits via cgroups v2 (CPU%/memory-
+  no-swap/IO/pids), one systemd slice per account. The core architectural
+  decision: a periodic root-privileged reconciler moves LSAPI workers into
+  their account's cgroup, instead of a setuid/capability helper binary
+  (which this environment's own security review correctly blocked before
+  it was ever installed).
+- **Feature 7**: full-featured backup/restore (JetBackup-equivalent) —
+  full-account and granular (file/database/mailbox) backup, local and
+  rclone-backed remote destinations, scheduling with retention, async jobs
+  with live progress, a backup browser, and restore that never requires
+  terminating the account first.
+
+Every feature's checkpoint records **real bugs found by live testing and
+fixed** — that pattern held for all 7 features, same as every Phase 1
+phase. Feature 7 in particular found four compounding bugs in the exact
+scenario the Definition of Done specifies (terminate → restore), each
+passing its own mocked unit tests and only surfacing once run against the
+real server end to end.
+
+### Phase 2 test suite
+
+306 pytest tests (up from Phase 1's 161), same coverage philosophy: no
+root/live services required, covers validation/state-machine/handler
+logic with system calls mocked. Every feature was *also* independently
+verified live against this real server — the mocked suite alone would not
+have caught any of the real bugs documented above.
+
+### What's genuinely untested from Phase 2 (collected from every
+CHECKPOINT-phase2-*.md)
+
+- IO bandwidth throttling (`io.max`) was confirmed *set correctly* but not
+  stress-tested under a real sustained disk-bound workload the way CPU/
+  memory/pids were.
+- A genuine host reboot was not performed to verify cgroups'
+  `bootstrap_all_slices()` reboot-recovery path end to end (verified by
+  code path + confirming systemd's drop-ins live under `/etc/`, not
+  `/run/`).
+- A real cloud backup destination (actual S3/SFTP/Google Drive
+  credentials) — the rclone code path was exercised via its own `local`
+  backend type instead, functionally identical from Forgehost's side.
+- The backup scheduler's actual hourly cron firing in production (the
+  script and its due-date logic are verified/unit-tested, but no live run
+  waited a real hour to observe a scheduled trigger fire on its own).
+- Cron jobs (feature 2) run entirely outside OLS's LSAPI spawn path and
+  are **not** covered by cgroups' `reconcile_processes()` scan — an
+  explicit scope boundary (the goal's cgroups text is about PHP-FPM/LSAPI
+  workers specifically), not a silent gap.
+- A separate, pre-existing latent bug found incidentally while building
+  feature 4 (`DnsZone.account_id` is `NOT NULL` but
+  `handlers_dns.create_zone`'s own code allows an unowned zone) — flagged,
+  not fixed (zero live rows affected, unrelated to what feature 4 was
+  scoped to fix).
+
+### What to review first on wake-up (Phase 2)
+
+1. **CHECKPOINT-phase2-7.md's four compounding restore bugs** — the
+   single highest-value read in this update: a real illustration of why
+   "run the Definition of Done scenario live" catches failure modes that
+   thorough mocked tests structurally cannot (every mock was mocking the
+   *correct* signature; the *sequence* around a row that survives
+   termination without its on-disk state surviving too was the actual
+   bug, four times over).
+2. **CHECKPOINT-phase2-6.md's architecture decision** — the
+   setuid/capability-binary rejection and the periodic-reconciler
+   alternative. Worth an independent read given it's a genuine security
+   trade-off (a small unthrottled window after a worker respawns, versus
+   zero new local privilege-escalation surface) rather than a clear-cut
+   right answer.
+3. **The schema-migration gap** (CHECKPOINT-phase2-6.md): this project
+   uses `Base.metadata.create_all()`, which only creates new tables, never
+   adds columns to existing ones. Feature 6 needed a manual
+   `ALTER TABLE ... ADD COLUMN` against the live DB; any *future* feature
+   that adds columns to an existing table (not a new table) will hit the
+   same thing. Worth deciding whether to adopt a real migration tool
+   (Alembic is already a stub dependency in this repo, unused) before it
+   bites a real production upgrade.
+4. Everything else in each feature's "what's untested" section.
+
+---
+
 ## Definition of Done — checklist
 
 - [x] **End-to-end account creation via REST API** (Linux user + OLS vhost

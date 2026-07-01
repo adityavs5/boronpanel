@@ -90,7 +90,7 @@ def add_domain(params: dict) -> dict:
     dns_label = _subdomain_label(domain_name, parent_zone) if parent_zone else None
     dns_record_created = False
     try:
-        _ensure_docroot(username, docroot)
+        ensure_docroot(username, docroot)
         if parent_zone and settings.server_public_ip:
             powerdns.upsert_record(parent_zone, dns_label, "A", [settings.server_public_ip])
             dns_record_created = True
@@ -165,7 +165,7 @@ def list_domains(params: dict) -> dict:
         return {"domains": [_domain_to_dict(d) for d in domains]}
 
 
-def _ensure_docroot(username: str, docroot: str) -> None:
+def ensure_docroot(username: str, docroot: str) -> None:
     import os
     import pwd
 

@@ -13,6 +13,7 @@
     <nav>
       <span class="muted">{{ identity.username }} ({{ identity.role }})</span>
       {% if identity.role == "admin" %}
+      <a href="/ui/backups" style="margin-left:1rem;">Backups</a>
       <a href="/ui/tokens" style="margin-left:1rem;">API tokens</a>
       {% endif %}
       <form class="inline" method="post" action="/logout" style="margin-left:1rem;">

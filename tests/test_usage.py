@@ -25,7 +25,7 @@ def stub_ols(monkeypatch):
 
 @pytest.fixture()
 def stub_filesystem(monkeypatch):
-    monkeypatch.setattr(hd, "_ensure_docroot", lambda username, docroot: None)
+    monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot: None)
 
 
 def _account(username="demo1"):

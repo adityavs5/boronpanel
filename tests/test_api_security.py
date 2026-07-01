@@ -37,8 +37,16 @@ def test_sign_and_unsign_round_trip(isolated_db):
 
 
 def test_unsign_rejects_tampered_cookie(isolated_db):
+    # Rarely flaky when tampering only the very last character: itsdangerous's
+    # signature is base64-encoded, and a base64 string whose bit-length isn't
+    # a multiple of 6 has a final character where 1-2 bits are unused padding
+    # -- occasionally (timestamp-dependent, since dumps() embeds the current
+    # time) two different characters there decode to the identical
+    # underlying signature bytes, letting a "tampered" cookie still verify.
+    # Tampering the payload instead (well before the trailing signature) has
+    # no such edge case -- it always changes the actual signed bytes.
     signed = sec.sign_session_id("abc123")
-    tampered = signed[:-1] + ("a" if signed[-1] != "a" else "b")
+    tampered = ("x" if signed[0] != "x" else "y") + signed[1:]
     assert sec.unsign_session_id(tampered) is None
 
 

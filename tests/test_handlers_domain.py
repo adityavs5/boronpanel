@@ -16,7 +16,7 @@ def stub_sysops(monkeypatch):
 
 @pytest.fixture()
 def stub_filesystem(monkeypatch):
-    monkeypatch.setattr(hd, "_ensure_docroot", lambda username, docroot: None)
+    monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot: None)
 
 
 @pytest.fixture()

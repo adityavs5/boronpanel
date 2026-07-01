@@ -135,6 +135,73 @@ def create_account(params: dict) -> dict:
     return result
 
 
+def reactivate_account(params: dict) -> dict:
+    """Recreates a terminated account's Linux user + cgroup slice and
+    flips its existing DB row back to active, instead of inserting a new
+    row. Used by daemon/backup.py's full-restore path when restoring onto
+    a terminated account: a plain create_account() call there would
+    always hit its own "account already exists" guard, since terminating
+    an account never deletes its historical row (a deliberate pattern --
+    see terminate_account) -- found live when a restore silently "succeeded"
+    past that guard (treated as a harmless already-exists no-op) without
+    ever actually recreating the Linux user, then failed later trying to
+    chown restored files to a uid that no longer existed."""
+    username = validate_username(params["username"])
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found -- use account.create for a genuinely new account")
+        if account.status not in ("terminated", "error"):
+            raise RuntimeError(f"account '{username}' is '{account.status}', not terminated -- nothing to reactivate")
+
+    php_version = validate_php_version(params.get("php_version") or settings.default_php_version, settings.php_versions)
+    quota_soft_mb = int(params.get("quota_soft_mb") or settings.default_quota_soft_mb)
+    quota_hard_mb = int(params.get("quota_hard_mb") or settings.default_quota_hard_mb)
+    if quota_hard_mb < quota_soft_mb:
+        raise ValidationError("quota_hard_mb must be >= quota_soft_mb")
+    cpu_pct = int(params.get("cpu_pct") or cgroups.DEFAULT_CPU_PCT)
+    mem_mb = int(params.get("mem_mb") or cgroups.DEFAULT_MEM_MB)
+    io_mb = int(params.get("io_mb") or cgroups.DEFAULT_IO_MB)
+    pids_max = int(params.get("pids_max") or cgroups.DEFAULT_PIDS_MAX)
+    _validate_limits(cpu_pct, mem_mb, io_mb, pids_max)
+
+    uid, gid = sysops.create_linux_user(username)
+    password = params.get("password") or sysops.generate_password()
+    sysops.set_initial_password(username, password)
+    try:
+        sysops.set_quota(username, quota_soft_mb, quota_hard_mb)
+    except Exception:
+        logger.exception("quota setup failed for %s during reactivation (continuing)", username)
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        account.status = "active"
+        account.uid = uid
+        account.gid = gid
+        account.php_version = php_version
+        account.quota_soft_mb = quota_soft_mb
+        account.quota_hard_mb = quota_hard_mb
+        account.cpu_pct = cpu_pct
+        account.mem_mb = mem_mb
+        account.io_mb = io_mb
+        account.pids_max = pids_max
+        account.terminated_at = None
+        account.suspended_at = None
+        account.last_error = None
+        session.flush()
+        result = _account_to_dict(account)
+        account_snapshot = account
+
+    for hook in CREATE_HOOKS:
+        try:
+            hook(account_snapshot)
+        except Exception:
+            logger.exception("create hook %s failed for reactivated account %s", hook, username)
+
+    result["initial_password"] = password
+    return result
+
+
 def set_limits(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:

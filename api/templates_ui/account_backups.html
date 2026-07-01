@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Backups: {{ username }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
+<h1>Backups: {{ username }}</h1>
+
+<div class="card">
+  <h2>Backup points</h2>
+  <table>
+    <thead><tr><th>Kind</th><th>Status</th><th>Trigger</th><th>Started</th><th>Size</th><th>Progress</th><th></th></tr></thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td>{{ j.kind }}{{ (" (" + j.item_ref + ")") if j.item_ref else "" }}</td>
+        <td><span class="status {{ 'active' if j.status == 'completed' else ('terminated' if j.status == 'failed' else 'suspended') }}">{{ j.status }}</span></td>
+        <td>{{ j.trigger }}</td>
+        <td>{{ j.started_at }}</td>
+        <td>{{ (j.size_bytes / 1048576) | round(1) if j.size_bytes else "" }} {{ "MB" if j.size_bytes else "" }}</td>
+        <td>{{ j.progress_message or "" }}</td>
+        <td>
+          {% if j.status == "completed" %}
+          <a href="/ui/accounts/{{ username }}/backups/{{ j.id }}">Browse / restore</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">No backups yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Trigger a backup</h2>
+  <form method="post" action="/ui/accounts/{{ username }}/backups">
+    <select name="kind">
+      <option value="full">Full account (files + databases + mail + DNS + config)</option>
+      <option value="file">Single file/directory</option>
+      <option value="database">Single database</option>
+      <option value="mailbox">Single mailbox</option>
+    </select>
+    <input type="text" name="item_ref" placeholder="e.g. public_html/wp-config.php, db name, or user@domain">
+    <select name="destination_id">
+      <option value="">(use effective schedule's destination)</option>
+      {% for d in destinations %}
+      <option value="{{ d.id }}">{{ d.name }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Back up now</button>
+  </form>
+</div>
+{% endblock %}

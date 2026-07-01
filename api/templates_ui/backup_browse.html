@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Backup {{ job.id }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts/{{ username }}/backups">&larr; all backups</a></p>
+<h1>Backup #{{ job.id }}: {{ username }}</h1>
+<p class="muted">{{ job.kind }}{{ (" (" + job.item_ref + ")") if job.item_ref else "" }} &middot;
+  <span class="status {{ 'active' if job.status == 'completed' else ('terminated' if job.status == 'failed' else 'suspended') }}">{{ job.status }}</span>
+  &middot; {{ job.progress_message or "" }}</p>
+
+{% if job.status != "completed" %}
+<div class="card"><p class="muted">This backup is not completed yet -- refresh to check progress.</p></div>
+{% elif browse and browse.kind == "full" %}
+<div class="card">
+  <h2>Contents</h2>
+  <p>Backed up at {{ browse.manifest.backed_up_at }} &middot; PHP {{ browse.manifest.php_version }}</p>
+  <ul>
+    <li>Domains: {{ browse.manifest.domains | length }}</li>
+    <li>Databases: {{ browse.manifest.databases | length }}</li>
+    <li>Mail domains: {{ browse.manifest.mail_domains | length }} ({{ browse.manifest.mail_users | length }} mailbox(es))</li>
+    <li>Cron jobs: {{ browse.manifest.cron_jobs | length }}</li>
+    <li>DNS zone: {{ browse.manifest.dns_zone.zone if browse.manifest.dns_zone else "none" }}</li>
+  </ul>
+  <h3>Archive members</h3>
+  <ul>
+    {% for member in browse.contents %}
+    <li><code>{{ member }}</code></li>
+    {% endfor %}
+  </ul>
+</div>
+
+<div class="card">
+  <h2>Restore</h2>
+  <form method="post" action="/ui/accounts/{{ username }}/backups/{{ job.id }}/restore"
+        onsubmit="return confirm('Restore the FULL account from this backup point? Current files/databases/mail will be overwritten in place (or the account recreated if terminated).');">
+    <input type="hidden" name="kind" value="full">
+    <button type="submit" class="warn">Restore full account</button>
+  </form>
+
+  <form method="post" action="/ui/accounts/{{ username }}/backups/{{ job.id }}/restore" style="margin-top: 1rem;">
+    <select name="kind">
+      <option value="file">Single file/directory</option>
+      <option value="database">Single database</option>
+      <option value="mailbox">Single mailbox</option>
+    </select>
+    <input type="text" name="item_ref" placeholder="path within home dir, db name, or user@domain" required>
+    <button type="submit">Restore item</button>
+  </form>
+</div>
+{% else %}
+<div class="card">
+  <h2>Restore this item</h2>
+  <form method="post" action="/ui/accounts/{{ username }}/backups/{{ job.id }}/restore">
+    <button type="submit">Restore {{ job.kind }} ({{ job.item_ref }})</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

@@ -136,6 +136,11 @@
 </div>
 
 <div class="card">
+  <h2>Backups</h2>
+  <p><a href="/ui/accounts/{{ account.username }}/backups">Browse backups &rarr;</a></p>
+</div>
+
+<div class="card">
   <h2>Usage</h2>
   {% set disk_total = usage.current.disk_total_bytes or 0 %}
   {% set quota_bytes = usage.quota_soft_mb * 1024 * 1024 %}

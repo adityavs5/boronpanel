@@ -130,6 +130,11 @@ class Settings:
     # target if it differs (e.g. /dev/sda, /dev/nvme0n1).
     cgroup_io_device: str = "/dev/vda"
 
+    # Phase 2 feature 7: backup system
+    rclone_bin: str = "/usr/bin/rclone"
+    backup_staging_dir: str = "/var/lib/forgehost/backup-staging"
+    backup_concurrency: int = 2
+
     # ssl (Phase f)
     certbot_bin: str = "/opt/forgehost/.venv/bin/certbot"
     letsencrypt_email: str = ""

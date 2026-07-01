@@ -200,3 +200,87 @@ class BandwidthDaily(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     date: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD
     bytes_served: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class BackupDestination(Base):
+    """Phase 2 feature 7: where backup artifacts are stored. Credentials
+    for rclone-backed destinations live in rclone's own config (managed
+    via `rclone config create`/`daemon/rclone.py`), never duplicated here
+    -- this row is just a pointer (remote name + path prefix), the same
+    "secrets live in one restricted-permission place, not the app DB"
+    pattern already used for MariaDB/mail/SSL credentials elsewhere in
+    this project."""
+
+    __tablename__ = "backup_destinations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # local | rclone
+    local_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    rclone_remote: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rclone_path_prefix: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BackupSchedule(Base):
+    """One row per account, or one row with account_id=NULL for the
+    server-wide default applied to any account without its own
+    override (daemon/backup.py's scheduler resolves account -> its own
+    schedule if present, else the account_id=NULL row)."""
+
+    __tablename__ = "backup_schedules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True, unique=True)
+    frequency: Mapped[str] = mapped_column(String(16), default="daily")  # daily | weekly | monthly
+    retention_count: Mapped[int] = mapped_column(Integer, default=7)
+    destination_id: Mapped[int] = mapped_column(ForeignKey("backup_destinations.id"))
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BackupJob(Base):
+    """A single backup point. `kind`="full" backs up files+DBs+mail+DNS
+    zone+config (a manifest.json describing exactly what's inside, so the
+    UI's backup browser and restore logic never have to guess); "file"/
+    "database"/"mailbox" back up exactly one item (item_ref identifies
+    which)."""
+
+    __tablename__ = "backup_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # full | file | database | mailbox
+    item_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")  # manual | scheduled
+    destination_id: Mapped[int] = mapped_column(ForeignKey("backup_destinations.id"))
+    artifact_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RestoreJob(Base):
+    """Restores FROM a BackupJob's artifact -- never requires the account
+    to be re-terminated/absent first (goal's explicit requirement):
+    restoring a still-active account overwrites its current files/DBs/
+    mail in place; restoring a terminated account's full backup
+    recreates it (Linux user, vhost, DBs, mail, DNS zone) from the
+    manifest."""
+
+    __tablename__ = "restore_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    backup_job_id: Mapped[int] = mapped_column(ForeignKey("backup_jobs.id"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # full | file | database | mailbox
+    item_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

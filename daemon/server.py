@@ -19,7 +19,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, cgroups, filemanager, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail, handlers_usage, ols, ssl
+from daemon import audit, backup, cgroups, filemanager, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail, handlers_usage, ols, ssl
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +40,7 @@ OP_TABLE = {
     "account.terminate": handlers_account.terminate_account,
     "account.set_php_version": handlers_account.set_php_version,
     "account.set_limits": handlers_account.set_limits,
+    "account.reactivate": handlers_account.reactivate_account,
     "cron.list": handlers_cron.list_cron_jobs,
     "cron.add": handlers_cron.add_cron_job,
     "cron.update": handlers_cron.update_cron_job,
@@ -79,6 +80,23 @@ OP_TABLE = {
     "auth.revoke_session": handlers_auth.revoke_session,
     "auth.create_api_token": handlers_auth.create_api_token,
     "auth.revoke_api_token": handlers_auth.revoke_api_token,
+    # Phase 2 feature 7: backup.py's functions already validate their own
+    # params and return handler-shaped dicts (like every other handlers_*.py
+    # module) -- it's registered directly rather than through a redundant
+    # pass-through handlers_backup.py, since it's already the "handler" as
+    # well as the engine.
+    "backup.destination.create": backup.create_destination,
+    "backup.destination.list": backup.list_destinations,
+    "backup.destination.delete": backup.delete_destination,
+    "backup.schedule.set": backup.set_schedule,
+    "backup.schedule.list": backup.list_schedules,
+    "backup.job.trigger": backup.trigger_backup,
+    "backup.job.get": backup.get_job,
+    "backup.job.list": backup.list_jobs,
+    "backup.job.browse": backup.browse_backup,
+    "backup.restore.trigger": backup.trigger_restore,
+    "backup.restore.get": backup.get_restore_job,
+    "backup.restore.list": backup.list_restore_jobs,
 }
 
 # Each phase wires its own account-scoped teardown/suspend behavior here

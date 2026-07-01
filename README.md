@@ -501,6 +501,61 @@ periodic root-privileged reconciler, not a setuid/capability helper
 binary -- and why the latter was deliberately rejected) if limits don't
 seem to be taking effect on a live worker.
 
+### 17. Backup system (Phase 2 feature 7)
+
+Full account and granular (file/database/mailbox) backup/restore, local
+or rclone-backed remote destinations, per-account/server-default
+scheduling with retention. Nothing to install for local destinations;
+rclone itself needs installing for remote ones:
+
+```bash
+apt-get install -y rclone
+mkdir -p /var/lib/forgehost/backup-staging
+```
+
+Create at least one destination and, optionally, a server-default
+schedule (admin only, via API or `/ui/backups`):
+
+```bash
+# local destination
+curl -sk -b <admin-cookie-jar> -H "Content-Type: application/json" \
+  -d '{"name":"local1","kind":"local","local_path":"/var/backups/forgehost"}' \
+  -X POST https://<host>:9443/api/v1/backups/destinations
+
+# rclone-backed remote (S3-compatible example) -- credentials are passed
+# once here and stored only in rclone's own config (/etc/rclone.conf),
+# never duplicated into Forgehost's DB
+curl -sk -b <admin-cookie-jar> -H "Content-Type: application/json" -d '{
+  "name": "s3backup", "kind": "rclone", "rclone_remote_type": "s3",
+  "rclone_config": {"provider": "AWS", "access_key_id": "...", "secret_access_key": "...", "region": "us-east-1"},
+  "rclone_path_prefix": "forgehost-backups"
+}' -X POST https://<host>:9443/api/v1/backups/destinations
+
+# server-wide default schedule (any account without its own override uses this)
+curl -sk -b <admin-cookie-jar> -H "Content-Type: application/json" \
+  -d '{"frequency":"daily","retention_count":7,"destination_id":1}' \
+  -X POST https://<host>:9443/api/v1/backups/schedules
+```
+
+Google Drive needs a service-account JSON key for non-interactive setup
+(`rclone_config: {"service_account_credentials": "<json>", ...}`) --
+rclone's normal interactive OAuth flow has no place in a headless daemon.
+
+Scheduled backups need an hourly cron to check for due accounts:
+
+```bash
+cat > /etc/cron.d/forgehost-backups << 'EOF'
+0 * * * * root /opt/forgehost/scripts/backup_scheduler.py >> /var/log/forgehost/backup-scheduler.log 2>&1
+EOF
+chmod 644 /etc/cron.d/forgehost-backups
+```
+
+See `docs/CHECKPOINT-phase2-7.md` for the four related bugs found live
+while getting "terminate an account, then fully restore it" working end
+to end (each is a variant of the same root cause: rows that survive
+termination don't have on-disk state that survives it too) if a restore
+doesn't bring the site back up.
+
 ## Verifying the install
 
 ```bash
