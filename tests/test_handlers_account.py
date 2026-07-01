@@ -173,3 +173,78 @@ def test_set_php_version_rejects_terminated_account(isolated_db, stub_sysops):
 def test_set_php_version_unknown_account_raises(isolated_db, stub_sysops):
     with pytest.raises(RuntimeError):
         ha.set_php_version({"username": "ghost", "php_version": "8.2"})
+
+
+def test_create_account_uses_default_limits(isolated_db, stub_sysops):
+    result = ha.create_account({"username": "demo1"})
+    assert result["cpu_pct"] == 25
+    assert result["mem_mb"] == 512
+    assert result["io_mb"] == 50
+    assert result["pids_max"] == 50
+
+
+def test_create_account_accepts_custom_limits(isolated_db, stub_sysops):
+    result = ha.create_account({"username": "demo1", "cpu_pct": 50, "mem_mb": 1024, "io_mb": 100, "pids_max": 100})
+    assert result["cpu_pct"] == 50
+    assert result["mem_mb"] == 1024
+    assert result["io_mb"] == 100
+    assert result["pids_max"] == 100
+
+
+def test_create_account_rejects_invalid_limits(isolated_db, stub_sysops):
+    with pytest.raises(ValidationError):
+        ha.create_account({"username": "demo1", "cpu_pct": 0})
+    with pytest.raises(ValidationError):
+        ha.create_account({"username": "demo2", "mem_mb": 32})
+    with pytest.raises(ValidationError):
+        ha.create_account({"username": "demo3", "pids_max": 1})
+
+
+def test_create_account_fires_create_hooks(isolated_db, stub_sysops):
+    calls = []
+    ha.CREATE_HOOKS.append(lambda account: calls.append(account.username))
+    try:
+        ha.create_account({"username": "demo1"})
+        assert calls == ["demo1"]
+    finally:
+        ha.CREATE_HOOKS.clear()
+
+
+def test_set_limits_updates_and_fires_hooks(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    calls = []
+    ha.LIMITS_HOOKS.append(lambda account: calls.append((account.username, account.cpu_pct)))
+    try:
+        result = ha.set_limits({"username": "demo1", "cpu_pct": 75, "mem_mb": 2048, "io_mb": 200, "pids_max": 150})
+        assert result["cpu_pct"] == 75
+        assert result["mem_mb"] == 2048
+        assert calls == [("demo1", 75)]
+    finally:
+        ha.LIMITS_HOOKS.clear()
+
+
+def test_set_limits_partial_update_keeps_other_fields(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1", "cpu_pct": 25, "mem_mb": 512, "io_mb": 50, "pids_max": 50})
+    result = ha.set_limits({"username": "demo1", "cpu_pct": 80})
+    assert result["cpu_pct"] == 80
+    assert result["mem_mb"] == 512
+    assert result["io_mb"] == 50
+    assert result["pids_max"] == 50
+
+
+def test_set_limits_rejects_invalid_values(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    with pytest.raises(ValidationError):
+        ha.set_limits({"username": "demo1", "cpu_pct": 200})
+
+
+def test_set_limits_rejects_unknown_account(isolated_db, stub_sysops):
+    with pytest.raises(RuntimeError):
+        ha.set_limits({"username": "ghost", "cpu_pct": 50})
+
+
+def test_set_limits_rejects_terminated_account(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo1"})
+    with pytest.raises(RuntimeError):
+        ha.set_limits({"username": "demo1", "cpu_pct": 50})

@@ -81,6 +81,21 @@ def set_php_version(username: str, body: SetPhpVersionBody, identity: Identity =
     return call_daemon("account.set_php_version", identity, username=username, php_version=body.php_version)
 
 
+class SetLimitsBody(BaseModel):
+    cpu_pct: int
+    mem_mb: int
+    io_mb: int
+    pids_max: int
+
+
+@api_router.patch("/{username}/limits")
+def set_limits(username: str, body: SetLimitsBody, identity: Identity = Depends(get_identity)):
+    # Admin-only, unlike php-version: a customer raising their own resource
+    # limits would defeat the point of having them.
+    require_admin(identity)
+    return call_daemon("account.set_limits", identity, username=username, **body.model_dump())
+
+
 # --- server-rendered UI (ARCHITECTURE.md SS1: Jinja2 + htmx, forms POST-Redirect-GET) ---
 
 
@@ -164,4 +179,18 @@ def ui_terminate(username: str, identity: Identity = Depends(get_identity)):
 def ui_set_php_version(username: str, php_version: str = Form(...), identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     call_daemon("account.set_php_version", identity, username=username, php_version=php_version)
+    return RedirectResponse(f"/ui/accounts/{username}", status_code=303)
+
+
+@ui_router.post("/{username}/limits")
+def ui_set_limits(
+    username: str,
+    cpu_pct: int = Form(...),
+    mem_mb: int = Form(...),
+    io_mb: int = Form(...),
+    pids_max: int = Form(...),
+    identity: Identity = Depends(get_identity),
+):
+    require_admin(identity)
+    call_daemon("account.set_limits", identity, username=username, cpu_pct=cpu_pct, mem_mb=mem_mb, io_mb=io_mb, pids_max=pids_max)
     return RedirectResponse(f"/ui/accounts/{username}", status_code=303)

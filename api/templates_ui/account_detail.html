@@ -38,6 +38,22 @@
   </form>
 </div>
 
+{% if identity.role == "admin" %}
+<div class="card">
+  <h2>Resource limits</h2>
+  <p class="muted">Enforced via a per-account cgroup (systemd slice forgehost-{{ account.username }}.slice).</p>
+  <form method="post" action="/ui/accounts/{{ account.username }}/limits">
+    <table>
+      <tr><td>CPU</td><td><input type="number" name="cpu_pct" value="{{ account.cpu_pct }}" min="1" max="100" required> %</td></tr>
+      <tr><td>Memory</td><td><input type="number" name="mem_mb" value="{{ account.mem_mb }}" min="64" max="65536" required> MB (no swap)</td></tr>
+      <tr><td>Disk IO</td><td><input type="number" name="io_mb" value="{{ account.io_mb }}" min="1" max="10000" required> MB/s (read+write)</td></tr>
+      <tr><td>Max processes</td><td><input type="number" name="pids_max" value="{{ account.pids_max }}" min="10" max="10000" required></td></tr>
+    </table>
+    <button type="submit">Update limits</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="card">
   <h2>Domains</h2>
   <table>

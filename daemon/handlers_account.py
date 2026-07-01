@@ -19,7 +19,7 @@ from shared.db import write_session
 from shared.models import Account
 from shared.validation import ValidationError, validate_php_version, validate_username
 
-from daemon import sysops
+from daemon import cgroups, sysops
 
 logger = logging.getLogger("forgehostd.account")
 
@@ -33,6 +33,11 @@ UNSUSPEND_HOOKS: list[Callable[[Account], None]] = []
 # Phase 2 feature 1: re-render/reload just this account's vhost after its
 # php_version column changes, same wiring pattern as the hooks above.
 PHP_VERSION_HOOKS: list[Callable[[Account], None]] = []
+# Phase 2 feature 6: create the account's cgroup slice with its (default or
+# requested) resource limits right after the Linux user/DB row exist.
+CREATE_HOOKS: list[Callable[[Account], None]] = []
+# Re-applies cgroup limits after set_limits() changes them.
+LIMITS_HOOKS: list[Callable[[Account], None]] = []
 
 
 def _account_to_dict(account: Account) -> dict:
@@ -46,11 +51,26 @@ def _account_to_dict(account: Account) -> dict:
         "php_version": account.php_version,
         "quota_soft_mb": account.quota_soft_mb,
         "quota_hard_mb": account.quota_hard_mb,
+        "cpu_pct": account.cpu_pct,
+        "mem_mb": account.mem_mb,
+        "io_mb": account.io_mb,
+        "pids_max": account.pids_max,
         "last_error": account.last_error,
         "created_at": account.created_at.isoformat() if account.created_at else None,
         "suspended_at": account.suspended_at.isoformat() if account.suspended_at else None,
         "terminated_at": account.terminated_at.isoformat() if account.terminated_at else None,
     }
+
+
+def _validate_limits(cpu_pct: int, mem_mb: int, io_mb: int, pids_max: int) -> None:
+    if not (1 <= cpu_pct <= 100):
+        raise ValidationError("cpu_pct must be between 1 and 100")
+    if not (64 <= mem_mb <= 65536):
+        raise ValidationError("mem_mb must be between 64 and 65536")
+    if not (1 <= io_mb <= 10000):
+        raise ValidationError("io_mb must be between 1 and 10000")
+    if not (10 <= pids_max <= 10000):
+        raise ValidationError("pids_max must be between 10 and 10000")
 
 
 def create_account(params: dict) -> dict:
@@ -63,6 +83,12 @@ def create_account(params: dict) -> dict:
     if quota_hard_mb < quota_soft_mb:
         raise ValidationError("quota_hard_mb must be >= quota_soft_mb")
     primary_domain = params.get("primary_domain")
+
+    cpu_pct = int(params.get("cpu_pct", cgroups.DEFAULT_CPU_PCT))
+    mem_mb = int(params.get("mem_mb", cgroups.DEFAULT_MEM_MB))
+    io_mb = int(params.get("io_mb", cgroups.DEFAULT_IO_MB))
+    pids_max = int(params.get("pids_max", cgroups.DEFAULT_PIDS_MAX))
+    _validate_limits(cpu_pct, mem_mb, io_mb, pids_max)
 
     with write_session() as session:
         existing = session.scalar(select(Account).where(Account.username == username))
@@ -89,12 +115,52 @@ def create_account(params: dict) -> dict:
             php_version=php_version,
             quota_soft_mb=quota_soft_mb,
             quota_hard_mb=quota_hard_mb,
+            cpu_pct=cpu_pct,
+            mem_mb=mem_mb,
+            io_mb=io_mb,
+            pids_max=pids_max,
         )
         session.add(account)
         session.flush()
         result = _account_to_dict(account)
+        account_snapshot = account
+
+    for hook in CREATE_HOOKS:
+        try:
+            hook(account_snapshot)
+        except Exception:
+            logger.exception("create hook %s failed for %s", hook, username)
 
     result["initial_password"] = password
+    return result
+
+
+def set_limits(params: dict) -> dict:
+    username = validate_username(params["username"])
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found")
+        if account.status not in ("active", "suspended"):
+            raise RuntimeError(f"cannot change limits for an account in status '{account.status}'")
+
+        cpu_pct = int(params.get("cpu_pct", account.cpu_pct))
+        mem_mb = int(params.get("mem_mb", account.mem_mb))
+        io_mb = int(params.get("io_mb", account.io_mb))
+        pids_max = int(params.get("pids_max", account.pids_max))
+        _validate_limits(cpu_pct, mem_mb, io_mb, pids_max)
+
+        account.cpu_pct = cpu_pct
+        account.mem_mb = mem_mb
+        account.io_mb = io_mb
+        account.pids_max = pids_max
+        session.flush()
+        result = _account_to_dict(account)
+        account_snapshot = account
+
+    for hook in LIMITS_HOOKS:
+        hook(account_snapshot)
+
     return result
 
 

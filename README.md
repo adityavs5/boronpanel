@@ -462,6 +462,45 @@ Root-owned system cron, not a per-account Forgehost-managed crontab
 `du`/`ps` across every account's home directory, the same trust level as
 forgehostd itself, not a customer-facing resource.
 
+### 16. Resource limits via cgroups v2 (Phase 2 feature 6)
+
+Per-account CPU/memory/IO/pids limits, enforced via one systemd slice per
+account (`forgehost-<username>.slice`, nested under `forgehost.slice`).
+Nothing to install -- `daemon/cgroups.py` creates/updates/removes each
+account's slice automatically on `account.create`/`account.set_limits`/
+`account.terminate`, and forgehostd's own startup reconciles every active
+account's slice back into existence after a host reboot.
+
+**If upgrading an existing Forgehost install** (this project uses
+`Base.metadata.create_all()`, not a migration framework -- it only
+creates *new* tables, never adds columns to existing ones), run this once
+against the live DB before restarting `forgehost-provisiond`, or account
+queries will fail with `no such column: accounts.cpu_pct`:
+
+```bash
+sqlite3 /var/lib/forgehost/forgehost.db << 'EOF'
+ALTER TABLE accounts ADD COLUMN cpu_pct INTEGER DEFAULT 25;
+ALTER TABLE accounts ADD COLUMN mem_mb INTEGER DEFAULT 512;
+ALTER TABLE accounts ADD COLUMN io_mb INTEGER DEFAULT 50;
+ALTER TABLE accounts ADD COLUMN pids_max INTEGER DEFAULT 50;
+EOF
+```
+
+A **fresh** install needs no such step -- `init_db()`'s `create_all()`
+creates the `accounts` table with these columns from the start.
+
+Confirm the IO-limited block device matches this deployment target:
+`cgroup_io_device` in `forgehost.toml` defaults to `/dev/vda` (this
+project's own dev/test server); check `findmnt -no SOURCE /` and
+`lsblk` and set it to the actual whole-disk device (not a partition --
+e.g. `/dev/sda`, not `/dev/sda1`) if it differs.
+
+See `docs/CHECKPOINT-phase2-6.md` for the architecture decision behind
+*how* LSAPI worker processes get placed into their account's cgroup (a
+periodic root-privileged reconciler, not a setuid/capability helper
+binary -- and why the latter was deliberately rejected) if limits don't
+seem to be taking effect on a live worker.
+
 ## Verifying the install
 
 ```bash

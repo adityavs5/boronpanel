@@ -19,7 +19,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, filemanager, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail, handlers_usage, ols, ssl
+from daemon import audit, cgroups, filemanager, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail, handlers_usage, ols, ssl
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +39,7 @@ OP_TABLE = {
     "account.unsuspend": handlers_account.unsuspend_account,
     "account.terminate": handlers_account.terminate_account,
     "account.set_php_version": handlers_account.set_php_version,
+    "account.set_limits": handlers_account.set_limits,
     "cron.list": handlers_cron.list_cron_jobs,
     "cron.add": handlers_cron.add_cron_job,
     "cron.update": handlers_cron.update_cron_job,
@@ -93,6 +94,13 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_database.termin
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_mail.terminate_account_mail(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ssl.terminate_account_certs(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_cron.terminate_account_cron(account))
+handlers_account.CREATE_HOOKS.append(
+    lambda account: cgroups.apply_limits(account.username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
+)
+handlers_account.LIMITS_HOOKS.append(
+    lambda account: cgroups.apply_limits(account.username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
+)
+handlers_account.TERMINATE_HOOKS.append(lambda account: cgroups.remove_slice(account.username))
 
 
 def register_op(name: str, handler) -> None:
@@ -149,8 +157,35 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         writer.close()
 
 
+CGROUP_RECONCILE_INTERVAL_SECONDS = 5
+
+
+async def _cgroup_reconcile_loop() -> None:
+    """Moves any LSAPI worker still sitting in lshttpd's own cgroup into
+    its owning account's slice -- see daemon/cgroups.py's module docstring
+    for why this periodic-scan approach was chosen over a setuid/capability
+    helper binary. Runs for the daemon's whole lifetime alongside the RPC
+    server; a single reconcile failure must not kill this loop, since a
+    transient error here (a PID exiting mid-scan, systemd being briefly
+    busy) is expected background noise, not a fatal condition."""
+    while True:
+        try:
+            moved = await asyncio.get_running_loop().run_in_executor(None, cgroups.reconcile_processes)
+            if moved:
+                logger.info("cgroup reconcile: moved %d process(es) into their account slice", moved)
+        except Exception:
+            logger.exception("cgroup reconcile pass failed")
+        await asyncio.sleep(CGROUP_RECONCILE_INTERVAL_SECONDS)
+
+
 async def amain() -> None:
     init_db()
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, cgroups.bootstrap_all_slices)
+    except Exception:
+        logger.exception("cgroup slice bootstrap failed at startup")
+    asyncio.create_task(_cgroup_reconcile_loop())
+
     socket_path = settings.rpc_socket
     Path(socket_path).parent.mkdir(parents=True, exist_ok=True)
     if Path(socket_path).exists():

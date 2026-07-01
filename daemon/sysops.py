@@ -94,6 +94,15 @@ def delete_linux_user(username: str) -> None:
     _assert_safe_username(username)
     if not user_exists(username):
         return
+    # `userdel` never kills running processes owned by the user on its
+    # own -- a real, previously-latent gap this project's own Phase 1
+    # accounts rarely surfaced (short-lived processes), but Phase 2
+    # feature 6's long-lived, pooled LSAPI workers (persistConn/autoStart)
+    # made it a real, observed leak: worker processes kept running under
+    # a now-unassigned uid indefinitely after `account.terminate`,
+    # confirmed live. `pkill -9 -u` first, so `userdel` always removes a
+    # genuinely process-free account.
+    run(["pkill", "-9", "-u", username], timeout=15)
     run(["userdel", "--remove", "--force", username], check=True)
 
 

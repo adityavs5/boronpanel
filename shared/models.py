@@ -40,6 +40,14 @@ class Account(Base):
     php_version: Mapped[str] = mapped_column(String(8), default="8.3")
     quota_soft_mb: Mapped[int] = mapped_column(Integer, default=5120)
     quota_hard_mb: Mapped[int] = mapped_column(Integer, default=6144)
+    # Phase 2 feature 6: cgroups v2 resource limits, one systemd slice per
+    # account (daemon/cgroups.py). Defaults match the goal's stated
+    # defaults exactly: CPU 25% of one core, 512MB RAM (no swap), 50MB/s
+    # IO, 50 pids.
+    cpu_pct: Mapped[int] = mapped_column(Integer, default=25)
+    mem_mb: Mapped[int] = mapped_column(Integer, default=512)
+    io_mb: Mapped[int] = mapped_column(Integer, default=50)
+    pids_max: Mapped[int] = mapped_column(Integer, default=50)
     last_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(
