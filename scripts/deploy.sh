@@ -6,9 +6,15 @@
 # symlink (found the hard way while building Phase h: a symlink from
 # /opt/forgehost into /root/cpanel-clone, this repo's original layout,
 # silently broke every forgehost-api file access with a generic permission
-# error). /opt/forgehost's own venv is NOT touched here -- run
-# `.venv/bin/pip install -r requirements.txt` there separately if
-# dependencies changed.
+# error).
+#
+# Also re-installs requirements.txt into /opt/forgehost's own venv every
+# run (fast/no-op when nothing changed -- pip just checks versions) --
+# added after a real crash loop in Phase 2: a new dependency (croniter) was
+# pip-installed into the *dev* venv only, deploy.sh synced the code that
+# imports it, and forgehostd crash-looped with ModuleNotFoundError on the
+# deployed side until someone noticed and installed it there too. Now that
+# step can't be forgotten.
 set -euo pipefail
 
 SRC=/root/cpanel-clone
@@ -29,5 +35,9 @@ find "$DST" -path "$DST/.venv" -prune -o -type d -exec chmod 755 {} \;
 find "$DST" -path "$DST/.venv" -prune -o -type f -exec chmod 644 {} \;
 find "$DST/scripts" -name '*.py' -exec chmod 755 {} \;
 find "$DST/scripts" -name '*.sh' -exec chmod 755 {} \;
+
+if [ -x "$DST/.venv/bin/pip" ]; then
+  "$DST/.venv/bin/pip" install -q -r "$DST/requirements.txt"
+fi
 
 echo "Deployed $SRC -> $DST"

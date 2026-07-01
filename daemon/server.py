@@ -19,7 +19,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, filemanager, handlers_account, handlers_auth, handlers_database, handlers_dns, handlers_domain, handlers_mail, ols, ssl
+from daemon import audit, filemanager, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail, ols, ssl
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +39,10 @@ OP_TABLE = {
     "account.unsuspend": handlers_account.unsuspend_account,
     "account.terminate": handlers_account.terminate_account,
     "account.set_php_version": handlers_account.set_php_version,
+    "cron.list": handlers_cron.list_cron_jobs,
+    "cron.add": handlers_cron.add_cron_job,
+    "cron.update": handlers_cron.update_cron_job,
+    "cron.delete": handlers_cron.delete_cron_job,
     "domain.add": handlers_domain.add_domain,
     "domain.list": handlers_domain.list_domains,
     "system.bootstrap_ols": lambda params: (ols.bootstrap_baseline(), {"status": "ok"})[1],
@@ -85,6 +89,7 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_dns.terminate_a
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_database.terminate_account_databases(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_mail.terminate_account_mail(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ssl.terminate_account_certs(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_cron.terminate_account_cron(account))
 
 
 def register_op(name: str, handler) -> None:
