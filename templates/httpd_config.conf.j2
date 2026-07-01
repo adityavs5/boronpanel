@@ -195,6 +195,42 @@ virtualHost roundcube{
 }
 {% endif %}
 
+{% if pma_hostname %}
+# Phase 3 feature 3: phpMyAdmin, deployed once server-wide (same
+# static-infra pattern as Roundcube above) -- gated on pma_hostname so an
+# operator who never runs bootstrap_pma sees no reference to it at all.
+extProcessor pma_php{
+    type                            lsapi
+    address                         uds://tmp/lshttpd/pma_php.sock
+    maxConns                        10
+    env                              PHP_LSAPI_CHILDREN=10
+    initTimeout                     60
+    retryTimeout                    0
+    persistConn                     1
+    respBuffer                      0
+    autoStart                       1
+    path                            {{ pma_lsphp_path }}
+    backlog                         100
+    instances                       1
+    priority                        0
+    extUser                         www-data
+    extGroup                        www-data
+    memSoftLimit                    256M
+    memHardLimit                    512M
+    procSoftLimit                   50
+    procHardLimit                   75
+}
+
+virtualHost phpmyadmin{
+    vhRoot                   {{ pma_docroot }}/
+    allowSymbolLink          1
+    enableScript             1
+    restrained                1
+    setUIDMode               0
+    configFile               conf/vhosts/phpmyadmin/vhconf.conf
+}
+{% endif %}
+
 {# Phase 2 feature 4: one extProcessor per ACCOUNT (php_version is an
    account-level setting, so every domain that account owns shares this
    one LSAPI backend), defined at server level so it can be referenced by
@@ -245,6 +281,9 @@ listener HTTP{
 {% if webmail_hostname %}
     map                      roundcube {{ webmail_hostname }}
 {% endif %}
+{% if pma_hostname %}
+    map                      phpmyadmin {{ pma_hostname }}
+{% endif %}
 {% for vh in domain_vhosts %}
     map                      {{ vh.vhost_name }} {{ vh.domain }}
 {% endfor %}
@@ -257,6 +296,9 @@ listener HTTPS{
     certFile                 {{ default_ssl_cert }}
 {% if webmail_hostname %}
     map                      roundcube {{ webmail_hostname }}
+{% endif %}
+{% if pma_hostname %}
+    map                      phpmyadmin {{ pma_hostname }}
 {% endif %}
 {% for vh in domain_vhosts %}
     map                      {{ vh.vhost_name }} {{ vh.domain }}

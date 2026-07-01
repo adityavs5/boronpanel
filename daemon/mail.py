@@ -54,8 +54,22 @@ def _connect():
 def hash_password(password: str) -> str:
     """doveadm pw, not a hand-rolled crypt() call -- guarantees Dovecot-
     compatible output by construction (RESEARCH.md SS6, the HestiaCP
-    pattern over ISPConfig's reimplemented PHP crypt())."""
-    result = run(["doveadm", "pw", "-s", "ARGON2ID", "-p", password], timeout=15, check=True)
+    pattern over ISPConfig's reimplemented PHP crypt()).
+
+    The password is piped via stdin (twice -- doveadm's own interactive
+    confirmation prompt, non-interactively satisfied), never passed as a
+    `-p` CLI argument -- found live while building Phase 3 feature 10's
+    password manager: daemon/procutil.py's run() logs every command's
+    full argument list (`logger.info("exec: %s", " ".join(args))`) for
+    ops visibility, which is exactly right for ordinary commands but
+    would have written every mailbox password in plaintext to
+    /var/log/forgehost/daemon.log if it had stayed a `-p` argument here
+    -- a real, pre-existing (Phase e) violation of "passwords never
+    logged anywhere," found and fixed as part of this feature's own
+    explicit scope. `chpasswd`/`pure-pw` already used the safer stdin
+    form; this was the one password-hashing call site in the project
+    that didn't."""
+    result = run(["doveadm", "pw", "-s", "ARGON2ID"], input_text=f"{password}\n{password}\n", timeout=15, check=True)
     return result.stdout.strip()
 
 
@@ -173,5 +187,208 @@ def change_mailbox_password(domain: str, local_part: str, new_password: str) -> 
                 "UPDATE mail_user SET password = %s WHERE domain_id = %s AND local_part = %s",
                 (password_hash, domain_id, local_part),
             )
+    finally:
+        conn.close()
+
+
+def _mail_user_id(domain_id: int, local_part: str) -> int:
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM mail_user WHERE domain_id = %s AND local_part = %s",
+                (domain_id, local_part),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise ValidationError(f"mailbox '{local_part}' is not provisioned")
+            return row["id"]
+    finally:
+        conn.close()
+
+
+# --- Forwarders (Phase 3 feature 4) -----------------------------------
+#
+# Routed through Postfix's virtual_alias_maps (RESEARCH.md SS6's SQL-
+# backed pattern, applied here for the first time -- Phase e only wired
+# virtual_mailbox_maps/virtual_mailbox_domains, never virtual_alias_maps,
+# since nothing needed forwarding before now). Postfix itself queries the
+# SAME lookup map twice per recipient when nothing matches the full
+# address: once for "user@domain", once for the bare "@domain" catch-all
+# form -- the single UNION query in mysql-virtual-forwards.cf (README)
+# answers both shapes, so forwarders and catch-all share one Postfix
+# config surface even though they're two separate tables here (a
+# forwarder is inherently per-address; a catch-all is inherently
+# singular per domain, enforced by mail_catchall.domain_id's own UNIQUE
+# constraint rather than overloading forwarders with a nullable
+# local_part). Routine CRUD here needs no Postfix/Dovecot reload, same
+# as mailbox CRUD -- it's a live SQL lookup, not a static config file.
+#
+# A forwarder does not require (or preclude) a real mailbox at the same
+# address -- Postfix's virtual_alias_maps is consulted BEFORE
+# virtual_mailbox_maps, so if both exist for one address the forward
+# wins and the real mailbox never receives that mail. This matches the
+# goal's literal ask ("forward to any external address"), not a "forward
+# and also keep a copy" model, which was not requested.
+
+
+def create_forward(domain: str, local_part: str, destination: str) -> dict:
+    validate_domain(domain)
+    validate_mailbox_local_part(local_part)
+    domain_id = _domain_id(domain)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO mail_forward (domain_id, source_local_part, destination, active) VALUES (%s, %s, %s, 1)",
+                (domain_id, local_part, destination),
+            )
+            forward_id = cur.lastrowid
+    finally:
+        conn.close()
+    return {"id": forward_id, "domain": domain, "local_part": local_part, "destination": destination}
+
+
+def delete_forward(domain: str, local_part: str, destination: str) -> None:
+    validate_domain(domain)
+    domain_id = _domain_id(domain)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM mail_forward WHERE domain_id = %s AND source_local_part = %s AND destination = %s",
+                (domain_id, local_part, destination),
+            )
+    finally:
+        conn.close()
+
+
+def list_forwards(domain: str) -> list[dict]:
+    validate_domain(domain)
+    domain_id = _domain_id(domain)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT source_local_part AS local_part, destination, active FROM mail_forward "
+                "WHERE domain_id = %s ORDER BY source_local_part, destination",
+                (domain_id,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def delete_all_forwards_for_domain(domain: str) -> None:
+    """TERMINATE_HOOKS-adjacent cleanup: forgehost_mail's own FK already
+    ON DELETE CASCADEs mail_forward when mail_domain is deleted, but this
+    is called from the same place delete_mail_domain's cache cleanup is,
+    for symmetry/explicitness rather than relying purely on the cascade."""
+    validate_domain(domain)
+    domain_id = _domain_id(domain)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM mail_forward WHERE domain_id = %s", (domain_id,))
+    finally:
+        conn.close()
+
+
+# --- Catch-all (Phase 3 feature 4) ------------------------------------
+
+
+def set_catchall(domain: str, destination: str) -> dict:
+    validate_domain(domain)
+    domain_id = _domain_id(domain)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO mail_catchall (domain_id, destination, active) VALUES (%s, %s, 1) "
+                "ON DUPLICATE KEY UPDATE destination = VALUES(destination), active = 1",
+                (domain_id, destination),
+            )
+    finally:
+        conn.close()
+    return {"domain": domain, "destination": destination}
+
+
+def get_catchall(domain: str) -> dict | None:
+    validate_domain(domain)
+    domain_id = _domain_id(domain)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT destination, active FROM mail_catchall WHERE domain_id = %s", (domain_id,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def delete_catchall(domain: str) -> None:
+    validate_domain(domain)
+    domain_id = _domain_id(domain)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM mail_catchall WHERE domain_id = %s", (domain_id,))
+    finally:
+        conn.close()
+
+
+# --- Autoresponders (Phase 3 feature 4) -------------------------------
+#
+# Enforcement lives entirely in daemon/autoresponder.py (a Dovecot Sieve
+# `vacation` script written to the mailbox's own Maildir, executed by
+# Dovecot's LMTP delivery -- no external `vacation(1)` binary, no
+# Postfix pipe/alias plumbing). This table is bookkeeping/display state
+# for the panel UI (current subject/body/date-range), FK-tied to the
+# real mailbox it applies to.
+
+
+def set_autoresponder(domain: str, local_part: str, subject: str, body: str, start_date: str | None, end_date: str | None) -> dict:
+    validate_domain(domain)
+    validate_mailbox_local_part(local_part)
+    domain_id = _domain_id(domain)
+    mail_user_id = _mail_user_id(domain_id, local_part)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO mail_autoresponder (mail_user_id, subject, body, start_date, end_date, active) "
+                "VALUES (%s, %s, %s, %s, %s, 1) "
+                "ON DUPLICATE KEY UPDATE subject = VALUES(subject), body = VALUES(body), "
+                "start_date = VALUES(start_date), end_date = VALUES(end_date), active = 1",
+                (mail_user_id, subject, body, start_date, end_date),
+            )
+    finally:
+        conn.close()
+    return {"domain": domain, "local_part": local_part, "subject": subject, "body": body, "start_date": start_date, "end_date": end_date}
+
+
+def get_autoresponder(domain: str, local_part: str) -> dict | None:
+    validate_domain(domain)
+    domain_id = _domain_id(domain)
+    mail_user_id = _mail_user_id(domain_id, local_part)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT subject, body, start_date, end_date, active FROM mail_autoresponder WHERE mail_user_id = %s",
+                (mail_user_id,),
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def delete_autoresponder(domain: str, local_part: str) -> None:
+    validate_domain(domain)
+    domain_id = _domain_id(domain)
+    mail_user_id = _mail_user_id(domain_id, local_part)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM mail_autoresponder WHERE mail_user_id = %s", (mail_user_id,))
     finally:
         conn.close()

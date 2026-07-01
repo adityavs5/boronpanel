@@ -21,6 +21,9 @@ RECORD_VALUE_VALIDATORS = {
     "CNAME": lambda v: validate_domain(v.rstrip(".")) + ".",
     "MX": lambda v: _validate_mx(v),
     "TXT": lambda v: _validate_txt(v),
+    "PTR": lambda v: validate_domain(v.rstrip(".")) + ".",
+    "SRV": lambda v: _validate_srv(v),
+    "CAA": lambda v: _validate_caa(v),
 }
 
 
@@ -59,6 +62,32 @@ def _validate_txt(value: str) -> str:
         return value
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _validate_srv(value: str) -> str:
+    parts = value.split()
+    if len(parts) != 4 or not all(p.isdigit() for p in parts[:3]):
+        raise ValidationError(f"SRV value '{value}' must be '<priority> <weight> <port> <target>'")
+    priority, weight, port, target = parts
+    if not (0 <= int(port) <= 65535):
+        raise ValidationError(f"SRV port '{port}' out of range")
+    return f"{priority} {weight} {port} {validate_domain(target.rstrip('.'))}."
+
+
+def _validate_caa(value: str) -> str:
+    parts = value.split(None, 2)
+    if len(parts) != 3 or not parts[0].isdigit():
+        raise ValidationError(f"CAA value '{value}' must be '<flags> <tag> <value>'")
+    flags, tag, tag_value = parts
+    if not (0 <= int(flags) <= 255):
+        raise ValidationError(f"CAA flags '{flags}' out of range (0-255)")
+    if tag not in ("issue", "issuewild", "iodef"):
+        raise ValidationError(f"CAA tag '{tag}' must be one of issue/issuewild/iodef")
+    tag_value = tag_value.strip()
+    if tag_value.startswith('"') and tag_value.endswith('"'):
+        return f"{flags} {tag} {tag_value}"
+    escaped = tag_value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{flags} {tag} "{escaped}"'
 
 
 def _zone_dict(zone: DnsZone) -> dict:

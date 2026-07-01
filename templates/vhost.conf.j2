@@ -32,6 +32,29 @@ context / {
 
   phpIniOverride  {
     php_admin_value open_basedir "{{ docroot }}:{{ home_dir }}/tmp:/tmp"
+    {# Phase 3 feature 9: a real, persistent per-account PHP error log --
+       lsphp's own compiled-in php.ini has no error_log path configured
+       at all (confirmed empirically: PHP fatal errors went nowhere
+       durable, not even the vhost's own OLS errorlog file, while
+       diagnosing an unrelated Phase 3 feature 3 bug), so without this
+       PHP errors were simply lost. Unconditional (not gated on a
+       PhpIniOverride row existing) -- every account gets a real error
+       log to view, whether or not it has ever customized its own PHP
+       ini settings. #}
+    php_admin_value log_errors "On"
+    php_admin_value error_log "{{ home_dir }}/logs/php-error.log"
+{% if php_ini %}
+    {# Phase 3 feature 6: per-account PHP ini overrides, rendered ONLY
+       into this account's own vhost context -- OLS's native per-context
+       mechanism, not a system-wide php.ini edit; no other account's
+       vhost ever references this account's PhpIniOverride row. #}
+    php_admin_value memory_limit "{{ php_ini.memory_limit }}"
+    php_admin_value upload_max_filesize "{{ php_ini.upload_max_filesize }}"
+    php_admin_value post_max_size "{{ php_ini.post_max_size }}"
+    php_admin_value max_execution_time "{{ php_ini.max_execution_time }}"
+    php_admin_value display_errors "{{ "On" if php_ini.display_errors else "Off" }}"
+    php_admin_value error_reporting "{{ php_ini.error_reporting }}"
+{% endif %}
   }
 {% endif %}
 }
@@ -48,6 +71,16 @@ rewrite {
   rules                   <<<END_forgehost_rules
 RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
 RewriteRule ^(.*)$ /index.html [L]
+END_forgehost_rules
+{% elif redirects %}
+  {# Phase 3 feature 7: per-domain path redirects. `regex_path` is
+     pre-escaped in daemon/ols.py (literal "." -> "\.") before reaching
+     this template -- the raw, validated `path` is never interpolated
+     directly into the rewrite pattern. #}
+  rules                   <<<END_forgehost_rules
+{% for r in redirects %}
+RewriteRule ^{{ r.regex_path }}$ {{ r.target_url }} [R={{ r.status_code }},L]
+{% endfor %}
 END_forgehost_rules
 {% endif %}
 }

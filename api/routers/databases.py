@@ -16,6 +16,10 @@ class CreateDatabaseBody(BaseModel):
     password: str | None = None
 
 
+class ChangeDatabasePasswordBody(BaseModel):
+    password: str | None = None
+
+
 @api_router.get("")
 def list_databases(username: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
@@ -40,6 +44,20 @@ def change_password(username: str, name: str, identity: Identity = Depends(get_i
     return call_daemon("db.change_password", identity, username=username, name=name)
 
 
+@api_router.patch("/{name}/password")
+def change_password_patch(username: str, name: str, body: ChangeDatabasePasswordBody, identity: Identity = Depends(get_identity)):
+    """Phase 3 feature 10: the goal's literal password-manager API shape
+    is PATCH (the existing POST route above predates this feature and
+    is kept as-is for backward compatibility) -- same handler either
+    way, an explicit customer-supplied password is optional on both
+    (falls back to a fresh generated one if omitted)."""
+    require_account_access(identity, username)
+    params = {"username": username, "name": name}
+    if body.password:
+        params["password"] = body.password
+    return call_daemon("db.change_password", identity, **params)
+
+
 @ui_router.post("")
 def ui_create_database(username: str, name: str = Form(...), identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
@@ -51,4 +69,11 @@ def ui_create_database(username: str, name: str = Form(...), identity: Identity 
 def ui_drop_database(username: str, name: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     call_daemon("db.drop", identity, username=username, name=name)
+    return RedirectResponse(f"/ui/accounts/{username}", status_code=303)
+
+
+@ui_router.post("/{name}/password")
+def ui_change_password(username: str, name: str, password: str = Form(...), identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    call_daemon("db.change_password", identity, username=username, name=name, password=password)
     return RedirectResponse(f"/ui/accounts/{username}", status_code=303)

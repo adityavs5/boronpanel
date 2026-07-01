@@ -9,9 +9,16 @@ from sqlalchemy import select
 
 from shared.db import write_session
 from shared.models import Account, MailDomain, MailUser
-from shared.validation import validate_domain, validate_mailbox_local_part, validate_username
+from shared.validation import (
+    validate_domain,
+    validate_email_address,
+    validate_iso_date,
+    validate_mailbox_local_part,
+    validate_password_strength,
+    validate_username,
+)
 
-from daemon import mail
+from daemon import autoresponder, dkim, mail
 
 
 def create_mail_domain(params: dict) -> dict:
@@ -37,7 +44,23 @@ def create_mail_domain(params: dict) -> dict:
         row = MailDomain(account_id=account.id if account else None, domain=domain_name)
         session.add(row)
         session.flush()
-        return {"id": row.id, "domain": row.domain, "account_id": row.account_id}
+        result = {"id": row.id, "domain": row.domain, "account_id": row.account_id}
+
+    # Phase 3 feature 1: SPF/DKIM/DMARC sane defaults, generated the moment
+    # a domain gets real mail routing -- a failure here must not undo the
+    # mail domain that was already successfully created above (DNS/keypair
+    # generation is a best-effort enhancement, not a precondition of mail
+    # working at all: Postfix/Dovecot delivery has zero dependency on these
+    # TXT records existing).
+    try:
+        result["dkim"] = dkim.setup_dns_signing(domain_name)
+    except Exception:
+        import logging
+
+        logging.getLogger("forgehostd.mail").exception(
+            "SPF/DKIM/DMARC setup failed for '%s' -- mail domain itself was still created", domain_name
+        )
+    return result
 
 
 def _delete_mail_domain_cache(domain_name: str) -> None:
@@ -65,13 +88,19 @@ def delete_mail_domain(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     mail.delete_mail_domain(domain_name)
     _delete_mail_domain_cache(domain_name)
+    try:
+        dkim.teardown_dns_signing(domain_name)
+    except Exception:
+        import logging
+
+        logging.getLogger("forgehostd.mail").exception("DKIM teardown failed for '%s'", domain_name)
     return {"domain": domain_name, "status": "deleted"}
 
 
 def create_mailbox(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
-    password = params["password"]
+    password = validate_password_strength(params["password"])
     quota_mb = int(params.get("quota_mb", 1024))
 
     with write_session() as session:
@@ -115,7 +144,7 @@ def list_mailboxes(params: dict) -> dict:
 def change_mailbox_password(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
-    new_password = params["password"]
+    new_password = validate_password_strength(params["password"])
     mail.change_mailbox_password(domain_name, local_part, new_password)
     return {"domain": domain_name, "local_part": local_part, "status": "password_changed"}
 
@@ -129,3 +158,95 @@ def terminate_account_mail(account: Account) -> None:
     for domain_name in domains:
         mail.delete_mail_domain(domain_name)
         _delete_mail_domain_cache(domain_name)
+        try:
+            dkim.teardown_dns_signing(domain_name)
+        except Exception:
+            import logging
+
+            logging.getLogger("forgehostd.mail").exception("DKIM teardown failed for '%s'", domain_name)
+
+
+# --- Forwarders (Phase 3 feature 4) -----------------------------------
+
+
+def create_forward(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    local_part = validate_mailbox_local_part(params["local_part"])
+    destination = validate_email_address(params["destination"])
+    return mail.create_forward(domain_name, local_part, destination)
+
+
+def delete_forward(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    local_part = validate_mailbox_local_part(params["local_part"])
+    destination = validate_email_address(params["destination"])
+    mail.delete_forward(domain_name, local_part, destination)
+    return {"domain": domain_name, "local_part": local_part, "destination": destination, "status": "deleted"}
+
+
+def list_forwards(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    return {"domain": domain_name, "forwards": mail.list_forwards(domain_name)}
+
+
+# --- Catch-all (Phase 3 feature 4) ------------------------------------
+
+
+def set_catchall(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    destination = validate_email_address(params["destination"])
+    return mail.set_catchall(domain_name, destination)
+
+
+def get_catchall(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    catchall = mail.get_catchall(domain_name)
+    return {"domain": domain_name, "catchall": catchall}
+
+
+def delete_catchall(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    mail.delete_catchall(domain_name)
+    return {"domain": domain_name, "status": "deleted"}
+
+
+# --- Autoresponders (Phase 3 feature 4) -------------------------------
+
+MAX_AUTORESPONDER_SUBJECT_LEN = 255
+MAX_AUTORESPONDER_BODY_LEN = 10_000
+
+
+def set_autoresponder(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    local_part = validate_mailbox_local_part(params["local_part"])
+    subject = params["subject"].strip()
+    body = params["body"]
+    if not subject or len(subject) > MAX_AUTORESPONDER_SUBJECT_LEN:
+        raise ValueError(f"subject must be 1-{MAX_AUTORESPONDER_SUBJECT_LEN} characters")
+    if not body or len(body) > MAX_AUTORESPONDER_BODY_LEN:
+        raise ValueError(f"body must be 1-{MAX_AUTORESPONDER_BODY_LEN} characters")
+    start_date = validate_iso_date(params["start_date"]) if params.get("start_date") else None
+    end_date = validate_iso_date(params["end_date"]) if params.get("end_date") else None
+    if start_date and end_date and end_date < start_date:
+        raise ValueError("end_date must not be before start_date")
+
+    # Apply the Sieve script (validated via sievec, see daemon/autoresponder.py)
+    # BEFORE recording it as this account's current setting -- a script
+    # that fails validation must not be reported as successfully set.
+    autoresponder.apply_autoresponder(domain_name, local_part, subject, body, start_date, end_date)
+    return mail.set_autoresponder(domain_name, local_part, subject, body, start_date, end_date)
+
+
+def get_autoresponder(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    local_part = validate_mailbox_local_part(params["local_part"])
+    current = mail.get_autoresponder(domain_name, local_part)
+    return {"domain": domain_name, "local_part": local_part, "autoresponder": current}
+
+
+def delete_autoresponder(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    local_part = validate_mailbox_local_part(params["local_part"])
+    autoresponder.remove_autoresponder(domain_name, local_part)
+    mail.delete_autoresponder(domain_name, local_part)
+    return {"domain": domain_name, "local_part": local_part, "status": "deleted"}

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Logs: {{ username }} - Forgehost{% endblock %}
+{% block content %}
+<meta http-equiv="refresh" content="15">
+<p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
+<h1>Error logs: {{ username }}</h1>
+<p class="muted">Auto-refreshes every 15 seconds. Showing the last {{ result.line_count }} matching line(s)
+  (of up to 500 read).</p>
+
+<form method="get" action="/ui/accounts/{{ username }}/logs">
+  <select name="type">
+    <option value="ols" {{ "selected" if type == "ols" else "" }}>OLS (web server)</option>
+    <option value="php" {{ "selected" if type == "php" else "" }}>PHP</option>
+  </select>
+  <input type="text" name="severity" placeholder="filter by severity (e.g. ERROR, WARN)" value="{{ severity }}">
+  <button type="submit">Apply</button>
+</form>
+
+{% if result.domain %}
+<p class="muted">Domain: <code>{{ result.domain }}</code></p>
+{% endif %}
+
+<pre style="background:#f3f4f6; padding:1rem; border-radius:6px; overflow-x:auto; max-height:70vh; overflow-y:auto;">{% for line in result.lines %}{{ line }}
+{% else %}(no matching log lines)
+{% endfor %}</pre>
+{% endblock %}

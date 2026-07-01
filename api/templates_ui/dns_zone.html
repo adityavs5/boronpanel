@@ -4,37 +4,75 @@
 <p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
 <h1>DNS records: {{ domain }}</h1>
 
+{% if records is none %}
+<div class="card">
+  <p>{{ domain }} has no Forgehost-managed DNS zone yet.</p>
+  <form method="post" action="/ui/accounts/{{ username }}/dns/{{ domain }}/create-zone">
+    <button type="submit">Create DNS zone</button>
+  </form>
+</div>
+{% else %}
+
 <table>
-  <thead><tr><th>Name</th><th>Type</th><th>TTL</th><th>Value(s)</th></tr></thead>
+  <thead><tr><th>Name</th><th>Type</th><th>TTL</th><th>Value(s)</th><th></th></tr></thead>
   <tbody>
     {% for r in records %}
     <tr>
       <td>{{ r.name }}</td>
       <td>{{ r.type }}</td>
       <td>{{ r.ttl }}</td>
-      <td>{% for v in r.values %}<code>{{ v }}</code><br>{% endfor %}</td>
+      <td>{% for v in r["values"] %}<code>{{ v }}</code><br>{% endfor %}</td>
+      <td>
+        <form class="inline" method="post" action="/ui/accounts/{{ username }}/dns/{{ domain }}/delete"
+              onsubmit="return confirm('Delete the {{ r.type }} record at {{ r.name }}? This removes the entire rrset (all values shown).');">
+          <input type="hidden" name="subdomain" value="{{ r.name[:-1] if r.name.endswith('.') else r.name }}">
+          <input type="hidden" name="type" value="{{ r.type }}">
+          <button type="submit" class="danger">Delete</button>
+        </form>
+      </td>
     </tr>
     {% else %}
-    <tr><td colspan="4" class="muted">No records.</td></tr>
+    <tr><td colspan="5" class="muted">No records.</td></tr>
     {% endfor %}
   </tbody>
 </table>
 
 <div class="card">
   <h2>Add / replace a record</h2>
+  <p class="muted">Editing a name+type that already exists replaces its <em>entire</em> value list
+    (this matches how DNS itself represents a multi-value rrset -- e.g. two MX hosts, or the
+    auto-generated SPF TXT record alongside any other TXT content at the same name, are edited
+    together, not independently).</p>
   <form method="post" action="/ui/accounts/{{ username }}/dns/{{ domain }}">
     <input type="text" name="subdomain" placeholder="@ (apex) or e.g. www" value="@">
     <select name="type">
-      <option>A</option>
-      <option>AAAA</option>
-      <option>CNAME</option>
-      <option>MX</option>
-      <option>TXT</option>
+      {% for t in record_types %}
+      <option value="{{ t }}">{{ t }}</option>
+      {% endfor %}
     </select>
-    <input type="text" name="value" placeholder="value (e.g. 1.2.3.4)" required>
     <input type="number" name="ttl" value="3600" min="60">
-    <button type="submit">Save record</button>
+    <br>
+    <textarea name="values" rows="3" style="width:100%; margin-top:0.5rem;" placeholder="one value per line" required></textarea>
+    <button type="submit" style="margin-top:0.5rem;">Save record</button>
   </form>
-  <p class="muted">MX value format: "&lt;priority&gt; &lt;host&gt;", e.g. "10 mail.example.com"</p>
+  <p class="muted">
+    Value formats -- A: <code>1.2.3.4</code> &middot;
+    AAAA: <code>2001:db8::1</code> &middot;
+    CNAME/PTR: <code>target.example.com</code> &middot;
+    MX: <code>10 mail.example.com</code> &middot;
+    TXT: <code>v=spf1 -all</code> &middot;
+    SRV: <code>10 20 5060 target.example.com</code> &middot;
+    CAA: <code>0 issue letsencrypt.org</code>
+  </p>
 </div>
+
+<div class="card">
+  <h2>Mail authentication (SPF / DKIM / DMARC)</h2>
+  <p class="muted">Generated automatically the first time mail is enabled for this domain
+    (see <a href="/ui/accounts/{{ username }}/mail/{{ domain }}">mail settings</a>) and published
+    above as ordinary TXT records at <code>@</code>, <code>default._domainkey</code>, and
+    <code>_dmarc</code>. DMARC defaults to <code>p=none</code> (monitor-only) since outgoing mail
+    isn't actually DKIM-signed by this build yet -- see CHECKPOINT-phase3-1.md.</p>
+</div>
+{% endif %}
 {% endblock %}

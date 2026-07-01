@@ -83,6 +83,25 @@ class DnsZone(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class DkimKey(Base):
+    """Phase 3 feature 1: one DKIM signing keypair per mail domain,
+    generated automatically the first time a mail domain is created
+    (daemon/dkim.py). The private key itself lives on disk
+    (/etc/forgehost/dkim/<domain>/<selector>.private, root-only) -- this
+    row is bookkeeping only (which selector is active, so repeat calls
+    reuse rather than silently rotate the key) plus whether the public key
+    was actually published to a Forgehost-managed DNS zone or just
+    generated for the operator to publish elsewhere."""
+
+    __tablename__ = "dkim_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    selector: Mapped[str] = mapped_column(String(63), default="default")
+    dns_published: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class DatabaseGrant(Base):
     """A hosted-account MariaDB database + the users granted to it."""
 
@@ -202,6 +221,96 @@ class BandwidthDaily(Base):
     bytes_served: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class Redirect(Base):
+    """Phase 3 feature 7: a per-domain 301/302 path redirect, rendered
+    into that domain's own vhost as an OLS/mod_rewrite-compatible
+    RewriteRule (daemon/ols.py). Keyed by domain NAME (string), not a
+    Domain.id foreign key -- matches this project's existing convention
+    for domain-scoped features (DnsZone.zone, MailDomain.domain) rather
+    than introducing the first FK to `domains.id` in the schema; cleanup
+    on domain removal is explicit application code
+    (handlers_domain.remove_domain), the same manual-cascade pattern
+    already used for MailDomain/MailUser."""
+
+    __tablename__ = "redirects"
+    __table_args__ = (UniqueConstraint("domain", "path", name="uq_redirect_domain_path"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    path: Mapped[str] = mapped_column(String(512))
+    target_url: Mapped[str] = mapped_column(String(2048))
+    status_code: Mapped[int] = mapped_column(Integer, default=301)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PhpIniOverride(Base):
+    """Phase 3 feature 6: per-account php.ini overrides. A NEW table
+    (not new columns on Account) deliberately -- this project uses
+    Base.metadata.create_all(), which only creates new tables, never
+    ALTERs existing ones (Phase 2 feature 6 hit this the hard way over
+    cgroup columns added directly to Account). A new table needs no
+    manual migration step on an existing install. Rendered into each of
+    the account's own domain-vhosts' phpIniOverride block
+    (daemon/ols.py) -- OLS's own native per-context PHP ini mechanism,
+    not a hand-rolled separate php.ini file, and not system-wide: no
+    other account's vhost references this row."""
+
+    __tablename__ = "php_ini_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), unique=True, index=True)
+    memory_limit: Mapped[str] = mapped_column(String(16), default="256M")
+    upload_max_filesize: Mapped[str] = mapped_column(String(16), default="64M")
+    post_max_size: Mapped[str] = mapped_column(String(16), default="64M")
+    max_execution_time: Mapped[int] = mapped_column(Integer, default=30)
+    display_errors: Mapped[bool] = mapped_column(default=False)
+    error_reporting: Mapped[str] = mapped_column(String(128), default="E_ALL & ~E_DEPRECATED & ~E_STRICT")
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class FtpAccount(Base):
+    """Phase 3 feature 5: an FTP sub-account, scoped to a path within its
+    hosting account's home dir. A Pure-FTPd *virtual* user (PureDB
+    backend), not a real Linux account -- so it can be chrooted to an
+    arbitrary subdirectory of the account's home rather than the whole
+    home dir, which real Linux/unix-auth FTP users can't do without a
+    separate per-user chroot mechanism this project doesn't otherwise
+    need. The password itself is never stored here (PureDB's own
+    pureftpd.pdb holds the hash) -- same "passwords never stored in the
+    panel DB" rule as every other credential in this project."""
+
+    __tablename__ = "ftp_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    ftp_login: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    path: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PmaToken(Base):
+    """Phase 3 feature 3: bookkeeping for a phpMyAdmin single-signon
+    token. The token itself is never stored (only its SHA-256 hash, same
+    pattern as ApiToken) -- the ephemeral MariaDB credentials it grants
+    access to live in a small per-token JSON file under
+    settings.pma_token_dir (NOT under /var/lib/forgehost, which is
+    locked to root:forgehost-api -- the phpMyAdmin signon script runs as
+    www-data and needs to read+delete that file itself; see
+    CHECKPOINT-phase3-3.md). This row exists so a periodic cleanup script
+    can drop the ephemeral MariaDB user + stale file even if a token is
+    generated but never redeemed."""
+
+    __tablename__ = "pma_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    db_name: Mapped[str] = mapped_column(String(64))
+    ephemeral_db_user: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+
+
 class BackupDestination(Base):
     """Phase 2 feature 7: where backup artifacts are stored. Credentials
     for rclone-backed destinations live in rclone's own config (managed
@@ -260,6 +369,56 @@ class BackupJob(Base):
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
     error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WordPressInstall(Base):
+    """Phase 3 feature 2: bookkeeping for a completed one-click WordPress
+    install -- one row per domain (a domain can only ever host one WP
+    install through this feature; reinstalling requires removing the
+    row/files first, same "don't silently clobber" posture as the install
+    step itself refusing a non-empty docroot). No password field here --
+    the admin password is returned once, at install-completion time
+    (WordPressJob.admin_password, cleared after first read), never
+    persisted long-term, matching this project's "passwords never stored"
+    rule applied everywhere else (DB/mail/FTP credentials)."""
+
+    __tablename__ = "wordpress_installs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    db_name: Mapped[str] = mapped_column(String(64))
+    db_user: Mapped[str] = mapped_column(String(64))
+    wp_version: Mapped[str] = mapped_column(String(32))
+    admin_user: Mapped[str] = mapped_column(String(64))
+    installed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WordPressJob(Base):
+    """Async install job (goal requirement: "shows install progress
+    async"). admin_password is stored here ONLY transiently -- it has to
+    survive from the background worker thread until the polling UI/API
+    call that first observes status=="completed" reads it, since (unlike
+    account.create's synchronous response) there's no single request/
+    response round trip to hand it back on. The first successful read
+    clears it (see get_job) so a second poll -- or a row inspected later
+    for any other reason -- never re-exposes it. This is a deliberate,
+    minimal-exposure tradeoff forced by the async requirement, not an
+    oversight; documented in CHECKPOINT-phase3-2.md."""
+
+    __tablename__ = "wordpress_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
+    progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    admin_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    admin_user: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    admin_password: Mapped[str | None] = mapped_column(String(128), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

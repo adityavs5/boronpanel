@@ -3,8 +3,13 @@
 {% block content %}
 <p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
 <h1>Mailboxes: {{ domain }}</h1>
-<p class="muted">Webmail isn't built into Forgehost -- point customers at your own Roundcube install
-  (set <code>webmail_url</code> in <code>forgehost.toml</code>) or any IMAP client using these mailboxes.</p>
+<p class="muted">Webmail: <a href="{{ webmail_url }}">{{ webmail_url }}</a> (Roundcube, deployed server-wide --
+  any mailbox created below logs in immediately, no extra setup) or any IMAP client using these mailboxes.</p>
+<p class="muted">SPF/DKIM/DMARC records are generated automatically once mail is enabled -- see the
+  <a href="/ui/accounts/{{ username }}/dns/{{ domain }}">DNS page</a> for the published records.</p>
+{% if mail_enabled %}
+<p><a href="/ui/accounts/{{ username }}/domains/{{ domain }}/email">Forwarders, catch-all, and autoresponders &rarr;</a></p>
+{% endif %}
 
 {% if not mail_enabled %}
 <div class="card">
@@ -16,16 +21,22 @@
 {% endif %}
 
 <table>
-  <thead><tr><th>Mailbox</th><th>Quota (MB)</th><th>Active</th></tr></thead>
+  <thead><tr><th>Mailbox</th><th>Quota (MB)</th><th>Active</th><th>New password</th></tr></thead>
   <tbody>
     {% for m in mailboxes %}
     <tr>
       <td>{{ m.local_part }}@{{ domain }}</td>
       <td>{{ m.quota_mb }}</td>
       <td>{{ "yes" if m.active else "no" }}</td>
+      <td>
+        <form class="inline" method="post" action="/ui/accounts/{{ username }}/mail/{{ domain }}/{{ m.local_part }}/password">
+          <input type="password" name="password" placeholder="min. 10 characters" size="16" required>
+          <button type="submit" class="secondary">Set</button>
+        </form>
+      </td>
     </tr>
     {% else %}
-    <tr><td colspan="3" class="muted">No mailboxes yet.</td></tr>
+    <tr><td colspan="4" class="muted">No mailboxes yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>

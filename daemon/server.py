@@ -19,7 +19,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, backup, cgroups, filemanager, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail, handlers_usage, ols, ssl
+from daemon import audit, backup, cgroups, filemanager, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, logs, ols, pma, ssl, wordpress
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,8 +66,19 @@ OP_TABLE = {
     "mail.delete_mailbox": handlers_mail.delete_mailbox,
     "mail.list_mailboxes": handlers_mail.list_mailboxes,
     "mail.change_password": handlers_mail.change_mailbox_password,
+    # Phase 3 feature 4: forwarders/catch-all/autoresponders
+    "mail.forward.create": handlers_mail.create_forward,
+    "mail.forward.delete": handlers_mail.delete_forward,
+    "mail.forward.list": handlers_mail.list_forwards,
+    "mail.catchall.set": handlers_mail.set_catchall,
+    "mail.catchall.get": handlers_mail.get_catchall,
+    "mail.catchall.delete": handlers_mail.delete_catchall,
+    "mail.autoresponder.set": handlers_mail.set_autoresponder,
+    "mail.autoresponder.get": handlers_mail.get_autoresponder,
+    "mail.autoresponder.delete": handlers_mail.delete_autoresponder,
     "ssl.issue": ssl.issue_certificate,
     "ssl.status": ssl.certificate_status,
+    "ssl.dashboard": ssl.get_ssl_dashboard,
     "file.list": filemanager.list_dir,
     "file.read": filemanager.read_file,
     "file.write": filemanager.write_file,
@@ -97,6 +108,30 @@ OP_TABLE = {
     "backup.restore.trigger": backup.trigger_restore,
     "backup.restore.get": backup.get_restore_job,
     "backup.restore.list": backup.list_restore_jobs,
+    # Phase 3 feature 2: one-click WordPress installer
+    "wordpress.install.trigger": wordpress.trigger_install,
+    "wordpress.install.get": wordpress.get_job,
+    "wordpress.install.list": wordpress.list_installs,
+    # Phase 3 feature 3: phpMyAdmin single-signon
+    "pma.token.create": pma.create_token,
+    "system.bootstrap_pma": lambda params: (pma.bootstrap_pma(), {"status": "ok"})[1],
+    # Phase 3 feature 5: FTP sub-accounts
+    "ftp.create": handlers_ftp.create_ftp_account,
+    "ftp.list": handlers_ftp.list_ftp_accounts,
+    "ftp.set_path": handlers_ftp.set_ftp_path,
+    "ftp.change_password": handlers_ftp.change_ftp_password,
+    "ftp.delete": handlers_ftp.delete_ftp_account,
+    # Phase 3 feature 6: per-account PHP ini overrides
+    "php_ini.get": handlers_php_ini.get_php_ini,
+    "php_ini.set": handlers_php_ini.set_php_ini,
+    "php_ini.reset": handlers_php_ini.reset_php_ini,
+    # Phase 3 feature 7: per-domain redirects
+    "redirect.create": handlers_redirect.create_redirect,
+    "redirect.update": handlers_redirect.update_redirect,
+    "redirect.delete": handlers_redirect.delete_redirect,
+    "redirect.list": handlers_redirect.list_redirects,
+    # Phase 3 feature 9: error log viewer
+    "logs.get": logs.get_log,
 }
 
 # Each phase wires its own account-scoped teardown/suspend behavior here
@@ -119,6 +154,9 @@ handlers_account.LIMITS_HOOKS.append(
     lambda account: cgroups.apply_limits(account.username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
 )
 handlers_account.TERMINATE_HOOKS.append(lambda account: cgroups.remove_slice(account.username))
+handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_ftp.terminate_account_ftp(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_php_ini.terminate_account_php_ini(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_redirect.terminate_account_redirects(account))
 
 
 def register_op(name: str, handler) -> None:

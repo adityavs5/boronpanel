@@ -27,6 +27,95 @@ def test_render_vhost_conf_active_uses_real_docroot():
     assert "_suspended" not in content
 
 
+def test_render_vhost_conf_omits_php_ini_block_when_not_set():
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(account, domain, suspended=False, php_ini=None)
+    assert "memory_limit" not in content
+
+
+def test_render_vhost_conf_always_sets_php_error_log():
+    """Phase 3 feature 9: unconditional, not gated on a PhpIniOverride
+    row existing -- every account needs a real, persistent PHP error
+    log to view, whether or not it has ever customized its PHP ini."""
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(account, domain, suspended=False, php_ini=None)
+    assert 'php_admin_value log_errors "On"' in content
+    assert 'php_admin_value error_log "/home/demo1/logs/php-error.log"' in content
+
+
+def test_render_vhost_conf_includes_php_ini_overrides_when_set():
+    """Phase 3 feature 6: rendered into THIS account's own vhost context
+    only -- OLS's native per-context phpIniOverride mechanism, not a
+    system-wide php.ini edit."""
+    account = make_account()
+    domain = make_domain()
+    php_ini = {
+        "memory_limit": "512M",
+        "upload_max_filesize": "128M",
+        "post_max_size": "128M",
+        "max_execution_time": 60,
+        "display_errors": True,
+        "error_reporting": "E_ALL",
+    }
+    content = ols.render_vhost_conf(account, domain, suspended=False, php_ini=php_ini)
+    assert 'php_admin_value memory_limit "512M"' in content
+    assert 'php_admin_value upload_max_filesize "128M"' in content
+    assert 'php_admin_value post_max_size "128M"' in content
+    assert 'php_admin_value max_execution_time "60"' in content
+    assert 'php_admin_value display_errors "On"' in content
+    assert 'php_admin_value error_reporting "E_ALL"' in content
+
+
+def test_render_vhost_conf_php_ini_display_errors_off():
+    account = make_account()
+    domain = make_domain()
+    php_ini = {
+        "memory_limit": "256M", "upload_max_filesize": "64M", "post_max_size": "64M",
+        "max_execution_time": 30, "display_errors": False, "error_reporting": "E_ALL",
+    }
+    content = ols.render_vhost_conf(account, domain, suspended=False, php_ini=php_ini)
+    assert 'php_admin_value display_errors "Off"' in content
+
+
+def test_render_vhost_conf_omits_redirect_rules_when_none():
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(account, domain, suspended=False, redirects=None)
+    assert "RewriteRule" not in content
+
+
+def test_render_vhost_conf_includes_redirect_rule():
+    account = make_account()
+    domain = make_domain()
+    redirects = [{"regex_path": "/old\\-page", "target_url": "https://example.com/new", "status_code": 301}]
+    content = ols.render_vhost_conf(account, domain, suspended=False, redirects=redirects)
+    assert "RewriteRule ^/old\\-page$ https://example.com/new [R=301,L]" in content
+
+
+def test_render_vhost_conf_suspended_ignores_redirects():
+    """A suspended account serves the suspended page for everything --
+    custom redirects must not re-enable serving during suspension."""
+    account = make_account()
+    domain = make_domain()
+    redirects = [{"regex_path": "/old", "target_url": "https://example.com/new", "status_code": 301}]
+    content = ols.render_vhost_conf(account, domain, suspended=True, redirects=redirects)
+    assert "RewriteRule ^/old$" not in content
+
+
+def test_redirects_for_domain_escapes_literal_dots(isolated_db):
+    from shared.db import write_session
+    from shared.models import Redirect
+
+    with write_session() as session:
+        session.add(Redirect(domain="demo1.example", path="/old.html", target_url="https://example.com/new", status_code=301))
+
+    with write_session() as session:
+        result = ols._redirects_for_domain(session, "demo1.example")
+    assert result[0]["regex_path"] == "/old\\.html"
+
+
 def test_render_vhost_conf_uses_domains_own_docroot_not_account_public_html():
     """Phase 2 feature 4: the actual fix for the Phase 1 gap -- a
     subdomain/addon domain's own docroot must be served, not silently
@@ -79,13 +168,16 @@ def test_render_vhost_conf_uses_domain_specific_ssl_paths():
 def test_render_httpd_config_empty_vhosts_has_no_virtualhost_block(monkeypatch):
     # Explicit, not incidental: this test's whole point is "no vhosts in ->
     # no virtualHost block out", so it must not depend on whatever
-    # webmail_hostname happens to be set to in this environment's real
-    # /etc/forgehost/forgehost.toml (shared.config.settings is a
-    # module-level singleton loaded from the live system config, not
-    # reset between tests) -- caught when Phase 2 feature 3 configured a
-    # real webmail_hostname on this deployment and this test started
-    # failing for a reason that had nothing to do with what it's testing.
+    # webmail_hostname/pma_hostname happen to be set to in this
+    # environment's real /etc/forgehost/forgehost.toml
+    # (shared.config.settings is a module-level singleton loaded from the
+    # live system config, not reset between tests) -- caught when Phase 2
+    # feature 3 configured a real webmail_hostname on this deployment and
+    # this test started failing for a reason that had nothing to do with
+    # what it's testing; Phase 3 feature 3's pma_hostname hit the exact
+    # same thing.
     monkeypatch.setattr(ols.settings, "webmail_hostname", "")
+    monkeypatch.setattr(ols.settings, "pma_hostname", "")
     content = ols.render_httpd_config([], [])
     assert "virtualHost" not in content
     assert "listener HTTP{" in content
@@ -180,3 +272,32 @@ def test_bootstrap_webmail_requires_hostname_configured(monkeypatch):
     monkeypatch.setattr(ols.settings, "webmail_hostname", "")
     with pytest.raises(RuntimeError):
         ols.bootstrap_webmail()
+
+
+def test_render_httpd_config_includes_pma_block_when_configured(monkeypatch):
+    monkeypatch.setattr(ols.settings, "pma_hostname", "pma.example.com")
+    content = ols.render_httpd_config([], [])
+    assert "virtualHost phpmyadmin{" in content
+    assert "extProcessor pma_php{" in content
+    assert "map                      phpmyadmin pma.example.com" in content
+
+
+def test_render_httpd_config_omits_pma_block_when_not_configured(monkeypatch):
+    monkeypatch.setattr(ols.settings, "pma_hostname", "")
+    content = ols.render_httpd_config([], [])
+    assert "virtualHost phpmyadmin{" not in content
+    assert "extProcessor pma_php{" not in content
+
+
+def test_render_pma_vhost_conf_uses_configured_docroot(monkeypatch):
+    monkeypatch.setattr(ols.settings, "pma_docroot", "/usr/share/phpmyadmin")
+    content = ols.render_pma_vhost_conf("/etc/forgehost/ssl/default.key", "/etc/forgehost/ssl/default.crt")
+    assert "docRoot                   /usr/share/phpmyadmin" in content
+    assert "lsapi:pma_php php" in content
+    assert "include_path" in content
+
+
+def test_bootstrap_pma_requires_hostname_configured(monkeypatch):
+    monkeypatch.setattr(ols.settings, "pma_hostname", "")
+    with pytest.raises(RuntimeError):
+        ols.bootstrap_pma()

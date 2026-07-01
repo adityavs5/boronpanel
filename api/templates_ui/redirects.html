@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Redirects: {{ domain }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
+<h1>Redirects: {{ domain }}</h1>
+
+<table>
+  <thead><tr><th>Path</th><th>Target URL</th><th>Code</th><th></th></tr></thead>
+  <tbody>
+    {% for r in redirects %}
+    <tr>
+      <td><code>{{ r.path }}</code></td>
+      <td><code>{{ r.target_url }}</code></td>
+      <td>{{ r.status_code }}</td>
+      <td>
+        <form class="inline" method="post" action="/ui/accounts/{{ username }}/domains/{{ domain }}/redirects/delete"
+              onsubmit="return confirm('Delete redirect for {{ r.path }}?');">
+          <input type="hidden" name="path" value="{{ r.path }}">
+          <button type="submit" class="danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">No redirects yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="card">
+  <h2>Add / edit a redirect</h2>
+  <p class="muted">Adding a redirect for a path that already has one replaces its target/code.</p>
+  <form method="post" action="/ui/accounts/{{ username }}/domains/{{ domain }}/redirects">
+    <input type="text" name="path" placeholder="/old-page" required>
+    <input type="url" name="target_url" placeholder="https://example.com/new-page" required style="width:40%;">
+    <select name="status_code">
+      <option value="301">301 (permanent)</option>
+      <option value="302">302 (temporary)</option>
+    </select>
+    <button type="submit">Save redirect</button>
+  </form>
+</div>
+{% endblock %}

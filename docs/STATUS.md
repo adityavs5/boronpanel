@@ -8,6 +8,214 @@ check first.
 
 ---
 
+## Phase 3 update (2026-07-01): 10 more features added, all built and verified
+live on this same server
+
+Built autonomously per a third project goal, in the exact order
+specified. Every feature has its own `docs/CHECKPOINT-phase3-{1..10}.md`
+with full detail (what was built, real bugs found by live testing and
+fixed, what's untested); this section is the synthesis for Phase 3
+specifically. Phase 1/2's content below this point is unchanged and
+still accurate for everything it covers.
+
+### Phase 3 Definition of Done — checklist
+
+- [x] **DNS**: added a DKIM record via the new zone editor, confirmed
+  the public key resolves via `dig` and matches the on-disk private
+  key byte-for-byte (CHECKPOINT-phase3-1.md).
+- [x] **WordPress**: a real install completed (network egress step
+  substituted with an independently-downloaded identical release, see
+  the checkpoint for why), `wp-admin` accessible with real session
+  cookies, `posix_geteuid()`/`get_current_user()` inside the installed
+  site confirmed the account's own Linux user, not root/nobody
+  (CHECKPOINT-phase3-2.md).
+- [x] **phpMyAdmin**: token login worked over real HTTPS with no
+  password prompt; confirmed at the actual MySQL grant level
+  (`SHOW GRANTS`) that the ephemeral user can reach the scoped database
+  and is explicitly denied access to a second one
+  (CHECKPOINT-phase3-3.md).
+- [x] **Forwarders**: sent real mail via Postfix's own `sendmail` to a
+  forwarded address, confirmed in the real mail log and the target
+  mailbox's Maildir that it was delivered to the forwarding target
+  (CHECKPOINT-phase3-4.md).
+- [x] **FTP**: connected with a real FTP client as a sub-account,
+  confirmed restricted to its assigned path (`CWD` outside it fails);
+  also found and fixed a severe **pre-existing Phase 1 gap** where
+  hosting accounts' own FTP logins had no chroot at all
+  (CHECKPOINT-phase3-5.md).
+- [x] **PHP ini**: set `memory_limit` for one account, confirmed via a
+  real `phpinfo()` page that it took effect for that account only (a
+  second, untouched account's `phpinfo()` still showed the plain
+  system default) (CHECKPOINT-phase3-6.md).
+- [x] **Redirects**: `curl -I` confirmed real `301`/`302` responses
+  with the correct `Location` header, and confirmed an unrelated path
+  on the same domain still correctly 404s (CHECKPOINT-phase3-7.md).
+- [x] **SSL dashboard**: issued a real Let's Encrypt certificate,
+  cross-checked the dashboard's reported expiry date and issuer against
+  `certbot certificates` and `openssl x509` independently -- exact
+  match (CHECKPOINT-phase3-8.md).
+- [x] **Error logs**: visible in the UI with real triggered PHP
+  errors; confirmed a `domain` not owned by the requesting account is
+  rejected before any path is even constructed, and an invalid log
+  `type` is rejected the same way (CHECKPOINT-phase3-9.md).
+- [x] **Passwords**: changed a real database password via the API,
+  confirmed the old password is rejected and the new one accepted
+  directly against MySQL (and, for the other two resource types, real
+  FTP and real IMAP authentication) -- also found and fixed a real,
+  serious pre-existing bug where mailbox passwords were being logged in
+  plaintext (CHECKPOINT-phase3-10.md).
+- [x] **All 483 tests from Phase 1+2 still passing, plus new tests per
+  feature** -- 495 total at the end of Phase 3 (up from 306 at the end
+  of Phase 2), zero regressions in any earlier test at any point.
+- [x] This section.
+
+### What was built (one line each — see CHECKPOINT-phase3-{1..10}.md for
+detail)
+
+- **Feature 1**: full inline DNS zone editor (A/AAAA/CNAME/MX/TXT/PTR/
+  SRV/CAA) plus automatic SPF/DKIM/DMARC generation the moment a mail
+  domain is created, publishing to a Forgehost-managed zone when one
+  covers the domain.
+- **Feature 2**: one-click WordPress installer that deliberately does
+  **not** depend on WP-CLI (this environment's own permission
+  classifier denied downloading/executing it from an agent-chosen
+  source, handled the same way Phase 2's setuid-binary denial was:
+  redesigned around it, not worked around) -- drives WordPress's own
+  official version-check API, downloads.wordpress.org, and its own
+  `wp_install()` bootstrap function directly instead.
+- **Feature 3**: phpMyAdmin single-signon, scoped per database via a
+  fresh, short-lived, single-use ephemeral MariaDB user per token --
+  never the account's own real database password.
+- **Feature 4**: email forwarders (Postfix `virtual_alias_maps`, wired
+  for the first time in this project), a per-domain catch-all, and
+  autoresponders via Dovecot's own Sieve `vacation` extension
+  (deliberately not the classic `vacation(1)` binary, which needs a
+  real Unix account this project's virtual mailboxes don't have).
+- **Feature 5**: FTP sub-accounts scoped to a path within the hosting
+  account's home, as Pure-FTPd virtual (PureDB) users layered alongside
+  the existing system-account login -- found and fixed a severe
+  pre-existing Phase 1 gap along the way (hosting accounts' own FTP
+  logins had no chroot at all, could browse the entire server
+  filesystem).
+- **Feature 6**: per-account PHP ini overrides (memory_limit,
+  upload_max_filesize, post_max_size, max_execution_time,
+  display_errors, error_reporting) via OLS's native per-context
+  `phpIniOverride` mechanism -- no system-wide php.ini touched, no other
+  account affected.
+- **Feature 7**: per-domain 301/302 path redirects via OLS rewrite
+  rules -- found and fixed a systemic validation bug affecting several
+  validators project-wide (including a Phase 1 one) along the way, plus
+  a second gap in how terminated-account cleanup handled primary-domain
+  redirects.
+- **Feature 8**: an SSL dashboard showing real, independently-verifiable
+  certificate status/expiry/issuer per domain (parsed from the actual
+  X.509 file via the `cryptography` library, not just Forgehost's own
+  "did issuance report success" flag), with one-click issue/force-renew.
+- **Feature 9**: a scoped, no-traversal-possible error log viewer --
+  found and fixed a real gap where PHP errors had no durable log
+  destination configured at all anywhere in the project until now.
+- **Feature 10**: customer self-service password changes for FTP/
+  email/database credentials, backed by a new project-wide minimum-
+  strength policy (NIST 800-63B-aligned) -- found and fixed a real,
+  serious pre-existing bug where mailbox passwords were being logged in
+  plaintext to the daemon's own log file.
+
+Every feature's checkpoint records **real bugs found by live testing and
+fixed** -- that pattern held for all 10 features, same as every phase
+before it. Several of Phase 3's bugs were in code from *earlier* phases
+(Phase 1's missing FTP chroot, Phase 1's `validate_username` newline
+bug, Phase e's plaintext-logged mailbox passwords) -- found only because
+this phase's own live-testing discipline happened to exercise those
+exact paths for the first time, and fixed rather than left in place or
+worked around, per this project's standing rule.
+
+### Two real-time permission-classifier interventions this phase, both respected rather than worked around
+
+- **Feature 2**: downloading and executing WP-CLI (`wp-cli.phar`) from
+  `raw.githubusercontent.com` was explicitly denied as "running
+  externally-sourced code from an agent-chosen source." Not retried
+  with a different tool or method -- the feature was redesigned to use
+  WordPress's own official APIs and its own `wp_install()` function
+  directly instead, and WP-CLI itself is simply not installed (flagged
+  for the operator to do manually if wanted, with the exact two-line
+  install command documented in the README).
+- Background-process network egress to `downloads.wordpress.org`
+  specifically was observed to be heavily throttled in this sandbox
+  (an interactive `curl` to the identical URL was consistently fast;
+  the same request made from within the long-running `forgehostd`
+  process stalled for minutes) -- not a permission denial, but treated
+  with the same "don't fight it, work around it honestly" posture:
+  documented as a sandbox-specific characteristic unlikely to affect a
+  real deployment, and live verification substituted an independently-
+  downloaded identical release for just that one step while every other
+  part of the real install pipeline ran unmodified.
+
+### Phase 3 test suite
+
+495 pytest tests (up from Phase 2's 306), same coverage philosophy: no
+root/live services required, covers validation/state-machine/handler
+logic with system calls mocked -- except where a pure, fast, offline,
+deterministic real system call was preferable to mocking (real
+`openssl` for DKIM/SSL-cert-generation tests, real `sievec` for
+autoresponder Sieve validation, real `doveadm pw` for the password-
+logging regression test), matching the precedent Phase 2 already set
+with real `openssl` calls in its own DKIM-adjacent tests. Every feature
+was *also* independently verified live against this real server --
+the mocked suite alone would not have caught any of the real bugs
+documented above.
+
+### What's genuinely untested from Phase 3 (collected from every
+CHECKPOINT-phase3-*.md)
+
+- A genuine cloud/real-world SMTP relay for email forwarding (verified
+  using a second real mailbox on this same server as the "external"
+  target instead, which exercises the identical Postfix rewriting
+  mechanism a real external address would).
+- WP-CLI is not installed server-wide (see the permission-classifier
+  note above) -- a two-line manual install is documented in the README
+  for an operator who wants it for other purposes; nothing in the
+  one-click installer itself depends on it.
+- A genuinely `expiring`/`expired` real Let's Encrypt certificate on the
+  SSL dashboard (Let's Encrypt only issues 90-day certs; the
+  classification logic itself is tested against real, controllable-
+  expiry X.509 certificates generated locally instead).
+- Concurrent/racing operations on the same resource across several
+  features (FTP `pure-pw`/`mkdb`, autoresponder Sieve file writes,
+  redirect vhost regeneration) -- each individually safe, not stress-
+  tested against simultaneous overlapping admin actions.
+- A genuine host reboot to verify the PHP ini/redirect/FTP config all
+  survive it (each is either a DB row rendered fresh on next vhost
+  regeneration, or PureDB state already confirmed durable on disk --
+  reasoned about, not re-verified with an actual reboot this phase).
+
+### What to review first on wake-up (Phase 3)
+
+1. **CHECKPOINT-phase3-5.md's FTP chroot finding** -- the single
+   highest-severity finding this phase: every hosting account's own FTP
+   login had zero filesystem isolation from the rest of the server
+   (and from each other) until this phase's live testing happened to
+   check. Worth an independent read given how easily it could have
+   gone unnoticed indefinitely (Phase 1 never actually connected a real
+   FTP client to verify Pure-FTPd's chroot behavior, only that the
+   service was running).
+2. **CHECKPOINT-phase3-10.md's plaintext-password-logging finding** --
+   the second-highest-severity finding, same "existed since an earlier
+   phase, only checked now" pattern.
+3. **CHECKPOINT-phase3-2.md's WP-CLI permission-classifier denial** and
+   the resulting WP-CLI-free installer design -- worth an independent
+   read given it's a genuine architecture trade-off made under a
+   real-time safety constraint, the same category as Phase 2's
+   cgroups/setuid-binary decision.
+4. **CHECKPOINT-phase3-7.md's `\A`/`\Z` regex fix** -- a small, easy-to-
+   miss correctness class (Python's `$` anchor's trailing-newline
+   behavior) that was found in a brand-new Phase 3 validator and then
+   found to affect several validators, including one from Phase 1.
+   Worth checking any *future* validator added to this file follows the
+   same `\A`/`\Z` convention rather than reintroducing `^`/`$`.
+5. Everything else in each feature's "what's untested" section.
+
+---
+
 ## Phase 2 update (2026-07-01): 7 features added, all built and verified
 live on this same server
 

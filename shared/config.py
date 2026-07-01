@@ -140,6 +140,27 @@ class Settings:
     letsencrypt_email: str = ""
     powerdns_credentials_file: str = "/etc/forgehost/ssl/powerdns-credentials.ini"
 
+    # Phase 3 feature 1: DKIM keypair storage
+    dkim_base_dir: str = "/etc/forgehost/dkim"
+
+    # Phase 3 feature 2: one-click WordPress installer
+    php_cli_bin: str = "/usr/bin/php"
+    wp_version_check_url: str = "https://api.wordpress.org/core/version-check/1.7/"
+    wp_salt_api_url: str = "https://api.wordpress.org/secret-key/1.1/salt/"
+    wp_staging_dir: str = "/var/lib/forgehost/wp-staging"
+    wp_install_concurrency: int = 2
+
+    # Phase 3 feature 3: phpMyAdmin auto-login. pma_token_dir is
+    # deliberately NOT under /var/lib/forgehost (locked to
+    # root:forgehost-api) -- see wp_staging_dir's install-helper lesson
+    # in CHECKPOINT-phase3-2.md, which applies identically here: the
+    # phpMyAdmin signon script runs as www-data and must be able to
+    # read+delete files in this directory itself.
+    pma_hostname: str = ""
+    pma_docroot: str = "/usr/share/phpmyadmin"
+    pma_token_dir: str = "/var/lib/forgehost-pma-tokens"
+    pma_token_ttl_seconds: int = 900
+
     secrets: dict[str, str] = field(default_factory=dict)
 
     @property

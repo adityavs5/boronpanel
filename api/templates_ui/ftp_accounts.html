@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}FTP accounts: {{ username }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
+<h1>FTP accounts: {{ username }}</h1>
+<p class="muted">Each FTP account is scoped (chrooted) to a path within {{ username }}'s own home
+  directory -- it cannot see or reach anything outside that path.</p>
+
+<table>
+  <thead><tr><th>Login</th><th>Path</th><th>Update path</th><th>Update password</th><th></th></tr></thead>
+  <tbody>
+    {% for f in ftp_accounts %}
+    <tr>
+      <td><code>{{ f.ftp_login }}</code></td>
+      <td><code>{{ f.path }}</code></td>
+      <td>
+        <form class="inline" method="post" action="/ui/accounts/{{ username }}/ftp/{{ f.label }}/path">
+          <input type="text" name="path" placeholder="new path" size="16" required>
+          <button type="submit" class="secondary">Set</button>
+        </form>
+      </td>
+      <td>
+        <form class="inline" method="post" action="/ui/accounts/{{ username }}/ftp/{{ f.label }}/password">
+          <input type="password" name="password" placeholder="min. 10 characters" size="14" required>
+          <button type="submit" class="secondary">Set</button>
+        </form>
+      </td>
+      <td>
+        <form class="inline" method="post" action="/ui/accounts/{{ username }}/ftp/{{ f.label }}/delete"
+              onsubmit="return confirm('Delete FTP account {{ f.ftp_login }}?');">
+          <button type="submit" class="danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">No FTP accounts yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="card">
+  <h2>Add FTP account</h2>
+  <form method="post" action="/ui/accounts/{{ username }}/ftp">
+    <input type="text" name="label" placeholder="label (e.g. designer)" required>
+    <input type="text" name="path" placeholder="path within home (e.g. public_html/uploads, blank for home dir)">
+    <input type="password" name="password" placeholder="password" required>
+    <button type="submit">Create</button>
+  </form>
+  <p class="muted">Login will be <code>{{ username }}_&lt;label&gt;</code>.</p>
+</div>
+{% endblock %}

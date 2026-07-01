@@ -140,6 +140,7 @@ def ui_account_detail(request: Request, username: str, identity: Identity = Depe
     # scan on every click -- the dedicated usage page has its own explicit
     # "refresh now" link for that.
     usage = call_daemon("usage.get", identity, username=username, force_refresh=False)
+    php_ini_result = call_daemon("php_ini.get", identity, username=username)
     return templates.TemplateResponse(
         request,
         "account_detail.html",
@@ -150,6 +151,8 @@ def ui_account_detail(request: Request, username: str, identity: Identity = Depe
             "databases": databases,
             "php_versions": settings.php_versions,
             "usage": usage,
+            "php_ini": php_ini_result["php_ini"] or php_ini_result["defaults"],
+            "php_ini_is_custom": php_ini_result["php_ini"] is not None,
         },
     )
 

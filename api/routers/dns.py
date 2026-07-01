@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -15,6 +15,8 @@ from api.templates import templates
 
 api_router = APIRouter(prefix="/api/v1/dns", tags=["dns"])
 ui_router = APIRouter(prefix="/ui/accounts/{username}/dns", tags=["ui:dns"])
+
+RECORD_TYPES = ["A", "AAAA", "CNAME", "MX", "TXT", "PTR", "SRV", "CAA"]
 
 
 class CreateZoneBody(BaseModel):
@@ -77,10 +79,24 @@ def delete_record(domain: str, subdomain: str, type: str, identity: Identity = D
 @ui_router.get("/{domain}")
 def ui_zone_records(request: Request, username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    records = call_daemon("dns.list_records", identity, domain=domain)["records"]
+    try:
+        records = call_daemon("dns.list_records", identity, domain=domain)["records"]
+    except HTTPException:
+        # No Forgehost-managed zone for this domain yet -- offer to create
+        # one instead of surfacing a raw PowerDNS 404 to the customer/admin.
+        return templates.TemplateResponse(
+            request, "dns_zone.html", {"identity": identity, "username": username, "domain": domain, "records": None, "record_types": RECORD_TYPES}
+        )
     return templates.TemplateResponse(
-        request, "dns_zone.html", {"identity": identity, "username": username, "domain": domain, "records": records}
+        request, "dns_zone.html", {"identity": identity, "username": username, "domain": domain, "records": records, "record_types": RECORD_TYPES}
     )
+
+
+@ui_router.post("/{domain}/create-zone")
+def ui_create_zone(username: str, domain: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    call_daemon("dns.create_zone", identity, domain=domain, username=username)
+    return RedirectResponse(f"/ui/accounts/{username}/dns/{domain}", status_code=303)
 
 
 @ui_router.post("/{domain}")
@@ -89,18 +105,37 @@ def ui_set_record(
     domain: str,
     subdomain: str = Form("@"),
     type: str = Form(...),
-    value: str = Form(...),
+    values: str = Form(...),
     ttl: int = Form(3600),
     identity: Identity = Depends(get_identity),
 ):
     require_account_access(identity, username)
+    # One value per line -- lets a multi-value rrset (e.g. two MX hosts,
+    # or an existing SPF TXT alongside a second TXT value at the same
+    # name) be edited as a whole, matching PowerDNS's own REPLACE
+    # semantics (daemon/powerdns.py's upsert_record docstring) rather than
+    # only ever supporting single-value rrsets.
+    value_list = [v.strip() for v in values.splitlines() if v.strip()]
     call_daemon(
         "dns.set_record",
         identity,
         domain=domain,
         subdomain=subdomain,
         type=type,
-        values=[value],
+        values=value_list,
         ttl=ttl,
     )
+    return RedirectResponse(f"/ui/accounts/{username}/dns/{domain}", status_code=303)
+
+
+@ui_router.post("/{domain}/delete")
+def ui_delete_record(
+    username: str,
+    domain: str,
+    subdomain: str = Form(...),
+    type: str = Form(...),
+    identity: Identity = Depends(get_identity),
+):
+    require_account_access(identity, username)
+    call_daemon("dns.delete_record", identity, domain=domain, subdomain=subdomain, type=type)
     return RedirectResponse(f"/ui/accounts/{username}/dns/{domain}", status_code=303)

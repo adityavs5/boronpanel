@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from shared.db import write_session
 from shared.models import Account, DatabaseGrant
-from shared.validation import ValidationError, validate_db_identifier, validate_username
+from shared.validation import ValidationError, validate_db_identifier, validate_password_strength, validate_username
 
 from daemon import mariadb
 
@@ -45,7 +45,7 @@ def create_database(params: dict) -> dict:
     if mariadb.database_exists(db_name):
         raise RuntimeError(f"database '{db_name}' already exists in MariaDB")
 
-    password = params.get("password") or mariadb.generate_password()
+    password = validate_password_strength(params["password"]) if params.get("password") else mariadb.generate_password()
 
     mariadb.create_database(db_name)
     try:
@@ -102,7 +102,7 @@ def change_password(params: dict) -> dict:
     username = validate_username(params["username"])
     suffix = params["name"]
     db_name = _scoped_name(username, suffix)
-    new_password = params.get("password") or mariadb.generate_password()
+    new_password = validate_password_strength(params["password"]) if params.get("password") else mariadb.generate_password()
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))

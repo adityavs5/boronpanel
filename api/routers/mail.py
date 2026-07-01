@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from starlette.requests import Request
 
+from shared.config import settings
 from shared.db import read_session
 from shared.models import Account, Domain, MailDomain
 
@@ -15,6 +16,13 @@ from api.templates import templates
 
 api_router = APIRouter(prefix="/api/v1/mail", tags=["mail"])
 ui_router = APIRouter(prefix="/ui/accounts/{username}/mail", tags=["ui:mail"])
+
+# Phase 3 feature 10: the goal's literal password-manager API shape is
+# account-scoped (/accounts/{u}/email/{m}/password) -- added alongside
+# the existing domain-scoped mail routes above (kept as-is) rather than
+# replacing them, same pattern used for Phase 3 feature 8's SSL
+# dashboard routes.
+account_api_router = APIRouter(prefix="/api/v1/accounts/{username}/email", tags=["mail"])
 
 
 class CreateMailDomainBody(BaseModel):
@@ -26,6 +34,11 @@ class CreateMailboxBody(BaseModel):
     local_part: str
     password: str
     quota_mb: int = 1024
+
+
+class ChangeMailboxPasswordBody(BaseModel):
+    domain: str
+    password: str
 
 
 @api_router.post("/domains")
@@ -73,6 +86,12 @@ def delete_mailbox(domain: str, local_part: str, identity: Identity = Depends(ge
     )
 
 
+@account_api_router.patch("/{local_part}/password")
+def change_mailbox_password(username: str, local_part: str, body: ChangeMailboxPasswordBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("mail.change_password", identity, domain=body.domain, local_part=local_part, password=body.password)
+
+
 @ui_router.get("/{domain}")
 def ui_mailboxes(request: Request, username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
@@ -83,7 +102,14 @@ def ui_mailboxes(request: Request, username: str, domain: str, identity: Identit
     return templates.TemplateResponse(
         request,
         "mail_domain.html",
-        {"identity": identity, "username": username, "domain": domain, "mailboxes": mailboxes, "mail_enabled": mail_enabled},
+        {
+            "identity": identity,
+            "username": username,
+            "domain": domain,
+            "mailboxes": mailboxes,
+            "mail_enabled": mail_enabled,
+            "webmail_url": settings.webmail_url,
+        },
     )
 
 
@@ -106,4 +132,17 @@ def ui_create_mailbox(
     call_daemon(
         "mail.create_mailbox", identity, domain=domain, local_part=local_part, password=password
     )
+    return RedirectResponse(f"/ui/accounts/{username}/mail/{domain}", status_code=303)
+
+
+@ui_router.post("/{domain}/{local_part}/password")
+def ui_change_mailbox_password(
+    username: str,
+    domain: str,
+    local_part: str,
+    password: str = Form(...),
+    identity: Identity = Depends(get_identity),
+):
+    require_account_access(identity, username)
+    call_daemon("mail.change_password", identity, domain=domain, local_part=local_part, password=password)
     return RedirectResponse(f"/ui/accounts/{username}/mail/{domain}", status_code=303)

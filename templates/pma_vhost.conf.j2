@@ -1,0 +1,47 @@
+docRoot                   {{ docroot }}
+allowSymbolLink           1
+enableGzip                1
+
+context / {
+  location                {{ docroot }}
+  allowBrowse             1
+
+  {# LiteSpeed's bundled lsphp ships its own php.ini, separate from
+     Ubuntu's system PHP -- its compiled-in default include_path is bare
+     (just "."), unlike Ubuntu's own php.ini which patches in
+     /usr/share/php for exactly this "PEAR-style shared library" use
+     case. The Debian phpmyadmin package's MoTranslator/autoload.php
+     requires 'Symfony/Component/ExpressionLanguage/autoload.php' via a
+     *relative* path that depends on that being in include_path --
+     confirmed live: phpMyAdmin 500'd with "Failed to open stream" until
+     this override was added. #}
+  phpIniOverride {
+    php_admin_value include_path ".:/usr/share/php"
+  }
+}
+
+context /.well-known/acme-challenge/ {
+  location                {{ docroot }}/.well-known/acme-challenge/
+  allowBrowse             1
+}
+
+scripthandler {
+  add                     lsapi:pma_php php
+}
+
+errorlog {{ log_dir }}/phpmyadmin-error.log {
+  useServer               0
+  logLevel                WARN
+  rollingSize             10M
+}
+
+accessLog {{ log_dir }}/phpmyadmin-access.log {
+  useServer               0
+  rollingSize             10M
+  keepDays                30
+}
+
+vhssl {
+  keyFile                 {{ ssl_key_file }}
+  certFile                {{ ssl_cert_file }}
+}

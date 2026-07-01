@@ -1,0 +1,51 @@
+<?php
+// Forgehost: phpMyAdmin single-signon redemption (Phase 3 feature 3).
+// Rendered once by daemon/pma.py's bootstrap_pma() and deployed into
+// phpMyAdmin's own docroot -- never hand-edited in place. Reads a
+// one-time token, resolves it to ephemeral MariaDB credentials scoped to
+// exactly one database, and hands phpMyAdmin's own "signon" auth_type a
+// session it recognizes (see config.inc.php's SignonSession/SignonURL).
+// This script never touches Forgehost's own control-plane DB or RPC
+// socket (this PHP process, running as www-data, has access to neither)
+// -- all state lives in the small per-token JSON file forgehostd wrote
+// to {{ pma_token_dir }} (deliberately NOT under /var/lib/forgehost,
+// which is locked to root:forgehost-api -- this script needs to read AND
+// delete files here itself).
+
+$token = isset($_GET['token']) ? $_GET['token'] : '';
+if (!preg_match('/^[A-Za-z0-9_-]{20,64}$/', $token)) {
+    http_response_code(400);
+    die('invalid token');
+}
+
+$tokenHash = hash('sha256', $token);
+$tokenFile = {{ pma_token_dir|tojson }} . '/' . $tokenHash . '.json';
+
+if (!is_file($tokenFile)) {
+    http_response_code(403);
+    die('token not found, already used, or expired');
+}
+
+$data = json_decode(file_get_contents($tokenFile), true);
+// Single-use: delete before trusting/using the contents, so a raced
+// second request for the same token can never also succeed.
+@unlink($tokenFile);
+
+if (!$data || !isset($data['db_user'], $data['db_password'], $data['db_name'], $data['expires_at'])) {
+    http_response_code(500);
+    die('malformed token data');
+}
+if (time() > $data['expires_at']) {
+    http_response_code(403);
+    die('token expired');
+}
+
+session_name('PMASignon');
+session_start();
+$_SESSION['PMA_single_signon_user'] = $data['db_user'];
+$_SESSION['PMA_single_signon_password'] = $data['db_password'];
+$_SESSION['PMA_single_signon_host_port'] = 'localhost';
+session_write_close();
+
+header('Location: /index.php?db=' . urlencode($data['db_name']));
+exit;

@@ -58,3 +58,51 @@ def test_validate_txt_rejects_too_long():
 def test_cname_validator_normalizes_trailing_dot():
     assert hdns.RECORD_VALUE_VALIDATORS["CNAME"]("target.example.com") == "target.example.com."
     assert hdns.RECORD_VALUE_VALIDATORS["CNAME"]("target.example.com.") == "target.example.com."
+
+
+def test_ptr_validator_normalizes_trailing_dot():
+    assert hdns.RECORD_VALUE_VALIDATORS["PTR"]("host.example.com") == "host.example.com."
+
+
+def test_validate_srv_accepts_good():
+    assert hdns._validate_srv("10 20 5060 sip.example.com") == "10 20 5060 sip.example.com."
+
+
+def test_validate_srv_rejects_wrong_field_count():
+    with pytest.raises(ValidationError):
+        hdns._validate_srv("10 20 sip.example.com")
+
+
+def test_validate_srv_rejects_non_numeric_priority():
+    with pytest.raises(ValidationError):
+        hdns._validate_srv("high 20 5060 sip.example.com")
+
+
+def test_validate_srv_rejects_bad_port():
+    with pytest.raises(ValidationError):
+        hdns._validate_srv("10 20 99999 sip.example.com")
+
+
+def test_validate_caa_accepts_good():
+    assert hdns._validate_caa("0 issue letsencrypt.org") == '0 issue "letsencrypt.org"'
+
+
+def test_validate_caa_accepts_already_quoted():
+    assert hdns._validate_caa('0 issue "letsencrypt.org"') == '0 issue "letsencrypt.org"'
+
+
+def test_validate_caa_rejects_bad_tag():
+    with pytest.raises(ValidationError):
+        hdns._validate_caa("0 bogus letsencrypt.org")
+
+
+def test_validate_caa_rejects_bad_flags():
+    with pytest.raises(ValidationError):
+        hdns._validate_caa("300 issue letsencrypt.org")
+
+
+def test_validate_record_type_accepts_new_types():
+    from shared.validation import validate_record_type
+
+    for rtype in ("PTR", "SRV", "CAA"):
+        assert validate_record_type(rtype) == rtype

@@ -556,6 +556,155 @@ to end (each is a variant of the same root cause: rows that survive
 termination don't have on-disk state that survives it too) if a restore
 doesn't bring the site back up.
 
+### 18. phpMyAdmin auto-login (Phase 3 feature 3)
+
+Deployed once for the whole server, not per hosting account. There is no
+interactive username/password login for this install at all -- only
+short-lived, single-use, scoped tokens minted by Forgehost's own "Manage"
+button per database.
+
+```bash
+echo "phpmyadmin phpmyadmin/dbconfig-install boolean false" | debconf-set-selections
+DEBIAN_FRONTEND=noninteractive apt-get install -y phpmyadmin
+
+# phpMyAdmin's stock docroot ownership (root:root) fails OLS's own
+# minimum-uid/gid check, the same failure class Roundcube hit in Phase 2
+# feature 3 -- fix it the same way:
+mkdir -p /usr/share/phpmyadmin/.well-known/acme-challenge
+chown -R www-data:www-data /usr/share/phpmyadmin
+
+# set forgehost.toml's pma_hostname (e.g. pma.yourdomain.com, or
+# pma.<ip-with-dashes>.sslip.io for a quick real-domain test), then:
+/opt/forgehost/.venv/bin/python -c "
+import sys; sys.path.insert(0, '/opt/forgehost')
+from shared.rpc import RpcClient
+RpcClient('/run/forgehost/provisiond.sock').call('system.bootstrap_pma', _actor='setup', _role='admin')
+"
+
+# optional: a real trusted cert for the phpMyAdmin hostname (same RPC
+# every hosted domain uses, just pointed at this one instead)
+/opt/forgehost/.venv/bin/python -c "
+import sys; sys.path.insert(0, '/opt/forgehost')
+from shared.rpc import RpcClient
+RpcClient('/run/forgehost/provisiond.sock').call('ssl.issue', domain='<pma_hostname>', _actor='setup', _role='admin')
+"
+```
+
+Token cleanup needs a periodic cron (drops the ephemeral MariaDB user +
+any still-present token file once a token expires, whether or not it was
+ever redeemed):
+
+```bash
+cat > /etc/cron.d/forgehost-pma-tokens << 'EOF'
+*/5 * * * * root /opt/forgehost/scripts/pma_token_cleanup.py >> /var/log/forgehost/pma-token-cleanup.log 2>&1
+EOF
+chmod 644 /etc/cron.d/forgehost-pma-tokens
+```
+
+See `docs/CHECKPOINT-phase3-3.md` for three bugs this project hit
+standing this up (a missing PHP dependency's `include_path` requirement
+under LiteSpeed's bundled `lsphp`, and a token-directory group-ownership
+bug) if `system.bootstrap_pma` or a signon attempt misbehaves.
+
+### 19. Email forwarders, autoresponders, catch-all (Phase 3 feature 4)
+
+New MariaDB tables in the existing `forgehost_mail` schema, plus Postfix
+`virtual_alias_maps` (not previously configured -- Phase e only wired
+`virtual_mailbox_maps`) and Dovecot's Sieve plugin (`dovecot-sieve`, for
+autoresponders):
+
+```bash
+mysql forgehost_mail <<'SQL'
+CREATE TABLE IF NOT EXISTS mail_forward (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  domain_id INT NOT NULL,
+  source_local_part VARCHAR(64) NOT NULL,
+  destination VARCHAR(320) NOT NULL,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  UNIQUE KEY uq_forward (domain_id, source_local_part, destination),
+  FOREIGN KEY (domain_id) REFERENCES mail_domain(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS mail_catchall (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  domain_id INT NOT NULL UNIQUE,
+  destination VARCHAR(320) NOT NULL,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  FOREIGN KEY (domain_id) REFERENCES mail_domain(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS mail_autoresponder (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  mail_user_id INT NOT NULL UNIQUE,
+  subject VARCHAR(255) NOT NULL,
+  body TEXT NOT NULL,
+  start_date DATE NULL,
+  end_date DATE NULL,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  FOREIGN KEY (mail_user_id) REFERENCES mail_user(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+SQL
+
+MAILRO_PASS=$(grep MARIADB_MAILRO_PASSWORD /etc/forgehost/secrets.env | cut -d= -f2)
+cat > /etc/postfix/forgehost/mysql-virtual-forwards.cf <<EOF
+user = forgehost_mailro
+password = ${MAILRO_PASS}
+hosts = unix:/run/mysqld/mysqld.sock
+dbname = forgehost_mail
+query = SELECT GROUP_CONCAT(destination SEPARATOR ',') FROM ( SELECT f.destination AS destination FROM mail_forward f JOIN mail_domain d ON f.domain_id = d.id WHERE CONCAT(f.source_local_part, '@', d.domain) = '%s' AND f.active = 1 AND d.active = 1 UNION ALL SELECT CONCAT(m.local_part, '@', d.domain) AS destination FROM mail_user m JOIN mail_domain d ON m.domain_id = d.id JOIN mail_catchall c ON c.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%s' AND m.active = 1 AND d.active = 1 AND c.active = 1 UNION ALL SELECT c.destination AS destination FROM mail_catchall c JOIN mail_domain d ON c.domain_id = d.id WHERE CONCAT('@', d.domain) = '%s' AND c.active = 1 AND d.active = 1 ) combined
+EOF
+chown root:postfix /etc/postfix/forgehost/mysql-virtual-forwards.cf
+chmod 640 /etc/postfix/forgehost/mysql-virtual-forwards.cf
+postconf -e "virtual_alias_maps = proxy:mysql:/etc/postfix/forgehost/mysql-virtual-forwards.cf"
+unset MAILRO_PASS
+postfix check && systemctl reload postfix
+
+# Autoresponders: Dovecot's own Sieve `vacation` extension, not the
+# classic vacation(1) binary (see CHECKPOINT-phase3-4.md for why)
+apt-get install -y dovecot-sieve
+sed -i 's/^  #mail_plugins = \$mail_plugins$/  mail_plugins = $mail_plugins sieve/' /etc/dovecot/conf.d/20-lmtp.conf
+doveconf -n > /dev/null && systemctl restart dovecot
+```
+
+The middle branch of that query (mailboxes joined through an active
+`mail_catchall` row) exists specifically so enabling a catch-all doesn't
+also swallow mail for real, existing mailboxes at that domain -- see
+`docs/CHECKPOINT-phase3-4.md` for the real bug this fixes (Postfix's own
+documented catch-all trap) if this ever needs to be reconstructed by
+hand.
+
+### 20. FTP account management (Phase 3 feature 5)
+
+Sub-accounts scoped to a path within their hosting account's home,
+implemented as Pure-FTPd virtual (PureDB) users layered alongside the
+existing system-account (`-l unix`) login every hosting account already
+has. **Two Phase 1 setup gaps fixed here** -- see
+`docs/CHECKPOINT-phase3-5.md` for the live testing that found them --
+apply both even if you're not using FTP sub-accounts at all, since #2
+affects every hosting account's own FTP login:
+
+```bash
+# 1. A hosting account's own FTP login never actually worked: pure-ftpd's
+#    PAM config rejects any shell not listed in /etc/shells, and every
+#    hosting account uses /usr/sbin/nologin (no interactive SSH, by
+#    design). This does not grant shell access -- nologin still refuses
+#    an interactive session -- it only satisfies pam_shells.so's check.
+echo "/usr/sbin/nologin" >> /etc/shells
+
+# 2. Far more serious: hosting accounts' own FTP logins were NOT
+#    chrooted to their home directory at all (no ChrootEveryone setting
+#    ever existed, despite ARCHITECTURE.md's own locked decision saying
+#    they should be) -- confirmed live that a real account could `CWD ..`
+#    all the way to the server's real filesystem root and browse
+#    everything, including other accounts' home directories.
+echo "yes" > /etc/pure-ftpd/conf/ChrootEveryone
+
+# 3. Enable the PureDB backend (for FTP sub-accounts specifically) as an
+#    additional, higher-priority auth source -- existing system-account
+#    logins keep working via the existing 65unix/70pam chain.
+ln -sf ../conf/PureDB /etc/pure-ftpd/auth/30pdb
+
+systemctl restart pure-ftpd
+```
+
 ## Verifying the install
 
 ```bash

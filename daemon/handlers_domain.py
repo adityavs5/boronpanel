@@ -13,10 +13,11 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, DnsZone
+from shared.models import Account, Domain
 from shared.validation import validate_domain, validate_username
 
-from daemon import ols, powerdns
+from daemon import handlers_redirect, ols, powerdns
+from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 
 
 def _domain_to_dict(domain: Domain) -> dict:
@@ -31,22 +32,12 @@ def _domain_to_dict(domain: Domain) -> dict:
     }
 
 
-def _find_parent_zone(domain_name: str) -> str | None:
-    """A subdomain doesn't get its own DNS zone -- it's an A record within
-    whatever zone already covers it, same as any real-world DNS setup (a
-    fresh zone per subdomain would be unusual and wasteful). Only matches
-    zones Forgehost itself manages (DnsZone rows); if the covering domain's
-    DNS is hosted elsewhere, there's nothing for us to automate here, same
-    reasoning as ssl.py's zone_managed check in _challenge_plan."""
-    with write_session() as session:
-        zones = session.scalars(select(DnsZone.zone)).all()
-    return next((z for z in zones if domain_name == z or domain_name.endswith(f".{z}")), None)
-
-
-def _subdomain_label(domain_name: str, parent_zone: str) -> str:
-    if domain_name == parent_zone:
-        return "@"
-    return domain_name[: -(len(parent_zone) + 1)]
+# Phase 3 feature 1 factored these two out into daemon/dns_zone_lookup.py
+# (handlers_mail.py needs the identical lookup for SPF/DKIM/DMARC
+# auto-publish) -- kept as thin aliases here so this module's existing
+# call sites and any external references don't need to change.
+_find_parent_zone = find_managed_zone
+_subdomain_label = label_within_zone
 
 
 def add_domain(params: dict) -> dict:
@@ -151,6 +142,7 @@ def remove_domain(params: dict) -> dict:
             pass  # already gone or zone unreachable -- vhost removal below is what actually matters
 
     ols.remove_domain_vhost(account_snapshot, domain_name)
+    handlers_redirect.delete_redirects_for_domain(domain_name)
 
     return {"domain": domain_name, "kind": kind, "status": "removed"}
 

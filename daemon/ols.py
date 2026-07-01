@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain
+from shared.models import Account, Domain, PhpIniOverride, Redirect
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
@@ -98,7 +98,44 @@ def _ssl_paths_for_domain(domain: dict) -> tuple[str, str]:
     return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
 
 
-def render_vhost_conf(account: Account, domain: dict, suspended: bool, ssl_key_file: str = DEFAULT_SSL_KEY, ssl_cert_file: str = DEFAULT_SSL_CERT) -> str:
+def _php_ini_for_account(session, account_id: int) -> dict | None:
+    row = session.scalar(select(PhpIniOverride).where(PhpIniOverride.account_id == account_id))
+    if row is None:
+        return None
+    return {
+        "memory_limit": row.memory_limit,
+        "upload_max_filesize": row.upload_max_filesize,
+        "post_max_size": row.post_max_size,
+        "max_execution_time": row.max_execution_time,
+        "display_errors": row.display_errors,
+        "error_reporting": row.error_reporting,
+    }
+
+
+def _redirects_for_domain(session, domain_name: str) -> list[dict]:
+    rows = session.scalars(select(Redirect).where(Redirect.domain == domain_name)).all()
+    return [
+        {
+            # Escaped here, once, in Python -- never in the Jinja template --
+            # so the raw validated path is never interpolated directly into
+            # an OLS rewrite-rule regex pattern.
+            "regex_path": r.path.replace(".", "\\."),
+            "target_url": r.target_url,
+            "status_code": r.status_code,
+        }
+        for r in rows
+    ]
+
+
+def render_vhost_conf(
+    account: Account,
+    domain: dict,
+    suspended: bool,
+    ssl_key_file: str = DEFAULT_SSL_KEY,
+    ssl_cert_file: str = DEFAULT_SSL_CERT,
+    php_ini: dict | None = None,
+    redirects: list[dict] | None = None,
+) -> str:
     home_dir = f"{settings.home_base}/{account.username}"
     template = _env.get_template("vhost.conf.j2")
     return template.render(
@@ -110,6 +147,8 @@ def render_vhost_conf(account: Account, domain: dict, suspended: bool, ssl_key_f
         suspended_page_root=settings.suspended_page_root,
         ssl_key_file=ssl_key_file,
         ssl_cert_file=ssl_cert_file,
+        php_ini=php_ini,
+        redirects=redirects,
     )
 
 
@@ -193,6 +232,9 @@ def render_httpd_config(domain_vhosts: list[dict], account_procs: list[dict]) ->
         webmail_hostname=settings.webmail_hostname,
         webmail_docroot=settings.webmail_docroot,
         webmail_lsphp_path=_lsphp_path(settings.default_php_version),
+        pma_hostname=settings.pma_hostname,
+        pma_docroot=settings.pma_docroot,
+        pma_lsphp_path=_lsphp_path(settings.default_php_version),
         **RESOURCE_DEFAULTS,
     )
 
@@ -245,6 +287,65 @@ def refresh_webmail_vhost() -> None:
     certbot deploy-hook once a real cert for webmail_hostname is issued,
     same role refresh_vhost() plays for account domains."""
     bootstrap_webmail()
+
+
+PMA_VHOST_NAME = "phpmyadmin"
+
+
+def _pma_ssl_paths(session) -> tuple[str, str]:
+    if not settings.pma_hostname:
+        return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
+    key, cert = letsencrypt_cert_paths(settings.pma_hostname)
+    if Path(key).exists() and Path(cert).exists():
+        return key, cert
+    return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
+
+
+def _pma_vhost_conf_path() -> str:
+    return VHOST_CONF_TEMPLATE.format(base=OLS_SERVER_BASE, name=PMA_VHOST_NAME)
+
+
+def render_pma_vhost_conf(ssl_key_file: str, ssl_cert_file: str) -> str:
+    template = _env.get_template("pma_vhost.conf.j2")
+    return template.render(
+        docroot=settings.pma_docroot,
+        log_dir=settings.log_dir,
+        ssl_key_file=ssl_key_file,
+        ssl_cert_file=ssl_cert_file,
+    )
+
+
+def bootstrap_pma() -> None:
+    """Same category as bootstrap_webmail -- phpMyAdmin isn't an account
+    resource, so nothing in the normal account/domain flow triggers this.
+    Run once (idempotent) after phpMyAdmin itself is installed and
+    daemon/pma.py has written config.inc.php + the signon script into its
+    docroot (README/CHECKPOINT-phase3-3.md)."""
+    if not settings.pma_hostname:
+        raise RuntimeError("pma_hostname is not set in forgehost.toml")
+
+    with write_session() as session:
+        domain_vhosts, account_procs = _all_active_vhosts(session)
+        ssl_key_file, ssl_cert_file = _pma_ssl_paths(session)
+
+    httpd_content = render_httpd_config(domain_vhosts, account_procs)
+    pma_content = render_pma_vhost_conf(ssl_key_file, ssl_cert_file)
+
+    writer = ConfigWriterMulti(
+        targets={"main": HTTPD_CONFIG_PATH, "pma": _pma_vhost_conf_path()},
+        validate=_validate_multi,
+        reload=_reload,
+        verify=_verify,
+        backup_dir=settings.backup_dir,
+        subsystem="ols",
+    )
+    result = writer.apply({"main": httpd_content, "pma": pma_content})
+    if not result.ok:
+        raise RuntimeError(f"OLS config transaction failed during bootstrap_pma: {result.summary()}")
+
+
+def refresh_pma_vhost() -> None:
+    bootstrap_pma()
 
 
 def _static_precheck(content: str) -> StepResult:
@@ -301,6 +402,8 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
     leave the rest pointed at a since-renamed extprocessor."""
     with write_session() as session:
         domain_vhosts, account_procs = _all_active_vhosts(session)
+        php_ini = _php_ini_for_account(session, account.id)
+        redirects_by_domain = {domain["domain"]: _redirects_for_domain(session, domain["domain"]) for domain in domains}
 
     targets = {"main": HTTPD_CONFIG_PATH}
     content = {"main": render_httpd_config(domain_vhosts, account_procs)}
@@ -308,7 +411,11 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
         vhost_name = _vhost_name(domain["domain"])
         ssl_key_file, ssl_cert_file = _ssl_paths_for_domain(domain)
         targets[vhost_name] = _vhost_conf_path(vhost_name)
-        content[vhost_name] = render_vhost_conf(account, domain, suspended, ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file)
+        content[vhost_name] = render_vhost_conf(
+            account, domain, suspended,
+            ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file,
+            php_ini=php_ini, redirects=redirects_by_domain[domain["domain"]],
+        )
 
     writer = ConfigWriterMulti(
         targets=targets,
