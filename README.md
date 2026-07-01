@@ -366,6 +366,83 @@ systemctl enable --now forgehost-api
 Then open `https://<server-ip>:9443/login` (accept the self-signed cert
 warning on first visit, or swap in your own cert for this hostname).
 
+### 14. Roundcube webmail (optional, Phase 2 feature 3)
+
+Deployed once for the whole server, not per hosting account. Any mailbox
+created via Forgehost (`mail.create_mailbox` / the mail UI) logs in
+automatically — Roundcube authenticates straight against Dovecot, there's
+no Forgehost-side account wiring involved.
+
+```bash
+# Ubuntu ships Roundcube in universe -- skip dbconfig-common's own
+# interactive DB setup, configure it by hand instead (same reasoning as
+# every other service's credentials in this project: no surprise prompts,
+# no dependency on dbconfig-common's own conventions).
+echo "roundcube-core roundcube/dbconfig-install boolean false" | debconf-set-selections
+DEBIAN_FRONTEND=noninteractive apt-get install -y roundcube-core roundcube-mysql
+
+# dedicated DB, own credentials -- NOT the forgehost_mail schema Postfix/
+# Dovecot use for actual mail routing/auth, this is only Roundcube's own
+# address book/cache/settings store
+RC_DB_PASS=$(openssl rand -hex 24)
+mysql -e "
+CREATE DATABASE IF NOT EXISTS roundcube CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+CREATE USER IF NOT EXISTS 'roundcube'@'localhost' IDENTIFIED BY '${RC_DB_PASS}';
+GRANT ALL PRIVILEGES ON roundcube.* TO 'roundcube'@'localhost';
+"
+mysql roundcube < /usr/share/roundcube/SQL/mysql.initial.sql
+
+# point Roundcube's DB include at those real credentials
+cat > /etc/roundcube/debian-db.php << EOF
+<?php
+\$dbuser='roundcube';
+\$dbpass='${RC_DB_PASS}';
+\$basepath='';
+\$dbname='roundcube';
+\$dbserver='localhost';
+\$dbport='';
+\$dbtype='mysql';
+EOF
+chown root:www-data /etc/roundcube/debian-db.php /etc/roundcube/config.inc.php
+chmod 640 /etc/roundcube/debian-db.php /etc/roundcube/config.inc.php
+unset RC_DB_PASS
+
+# post-install hardening: remove the setup wizard
+rm -rf /usr/share/roundcube/installer
+
+# the shared/writable dirs the Debian package ships must be owned by the
+# SAME uid the roundcube_php extProcessor runs as (www-data) -- confirmed
+# live in CHECKPOINT-phase2-3.md: leaving these root:root (the package
+# default) fails OLS's own minimum-uid check at reload time
+chown -R www-data:www-data /var/lib/roundcube/public_html /var/lib/roundcube/temp
+
+# Roundcube's stock config already targets IMAP localhost:143 / SMTP
+# localhost:587 (Dovecot/Postfix) -- enable Postfix's submission (587)
+# service if it isn't already (stock master.cf ships it commented out):
+#   uncomment the `submission inet ...` block + its `-o` lines in
+#   /etc/postfix/master.cf, then `postfix check && systemctl reload postfix`
+
+# set forgehost.toml's webmail_hostname (e.g. webmail.yourdomain.com, or
+# webmail.<ip-with-dashes>.sslip.io for a quick real-domain test), then:
+/opt/forgehost/.venv/bin/python -c "
+import sys; sys.path.insert(0, '/opt/forgehost')
+from shared.rpc import RpcClient
+RpcClient('/run/forgehost/provisiond.sock').call('system.bootstrap_webmail', _actor='setup', _role='admin')
+"
+
+# optional: a real trusted cert for the webmail hostname (same RPC every
+# hosted domain uses, just pointed at this one instead)
+/opt/forgehost/.venv/bin/python -c "
+import sys; sys.path.insert(0, '/opt/forgehost')
+from shared.rpc import RpcClient
+RpcClient('/run/forgehost/provisiond.sock').call('ssl.issue', domain='<webmail_hostname>', _actor='setup', _role='admin')
+"
+```
+
+See `docs/CHECKPOINT-phase2-3.md` for the three ownership/permission bugs
+this project hit standing this up (and how each was diagnosed), if
+`system.bootstrap_webmail` or the webmail vhost misbehaves.
+
 ## Verifying the install
 
 ```bash
