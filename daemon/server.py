@@ -38,6 +38,7 @@ OP_TABLE = {
     "account.suspend": handlers_account.suspend_account,
     "account.unsuspend": handlers_account.unsuspend_account,
     "account.terminate": handlers_account.terminate_account,
+    "account.set_php_version": handlers_account.set_php_version,
     "domain.add": handlers_domain.add_domain,
     "domain.list": handlers_domain.list_domains,
     "system.bootstrap_ols": lambda params: (ols.bootstrap_baseline(), {"status": "ok"})[1],
@@ -78,6 +79,7 @@ OP_TABLE = {
 # type, not the other way around).
 handlers_account.SUSPEND_HOOKS.append(lambda account: ols.suspend_vhost(account))
 handlers_account.UNSUSPEND_HOOKS.append(lambda account: ols.unsuspend_vhost(account))
+handlers_account.PHP_VERSION_HOOKS.append(lambda account: ols.refresh_vhost(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ols.terminate_vhost(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_dns.terminate_account_zones(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_database.terminate_account_databases(account))

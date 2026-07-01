@@ -5,7 +5,15 @@ enableIpGeo               0
 
 extprocessor {{ php_app_name }} {
   type                    lsapi
-  address                 uds://tmp/lshttpd/{{ username }}.sock
+  {# Socket path keyed by php_app_name (username+version), NOT just
+     username: Phase 2's PHP-version-switch feature found that reusing the
+     same socket path across different lsphp versions for the same account
+     let OLS's LSAPI backend bookkeeping (keyed by address, not by
+     extprocessor name) keep routing to the previously-spawned binary after
+     a version switch + graceful reload -- confirmed live: phpversion()
+     kept reporting the old version until each version got its own socket
+     path, forcing a genuinely fresh backend on switch. #}
+  address                 uds://tmp/lshttpd/{{ php_app_name }}.sock
   maxConns                10
   env                     PHP_LSAPI_CHILDREN=10
   initTimeout             60

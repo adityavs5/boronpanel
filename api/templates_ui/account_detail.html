@@ -27,6 +27,18 @@
 {% endif %}
 
 <div class="card">
+  <h2>PHP version</h2>
+  <form method="post" action="/ui/accounts/{{ account.username }}/php-version">
+    <select name="php_version">
+      {% for v in php_versions %}
+      <option value="{{ v }}" {{ "selected" if v == account.php_version else "" }}>PHP {{ v }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Switch</button>
+  </form>
+</div>
+
+<div class="card">
   <h2>Domains</h2>
   <table>
     <thead><tr><th>Domain</th><th>Kind</th><th>SSL</th><th></th></tr></thead>

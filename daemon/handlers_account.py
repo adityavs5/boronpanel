@@ -30,6 +30,9 @@ logger = logging.getLogger("forgehostd.account")
 TERMINATE_HOOKS: list[Callable[[Account], None]] = []
 SUSPEND_HOOKS: list[Callable[[Account], None]] = []
 UNSUSPEND_HOOKS: list[Callable[[Account], None]] = []
+# Phase 2 feature 1: re-render/reload just this account's vhost after its
+# php_version column changes, same wiring pattern as the hooks above.
+PHP_VERSION_HOOKS: list[Callable[[Account], None]] = []
 
 
 def _account_to_dict(account: Account) -> dict:
@@ -191,4 +194,35 @@ def terminate_account(params: dict) -> dict:
             account.status = "terminated"
             account.terminated_at = utcnow()
         session.flush()
+        return _account_to_dict(account)
+
+
+def set_php_version(params: dict) -> dict:
+    """Phase 2 feature 1: switch one account's PHP version. Re-renders and
+    reloads only that account's own vhconf.conf (+ the shared
+    httpd_config.conf, which the existing ConfigWriterMulti pipeline always
+    regenerates in full -- ARCHITECTURE.md SS6/SS7) -- no other account's
+    vhost content changes, since each account's extprocessor/vhost block is
+    rendered independently from its own Account.php_version column."""
+    username = validate_username(params["username"])
+    new_version = validate_php_version(params["php_version"], settings.php_versions)
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found")
+        if account.status not in ("active", "suspended"):
+            raise RuntimeError(f"cannot change PHP version for an account in status '{account.status}'")
+        if account.php_version == new_version:
+            return _account_to_dict(account)
+
+        account.php_version = new_version
+        session.flush()
+        account_snapshot = account
+
+    for hook in PHP_VERSION_HOOKS:
+        hook(account_snapshot)
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
         return _account_to_dict(account)

@@ -74,7 +74,17 @@ class Settings:
     api_bind_port: int = 9443
 
     # accounts
-    php_versions: tuple[str, ...] = ("8.1", "8.3")
+    # Phase 2 goal asked for 7.4/8.0/8.1/8.2/8.3 -- 7.4 and 8.0 are both EOL
+    # and LiteSpeed's official repo ships no lsphp74/lsphp80 build at all
+    # for Ubuntu 24.04 (noble); confirmed via `apt-cache search`, not
+    # assumed. The only way to get them would be pulling packages built for
+    # an older Ubuntu/Debian codename, risking glibc/OpenSSL ABI mismatches
+    # against this system's actual libraries and running long-unpatched PHP
+    # builds with no security fixes available regardless of source -- not a
+    # conservative or secure choice for a hosting panel. Substituted with
+    # 8.4/8.5 (both free, natively available) instead, documented here and
+    # in CHECKPOINT-phase2-1.md.
+    php_versions: tuple[str, ...] = ("8.1", "8.2", "8.3", "8.4", "8.5")
     default_php_version: str = "8.3"
     default_quota_soft_mb: int = 5120
     default_quota_hard_mb: int = 6144

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from starlette.requests import Request
 
+from shared.config import settings
 from shared.db import read_session
 from shared.models import Account
 
@@ -67,6 +68,19 @@ def terminate_account(username: str, identity: Identity = Depends(get_identity))
     return call_daemon("account.terminate", identity, username=username)
 
 
+class SetPhpVersionBody(BaseModel):
+    php_version: str
+
+
+@api_router.patch("/{username}/php-version")
+def set_php_version(username: str, body: SetPhpVersionBody, identity: Identity = Depends(get_identity)):
+    # Self-service, not admin-only: PHP version is a per-account convenience
+    # setting a customer manages themselves in cPanel-equivalent panels,
+    # unlike suspend/terminate which are operator actions.
+    require_account_access(identity, username)
+    return call_daemon("account.set_php_version", identity, username=username, php_version=body.php_version)
+
+
 # --- server-rendered UI (ARCHITECTURE.md SS1: Jinja2 + htmx, forms POST-Redirect-GET) ---
 
 
@@ -114,6 +128,7 @@ def ui_account_detail(request: Request, username: str, identity: Identity = Depe
             "account": account,
             "domains": domains,
             "databases": databases,
+            "php_versions": settings.php_versions,
         },
     )
 
@@ -137,3 +152,10 @@ def ui_terminate(username: str, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     call_daemon("account.terminate", identity, username=username)
     return RedirectResponse("/ui/accounts", status_code=303)
+
+
+@ui_router.post("/{username}/php-version")
+def ui_set_php_version(username: str, php_version: str = Form(...), identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    call_daemon("account.set_php_version", identity, username=username, php_version=php_version)
+    return RedirectResponse(f"/ui/accounts/{username}", status_code=303)

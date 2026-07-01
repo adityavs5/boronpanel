@@ -132,3 +132,44 @@ def test_list_accounts(isolated_db, stub_sysops):
     result = ha.list_accounts({})
     usernames = {a["username"] for a in result["accounts"]}
     assert usernames == {"demo1", "demo2"}
+
+
+def test_set_php_version_happy_path(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    calls = []
+    ha.PHP_VERSION_HOOKS.append(lambda account: calls.append(account.username))
+    try:
+        result = ha.set_php_version({"username": "demo1", "php_version": "8.2"})
+        assert result["php_version"] == "8.2"
+        assert calls == ["demo1"]
+    finally:
+        ha.PHP_VERSION_HOOKS.clear()
+
+
+def test_set_php_version_rejects_unknown_version(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    with pytest.raises(ValidationError):
+        ha.set_php_version({"username": "demo1", "php_version": "7.4"})
+
+
+def test_set_php_version_is_noop_when_unchanged(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    calls = []
+    ha.PHP_VERSION_HOOKS.append(lambda account: calls.append(account.username))
+    try:
+        ha.set_php_version({"username": "demo1", "php_version": "8.3"})  # default is already 8.3
+        assert calls == []
+    finally:
+        ha.PHP_VERSION_HOOKS.clear()
+
+
+def test_set_php_version_rejects_terminated_account(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo1"})
+    with pytest.raises(RuntimeError):
+        ha.set_php_version({"username": "demo1", "php_version": "8.2"})
+
+
+def test_set_php_version_unknown_account_raises(isolated_db, stub_sysops):
+    with pytest.raises(RuntimeError):
+        ha.set_php_version({"username": "ghost", "php_version": "8.2"})
