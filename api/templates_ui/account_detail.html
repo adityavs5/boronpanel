@@ -57,6 +57,13 @@
             <button type="submit">Issue SSL</button>
           </form>
           {% endif %}
+          {% if d.kind != "primary" %}
+          &middot;
+          <form class="inline" method="post" action="/ui/accounts/{{ account.username }}/domains/{{ d.domain }}/remove"
+                onsubmit="return confirm('Remove {{ d.domain }}? Its vhost and any auto-created DNS record are removed; files on disk are kept.');">
+            <button type="submit" class="danger">Remove</button>
+          </form>
+          {% endif %}
         </td>
       </tr>
       {% else %}

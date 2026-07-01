@@ -44,6 +44,7 @@ OP_TABLE = {
     "cron.update": handlers_cron.update_cron_job,
     "cron.delete": handlers_cron.delete_cron_job,
     "domain.add": handlers_domain.add_domain,
+    "domain.remove": handlers_domain.remove_domain,
     "domain.list": handlers_domain.list_domains,
     "system.bootstrap_ols": lambda params: (ols.bootstrap_baseline(), {"status": "ok"})[1],
     "system.bootstrap_webmail": lambda params: (ols.bootstrap_webmail(), {"status": "ok"})[1],

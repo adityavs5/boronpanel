@@ -195,14 +195,47 @@ virtualHost roundcube{
 }
 {% endif %}
 
-{% for vh in vhosts %}
-virtualHost {{ vh.name }}{
-    vhRoot                   {{ vh.home_dir }}/
+{# Phase 2 feature 4: one extProcessor per ACCOUNT (php_version is an
+   account-level setting, so every domain that account owns shares this
+   one LSAPI backend), defined at server level so it can be referenced by
+   name from each of that account's per-domain vhost files below. #}
+{% for acc in account_procs %}
+extProcessor {{ acc.php_app_name }}{
+    type                            lsapi
+    address                         uds://tmp/lshttpd/{{ acc.php_app_name }}.sock
+    maxConns                        10
+    env                              PHP_LSAPI_CHILDREN=10
+    initTimeout                     60
+    retryTimeout                    0
+    persistConn                     1
+    respBuffer                      0
+    autoStart                       1
+    path                            {{ acc.lsphp_path }}
+    backlog                         100
+    instances                       1
+    priority                        0
+    extUser                         {{ acc.username }}
+    extGroup                        {{ acc.username }}
+    memSoftLimit                    {{ mem_soft_limit }}
+    memHardLimit                    {{ mem_hard_limit }}
+    procSoftLimit                   {{ proc_soft_limit }}
+    procHardLimit                   {{ proc_hard_limit }}
+}
+{% endfor %}
+
+{# One vhost per DOMAIN, not per account -- the actual fix for Phase 1's
+   gap (every domain under an account used to serve the same public_html
+   content regardless of its own docroot). vhRoot stays the account's home
+   dir (OLS's own relative-path base for this vhost's config/logs, distinct
+   from docRoot which vhconf.conf sets to the domain's real docroot). #}
+{% for vh in domain_vhosts %}
+virtualHost {{ vh.vhost_name }}{
+    vhRoot                   {{ vh.account_home }}/
     allowSymbolLink          1
     enableScript             1
     restrained               1
     setUIDMode               2
-    configFile               conf/vhosts/{{ vh.name }}/vhconf.conf
+    configFile               conf/vhosts/{{ vh.vhost_name }}/vhconf.conf
 }
 {% endfor %}
 
@@ -212,8 +245,8 @@ listener HTTP{
 {% if webmail_hostname %}
     map                      roundcube {{ webmail_hostname }}
 {% endif %}
-{% for vh in vhosts %}
-    map                      {{ vh.name }} {{ vh.domains | join(', ') }}
+{% for vh in domain_vhosts %}
+    map                      {{ vh.vhost_name }} {{ vh.domain }}
 {% endfor %}
 }
 
@@ -225,8 +258,8 @@ listener HTTPS{
 {% if webmail_hostname %}
     map                      roundcube {{ webmail_hostname }}
 {% endif %}
-{% for vh in vhosts %}
-    map                      {{ vh.name }} {{ vh.domains | join(', ') }}
+{% for vh in domain_vhosts %}
+    map                      {{ vh.vhost_name }} {{ vh.domain }}
 {% endfor %}
 }
 

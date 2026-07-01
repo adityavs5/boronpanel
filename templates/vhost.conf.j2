@@ -3,35 +3,16 @@ allowSymbolLink           1
 enableGzip                1
 enableIpGeo               0
 
-extprocessor {{ php_app_name }} {
-  type                    lsapi
-  {# Socket path keyed by php_app_name (username+version), NOT just
-     username: Phase 2's PHP-version-switch feature found that reusing the
-     same socket path across different lsphp versions for the same account
-     let OLS's LSAPI backend bookkeeping (keyed by address, not by
-     extprocessor name) keep routing to the previously-spawned binary after
-     a version switch + graceful reload -- confirmed live: phpversion()
-     kept reporting the old version until each version got its own socket
-     path, forcing a genuinely fresh backend on switch. #}
-  address                 uds://tmp/lshttpd/{{ php_app_name }}.sock
-  maxConns                10
-  env                     PHP_LSAPI_CHILDREN=10
-  initTimeout             60
-  retryTimeout            0
-  persistConn             1
-  respBuffer              0
-  autoStart               1
-  path                    {{ lsphp_path }}
-  backlog                 100
-  instances               1
-  extUser                 {{ username }}
-  extGroup                {{ username }}
-  memSoftLimit            {{ mem_soft_limit }}
-  memHardLimit            {{ mem_hard_limit }}
-  procSoftLimit           {{ proc_soft_limit }}
-  procHardLimit           {{ proc_hard_limit }}
-}
-
+{# Phase 2 feature 4: one vhost per DOMAIN now (not per account -- the
+   Phase 1 gap this feature exists to fix: every domain under an account
+   used to silently serve the same public_html content, since only one
+   vhost existed per account no matter how many domains it had). The
+   extprocessor itself stays account-scoped, not domain-scoped -- an
+   account has exactly one php_version, so it's defined ONCE at server
+   level in httpd_config.conf.j2 (named {{ php_app_name }}, same naming
+   scheme as before) and referenced here by name only, letting every
+   domain-vhost belonging to this account share one LSAPI backend/socket
+   instead of spawning a redundant one per domain. #}
 scripthandler {
   add                     lsapi:{{ php_app_name }} php
 }
@@ -71,13 +52,16 @@ END_forgehost_rules
 {% endif %}
 }
 
-errorlog {{ home_dir }}/logs/error.log {
+{# Per-domain log files, not shared per-account: each domain is now its own
+   vhost, and OLS logging isn't safe/meaningful to point multiple
+   concurrently-active vhost definitions at the exact same log file. #}
+errorlog {{ home_dir }}/logs/{{ vhost_name }}-error.log {
   useServer               0
   logLevel                WARN
   rollingSize             10M
 }
 
-accessLog {{ home_dir }}/logs/access.log {
+accessLog {{ home_dir }}/logs/{{ vhost_name }}-access.log {
   useServer               0
   rollingSize             10M
   keepDays                30

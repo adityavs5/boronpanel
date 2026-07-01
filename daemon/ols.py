@@ -48,8 +48,16 @@ def _lsphp_path(php_version: str) -> str:
     return f"{OLS_SERVER_BASE}/lsphp{php_version.replace('.', '')}/bin/lsphp"
 
 
-def _vhost_conf_path(username: str) -> str:
-    return VHOST_CONF_TEMPLATE.format(base=OLS_SERVER_BASE, name=username)
+def _vhost_name(domain: str) -> str:
+    """Phase 2 feature 4: domain -> vhost identifier. Collision-free: valid
+    domains (shared/validation.py's DOMAIN_RE) only ever contain
+    [a-z0-9-.], never underscore, so replacing '.' with '_' can't map two
+    distinct valid domains to the same vhost name."""
+    return domain.replace(".", "_")
+
+
+def _vhost_conf_path(vhost_name: str) -> str:
+    return VHOST_CONF_TEMPLATE.format(base=OLS_SERVER_BASE, name=vhost_name)
 
 
 DEFAULT_SSL_KEY = "/etc/forgehost/ssl/default.key"
@@ -64,47 +72,71 @@ def letsencrypt_cert_paths(cert_name: str) -> tuple[str, str]:
     return f"{base}/privkey.pem", f"{base}/fullchain.pem"
 
 
-def _ssl_paths_for_account(account: Account, session) -> tuple[str, str]:
-    """Phase f: one cert per vhost in v1, keyed to the account's primary
-    domain. Falls back to the bootstrap self-signed cert until/unless a
-    real one has been issued (Domain.ssl_status == 'active')."""
-    primary = session.scalar(
-        select(Domain).where(Domain.account_id == account.id, Domain.kind == "primary")
-    )
-    if primary is not None and primary.ssl_status == "active":
-        key, cert = letsencrypt_cert_paths(primary.domain)
+def _domain_row_to_plain(d: Domain) -> dict:
+    """Plain-value snapshot of a Domain row -- render_vhost_conf/
+    _ssl_paths_for_domain only need domain/docroot/ssl_status, and pulling
+    these out as plain values (rather than holding a live ORM object
+    across a later, separate write_session() block) avoids a
+    DetachedInstanceError -- the same reason refresh_vhost/suspend_vhost/
+    unsuspend_vhost have always selected Domain.domain scalar strings
+    rather than full Domain rows, now applied to the other Domain fields
+    Phase 2 feature 4 needs too."""
+    return {"id": d.id, "domain": d.domain, "docroot": d.docroot, "ssl_status": d.ssl_status}
+
+
+def _ssl_paths_for_domain(domain: dict) -> tuple[str, str]:
+    """Phase 2 feature 4: one cert per DOMAIN now, not one per account
+    keyed to its primary domain -- each domain's own Domain.ssl_status
+    already existed (Phase f), it just wasn't wired to per-domain vhosts
+    since there weren't any yet. Falls back to the bootstrap self-signed
+    cert until/unless a real one has been issued for that specific
+    domain."""
+    if domain["ssl_status"] == "active":
+        key, cert = letsencrypt_cert_paths(domain["domain"])
         if Path(key).exists() and Path(cert).exists():
             return key, cert
     return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
 
 
-def render_vhost_conf(account: Account, domains: list[str], suspended: bool, ssl_key_file: str = DEFAULT_SSL_KEY, ssl_cert_file: str = DEFAULT_SSL_CERT) -> str:
+def render_vhost_conf(account: Account, domain: dict, suspended: bool, ssl_key_file: str = DEFAULT_SSL_KEY, ssl_cert_file: str = DEFAULT_SSL_CERT) -> str:
     home_dir = f"{settings.home_base}/{account.username}"
-    docroot = f"{home_dir}/public_html"
     template = _env.get_template("vhost.conf.j2")
     return template.render(
-        username=account.username,
-        docroot=docroot,
+        vhost_name=_vhost_name(domain["domain"]),
+        docroot=domain["docroot"],
         home_dir=home_dir,
         php_app_name=_php_app_name(account.username, account.php_version),
-        lsphp_path=_lsphp_path(account.php_version),
         suspended=suspended,
         suspended_page_root=settings.suspended_page_root,
         ssl_key_file=ssl_key_file,
         ssl_cert_file=ssl_cert_file,
-        **RESOURCE_DEFAULTS,
     )
 
 
-def _all_active_vhosts(session) -> list[dict]:
+def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
     """Every account that should have a live vhost: active or suspended (a
-    suspended account still needs its vhost present, just serving the
+    suspended account still needs its vhosts present, just serving the
     suspended page -- ARCHITECTURE.md SS10). terminated/terminating/error
-    accounts are excluded."""
+    accounts are excluded.
+
+    Returns (domain_vhosts, account_procs):
+      domain_vhosts -- one entry per (account, domain) pair. Phase 2
+        feature 4 moved this from one-vhost-per-account to
+        one-vhost-per-domain, so each domain gets its own docRoot/listener
+        map entry/SSL cert instead of every domain under an account
+        silently serving the same public_html content (the Phase 1 gap
+        this feature exists to fix).
+      account_procs -- one extProcessor per account with >=1 domain,
+        deduplicated: php_version is an account-level setting, so every
+        domain-vhost under the same account shares ONE extprocessor,
+        referenced by name from each vhost's own scripthandler rather than
+        each domain spawning a redundant LSAPI backend of its own.
+    """
     accounts = session.scalars(
         select(Account).where(Account.status.in_(["active", "suspended"]))
     ).all()
-    vhosts = []
+    domain_vhosts = []
+    account_procs = []
     for account in accounts:
         # Domain rows are the only source of truth for what gets a listener
         # map entry. Account.primary_domain is a denormalized display field
@@ -115,16 +147,27 @@ def _all_active_vhosts(session) -> list[dict]:
         domains = session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all()
         if not domains:
             continue  # an account with no domain yet has no vhost/listener entry
-        vhosts.append({"name": account.username, "home_dir": f"{settings.home_base}/{account.username}", "domains": domains})
-    return vhosts
+        account_home = f"{settings.home_base}/{account.username}"
+        account_procs.append({
+            "username": account.username,
+            "php_app_name": _php_app_name(account.username, account.php_version),
+            "lsphp_path": _lsphp_path(account.php_version),
+        })
+        for domain_name in domains:
+            domain_vhosts.append({
+                "vhost_name": _vhost_name(domain_name),
+                "domain": domain_name,
+                "account_home": account_home,
+            })
+    return domain_vhosts, account_procs
 
 
 WEBMAIL_VHOST_NAME = "roundcube"
 
 
 def _webmail_ssl_paths(session) -> tuple[str, str]:
-    """Same pattern as _ssl_paths_for_account, keyed to the static webmail
-    hostname instead of an account's primary domain -- Roundcube gets a
+    """Same pattern as _ssl_paths_for_domain, keyed to the static webmail
+    hostname instead of a Domain row -- Roundcube gets a
     real cert the same way any other vhost does (see ssl.issue's
     challenge-plan; it just isn't tied to a Domain row's account)."""
     if not settings.webmail_hostname:
@@ -135,7 +178,7 @@ def _webmail_ssl_paths(session) -> tuple[str, str]:
     return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
 
 
-def render_httpd_config(vhosts: list[dict]) -> str:
+def render_httpd_config(domain_vhosts: list[dict], account_procs: list[dict]) -> str:
     template = _env.get_template("httpd_config.conf.j2")
     return template.render(
         server_name="forgehost",
@@ -145,10 +188,12 @@ def render_httpd_config(vhosts: list[dict]) -> str:
         default_php_version_nodot=settings.default_php_version.replace(".", ""),
         default_ssl_key="/etc/forgehost/ssl/default.key",
         default_ssl_cert="/etc/forgehost/ssl/default.crt",
-        vhosts=vhosts,
+        domain_vhosts=domain_vhosts,
+        account_procs=account_procs,
         webmail_hostname=settings.webmail_hostname,
         webmail_docroot=settings.webmail_docroot,
         webmail_lsphp_path=_lsphp_path(settings.default_php_version),
+        **RESOURCE_DEFAULTS,
     )
 
 
@@ -176,10 +221,10 @@ def bootstrap_webmail() -> None:
         raise RuntimeError("webmail_hostname is not set in forgehost.toml")
 
     with write_session() as session:
-        vhosts = _all_active_vhosts(session)
+        domain_vhosts, account_procs = _all_active_vhosts(session)
         ssl_key_file, ssl_cert_file = _webmail_ssl_paths(session)
 
-    httpd_content = render_httpd_config(vhosts)
+    httpd_content = render_httpd_config(domain_vhosts, account_procs)
     webmail_content = render_webmail_vhost_conf(ssl_key_file, ssl_cert_file)
 
     writer = ConfigWriterMulti(
@@ -241,86 +286,124 @@ def _verify() -> StepResult:
     return StepResult(True)
 
 
-def _apply_vhost_set(account: Account, domains: list[str], suspended: bool) -> None:
+def _domains_as_plain(account_id: int) -> list[dict]:
     with write_session() as session:
-        vhosts = _all_active_vhosts(session)
-        ssl_key_file, ssl_cert_file = _ssl_paths_for_account(account, session)
+        rows = session.scalars(select(Domain).where(Domain.account_id == account_id)).all()
+        return [_domain_row_to_plain(d) for d in rows]
 
-    vhost_content = render_vhost_conf(account, domains, suspended, ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file)
-    httpd_content = render_httpd_config(vhosts)
+
+def _apply_targets(account: Account, domains: list[dict], suspended: bool, context: str) -> None:
+    """Regenerate every vhost file in `domains` (each gets its own docRoot/
+    SSL cert/log files -- Phase 2 feature 4) plus httpd_config.conf, as ONE
+    atomic transaction. All of an account's domain-vhosts must move
+    together: a PHP-version switch changes which server-level extprocessor
+    name every single one of them references, so applying only some would
+    leave the rest pointed at a since-renamed extprocessor."""
+    with write_session() as session:
+        domain_vhosts, account_procs = _all_active_vhosts(session)
+
+    targets = {"main": HTTPD_CONFIG_PATH}
+    content = {"main": render_httpd_config(domain_vhosts, account_procs)}
+    for domain in domains:
+        vhost_name = _vhost_name(domain["domain"])
+        ssl_key_file, ssl_cert_file = _ssl_paths_for_domain(domain)
+        targets[vhost_name] = _vhost_conf_path(vhost_name)
+        content[vhost_name] = render_vhost_conf(account, domain, suspended, ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file)
 
     writer = ConfigWriterMulti(
-        targets={
-            "vhost": _vhost_conf_path(account.username),
-            "main": HTTPD_CONFIG_PATH,
-        },
+        targets=targets,
         validate=_validate_multi,
         reload=_reload,
         verify=_verify,
         backup_dir=settings.backup_dir,
         subsystem="ols",
     )
-    result = writer.apply({"vhost": vhost_content, "main": httpd_content})
+    result = writer.apply(content)
     if not result.ok:
-        raise RuntimeError(f"OLS config transaction failed: {result.summary()}")
+        raise RuntimeError(f"OLS config transaction failed during {context}: {result.summary()}")
 
 
-def provision_vhost(account: Account, domains: list[str]) -> None:
-    _apply_vhost_set(account, domains, suspended=False)
+def provision_vhost(account: Account) -> None:
+    """Called once a new Domain row is committed (handlers_domain.add_domain)
+    -- regenerates every one of the account's domain-vhosts, including the
+    brand new one, plus httpd_config.conf."""
+    domains = _domains_as_plain(account.id)
+    if not domains:
+        return
+    _apply_targets(account, domains, suspended=False, context="provision")
 
 
 def refresh_vhost(account: Account) -> None:
-    """Re-render and re-apply this account's vhost from current DB state
-    (domains, suspend status, SSL status) with no content changes of its
-    own -- used by the certbot deploy-hook (Phase f) after marking a
-    domain's ssl_status active, so the new cert path actually gets picked
-    up by a real OLS reload rather than just sitting in the database."""
-    with write_session() as session:
-        domains = list(session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all())
-        suspended = account.status == "suspended"
+    """Re-render and re-apply every one of this account's domain-vhosts
+    from current DB state (SSL status per domain, PHP version) -- used by
+    the certbot deploy-hook (Phase f) after marking a domain's ssl_status
+    active, and by the PHP-version-switch hook (Phase 2 feature 1)."""
+    domains = _domains_as_plain(account.id)
     if not domains:
         return
-    _apply_vhost_set(account, domains, suspended=suspended)
+    _apply_targets(account, domains, suspended=(account.status == "suspended"), context="refresh")
 
 
 def suspend_vhost(account: Account) -> None:
-    with write_session() as session:
-        domains = session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all()
-        domains = list(domains) or ([account.primary_domain] if account.primary_domain else [])
+    domains = _domains_as_plain(account.id)
     if not domains:
         return
-    _apply_vhost_set(account, domains, suspended=True)
+    _apply_targets(account, domains, suspended=True, context="suspend")
 
 
 def unsuspend_vhost(account: Account) -> None:
-    with write_session() as session:
-        domains = session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all()
-        domains = list(domains) or ([account.primary_domain] if account.primary_domain else [])
+    domains = _domains_as_plain(account.id)
     if not domains:
         return
-    _apply_vhost_set(account, domains, suspended=False)
+    _apply_targets(account, domains, suspended=False, context="unsuspend")
 
 
-def terminate_vhost(account: Account) -> None:
-    """Remove this account's vhost dir + regenerate httpd_config.conf
-    without it. Idempotent: safe to call even if the account never had a
-    domain/vhost provisioned."""
-    vhost_dir = Path(OLS_SERVER_BASE) / "conf" / "vhosts" / account.username
-    if not vhost_dir.exists():
-        return
-
-    with write_session() as session:
-        vhosts = [v for v in _all_active_vhosts(session) if v["name"] != account.username]
-
-    _apply_main_only(vhosts, context="terminate")
+def remove_domain_vhost(account: Account, removed_domain_name: str) -> None:
+    """Called after a Domain row has already been deleted from the DB
+    (handlers_domain.remove_domain) -- regenerates every REMAINING
+    domain-vhost for this account plus httpd_config.conf (main is always
+    regenerated here, even when zero domains remain, to purge the removed
+    domain's now-stale extprocessor/vhost/listener-map entries -- unlike
+    provision/refresh/suspend, "no domains left" is a real state change
+    here, not a no-op), then removes the deleted domain's own vhost
+    directory from disk."""
+    remaining = _domains_as_plain(account.id)
+    _apply_targets(account, remaining, suspended=(account.status == "suspended"), context="remove_domain")
 
     import shutil
 
+    vhost_dir = Path(OLS_SERVER_BASE) / "conf" / "vhosts" / _vhost_name(removed_domain_name)
     shutil.rmtree(vhost_dir, ignore_errors=True)
 
 
-def _apply_main_only(vhosts: list[dict], context: str) -> None:
-    httpd_content = render_httpd_config(vhosts)
+def terminate_vhost(account: Account) -> None:
+    """Remove every one of this account's domain-vhost directories +
+    regenerate httpd_config.conf without them. Idempotent: safe to call
+    even if the account never had a domain/vhost provisioned.
+
+    Account.status is already 'terminating' (set before TERMINATE_HOOKS
+    run -- see handlers_account.terminate_account) by the time this runs,
+    which is neither 'active' nor 'suspended', so _all_active_vhosts()
+    below already excludes this account's domains from the regenerated
+    main config without any extra filtering needed here."""
+    with write_session() as session:
+        domain_names = list(session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all())
+        domain_vhosts, account_procs = _all_active_vhosts(session)
+
+    if not domain_names:
+        return
+
+    _apply_main_only(domain_vhosts, account_procs, context="terminate")
+
+    import shutil
+
+    for domain_name in domain_names:
+        vhost_dir = Path(OLS_SERVER_BASE) / "conf" / "vhosts" / _vhost_name(domain_name)
+        shutil.rmtree(vhost_dir, ignore_errors=True)
+
+
+def _apply_main_only(domain_vhosts: list[dict], account_procs: list[dict], context: str) -> None:
+    httpd_content = render_httpd_config(domain_vhosts, account_procs)
     writer = ConfigWriterMulti(
         targets={"main": HTTPD_CONFIG_PATH},
         validate=_validate_multi,
@@ -349,5 +432,5 @@ def bootstrap_baseline() -> None:
     config was live before the failed change.
     """
     with write_session() as session:
-        vhosts = _all_active_vhosts(session)
-    _apply_main_only(vhosts, context="bootstrap_baseline")
+        domain_vhosts, account_procs = _all_active_vhosts(session)
+    _apply_main_only(domain_vhosts, account_procs, context="bootstrap_baseline")

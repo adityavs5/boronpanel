@@ -17,7 +17,7 @@ def stub_sysops(monkeypatch):
 @pytest.fixture()
 def stub_filesystem(monkeypatch):
     monkeypatch.setattr(hd, "_ensure_docroot", lambda username, docroot: None)
-    monkeypatch.setattr(hd.ols, "provision_vhost", lambda account, domains: None)
+    monkeypatch.setattr(hd.ols, "provision_vhost", lambda account: None)
 
 
 def test_challenge_plan_http01_when_zone_not_managed(isolated_db, stub_sysops, stub_filesystem):

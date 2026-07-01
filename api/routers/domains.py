@@ -28,6 +28,12 @@ def add_domain(username: str, body: AddDomainBody, identity: Identity = Depends(
     return call_daemon("domain.add", identity, username=username, **body.model_dump())
 
 
+@api_router.delete("/{domain}")
+def remove_domain(username: str, domain: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("domain.remove", identity, username=username, domain=domain)
+
+
 @ui_router.post("")
 def ui_add_domain(
     username: str,
@@ -37,4 +43,11 @@ def ui_add_domain(
 ):
     require_account_access(identity, username)
     call_daemon("domain.add", identity, username=username, domain=domain, kind=kind)
+    return RedirectResponse(f"/ui/accounts/{username}", status_code=303)
+
+
+@ui_router.post("/{domain}/remove")
+def ui_remove_domain(username: str, domain: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    call_daemon("domain.remove", identity, username=username, domain=domain)
     return RedirectResponse(f"/ui/accounts/{username}", status_code=303)

@@ -1,5 +1,11 @@
 """Domain CRUD: addon/subdomain support for Phase b's vhost templating, and
 the foundation Phase c's DNS zones build on top of.
+
+Phase 2 feature 4: subdomains get their own real OLS vhost (daemon/ols.py's
+one-vhost-per-domain refactor) and, when their parent domain's zone is
+Forgehost-managed, their own DNS A record -- fixing the Phase 1 gap where
+every domain under an account silently served identical public_html
+content regardless of which domain/subdomain was actually requested.
 """
 from __future__ import annotations
 
@@ -7,10 +13,10 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain
+from shared.models import Account, Domain, DnsZone
 from shared.validation import validate_domain, validate_username
 
-from daemon import ols
+from daemon import ols, powerdns
 
 
 def _domain_to_dict(domain: Domain) -> dict:
@@ -23,6 +29,24 @@ def _domain_to_dict(domain: Domain) -> dict:
         "ssl_status": domain.ssl_status,
         "created_at": domain.created_at.isoformat() if domain.created_at else None,
     }
+
+
+def _find_parent_zone(domain_name: str) -> str | None:
+    """A subdomain doesn't get its own DNS zone -- it's an A record within
+    whatever zone already covers it, same as any real-world DNS setup (a
+    fresh zone per subdomain would be unusual and wasteful). Only matches
+    zones Forgehost itself manages (DnsZone rows); if the covering domain's
+    DNS is hosted elsewhere, there's nothing for us to automate here, same
+    reasoning as ssl.py's zone_managed check in _challenge_plan."""
+    with write_session() as session:
+        zones = session.scalars(select(DnsZone.zone)).all()
+    return next((z for z in zones if domain_name == z or domain_name.endswith(f".{z}")), None)
+
+
+def _subdomain_label(domain_name: str, parent_zone: str) -> str:
+    if domain_name == parent_zone:
+        return "@"
+    return domain_name[: -(len(parent_zone) + 1)]
 
 
 def add_domain(params: dict) -> dict:
@@ -62,10 +86,21 @@ def add_domain(params: dict) -> dict:
     # has to be committed before the OLS apply -- which means a failed OLS
     # apply must be compensated by deleting the row, or it's left orphaned
     # with no corresponding vhost (caught by real end-to-end testing below).
+    parent_zone = _find_parent_zone(domain_name)
+    dns_label = _subdomain_label(domain_name, parent_zone) if parent_zone else None
+    dns_record_created = False
     try:
         _ensure_docroot(username, docroot)
-        ols.provision_vhost(account_snapshot, _domains_for_account(account_snapshot.id))
+        if parent_zone and settings.server_public_ip:
+            powerdns.upsert_record(parent_zone, dns_label, "A", [settings.server_public_ip])
+            dns_record_created = True
+        ols.provision_vhost(account_snapshot)
     except Exception:
+        if dns_record_created:
+            try:
+                powerdns.delete_record(parent_zone, dns_label, "A")
+            except powerdns.PowerDnsError:
+                pass  # best-effort; the DB-row compensation below is authoritative
         with write_session() as session:
             orphan = session.scalar(select(Domain).where(Domain.domain == domain_name))
             if orphan is not None:
@@ -75,7 +110,49 @@ def add_domain(params: dict) -> dict:
                 account.primary_domain = None
         raise
 
+    domain_dict["dns_record_created"] = dns_record_created
     return domain_dict
+
+
+def remove_domain(params: dict) -> dict:
+    """Subdomain/addon delete (Phase 2 feature 4). Deliberately refuses to
+    remove an account's primary domain -- that's not "delete a domain", an
+    account without a primary domain is a different, unhandled state; use
+    account.terminate or reassign the primary domain instead.
+
+    Files (docroot, logs) are deliberately left on disk: removing a domain
+    is a routing change, not a request to destroy the customer's content.
+    Only the OLS vhost/serving path (and, if this add created one, the
+    subdomain's DNS A record) is torn down."""
+    username = validate_username(params["username"])
+    domain_name = validate_domain(params["domain"])
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found")
+        domain = session.scalar(
+            select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id)
+        )
+        if domain is None:
+            raise RuntimeError(f"domain '{domain_name}' not found for account '{username}'")
+        if domain.kind == "primary":
+            raise RuntimeError("cannot remove an account's primary domain -- terminate or reassign the account instead")
+        kind = domain.kind
+        account_snapshot = account
+        session.delete(domain)
+
+    parent_zone = _find_parent_zone(domain_name)
+    if parent_zone:
+        label = _subdomain_label(domain_name, parent_zone)
+        try:
+            powerdns.delete_record(parent_zone, label, "A")
+        except powerdns.PowerDnsError:
+            pass  # already gone or zone unreachable -- vhost removal below is what actually matters
+
+    ols.remove_domain_vhost(account_snapshot, domain_name)
+
+    return {"domain": domain_name, "kind": kind, "status": "removed"}
 
 
 def list_domains(params: dict) -> dict:
@@ -86,11 +163,6 @@ def list_domains(params: dict) -> dict:
             raise RuntimeError(f"account '{username}' not found")
         domains = session.scalars(select(Domain).where(Domain.account_id == account.id)).all()
         return {"domains": [_domain_to_dict(d) for d in domains]}
-
-
-def _domains_for_account(account_id: int) -> list[str]:
-    with write_session() as session:
-        return list(session.scalars(select(Domain.domain).where(Domain.account_id == account_id)).all())
 
 
 def _ensure_docroot(username: str, docroot: str) -> None:
