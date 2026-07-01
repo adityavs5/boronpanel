@@ -118,4 +118,17 @@
   <h2>Cron jobs</h2>
   <p><a href="/ui/accounts/{{ account.username }}/crons">Manage cron jobs &rarr;</a></p>
 </div>
+
+<div class="card">
+  <h2>Usage</h2>
+  {% set disk_total = usage.current.disk_total_bytes or 0 %}
+  {% set quota_bytes = usage.quota_soft_mb * 1024 * 1024 %}
+  {% set disk_pct = (disk_total / quota_bytes * 100) if quota_bytes else 0 %}
+  <div class="usage-row">
+    <div class="label"><span>Disk: {{ disk_total | human_bytes }} of {{ usage.quota_soft_mb }} MB</span><span>{{ "%.1f"|format(disk_pct) }}%</span></div>
+    <div class="usage-bar"><div class="usage-bar-fill {{ 'danger' if disk_pct > 90 else ('warn' if disk_pct > 75 else '') }}" style="width: {{ [disk_pct, 100] | min }}%"></div></div>
+  </div>
+  <p class="muted">{{ usage.current.process_count }} processes &middot; {{ usage.current.inode_count }} inodes &middot; {{ usage.bandwidth_month_to_date_bytes | human_bytes }} bandwidth this month</p>
+  <p><a href="/ui/accounts/{{ account.username }}/usage">Full usage report &rarr;</a></p>
+</div>
 {% endblock %}

@@ -170,3 +170,27 @@ def revoke_all(db_name: str, db_user: str, host: str = "localhost") -> None:
             cur.execute("FLUSH PRIVILEGES")
     finally:
         conn.close()
+
+
+def database_size_bytes(db_names: list[str]) -> int:
+    """Phase 2 feature 5: real size from information_schema, the same
+    source `SHOW TABLE STATUS`/phpMyAdmin's own size column reads from --
+    not an estimate, so it matches what an operator would see querying
+    MySQL directly by hand."""
+    if not db_names:
+        return 0
+    for name in db_names:
+        validate_db_identifier(name)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            placeholders = ", ".join(["%s"] * len(db_names))
+            cur.execute(
+                f"SELECT COALESCE(SUM(data_length + index_length), 0) "
+                f"FROM information_schema.tables WHERE table_schema IN ({placeholders})",
+                db_names,
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+    finally:
+        conn.close()

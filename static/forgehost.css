@@ -48,3 +48,9 @@ button.warn { background: var(--warn); border-color: var(--warn); }
 .muted { color: var(--muted); font-size: 0.9rem; }
 .login-box { max-width: 360px; margin: 4rem auto; }
 code { background: #f3f4f6; padding: 0.1rem 0.35rem; border-radius: 4px; }
+.usage-bar { background: #f3f4f6; border-radius: 6px; height: 0.9rem; overflow: hidden; margin: 0.25rem 0; }
+.usage-bar-fill { background: var(--accent); height: 100%; }
+.usage-bar-fill.warn { background: var(--warn); }
+.usage-bar-fill.danger { background: var(--danger); }
+.usage-row { margin-bottom: 0.9rem; }
+.usage-row .label { display: flex; justify-content: space-between; font-size: 0.9rem; }

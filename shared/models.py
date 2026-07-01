@@ -157,3 +157,38 @@ class AuditLog(Base):
     result: Mapped[str] = mapped_column(String(16))  # ok | failed
     detail: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UsageSnapshot(Base):
+    """Phase 2 feature 5: point-in-time gauge metrics (disk/inodes/process
+    count), refreshed at most every 15 min (daemon/usage.py) -- never
+    overwritten, always appended, so the history itself IS the trend data
+    for the UI's usage-over-time display."""
+
+    __tablename__ = "usage_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    taken_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    disk_home_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    disk_mail_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    disk_db_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    inode_count: Mapped[int] = mapped_column(Integer, default=0)
+    process_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class BandwidthDaily(Base):
+    """Phase 2 feature 5: one row per (account, calendar day), aggregated
+    from OLS access logs. Upserted, not appended -- each refresh
+    recomputes and replaces the day's total for as long as that day's
+    traffic is still fully present in on-disk logs; once a day's log
+    content rotates away, its last-computed row is simply never touched
+    again, becoming the durable historical value."""
+
+    __tablename__ = "bandwidth_daily"
+    __table_args__ = (UniqueConstraint("account_id", "date", name="uq_bandwidth_daily"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    date: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD
+    bytes_served: Mapped[int] = mapped_column(Integer, default=0)

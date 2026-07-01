@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Usage: {{ username }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
+<h1>Resource usage: {{ username }}</h1>
+<p class="muted">Last measured: {{ usage.current.taken_at or "never" }}
+  &middot; <a href="/ui/accounts/{{ username }}/usage?force_refresh=true">refresh now</a></p>
+
+{% set disk_total = usage.current.disk_total_bytes or 0 %}
+{% set quota_bytes = usage.quota_soft_mb * 1024 * 1024 %}
+{% set disk_pct = (disk_total / quota_bytes * 100) if quota_bytes else 0 %}
+
+<div class="card">
+  <h2>Disk usage</h2>
+  <div class="usage-row">
+    <div class="label"><span>{{ disk_total | human_bytes }} of {{ usage.quota_soft_mb }} MB soft quota</span><span>{{ "%.1f"|format(disk_pct) }}%</span></div>
+    <div class="usage-bar"><div class="usage-bar-fill {{ 'danger' if disk_pct > 90 else ('warn' if disk_pct > 75 else '') }}" style="width: {{ [disk_pct, 100] | min }}%"></div></div>
+  </div>
+  <table>
+    <tbody>
+      <tr><td>Home directory</td><td>{{ usage.current.disk_home_bytes | human_bytes }}</td></tr>
+      <tr><td>Mail</td><td>{{ usage.current.disk_mail_bytes | human_bytes }}</td></tr>
+      <tr><td>Databases</td><td>{{ usage.current.disk_db_bytes | human_bytes }}</td></tr>
+      <tr><td>Inodes (home dir)</td><td>{{ usage.current.inode_count }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Processes</h2>
+  <p>{{ usage.current.process_count }} running process(es) owned by this account's Linux user.</p>
+</div>
+
+<div class="card">
+  <h2>Bandwidth</h2>
+  <p>Month to date: {{ usage.bandwidth_month_to_date_bytes | human_bytes }}</p>
+  <table>
+    <thead><tr><th>Date</th><th>Bytes served</th></tr></thead>
+    <tbody>
+      {% for row in usage.bandwidth_daily | reverse %}
+      <tr><td>{{ row.date }}</td><td>{{ row.bytes_served | human_bytes }}</td></tr>
+      {% else %}
+      <tr><td colspan="2" class="muted">No bandwidth data yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Disk usage history</h2>
+  <table>
+    <thead><tr><th>Taken at</th><th>Total disk</th><th>Inodes</th><th>Processes</th></tr></thead>
+    <tbody>
+      {% for snap in usage.history | reverse %}
+      <tr>
+        <td>{{ snap.taken_at }}</td>
+        <td>{{ snap.disk_total_bytes | human_bytes }}</td>
+        <td>{{ snap.inode_count }}</td>
+        <td>{{ snap.process_count }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">No history yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

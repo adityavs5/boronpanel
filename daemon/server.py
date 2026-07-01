@@ -19,7 +19,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, filemanager, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail, ols, ssl
+from daemon import audit, filemanager, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail, handlers_usage, ols, ssl
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +46,7 @@ OP_TABLE = {
     "domain.add": handlers_domain.add_domain,
     "domain.remove": handlers_domain.remove_domain,
     "domain.list": handlers_domain.list_domains,
+    "usage.get": handlers_usage.get_account_usage,
     "system.bootstrap_ols": lambda params: (ols.bootstrap_baseline(), {"status": "ok"})[1],
     "system.bootstrap_webmail": lambda params: (ols.bootstrap_webmail(), {"status": "ok"})[1],
     "dns.create_zone": handlers_dns.create_zone,

@@ -443,6 +443,25 @@ See `docs/CHECKPOINT-phase2-3.md` for the three ownership/permission bugs
 this project hit standing this up (and how each was diagnosed), if
 `system.bootstrap_webmail` or the webmail vhost misbehaves.
 
+### 15. Resource usage reporting (Phase 2 feature 5)
+
+Per-account disk/inode/bandwidth/database/process usage. The panel's own
+lazy on-read cache (15 min) is enough for the UI page itself, but a system
+cron keeps the historical trend data (`usage_snapshots`/`bandwidth_daily`)
+accumulating even when nobody opens it:
+
+```bash
+cat > /etc/cron.d/forgehost-usage << 'EOF'
+*/15 * * * * root /opt/forgehost/scripts/usage_snapshot.py >> /var/log/forgehost/usage-snapshot.log 2>&1
+EOF
+chmod 644 /etc/cron.d/forgehost-usage
+```
+
+Root-owned system cron, not a per-account Forgehost-managed crontab
+(feature 2's `daemon/cron.py`) -- this is infrastructure that needs to run
+`du`/`ps` across every account's home directory, the same trust level as
+forgehostd itself, not a customer-facing resource.
+
 ## Verifying the install
 
 ```bash

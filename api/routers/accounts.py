@@ -120,6 +120,11 @@ def ui_account_detail(request: Request, username: str, identity: Identity = Depe
     # rather than string-slicing inside the Jinja template.
     for db in databases:
         db["suffix"] = db["db_name"][len(username) + 1 :]
+    # force_refresh=False: this page loads often (every visit to the
+    # account), so it must ride the 15-min cache rather than trigger a du
+    # scan on every click -- the dedicated usage page has its own explicit
+    # "refresh now" link for that.
+    usage = call_daemon("usage.get", identity, username=username, force_refresh=False)
     return templates.TemplateResponse(
         request,
         "account_detail.html",
@@ -129,6 +134,7 @@ def ui_account_detail(request: Request, username: str, identity: Identity = Depe
             "domains": domains,
             "databases": databases,
             "php_versions": settings.php_versions,
+            "usage": usage,
         },
     )
 
