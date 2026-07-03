@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Server health - Forgehost{% endblock %}
+{% block content %}
+<meta http-equiv="refresh" content="10">
+<h1>Server health</h1>
+<p class="muted">Auto-refreshes every 10 seconds. Uptime: {{ live.uptime_display }}</p>
+
+<div class="card">
+  <h2>Live</h2>
+  <table>
+    <tbody>
+      <tr><td>CPU usage</td><td>{{ live.cpu_pct }}% ({{ live.cpu_count }} cores)</td></tr>
+      <tr><td>Load average</td><td>{{ "%.2f"|format(live.load1) }}, {{ "%.2f"|format(live.load5) }}, {{ "%.2f"|format(live.load15) }} (1m / 5m / 15m)</td></tr>
+      <tr><td>Memory</td><td>{{ live.mem_used | human_bytes }} / {{ live.mem_total | human_bytes }} ({{ live.mem_pct }}%)</td></tr>
+      <tr><td>Network total</td><td>in {{ live.net_rx_bytes | human_bytes }} / out {{ live.net_tx_bytes | human_bytes }} (cumulative since boot)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Disk usage per mount</h2>
+  <table>
+    <thead><tr><th>Mount</th><th>Device</th><th>FS</th><th>Used</th><th>Total</th><th>%</th></tr></thead>
+    <tbody>
+      {% for d in live.disks %}
+      <tr>
+        <td>{{ d.mount }}</td>
+        <td>{{ d.device }}</td>
+        <td>{{ d.fstype }}</td>
+        <td>{{ d.used | human_bytes }}</td>
+        <td>{{ d.total | human_bytes }}</td>
+        <td>{{ d.pct }}%</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No mounted disks found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>History ({{ hours }}h)</h2>
+  <form method="get" action="/ui/health">
+    <select name="hours" onchange="this.form.submit()">
+      <option value="1" {% if hours == 1 %}selected{% endif %}>Last 1h</option>
+      <option value="6" {% if hours == 6 %}selected{% endif %}>Last 6h</option>
+      <option value="24" {% if hours == 24 %}selected{% endif %}>Last 24h</option>
+      <option value="48" {% if hours == 48 %}selected{% endif %}>Last 48h</option>
+    </select>
+    <noscript><button type="submit">Go</button></noscript>
+  </form>
+
+  {% if history %}
+  <h3>CPU %</h3>
+  <svg viewBox="0 0 600 100" width="100%" height="100" preserveAspectRatio="none" style="background:#111;border-radius:4px;">
+    <polyline points="{{ cpu_points }}" fill="none" stroke="#4caf50" stroke-width="2"/>
+  </svg>
+
+  <h3>Memory %</h3>
+  <svg viewBox="0 0 600 100" width="100%" height="100" preserveAspectRatio="none" style="background:#111;border-radius:4px;">
+    <polyline points="{{ mem_points }}" fill="none" stroke="#2196f3" stroke-width="2"/>
+  </svg>
+
+  <h3>Network in (bytes/interval)</h3>
+  <svg viewBox="0 0 600 100" width="100%" height="100" preserveAspectRatio="none" style="background:#111;border-radius:4px;">
+    <polyline points="{{ net_rx_points }}" fill="none" stroke="#ff9800" stroke-width="2"/>
+  </svg>
+
+  <h3>Network out (bytes/interval)</h3>
+  <svg viewBox="0 0 600 100" width="100%" height="100" preserveAspectRatio="none" style="background:#111;border-radius:4px;">
+    <polyline points="{{ net_tx_points }}" fill="none" stroke="#e91e63" stroke-width="2"/>
+  </svg>
+  <p class="muted">{{ history|length }} snapshot(s) in range, taken every ~60s.</p>
+  {% else %}
+  <p class="muted">No history yet -- snapshots accumulate every ~60s via cron.</p>
+  {% endif %}
+</div>
+{% endblock %}

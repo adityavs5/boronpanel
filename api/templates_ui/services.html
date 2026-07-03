@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Services - Forgehost{% endblock %}
+{% block content %}
+<h1>Service manager</h1>
+<table>
+  <thead><tr><th>Service</th><th>Unit</th><th>Active</th><th>Enabled</th><th></th></tr></thead>
+  <tbody>
+    {% for s in services %}
+    <tr>
+      <td>{{ s.service }}</td>
+      <td>{{ s.unit }}</td>
+      <td><span class="status {{ s.active }}">{{ s.active }}</span></td>
+      <td>{{ s.enabled }}</td>
+      <td><a href="/ui/services/{{ s.service }}">manage</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

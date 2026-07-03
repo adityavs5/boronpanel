@@ -554,6 +554,31 @@ class AppInstall(Base):
     installed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class HealthSnapshot(Base):
+    """Phase 5 feature 1: server health dashboard. One row per ~60s tick
+    (scripts/health_snapshot.py, cron), independent of any hosting account
+    -- this is host-wide infrastructure telemetry, not a per-tenant
+    resource. Network counters are stored as cumulative totals (matches
+    /proc/net/dev's own semantics, which is what psutil reads) -- the
+    reader computes per-interval in/out from the delta between
+    consecutive rows, so one missed tick or a counter reset just yields
+    one odd interval rather than corrupting the whole series."""
+
+    __tablename__ = "health_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    taken_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    cpu_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    load1: Mapped[float] = mapped_column(Float, default=0.0)
+    load5: Mapped[float] = mapped_column(Float, default=0.0)
+    load15: Mapped[float] = mapped_column(Float, default=0.0)
+    mem_total_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    mem_used_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    disks: Mapped[list] = mapped_column(JSON, default=list)  # [{mount,device,fstype,total,used,free,pct}]
+    net_rx_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    net_tx_bytes: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class AppInstallJob(Base):
     """Async install job -- same one-time-reveal pattern as WordPressJob
     (Phase 3 feature 2): admin_password is stored only transiently, until

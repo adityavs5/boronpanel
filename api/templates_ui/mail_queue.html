@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Mail queue - Forgehost{% endblock %}
+{% block content %}
+<h1>Mail queue</h1>
+
+<div class="card">
+  <form method="get" action="/ui/mail-queue">
+    <input type="text" name="search" placeholder="search by sender or recipient" value="{{ search }}">
+    <button type="submit">Search</button>
+    {% if search %}<a href="/ui/mail-queue">clear</a>{% endif %}
+  </form>
+</div>
+
+<div class="card">
+  <form class="inline" method="post" action="/ui/mail-queue/flush">
+    <button type="submit">Flush all</button>
+  </form>
+  <form class="inline" method="post" action="/ui/mail-queue/delete-all" onsubmit="return true;">
+    <button type="submit" class="danger">Delete all</button>
+  </form>
+  <p class="muted">{{ count }} message(s) in queue.</p>
+</div>
+
+<table>
+  <thead><tr><th>Queue ID</th><th>Status</th><th>Sender</th><th>Recipient</th><th>Size</th><th>Age</th><th>Defer reason</th><th></th></tr></thead>
+  <tbody>
+    {% for e in entries %}
+    <tr>
+      <td>{{ e.queue_id }}</td>
+      <td><span class="status {{ 'active' if e.status == 'active' else 'suspended' }}">{{ e.status }}</span></td>
+      <td>{{ e.sender }}</td>
+      <td>{{ e.recipient }}</td>
+      <td>{{ e.size }} B</td>
+      <td>{{ (e.age_seconds // 60) }}m</td>
+      <td class="muted">{{ e.defer_reason or "-" }}</td>
+      <td>
+        <form class="inline" method="post" action="/ui/mail-queue/{{ e.queue_id }}/flush"><button type="submit" class="secondary">flush</button></form>
+        <form class="inline" method="post" action="/ui/mail-queue/{{ e.queue_id }}/delete"><button type="submit" class="danger">delete</button></form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="muted">Queue is empty.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

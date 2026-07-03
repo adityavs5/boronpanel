@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, cgroups, disktree, fileauth, filemanager, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, logs, nameservers, ols, pma, spamfilter, sshkeys, ssl, wordpress
+from daemon import appinstaller, audit, backup, cgroups, disktree, fileauth, filemanager, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, health, logs, mailqueue, nameservers, ols, pma, servicemgr, spamfilter, sshkeys, ssl, wordpress
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -171,6 +171,20 @@ OP_TABLE = {
     "apps.list": appinstaller.list_installed_apps,
     # Phase 3 feature 9: error log viewer
     "logs.get": logs.get_log,
+    # Phase 5 feature 1: server health dashboard
+    "health.get": health.get_live,
+    "health.history": health.get_history,
+    "health.snapshot": health.take_snapshot,
+    # Phase 5 feature 2: service manager
+    "services.list": servicemgr.list_services,
+    "services.status": servicemgr.get_service,
+    "services.control": servicemgr.control_service,
+    # Phase 5 feature 3: mail queue viewer
+    "mailqueue.list": mailqueue.list_queue,
+    "mailqueue.flush": mailqueue.flush_message,
+    "mailqueue.flush_all": mailqueue.flush_all,
+    "mailqueue.delete": mailqueue.delete_message,
+    "mailqueue.delete_all": mailqueue.delete_all,
 }
 
 # Security audit finding F7: disktree.get/top_files and usage.get run real
@@ -185,7 +199,19 @@ OP_TABLE = {
 # disk/usage-reporting path the same treatment -- a small, separate pool
 # so a burst of usage polling can never starve the rest of the daemon.
 REPORTING_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reporting")
-REPORTING_OPS = {"disktree.get", "disktree.top_files", "usage.get"}
+REPORTING_OPS = {
+    "disktree.get", "disktree.top_files", "usage.get",
+    # Phase 5: admin-only polling/dashboard ops that shell out or sample
+    # live system state -- same isolation reasoning as disktree/usage
+    # above, just for the admin surface instead of the customer one.
+    "health.get", "health.history",
+    "services.status", "services.list",
+    "mailqueue.list",
+    "firewall.list",
+    "fail2ban.status",
+    "waf.status", "waf.blocked_requests",
+    "slowquery.list",
+}
 
 # Each phase wires its own account-scoped teardown/suspend behavior here
 # instead of handlers_account.py importing every phase directly (avoids an

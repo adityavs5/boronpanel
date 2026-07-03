@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.service }} - Forgehost{% endblock %}
+{% block content %}
+<h1>{{ detail.service }} <span class="muted">({{ detail.unit }})</span></h1>
+<p><a href="/ui/services">&larr; all services</a></p>
+
+<div class="card">
+  <h2>Status</h2>
+  <p>Active: <span class="status {{ detail.active }}">{{ detail.active }}</span> &middot; Enabled: {{ detail.enabled }}</p>
+
+  <form class="inline" method="post" action="/ui/services/{{ detail.service }}/start">
+    <button type="submit">Start</button>
+  </form>
+  <form class="inline" method="post" action="/ui/services/{{ detail.service }}/reload">
+    <button type="submit" class="secondary">Reload</button>
+  </form>
+
+  <form method="post" action="/ui/services/{{ detail.service }}/restart">
+    <label><input type="checkbox" name="confirm" value="yes" required> I understand this will briefly interrupt this service</label>
+    <button type="submit" class="secondary">Restart</button>
+  </form>
+  <form method="post" action="/ui/services/{{ detail.service }}/stop">
+    <label><input type="checkbox" name="confirm" value="yes" required> I understand this will stop this service until manually started again</label>
+    <button type="submit" class="danger">Stop</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Last 50 log lines</h2>
+  <pre>{% for line in detail.log_lines %}{{ line }}
+{% else %}(no log lines){% endfor %}</pre>
+</div>
+{% endblock %}
