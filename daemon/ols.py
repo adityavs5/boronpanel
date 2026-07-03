@@ -11,6 +11,7 @@ OLS-specific adaptation of "validate before reload" forced by `openlitespeed
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -18,7 +19,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, PhpIniOverride, Redirect
+from shared.models import Account, Domain, FileAuthDir, PhpIniOverride, Redirect
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
@@ -81,7 +82,15 @@ def _domain_row_to_plain(d: Domain) -> dict:
     unsuspend_vhost have always selected Domain.domain scalar strings
     rather than full Domain rows, now applied to the other Domain fields
     Phase 2 feature 4 needs too."""
-    return {"id": d.id, "domain": d.domain, "docroot": d.docroot, "ssl_status": d.ssl_status}
+    return {
+        "id": d.id,
+        "domain": d.domain,
+        "docroot": d.docroot,
+        "ssl_status": d.ssl_status,
+        "hotlink_protection_enabled": d.hotlink_protection_enabled,
+        "hotlink_allowed_domains": d.hotlink_allowed_domains or [],
+        "ip_block_list": d.ip_block_list or [],
+    }
 
 
 def _ssl_paths_for_domain(domain: dict) -> tuple[str, str]:
@@ -127,6 +136,51 @@ def _redirects_for_domain(session, domain_name: str) -> list[dict]:
     ]
 
 
+def _protected_dirs_for_domain(session, username: str, account_id: int, docroot: str) -> list[dict]:
+    """Phase 4 feature 4. FileAuthDir.path is relative to the account's
+    HOME dir (daemon/fileauth.py, matching daemon/filemanager.py's own
+    convention) -- rebased here to be relative to THIS domain's docroot,
+    since that's what the vhost's own `location`/context path needs (a
+    domain's docroot is some subdirectory of the account home, e.g.
+    `<home>/public_html`, and a protected dir several levels under that
+    needs a context path relative to the docroot, not the home)."""
+    docroot_real = os.path.realpath(docroot)
+    home = os.path.realpath(f"{settings.home_base}/{username}")
+    rows = session.scalars(select(FileAuthDir).where(FileAuthDir.account_id == account_id)).all()
+    result = []
+    for row in rows:
+        absolute = os.path.realpath(os.path.join(home, row.path))
+        if absolute != docroot_real and not absolute.startswith(docroot_real + os.sep):
+            continue
+        relative_to_docroot = os.path.relpath(absolute, docroot_real)
+        result.append({
+            "realm_name": row.realm_name,
+            "relative_path": "" if relative_to_docroot == "." else relative_to_docroot,
+            "htpasswd_path": os.path.join(absolute, ".htpasswd"),
+        })
+    return result
+
+
+HOTLINK_PROTECTED_EXTENSIONS = "jpg|jpeg|png|gif|bmp|webp|svg|ico|mp4|mp3"
+
+
+def _hotlink_context(domain: dict) -> dict | None:
+    """Phase 4 feature 2. Standard mod_rewrite-compatible hotlink recipe
+    (OLS's rewrite engine is Apache mod_rewrite-compatible, same engine
+    already used for suspended-page/redirect rules): block only when
+    Referer is present AND doesn't match this domain or an allow-listed
+    one -- empty Referer (direct navigation, bookmarks, many privacy-
+    conscious browsers/extensions that strip it) is deliberately always
+    allowed, never blocked; blocking it too would break far more
+    legitimate traffic than it protects."""
+    if not domain.get("hotlink_protection_enabled"):
+        return None
+    # Escaped here, once, in Python -- never in the Jinja template -- same
+    # discipline _redirects_for_domain already applies to Redirect.path.
+    allowed = [domain["domain"]] + list(domain.get("hotlink_allowed_domains") or [])
+    return {"allowed_domains_escaped": [d.replace(".", "\\.") for d in allowed], "extensions": HOTLINK_PROTECTED_EXTENSIONS}
+
+
 def render_vhost_conf(
     account: Account,
     domain: dict,
@@ -135,6 +189,7 @@ def render_vhost_conf(
     ssl_cert_file: str = DEFAULT_SSL_CERT,
     php_ini: dict | None = None,
     redirects: list[dict] | None = None,
+    protected_dirs: list[dict] | None = None,
 ) -> str:
     home_dir = f"{settings.home_base}/{account.username}"
     template = _env.get_template("vhost.conf.j2")
@@ -149,6 +204,9 @@ def render_vhost_conf(
         ssl_cert_file=ssl_cert_file,
         php_ini=php_ini,
         redirects=redirects,
+        hotlink=_hotlink_context(domain),
+        ip_block_list=domain.get("ip_block_list") or [],
+        protected_dirs=protected_dirs or [],
     )
 
 
@@ -404,6 +462,10 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
         domain_vhosts, account_procs = _all_active_vhosts(session)
         php_ini = _php_ini_for_account(session, account.id)
         redirects_by_domain = {domain["domain"]: _redirects_for_domain(session, domain["domain"]) for domain in domains}
+        protected_dirs_by_domain = {
+            domain["domain"]: _protected_dirs_for_domain(session, account.username, account.id, domain["docroot"])
+            for domain in domains
+        }
 
     targets = {"main": HTTPD_CONFIG_PATH}
     content = {"main": render_httpd_config(domain_vhosts, account_procs)}
@@ -415,6 +477,7 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
             account, domain, suspended,
             ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file,
             php_ini=php_ini, redirects=redirects_by_domain[domain["domain"]],
+            protected_dirs=protected_dirs_by_domain[domain["domain"]],
         )
 
     writer = ConfigWriterMulti(

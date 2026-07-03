@@ -17,7 +17,33 @@ scripthandler {
   add                     lsapi:{{ php_app_name }} php
 }
 
+{% if protected_dirs and not suspended %}
+{# Phase 4 feature 4: directory privacy, OLS's native realm/userDB
+   mechanism (syntax confirmed empirically against this server's real
+   OLS install -- see daemon/fileauth.py's module docstring). Skipped
+   entirely while suspended: every request is rewritten to /index.html
+   regardless of path in that state, so these contexts would never be
+   reached, and re-including them adds nothing but vhost bloat. #}
+{% for pd in protected_dirs %}
+realm {{ pd.realm_name }} {
+  userDB {
+    location              {{ pd.htpasswd_path }}
+  }
+}
+{% endfor %}
+{% endif %}
+
 context / {
+{% if ip_block_list %}
+  {# Phase 4 feature 3: IP/CIDR deny list, OLS's own native per-vhost
+     access control (VHSecurity_Help.html/rails.conf's shipped example) --
+     applies regardless of suspended state, since a blocked IP shouldn't
+     see the suspended page either. #}
+  accessControl {
+    allow                 *
+    deny                  {{ ip_block_list | join(', ') }}
+  }
+{% endif %}
 {% if suspended %}
   location                {{ suspended_page_root }}
   allowBrowse             1
@@ -64,6 +90,17 @@ context /.well-known/acme-challenge/ {
   allowBrowse             1
 }
 
+{% if protected_dirs and not suspended %}
+{% for pd in protected_dirs %}
+context /{{ pd.relative_path }}/ {
+  location                {{ docroot }}/{{ pd.relative_path }}/
+  allowBrowse             1
+  realm                   {{ pd.realm_name }}
+  authName                "Protected Area"
+}
+{% endfor %}
+{% endif %}
+
 rewrite {
   enable                  1
   autoLoadHtaccess        {{ 0 if suspended else 1 }}
@@ -72,13 +109,28 @@ rewrite {
 RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
 RewriteRule ^(.*)$ /index.html [L]
 END_forgehost_rules
-{% elif redirects %}
-  {# Phase 3 feature 7: per-domain path redirects. `regex_path` is
-     pre-escaped in daemon/ols.py (literal "." -> "\.") before reaching
-     this template -- the raw, validated `path` is never interpolated
-     directly into the rewrite pattern. #}
+{% elif hotlink or redirects %}
+  {# Phase 4 feature 2 (hotlink) and Phase 3 feature 7 (redirects) are
+     independent, both may be active at once -- unlike "suspended",
+     which wins exclusively over everything else. Hotlink rules run
+     first (a blocked hotlinked image should never fall through to a
+     redirect rule). #}
   rules                   <<<END_forgehost_rules
-{% for r in redirects %}
+{% if hotlink %}
+  {# Standard mod_rewrite hotlink-protection recipe: block only when
+     Referer is present (empty Referer always allowed -- direct nav,
+     bookmarks, privacy tools that strip it) AND doesn't match this
+     domain or any allow-listed one. All RewriteCond lines AND together
+     by default (no [OR]) -- exactly "not empty AND not own-domain AND
+     not each allowed domain" all simultaneously true triggers the
+     block. #}
+RewriteCond %{HTTP_REFERER} !^$
+{% for d in hotlink.allowed_domains_escaped %}
+RewriteCond %{HTTP_REFERER} !^https?://([^/]+\.)?{{ d }}(/|$) [NC]
+{% endfor %}
+RewriteRule \.({{ hotlink.extensions }})$ - [F,L]
+{% endif %}
+{% for r in redirects or [] %}
 RewriteRule ^{{ r.regex_path }}$ {{ r.target_url }} [R={{ r.status_code }},L]
 {% endfor %}
 END_forgehost_rules

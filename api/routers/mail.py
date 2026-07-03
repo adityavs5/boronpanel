@@ -89,12 +89,14 @@ def delete_mailbox(domain: str, local_part: str, identity: Identity = Depends(ge
 @account_api_router.patch("/{local_part}/password")
 def change_mailbox_password(username: str, local_part: str, body: ChangeMailboxPasswordBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, body.domain)
     return call_daemon("mail.change_password", identity, domain=body.domain, local_part=local_part, password=body.password)
 
 
 @ui_router.get("/{domain}")
 def ui_mailboxes(request: Request, username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     with read_session() as db:
         mail_enabled = db.scalar(select(MailDomain).where(MailDomain.domain == domain)) is not None
 
@@ -116,6 +118,7 @@ def ui_mailboxes(request: Request, username: str, domain: str, identity: Identit
 @ui_router.post("/{domain}/enable")
 def ui_enable_mail_domain(username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon("mail.create_domain", identity, username=username, domain=domain)
     return RedirectResponse(f"/ui/accounts/{username}/mail/{domain}", status_code=303)
 
@@ -129,6 +132,7 @@ def ui_create_mailbox(
     identity: Identity = Depends(get_identity),
 ):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon(
         "mail.create_mailbox", identity, domain=domain, local_part=local_part, password=password
     )
@@ -144,5 +148,6 @@ def ui_change_mailbox_password(
     identity: Identity = Depends(get_identity),
 ):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon("mail.change_password", identity, domain=domain, local_part=local_part, password=password)
     return RedirectResponse(f"/ui/accounts/{username}/mail/{domain}", status_code=303)

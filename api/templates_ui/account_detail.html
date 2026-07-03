@@ -89,7 +89,10 @@
           <a href="/ui/accounts/{{ account.username }}/dns/{{ d.domain }}">DNS</a> &middot;
           <a href="/ui/accounts/{{ account.username }}/mail/{{ d.domain }}">Mail</a> &middot;
           <a href="/ui/accounts/{{ account.username }}/domains/{{ d.domain }}/wordpress">WordPress</a> &middot;
-          <a href="/ui/accounts/{{ account.username }}/domains/{{ d.domain }}/redirects">Redirects</a>
+          <a href="/ui/accounts/{{ account.username }}/domains/{{ d.domain }}/apps">App installer</a> &middot;
+          <a href="/ui/accounts/{{ account.username }}/domains/{{ d.domain }}/redirects">Redirects</a> &middot;
+          <a href="/ui/accounts/{{ account.username }}/domains/{{ d.domain }}/hotlink-protection">Hotlink protection</a> &middot;
+          <a href="/ui/accounts/{{ account.username }}/domains/{{ d.domain }}/ip-block">IP blocker</a>
           {% if d.ssl_status != "active" %}
           &middot;
           <form class="inline" method="post" action="/ui/accounts/{{ account.username }}/ssl/{{ d.domain }}/issue">
@@ -160,6 +163,12 @@
 <div class="card">
   <h2>Files</h2>
   <p><a href="/ui/accounts/{{ account.username }}/files">Open file manager &rarr;</a></p>
+  <p><a href="/ui/accounts/{{ account.username }}/file-auth">Directory privacy (password-protect a directory) &rarr;</a></p>
+  <p><a href="/ui/accounts/{{ account.username }}/disk-tree">Disk usage treemap &rarr;</a></p>
+  <p><a href="/ui/accounts/{{ account.username }}/git">Git repos (push-to-deploy) &rarr;</a></p>
+{% if identity.role != "admin" %}
+  <p><a href="/ui/accounts/{{ account.username }}/ssh-keys">SSH keys &rarr;</a></p>
+{% endif %}
 </div>
 
 <div class="card">

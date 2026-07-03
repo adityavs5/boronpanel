@@ -15,7 +15,7 @@ def stub_sysops(monkeypatch):
         return 5001, 5001
 
     def set_initial_password(username, password):
-        calls.append(("set_initial_password", username))
+        calls.append(("set_initial_password", username, password))
 
     def set_quota(username, soft, hard):
         calls.append(("set_quota", username, soft, hard))
@@ -289,3 +289,55 @@ def test_reactivate_account_rejects_active_account(isolated_db, stub_sysops):
     ha.create_account({"username": "demo1"})
     with pytest.raises(RuntimeError):
         ha.reactivate_account({"username": "demo1"})
+
+
+# --- password strength enforcement (Phase 4 feature 12: codebase-wide audit) --
+# Real gap found: a custom `password` param was previously used as-is with no
+# strength check at all -- only the auto-generated fallback was safe by
+# construction. Fixed in daemon/handlers_account.py; covered here.
+
+
+def test_create_account_rejects_weak_custom_password(isolated_db, stub_sysops):
+    with pytest.raises(ValidationError):
+        ha.create_account({"username": "demo1", "password": "short1!"})
+
+
+def test_create_account_rejects_weak_password_before_creating_linux_user(isolated_db, stub_sysops):
+    """Real ordering bug found live: create_linux_user ran before password
+    validation, so a rejected weak password still left an orphaned Linux
+    user behind (with no corresponding account DB row). Fixed by moving
+    validation ahead of create_linux_user -- covered here by asserting
+    create_linux_user is never even called when the password is rejected."""
+    with pytest.raises(ValidationError):
+        ha.create_account({"username": "demo1", "password": "short1!"})
+    assert not any(c[0] == "create_linux_user" for c in stub_sysops)
+
+
+def test_create_account_accepts_strong_custom_password(isolated_db, stub_sysops):
+    result = ha.create_account({"username": "demo1", "password": "MyStr0ngPass!word"})
+    assert result["username"] == "demo1"
+
+
+def test_create_account_auto_generated_password_is_strong(isolated_db, stub_sysops):
+    from shared.validation import validate_password_strength
+
+    ha.create_account({"username": "demo1"})
+    generated = [c for c in stub_sysops if c[0] == "set_initial_password"]
+    assert len(generated) == 1
+    validate_password_strength(generated[0][2])  # must not raise
+
+
+def test_reactivate_account_rejects_weak_custom_password(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo1"})
+    with pytest.raises(ValidationError):
+        ha.reactivate_account({"username": "demo1", "password": "weak"})
+
+
+def test_reactivate_account_rejects_weak_password_before_creating_linux_user(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo1"})
+    calls_before = len(stub_sysops)
+    with pytest.raises(ValidationError):
+        ha.reactivate_account({"username": "demo1", "password": "weak"})
+    assert not any(c[0] == "create_linux_user" for c in stub_sysops[calls_before:])

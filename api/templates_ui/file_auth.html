@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Directory Privacy - {{ username }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
+<h1>Directory Privacy</h1>
+<p class="muted">Password-protect a directory under one of your domains -- visitors are prompted for a
+  username/password before the browser will show anything under it. Use the
+  <a href="/ui/accounts/{{ username }}/files">file manager</a> to find the directory you want to protect,
+  then enter its path below (relative to your account home, e.g. <code>public_html/members</code>).</p>
+
+{% for entry in protected %}
+<div class="card">
+  <h2><code>{{ entry.path }}</code></h2>
+  <table>
+    <thead><tr><th>User</th><th></th></tr></thead>
+    <tbody>
+      {% for u in users_by_dir.get(entry.path, []) %}
+      <tr>
+        <td>{{ u }}</td>
+        <td>
+          <form class="inline" method="post" action="/ui/accounts/{{ username }}/file-auth/users/delete">
+            <input type="hidden" name="path" value="{{ entry.path }}">
+            <input type="hidden" name="htuser" value="{{ u }}">
+            <button type="submit" class="danger">Delete user</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2" class="muted">No users yet -- this directory is locked out until you add one.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="/ui/accounts/{{ username }}/file-auth/users/add">
+    <input type="hidden" name="path" value="{{ entry.path }}">
+    <input type="text" name="htuser" placeholder="username" required>
+    <input type="password" name="password" placeholder="password" required>
+    <button type="submit">Add / update user</button>
+  </form>
+  <form method="post" action="/ui/accounts/{{ username }}/file-auth/disable" style="margin-top:0.5rem;">
+    <input type="hidden" name="path" value="{{ entry.path }}">
+    <button type="submit" class="danger">Remove protection from this directory</button>
+  </form>
+</div>
+{% else %}
+<p class="muted">No protected directories yet.</p>
+{% endfor %}
+
+<div class="card">
+  <h2>Protect a new directory</h2>
+  <form method="post" action="/ui/accounts/{{ username }}/file-auth/enable">
+    <input type="text" name="path" placeholder="public_html/members" required style="width:60%;">
+    <button type="submit">Protect</button>
+  </form>
+</div>
+{% endblock %}

@@ -17,7 +17,7 @@ from shared.models import Account, ApiToken, PanelUser, Session  # noqa: E402
 
 
 def _make_admin(isolated_db):
-    return hauth.create_panel_user({"username": "admin1", "password": "adminpass123", "role": "admin"})
+    return hauth.create_panel_user({"username": "admin1", "password": "AdminPass123!", "role": "admin"})
 
 
 def _make_account_and_customer(isolated_db, monkeypatch):
@@ -26,7 +26,7 @@ def _make_account_and_customer(isolated_db, monkeypatch):
     monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
     account = ha.create_account({"username": "cust1"})
     user = hauth.create_panel_user(
-        {"username": "custlogin", "password": "custpass123", "role": "customer", "account_id": account["id"]}
+        {"username": "custlogin", "password": "CustPass123!", "role": "customer", "account_id": account["id"]}
     )
     return account, user
 
@@ -170,4 +170,32 @@ def test_require_domain_access_customer_other_domain_denied(isolated_db, monkeyp
     identity = sec.Identity(user["id"], "custlogin", "customer", account["id"], "session")
     with pytest.raises(HTTPException) as exc_info:
         sec.require_domain_access(identity, "nonexistent-or-other.example")
+    assert exc_info.value.status_code == 403
+
+
+def test_require_customer_self_access_allows_own_customer(isolated_db, monkeypatch):
+    account, user = _make_account_and_customer(isolated_db, monkeypatch)
+    identity = sec.Identity(user["id"], "custlogin", "customer", account["id"], "session")
+    sec.require_customer_self_access(identity, "cust1")  # should not raise
+
+
+def test_require_customer_self_access_rejects_other_customer(isolated_db, monkeypatch):
+    from fastapi import HTTPException
+
+    account, user = _make_account_and_customer(isolated_db, monkeypatch)
+    identity = sec.Identity(user["id"], "custlogin", "customer", account["id"], "session")
+    with pytest.raises(HTTPException) as exc_info:
+        sec.require_customer_self_access(identity, "someone-elses-account")
+    assert exc_info.value.status_code == 403
+
+
+def test_require_customer_self_access_rejects_admin():
+    """Phase 4 feature 6's explicit "customer panel only" scoping -- the
+    one resource in this project where an admin identity is rejected even
+    though it would pass every other require_*_access check."""
+    from fastapi import HTTPException
+
+    identity = sec.Identity(1, "admin1", "admin", None, "session")
+    with pytest.raises(HTTPException) as exc_info:
+        sec.require_customer_self_access(identity, "cust1")
     assert exc_info.value.status_code == 403

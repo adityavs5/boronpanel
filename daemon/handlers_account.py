@@ -17,7 +17,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account
-from shared.validation import ValidationError, validate_php_version, validate_username
+from shared.validation import ValidationError, validate_password_strength, validate_php_version, validate_username
 
 from daemon import cgroups, sysops
 
@@ -90,6 +90,16 @@ def create_account(params: dict) -> dict:
     pids_max = int(params.get("pids_max", cgroups.DEFAULT_PIDS_MAX))
     _validate_limits(cpu_pct, mem_mb, io_mb, pids_max)
 
+    # Validated before create_linux_user, not after: a rejected weak
+    # custom password must never leave an orphaned Linux user behind (no
+    # account DB row exists yet at this point either) -- a real ordering
+    # bug this validation itself made newly reachable (a weak password
+    # was previously always silently accepted, so this failure path had
+    # never actually been exercised before), found live during Phase 4
+    # feature 12's own verification and fixed here rather than left as a
+    # known gap.
+    password = validate_password_strength(params["password"]) if params.get("password") else None
+
     with write_session() as session:
         existing = session.scalar(select(Account).where(Account.username == username))
         if existing is not None:
@@ -97,7 +107,7 @@ def create_account(params: dict) -> dict:
 
     uid, gid = sysops.create_linux_user(username)
 
-    password = params.get("password") or sysops.generate_password()
+    password = password or sysops.generate_password()
     sysops.set_initial_password(username, password)
 
     try:
@@ -165,8 +175,12 @@ def reactivate_account(params: dict) -> dict:
     pids_max = int(params.get("pids_max") or cgroups.DEFAULT_PIDS_MAX)
     _validate_limits(cpu_pct, mem_mb, io_mb, pids_max)
 
+    # Validated before create_linux_user -- see create_account's identical
+    # ordering fix and its own comment for why.
+    password = validate_password_strength(params["password"]) if params.get("password") else None
+
     uid, gid = sysops.create_linux_user(username)
-    password = params.get("password") or sysops.generate_password()
+    password = password or sysops.generate_password()
     sysops.set_initial_password(username, password)
     try:
         sysops.set_quota(username, quota_soft_mb, quota_hard_mb)

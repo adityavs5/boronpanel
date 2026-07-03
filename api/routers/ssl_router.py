@@ -48,6 +48,7 @@ def ssl_dashboard(username: str, identity: Identity = Depends(get_identity)):
 @account_api_router.post("/domains/{domain}/ssl/issue")
 def issue_or_renew_certificate(username: str, domain: str, body: DomainIssueCertBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     return call_daemon("ssl.issue", identity, domain=domain, force=body.force)
 
 
@@ -63,6 +64,7 @@ def ui_ssl_dashboard(request: Request, username: str, identity: Identity = Depen
 @ui_router.post("/{domain}/issue")
 def ui_issue_certificate(username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon("ssl.issue", identity, domain=domain)
     return RedirectResponse(f"/ui/accounts/{username}/ssl", status_code=303)
 
@@ -70,5 +72,6 @@ def ui_issue_certificate(username: str, domain: str, identity: Identity = Depend
 @ui_router.post("/{domain}/renew")
 def ui_renew_certificate(username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon("ssl.issue", identity, domain=domain, force=True)
     return RedirectResponse(f"/ui/accounts/{username}/ssl", status_code=303)

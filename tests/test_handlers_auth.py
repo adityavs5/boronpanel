@@ -6,14 +6,14 @@ from shared.validation import ValidationError
 
 
 def test_create_panel_user_admin(isolated_db):
-    result = hauth.create_panel_user({"username": "admin", "password": "supersecret123", "role": "admin"})
+    result = hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
     assert result["role"] == "admin"
     assert result["account_id"] is None
 
 
 def test_create_panel_user_customer_requires_account_id(isolated_db):
     with pytest.raises(ValidationError):
-        hauth.create_panel_user({"username": "cust1", "password": "supersecret123", "role": "customer"})
+        hauth.create_panel_user({"username": "cust1", "password": "SuperSecret123!", "role": "customer"})
 
 
 def test_create_panel_user_customer_with_account_id(isolated_db, monkeypatch):
@@ -25,7 +25,7 @@ def test_create_panel_user_customer_with_account_id(isolated_db, monkeypatch):
     account = ha.create_account({"username": "demo1"})
 
     result = hauth.create_panel_user(
-        {"username": "cust1", "password": "supersecret123", "role": "customer", "account_id": account["id"]}
+        {"username": "cust1", "password": "SuperSecret123!", "role": "customer", "account_id": account["id"]}
     )
     assert result["account_id"] == account["id"]
 
@@ -35,14 +35,30 @@ def test_create_panel_user_rejects_short_password(isolated_db):
         hauth.create_panel_user({"username": "admin", "password": "short", "role": "admin"})
 
 
+def test_create_panel_user_rejects_weak_password_missing_complexity(isolated_db):
+    """Phase 4 feature 12: this codebase-wide audit's real finding -- panel
+    login passwords (the most security-critical password in the whole
+    system) previously only checked len(password) < 8, the weakest rule
+    of any password path in the project. "supersecretpassword" (20 chars,
+    all lowercase) would have passed the old check outright."""
+    with pytest.raises(ValidationError):
+        hauth.create_panel_user({"username": "admin", "password": "supersecretpassword", "role": "admin"})
+
+
+def test_set_panel_user_password_rejects_weak_password(isolated_db):
+    hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
+    with pytest.raises(ValidationError):
+        hauth.set_panel_user_password({"username": "admin", "password": "alllowercase123"})
+
+
 def test_create_panel_user_rejects_duplicate(isolated_db):
-    hauth.create_panel_user({"username": "admin", "password": "supersecret123", "role": "admin"})
+    hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
     with pytest.raises(RuntimeError):
-        hauth.create_panel_user({"username": "admin", "password": "anotherpassword1", "role": "admin"})
+        hauth.create_panel_user({"username": "admin", "password": "AnotherPassword1!", "role": "admin"})
 
 
 def test_password_is_actually_hashed_and_verifiable(isolated_db):
-    hauth.create_panel_user({"username": "admin", "password": "supersecret123", "role": "admin"})
+    hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
     from sqlalchemy import select
 
     from shared.db import write_session
@@ -50,14 +66,14 @@ def test_password_is_actually_hashed_and_verifiable(isolated_db):
 
     with write_session() as session:
         user = session.scalar(select(PanelUser).where(PanelUser.username == "admin"))
-        assert user.password_hash != "supersecret123"
-        assert verify_password("supersecret123", user.password_hash)
+        assert user.password_hash != "SuperSecret123!"
+        assert verify_password("SuperSecret123!", user.password_hash)
         assert not verify_password("wrongpassword", user.password_hash)
 
 
 def test_set_panel_user_password(isolated_db):
-    hauth.create_panel_user({"username": "admin", "password": "supersecret123", "role": "admin"})
-    hauth.set_panel_user_password({"username": "admin", "password": "newpassword456"})
+    hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
+    hauth.set_panel_user_password({"username": "admin", "password": "NewPassword456!"})
 
     from sqlalchemy import select
 
@@ -66,11 +82,11 @@ def test_set_panel_user_password(isolated_db):
 
     with write_session() as session:
         user = session.scalar(select(PanelUser).where(PanelUser.username == "admin"))
-        assert verify_password("newpassword456", user.password_hash)
+        assert verify_password("NewPassword456!", user.password_hash)
 
 
 def test_create_and_revoke_session(isolated_db):
-    user = hauth.create_panel_user({"username": "admin", "password": "supersecret123", "role": "admin"})
+    user = hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
     session_result = hauth.create_session({"panel_user_id": user["id"]})
     assert "session_id" in session_result
 
@@ -91,7 +107,7 @@ def test_create_and_revoke_session(isolated_db):
 
 
 def test_create_session_rejects_disabled_user(isolated_db):
-    user = hauth.create_panel_user({"username": "admin", "password": "supersecret123", "role": "admin"})
+    user = hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
 
     from sqlalchemy import select
 

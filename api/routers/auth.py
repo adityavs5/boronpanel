@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from starlette.requests import Request
@@ -61,6 +61,49 @@ def logout(request: Request, identity: Identity = Depends(get_identity)):
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(COOKIE_NAME)
     return response
+
+
+@router.get("/change-password")
+def change_password_form(request: Request, identity: Identity = Depends(get_identity)):
+    return templates.TemplateResponse(request, "change_password.html", {"identity": identity, "error": None})
+
+
+@router.post("/change-password")
+def change_password_submit(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    identity: Identity = Depends(get_identity),
+):
+    # Self-service, own-account only: the target is always identity's own
+    # username, never taken from the form -- a bearer-token/session
+    # identity that's been compromised must not be able to use this
+    # endpoint to change any *other* panel user's password, and requiring
+    # the current password (re-verified here, the same way login itself
+    # already checks it) means a hijacked but not-yet-fully-controlled
+    # session can't silently lock the real owner out either.
+    with read_session() as db:
+        user = db.scalar(select(PanelUser).where(PanelUser.username == identity.username))
+        current_ok = user is not None and verify_password(current_password, user.password_hash)
+
+    if not current_ok:
+        return templates.TemplateResponse(
+            request, "change_password.html", {"identity": identity, "error": "current password is incorrect"}, status_code=401
+        )
+    if new_password != confirm_password:
+        return templates.TemplateResponse(
+            request, "change_password.html", {"identity": identity, "error": "new password and confirmation do not match"}, status_code=400
+        )
+
+    try:
+        call_daemon("panel_user.set_password", identity, username=identity.username, password=new_password)
+    except HTTPException as exc:
+        return templates.TemplateResponse(
+            request, "change_password.html", {"identity": identity, "error": exc.detail}, status_code=exc.status_code
+        )
+
+    return templates.TemplateResponse(request, "change_password.html", {"identity": identity, "error": None, "success": True})
 
 
 def _customer_account_username(account_id: int | None) -> str:

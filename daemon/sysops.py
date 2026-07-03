@@ -11,15 +11,23 @@ from __future__ import annotations
 
 import grp
 import pwd
-import secrets
-import string
 
 from shared.config import settings
-from shared.validation import ValidationError, validate_username
+from shared.validation import ValidationError, generate_strong_password, validate_username
 
 from daemon.procutil import run
 
 NOLOGIN_SHELL = "/usr/sbin/nologin"
+# Phase 4 feature 6: SSH key management. ARCHITECTURE.md SS5 originally
+# scoped v1 to no interactive shell at all -- superseded explicitly by the
+# Phase 4 goal, which asks for real SSH login once a key is added. A plain
+# login shell, not a restricted/jailed one: the goal's own DONE WHEN bar
+# ("added key allows SSH login") describes ordinary shell access, and
+# every account is already isolated by ordinary Linux DAC permissions
+# (home dir 711, no sudo/root capability) -- the same isolation model a
+# real multi-user Unix system already relies on, not something a
+# restricted shell would meaningfully add to for this goal's stated scope.
+LOGIN_SHELL = "/bin/bash"
 
 
 def _assert_safe_username(username: str) -> str:
@@ -35,8 +43,7 @@ def user_exists(username: str) -> bool:
 
 
 def generate_password(length: int = 20) -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
+    return generate_strong_password(length)
 
 
 def create_linux_user(username: str) -> tuple[int, int]:
@@ -80,6 +87,18 @@ def set_initial_password(username: str, password: str) -> None:
     run(["chpasswd"], input_text=f"{username}:{password}\n", check=True)
 
 
+def get_shell(username: str) -> str:
+    _assert_safe_username(username)
+    return pwd.getpwnam(username).pw_shell
+
+
+def set_shell(username: str, shell: str) -> None:
+    _assert_safe_username(username)
+    if shell not in (NOLOGIN_SHELL, LOGIN_SHELL):
+        raise ValidationError(f"refusing to set an unrecognized shell '{shell}'")
+    run(["usermod", "-s", shell, username], check=True)
+
+
 def lock_user(username: str) -> None:
     _assert_safe_username(username)
     run(["usermod", "-L", username], check=True)
@@ -88,6 +107,28 @@ def lock_user(username: str) -> None:
 def unlock_user(username: str) -> None:
     _assert_safe_username(username)
     run(["usermod", "-U", username], check=True)
+
+
+def recycle_php_workers(username: str) -> None:
+    """Forces this account's own persistent LSAPI PHP worker pool
+    (extProcessor persistConn/autoStart, Phase 2 feature 4) to restart so
+    a php_ini override change takes effect immediately, rather than
+    waiting on the pool's own natural recycle schedule.
+
+    A real, live-observed gap: confirmed during Phase 4 feature 9's own
+    verification that removing a memory_limit override kept reporting the
+    old value for well over a minute after a full `systemctl restart
+    lshttpd` -- already-warm LSAPI worker processes keep serving whatever
+    ini values they were first invoked with, and a graceful (or even
+    full) web-server restart alone doesn't force them to re-read a
+    per-vhost override change. delete_linux_user's own `pkill -9 -u`
+    already documents this same worker pool as a known, previously-
+    observed leak in a different context (account termination). Scoped
+    to `-u <username> -f lsphp` -- the same "only this account's own uid"
+    boundary delete_linux_user relies on, further narrowed to just PHP
+    workers so an active SSH session (Phase 4 feature 6) or a running
+    cron/git-deploy job for this same account is left alone."""
+    run(["pkill", "-u", username, "-f", "lsphp"], timeout=15)
 
 
 def delete_linux_user(username: str) -> None:

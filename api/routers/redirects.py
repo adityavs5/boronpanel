@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 
 from api.rpc import call_daemon
-from api.security import Identity, get_identity, require_account_access
+from api.security import Identity, get_identity, require_account_access, require_domain_access
 from api.templates import templates
 
 api_router = APIRouter(prefix="/api/v1/accounts/{username}/domains/{domain}/redirects", tags=["redirects"])
@@ -22,30 +22,35 @@ class RedirectBody(BaseModel):
 @api_router.get("")
 def list_redirects(username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     return call_daemon("redirect.list", identity, domain=domain)
 
 
 @api_router.post("")
 def create_redirect(username: str, domain: str, body: RedirectBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     return call_daemon("redirect.create", identity, domain=domain, **body.model_dump())
 
 
 @api_router.put("")
 def update_redirect(username: str, domain: str, body: RedirectBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     return call_daemon("redirect.update", identity, domain=domain, **body.model_dump())
 
 
 @api_router.delete("")
 def delete_redirect(username: str, domain: str, path: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     return call_daemon("redirect.delete", identity, domain=domain, path=path)
 
 
 @ui_router.get("")
 def ui_redirects_home(request: Request, username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     redirects = call_daemon("redirect.list", identity, domain=domain)["redirects"]
     return templates.TemplateResponse(
         request, "redirects.html", {"identity": identity, "username": username, "domain": domain, "redirects": redirects}
@@ -62,6 +67,7 @@ def ui_create_redirect(
     identity: Identity = Depends(get_identity),
 ):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon("redirect.create", identity, domain=domain, path=path, target_url=target_url, status_code=status_code)
     return RedirectResponse(f"/ui/accounts/{username}/domains/{domain}/redirects", status_code=303)
 
@@ -76,6 +82,7 @@ def ui_update_redirect(
     identity: Identity = Depends(get_identity),
 ):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon("redirect.update", identity, domain=domain, path=path, target_url=target_url, status_code=status_code)
     return RedirectResponse(f"/ui/accounts/{username}/domains/{domain}/redirects", status_code=303)
 
@@ -83,5 +90,6 @@ def ui_update_redirect(
 @ui_router.post("/delete")
 def ui_delete_redirect(username: str, domain: str, path: str = Form(...), identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon("redirect.delete", identity, domain=domain, path=path)
     return RedirectResponse(f"/ui/accounts/{username}/domains/{domain}/redirects", status_code=303)

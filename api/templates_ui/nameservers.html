@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Nameservers: {{ domain }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts/{{ username }}/dns/{{ domain }}">&larr; {{ domain }} DNS</a></p>
+<h1>Nameservers: {{ domain }}</h1>
+<p class="muted">Custom nameservers for this domain's zone. If a nameserver hostname is itself a
+  subdomain of <code>{{ domain }}</code>, its own IP address (a "glue" record) must be provided,
+  since it can't otherwise be resolved before the delegation to it works.</p>
+
+<div class="card">
+  <h2>Current nameservers</h2>
+  <table>
+    <thead><tr><th>Hostname</th><th>Glue (A/AAAA)</th></tr></thead>
+    <tbody>
+      {% for ns in nameservers %}
+      <tr>
+        <td><code>{{ ns }}</code></td>
+        <td>
+          {% if ns in glue %}
+            {{ (glue[ns].a + glue[ns].aaaa) | join(", ") }}
+          {% else %}
+            <span class="muted">external -- no glue needed</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2" class="muted">No custom nameservers set.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="/ui/accounts/{{ username }}/domains/{{ domain }}/nameservers/reset"
+        onsubmit="return confirm('Reset to Forgehost-managed default nameservers?');">
+    <button type="submit" class="secondary">Reset to defaults</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Set custom nameservers</h2>
+  <form method="post" action="/ui/accounts/{{ username }}/domains/{{ domain }}/nameservers">
+    <p>One nameserver hostname per line:</p>
+    <textarea name="ns_list" rows="4" style="width:100%" placeholder="ns1.{{ domain }}&#10;ns2.{{ domain }}" required></textarea>
+    <p>Glue records (only needed for nameservers that are subdomains of <code>{{ domain }}</code>) --
+      one per line, as <code>hostname=ip</code>:</p>
+    <textarea name="glue_ips" rows="3" style="width:100%" placeholder="ns1.{{ domain }}=203.0.113.10"></textarea>
+    <button type="submit" style="margin-top:0.5rem;">Save</button>
+  </form>
+</div>
+{% endblock %}

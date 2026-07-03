@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}SSH Keys - {{ username }} - Forgehost{% endblock %}
+{% block content %}
+<p><a href="/ui/accounts/{{ username }}">&larr; {{ username }}</a></p>
+<h1>SSH Keys</h1>
+<p class="muted">Paste a public key (e.g. the contents of <code>~/.ssh/id_ed25519.pub</code>) to allow
+  SSH login as this account. Removing the last key disables SSH login again.</p>
+
+<table>
+  <thead><tr><th>Type</th><th>Fingerprint</th><th>Comment</th><th></th></tr></thead>
+  <tbody>
+    {% for k in keys %}
+    <tr>
+      <td>{{ k.type }}</td>
+      <td><code>{{ k.fingerprint }}</code></td>
+      <td>{{ k.comment or "-" }}</td>
+      <td>
+        <form class="inline" method="post" action="/ui/accounts/{{ username }}/ssh-keys/delete" onsubmit="return confirm('Remove this key?');">
+          <input type="hidden" name="fingerprint" value="{{ k.fingerprint }}">
+          <button type="submit" class="danger">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">No SSH keys yet -- SSH login is disabled for this account.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="card">
+  <h2>Add a key</h2>
+  <form method="post" action="/ui/accounts/{{ username }}/ssh-keys">
+    <textarea name="key" rows="4" placeholder="ssh-ed25519 AAAA... you@yourcomputer" required style="width:100%;"></textarea>
+    <button type="submit" style="margin-top:0.5rem;">Add key</button>
+  </form>
+</div>
+{% endblock %}

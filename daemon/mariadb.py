@@ -13,13 +13,10 @@ exists with the necessary CREATE/DROP/GRANT privileges.
 """
 from __future__ import annotations
 
-import secrets
-import string
-
 import pymysql
 
 from shared.config import settings
-from shared.validation import ValidationError, validate_db_identifier
+from shared.validation import ValidationError, generate_strong_password, validate_db_identifier
 
 
 class MariaDbError(Exception):
@@ -44,8 +41,7 @@ def _quote_ident(name: str) -> str:
 
 
 def generate_password(length: int = 24) -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
+    return generate_strong_password(length)
 
 
 def database_exists(db_name: str) -> bool:

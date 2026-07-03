@@ -5,7 +5,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from api.rpc import call_daemon
-from api.security import Identity, get_identity, require_account_access
+from api.security import Identity, get_identity, require_account_access, require_domain_access
 
 api_router = APIRouter(prefix="/api/v1/accounts/{username}/domains", tags=["domains"])
 ui_router = APIRouter(prefix="/ui/accounts/{username}/domains", tags=["ui:domains"])
@@ -31,6 +31,7 @@ def add_domain(username: str, body: AddDomainBody, identity: Identity = Depends(
 @api_router.delete("/{domain}")
 def remove_domain(username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     return call_daemon("domain.remove", identity, username=username, domain=domain)
 
 
@@ -49,5 +50,6 @@ def ui_add_domain(
 @ui_router.post("/{domain}/remove")
 def ui_remove_domain(username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon("domain.remove", identity, username=username, domain=domain)
     return RedirectResponse(f"/ui/accounts/{username}", status_code=303)

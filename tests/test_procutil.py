@@ -1,0 +1,37 @@
+import logging
+
+from daemon.procutil import run
+
+
+def test_run_logs_full_argv_by_default(caplog):
+    with caplog.at_level(logging.INFO, logger="forgehostd.proc"):
+        run(["echo", "hello-world-marker"], timeout=5)
+    assert any("hello-world-marker" in r.message for r in caplog.records)
+
+
+def test_run_redacts_listed_secret_from_log_line(caplog):
+    """Phase 4 feature 8's own real near-miss: Joomla's password-hashing
+    call originally passed the admin password as a CLI argument, and
+    daemon/procutil.py's run() logs the full argv unconditionally -- found
+    by grepping daemon.log after this feature's own live verification.
+    Fixed there by switching to stdin; this redact param exists for the
+    one remaining case (PrestaShop's install/index_cli.php) that has no
+    stdin alternative at all."""
+    with caplog.at_level(logging.INFO, logger="forgehostd.proc"):
+        result = run(["echo", "--password=TopSecret123!"], timeout=5, redact=["TopSecret123!"])
+    assert not any("TopSecret123!" in r.message for r in caplog.records)
+    assert any("REDACTED" in r.message for r in caplog.records)
+    # the real subprocess still receives the unredacted value -- only the
+    # log line is scrubbed
+    assert "TopSecret123!" in result.stdout
+
+
+def test_run_redact_does_not_affect_actual_subprocess_args():
+    result = run(["echo", "--password=Real Value 42!"], timeout=5, redact=["Real Value 42!"])
+    assert "Real Value 42!" in result.stdout
+
+
+def test_run_redact_none_is_a_no_op(caplog):
+    with caplog.at_level(logging.INFO, logger="forgehostd.proc"):
+        run(["echo", "plain"], timeout=5, redact=None)
+    assert any("exec: echo plain" in r.message for r in caplog.records)

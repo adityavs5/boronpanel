@@ -13,6 +13,13 @@ def stub_ols(monkeypatch):
 
 
 @pytest.fixture()
+def stub_recycle(monkeypatch):
+    calls = []
+    monkeypatch.setattr(hpi.sysops, "recycle_php_workers", lambda username: calls.append(username))
+    return calls
+
+
+@pytest.fixture()
 def account(isolated_db, monkeypatch):
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
@@ -23,10 +30,12 @@ def account(isolated_db, monkeypatch):
 def test_get_php_ini_defaults_when_unset(account, stub_ols):
     result = hpi.get_php_ini({"username": "demo1"})
     assert result["php_ini"] is None
-    assert result["defaults"]["memory_limit"] == "256M"
+    # must match the real system php.ini (see DEFAULTS's own docstring in
+    # daemon/handlers_php_ini.py) -- 128M, not a rounder-looking guess
+    assert result["defaults"]["memory_limit"] == "128M"
 
 
-def test_set_php_ini_happy_path(account, stub_ols):
+def test_set_php_ini_happy_path(account, stub_ols, stub_recycle):
     result = hpi.set_php_ini(
         {
             "username": "demo1",
@@ -44,6 +53,15 @@ def test_set_php_ini_happy_path(account, stub_ols):
 
     fetched = hpi.get_php_ini({"username": "demo1"})["php_ini"]
     assert fetched["memory_limit"] == "512M"
+
+
+def test_set_php_ini_recycles_php_workers(account, stub_ols, stub_recycle):
+    """Not cosmetic -- see sysops.recycle_php_workers's own docstring: a
+    vhost reload alone leaves already-warm LSAPI workers serving the old
+    ini value indefinitely (confirmed live during this feature's own
+    verification)."""
+    hpi.set_php_ini({"username": "demo1", "memory_limit": "512M"})
+    assert stub_recycle == ["demo1"]
 
 
 def test_set_php_ini_partial_update_keeps_other_fields(account, stub_ols):
@@ -83,14 +101,18 @@ def test_set_php_ini_rejects_invalid_error_reporting_injection_attempt(account, 
         hpi.set_php_ini({"username": "demo1", "error_reporting": 'E_ALL"; rm -rf /'})
 
 
-def test_reset_php_ini(account, stub_ols):
+def test_reset_php_ini(account, stub_ols, stub_recycle):
     hpi.set_php_ini({"username": "demo1", "memory_limit": "512M"})
     result = hpi.reset_php_ini({"username": "demo1"})
     assert result["status"] == "reset_to_defaults"
     assert hpi.get_php_ini({"username": "demo1"})["php_ini"] is None
+    # recycled once for the set, once for the reset -- without this, a
+    # removed override keeps reporting its old value from already-warm
+    # LSAPI workers (see sysops.recycle_php_workers's own docstring)
+    assert stub_recycle == ["demo1", "demo1"]
 
 
-def test_reset_php_ini_idempotent_when_never_set(account, stub_ols):
+def test_reset_php_ini_idempotent_when_never_set(account, stub_ols, stub_recycle):
     hpi.reset_php_ini({"username": "demo1"})  # must not raise
 
 

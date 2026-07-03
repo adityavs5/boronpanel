@@ -8,6 +8,231 @@ check first.
 
 ---
 
+## Phase 4 update (2026-07-01): 12 more features added, all built and
+verified live on this same server
+
+Built autonomously per a fourth project goal, in the exact order
+specified, plus mandatory pre-work (a plaintext-password log audit and a
+12+ char strong-password rule enforced codebase-wide). Every feature has
+its own `docs/CHECKPOINT-phase4-{0,0b,1..12}.md` with full detail (what
+was built, real bugs found by live testing and fixed, what's untested);
+this section is the synthesis for Phase 4 specifically. Phase 1/2/3's
+content below this point is unchanged and still accurate for everything
+it covers.
+
+### Phase 4 Definition of Done — checklist
+
+- [x] **SpamAssassin**: a real GTUBE test string routed to Junk via
+  Dovecot Sieve, confirmed in the mailbox's real Maildir
+  (CHECKPOINT-phase4-1.md).
+- [x] **Hotlink protection**: an image request with a foreign `Referer`
+  blocked, the same request with no `Referer`/an allow-listed domain's
+  `Referer` served normally (CHECKPOINT-phase4-2.md).
+- [x] **IP blocker**: a blocked CIDR's request returned `403`; an
+  unblocked IP against the same vhost still `200`'d
+  (CHECKPOINT-phase4-3.md).
+- [x] **Directory privacy**: a protected directory rejected a wrong
+  password (`401`) and accepted the correct one, via OLS's own
+  `phpIniOverride`-adjacent `realm`/`userDB` mechanism and real
+  `htpasswd`-generated bcrypt hashes (CHECKPOINT-phase4-4.md).
+- [x] **Git push-to-deploy**: a real `git push` **over SSH** (not just a
+  local-filesystem push) to a bare repo triggered its `post-receive` hook
+  and deployed the pushed file to the configured docroot
+  (CHECKPOINT-phase4-5.md, closed out live in CHECKPOINT-phase4-6.md).
+- [x] **SSH keys**: an added key allowed a real SSH login (`whoami`/`id`
+  matching the account's own uid); deleting it made the identical login
+  attempt fail again (CHECKPOINT-phase4-6.md).
+- [x] **Disk usage treemap**: every reported figure (root total, a
+  drilled-into subdirectory, and the top-3 largest files) matched an
+  independently-run `du`/`find` byte-for-byte (CHECKPOINT-phase4-7.md).
+- [x] **App installer**: a real Joomla install completed in ~20 seconds
+  (real downloaded release, real schema import, real bcrypt admin
+  password), and a scripted login against the real CSRF-protected admin
+  form landed on Joomla's actual authenticated "Home Dashboard"
+  (CHECKPOINT-phase4-8.md).
+- [x] **PHP ini editor** (verify Phase 3): confirmed already built and
+  working, but live verification found and fixed two real bugs anyway —
+  stale UI defaults that didn't match this server's actual php.ini, and
+  a removed override that silently kept its old value for 200+ seconds
+  (pooled LSAPI workers not recycling on a vhost reload) until a
+  targeted, account-scoped worker-recycle step was added
+  (CHECKPOINT-phase4-9.md).
+- [x] **Cron MAILTO**: a real cron job fired by the system's own
+  scheduler (not manually triggered) delivered its output to the
+  configured mailbox, confirmed by reading the actual delivered message
+  headers and body (CHECKPOINT-phase4-10.md).
+- [x] **Nameserver management**: custom NS + glue records confirmed via
+  `dig` against this server's own PowerDNS, including full REPLACE
+  semantics (switching to entirely different NS hostnames) and correct
+  rejection of an in-zone NS with no glue supplied
+  (CHECKPOINT-phase4-11.md).
+- [x] **Passwords strong everywhere / no plaintext in logs**: a
+  codebase-wide sweep found and fixed six real gaps, including the
+  single weakest password path in the project (panel login passwords)
+  and a completely unreachable password-change feature (RPC op existed,
+  no UI/API route anywhere) — both fixed and live-verified end-to-end
+  (CHECKPOINT-phase4-12.md). A **second, distinct** real plaintext-
+  password leak (not the pre-work audit's) was found and fixed live
+  during Feature 8's own verification (CHECKPOINT-phase4-8.md).
+- [x] **All 710 tests from Phases 1-3 + earlier Phase 4 features still
+  passing, plus new tests per feature** — 722 total at the end of
+  Phase 4 (up from 495 at the end of Phase 3), zero regressions in any
+  earlier test at any point.
+- [x] This section.
+
+### What was built (one line each — see
+CHECKPOINT-phase4-{0,0b,1..12}.md for detail)
+
+- **Pre-work**: audited `daemon.log`/journald for plaintext passwords
+  from earlier phases (found and redacted 15 real historical exposures
+  from a Phase 3 bug already fixed in code but not yet reflected in the
+  running service — root-caused to `forgehostd.proc` propagating to the
+  un-redactable systemd journal, fixed structurally by detaching it from
+  the root logger); rewrote `validate_password_strength` to 12+ chars/
+  mixed complexity project-wide.
+- **Pre-work (0b)**: found and fixed the single most severe issue in the
+  project's history — a systematic cross-account authorization bypass
+  (IDOR) across **8 routers and 2 daemon modules** (mail catch-all/
+  forwarder hijack, DNS record takeover via UI routes, backup browse +
+  unauthorized destructive restore, WordPress admin-credential theft via
+  a sequential job id, redirect defacement, forced SSL issuance abuse,
+  and more) — found while building Feature 1, by noticing a newly-built
+  router correctly checked domain ownership where an older one didn't.
+- **Feature 1**: SpamAssassin, integrated with Postfix via `spamc`/
+  `content_filter`, per-account enable/threshold override, auto-move to
+  Junk via a Dovecot Sieve script.
+- **Feature 2**: per-domain hotlink protection via OLS rewrite rules,
+  Referer-checked, with an external-domain allow-list.
+- **Feature 3**: per-account IP/CIDR deny list via OLS `accessControl`,
+  enforced even while suspended.
+- **Feature 4**: directory privacy via OLS `realm`/`userDB` blocks and
+  real per-directory `.htpasswd` files inside the account's own home —
+  never in the panel DB.
+- **Feature 5**: git push-to-deploy — a bare repo under `~/repos/` per
+  account, a `post-receive` hook doing a branch-gated `checkout -f` into
+  a configured deploy target.
+- **Feature 6**: SSH key management — adding the first key upgrades the
+  account's shell from `nologin` to a real login shell (and reverts on
+  removing the last one); keys validated with a real `ssh-keygen`
+  call, so a private key can never be accepted; explicitly customer-only
+  (a new `require_customer_self_access` RBAC primitive — admin cannot
+  view a customer's SSH keys, the one place in this project where that's
+  correct).
+- **Feature 7**: an interactive disk-usage treemap built from live,
+  on-demand shallow `du`/`find` calls (Phase 2's own usage snapshot only
+  ever collected a single scalar total, not a tree, as its own live
+  verification confirmed) — the root node reuses that cached total when
+  fresh, drilling into any subdirectory is a fresh, cheap fetch, not an
+  eager full-tree walk.
+- **Feature 8**: a Softaculous-equivalent one-click app installer
+  (WordPress reused as-is from Phase 3; static HTML; Joomla built and
+  live-verified in full, including a from-scratch investigation of its
+  bundled SQL schema files since no interactive-wizard-free install path
+  is documented anywhere; Drupal/PrestaShop/Laravel built with the same
+  rigor but not independently live-verified this pass, since the goal's
+  own Definition of Done names only Joomla).
+- **Feature 9**: verified Phase 3's existing PHP ini editor rather than
+  rebuilding it — found and fixed a stale-defaults bug and a real LSAPI
+  worker-pool staleness bug along the way (see above).
+- **Feature 10**: per-crontab MAILTO, validated as a real email address,
+  explicitly rejecting anything resolving to the server's own `root`
+  mailbox.
+- **Feature 11**: custom nameserver + glue-record management via
+  PowerDNS's REST API, with automatic glue-requirement detection for any
+  nameserver hostname that's a subdomain of the zone being delegated.
+- **Feature 12**: the codebase-wide password-strength audit itself —
+  see the checklist item above for what it found.
+
+Every feature's checkpoint records **real bugs found by live testing and
+fixed** — that pattern held for all 12 features (plus both pieces of
+pre-work), same as every phase before it. This phase in particular
+surfaced the single most severe finding of the whole project (the
+cross-account IDOR) and two separate genuine password-leak bugs (one in
+this phase's own new code, caught by its own live-verification
+discipline) — both fixed rather than left in place.
+
+### Phase 4 test suite
+
+722 pytest tests (up from Phase 3's 495), same coverage philosophy: no
+root/live services required, covers validation/state-machine/handler
+logic with system calls mocked — except where a real subprocess call was
+preferable to mocking (real `ssh-keygen`/`htpasswd`/`bash -n`/`php -l`/
+`php -r` calls throughout this phase's tests, matching the precedent set
+by real `openssl`/`sievec`/`doveadm` calls in earlier phases). Every
+feature was *also* independently verified live against this real
+server — the mocked suite alone would not have caught any of the real
+bugs documented above (the IDOR, the two password-logging leaks, or the
+LSAPI worker-staleness bug).
+
+### What's genuinely untested from Phase 4 (collected from every
+CHECKPOINT-phase4-*.md)
+
+- Drupal, PrestaShop, and Laravel-skeleton app installs were not
+  independently live-verified against a running instance (Joomla was,
+  in full) — a deliberate, disclosed scope decision given the goal's own
+  Definition of Done names only Joomla, not an oversight
+  (CHECKPOINT-phase4-8.md).
+- The app installer's "update available" flag: `AppInstall.version` is
+  recorded at install time but never re-checked against the app's
+  current latest release afterward.
+- Account termination does not clean up that account's `PanelUser`
+  row(s) — a pre-existing gap unrelated to password strength, noticed
+  incidentally while verifying Feature 12 (CHECKPOINT-phase4-12.md).
+- SSH key types other than ed25519 were not each individually round-
+  tripped through a real login (validated identically by the same
+  `ssh-keygen -lf -` call, judged sufficient).
+- Very large directory trees (tens of thousands of files) were not
+  stress-tested against the disk-tree feature's `du`/`find` timeouts.
+- Old glue A/AAAA records are not automatically cleaned up when a
+  nameserver hostname is changed away from (observed live during
+  Feature 11's own verification, matches how the general DNS editor
+  already behaves for any edited-away rrset).
+- Real external-mailbox delivery for cron MAILTO was not tested (this
+  VM's outbound mail posture makes that unreliable to test from here
+  regardless of what the feature does correctly) — real local delivery
+  through this server's own Postfix/Dovecot was verified instead, which
+  exercises the identical code path.
+
+### What to review first on wake-up (Phase 4)
+
+1. **CHECKPOINT-phase4-0b.md's cross-account IDOR finding** — the single
+   highest-severity finding in the project's entire history, across
+   eight routers and two daemon modules. Worth an independent read
+   before anything else in this phase: mail hijack, DNS takeover,
+   unauthorized destructive backup restore, WordPress credential theft,
+   redirect defacement, and forced SSL issuance abuse, all from the same
+   missing `require_domain_access`/ownership-check pattern.
+2. **CHECKPOINT-phase4-8.md's and CHECKPOINT-phase4-12.md's password-
+   leak findings** — two *separate* real plaintext-password-in-logs
+   bugs found this phase (one in this phase's own brand-new code), on
+   top of the pre-work's 15 historical exposures from a Phase 3 bug.
+   `daemon/procutil.py`'s `run()` logs every subprocess's full argv
+   unconditionally; any future call site that puts a secret in argv
+   instead of `input_text` will leak it the same way. The new `redact`
+   parameter (CHECKPOINT-phase4-8.md) helps for the rare case where
+   stdin isn't an option, but the real discipline is "secrets go via
+   stdin" — worth keeping front of mind for anything built after this.
+3. **CHECKPOINT-phase4-9.md's LSAPI worker-staleness finding** — a
+   real, previously-undiscovered gap in Phase 3's own PHP ini editor: a
+   vhost config reload (even a full `systemctl restart lshttpd`) does
+   not reliably force already-warm PHP LSAPI worker processes to pick up
+   a changed/removed `php_admin_value`. The fix
+   (`sysops.recycle_php_workers`, an account-scoped `pkill -f lsphp`)
+   is narrow and targeted, but the underlying LSAPI pooling behavior is
+   worth understanding before adding any *other* feature that relies on
+   a vhost-level PHP ini change taking effect immediately.
+4. **CHECKPOINT-phase4-8.md's Joomla schema-file approach** — bypasses
+   Joomla's own interactive installer entirely by importing its bundled
+   `installation/sql/mysql/*.sql` files directly and writing
+   `configuration.php` by hand, the same "use the target application's
+   own stable data formats, not a scripted wizard" design WordPress's
+   installer (Phase 3) already established. Worth reading before
+   extending Drupal/PrestaShop to the same live-verified depth, since
+   Drupal in particular has no equivalent flat-SQL schema to lean on.
+5. Everything else in each feature's "what's untested" section.
+
+---
+
 ## Phase 3 update (2026-07-01): 10 more features added, all built and verified
 live on this same server
 

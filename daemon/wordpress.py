@@ -35,7 +35,6 @@ import os
 import pwd
 import secrets
 import shutil
-import string
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -46,7 +45,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, WordPressInstall, WordPressJob
-from shared.validation import validate_domain, validate_username
+from shared.validation import generate_strong_password, validate_domain, validate_password_strength, validate_username
 
 from daemon import handlers_database
 from daemon.procutil import run
@@ -77,8 +76,7 @@ class WordPressError(Exception):
 
 
 def _generate_password(length: int = 20) -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
+    return generate_strong_password(length)
 
 
 def fetch_latest_version_and_url() -> tuple[str, str]:
@@ -225,7 +223,7 @@ def install(params: dict) -> dict:
     title = (params.get("title") or domain_name).strip()
     admin_user = (params.get("admin_user") or "admin").strip()
     admin_email = (params.get("admin_email") or f"webmaster@{domain_name}").strip()
-    admin_password = params.get("admin_password") or _generate_password()
+    admin_password = validate_password_strength(params["admin_password"]) if params.get("admin_password") else _generate_password()
 
     account_id, docroot = _account_and_domain(username, domain_name)
 
@@ -360,10 +358,27 @@ def _run_install_job(job_id: int, params: dict) -> None:
 
 
 def get_job(params: dict) -> dict:
+    """job_id alone is not a capability -- it's a small sequential integer,
+    guessable/enumerable by any authenticated customer. Without an
+    ownership check here, any account could poll another account's job and
+    read its one-time-reveal admin_password (see WordPressJob's docstring),
+    also permanently burning the reveal before the real owner ever sees
+    it -- a real cross-account credential-theft-plus-denial-of-view bug,
+    found auditing this module for the same class of missing
+    domain/account ownership check found across several other routers
+    this phase (docs/CHECKPOINT-phase4-0b-cross-account-idor.md). username is now
+    required and cross-checked against the job's own account_id, mirroring
+    install()'s own _account_and_domain check; a mismatch is reported
+    identically to a nonexistent job_id, so this endpoint can't be used to
+    enumerate which job IDs belong to other accounts either."""
     job_id = int(params["job_id"])
+    username = validate_username(params["username"])
     with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found")
         job = session.get(WordPressJob, job_id)
-        if job is None:
+        if job is None or job.account_id != account.id:
             raise WordPressError(f"WordPress install job {job_id} not found")
         reveal = job.status == "completed" and job.admin_password is not None
         result = _job_to_dict(job, reveal_password=reveal)

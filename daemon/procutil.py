@@ -14,6 +14,13 @@ from dataclasses import dataclass
 logger = logging.getLogger("forgehostd.proc")
 
 
+def _redact_value(arg: str, secrets: list[str]) -> str:
+    for secret in secrets:
+        if secret:
+            arg = arg.replace(secret, "***REDACTED***")
+    return arg
+
+
 @dataclass
 class ProcResult:
     args: list[str]
@@ -34,10 +41,27 @@ class ProcResult:
         return self
 
 
-def run(args: list[str], *, input_text: str | None = None, timeout: float = 30.0, check: bool = False) -> ProcResult:
+def run(
+    args: list[str], *, input_text: str | None = None, timeout: float = 30.0, check: bool = False, redact: list[str] | None = None
+) -> ProcResult:
+    """redact: values that must appear as literal CLI arguments (a
+    third-party tool's own documented flag syntax, e.g. `--password=...`,
+    that offers no stdin/config-file alternative) but must never reach the
+    log line verbatim -- this project's hard "passwords never logged
+    anywhere" rule (found violated once, by Joomla's own password-hashing
+    call in daemon/appinstaller.py, and fixed there by switching to stdin
+    instead; PrestaShop's first-party install/index_cli.php genuinely has
+    no stdin-based alternative, so this is the fix for that case). Every
+    other password-bearing call in this codebase pipes via input_text
+    instead, which was already never logged -- redact exists only for the
+    rare case where argv is the tool's only real interface."""
     if isinstance(args, str):  # pragma: no cover - defensive, should never happen
         raise TypeError("run() requires an argument list, never a shell string")
-    logger.info("exec: %s", " ".join(args))
+    if redact:
+        logged_args = [_redact_value(a, redact) for a in args]
+    else:
+        logged_args = args
+    logger.info("exec: %s", " ".join(logged_args))
     proc = subprocess.run(
         args,
         input=input_text,

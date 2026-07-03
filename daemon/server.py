@@ -19,16 +19,9 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import audit, backup, cgroups, filemanager, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, logs, ols, pma, ssl, wordpress
+from daemon import appinstaller, audit, backup, cgroups, disktree, fileauth, filemanager, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, logs, nameservers, ols, pma, spamfilter, sshkeys, ssl, wordpress
+from daemon.logsetup import configure_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(Path(settings.log_dir) / "daemon.log"),
-        logging.StreamHandler(),
-    ],
-)
 logger = logging.getLogger("forgehostd")
 
 OP_TABLE = {
@@ -45,6 +38,8 @@ OP_TABLE = {
     "cron.add": handlers_cron.add_cron_job,
     "cron.update": handlers_cron.update_cron_job,
     "cron.delete": handlers_cron.delete_cron_job,
+    "cron.mailto.get": handlers_cron.get_cron_mailto,
+    "cron.mailto.set": handlers_cron.set_cron_mailto,
     "domain.add": handlers_domain.add_domain,
     "domain.remove": handlers_domain.remove_domain,
     "domain.list": handlers_domain.list_domains,
@@ -56,6 +51,9 @@ OP_TABLE = {
     "dns.list_records": handlers_dns.list_records,
     "dns.set_record": handlers_dns.set_record,
     "dns.delete_record": handlers_dns.delete_record,
+    "nameservers.list": nameservers.list_nameservers,
+    "nameservers.set": nameservers.set_nameservers,
+    "nameservers.reset": nameservers.reset_nameservers,
     "db.create": handlers_database.create_database,
     "db.list": handlers_database.list_databases,
     "db.drop": handlers_database.drop_database,
@@ -76,6 +74,11 @@ OP_TABLE = {
     "mail.autoresponder.set": handlers_mail.set_autoresponder,
     "mail.autoresponder.get": handlers_mail.get_autoresponder,
     "mail.autoresponder.delete": handlers_mail.delete_autoresponder,
+    # Phase 4 feature 1: SpamAssassin
+    "mail.spamfilter.get": handlers_mail.get_spam_filter,
+    "mail.spamfilter.set": handlers_mail.set_spam_filter,
+    "spamfilter.global_default.get": lambda params: {"default_threshold": spamfilter.get_global_default_threshold()},
+    "spamfilter.global_default.set": lambda params: spamfilter.set_global_default_threshold(params["threshold"]),
     "ssl.issue": ssl.issue_certificate,
     "ssl.status": ssl.certificate_status,
     "ssl.dashboard": ssl.get_ssl_dashboard,
@@ -115,6 +118,7 @@ OP_TABLE = {
     # Phase 3 feature 3: phpMyAdmin single-signon
     "pma.token.create": pma.create_token,
     "system.bootstrap_pma": lambda params: (pma.bootstrap_pma(), {"status": "ok"})[1],
+    "system.bootstrap_spamassassin": lambda params: spamfilter.bootstrap_spamassassin(),
     # Phase 3 feature 5: FTP sub-accounts
     "ftp.create": handlers_ftp.create_ftp_account,
     "ftp.list": handlers_ftp.list_ftp_accounts,
@@ -130,6 +134,37 @@ OP_TABLE = {
     "redirect.update": handlers_redirect.update_redirect,
     "redirect.delete": handlers_redirect.delete_redirect,
     "redirect.list": handlers_redirect.list_redirects,
+    # Phase 4 feature 2: hotlink protection
+    "hotlink.get": handlers_hotlink.get_hotlink_protection,
+    "hotlink.set": handlers_hotlink.set_hotlink_protection,
+    # Phase 4 feature 3: IP blocker
+    "ipblock.list": handlers_ipblock.list_ip_blocks,
+    "ipblock.add": handlers_ipblock.add_ip_block,
+    "ipblock.remove": handlers_ipblock.remove_ip_block,
+    # Phase 4 feature 4: directory privacy
+    "fileauth.list": fileauth.list_protected_dirs,
+    "fileauth.enable": fileauth.enable_protection,
+    "fileauth.disable": fileauth.disable_protection,
+    "fileauth.user.list": fileauth.list_users,
+    "fileauth.user.add": fileauth.add_user,
+    "fileauth.user.delete": fileauth.delete_user,
+    # Phase 4 feature 5: git version control / push-to-deploy
+    "git.repo.list": gitrepo.list_repos,
+    "git.repo.create": gitrepo.create_repo,
+    "git.repo.delete": gitrepo.delete_repo,
+    "git.repo.set_deploy_target": gitrepo.set_deploy_target,
+    "git.repo.push_log": gitrepo.get_push_log,
+    # Phase 4 feature 6: SSH key management
+    "sshkeys.list": sshkeys.list_keys,
+    "sshkeys.add": sshkeys.add_key,
+    "sshkeys.delete": sshkeys.delete_key,
+    # Phase 4 feature 7: disk usage treemap
+    "disktree.get": disktree.get_disk_tree,
+    "disktree.top_files": disktree.get_top_files,
+    # Phase 4 feature 8: app installer (Softaculous-equivalent)
+    "apps.install.trigger": appinstaller.trigger_install,
+    "apps.install.get": appinstaller.get_job,
+    "apps.list": appinstaller.list_installed_apps,
     # Phase 3 feature 9: error log viewer
     "logs.get": logs.get_log,
 }
@@ -157,6 +192,10 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: cgroups.remove_slice(acc
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_ftp.terminate_account_ftp(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_php_ini.terminate_account_php_ini(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_redirect.terminate_account_redirects(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: fileauth.terminate_account_fileauth(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: gitrepo.terminate_account_git(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: sshkeys.terminate_account_sshkeys(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: appinstaller.terminate_account_apps(account))
 
 
 def register_op(name: str, handler) -> None:
@@ -279,6 +318,7 @@ async def amain() -> None:
 def main() -> None:
     if os.geteuid() != 0:
         raise SystemExit("forgehostd must run as root")
+    configure_logging(settings.log_dir)
     asyncio.run(amain())
 
 

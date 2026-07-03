@@ -503,7 +503,7 @@ def test_browse_full_backup_reads_manifest(isolated_db, fake_staging, tmp_path):
         session.flush()
         job_id = job.id
 
-    result = backup.browse_backup({"job_id": job_id})
+    result = backup.browse_backup({"job_id": job_id, "username": account.username})
     assert result["kind"] == "full"
     assert result["manifest"]["username"] == "demo1"
     assert any(n.endswith("manifest.json") for n in result["contents"])
@@ -519,7 +519,7 @@ def test_browse_non_full_backup_returns_item_ref(isolated_db, tmp_path):
         session.flush()
         job_id = job.id
 
-    result = backup.browse_backup({"job_id": job_id})
+    result = backup.browse_backup({"job_id": job_id, "username": account.username})
     assert result == {"kind": "database", "item_ref": "demo1_shop"}
 
 
@@ -533,7 +533,7 @@ def test_browse_incomplete_backup_raises(isolated_db, tmp_path):
         session.flush()
         job_id = job.id
     with pytest.raises(backup.BackupError):
-        backup.browse_backup({"job_id": job_id})
+        backup.browse_backup({"job_id": job_id, "username": account.username})
 
 
 # --- restore ---------------------------------------------------------------------
@@ -586,7 +586,7 @@ def test_trigger_restore_requires_completed_backup(isolated_db, tmp_path, stub_e
         session.flush()
         job_id = job.id
     with pytest.raises(backup.BackupError):
-        backup.trigger_restore({"backup_job_id": job_id})
+        backup.trigger_restore({"backup_job_id": job_id, "username": account.username})
 
 
 def test_trigger_restore_creates_row_and_submits(isolated_db, tmp_path, stub_executor):
@@ -599,7 +599,7 @@ def test_trigger_restore_creates_row_and_submits(isolated_db, tmp_path, stub_exe
         session.flush()
         job_id = job.id
 
-    result = backup.trigger_restore({"backup_job_id": job_id})
+    result = backup.trigger_restore({"backup_job_id": job_id, "username": account.username})
     assert result["kind"] == "database"
     assert result["item_ref"] == "demo1_shop"
     assert len(stub_executor) == 1
@@ -615,7 +615,7 @@ def test_trigger_restore_rejects_mismatched_kind_for_non_full_artifact(isolated_
         session.flush()
         job_id = job.id
     with pytest.raises(backup.BackupError):
-        backup.trigger_restore({"backup_job_id": job_id, "kind": "mailbox"})
+        backup.trigger_restore({"backup_job_id": job_id, "username": account.username, "kind": "mailbox"})
 
 
 def test_restore_full_reactivates_terminated_account_not_create(isolated_db, fake_home, fake_mail_base, fake_staging, tmp_path, monkeypatch):

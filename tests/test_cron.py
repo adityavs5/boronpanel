@@ -152,3 +152,75 @@ def test_jobs_are_per_user_independent(fake_crontab):
     assert len(cron.list_jobs("demo1")) == 1
     assert len(cron.list_jobs("demo2")) == 1
     assert cron.list_jobs("demo1")[0]["command"] == "/bin/job-for-demo1"
+
+
+# --- MAILTO (Phase 4 feature 10) -------------------------------------------
+
+
+def test_get_mailto_defaults_empty_on_fresh_crontab(fake_crontab):
+    assert cron.get_mailto("demo1") == ""
+
+
+def test_set_mailto_happy_path(fake_crontab):
+    result = cron.set_mailto("demo1", "alerts@example.com")
+    assert result == "alerts@example.com"
+    assert cron.get_mailto("demo1") == "alerts@example.com"
+    assert "MAILTO=alerts@example.com" in fake_crontab["demo1"]
+
+
+def test_set_mailto_rejects_root(fake_crontab):
+    from shared.validation import ValidationError
+
+    with pytest.raises(ValidationError):
+        cron.set_mailto("demo1", "root")
+    with pytest.raises(ValidationError):
+        cron.set_mailto("demo1", "root@localhost")
+    with pytest.raises(ValidationError):
+        cron.set_mailto("demo1", "ROOT@example.com")
+
+
+def test_set_mailto_rejects_malformed_address(fake_crontab):
+    from shared.validation import ValidationError
+
+    with pytest.raises(ValidationError):
+        cron.set_mailto("demo1", "not-an-email")
+
+
+def test_set_mailto_empty_removes_line_and_preserves_jobs(fake_crontab):
+    cron.add_job("demo1", "* * * * *", "/bin/true")
+    cron.set_mailto("demo1", "alerts@example.com")
+    assert "MAILTO=" in fake_crontab["demo1"]
+
+    cron.set_mailto("demo1", "")
+    assert "MAILTO=" not in fake_crontab["demo1"]
+    assert cron.get_mailto("demo1") == ""
+    assert len(cron.list_jobs("demo1")) == 1  # job untouched
+
+
+def test_set_mailto_preserves_existing_jobs_and_manual_lines(fake_crontab):
+    fake_crontab["demo1"] = "# a manual comment\n0 3 * * * /bin/manual-job\n"
+    job = cron.add_job("demo1", "0 0 * * *", "/bin/managed-job")
+
+    cron.set_mailto("demo1", "alerts@example.com")
+
+    raw = fake_crontab["demo1"]
+    assert "MAILTO=alerts@example.com" in raw
+    assert "# a manual comment" in raw
+    assert "/bin/manual-job" in raw
+    assert "/bin/managed-job" in raw
+    assert cron.list_jobs("demo1")[0]["id"] == job["id"]
+
+
+def test_set_mailto_is_idempotent_no_duplicate_lines(fake_crontab):
+    cron.set_mailto("demo1", "first@example.com")
+    cron.set_mailto("demo1", "second@example.com")
+    raw = fake_crontab["demo1"]
+    assert raw.count("MAILTO=") == 1
+    assert "MAILTO=second@example.com" in raw
+
+
+def test_mailto_is_per_user_independent(fake_crontab):
+    cron.set_mailto("demo1", "one@example.com")
+    cron.set_mailto("demo2", "two@example.com")
+    assert cron.get_mailto("demo1") == "one@example.com"
+    assert cron.get_mailto("demo2") == "two@example.com"

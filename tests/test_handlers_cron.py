@@ -87,3 +87,27 @@ def test_terminate_account_cron_hook_clears_crontab(isolated_db, stub_sysops, fa
         hc.terminate_account_cron(account)
 
     assert "demo1" not in fake_crontab
+
+
+def test_mailto_get_set_via_handlers(isolated_db, stub_sysops, fake_crontab):
+    ha.create_account({"username": "demo1"})
+    assert hc.get_cron_mailto({"username": "demo1"})["mailto"] == ""
+
+    result = hc.set_cron_mailto({"username": "demo1", "mailto": "alerts@example.com"})
+    assert result["mailto"] == "alerts@example.com"
+    assert hc.get_cron_mailto({"username": "demo1"})["mailto"] == "alerts@example.com"
+
+
+def test_mailto_set_rejects_root(isolated_db, stub_sysops, fake_crontab):
+    from shared.validation import ValidationError
+
+    ha.create_account({"username": "demo1"})
+    with pytest.raises(ValidationError):
+        hc.set_cron_mailto({"username": "demo1", "mailto": "root"})
+
+
+def test_mailto_ops_reject_unknown_account(isolated_db, stub_sysops, fake_crontab):
+    with pytest.raises(RuntimeError):
+        hc.get_cron_mailto({"username": "ghost"})
+    with pytest.raises(RuntimeError):
+        hc.set_cron_mailto({"username": "ghost", "mailto": "a@b.com"})

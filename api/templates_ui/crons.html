@@ -5,6 +5,16 @@
 <h1>Cron jobs: {{ username }}</h1>
 <p class="muted">Jobs run as the account's own Linux user (never root), via the real system crontab.</p>
 
+<div class="card">
+  <h2>Cron output email (MAILTO)</h2>
+  <p class="muted">Where output/errors from your cron jobs are emailed. Leave blank to use the
+    system default (mail is never sent to the server's root account).</p>
+  <form method="post" action="/ui/accounts/{{ username }}/crons/mailto">
+    <input type="email" name="mailto" value="{{ mailto }}" placeholder="you@yourdomain.com" style="width: 60%">
+    <button type="submit">Save</button>
+  </form>
+</div>
+
 <table>
   <thead><tr><th>Schedule</th><th>Command</th><th>Label</th><th></th></tr></thead>
   <tbody>

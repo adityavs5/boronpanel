@@ -152,13 +152,13 @@ def test_create_mail_domain_rejects_duplicate(isolated_db, stub_sysops, stub_mai
 
 def test_create_mailbox_requires_domain(isolated_db, stub_sysops, stub_mail):
     with pytest.raises(RuntimeError):
-        hm.create_mailbox({"domain": "nope.example", "local_part": "john", "password": "secret123"})
+        hm.create_mailbox({"domain": "nope.example", "local_part": "john", "password": "Secret123!Pass"})
 
 
 def test_create_mailbox_happy_path(isolated_db, stub_sysops, stub_mail):
     ha.create_account({"username": "demo1"})
     hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
-    result = hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "secret123"})
+    result = hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
     assert result["email"] == "john@demo1.example"
     assert ("create_mailbox", "demo1.example", "john") in stub_mail
 
@@ -166,22 +166,22 @@ def test_create_mailbox_happy_path(isolated_db, stub_sysops, stub_mail):
 def test_create_mailbox_rejects_duplicate(isolated_db, stub_sysops, stub_mail):
     ha.create_account({"username": "demo1"})
     hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
-    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "secret123"})
+    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
     with pytest.raises(RuntimeError):
-        hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "secret456"})
+        hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret456!Pass"})
 
 
 def test_create_mailbox_rejects_invalid_local_part(isolated_db, stub_sysops, stub_mail):
     ha.create_account({"username": "demo1"})
     hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
     with pytest.raises(ValidationError):
-        hm.create_mailbox({"domain": "demo1.example", "local_part": "John Doe", "password": "secret123"})
+        hm.create_mailbox({"domain": "demo1.example", "local_part": "John Doe", "password": "Secret123!Pass"})
 
 
 def test_delete_mailbox(isolated_db, stub_sysops, stub_mail):
     ha.create_account({"username": "demo1"})
     hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
-    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "secret123"})
+    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
     result = hm.delete_mailbox({"domain": "demo1.example", "local_part": "john"})
     assert result["status"] == "deleted"
     assert hm.list_mailboxes({"domain": "demo1.example"})["mailboxes"] == []
@@ -190,7 +190,7 @@ def test_delete_mailbox(isolated_db, stub_sysops, stub_mail):
 def test_terminate_account_drops_mail_domains_and_mailboxes(isolated_db, stub_sysops, stub_mail):
     ha.create_account({"username": "demo1"})
     hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
-    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "secret123"})
+    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
 
     from sqlalchemy import select
 
@@ -288,3 +288,62 @@ def test_set_autoresponder_rejects_bad_date_format(isolated_db, stub_mail):
         hm.set_autoresponder(
             {"domain": "demo1.example", "local_part": "john", "subject": "s", "body": "b", "start_date": "07/01/2026"}
         )
+
+
+# --- Spam filter (Phase 4 feature 1) --------------------------------------
+
+
+@pytest.fixture()
+def mail_domain_row(isolated_db, tmp_path, monkeypatch):
+    """get_spam_filter/set_spam_filter read/write shared.models.MailDomain
+    directly (the SQLite control-plane cache), not the MariaDB-backed
+    daemon/mail.py helpers stub_mail mocks -- these settings are consumed
+    only by Forgehost's own code (daemon/spamfilter.py), never queried by
+    Postfix/Dovecot at delivery time, so there's no reason to duplicate
+    them into forgehost_mail (see daemon/spamfilter.py's module
+    docstring)."""
+    from shared.db import write_session
+    from shared.models import Account, MailDomain
+
+    monkeypatch.setattr(hm.spamfilter, "VIRTUAL_CONFIG_BASE", str(tmp_path / "spamassassin"))
+    with write_session() as session:
+        account = Account(username="demo1", uid=5001, gid=5001, status="active")
+        session.add(account)
+        session.flush()
+        row = MailDomain(account_id=account.id, domain="demo1.example")
+        session.add(row)
+        session.flush()
+    return row
+
+
+def test_get_spam_filter_defaults_enabled_no_override(mail_domain_row):
+    result = hm.get_spam_filter({"domain": "demo1.example"})
+    assert result["enabled"] is True
+    assert result["threshold"] is None
+    assert result["effective_threshold"] == 5.0  # server default, unset
+
+
+def test_set_spam_filter_custom_threshold(mail_domain_row):
+    result = hm.set_spam_filter({"domain": "demo1.example", "enabled": True, "threshold": 3.5})
+    assert result["threshold"] == 3.5
+    assert result["effective_threshold"] == 3.5
+    prefs = hm.spamfilter._user_prefs_path("demo1.example").read_text()
+    assert "required_score 3.5" in prefs
+
+
+def test_set_spam_filter_disabled_writes_high_threshold_to_disk(mail_domain_row):
+    hm.set_spam_filter({"domain": "demo1.example", "enabled": False})
+    result = hm.get_spam_filter({"domain": "demo1.example"})
+    assert result["enabled"] is False
+    prefs = hm.spamfilter._user_prefs_path("demo1.example").read_text()
+    assert f"required_score {hm.spamfilter.DISABLED_THRESHOLD}" in prefs
+
+
+def test_set_spam_filter_rejects_out_of_range_threshold(mail_domain_row):
+    with pytest.raises(ValidationError):
+        hm.set_spam_filter({"domain": "demo1.example", "enabled": True, "threshold": 500})
+
+
+def test_get_spam_filter_rejects_unprovisioned_domain(isolated_db):
+    with pytest.raises(ValidationError):
+        hm.get_spam_filter({"domain": "never-provisioned.example"})

@@ -56,6 +56,19 @@ def delete_cron_job(params: dict) -> dict:
     return {"id": params["job_id"], "status": "deleted"}
 
 
+def get_cron_mailto(params: dict) -> dict:
+    username = validate_username(params["username"])
+    _get_active_account(username)
+    return {"mailto": cron.get_mailto(username)}
+
+
+def set_cron_mailto(params: dict) -> dict:
+    username = validate_username(params["username"])
+    _get_active_account(username)
+    mailto = cron.set_mailto(username, params.get("mailto", ""))
+    return {"mailto": mailto}
+
+
 def terminate_account_cron(account: Account) -> None:
     """TERMINATE_HOOKS entry: idempotent -- safe even if the account never
     had any cron jobs (delete_all_jobs treats "no crontab" as success)."""

@@ -104,6 +104,137 @@ def test_render_vhost_conf_suspended_ignores_redirects():
     assert "RewriteRule ^/old$" not in content
 
 
+def test_render_vhost_conf_omits_hotlink_rules_when_disabled():
+    account = make_account()
+    domain = make_domain(hotlink_protection_enabled=False, hotlink_allowed_domains=[])
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert "HTTP_REFERER" not in content
+
+
+def test_render_vhost_conf_includes_hotlink_rules_when_enabled():
+    account = make_account()
+    domain = make_domain(hotlink_protection_enabled=True, hotlink_allowed_domains=[])
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert "RewriteCond %{HTTP_REFERER} !^$" in content
+    assert "RewriteCond %{HTTP_REFERER} !^https?://([^/]+\\.)?demo1\\.example(/|$) [NC]" in content
+    assert f"RewriteRule \\.({ols.HOTLINK_PROTECTED_EXTENSIONS})$ - [F,L]" in content
+
+
+def test_render_vhost_conf_hotlink_includes_allowed_domains():
+    account = make_account()
+    domain = make_domain(hotlink_protection_enabled=True, hotlink_allowed_domains=["cdn.example"])
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert "!^https?://([^/]+\\.)?demo1\\.example(/|$) [NC]" in content
+    assert "!^https?://([^/]+\\.)?cdn\\.example(/|$) [NC]" in content
+
+
+def test_render_vhost_conf_hotlink_and_redirects_coexist():
+    account = make_account()
+    domain = make_domain(hotlink_protection_enabled=True, hotlink_allowed_domains=[])
+    redirects = [{"regex_path": "/old", "target_url": "https://example.com/new", "status_code": 301}]
+    content = ols.render_vhost_conf(account, domain, suspended=False, redirects=redirects)
+    assert "HTTP_REFERER" in content
+    assert "RewriteRule ^/old$ https://example.com/new [R=301,L]" in content
+
+
+def test_render_vhost_conf_suspended_ignores_hotlink():
+    account = make_account()
+    domain = make_domain(hotlink_protection_enabled=True, hotlink_allowed_domains=[])
+    content = ols.render_vhost_conf(account, domain, suspended=True)
+    assert "HTTP_REFERER" not in content
+
+
+def test_render_vhost_conf_omits_realm_when_no_protected_dirs():
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(account, domain, suspended=False, protected_dirs=None)
+    assert "realm" not in content
+
+
+def test_render_vhost_conf_includes_realm_and_context_for_protected_dir():
+    account = make_account()
+    domain = make_domain()
+    protected_dirs = [{"realm_name": "demo1_members", "relative_path": "members", "htpasswd_path": "/home/demo1/public_html/members/.htpasswd"}]
+    content = ols.render_vhost_conf(account, domain, suspended=False, protected_dirs=protected_dirs)
+    assert "realm demo1_members {" in content
+    assert "location              /home/demo1/public_html/members/.htpasswd" in content
+    assert "context /members/ {" in content
+    assert "realm                   demo1_members" in content
+    assert "location                /home/demo1/public_html/members/" in content
+
+
+def test_render_vhost_conf_suspended_omits_protected_dirs():
+    account = make_account()
+    domain = make_domain()
+    protected_dirs = [{"realm_name": "demo1_members", "relative_path": "members", "htpasswd_path": "/x/.htpasswd"}]
+    content = ols.render_vhost_conf(account, domain, suspended=True, protected_dirs=protected_dirs)
+    assert "realm" not in content
+    assert "context /members/" not in content
+
+
+def test_protected_dirs_for_domain_rebases_relative_to_docroot(isolated_db):
+    from shared.db import write_session
+    from shared.models import Account as AccountModel
+    from shared.models import FileAuthDir
+
+    with write_session() as session:
+        account = AccountModel(username="demo1", uid=5001, gid=5001, status="active")
+        session.add(account)
+        session.flush()
+        session.add(FileAuthDir(account_id=account.id, path="public_html/members", realm_name="demo1_members"))
+        account_id = account.id
+
+    with write_session() as session:
+        result = ols._protected_dirs_for_domain(session, "demo1", account_id, "/home/demo1/public_html")
+    assert result == [{
+        "realm_name": "demo1_members",
+        "relative_path": "members",
+        "htpasswd_path": "/home/demo1/public_html/members/.htpasswd",
+    }]
+
+
+def test_protected_dirs_for_domain_excludes_other_domains(isolated_db):
+    from shared.db import write_session
+    from shared.models import Account as AccountModel
+    from shared.models import FileAuthDir
+
+    with write_session() as session:
+        account = AccountModel(username="demo1", uid=5001, gid=5001, status="active")
+        session.add(account)
+        session.flush()
+        session.add(FileAuthDir(account_id=account.id, path="othersite.example/secret", realm_name="demo1_secret"))
+        account_id = account.id
+
+    with write_session() as session:
+        result = ols._protected_dirs_for_domain(session, "demo1", account_id, "/home/demo1/public_html")
+    assert result == []
+
+
+def test_render_vhost_conf_omits_access_control_when_no_blocks():
+    account = make_account()
+    domain = make_domain(ip_block_list=[])
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert "accessControl" not in content
+
+
+def test_render_vhost_conf_includes_access_control_when_blocked():
+    account = make_account()
+    domain = make_domain(ip_block_list=["203.0.113.7", "198.51.100.0/24"])
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert "accessControl" in content
+    assert "allow                 *" in content
+    assert "deny                  203.0.113.7, 198.51.100.0/24" in content
+
+
+def test_render_vhost_conf_access_control_applies_even_when_suspended():
+    """A blocked IP shouldn't see the suspended page either."""
+    account = make_account()
+    domain = make_domain(ip_block_list=["203.0.113.7"])
+    content = ols.render_vhost_conf(account, domain, suspended=True)
+    assert "accessControl" in content
+    assert "deny                  203.0.113.7" in content
+
+
 def test_redirects_for_domain_escapes_literal_dots(isolated_db):
     from shared.db import write_session
     from shared.models import Redirect

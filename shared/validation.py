@@ -8,7 +8,10 @@ just because it passed validation somewhere else in the call stack.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
+import secrets
+import string
 
 # \A/\Z, not ^/$, throughout this module: Python's $ matches either at the
 # true end of the string OR immediately before a single trailing newline
@@ -211,22 +214,123 @@ def validate_redirect_status_code(code: int) -> int:
     return code
 
 
-# Phase 3 feature 10: password manager. NIST SP 800-63B-aligned posture
-# (length is the dominant factor; arbitrary complexity-composition rules
-# are de-emphasized in modern guidance) rather than a traditional
-# "must contain 1 uppercase/1 digit/1 symbol" policy, which mostly
-# encourages predictable substitutions (Password1! satisfies it, isn't
-# meaningfully stronger). Still rejects the most common trivially-weak
-# patterns (blocklist, all-one-character, purely numeric) since a bare
-# length check alone lets those through. 8 chars is NIST 800-63B's own
-# stated minimum (section 5.1.1.2) -- deliberately not a stricter
-# in-house number, so this can be cited against a real published
-# standard rather than an arbitrary house policy.
-MIN_PASSWORD_LENGTH = 8
+# Phase 4 feature 1: SpamAssassin required_score. SpamAssassin itself
+# accepts any positive float, but a threshold below ~1 flags nearly
+# everything as spam (useless) and one above ~20 is indistinguishable in
+# practice from "disabled" (which this feature already has an explicit,
+# separate toggle for) -- bounding the range catches obvious fat-finger
+# input (e.g. "50" meant as a percentage) without being paternalistic
+# about the real, wide range (3-10 is typical) legitimate configs use.
+MIN_SPAM_THRESHOLD = 1.0
+MAX_SPAM_THRESHOLD = 20.0
+
+
+def validate_spam_threshold(value) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        raise ValidationError("spam threshold must be a number") from None
+    if not (MIN_SPAM_THRESHOLD <= score <= MAX_SPAM_THRESHOLD):
+        raise ValidationError(f"spam threshold must be between {MIN_SPAM_THRESHOLD} and {MAX_SPAM_THRESHOLD}")
+    return score
+
+
+# Phase 4 feature 3: IP blocker. Python's own ipaddress module is the
+# validator -- it already correctly rejects the input classes that matter
+# here (malformed octets, out-of-range prefix lengths, trailing garbage)
+# without reimplementing IPv4/IPv6/CIDR parsing by hand.
+MAX_IP_BLOCK_ENTRIES = 200
+
+
+def validate_ip_or_cidr(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("IP/CIDR entry must not be empty")
+    value = value.strip()
+    try:
+        if "/" in value:
+            network = ipaddress.ip_network(value, strict=False)
+            return str(network)
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        raise ValidationError(f"'{value}' is not a valid IP address or CIDR range") from None
+
+
+# Phase 4 feature 4: directory privacy (.htpasswd users). No colon (the
+# htpasswd file's own field separator) or whitespace -- both would corrupt
+# the file's line-based format, the same class of injection this module's
+# other \A/\Z-anchored validators exist to prevent for their own contexts.
+HTPASSWD_USERNAME_RE = re.compile(r"\A[A-Za-z0-9._-]{1,64}\Z")
+
+
+def validate_htpasswd_username(value: str) -> str:
+    if not isinstance(value, str) or not HTPASSWD_USERNAME_RE.match(value):
+        raise ValidationError("username must be 1-64 characters: letters, digits, dot, underscore, hyphen only")
+    return value
+
+
+def validate_protected_dir_relative_path(value: str) -> str:
+    """The real traversal jail is daemon/filemanager.py's own
+    os.path.realpath-based check (reused directly, not reimplemented) --
+    this only rejects a NUL byte, which os.path itself doesn't guard
+    against and would otherwise reach a syscall."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("directory path must not be empty")
+    if "\x00" in value:
+        raise ValidationError("directory path must not contain a NUL byte")
+    return value.strip().strip("/")
+
+
+# Phase 4 feature 5: git repos. Used directly as a directory name
+# (`<name>.git`) and inside a shell-invoked git command's argument list --
+# never shell=True, but still conservative: no dots/slashes, so a name can
+# never itself look like a path segment (`..`, `a/b`).
+GIT_REPO_NAME_RE = re.compile(r"\A[a-z][a-z0-9-]{0,62}\Z")
+
+
+def validate_git_repo_name(value: str) -> str:
+    if not isinstance(value, str) or not GIT_REPO_NAME_RE.match(value):
+        raise ValidationError("repo name must start with a lowercase letter and contain only lowercase letters, digits, hyphens (max 63 chars)")
+    return value
+
+
+MAX_HOTLINK_ALLOWED_DOMAINS = 20
+
+
+def validate_hotlink_allowed_domains(values) -> list[str]:
+    if not isinstance(values, list):
+        raise ValidationError("allowed_domains must be a list")
+    if len(values) > MAX_HOTLINK_ALLOWED_DOMAINS:
+        raise ValidationError(f"allowed_domains must have at most {MAX_HOTLINK_ALLOWED_DOMAINS} entries")
+    seen = set()
+    result = []
+    for value in values:
+        domain = validate_domain(value)
+        if domain not in seen:
+            seen.add(domain)
+            result.append(domain)
+    return result
+
+
+# Phase 3 feature 10 originally set this to an 8-char, NIST SP 800-63B-
+# aligned, length-dominant policy with no composition rules (the modern-
+# guidance argument: composition rules mostly encourage predictable
+# substitutions like "Password1!"). **Superseded explicitly by the Phase 4
+# goal**, which specifies a traditional composition policy in so many words
+# (12+ characters, upper+lower+number+special all required) -- an explicit
+# instruction overrides the earlier in-house reasoning; the NIST-aligned
+# rationale is left here only as a record of what changed and why, not as
+# live guidance. Still rejects the most common trivially-weak patterns
+# (blocklist, all-one-character, purely numeric) on top of the new
+# composition checks, since composition rules alone don't catch those
+# either (e.g. "Password123!" passes composition but is the single most
+# common weak password in every real-world breach corpus).
+MIN_PASSWORD_LENGTH = 12
 _COMMON_WEAK_PASSWORDS = {
     "password", "password1", "password123", "12345678", "123456789",
     "1234567890", "qwertyuiop", "letmein123", "changeme123", "admin1234",
+    "password1!", "password123!", "welcome123!", "iloveyou123",
 }
+_SPECIAL_CHARS_RE = re.compile(r"[^A-Za-z0-9]")
 
 
 def validate_password_strength(password: str) -> str:
@@ -240,7 +344,57 @@ def validate_password_strength(password: str) -> str:
         raise ValidationError("password must not be a single repeated character")
     if password.isdigit():
         raise ValidationError("password must not be purely numeric")
+    if not any(c.isupper() for c in password):
+        raise ValidationError("password must contain at least one uppercase letter")
+    if not any(c.islower() for c in password):
+        raise ValidationError("password must contain at least one lowercase letter")
+    if not any(c.isdigit() for c in password):
+        raise ValidationError("password must contain at least one number")
+    if not _SPECIAL_CHARS_RE.search(password):
+        raise ValidationError("password must contain at least one special character")
     return password
+
+
+_PASSWORD_SPECIAL_CHARS = "!@#$%^&*-_=+"
+
+
+def generate_strong_password(length: int = 20) -> str:
+    """The one place this project generates a random password -- every
+    auto-generated password (account creation, WordPress/app-installer
+    admin accounts, database users) must itself satisfy
+    validate_password_strength, the same as any customer-supplied one.
+
+    Before this consolidation, four separate call sites
+    (daemon/sysops.py, daemon/wordpress.py, daemon/appinstaller.py,
+    daemon/mariadb.py) each had their own near-identical
+    generate_password() drawing only from letters+digits -- none of them
+    would have actually passed validate_password_strength's own special-
+    character requirement if anything had ever checked. Found during
+    Phase 4 feature 12's codebase-wide audit. Not a practical secrecy
+    weakness on its own (20+ random alnum characters is already far
+    stronger than the 12-char human-chosen minimum this validator
+    enforces) -- fixed anyway, for genuine consistency with "12+ char
+    strong passwords... on ALL password operations codebase-wide," and so
+    the generator and the validator can never silently drift apart again.
+    """
+    if length < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"generated password length must be >= {MIN_PASSWORD_LENGTH}")
+    alphabet = string.ascii_letters + string.digits + _PASSWORD_SPECIAL_CHARS
+    while True:
+        required = [
+            secrets.choice(string.ascii_uppercase),
+            secrets.choice(string.ascii_lowercase),
+            secrets.choice(string.digits),
+            secrets.choice(_PASSWORD_SPECIAL_CHARS),
+        ]
+        rest = [secrets.choice(alphabet) for _ in range(length - len(required))]
+        chars = required + rest
+        secrets.SystemRandom().shuffle(chars)
+        candidate = "".join(chars)
+        try:
+            return validate_password_strength(candidate)
+        except ValidationError:
+            continue  # vanishingly rare (e.g. landed on a disallowed common password); retry
 
 
 DATE_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
@@ -256,3 +410,45 @@ def validate_iso_date(value: str) -> str:
     except ValueError as exc:
         raise ValidationError(f"'{value}' is not a valid calendar date") from exc
     return value
+
+
+# Phase 4 feature 6: SSH keys. Only a cheap, pure pre-check here (no NUL
+# byte, single line only -- authorized_keys is one-key-per-line, so a
+# multi-line paste would silently corrupt the file/add unintended keys,
+# and a reasonable length ceiling) -- the actual cryptographic format
+# check is a real `ssh-keygen -lf -` call in daemon/sshkeys.py, the same
+# "cheap pure check here, real system-tool validation in the daemon"
+# split autoresponder.py's Sieve validation already uses.
+MAX_SSH_KEY_LENGTH = 8192
+
+
+def validate_ssh_key_text(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("SSH public key must not be empty")
+    value = value.strip()
+    if "\x00" in value:
+        raise ValidationError("SSH public key must not contain a NUL byte")
+    if len(value) > MAX_SSH_KEY_LENGTH:
+        raise ValidationError(f"SSH public key must be at most {MAX_SSH_KEY_LENGTH} characters")
+    if "\n" in value:
+        raise ValidationError("SSH public key must be a single line (one key per entry)")
+    return value
+
+
+# Phase 4 feature 10: cron MAILTO. Empty is valid and means "no MAILTO
+# line at all" (daemon/cron.py falls back to cron's own native per-owner
+# default -- always the account's own Linux user, since every crontab is
+# always written via `crontab -u <username>`, never root, so this is a
+# reset, not a "suppress all mail" state). The one thing actually worth
+# rejecting: a customer typing "root" (in any of its addressable forms)
+# and having their cron output routed to the server operator's own
+# mailbox -- an information-disclosure surprise on a shared box, not
+# something cron's own syntax prevents on its own.
+def validate_cron_mailto(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    local_part = value.split("@", 1)[0].strip('"').lower()
+    if local_part == "root":
+        raise ValidationError("MAILTO must not be 'root' -- shared hosting crontabs must never target the server's root mailbox")
+    return validate_email_address(value)

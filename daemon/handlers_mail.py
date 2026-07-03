@@ -10,15 +10,17 @@ from sqlalchemy import select
 from shared.db import write_session
 from shared.models import Account, MailDomain, MailUser
 from shared.validation import (
+    ValidationError,
     validate_domain,
     validate_email_address,
     validate_iso_date,
     validate_mailbox_local_part,
     validate_password_strength,
+    validate_spam_threshold,
     validate_username,
 )
 
-from daemon import autoresponder, dkim, mail
+from daemon import autoresponder, dkim, mail, spamfilter
 
 
 def create_mail_domain(params: dict) -> dict:
@@ -158,6 +160,7 @@ def terminate_account_mail(account: Account) -> None:
     for domain_name in domains:
         mail.delete_mail_domain(domain_name)
         _delete_mail_domain_cache(domain_name)
+        spamfilter.remove_domain_spam_settings(domain_name)
         try:
             dkim.teardown_dns_signing(domain_name)
         except Exception:
@@ -250,3 +253,61 @@ def delete_autoresponder(params: dict) -> dict:
     autoresponder.remove_autoresponder(domain_name, local_part)
     mail.delete_autoresponder(domain_name, local_part)
     return {"domain": domain_name, "local_part": local_part, "status": "deleted"}
+
+
+# --- SpamAssassin spam filter (Phase 4 feature 1) --------------------------
+#
+# Per mail-domain, not per-mailbox (matches this file's existing catchall/
+# forwarder/autoresponder API shape). enabled/threshold are stored in the
+# SQLite control-plane cache (MailDomain) -- not MariaDB's forgehost_mail
+# schema like catchall/forwarders, since nothing outside Forgehost's own
+# code (no Postfix/Dovecot SQL lookup) ever needs to query these values;
+# the actual enforcement is daemon/spamfilter.py's per-domain
+# virtual-config-dir prefs file, kept in sync with this row on every
+# write.
+
+
+def _mail_domain_row(session, domain_name: str) -> MailDomain:
+    row = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))
+    if row is None:
+        raise ValidationError(f"mail domain '{domain_name}' is not provisioned")
+    return row
+
+
+def get_spam_filter(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    with write_session() as session:
+        row = _mail_domain_row(session, domain_name)
+        enabled = row.spam_filter_enabled
+        threshold = row.spam_filter_threshold
+    return {
+        "domain": domain_name,
+        "enabled": enabled,
+        "threshold": threshold,
+        "effective_threshold": threshold if threshold is not None else spamfilter.get_global_default_threshold(),
+    }
+
+
+def set_spam_filter(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    enabled = bool(params.get("enabled", True))
+    raw_threshold = params.get("threshold")
+    threshold = validate_spam_threshold(raw_threshold) if raw_threshold is not None else None
+
+    with write_session() as session:
+        row = _mail_domain_row(session, domain_name)
+        row.spam_filter_enabled = enabled
+        row.spam_filter_threshold = threshold
+        session.flush()
+
+    # Apply to disk AFTER the DB commit succeeds, mirroring this file's own
+    # autoresponder ordering rationale (mail.set_autoresponder is called
+    # only after autoresponder.apply_autoresponder succeeds) -- inverted
+    # here on purpose: a prefs-file write failing after the DB already
+    # says "enabled" would leave a domain silently unprotected rather than
+    # silently un-set, and a filesystem write is far less likely to fail
+    # than a validated DB update, so recording intent first is the safer
+    # order for this specific feature.
+    spamfilter.apply_domain_spam_settings(domain_name, enabled, threshold)
+
+    return get_spam_filter({"domain": domain_name})

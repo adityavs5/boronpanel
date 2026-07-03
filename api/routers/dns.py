@@ -79,6 +79,7 @@ def delete_record(domain: str, subdomain: str, type: str, identity: Identity = D
 @ui_router.get("/{domain}")
 def ui_zone_records(request: Request, username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     try:
         records = call_daemon("dns.list_records", identity, domain=domain)["records"]
     except HTTPException:
@@ -95,6 +96,7 @@ def ui_zone_records(request: Request, username: str, domain: str, identity: Iden
 @ui_router.post("/{domain}/create-zone")
 def ui_create_zone(username: str, domain: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon("dns.create_zone", identity, domain=domain, username=username)
     return RedirectResponse(f"/ui/accounts/{username}/dns/{domain}", status_code=303)
 
@@ -110,6 +112,7 @@ def ui_set_record(
     identity: Identity = Depends(get_identity),
 ):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     # One value per line -- lets a multi-value rrset (e.g. two MX hosts,
     # or an existing SPF TXT alongside a second TXT value at the same
     # name) be edited as a whole, matching PowerDNS's own REPLACE
@@ -137,5 +140,6 @@ def ui_delete_record(
     identity: Identity = Depends(get_identity),
 ):
     require_account_access(identity, username)
+    require_domain_access(identity, domain)
     call_daemon("dns.delete_record", identity, domain=domain, subdomain=subdomain, type=type)
     return RedirectResponse(f"/ui/accounts/{username}/dns/{domain}", status_code=303)

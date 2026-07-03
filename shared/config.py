@@ -150,6 +150,16 @@ class Settings:
     wp_staging_dir: str = "/var/lib/forgehost/wp-staging"
     wp_install_concurrency: int = 2
 
+    # Phase 4 feature 8: Softaculous-equivalent app installer (Joomla/
+    # Drupal/PrestaShop/Laravel/static) -- same staging-dir lesson as
+    # wp_staging_dir (CHECKPOINT-phase3-2.md: an install helper invoked
+    # via `runuser` must live somewhere the target hosting account's own
+    # uid can read), kept separate from wp_staging_dir since it's a
+    # different, newer feature's own scratch space, not because the two
+    # locations need different permissions.
+    app_staging_dir: str = "/var/lib/forgehost/app-staging"
+    app_install_concurrency: int = 2
+
     # Phase 3 feature 3: phpMyAdmin auto-login. pma_token_dir is
     # deliberately NOT under /var/lib/forgehost (locked to
     # root:forgehost-api) -- see wp_staging_dir's install-helper lesson

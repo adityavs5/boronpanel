@@ -21,12 +21,21 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import ols
+from daemon import ols, sysops
 
 DEFAULTS = {
-    "memory_limit": "256M",
-    "upload_max_filesize": "64M",
-    "post_max_size": "64M",
+    # Must match this server's real /usr/local/lsws/lsphp83/etc/php/8.3/litespeed/php.ini
+    # -- these are shown in the UI/API as the account's *current* effective
+    # values whenever no PhpIniOverride row exists yet (get_php_ini falls
+    # back to this dict), so a mismatch here isn't cosmetic: a customer
+    # would see e.g. "64M" upload limit pre-filled and not understand why
+    # their actual uploads fail at 2M. Found stale during Phase 4 feature 9's
+    # live verification (memory_limit/upload_max_filesize/post_max_size were
+    # all higher than the real php.ini) -- confirmed against the live file,
+    # not assumed, before correcting.
+    "memory_limit": "128M",
+    "upload_max_filesize": "2M",
+    "post_max_size": "8M",
     "max_execution_time": 30,
     "display_errors": False,
     "error_reporting": "E_ALL & ~E_DEPRECATED & ~E_STRICT",
@@ -104,6 +113,11 @@ def set_php_ini(params: dict) -> dict:
     # going through the same validate->apply->reload->verify->rollback
     # pipeline every other config change in this project uses.
     ols.refresh_vhost(account_snapshot)
+    # A vhost/web-server reload alone is not enough for a php_ini change
+    # specifically -- see sysops.recycle_php_workers's own docstring for
+    # why (confirmed live: a stale ini value can persist for well over a
+    # minute otherwise, from already-warm pooled LSAPI workers).
+    sysops.recycle_php_workers(username)
 
     return {"username": username, "php_ini": result}
 
@@ -120,6 +134,7 @@ def reset_php_ini(params: dict) -> dict:
         account_snapshot = account
 
     ols.refresh_vhost(account_snapshot)
+    sysops.recycle_php_workers(username)
     return {"username": username, "status": "reset_to_defaults"}
 
 

@@ -18,7 +18,7 @@ from sqlalchemy import select
 from shared.db import write_session
 from shared.models import ApiToken, PanelUser, Session
 from shared.passwords import hash_password
-from shared.validation import ValidationError
+from shared.validation import ValidationError, validate_password_strength
 
 SESSION_TTL_HOURS = 24 * 7
 TOKEN_PREFIX_LEN = 8
@@ -45,8 +45,7 @@ def create_panel_user(params: dict) -> dict:
         raise ValidationError("role must be 'admin' or 'customer'")
     if role == "customer" and account_id is None:
         raise ValidationError("customer panel users must have an account_id")
-    if len(password) < 8:
-        raise ValidationError("password must be at least 8 characters")
+    password = validate_password_strength(password)
 
     with write_session() as session:
         existing = session.scalar(select(PanelUser).where(PanelUser.username == username))
@@ -65,9 +64,7 @@ def create_panel_user(params: dict) -> dict:
 
 def set_panel_user_password(params: dict) -> dict:
     username = params["username"]
-    new_password = params["password"]
-    if len(new_password) < 8:
-        raise ValidationError("password must be at least 8 characters")
+    new_password = validate_password_strength(params["password"])
     with write_session() as session:
         user = session.scalar(select(PanelUser).where(PanelUser.username == username))
         if user is None:

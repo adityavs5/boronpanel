@@ -19,6 +19,22 @@ class CronJobBody(BaseModel):
     label: str = ""
 
 
+class CronMailtoBody(BaseModel):
+    mailto: str = ""
+
+
+@api_router.get("/mailto")
+def get_mailto(username: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("cron.mailto.get", identity, username=username)
+
+
+@api_router.patch("/mailto")
+def set_mailto(username: str, body: CronMailtoBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("cron.mailto.set", identity, username=username, mailto=body.mailto)
+
+
 @api_router.get("")
 def list_crons(username: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
@@ -59,7 +75,15 @@ def _build_schedule(minute: str, hour: str, dom: str, month: str, dow: str, raw:
 def ui_list_crons(request: Request, username: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     jobs = call_daemon("cron.list", identity, username=username)["jobs"]
-    return templates.TemplateResponse(request, "crons.html", {"identity": identity, "username": username, "jobs": jobs})
+    mailto = call_daemon("cron.mailto.get", identity, username=username)["mailto"]
+    return templates.TemplateResponse(request, "crons.html", {"identity": identity, "username": username, "jobs": jobs, "mailto": mailto})
+
+
+@ui_router.post("/mailto")
+def ui_set_mailto(username: str, mailto: str = Form(""), identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    call_daemon("cron.mailto.set", identity, username=username, mailto=mailto)
+    return RedirectResponse(f"/ui/accounts/{username}/crons", status_code=303)
 
 
 @ui_router.post("")

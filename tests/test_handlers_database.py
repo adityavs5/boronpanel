@@ -113,8 +113,8 @@ def test_drop_database_not_found(isolated_db, stub_sysops, stub_mariadb):
 def test_change_password(isolated_db, stub_sysops, stub_mariadb):
     ha.create_account({"username": "demo1"})
     hdb.create_database({"username": "demo1", "name": "shop"})
-    result = hdb.change_password({"username": "demo1", "name": "shop", "password": "newpass123"})
-    assert result["password"] == "newpass123"
+    result = hdb.change_password({"username": "demo1", "name": "shop", "password": "NewPassword123!"})
+    assert result["password"] == "NewPassword123!"
     assert ("set_password", "demo1_shop") in stub_mariadb
 
 

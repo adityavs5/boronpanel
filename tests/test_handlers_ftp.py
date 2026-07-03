@@ -73,7 +73,7 @@ def account(isolated_db, stub_sysops):
 
 def test_create_ftp_account_happy_path(account, fake_account_home, stub_pure_ftpd):
     result = hf.create_ftp_account(
-        {"username": "demo1", "label": "designer", "path": "public_html", "password": "secret123"}
+        {"username": "demo1", "label": "designer", "path": "public_html", "password": "Secret123!Pass"}
     )
     assert result["ftp_login"] == "demo1_designer"
     assert result["label"] == "designer"
@@ -82,58 +82,58 @@ def test_create_ftp_account_happy_path(account, fake_account_home, stub_pure_ftp
 
 
 def test_create_ftp_account_creates_missing_path(account, fake_account_home, stub_pure_ftpd):
-    hf.create_ftp_account({"username": "demo1", "label": "uploads", "path": "public_html/uploads", "password": "secret123"})
+    hf.create_ftp_account({"username": "demo1", "label": "uploads", "path": "public_html/uploads", "password": "Secret123!Pass"})
     assert (fake_account_home["home"] / "public_html" / "uploads").is_dir()
 
 
 def test_create_ftp_account_rejects_path_escape(account, fake_account_home, stub_pure_ftpd):
     with pytest.raises(ValidationError):
-        hf.create_ftp_account({"username": "demo1", "label": "escape", "path": "../outside_the_jail", "password": "secret123"})
+        hf.create_ftp_account({"username": "demo1", "label": "escape", "path": "../outside_the_jail", "password": "Secret123!Pass"})
     assert stub_pure_ftpd == []
 
 
 def test_create_ftp_account_rejects_symlink_escape(account, fake_account_home, stub_pure_ftpd):
     (fake_account_home["home"] / "escape_link").symlink_to(fake_account_home["outside"])
     with pytest.raises(ValidationError):
-        hf.create_ftp_account({"username": "demo1", "label": "escape", "path": "escape_link", "password": "secret123"})
+        hf.create_ftp_account({"username": "demo1", "label": "escape", "path": "escape_link", "password": "Secret123!Pass"})
     assert stub_pure_ftpd == []
 
 
 def test_create_ftp_account_rejects_duplicate_label(account, fake_account_home, stub_pure_ftpd):
-    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "secret123"})
+    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
     with pytest.raises(RuntimeError):
-        hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "secret123"})
+        hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
 
 
 def test_list_ftp_accounts(account, fake_account_home, stub_pure_ftpd):
-    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "secret123"})
+    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
     result = hf.list_ftp_accounts({"username": "demo1"})["ftp_accounts"]
     assert len(result) == 1
     assert result[0]["label"] == "designer"
 
 
 def test_set_ftp_path(account, fake_account_home, stub_pure_ftpd):
-    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "secret123"})
+    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
     result = hf.set_ftp_path({"username": "demo1", "label": "designer", "path": "public_html"})
     assert result["path"] == str(fake_account_home["home"] / "public_html")
     assert ("set_path", "demo1_designer", str(fake_account_home["home"] / "public_html")) in stub_pure_ftpd
 
 
 def test_set_ftp_path_rejects_escape(account, fake_account_home, stub_pure_ftpd):
-    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "secret123"})
+    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
     with pytest.raises(ValidationError):
         hf.set_ftp_path({"username": "demo1", "label": "designer", "path": "../outside_the_jail"})
 
 
 def test_change_ftp_password(account, fake_account_home, stub_pure_ftpd):
-    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "secret123"})
-    result = hf.change_ftp_password({"username": "demo1", "label": "designer", "password": "newpass456"})
+    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
+    result = hf.change_ftp_password({"username": "demo1", "label": "designer", "password": "NewPassword456!"})
     assert result["status"] == "password_changed"
     assert ("set_password", "demo1_designer") in stub_pure_ftpd
 
 
 def test_delete_ftp_account(account, fake_account_home, stub_pure_ftpd):
-    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "secret123"})
+    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
     result = hf.delete_ftp_account({"username": "demo1", "label": "designer"})
     assert result["status"] == "deleted"
     assert hf.list_ftp_accounts({"username": "demo1"})["ftp_accounts"] == []
@@ -146,8 +146,8 @@ def test_delete_ftp_account_not_found(account, fake_account_home, stub_pure_ftpd
 
 
 def test_terminate_account_removes_ftp_accounts(account, fake_account_home, stub_pure_ftpd):
-    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "secret123"})
-    hf.create_ftp_account({"username": "demo1", "label": "backup", "path": "", "password": "secret456"})
+    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
+    hf.create_ftp_account({"username": "demo1", "label": "backup", "path": "", "password": "Secret456!Pass"})
 
     from shared.models import Account
 
@@ -180,6 +180,6 @@ def test_another_accounts_ftp_login_does_not_collide(isolated_db, stub_sysops, f
 
     monkeypatch.setattr(hf.pwd, "getpwnam", fake_getpwnam)
 
-    hf.create_ftp_account({"username": "demo1", "label": "shared", "path": "", "password": "secret123"})
-    result = hf.create_ftp_account({"username": "demo2", "label": "shared", "path": "", "password": "secret456"})
+    hf.create_ftp_account({"username": "demo1", "label": "shared", "path": "", "password": "Secret123!Pass"})
+    result = hf.create_ftp_account({"username": "demo2", "label": "shared", "path": "", "password": "Secret456!Pass"})
     assert result["ftp_login"] == "demo2_shared"

@@ -122,3 +122,20 @@ def require_domain_access(identity: Identity, domain: str) -> None:
         domain_row = db.scalar(select(Domain).where(Domain.domain == domain))
         if domain_row is None or domain_row.account_id != identity.account_id:
             raise HTTPException(status_code=403, detail="not authorized for this domain")
+
+
+def require_customer_self_access(identity: Identity, username: str) -> None:
+    """Phase 4 feature 6's own explicit scoping: "Customer panel only --
+    admin cannot see account SSH keys." A deliberate exception to every
+    other resource in this project, where an admin can always act on any
+    account -- an SSH key grants real interactive shell access to that
+    account's files (daemon/sysops.py's LOGIN_SHELL), and the goal singles
+    this one resource out as customer-eyes-only, so admin is rejected
+    here even though require_account_access would normally let it through.
+    """
+    if identity.role != "customer" or identity.account_id is None:
+        raise HTTPException(status_code=403, detail="SSH key management is customer-only")
+    with read_session() as db:
+        account = db.get(Account, identity.account_id)
+        if account is None or account.username != username:
+            raise HTTPException(status_code=403, detail="not authorized for this account")

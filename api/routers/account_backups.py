@@ -39,13 +39,13 @@ def list_account_jobs(username: str, identity: Identity = Depends(get_identity))
 @api_router.get("/{job_id}")
 def get_job(username: str, job_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon("backup.job.get", identity, job_id=job_id)
+    return call_daemon("backup.job.get", identity, username=username, job_id=job_id)
 
 
 @api_router.get("/{job_id}/browse")
 def browse_backup(username: str, job_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon("backup.job.browse", identity, job_id=job_id)
+    return call_daemon("backup.job.browse", identity, username=username, job_id=job_id)
 
 
 class TriggerRestoreBody(BaseModel):
@@ -56,7 +56,7 @@ class TriggerRestoreBody(BaseModel):
 @api_router.post("/{job_id}/restore")
 def trigger_restore(username: str, job_id: int, body: TriggerRestoreBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon("backup.restore.trigger", identity, backup_job_id=job_id, **body.model_dump())
+    return call_daemon("backup.restore.trigger", identity, username=username, backup_job_id=job_id, **body.model_dump())
 
 
 @api_router.get("/restores/list")
@@ -103,8 +103,8 @@ def ui_trigger_backup(
 @ui_router.get("/{job_id}")
 def ui_browse_backup(request: Request, username: str, job_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    job = call_daemon("backup.job.get", identity, job_id=job_id)
-    browse = call_daemon("backup.job.browse", identity, job_id=job_id) if job["status"] == "completed" else None
+    job = call_daemon("backup.job.get", identity, username=username, job_id=job_id)
+    browse = call_daemon("backup.job.browse", identity, username=username, job_id=job_id) if job["status"] == "completed" else None
     return templates.TemplateResponse(
         request,
         "backup_browse.html",
@@ -124,6 +124,7 @@ def ui_trigger_restore(
     call_daemon(
         "backup.restore.trigger",
         identity,
+        username=username,
         backup_job_id=job_id,
         kind=kind or None,
         item_ref=item_ref or None,

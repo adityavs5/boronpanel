@@ -209,7 +209,7 @@ def test_trigger_install_creates_pending_job_and_runs_async(account_with_domain,
     import time
 
     for _ in range(50):
-        job = wp.get_job({"job_id": result["id"]})
+        job = wp.get_job({"job_id": result["id"], "username": "demo1"})
         if job["status"] == "completed":
             break
         time.sleep(0.05)
@@ -218,13 +218,13 @@ def test_trigger_install_creates_pending_job_and_runs_async(account_with_domain,
 
     assert job["admin_password"] is not None
     # Second read must not re-reveal the password (one-time reveal).
-    job2 = wp.get_job({"job_id": result["id"]})
+    job2 = wp.get_job({"job_id": result["id"], "username": "demo1"})
     assert job2["admin_password"] is None
 
 
-def test_get_job_missing_raises(isolated_db):
+def test_get_job_missing_raises(account_with_domain):
     with pytest.raises(wp.WordPressError):
-        wp.get_job({"job_id": 999999})
+        wp.get_job({"job_id": 999999, "username": "demo1"})
 
 
 def test_install_helper_lives_outside_var_lib_forgehost():

@@ -11,6 +11,7 @@ import datetime as dt
 from sqlalchemy import (
     JSON,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -70,6 +71,15 @@ class Domain(Base):
     docroot: Mapped[str] = mapped_column(String(512))
     ssl_status: Mapped[str] = mapped_column(String(16), default="none")  # none|pending|active|error
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Phase 4 feature 2: hotlink protection. Off by default -- this is an
+    # opt-in feature that can break legitimate embedding (the account's
+    # own other domains, a CDN, etc.), so a fresh domain must not suddenly
+    # start blocking image requests nobody asked to block.
+    hotlink_protection_enabled: Mapped[bool] = mapped_column(default=False)
+    hotlink_allowed_domains: Mapped[list] = mapped_column(JSON, default=list)
+    # Phase 4 feature 3: IP/CIDR deny list, rendered into OLS's native
+    # per-vhost accessControl block.
+    ip_block_list: Mapped[list] = mapped_column(JSON, default=list)
 
     account: Mapped[Account] = relationship(back_populates="domains")
 
@@ -121,6 +131,17 @@ class MailDomain(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
     domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Phase 4 feature 1: SpamAssassin. Domain-wide (not per-mailbox --
+    # matches this project's existing domain-scoped email-feature API
+    # shape from Phase 3 feature 4: catchall/forwarders/autoresponders are
+    # all per-domain, not per-mailbox). threshold=None means "use the
+    # server-wide admin default" (SpamGlobalSettings) -- no per-domain
+    # SpamAssassin config file is written for that case at all (daemon/
+    # spamfilter.py), so a later change to the global default is picked up
+    # automatically rather than needing every "using the default" domain's
+    # file rewritten.
+    spam_filter_enabled: Mapped[bool] = mapped_column(default=True)
+    spam_filter_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class MailUser(Base):
@@ -133,6 +154,21 @@ class MailUser(Base):
     domain: Mapped[str] = mapped_column(String(253))
     quota_mb: Mapped[int] = mapped_column(Integer, default=1024)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SpamGlobalSettings(Base):
+    """Single-row (id=1) table: the admin-configurable, server-wide default
+    SpamAssassin `required_score` (Phase 4 feature 1). A dedicated table
+    rather than a generic key-value settings store -- no other server-wide
+    admin setting exists yet in this project to justify that abstraction,
+    and this is simpler to reason about (one row, one column that matters)
+    until a second such setting actually shows up."""
+
+    __tablename__ = "spam_global_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    default_threshold: Mapped[float] = mapped_column(Float, default=5.0)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class PanelUser(Base):
@@ -441,5 +477,83 @@ class RestoreJob(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")
     progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
     error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FileAuthDir(Base):
+    """Per-directory password protection (Phase 4 feature 4). Deliberately
+    holds NO credentials -- users/passwords live only in the directory's own
+    `.htpasswd` file inside the account's home (daemon/fileauth.py), per the
+    goal's explicit "never in panel DB" requirement. This row is purely
+    metadata: which directory is protected, and the OLS realm name that
+    references its .htpasswd file (needed at vhost-render time, daemon/ols.py).
+    `path` is relative to the account's home dir, matching
+    daemon/filemanager.py's own path convention (jailed the same way)."""
+
+    __tablename__ = "file_auth_dirs"
+    __table_args__ = (UniqueConstraint("account_id", "path", name="uq_file_auth_dir"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    path: Mapped[str] = mapped_column(String(1024))
+    realm_name: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GitRepo(Base):
+    """Per-account bare git repo + push-to-deploy (Phase 4 feature 5).
+    `deploy_target` is relative to the account's home dir (None until
+    configured -- a repo can exist with no deploy target set, in which case
+    pushes are accepted but nothing is deployed anywhere)."""
+
+    __tablename__ = "git_repos"
+    __table_args__ = (UniqueConstraint("account_id", "name", name="uq_git_repo"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    deploy_target: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AppInstall(Base):
+    """Softaculous-equivalent app-installer metadata (Phase 4 feature 8).
+    Same "record metadata, never credentials" posture as WordPressInstall
+    (Phase 3 feature 2) -- admin_user/db_name are recorded (needed for the
+    installed-apps list and "update available" checks), the admin
+    password is not."""
+
+    __tablename__ = "app_installs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    app_id: Mapped[str] = mapped_column(String(32))  # joomla | drupal | prestashop | laravel | static
+    version: Mapped[str] = mapped_column(String(32))
+    db_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    db_user: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    admin_user: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    installed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AppInstallJob(Base):
+    """Async install job -- same one-time-reveal pattern as WordPressJob
+    (Phase 3 feature 2): admin_password is stored only transiently, until
+    the first successful poll that observes status=="completed", then
+    cleared so it can never leak from this row again."""
+
+    __tablename__ = "app_install_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(253))
+    app_id: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
+    progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    admin_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    admin_user: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    admin_password: Mapped[str | None] = mapped_column(String(128), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

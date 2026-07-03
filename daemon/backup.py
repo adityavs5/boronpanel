@@ -286,11 +286,26 @@ def trigger_backup(params: dict) -> dict:
     return result
 
 
+def _resolve_account_id(username: str) -> int:
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found")
+        return account.id
+
+
 def get_job(params: dict) -> dict:
+    """job_id is a small sequential integer, not a capability -- see
+    daemon/wordpress.py's get_job docstring for the exact same class of
+    bug (found auditing this module right after finding it there;
+    docs/CHECKPOINT-phase4-0b-cross-account-idor.md). username is required and
+    cross-checked against the job's own account_id; a mismatch is
+    reported identically to a nonexistent job_id."""
     job_id = int(params["job_id"])
+    account_id = _resolve_account_id(validate_username(params["username"]))
     with write_session() as session:
         job = session.get(BackupJob, job_id)
-        if job is None:
+        if job is None or job.account_id != account_id:
             raise BackupError(f"backup job {job_id} not found")
         return _job_to_dict(job)
 
@@ -633,9 +648,10 @@ def _fetch_artifact_locally(artifact_path: str, dest_kind: str, tmp_dir: str) ->
 
 def browse_backup(params: dict) -> dict:
     job_id = int(params["job_id"])
+    account_id = _resolve_account_id(validate_username(params["username"]))
     with write_session() as session:
         job = session.get(BackupJob, job_id)
-        if job is None:
+        if job is None or job.account_id != account_id:
             raise BackupError(f"backup job {job_id} not found")
         if job.status != "completed":
             raise BackupError(f"backup job {job_id} is not completed (status: {job.status})")
@@ -680,10 +696,11 @@ def _restore_to_dict(r: RestoreJob) -> dict:
 def trigger_restore(params: dict) -> dict:
     backup_job_id = int(params["backup_job_id"])
     item_ref = params.get("item_ref")
+    account_id = _resolve_account_id(validate_username(params["username"]))
 
     with write_session() as session:
         backup_job = session.get(BackupJob, backup_job_id)
-        if backup_job is None:
+        if backup_job is None or backup_job.account_id != account_id:
             raise BackupError(f"backup job {backup_job_id} not found")
         if backup_job.status != "completed":
             raise BackupError(f"backup job {backup_job_id} is not completed")
@@ -715,10 +732,16 @@ def trigger_restore(params: dict) -> dict:
 
 
 def get_restore_job(params: dict) -> dict:
+    """Not currently wired to any API route, but fixed with the same
+    username-ownership check as get_job/browse_backup/trigger_restore
+    above so it can't become a silent IDOR the moment a future route
+    exposes it (the exact "not built yet, so not a bug yet" trap this
+    project's own review process explicitly watches for)."""
     restore_job_id = int(params["restore_job_id"])
+    account_id = _resolve_account_id(validate_username(params["username"]))
     with write_session() as session:
         r = session.get(RestoreJob, restore_job_id)
-        if r is None:
+        if r is None or r.account_id != account_id:
             raise BackupError(f"restore job {restore_job_id} not found")
         return _restore_to_dict(r)
 

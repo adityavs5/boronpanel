@@ -22,9 +22,12 @@ import uuid
 
 from croniter import croniter
 
+from shared.validation import validate_cron_mailto
+
 from daemon.procutil import run
 
 MARKER_RE = re.compile(r"^#\s*forgehost:id=([0-9a-f-]{36})(?:\s+label=(.*))?$")
+MAILTO_RE = re.compile(r"^MAILTO\s*=\s*(.*)$")
 MAX_COMMAND_LEN = 1000
 MAX_LABEL_LEN = 200
 
@@ -83,6 +86,31 @@ def _write_raw(username: str, lines: list[str]) -> None:
     result = run(["crontab", "-u", username, "-"], input_text=content, timeout=10)
     if not result.ok:
         raise CronError(f"failed to write crontab for '{username}': {result.stderr.strip()}")
+
+
+def get_mailto(username: str) -> str:
+    for line in _read_raw(username):
+        m = MAILTO_RE.match(line.strip())
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+    return ""
+
+
+def set_mailto(username: str, mailto: str) -> str:
+    """A MAILTO=<value> line, when present, must be the crontab's own
+    global setting -- not tied to any one job -- so it's kept separate
+    from the marker-comment/job-line pairs list_jobs/add_job/etc. work
+    with. An empty value removes the line entirely (falls back to cron's
+    own native default: mail to the crontab's owner, which is always this
+    account's own Linux user -- crontab -u <username>, never root -- so
+    this is a reset, not a "suppress all mail" state; see
+    validate_cron_mailto's own docstring)."""
+    mailto = validate_cron_mailto(mailto)
+    lines = [line for line in _read_raw(username) if not MAILTO_RE.match(line.strip())]
+    if mailto:
+        lines.insert(0, f"MAILTO={mailto}")
+    _write_raw(username, lines)
+    return mailto
 
 
 def list_jobs(username: str) -> list[dict]:
