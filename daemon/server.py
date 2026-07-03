@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, cgroups, disktree, fileauth, filemanager, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, health, logs, mailqueue, nameservers, ols, pma, servicemgr, spamfilter, sshkeys, ssl, wordpress
+from daemon import appinstaller, audit, backup, cgroups, disktree, fileauth, filemanager, firewall, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, health, logs, mailqueue, nameservers, ols, pma, servicemgr, spamfilter, sshkeys, ssl, wordpress
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -185,6 +185,13 @@ OP_TABLE = {
     "mailqueue.flush_all": mailqueue.flush_all,
     "mailqueue.delete": mailqueue.delete_message,
     "mailqueue.delete_all": mailqueue.delete_all,
+    # Phase 5 feature 4: firewall UI (UFW)
+    "firewall.list": firewall.list_rules,
+    "firewall.add": firewall.add_rule,
+    "firewall.delete": firewall.delete_rule,
+    "firewall.status": firewall.get_status,
+    "firewall.enable": firewall.enable_firewall,
+    "firewall.disable": firewall.disable_firewall,
 }
 
 # Security audit finding F7: disktree.get/top_files and usage.get run real

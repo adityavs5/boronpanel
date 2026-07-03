@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.routers import account_backups, accounts, apps, auth, backups, cron, databases, disktree, dns, domains, email, fileauth, files, ftp, git, health, hotlink, ipblock, logs_router, mail, mailqueue, nameservers, php_ini, pma, redirects, services, sshkeys, ssl_router, tokens, usage, wordpress
+from api.routers import account_backups, accounts, apps, auth, backups, cron, databases, disktree, dns, domains, email, fileauth, files, firewall, ftp, git, health, hotlink, ipblock, logs_router, mail, mailqueue, nameservers, php_ini, pma, redirects, services, sshkeys, ssl_router, tokens, usage, wordpress
 
 app = FastAPI(title="Forgehost", docs_url="/api/docs", redoc_url=None)
 
@@ -42,7 +42,7 @@ async def _security_headers(request, call_next):
     return response
 
 app.include_router(auth.router)
-for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue):
+for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall):
     app.include_router(module.api_router)
     app.include_router(module.ui_router)
 # Phase 4 feature 8: apps.py has three router objects (account-scoped
