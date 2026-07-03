@@ -12,6 +12,7 @@ import grp
 import logging
 import os
 import stat
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from shared.config import settings
@@ -92,6 +93,9 @@ OP_TABLE = {
     "panel_user.set_password": handlers_auth.set_panel_user_password,
     "auth.create_session": handlers_auth.create_session,
     "auth.revoke_session": handlers_auth.revoke_session,
+    # Security audit finding F2: login brute-force throttling
+    "auth.check_login_lockout": handlers_auth.check_login_lockout,
+    "auth.record_login_result": handlers_auth.record_login_result,
     "auth.create_api_token": handlers_auth.create_api_token,
     "auth.revoke_api_token": handlers_auth.revoke_api_token,
     # Phase 2 feature 7: backup.py's functions already validate their own
@@ -169,6 +173,20 @@ OP_TABLE = {
     "logs.get": logs.get_log,
 }
 
+# Security audit finding F7: disktree.get/top_files and usage.get run real
+# `du`/`find` subprocess calls with 30-120s timeouts, but are ordinary
+# self-service, no-cooldown RPCs -- dispatch() otherwise runs every op
+# through the asyncio loop's single shared default executor, so enough
+# concurrent requests from one account (no elevated capability needed to
+# trigger this) saturate that shared pool and starve every *other*
+# account's unrelated calls (login, DNS edits, anything) behind them, a
+# cross-tenant DoS. backup/wordpress/appinstaller jobs already use their
+# own dedicated bounded executors for exactly this reason; this gives the
+# disk/usage-reporting path the same treatment -- a small, separate pool
+# so a burst of usage polling can never starve the rest of the daemon.
+REPORTING_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reporting")
+REPORTING_OPS = {"disktree.get", "disktree.top_files", "usage.get"}
+
 # Each phase wires its own account-scoped teardown/suspend behavior here
 # instead of handlers_account.py importing every phase directly (avoids an
 # import cycle: ols/dns/db/mail modules all need handlers_account's Account
@@ -214,8 +232,9 @@ async def dispatch(op: str, params: dict) -> dict:
         raise LookupError(f"unknown op '{op}'")
 
     loop = asyncio.get_running_loop()
+    executor = REPORTING_EXECUTOR if op in REPORTING_OPS else None
     try:
-        result = await loop.run_in_executor(None, handler, params)
+        result = await loop.run_in_executor(executor, handler, params)
     except (ValidationError, ValueError) as exc:
         audit.record(actor, role, op, params.get("username"), params, "failed", str(exc))
         raise

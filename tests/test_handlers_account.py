@@ -128,6 +128,81 @@ def test_terminate_unknown_account_raises(isolated_db, stub_sysops):
         ha.terminate_account({"username": "ghost"})
 
 
+# Security audit finding F3: terminate_account revokes that account's
+# panel login(s) -- flagged twice before (Phase 4-0b, Phase 4-12) as an
+# observed gap and never fixed until this audit.
+def _setup_panel_access_for(username: str) -> dict:
+    from daemon import handlers_auth as hauth
+    from shared.models import Account
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        account_id = account.id
+
+    panel_user = hauth.create_panel_user(
+        {"username": f"{username}-login", "password": "SuperSecret123!", "role": "customer", "account_id": account_id}
+    )
+    session_result = hauth.create_session({"panel_user_id": panel_user["id"]})
+    token_result = hauth.create_api_token({"label": f"{username}-token", "role": "customer", "account_id": account_id})
+    return {"panel_user": panel_user, "session": session_result, "token": token_result}
+
+
+def test_terminate_disables_panel_user_and_revokes_sessions_and_tokens(isolated_db, stub_sysops):
+    from shared.models import ApiToken, PanelUser
+    from shared.models import Session as SessionModel
+
+    ha.create_account({"username": "demo1"})
+    access = _setup_panel_access_for("demo1")
+
+    ha.terminate_account({"username": "demo1"})
+
+    with write_session() as session:
+        panel_user = session.get(PanelUser, access["panel_user"]["id"])
+        assert panel_user.disabled is True
+        session_row = session.scalar(select(SessionModel).where(SessionModel.session_id == access["session"]["session_id"]))
+        assert session_row.revoked is True
+        token_row = session.get(ApiToken, access["token"]["id"])
+        assert token_row.revoked_at is not None
+
+
+def test_terminate_revokes_panel_access_even_on_partial_failure(isolated_db, stub_sysops):
+    def failing_hook(account):
+        raise RuntimeError("vhost teardown exploded")
+
+    ha.TERMINATE_HOOKS.append(failing_hook)
+    try:
+        ha.create_account({"username": "demo1"})
+        access = _setup_panel_access_for("demo1")
+        result = ha.terminate_account({"username": "demo1"})
+        assert result["status"] == "error"
+
+        from shared.models import PanelUser
+
+        with write_session() as session:
+            panel_user = session.get(PanelUser, access["panel_user"]["id"])
+            assert panel_user.disabled is True
+    finally:
+        ha.TERMINATE_HOOKS.clear()
+
+
+def test_reactivate_account_re_enables_panel_user(isolated_db, stub_sysops):
+    from shared.models import PanelUser
+
+    ha.create_account({"username": "demo1"})
+    access = _setup_panel_access_for("demo1")
+    ha.terminate_account({"username": "demo1"})
+
+    with write_session() as session:
+        panel_user = session.get(PanelUser, access["panel_user"]["id"])
+        assert panel_user.disabled is True
+
+    ha.reactivate_account({"username": "demo1"})
+
+    with write_session() as session:
+        panel_user = session.get(PanelUser, access["panel_user"]["id"])
+        assert panel_user.disabled is False
+
+
 def test_list_accounts(isolated_db, stub_sysops):
     ha.create_account({"username": "demo1"})
     ha.create_account({"username": "demo2"})

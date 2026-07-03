@@ -185,6 +185,23 @@ class PanelUser(Base):
     disabled: Mapped[bool] = mapped_column(default=False)
 
 
+class LoginAttempt(Base):
+    """Security audit finding F2: brute-force throttling for /login, one
+    row per username (created lazily on first failure). A new table
+    rather than new columns on PanelUser -- Base.metadata.create_all()
+    only creates missing tables, never adds columns to an existing one
+    (a recurring gap in this project's own migration story), so this
+    avoids needing a manual ALTER TABLE against the live DB."""
+
+    __tablename__ = "login_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class Session(Base):
     __tablename__ = "sessions"
 

@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account
+from shared.models import Account, ApiToken, PanelUser, Session
 from shared.validation import ValidationError, validate_password_strength, validate_php_version, validate_username
 
 from daemon import cgroups, sysops
@@ -202,6 +202,18 @@ def reactivate_account(params: dict) -> dict:
         account.terminated_at = None
         account.suspended_at = None
         account.last_error = None
+
+        # Symmetric with terminate_account's F3 fix: reactivation is an
+        # explicit, admin-invoked action on this same account_id (not a
+        # new account), so the original customer's panel login(s) should
+        # come back with it -- otherwise every reactivated account would
+        # need a brand new PanelUser created by hand even when it's
+        # genuinely the same customer resuming (e.g. the backup-restore
+        # "terminate -> restore" flow this function also serves).
+        panel_users = session.scalars(select(PanelUser).where(PanelUser.account_id == account.id)).all()
+        for pu in panel_users:
+            pu.disabled = False
+
         session.flush()
         result = _account_to_dict(account)
         account_snapshot = account
@@ -340,6 +352,35 @@ def terminate_account(params: dict) -> dict:
         else:
             account.status = "terminated"
             account.terminated_at = utcnow()
+
+        # Security audit finding F3: every *system* resource above is torn
+        # down by TERMINATE_HOOKS, but nothing ever touched this account's
+        # panel login(s) -- a terminated customer kept a fully valid
+        # session/token indefinitely, and if the username were ever
+        # reactivated or repurposed for a different customer, the old
+        # credentials would silently regain real access (require_account_access
+        # only checks account.username, not who the credentials originally
+        # belonged to). Disable every PanelUser row scoped to this account,
+        # revoke their active sessions, and revoke their API tokens --
+        # applied even on a partial/"error" termination, since a resource
+        # that failed to tear down is exactly when access should be locked
+        # down hardest, not left open.
+        panel_users = session.scalars(select(PanelUser).where(PanelUser.account_id == account.id)).all()
+        panel_user_ids = [pu.id for pu in panel_users]
+        for pu in panel_users:
+            pu.disabled = True
+        if panel_user_ids:
+            active_sessions = session.scalars(
+                select(Session).where(Session.panel_user_id.in_(panel_user_ids), Session.revoked == False)  # noqa: E712
+            ).all()
+            for row in active_sessions:
+                row.revoked = True
+        tokens = session.scalars(
+            select(ApiToken).where(ApiToken.account_id == account.id, ApiToken.revoked_at.is_(None))
+        ).all()
+        for token in tokens:
+            token.revoked_at = utcnow()
+
         session.flush()
         return _account_to_dict(account)
 

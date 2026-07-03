@@ -25,13 +25,11 @@ def login_form(request: Request):
 def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
     with read_session() as db:
         user = db.scalar(select(PanelUser).where(PanelUser.username == username))
-        valid = user is not None and not user.disabled and verify_password(password, user.password_hash)
         user_id = user.id if user else None
         role = user.role if user else None
         account_id = user.account_id if user else None
-
-    if not valid:
-        return templates.TemplateResponse(request, "login.html", {"error": "invalid username or password"}, status_code=401)
+        disabled = user.disabled if user else False
+        password_hash = user.password_hash if user else None
 
     # No Identity exists yet at this point -- the user is mid-authentication,
     # not authenticated -- so build one just for this audit-trail purpose
@@ -39,6 +37,26 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
     # _identity_from_bearer_token uses for tokens, which similarly have no
     # real panel_user_id).
     login_identity = Identity(panel_user_id=user_id or -1, username=username, role=role or "customer", account_id=account_id, auth_method="session")
+
+    # Security audit finding F2: brute-force throttling, checked before
+    # spending a bcrypt verify -- 5 failed attempts locks this username
+    # out for 15 minutes.
+    lockout = call_daemon("auth.check_login_lockout", login_identity, username=username)
+    if lockout.get("locked"):
+        retry_minutes = lockout.get("retry_after_seconds", 0) // 60 + 1
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": f"too many failed attempts -- try again in {retry_minutes} minute(s)"},
+            status_code=429,
+        )
+
+    valid = user is not None and not disabled and verify_password(password, password_hash or "")
+    call_daemon("auth.record_login_result", login_identity, username=username, success=valid)
+
+    if not valid:
+        return templates.TemplateResponse(request, "login.html", {"error": "invalid username or password"}, status_code=401)
+
     session_result = call_daemon("auth.create_session", login_identity, panel_user_id=user_id)
     cookie_value = sign_session_id(session_result["session_id"])
 

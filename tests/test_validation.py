@@ -336,6 +336,28 @@ def test_validate_protected_dir_relative_path_rejects_nul_byte():
         validate_protected_dir_relative_path("public_html/\x00evil")
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        'public_html/x"; touch /tmp/pwned; echo "',
+        "public_html/$(touch /tmp/pwned)",
+        "public_html/`touch /tmp/pwned`",
+        "public_html/x\nrealm evil {",
+        "public_html/x|evil",
+        "public_html/x;evil",
+        "public_html/x&evil",
+        "public_html/x'evil",
+    ],
+)
+def test_validate_protected_dir_relative_path_rejects_shell_metacharacters(bad):
+    """Security audit F5: this value is later interpolated unescaped into
+    a bash post-receive hook (daemon/gitrepo.py) and an OLS vhost realm
+    block (daemon/fileauth.py) -- the charset restriction is the actual
+    injection defense for both, not just cosmetic."""
+    with pytest.raises(ValidationError):
+        validate_protected_dir_relative_path(bad)
+
+
 @pytest.mark.parametrize("good", ["a", "my-site", "site2", "x" * 63])
 def test_valid_git_repo_name(good):
     assert validate_git_repo_name(good) == good

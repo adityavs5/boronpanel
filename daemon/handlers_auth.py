@@ -16,12 +16,26 @@ import string
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import ApiToken, PanelUser, Session
+from shared.models import ApiToken, LoginAttempt, PanelUser, Session
 from shared.passwords import hash_password
 from shared.validation import ValidationError, validate_password_strength
 
 SESSION_TTL_HOURS = 24 * 7
 TOKEN_PREFIX_LEN = 8
+
+# Security audit finding F2: no throttling existed on /login at all --
+# unlimited password attempts against any username, flagged as a known
+# gap since Phase 1 and never revisited. 5 failures locks that username
+# out for 15 minutes; a successful login clears the counter. Scoped per
+# username rather than per-IP: this project has no established
+# trusted-proxy model to make client-IP attribution reliable, and
+# per-username lockout is the same primary mechanism cPanel's own
+# cphulk uses. 15 minutes (not longer) deliberately bounds the
+# self-inflicted-lockout annoyance of a third party repeatedly failing
+# against a known username, while still meaningfully slowing automated
+# guessing.
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_DURATION_SECONDS = 15 * 60
 
 
 def _panel_user_dict(user: PanelUser) -> dict:
@@ -70,7 +84,64 @@ def set_panel_user_password(params: dict) -> dict:
         if user is None:
             raise RuntimeError(f"panel user '{username}' not found")
         user.password_hash = hash_password(new_password)
+        session.flush()
+        # Security audit finding F11: a password change is frequently
+        # motivated by "I think someone else has my session" -- that's
+        # not actually addressed unless existing sessions are revoked
+        # too, not just the credential. The caller's own already-resolved
+        # Identity for *this* request is unaffected (FastAPI resolved it
+        # before this RPC was made); their *next* request requires a
+        # fresh login with the new password, same as changing a password
+        # anywhere else typically behaves.
+        active_sessions = session.scalars(
+            select(Session).where(Session.panel_user_id == user.id, Session.revoked == False)  # noqa: E712
+        ).all()
+        for row in active_sessions:
+            row.revoked = True
         return {"username": username, "status": "password_changed"}
+
+
+def check_login_lockout(params: dict) -> dict:
+    """Security audit finding F2. Called before password verification
+    (which happens in forgehost-api against a read-only PanelUser row --
+    this RPC exists only for the write side of throttling, same reason
+    create_session/revoke_session are here rather than in forgehost-api
+    directly)."""
+    username = params["username"]
+    with write_session() as session:
+        row = session.scalar(select(LoginAttempt).where(LoginAttempt.username == username))
+        if row is None or row.locked_until is None:
+            return {"locked": False}
+        locked_until = row.locked_until
+        if locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=dt.timezone.utc)
+        now = dt.datetime.now(dt.timezone.utc)
+        if locked_until <= now:
+            return {"locked": False}
+        return {"locked": True, "retry_after_seconds": int((locked_until - now).total_seconds())}
+
+
+def record_login_result(params: dict) -> dict:
+    """The write half of the same lockout: success clears the counter,
+    failure increments it and locks the username out once
+    LOCKOUT_THRESHOLD is reached."""
+    username = params["username"]
+    success = bool(params["success"])
+    with write_session() as session:
+        row = session.scalar(select(LoginAttempt).where(LoginAttempt.username == username))
+        if success:
+            if row is not None:
+                session.delete(row)
+            return {"status": "ok"}
+        if row is None:
+            row = LoginAttempt(username=username, failed_count=0)
+            session.add(row)
+            session.flush()
+        row.failed_count += 1
+        if row.failed_count >= LOCKOUT_THRESHOLD:
+            row.locked_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=LOCKOUT_DURATION_SECONDS)
+            row.failed_count = 0
+        return {"status": "ok"}
 
 
 def create_session(params: dict) -> dict:

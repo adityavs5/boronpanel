@@ -268,16 +268,28 @@ def validate_htpasswd_username(value: str) -> str:
     return value
 
 
+# Security audit finding F5: this charset restriction IS the injection
+# defense, not cosmetic -- the traversal jail is daemon/filemanager.py's
+# realpath check (reused directly, not reimplemented), but a value that
+# passes that jail is still later interpolated *unescaped* into a bash
+# post-receive hook (daemon/gitrepo.py) and an OLS vhost realm/context
+# block (daemon/fileauth.py). A prior version of this validator only
+# rejected empty strings and a NUL byte, so a directory name/path
+# containing '"', '`', '$(...)', or a newline survived validation and
+# reached those interpolation sites unescaped -- a real, confirmed
+# command/config-injection defect (see docs/AUDIT-FINDINGS.md F5).
+PROTECTED_DIR_RE = re.compile(r"\A[A-Za-z0-9_./-]+\Z")
+
+
 def validate_protected_dir_relative_path(value: str) -> str:
-    """The real traversal jail is daemon/filemanager.py's own
-    os.path.realpath-based check (reused directly, not reimplemented) --
-    this only rejects a NUL byte, which os.path itself doesn't guard
-    against and would otherwise reach a syscall."""
     if not isinstance(value, str) or not value.strip():
         raise ValidationError("directory path must not be empty")
-    if "\x00" in value:
-        raise ValidationError("directory path must not contain a NUL byte")
-    return value.strip().strip("/")
+    candidate = value.strip().strip("/")
+    if not candidate or not PROTECTED_DIR_RE.match(candidate):
+        raise ValidationError(
+            "directory path may only contain letters, digits, '.', '_', '-', and '/'"
+        )
+    return candidate
 
 
 # Phase 4 feature 5: git repos. Used directly as a directory name

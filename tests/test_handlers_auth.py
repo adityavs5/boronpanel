@@ -149,3 +149,74 @@ def test_revoke_api_token(isolated_db):
     with write_session() as db:
         row = db.get(ApiToken, result["id"])
         assert row.revoked_at is not None
+
+
+# Security audit finding F11: password change revokes existing sessions.
+def test_set_panel_user_password_revokes_existing_sessions(isolated_db):
+    user = hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
+    session_result = hauth.create_session({"panel_user_id": user["id"]})
+
+    hauth.set_panel_user_password({"username": "admin", "password": "NewPassword456!"})
+
+    from sqlalchemy import select
+
+    from shared.db import write_session
+    from shared.models import Session as SessionModel
+
+    with write_session() as db:
+        row = db.scalar(select(SessionModel).where(SessionModel.session_id == session_result["session_id"]))
+        assert row.revoked is True
+
+
+# Security audit finding F2: brute-force lockout on /login.
+def test_check_login_lockout_unlocked_when_no_history(isolated_db):
+    assert hauth.check_login_lockout({"username": "nobody"}) == {"locked": False}
+
+
+def test_record_login_result_success_clears_failures(isolated_db):
+    for _ in range(3):
+        hauth.record_login_result({"username": "admin", "success": False})
+    hauth.record_login_result({"username": "admin", "success": True})
+
+    from sqlalchemy import select
+
+    from shared.db import write_session
+    from shared.models import LoginAttempt
+
+    with write_session() as db:
+        row = db.scalar(select(LoginAttempt).where(LoginAttempt.username == "admin"))
+        assert row is None
+
+
+def test_record_login_result_locks_out_after_threshold(isolated_db):
+    for _ in range(hauth.LOCKOUT_THRESHOLD):
+        hauth.record_login_result({"username": "admin", "success": False})
+
+    lockout = hauth.check_login_lockout({"username": "admin"})
+    assert lockout["locked"] is True
+    assert lockout["retry_after_seconds"] > 0
+
+
+def test_record_login_result_below_threshold_does_not_lock(isolated_db):
+    for _ in range(hauth.LOCKOUT_THRESHOLD - 1):
+        hauth.record_login_result({"username": "admin", "success": False})
+
+    assert hauth.check_login_lockout({"username": "admin"}) == {"locked": False}
+
+
+def test_check_login_lockout_clears_after_expiry(isolated_db):
+    import datetime as dt
+
+    from sqlalchemy import select
+
+    from shared.db import write_session
+    from shared.models import LoginAttempt
+
+    for _ in range(hauth.LOCKOUT_THRESHOLD):
+        hauth.record_login_result({"username": "admin", "success": False})
+
+    with write_session() as db:
+        row = db.scalar(select(LoginAttempt).where(LoginAttempt.username == "admin"))
+        row.locked_until = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+
+    assert hauth.check_login_lockout({"username": "admin"}) == {"locked": False}
