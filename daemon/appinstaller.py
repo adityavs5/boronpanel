@@ -130,6 +130,21 @@ def _download(url: str, dest: Path, timeout: float = 180.0) -> None:
                 f.write(chunk)
 
 
+def _safe_extract_target(docroot: str, relative: str) -> str:
+    """Zip Slip defense: a malicious/compromised archive can name a member
+    `../../../etc/cron.d/evil` -- os.path.join alone happily builds a path
+    outside docroot from that. Extraction runs as root (before
+    _set_ownership chowns the result), so an unchecked escape here is a
+    root-level arbitrary file write, not just a jail breakout -- this is
+    the same os.path.realpath + startswith jail check
+    daemon/filemanager.py uses, applied per zip member."""
+    docroot_real = os.path.realpath(docroot)
+    target = os.path.realpath(os.path.join(docroot_real, relative))
+    if target != docroot_real and not target.startswith(docroot_real + os.sep):
+        raise AppInstallError(f"archive member '{relative}' would extract outside the docroot -- refusing (possible zip slip)")
+    return target
+
+
 def _extract_zip(zip_path: Path, docroot: str, root_prefix: str | None = None) -> None:
     """root_prefix strips one wrapping top-level directory some release
     zips use (WordPress's own `wordpress/` being the precedent this
@@ -146,7 +161,7 @@ def _extract_zip(zip_path: Path, docroot: str, root_prefix: str | None = None) -
                     continue
             else:
                 relative = name
-            target = os.path.join(docroot, relative)
+            target = _safe_extract_target(docroot, relative)
             if info.is_dir() or name.endswith("/"):
                 os.makedirs(target, exist_ok=True)
                 continue

@@ -120,6 +120,56 @@ def test_sql_str_escapes_quotes_and_backslashes():
     assert ai._sql_str("back\\slash") == "'back\\\\slash'"
 
 
+def test_extract_zip_rejects_zip_slip(tmp_path):
+    """Security audit finding F1: a malicious/compromised release zip
+    with a '../' member name must not be able to write outside docroot --
+    extraction runs as root, before ownership is chowned to the account,
+    so an unchecked escape here would be a root-level arbitrary write."""
+    import zipfile
+
+    zip_path = tmp_path / "evil.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("../../../../tmp/forgehost_zipslip_app.txt", "pwned")
+    docroot = tmp_path / "docroot"
+    docroot.mkdir()
+
+    with pytest.raises(ai.AppInstallError):
+        ai._extract_zip(zip_path, str(docroot))
+    assert not os.path.exists("/tmp/forgehost_zipslip_app.txt")
+
+
+def test_extract_zip_rejects_zip_slip_with_root_prefix(tmp_path):
+    """Same defect, exercised through the root_prefix-stripping path
+    (Joomla/PrestaShop's own wrapped-zip case)."""
+    import zipfile
+
+    zip_path = tmp_path / "evil.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("app/../../../../tmp/forgehost_zipslip_app2.txt", "pwned")
+    docroot = tmp_path / "docroot"
+    docroot.mkdir()
+
+    with pytest.raises(ai.AppInstallError):
+        ai._extract_zip(zip_path, str(docroot), root_prefix="app/")
+    assert not os.path.exists("/tmp/forgehost_zipslip_app2.txt")
+
+
+def test_extract_zip_accepts_normal_members(tmp_path):
+    import zipfile
+
+    zip_path = tmp_path / "good.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("index.php", "<?php echo 'hi';")
+        zf.writestr("assets/style.css", "body {}")
+    docroot = tmp_path / "docroot"
+    docroot.mkdir()
+
+    ai._extract_zip(zip_path, str(docroot))
+
+    assert (docroot / "index.php").read_text() == "<?php echo 'hi';"
+    assert (docroot / "assets" / "style.css").exists()
+
+
 def test_php_str_escapes_quotes_and_backslashes():
     assert ai._php_str("it's") == "'it\\'s'"
 

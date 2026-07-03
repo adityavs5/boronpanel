@@ -105,6 +105,20 @@ def _download_zip(url: str, dest: Path) -> None:
                 f.write(chunk)
 
 
+def _safe_extract_target(docroot: str, relative: str) -> str:
+    """Zip Slip defense: a malicious/compromised archive can name a member
+    `../../../etc/cron.d/evil` -- os.path.join alone happily builds a path
+    outside docroot from that. Extraction runs as root (before the caller
+    chowns the result to the account's uid), so an unchecked escape here
+    is a root-level arbitrary file write -- the same os.path.realpath +
+    startswith jail check daemon/filemanager.py uses, applied per member."""
+    docroot_real = os.path.realpath(docroot)
+    target = os.path.realpath(os.path.join(docroot_real, relative))
+    if target != docroot_real and not target.startswith(docroot_real + os.sep):
+        raise WordPressError(f"archive member '{relative}' would extract outside the docroot -- refusing (possible zip slip)")
+    return target
+
+
 def _extract_wordpress(zip_path: Path, docroot: str) -> None:
     """The official zip wraps everything in a top-level `wordpress/`
     directory -- strip it so the docroot itself becomes the WP root."""
@@ -116,7 +130,7 @@ def _extract_wordpress(zip_path: Path, docroot: str) -> None:
             relative = name[len("wordpress/"):]
             if not relative:
                 continue
-            target = os.path.join(docroot, relative)
+            target = _safe_extract_target(docroot, relative)
             if info.is_dir():
                 os.makedirs(target, exist_ok=True)
                 continue

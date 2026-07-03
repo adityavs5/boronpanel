@@ -127,6 +127,24 @@ def test_extract_wordpress_strips_top_level_dir(tmp_path):
     assert not (docroot / "wordpress").exists()
 
 
+def test_extract_wordpress_rejects_zip_slip(tmp_path):
+    """Security audit finding F1: a malicious/compromised release zip
+    with a '../' member name must not be able to write outside docroot --
+    extraction runs as root, before ownership is chowned to the account,
+    so an unchecked escape here would be a root-level arbitrary write."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("wordpress/../../../../tmp/forgehost_zipslip_wp.txt", "pwned")
+    zip_path = tmp_path / "evil.zip"
+    zip_path.write_bytes(buf.getvalue())
+    docroot = tmp_path / "docroot"
+    docroot.mkdir()
+
+    with pytest.raises(wp.WordPressError):
+        wp._extract_wordpress(zip_path, str(docroot))
+    assert not os.path.exists("/tmp/forgehost_zipslip_wp.txt")
+
+
 def test_write_wp_config_contains_db_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(wp, "_fetch_salts", lambda: "define('AUTH_KEY', 'x');\n")
     docroot = tmp_path / "docroot"
