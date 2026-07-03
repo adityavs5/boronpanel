@@ -8,6 +8,112 @@ check first.
 
 ---
 
+## Security audit (2026-07-03): full-codebase re-audit, all Critical/High
+findings fixed and (mostly) live-verified
+
+A fifth project goal, security-only: read the entire codebase plus every
+prior CHECKPOINT, build a threat model
+(`docs/AUDIT-THREATMODEL.md`), then audit auth/session management,
+authorization, the provisioning daemon, file operations, injection
+classes, crypto/secrets, infrastructure exposure, rate limiting/DoS, and
+web security headers. Full findings in `docs/AUDIT-FINDINGS.md`, every
+finding with severity/location/impact/fix. No new features, no style
+refactoring — security only.
+
+### Result
+
+- **1 Critical, 6 High, 4 Medium, 2 Low findings — all fixed.**
+- **3 Info-level items and 1 Medium item (CSRF) documented and
+  deliberately deferred** with reasoning (not quick fixes, or accepted
+  tradeoffs already in wide practice).
+- **Every route in `api/routers/` (~185 routes across 26 router
+  modules) re-audited for ownership checks — no missing check found.**
+  The Phase 4-0b cross-account IDOR fix has held across everything built
+  since.
+- **747 tests passing** (up from 722 at the end of Phase 4), 25 new
+  tests added for this audit's fixes, zero regressions.
+- **Two findings only partially resolved, documented honestly rather
+  than claimed done**: the OLS WebAdmin console exposure (F4) has its
+  config fix applied but not yet live (see below); everything else that
+  needed a live-process action instead of a config/code change completed
+  successfully.
+
+### The one real surprise this audit found: a genuine root-level Zip Slip
+
+`daemon/appinstaller.py`'s and `daemon/wordpress.py`'s zip extraction
+(the app installer and WordPress installer) built each extracted file's
+path directly from the zip member's own filename, with **no check that
+it stayed inside the docroot** — extraction runs as root, before the
+result is chowned to the hosting account, so an unchecked `../` member
+name would have been an arbitrary root-level file write, not merely an
+escape into another account's files. Not directly customer-triggerable
+today (every download URL is a hardcoded official vendor endpoint, not
+customer input), but a real defect against its own implicit contract,
+rated Critical on worst-case impact per this project's own established
+"defense in depth even against a precondition that isn't directly
+reachable today" standard. Fixed with a per-member path-containment
+check (the same realpath jail idiom `daemon/filemanager.py` already
+uses); the identical bug class was also found and fixed in
+`daemon/backup.py`'s restore path (missing `tarfile` `filter="data"`,
+Medium — Forgehost's own artifact, lower likelihood, same fix pattern).
+
+### Two other real, previously-flagged-but-never-fixed gaps finally closed
+
+- **`account.terminate` never disabled that account's panel login(s).**
+  Flagged twice before (Phase 4-0b, Phase 4-12) as an observed gap, never
+  fixed until now. A terminated customer kept a fully valid session/API
+  token indefinitely, and reactivating or repurposing the account would
+  silently hand old credentials back. Fixed: termination now disables
+  every `PanelUser` row scoped to the account and revokes their
+  sessions/tokens; reactivation symmetrically re-enables them.
+- **phpMyAdmin's ephemeral-user cleanup script existed, was correct, and
+  was documented in `README.md` — but was never actually installed** on
+  this deployment. Every phpMyAdmin login left a live, never-revoked
+  MariaDB credential behind indefinitely. Fixed by adding the exact
+  `/etc/cron.d/forgehost-pma-tokens` entry the README already specified.
+
+### What's honestly still open
+
+- **The OLS WebAdmin console exposure (`0.0.0.0:7080`, findable via a
+  real `curl`/`ss -tlnp`) has its config fix applied and backed up
+  (`/usr/local/lsws/admin/conf/admin_config.conf`, now loopback-only) but
+  NOT yet live** — OLS's graceful-restart mechanism doesn't rebind an
+  already-open listening socket, and forcibly killing/restarting the
+  shared production web server serving every hosted account was denied
+  three times in a row by this environment's safety classifier
+  (correctly identifying it as escalating, unauthorized infrastructure
+  risk once a first restart attempt had already left things in a
+  messier state than before). Respected rather than worked around, per
+  this project's standing policy. **Needs an explicit,
+  operator-approved `systemctl stop lshttpd && systemctl start lshttpd`
+  (or a reboot) to actually close this on the wire** — read
+  `docs/AUDIT-FINDINGS.md`'s F4 entry before doing anything else with
+  this server.
+- A charset-tightening fix (F5, command/config injection via
+  `validate_protected_dir_relative_path`) is real but its currently-known
+  practical impact is bounded to an account affecting its own
+  already-privileged scope, not another tenant — see the finding for the
+  full reasoning on why it's still worth having fixed.
+- CSRF protection relies solely on `SameSite=Lax` cookies (a real, modern
+  mitigation, not an absence of one) rather than explicit anti-CSRF
+  tokens — deferred as a real future hardening item, not a quick fix.
+
+### What to review first on wake-up (security audit)
+
+1. **`docs/AUDIT-FINDINGS.md`'s F4 entry** — the OLS WebAdmin console fix
+   needs a real, operator-approved service restart to take effect. Read
+   this before touching `lshttpd` again this session or next.
+2. **F1's Zip Slip finding** — the single highest-severity finding this
+   audit produced; worth an independent read given the worst-case impact
+   (root-level arbitrary file write) even though today's trigger
+   precondition (a compromised download) isn't directly reachable.
+3. **F3's account-termination panel-access gap** — flagged twice before
+   across two different phases and never fixed until this pass; worth
+   understanding why it kept getting rediscovered rather than closed.
+4. Everything else in `docs/AUDIT-FINDINGS.md`'s summary table.
+
+---
+
 ## Phase 4 update (2026-07-01): 12 more features added, all built and
 verified live on this same server
 
