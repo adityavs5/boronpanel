@@ -305,11 +305,6 @@ listener HTTPS{
 {% endfor %}
 }
 
-listener PanelAdmin{
-    address                  *:8088
-    secure                   0
-}
-
 module cache {
     ls_enabled          1
     checkPrivateCache   1

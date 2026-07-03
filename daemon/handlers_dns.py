@@ -109,6 +109,19 @@ def create_zone(params: dict) -> dict:
             account = session.scalar(select(Account).where(Account.username == username))
             if account is None:
                 raise RuntimeError(f"account '{username}' not found")
+        # Security audit finding F13: DnsZone.account_id is a NOT NULL
+        # foreign key, but nothing previously stopped this function from
+        # reaching the insert with account=None (the API layer only
+        # passes `username` when it could resolve an owning Domain row --
+        # daemon/api/routers/dns.py's create_zone) -- that insert would
+        # hit a raw, unhandled IntegrityError instead of a clean message.
+        # Admin-only endpoint, so not customer-reachable, but fail with a
+        # clear validation error instead of a raw DB exception.
+        if account is None:
+            raise ValidationError(
+                f"cannot create a zone for '{domain_name}' -- no account owns this domain yet "
+                "(add the domain to an account first)"
+            )
         existing = session.scalar(select(DnsZone).where(DnsZone.zone == domain_name))
         if existing is not None:
             raise RuntimeError(f"zone '{domain_name}' already managed by Forgehost")

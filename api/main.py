@@ -20,6 +20,27 @@ app = FastAPI(title="Forgehost", docs_url="/api/docs", redoc_url=None)
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+
+# Security audit finding F10: no response ever carried any of these
+# headers. Verified safe against the actual UI before adding a real CSP:
+# no template anywhere uses an inline <script> tag or loads anything from
+# a CDN/external host (this project vendors its one stylesheet, confirmed
+# by grep), so `script-src 'none'` doesn't break anything; `style-src
+# 'unsafe-inline'` is kept because several templates use inline
+# `style="width: N%"` for progress/usage bars.
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    )
+    return response
+
 app.include_router(auth.router)
 for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, fileauth, git, sshkeys, disktree, nameservers):
     app.include_router(module.api_router)

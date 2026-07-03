@@ -106,3 +106,12 @@ def test_validate_record_type_accepts_new_types():
 
     for rtype in ("PTR", "SRV", "CAA"):
         assert validate_record_type(rtype) == rtype
+
+
+def test_create_zone_rejects_unowned_domain_cleanly(isolated_db):
+    """Security audit finding F13: DnsZone.account_id is NOT NULL, but
+    create_zone previously reached the insert anyway when no account
+    could be resolved, raising a raw IntegrityError instead of a clean
+    ValidationError."""
+    with pytest.raises(ValidationError):
+        hdns.create_zone({"domain": "unowned-example.com"})

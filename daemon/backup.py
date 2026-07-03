@@ -255,6 +255,26 @@ def trigger_backup(params: dict) -> dict:
         if account is None:
             raise BackupError(f"account '{username}' not found")
 
+        # Security audit finding F9: the scheduled path is safely bounded
+        # (frequency is an enum -- daily/weekly/monthly, never a raw cron
+        # expression), but manual triggers had no cooldown at all, and
+        # backup artifacts live under settings.backup_staging_dir/the
+        # configured destination -- outside the account's own jailed home,
+        # so its disk quota never capped this. A customer spamming
+        # backup.job.trigger could queue unboundedly in the shared,
+        # bounded-concurrency executor and fill shared backup storage,
+        # starving every other account's real backups behind the spam.
+        existing_active = session.scalar(
+            select(BackupJob).where(
+                BackupJob.account_id == account.id,
+                BackupJob.status.in_(("pending", "running")),
+            )
+        )
+        if existing_active is not None:
+            raise BackupError(
+                f"a backup is already in progress for this account (job {existing_active.id}, status '{existing_active.status}')"
+            )
+
         destination_id = params.get("destination_id")
         if destination_id is None:
             schedule = get_effective_schedule(session, account.id)
@@ -788,7 +808,14 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
     extract_dir = Path(tmp_dir) / "extracted"
     extract_dir.mkdir()
     with tarfile.open(local_artifact) as tf:
-        tf.extractall(extract_dir)
+        # filter="data" (Python 3.12+) rejects absolute paths, ".."
+        # traversal, and device/special files -- the standard-library
+        # defense for the same tar-slip class as the zip-slip fix in
+        # daemon/appinstaller.py/wordpress.py. This artifact is normally
+        # Forgehost's own backup output, but restore runs as root, so this
+        # is the same "no unchecked precondition" bar applied to a
+        # compromised remote destination or a future format bug.
+        tf.extractall(extract_dir, filter="data")
 
     inner_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
     if len(inner_dirs) != 1:

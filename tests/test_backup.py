@@ -395,6 +395,39 @@ def test_trigger_backup_creates_job_and_submits(isolated_db, tmp_path, stub_exec
     assert stub_executor[0][0] is backup._run_backup_job
 
 
+def test_trigger_backup_rejects_when_already_pending(isolated_db, tmp_path, stub_executor):
+    """Security audit finding F9: manual backup triggers had no per-account
+    concurrency limit and backup artifacts live outside the account's own
+    jailed home (so disk quota never capped this) -- a customer spamming
+    backup.job.trigger could queue unboundedly and starve other accounts'
+    real backups behind it."""
+    with write_session() as session:
+        make_account(session)
+    dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(tmp_path / "d1")})
+
+    first = backup.trigger_backup({"username": "demo1", "kind": "full", "destination_id": dest["id"]})
+    assert first["status"] == "pending"
+
+    with pytest.raises(backup.BackupError):
+        backup.trigger_backup({"username": "demo1", "kind": "full", "destination_id": dest["id"]})
+    assert len(stub_executor) == 1  # the second attempt never submitted a job
+
+
+def test_trigger_backup_allowed_again_after_prior_job_completes(isolated_db, tmp_path, stub_executor):
+    with write_session() as session:
+        make_account(session)
+    dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(tmp_path / "d1")})
+
+    first = backup.trigger_backup({"username": "demo1", "kind": "full", "destination_id": dest["id"]})
+    with write_session() as session:
+        job = session.get(backup.BackupJob, first["id"])
+        job.status = "completed"
+
+    second = backup.trigger_backup({"username": "demo1", "kind": "full", "destination_id": dest["id"]})
+    assert second["status"] == "pending"
+    assert len(stub_executor) == 2
+
+
 def test_trigger_backup_resolves_destination_from_schedule(isolated_db, tmp_path, stub_executor):
     with write_session() as session:
         make_account(session)
@@ -657,6 +690,34 @@ def test_restore_full_reactivates_terminated_account_not_create(isolated_db, fak
     assert len(reactivate_calls) == 1
     assert reactivate_calls[0]["php_version"] == "8.2"
     assert create_calls == []
+
+
+def test_restore_full_rejects_tar_slip(isolated_db, fake_home, fake_mail_base, fake_staging):
+    """Security audit finding F8: tarfile.extractall() must reject a
+    member that would escape the extraction directory (filter="data",
+    Python 3.12+) -- the same tar-slip class as the zip-slip fix in
+    daemon/appinstaller.py/wordpress.py, applied here to Forgehost's own
+    backup artifacts (restore runs as root, before anything is chowned
+    back to the account)."""
+    import io
+    import os
+
+    with write_session() as session:
+        make_account(session, status="terminated")
+
+    artifact = fake_staging / "evil.tar"
+    with tarfile.open(artifact, "w") as tf:
+        data = b"pwned"
+        info = tarfile.TarInfo(name="../../../../tmp/forgehost_tarslip.txt")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+
+    tmp_dir = str(fake_staging / "restore_tmp")
+    os.makedirs(tmp_dir)
+
+    with pytest.raises(Exception):
+        backup._restore_full("demo1", "terminated", str(artifact), tmp_dir, restore_job_id=1)
+    assert not os.path.exists("/tmp/forgehost_tarslip.txt")
 
 
 def test_restore_full_reprovisions_vhost_even_when_domain_row_preexisted(isolated_db, fake_home, fake_mail_base, fake_staging, monkeypatch):
