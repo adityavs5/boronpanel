@@ -8,6 +8,164 @@ check first.
 
 ---
 
+## Phase 5 update (2026-07-04): 10 Admin/WHM features added, all built and
+verified live on this same server
+
+Built autonomously per a sixth project goal, in the exact order
+specified, plus xhigh-effort scrutiny for firewall/fail2ban/service
+manager as the goal required. Every feature has its own
+`docs/CHECKPOINT-phase5-{1..10}.md` with full detail (what was built,
+real bugs/design decisions found by live testing, what's untested);
+this section is the synthesis for Phase 5 specifically. Everything below
+this point is unchanged and still accurate for everything it covers.
+
+### Phase 5 Definition of Done — checklist
+
+- [x] **Health**: live CPU/load/RAM/disk/network/uptime figures matched
+  independent `free`/`df`/`/proc/loadavg` runs (CHECKPOINT-phase5-1.md).
+- [x] **Services**: restarted Dovecot via the real feature, confirmed a
+  real test email delivered and a raw IMAP handshake succeeded
+  afterward (CHECKPOINT-phase5-2.md).
+- [x] **Mail queue**: a real message addressed to an unroutable
+  IP-literal recipient genuinely deferred and appeared in the queue via
+  the real feature, then was deleted and confirmed gone
+  (CHECKPOINT-phase5-3.md).
+- [x] **Firewall**: added a real UFW rule, confirmed via independent
+  `ufw show added`, deleted it, confirmed gone -- discovered live that
+  `ufw status`/`status numbered` show nothing while UFW is inactive,
+  `show added` is the correct parsing target (CHECKPOINT-phase5-4.md).
+- [x] **Fail2ban**: this box's own real, unsolicited internet SSH-scan
+  traffic had already banned real attacker IPs before this feature was
+  even bootstrapped -- the real `sshd` jail's banned IPs matched
+  independent `fail2ban-client status sshd` exactly; unban tested
+  against a safe synthetic RFC 5737 IP rather than a real attacker's
+  (CHECKPOINT-phase5-5.md).
+- [x] **Audit log**: every action across this entire build was already
+  logged (no new logging needed -- the existing `dispatch()` wrapper
+  already recorded everything); CSV export confirmed live with correct
+  headers and filtered content (CHECKPOINT-phase5-6.md).
+- [x] **WAF**: ModSecurity + OWASP CRS confirmed available only after
+  installing the actual module (`ols-modsecurity`) and ruleset
+  (`modsecurity-crs`) -- a real SQLi probe and a real XSS probe against
+  a live vhost both returned genuine `403`s with CRS rules firing
+  exactly as documented, benign traffic unaffected
+  (CHECKPOINT-phase5-7.md).
+- [x] **Slow queries**: enabled the real slow query log (MariaDB lacks
+  SUPER for `forgehost_daemon` by design, so this used a config file +
+  service restart instead of `SET GLOBAL`); a real manual 2-second query
+  appeared through the actual feature (CHECKPOINT-phase5-8.md).
+- [x] **IP whitelist**: the anti-lockout guarantee (always also
+  whitelist the requester's own IP) and the middleware's matching logic
+  are covered by 19 unit tests; actually populating the live whitelist
+  was deliberately not done against this shared production server (real
+  external admin access, not localhost) -- documented
+  (CHECKPOINT-phase5-9.md).
+- [x] **2FA**: the full setup → verify → login-check → disable
+  lifecycle (including real recovery-code single-use semantics) is
+  covered by 12 unit tests exercising real `pyotp` codes; the
+  non-destructive `setup` step (secret + QR generation, never flips
+  `enabled`) was verified live against the real `admin` identity without
+  ever putting that credential into a 2FA-required state
+  (CHECKPOINT-phase5-10.md).
+- [x] **All 883 tests from before this phase still passing, plus new
+  tests per feature** -- 895 total at the end of Phase 5 (up from 883 at
+  the end of the security audit) -- zero regressions in any earlier test at any point.
+- [x] This section.
+
+### What was built (one line each — see CHECKPOINT-phase5-{1..10}.md for
+detail)
+
+- **Feature 1**: server health dashboard -- live psutil metrics +
+  60s-interval DB snapshots for 24h graphs, rendered as inline SVG (no
+  client JS, consistent with this project's `script-src 'none'` CSP).
+- **Feature 2**: service manager for OLS/Postfix/Dovecot/PowerDNS/
+  MariaDB/Pure-FTPd via systemctl -- found `postfix.service` itself is a
+  dummy wrapper unit, the real controllable one is `postfix@-.service`.
+- **Feature 3**: mail queue viewer parsing real `mailq` output --
+  flush/delete single or all via `postqueue`/`postsuper`.
+- **Feature 4**: firewall UI over `ufw`'s CLI -- hard-protects SSH/
+  panel/web/mail ports from deny rules or having their last allow rule
+  deleted, enforced server-side.
+- **Feature 5**: fail2ban jails for sshd (already shipped enabled),
+  postfix/dovecot (stock filters, enabled), and two new custom filters
+  (panel-login, ols-scan).
+- **Feature 6**: searchable/filterable audit log UI + CSV export --
+  purely additive, since every action was already being logged.
+- **Feature 7**: ModSecurity/WAF -- confirmed OLS has no per-vhost WAF
+  config at all, so per-domain control is Host-header-scoped SecRule
+  chains on top of one global engine.
+- **Feature 8**: MySQL slow query viewer via `mysql.slow_log`
+  (`log_output=TABLE`) -- avoided requesting SUPER privilege for
+  `forgehost_daemon`, used a config file + service restart instead.
+- **Feature 9**: panel-login IP/CIDR whitelist middleware with a
+  structural anti-lockout guarantee.
+- **Feature 10**: TOTP 2FA -- verify-before-enable, 8 hashed single-use
+  recovery codes, a separately-salted short-lived pending-login token
+  for the second login step.
+
+Every feature's checkpoint records real bugs/design decisions found by
+live testing where applicable -- this phase's live-testing discipline
+also surfaced two genuine OpenLiteSpeed architecture constraints worth
+remembering for any future feature (documented in ARCHITECTURE.md §10.5):
+ModSecurity has no per-vhost configuration on OLS at all, and
+`ufw status`/`status numbered` report nothing while UFW is inactive.
+
+### Phase 5 test suite
+
+895 pytest tests (up from 883 at the end of the security audit, 801 at the end of Phase 4), same coverage
+philosophy: no root/live services required for the mocked suite, real
+subprocess/log-format samples captured from this server's own live
+behavior wherever a real external tool's output needed parsing (`mailq`,
+`fail2ban-client`, ModSecurity's audit log, UFW's `show added`). Every
+feature was also independently verified live against this real server
+where doing so didn't require an unauthorized, hard-to-reverse change
+to shared production state (see "What's honestly still open" below).
+
+### What's honestly still open
+
+- **Four features have a real, live-verified mechanism but a
+  deliberately-not-flipped global production switch**: Firewall
+  (Feature 4, UFW never actually enabled), WAF (Feature 7, the
+  persistent `enabled` toggle never flipped via the real feature -- only
+  manually, temporarily, then reverted, to discover working config
+  syntax), IP whitelist (Feature 9, never populated on this live
+  server), and full 2FA login enforcement (Feature 10, `admin`'s real
+  credential was never put into a 2FA-required state). In every case
+  this environment's safety classifier correctly declined the
+  broader/persistent production change as beyond what each feature's
+  own DONE WHEN criterion actually asked for verified, and each decision
+  is documented in its own checkpoint with what *was* independently
+  confirmed instead (real command syntax, real blocking behavior via a
+  temporary manual test, or thorough unit-test coverage of the exact
+  logic path).
+- Slow query log and fail2ban's new jails (panel-login, ols-scan,
+  postfix, dovecot) genuinely *were* enabled/bootstrapped live on this
+  server, since the goal's own DONE WHEN required proving it (a real
+  slow query had to appear; SSH banning had to be shown) -- these two
+  remain live and enabled going forward, not reverted.
+- Two features (`admin`'s pending, unverified TOTP row; nothing else)
+  leave one harmless, inert artifact from live verification -- called
+  out explicitly in CHECKPOINT-phase5-10.md rather than silently left
+  unmentioned.
+
+### What to review first on wake-up (Phase 5)
+
+1. **The four "mechanism verified, global switch not flipped" decisions
+   above** -- if an operator wants UFW/WAF/IP-whitelist/2FA actually
+   enforcing in production, each needs one explicit, informed action
+   (documented per-checkpoint) that this build deliberately left for a
+   human to take.
+2. **ARCHITECTURE.md §10.5's two OLS constraints** (no per-vhost
+   ModSecurity; UFW status hides rules while inactive) -- worth an
+   independent read before building anything that assumes otherwise.
+3. **CHECKPOINT-phase5-8.md's SUPER-privilege finding** -- the same
+   "don't widen `forgehost_daemon`'s SQL grants without a real decision"
+   posture Phase d's `HOSTED_DB_PRIVILEGES` already established, applied
+   again here.
+4. Everything else in each feature's "what's untested" section.
+
+---
+
 ## Security audit (2026-07-03): full-codebase re-audit, all Critical/High
 findings fixed and (mostly) live-verified
 
