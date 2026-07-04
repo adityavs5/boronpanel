@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, cgroups, disktree, fileauth, filemanager, firewall, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, health, logs, mailqueue, nameservers, ols, pma, servicemgr, spamfilter, sshkeys, ssl, wordpress
+from daemon import appinstaller, audit, backup, cgroups, disktree, fail2ban, fileauth, filemanager, firewall, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, health, ipwhitelist, logs, mailqueue, nameservers, ols, pma, servicemgr, slowquery, spamfilter, sshkeys, ssl, totp, waf, wordpress
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -192,6 +192,34 @@ OP_TABLE = {
     "firewall.status": firewall.get_status,
     "firewall.enable": firewall.enable_firewall,
     "firewall.disable": firewall.disable_firewall,
+    # Phase 5 feature 5: fail2ban
+    "fail2ban.bootstrap": fail2ban.bootstrap_jails,
+    "fail2ban.list_jails": fail2ban.list_jails,
+    "fail2ban.get_jail": fail2ban.get_jail,
+    "fail2ban.unban_ip": fail2ban.unban_ip,
+    "fail2ban.unban_all": fail2ban.unban_all_in_jail,
+    "fail2ban.recent_events": fail2ban.recent_events,
+    # Phase 5 feature 7: ModSecurity/WAF
+    "waf.status": waf.get_status,
+    "waf.set_enabled": waf.set_enabled,
+    "waf.set_domain_override": waf.set_domain_override,
+    "waf.add_custom_rule": waf.add_custom_rule,
+    "waf.delete_custom_rule": waf.delete_custom_rule,
+    "waf.blocked_requests": waf.list_blocked_requests,
+    # Phase 5 feature 8: MySQL slow query viewer
+    "slowquery.status": slowquery.get_status,
+    "slowquery.bootstrap": slowquery.bootstrap_slow_query_log,
+    "slowquery.list": slowquery.list_slow_queries,
+    # Phase 5 feature 9: IP whitelist for panel login
+    "ipwhitelist.list": ipwhitelist.list_entries,
+    "ipwhitelist.add": ipwhitelist.add_entry,
+    "ipwhitelist.delete": ipwhitelist.delete_entry,
+    # Phase 5 feature 10: TOTP two-factor authentication
+    "totp.status": totp.get_status,
+    "totp.setup": totp.setup_totp,
+    "totp.verify": totp.verify_totp,
+    "totp.disable": totp.disable_totp,
+    "totp.check_login_code": totp.check_login_code,
 }
 
 # Security audit finding F7: disktree.get/top_files and usage.get run real
@@ -215,9 +243,9 @@ REPORTING_OPS = {
     "services.status", "services.list",
     "mailqueue.list",
     "firewall.list",
-    "fail2ban.status",
+    "fail2ban.list_jails", "fail2ban.get_jail", "fail2ban.recent_events",
     "waf.status", "waf.blocked_requests",
-    "slowquery.list",
+    "slowquery.list", "slowquery.status",
 }
 
 # Each phase wires its own account-scoped teardown/suspend behavior here

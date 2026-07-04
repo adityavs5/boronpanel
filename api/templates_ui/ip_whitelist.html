@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}IP whitelist - Forgehost{% endblock %}
+{% block content %}
+<h1>Panel login IP whitelist</h1>
+<p class="muted">Your current IP: {{ client_ip }}. Empty list = no restriction. Adding an entry automatically also whitelists your own current IP, so you can't lock yourself out.</p>
+
+<div class="card">
+  <form method="post" action="/ui/security/ip-whitelist">
+    <input type="text" name="value" placeholder="IP or CIDR (e.g. 203.0.113.5 or 203.0.113.0/24)" required>
+    <input type="text" name="note" placeholder="note (optional)">
+    <button type="submit">Add</button>
+  </form>
+</div>
+
+<table>
+  <thead><tr><th>IP/CIDR</th><th>Note</th><th></th></tr></thead>
+  <tbody>
+    {% for e in entries %}
+    <tr>
+      <td>{{ e.value }}</td>
+      <td class="muted">{{ e.note or "-" }}</td>
+      <td>
+        <form class="inline" method="post" action="/ui/security/ip-whitelist/{{ e.id }}/delete">
+          <button type="submit" class="danger">delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3" class="muted">No entries -- panel access is unrestricted by IP.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

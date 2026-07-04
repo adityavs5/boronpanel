@@ -554,6 +554,119 @@ class AppInstall(Base):
     installed_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class WafSettings(Base):
+    """Phase 5 feature 7: ModSecurity/WAF. Single-row (id=1) global on/off
+    switch -- confirmed live that OpenLiteSpeed loads ModSecurity's engine
+    and rule files exactly once, server-wide (no per-vhost module load),
+    so there is genuinely only one "is the WAF on" toggle, same
+    single-row-settings shape as SpamGlobalSettings."""
+
+    __tablename__ = "waf_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class WafDomainOverride(Base):
+    """A domain that opted OUT of the (server-wide) WAF engine, rendered as
+    a `ctl:ruleEngine=Off` SecRule scoped to that domain's Host header
+    (daemon/ols.py's `_waf_template_context`) -- the actual mechanism
+    "per-domain enable/disable" uses, since the engine itself cannot be
+    loaded per-vhost on OpenLiteSpeed (confirmed live, see
+    docs/CHECKPOINT-phase5-7-waf.md)."""
+
+    __tablename__ = "waf_domain_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    disabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WafCustomRule(Base):
+    """A per-domain custom WAF rule -- rendered as a Host-header-scoped
+    SecRule chain (daemon/ols.py) so it only ever applies to requests for
+    this one domain, even though the underlying engine/rule file load is
+    global. `target`/`pattern` (not a raw free-text rule body) deliberately
+    constrains what an admin can express here to ModSecurity's own
+    variable+regex operator shape -- enough to block "this header/arg
+    matches this pattern," without accepting arbitrary rule-language text
+    that would be far harder to validate before it reaches a live,
+    server-wide config file."""
+
+    __tablename__ = "waf_custom_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    target: Mapped[str] = mapped_column(String(64))
+    pattern: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class IpWhitelistEntry(Base):
+    """Phase 5 feature 9: panel-login IP/CIDR whitelist. Empty table =
+    no restriction (goal's explicit default) -- enforced by a
+    request-time check in `api/main.py`'s middleware, not here; this
+    model is pure storage. `add_entry` (daemon/ipwhitelist.py) always
+    also upserts the requesting admin's own current IP alongside
+    whatever value they asked to add, structurally guaranteeing "always
+    include current admin IP to prevent lockout" regardless of which
+    entry number is being added or how many already exist."""
+
+    __tablename__ = "ip_whitelist_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TotpCredential(Base):
+    """Phase 5 feature 10: TOTP 2FA. `secret` is stored in plain base32,
+    not hashed -- unlike a password, a TOTP secret must be *used*
+    (HMAC'd against the current time step) on every verification, not
+    just compared, so it can't be one-way-hashed the way
+    PanelUser.password_hash is. This project has no generalized
+    application-level encryption-at-rest layer for DB row secrets (the
+    few genuinely irreversible secrets it holds -- MariaDB admin creds,
+    the PowerDNS API key, the session-signing key -- all live in
+    root-only files under /etc/forgehost/, never in this SQLite DB); a
+    dedicated KMS/envelope-encryption layer for this one field was
+    judged out of scope for this feature, so the DB file's own existing
+    permission boundary (0640 root:forgehost-api, ARCHITECTURE.md SS4)
+    is the actual protection here -- the same real, documented tradeoff
+    this project already accepts for the PanelUser table it sits
+    alongside. `enabled=False` until a submitted code proves the admin
+    actually scanned the QR code and can generate valid codes
+    (goal: "verify before enabling")."""
+
+    __tablename__ = "totp_credentials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    panel_user_id: Mapped[int] = mapped_column(ForeignKey("panel_users.id"), unique=True, index=True)
+    secret: Mapped[str] = mapped_column(String(64))
+    enabled: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TotpRecoveryCode(Base):
+    """8 single-use recovery codes generated once, at the moment 2FA is
+    successfully enabled (goal's explicit count) -- stored hashed
+    (SHA-256, same "never store the raw secret" rule as ApiToken/PmaToken),
+    each usable exactly once (`used_at` set on redemption, never deleted
+    so a reused code can still be rejected rather than silently
+    accepted if the row were ever removed)."""
+
+    __tablename__ = "totp_recovery_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    panel_user_id: Mapped[int] = mapped_column(ForeignKey("panel_users.id"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class HealthSnapshot(Base):
     """Phase 5 feature 1: server health dashboard. One row per ~60s tick
     (scripts/health_snapshot.py, cron), independent of any hosting account

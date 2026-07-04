@@ -432,3 +432,71 @@ def test_bootstrap_pma_requires_hostname_configured(monkeypatch):
     monkeypatch.setattr(ols.settings, "pma_hostname", "")
     with pytest.raises(RuntimeError):
         ols.bootstrap_pma()
+
+
+# --- Phase 5 feature 7: ModSecurity/WAF template context -------------------
+
+
+def test_render_httpd_config_omits_modsecurity_module_when_waf_disabled():
+    content = ols.render_httpd_config([], [])
+    assert "module mod_security" not in content
+
+
+def test_render_httpd_config_includes_modsecurity_module_when_waf_enabled():
+    waf = {
+        "waf_enabled": True,
+        "waf_audit_log": "/var/log/forgehost/modsecurity-audit.log",
+        "waf_rules_file": "/etc/modsecurity/modsec_includes.conf",
+        "waf_domain_overrides": [],
+        "waf_custom_rules": [],
+    }
+    content = ols.render_httpd_config([], [], waf=waf)
+    assert "module mod_security {" in content
+    assert "modsecurity         on" in content
+    assert "modsecurity_rules_file   /etc/modsecurity/modsec_includes.conf" in content
+    assert "SecAuditLog /var/log/forgehost/modsecurity-audit.log" in content
+
+
+def test_render_httpd_config_waf_domain_override_generates_rule_engine_off():
+    waf = {
+        "waf_enabled": True,
+        "waf_audit_log": "/var/log/forgehost/modsecurity-audit.log",
+        "waf_rules_file": "/etc/modsecurity/modsec_includes.conf",
+        "waf_domain_overrides": [{"domain": "example.com"}],
+        "waf_custom_rules": [],
+    }
+    content = ols.render_httpd_config([], [], waf=waf)
+    assert '@streq example.com' in content
+    assert "ctl:ruleEngine=Off" in content
+
+
+def test_render_httpd_config_waf_custom_rule_generates_scoped_chain():
+    waf = {
+        "waf_enabled": True,
+        "waf_audit_log": "/var/log/forgehost/modsecurity-audit.log",
+        "waf_rules_file": "/etc/modsecurity/modsec_includes.conf",
+        "waf_domain_overrides": [],
+        "waf_custom_rules": [{"id": 7, "domain": "shop.example.com", "target": "ARGS", "pattern": "badbot"}],
+    }
+    content = ols.render_httpd_config([], [], waf=waf)
+    assert '@streq shop.example.com' in content
+    assert 'SecRule ARGS "@rx badbot"' in content
+    assert "forgehost-custom-rule-7" in content
+
+
+def test_waf_template_context_reflects_db_state(isolated_db):
+    from shared.db import write_session
+    from shared.models import WafCustomRule, WafDomainOverride, WafSettings
+
+    with write_session() as session:
+        session.add(WafSettings(id=1, enabled=True))
+        session.add(WafDomainOverride(domain="off.example.com", disabled=True))
+        session.add(WafCustomRule(domain="shop.example.com", target="ARGS", pattern="badbot"))
+
+    with write_session() as session:
+        ctx = ols.waf_template_context(session)
+
+    assert ctx["waf_enabled"] is True
+    assert ctx["waf_domain_overrides"] == [{"domain": "off.example.com"}]
+    assert len(ctx["waf_custom_rules"]) == 1
+    assert ctx["waf_custom_rules"][0]["domain"] == "shop.example.com"

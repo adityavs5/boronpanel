@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Slow queries - Forgehost{% endblock %}
+{% block content %}
+<h1>MySQL slow query log</h1>
+
+<div class="card">
+  <p>Status: <span class="status {{ 'active' if status.enabled else 'suspended' }}">{{ 'enabled' if status.enabled else 'disabled' }}</span>
+    &middot; threshold: {{ status.long_query_time }}s &middot; output: {{ status.log_output }}</p>
+  {% if not status.enabled %}
+  <form method="post" action="/ui/slow-queries/bootstrap">
+    <label><input type="checkbox" name="confirm" value="yes" required> I understand this restarts MariaDB briefly</label>
+    <button type="submit">Enable slow query log (1s threshold)</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <form method="get" action="/ui/slow-queries">
+    <input type="text" name="q" placeholder="search query text or DB" value="{{ q }}">
+    <input type="text" name="db" placeholder="exact DB name" value="{{ db }}">
+    <button type="submit">Search</button>
+    <a href="/ui/slow-queries">clear</a>
+  </form>
+</div>
+
+<table>
+  <thead><tr><th>Time</th><th>DB</th><th>Query time (s)</th><th>Rows examined</th><th>Rows sent</th><th>Query</th></tr></thead>
+  <tbody>
+    {% for row in queries %}
+    <tr>
+      <td>{{ row.start_time }}</td>
+      <td>{{ row.db }}</td>
+      <td>{{ "%.3f"|format(row.query_time_seconds) }}</td>
+      <td>{{ row.rows_examined }}</td>
+      <td>{{ row.rows_sent }}</td>
+      <td><code>{{ row.sql_text[:200] }}</code></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">No slow queries recorded yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

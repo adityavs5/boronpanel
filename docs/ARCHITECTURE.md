@@ -470,6 +470,46 @@ whatever config was live before the failed change.
   API layer (defense in depth: even if an API-layer check were buggy, the
   daemon re-validates independently before touching disk).
 
+## 10.5 ModSecurity/WAF (Phase 5 feature 7) — available, but server-wide only
+
+**Availability was checked empirically, not assumed.** This OLS build's
+`openlitespeed -v` banner advertises `mod_security 1.4 (with
+libmodsecurity v3.0.14)` as compiled in, but the loadable
+`mod_security.so` was not actually present in `/usr/local/lsws/modules/`
+on a fresh install (confirmed by a real `openlitespeed -t` failure —
+"cannot open shared object file" — before this feature assumed it was
+usable), and no OWASP Core Rule Set was installed anywhere either.
+**Fixed with two official packages**, not a third-party/arbitrary
+source: LiteSpeed's own `ols-modsecurity` (same `rpms.litespeedtech.com`
+repo `openlitespeed` itself already comes from) for the module, and
+Ubuntu's official `modsecurity-crs` (universe repo) for the ruleset.
+Confirmed live end-to-end afterward: a real reflected-XSS probe and a
+real SQLi probe against a live vhost both returned `403` (OWASP CRS
+rules firing exactly as documented), with ordinary traffic to the same
+vhost unaffected (still `200`) — see `docs/CHECKPOINT-phase5-7-waf.md`
+for the full transcript.
+
+**Real, load-bearing scope limitation, also confirmed live**:
+OpenLiteSpeed has **no per-virtual-host ModSecurity configuration at
+all** — the engine and its rule files load exactly once, server-wide,
+in a single `module mod_security {}` block in `httpd_config.conf`. A
+`modsecurity {}` block placed at the vhost-config level is rejected
+outright by `openlitespeed -t` as an unrecognized keyword (confirmed
+directly, not just taken from OpenLiteSpeed's own forum, which
+independently says the same thing: "I don't think there's a way to
+apply modsecurity by user/virtual host on OpenLiteSpeed"). Consequently,
+this project's "per-domain WAF enable/disable" and "custom rules per
+domain" are implemented as ModSecurity rule-language conditionals keyed
+off the `Host` request header (`SecRule REQUEST_HEADERS:Host "@streq
+<domain>" ...`, with `ctl:ruleEngine=Off` for a disable and a chained
+match rule for a custom block) rather than as genuinely separate
+per-vhost engine instances — the engine itself remains one global
+on/off switch (`daemon/waf.py`, `WafSettings`); only individual *rules*
+can be scoped to a single domain. Any future Forgehost feature that
+assumes per-vhost module-level control over ModSecurity on OpenLiteSpeed
+specifically should re-read this section first — it's a real constraint
+of the web server, not a Forgehost design choice.
+
 ## 11. What's explicitly NOT built (confirming OUT OF SCOPE adherence)
 
 No multi-server/WHM-style management, no reseller/package billing logic, no

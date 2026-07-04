@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Fail2ban - Forgehost{% endblock %}
+{% block content %}
+<h1>Fail2ban</h1>
+
+<div class="card">
+  <form method="post" action="/ui/fail2ban/bootstrap">
+    <button type="submit">Install / reconfigure jails (SSH, panel login, OLS, Postfix, Dovecot)</button>
+  </form>
+</div>
+
+<table>
+  <thead><tr><th>Jail</th><th>Currently failed</th><th>Total failed</th><th>Currently banned</th><th>Total banned</th><th>Banned IPs</th><th></th></tr></thead>
+  <tbody>
+    {% for j in jails %}
+    <tr>
+      <td>{{ j.jail }}</td>
+      <td>{{ j.currently_failed }}</td>
+      <td>{{ j.total_failed }}</td>
+      <td>{{ j.currently_banned }}</td>
+      <td>{{ j.total_banned }}</td>
+      <td>
+        {% for ip in j.banned_ips %}
+        <form class="inline" method="post" action="/ui/fail2ban/{{ j.jail }}/unban">
+          <input type="hidden" name="ip" value="{{ ip }}">
+          <button type="submit" class="secondary">{{ ip }} &times;</button>
+        </form>
+        {% else %}<span class="muted">none</span>{% endfor %}
+      </td>
+      <td>
+        {% if j.banned_ips %}
+        <form method="post" action="/ui/fail2ban/{{ j.jail }}/unban-all">
+          <button type="submit" class="secondary">unban all</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="muted">No jails active.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="card">
+  <h2>Recent ban events</h2>
+  <table>
+    <thead><tr><th>Time</th><th>Jail</th><th>Action</th><th>IP</th></tr></thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td>{{ e.timestamp }}</td>
+        <td>{{ e.jail }}</td>
+        <td>{{ e.action }}</td>
+        <td>{{ e.ip }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">No recent events.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

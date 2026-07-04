@@ -321,3 +321,36 @@ module cache {
     enablePrivateCache  0
     privateExpireInSeconds 3600
 }
+{% if waf_enabled %}
+
+# Phase 5 feature 7: ModSecurity/WAF (daemon/waf.py). Confirmed live on this
+# server that OpenLiteSpeed has NO per-vhost ModSecurity configuration --
+# the engine and its rule files load once, server-wide, in this one
+# `module mod_security` block (https://forum.openlitespeed.org/threads/
+# mod-security-at-vhost-level.5401/: "I don't think there's a way to apply
+# modsecurity by user/virtual host on OpenLiteSpeed" -- confirmed correct
+# by testing). Per-domain enable/disable and per-domain custom rules are
+# therefore both implemented as conditional SecRule chains keyed off the
+# Host header (`ctl:ruleEngine=Off` for disable, a matching rule for a
+# custom block) -- the engine itself is global, but individual rules can
+# still be scoped to one domain via ModSecurity's own rule language, which
+# is the actual mechanism this feature relies on for "per domain" control.
+module mod_security {
+    ls_enabled          1
+    modsecurity         on
+    modsecurity_rules   `SecRuleEngine On
+SecRequestBodyAccess On
+SecAuditEngine RelevantOnly
+SecAuditLogParts ABCEFHJKZ
+SecAuditLogType Serial
+SecAuditLog {{ waf_audit_log }}
+{% for override in waf_domain_overrides %}
+SecRule REQUEST_HEADERS:Host "@streq {{ override.domain }}" "id:{{ 9000000 + loop.index }},phase:1,pass,nolog,ctl:ruleEngine=Off"
+{% endfor %}
+{% for rule in waf_custom_rules %}
+SecRule REQUEST_HEADERS:Host "@streq {{ rule.domain }}" "id:{{ 9100000 + loop.index }},phase:2,chain"
+SecRule {{ rule.target }} "@rx {{ rule.pattern }}" "t:none,deny,status:403,msg:'forgehost-custom-rule-{{ rule.id }}'"
+{% endfor %}`
+    modsecurity_rules_file   {{ waf_rules_file }}
+}
+{% endif %}

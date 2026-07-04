@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, FileAuthDir, PhpIniOverride, Redirect
+from shared.models import Account, Domain, FileAuthDir, PhpIniOverride, Redirect, WafCustomRule, WafDomainOverride, WafSettings
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
@@ -275,7 +275,44 @@ def _webmail_ssl_paths(session) -> tuple[str, str]:
     return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
 
 
-def render_httpd_config(domain_vhosts: list[dict], account_procs: list[dict]) -> str:
+# Phase 5 feature 7: ModSecurity/WAF. Kept here (not in daemon/waf.py) since
+# it's read at every httpd_config.conf render, same as every other piece of
+# this function's context -- daemon/waf.py imports these path constants
+# rather than duplicating them.
+WAF_RULES_FILE = "/etc/modsecurity/modsec_includes.conf"
+WAF_AUDIT_LOG = "/var/log/forgehost/modsecurity-audit.log"
+
+
+def waf_template_context(session) -> dict:
+    """Takes an already-open session (the same one the caller already used
+    to fetch domain_vhosts/account_procs) rather than opening its own --
+    render_httpd_config must stay a pure function of its arguments so every
+    existing test that calls it directly with plain dicts (no DB involved
+    at all) keeps working, and so this never touches the live DB as a
+    surprise side effect of what looks like template rendering."""
+    waf_settings = session.get(WafSettings, 1)
+    enabled = bool(waf_settings and waf_settings.enabled)
+    overrides = session.scalars(select(WafDomainOverride).where(WafDomainOverride.disabled == True)).all()  # noqa: E712
+    rules = session.scalars(select(WafCustomRule)).all()
+    return {
+        "waf_enabled": enabled,
+        "waf_audit_log": WAF_AUDIT_LOG,
+        "waf_rules_file": WAF_RULES_FILE,
+        "waf_domain_overrides": [{"domain": o.domain} for o in overrides],
+        "waf_custom_rules": [{"id": r.id, "domain": r.domain, "target": r.target, "pattern": r.pattern} for r in rules],
+    }
+
+
+_WAF_DISABLED_CONTEXT = {
+    "waf_enabled": False,
+    "waf_audit_log": WAF_AUDIT_LOG,
+    "waf_rules_file": WAF_RULES_FILE,
+    "waf_domain_overrides": [],
+    "waf_custom_rules": [],
+}
+
+
+def render_httpd_config(domain_vhosts: list[dict], account_procs: list[dict], waf: dict | None = None) -> str:
     template = _env.get_template("httpd_config.conf.j2")
     return template.render(
         server_name="forgehost",
@@ -293,6 +330,7 @@ def render_httpd_config(domain_vhosts: list[dict], account_procs: list[dict]) ->
         pma_hostname=settings.pma_hostname,
         pma_docroot=settings.pma_docroot,
         pma_lsphp_path=_lsphp_path(settings.default_php_version),
+        **(waf or _WAF_DISABLED_CONTEXT),
         **RESOURCE_DEFAULTS,
     )
 
@@ -323,8 +361,9 @@ def bootstrap_webmail() -> None:
     with write_session() as session:
         domain_vhosts, account_procs = _all_active_vhosts(session)
         ssl_key_file, ssl_cert_file = _webmail_ssl_paths(session)
+        waf = waf_template_context(session)
 
-    httpd_content = render_httpd_config(domain_vhosts, account_procs)
+    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf)
     webmail_content = render_webmail_vhost_conf(ssl_key_file, ssl_cert_file)
 
     writer = ConfigWriterMulti(
@@ -385,8 +424,9 @@ def bootstrap_pma() -> None:
     with write_session() as session:
         domain_vhosts, account_procs = _all_active_vhosts(session)
         ssl_key_file, ssl_cert_file = _pma_ssl_paths(session)
+        waf = waf_template_context(session)
 
-    httpd_content = render_httpd_config(domain_vhosts, account_procs)
+    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf)
     pma_content = render_pma_vhost_conf(ssl_key_file, ssl_cert_file)
 
     writer = ConfigWriterMulti(
@@ -466,9 +506,10 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
             domain["domain"]: _protected_dirs_for_domain(session, account.username, account.id, domain["docroot"])
             for domain in domains
         }
+        waf = waf_template_context(session)
 
     targets = {"main": HTTPD_CONFIG_PATH}
-    content = {"main": render_httpd_config(domain_vhosts, account_procs)}
+    content = {"main": render_httpd_config(domain_vhosts, account_procs, waf=waf)}
     for domain in domains:
         vhost_name = _vhost_name(domain["domain"])
         ssl_key_file, ssl_cert_file = _ssl_paths_for_domain(domain)
@@ -573,7 +614,9 @@ def terminate_vhost(account: Account) -> None:
 
 
 def _apply_main_only(domain_vhosts: list[dict], account_procs: list[dict], context: str) -> None:
-    httpd_content = render_httpd_config(domain_vhosts, account_procs)
+    with write_session() as session:
+        waf = waf_template_context(session)
+    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf)
     writer = ConfigWriterMulti(
         targets={"main": HTTPD_CONFIG_PATH},
         validate=_validate_multi,
@@ -585,6 +628,17 @@ def _apply_main_only(domain_vhosts: list[dict], account_procs: list[dict], conte
     result = writer.apply({"main": httpd_content})
     if not result.ok:
         raise RuntimeError(f"OLS config transaction failed during {context}: {result.summary()}")
+
+
+def refresh_main_config() -> None:
+    """Re-render + re-apply just httpd_config.conf from current DB state,
+    with no domain/account change involved -- used by daemon/waf.py
+    whenever WAF settings/overrides/custom rules change, the same
+    validate/backup/reload/verify/rollback path every other OLS config
+    change goes through (ARCHITECTURE.md SS7), not a special case."""
+    with write_session() as session:
+        domain_vhosts, account_procs = _all_active_vhosts(session)
+    _apply_main_only(domain_vhosts, account_procs, context="waf_settings_change")
 
 
 def bootstrap_baseline() -> None:

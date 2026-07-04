@@ -9,16 +9,65 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
+import ipaddress
 
-from api.routers import account_backups, accounts, apps, auth, backups, cron, databases, disktree, dns, domains, email, fileauth, files, firewall, ftp, git, health, hotlink, ipblock, logs_router, mail, mailqueue, nameservers, php_ini, pma, redirects, services, sshkeys, ssl_router, tokens, usage, wordpress
+from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
+
+from shared.db import read_session
+from shared.models import IpWhitelistEntry
+
+from api.routers import account_backups, accounts, apps, auditlog, auth, backups, cron, databases, disktree, dns, domains, email, fail2ban, fileauth, files, firewall, ftp, git, health, hotlink, ipblock, ipwhitelist, logs_router, mail, mailqueue, nameservers, php_ini, pma, redirects, services, slowquery, sshkeys, ssl_router, tokens, twofactor, usage, waf, wordpress
 
 app = FastAPI(title="Forgehost", docs_url="/api/docs", redoc_url=None)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+# Phase 5 feature 9: IP whitelist for panel login. Runs before every
+# other route (including /login itself, and every API route -- goal:
+# "before login page loads") -- an empty list means no restriction
+# (checked first, so the common/default case costs one cheap read and
+# nothing else). /healthz is exempt: it's the one route external
+# monitoring infrastructure (not an admin browser) is expected to poll,
+# and has no state-changing or data-exposing behavior worth restricting.
+def ip_allowed(client_host: str | None, whitelist_values: list[str]) -> bool:
+    """Pure function (no request/DB objects) so this is directly unit-
+    testable without spinning up the ASGI app -- the middleware below is
+    just this function plus its I/O."""
+    if not whitelist_values:
+        return True
+    if client_host is None:
+        return False
+    try:
+        client_ip = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    for value in whitelist_values:
+        try:
+            if "/" in value:
+                if client_ip in ipaddress.ip_network(value, strict=False):
+                    return True
+            elif client_ip == ipaddress.ip_address(value):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+@app.middleware("http")
+async def _ip_whitelist(request, call_next):
+    if request.url.path == "/healthz":
+        return await call_next(request)
+    with read_session() as db:
+        values = list(db.scalars(select(IpWhitelistEntry.value)).all())
+    client_host = request.client.host if request.client else None
+    if not ip_allowed(client_host, values):
+        return PlainTextResponse("Forbidden", status_code=403)
+    return await call_next(request)
 
 
 # Security audit finding F10: no response ever carried any of these
@@ -42,7 +91,7 @@ async def _security_headers(request, call_next):
     return response
 
 app.include_router(auth.router)
-for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall):
+for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor):
     app.include_router(module.api_router)
     app.include_router(module.ui_router)
 # Phase 4 feature 8: apps.py has three router objects (account-scoped

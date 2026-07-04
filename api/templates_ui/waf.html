@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}WAF - Forgehost{% endblock %}
+{% block content %}
+<h1>ModSecurity / WAF</h1>
+
+{% if not status.available %}
+<div class="card">
+  <p class="error">ModSecurity is not installed on this server.</p>
+</div>
+{% else %}
+
+<div class="card">
+  <h2>Status: <span class="status {{ 'active' if status.enabled else 'suspended' }}">{{ 'enabled' if status.enabled else 'disabled' }}</span></h2>
+  <p class="muted">OpenLiteSpeed loads ModSecurity once, server-wide -- this is the single global on/off switch. Per-domain control is below.</p>
+  <form method="post" action="/ui/waf/enable">
+    <input type="hidden" name="enabled" value="{{ 'no' if status.enabled else 'yes' }}">
+    <button type="submit">{{ 'Disable' if status.enabled else 'Enable' }} WAF</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Per-domain override</h2>
+  <form method="post" action="/ui/waf/domain-override">
+    <input type="text" name="domain" placeholder="domain">
+    <select name="disabled">
+      <option value="yes">disable WAF for this domain</option>
+      <option value="no">re-enable WAF for this domain</option>
+    </select>
+    <button type="submit">Apply</button>
+  </form>
+  <table>
+    <thead><tr><th>Domain (WAF disabled)</th></tr></thead>
+    <tbody>
+      {% for d in status.domain_overrides %}
+      <tr><td>{{ d }}</td></tr>
+      {% else %}
+      <tr><td class="muted">No per-domain overrides -- WAF applies to every domain.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Custom rules per domain</h2>
+  <form method="post" action="/ui/waf/custom-rules">
+    <input type="text" name="domain" placeholder="domain" required>
+    <select name="target">
+      <option value="ARGS">ARGS</option>
+      <option value="REQUEST_URI">REQUEST_URI</option>
+      <option value="QUERY_STRING">QUERY_STRING</option>
+      <option value="REQUEST_BODY">REQUEST_BODY</option>
+      <option value="REQUEST_COOKIES">REQUEST_COOKIES</option>
+      <option value="REQUEST_HEADERS:User-Agent">User-Agent header</option>
+      <option value="REQUEST_HEADERS:Referer">Referer header</option>
+    </select>
+    <input type="text" name="pattern" placeholder="regex pattern to block" required maxlength="300">
+    <button type="submit">Add rule</button>
+  </form>
+  <table>
+    <thead><tr><th>Domain</th><th>Target</th><th>Pattern</th><th></th></tr></thead>
+    <tbody>
+      {% for r in status.custom_rules %}
+      <tr>
+        <td>{{ r.domain }}</td>
+        <td>{{ r.target }}</td>
+        <td>{{ r.pattern }}</td>
+        <td>
+          <form class="inline" method="post" action="/ui/waf/custom-rules/{{ r.id }}/delete">
+            <button type="submit" class="danger">delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">No custom rules.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Recent blocked requests</h2>
+  <table>
+    <thead><tr><th>Time</th><th>Client IP</th><th>Host</th><th>Method</th><th>Path</th><th>Status</th><th>Message</th></tr></thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td>{{ e.timestamp }}</td>
+        <td>{{ e.client_ip }}</td>
+        <td>{{ e.host }}</td>
+        <td>{{ e.method }}</td>
+        <td>{{ e.path }}</td>
+        <td>{{ e.status }}</td>
+        <td class="muted">{{ e.message }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">No blocked requests recorded.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}
