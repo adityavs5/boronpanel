@@ -27,6 +27,26 @@ COOKIE_MAX_AGE_SECONDS = 7 * 24 * 3600
 
 _serializer = URLSafeTimedSerializer(settings.session_secret, salt="forgehost-session")
 
+# Phase 5 feature 10: TOTP 2FA login's second step. A separate salt from
+# the real session serializer above -- this token only ever proves
+# "the password check already passed for this panel_user_id a moment
+# ago," never grants an authenticated session by itself, so it's
+# deliberately short-lived (5 minutes) and carried as a hidden form
+# field, not a cookie.
+_TWOFACTOR_PENDING_MAX_AGE_SECONDS = 5 * 60
+_twofactor_serializer = URLSafeTimedSerializer(settings.session_secret, salt="forgehost-2fa-pending")
+
+
+def sign_twofactor_pending(panel_user_id: int) -> str:
+    return _twofactor_serializer.dumps(panel_user_id)
+
+
+def unsign_twofactor_pending(token: str) -> int | None:
+    try:
+        return _twofactor_serializer.loads(token, max_age=_TWOFACTOR_PENDING_MAX_AGE_SECONDS)
+    except BadSignature:
+        return None
+
 
 def sign_session_id(session_id: str) -> str:
     return _serializer.dumps(session_id)

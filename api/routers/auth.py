@@ -10,7 +10,16 @@ from shared.models import PanelUser
 from shared.passwords import verify_password
 
 from api.rpc import call_daemon
-from api.security import COOKIE_MAX_AGE_SECONDS, COOKIE_NAME, Identity, get_identity, sign_session_id, unsign_session_id
+from api.security import (
+    COOKIE_MAX_AGE_SECONDS,
+    COOKIE_NAME,
+    Identity,
+    get_identity,
+    sign_session_id,
+    sign_twofactor_pending,
+    unsign_session_id,
+    unsign_twofactor_pending,
+)
 from api.templates import templates
 
 router = APIRouter(tags=["auth"])
@@ -57,6 +66,19 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
     if not valid:
         return templates.TemplateResponse(request, "login.html", {"error": "invalid username or password"}, status_code=401)
 
+    # Phase 5 feature 10: TOTP 2FA. Password is correct, but if this user
+    # has 2FA enabled the session must not be created yet -- a second
+    # step (code or recovery code) is required first.
+    totp_status = call_daemon("totp.status", login_identity, panel_user_id=user_id)
+    if totp_status["enabled"]:
+        pending_token = sign_twofactor_pending(user_id)
+        return templates.TemplateResponse(request, "twofactor_login.html", {"pending_token": pending_token, "error": None})
+
+    return _complete_login(user_id, role, account_id)
+
+
+def _complete_login(user_id: int, role: str, account_id: int | None):
+    login_identity = Identity(panel_user_id=user_id, username="", role=role, account_id=account_id, auth_method="session")
     session_result = call_daemon("auth.create_session", login_identity, panel_user_id=user_id)
     cookie_value = sign_session_id(session_result["session_id"])
 
@@ -66,6 +88,28 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
         COOKIE_NAME, cookie_value, max_age=COOKIE_MAX_AGE_SECONDS, httponly=True, samesite="lax", secure=True
     )
     return response
+
+
+@router.post("/login/2fa")
+def login_2fa_submit(request: Request, pending_token: str = Form(...), code: str = Form(...)):
+    panel_user_id = unsign_twofactor_pending(pending_token)
+    if panel_user_id is None:
+        return templates.TemplateResponse(request, "login.html", {"error": "2FA session expired -- please log in again"}, status_code=401)
+
+    with read_session() as db:
+        user = db.get(PanelUser, panel_user_id)
+        if user is None or user.disabled:
+            return templates.TemplateResponse(request, "login.html", {"error": "invalid username or password"}, status_code=401)
+        role, account_id = user.role, user.account_id
+
+    check_identity = Identity(panel_user_id=panel_user_id, username=user.username, role=role, account_id=account_id, auth_method="session")
+    result = call_daemon("totp.check_login_code", check_identity, panel_user_id=panel_user_id, code=code)
+    if not result["valid"]:
+        return templates.TemplateResponse(
+            request, "twofactor_login.html", {"pending_token": pending_token, "error": "invalid code"}, status_code=401
+        )
+
+    return _complete_login(panel_user_id, role, account_id)
 
 
 @router.post("/logout")
