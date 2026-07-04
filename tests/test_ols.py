@@ -334,14 +334,16 @@ def test_render_httpd_config_includes_each_domain_as_its_own_vhost():
 
 def test_render_httpd_config_includes_one_extprocessor_per_account():
     account_procs = [
-        {"username": "demo1", "php_app_name": "demo1_php83", "lsphp_path": "/usr/local/lsws/lsphp83/bin/lsphp"},
-        {"username": "demo2", "php_app_name": "demo2_php81", "lsphp_path": "/usr/local/lsws/lsphp81/bin/lsphp"},
+        {"username": "demo1", "php_app_name": "demo1_php83", "lsphp_path": "/usr/local/lsws/lsphp83/bin/lsphp", "home_dir": "/home/demo1"},
+        {"username": "demo2", "php_app_name": "demo2_php81", "lsphp_path": "/usr/local/lsws/lsphp81/bin/lsphp", "home_dir": "/home/demo2"},
     ]
     content = ols.render_httpd_config([], account_procs)
     assert "extProcessor demo1_php83{" in content
     assert "extProcessor demo2_php81{" in content
     assert "extUser                         demo1" in content
     assert "extUser                         demo2" in content
+    assert "TMPDIR=/home/demo1/tmp" in content
+    assert "TMPDIR=/home/demo2/tmp" in content
 
 
 def test_php_app_name_and_lsphp_path_helpers():
@@ -500,3 +502,92 @@ def test_waf_template_context_reflects_db_state(isolated_db):
     assert ctx["waf_domain_overrides"] == [{"domain": "off.example.com"}]
     assert len(ctx["waf_custom_rules"]) == 1
     assert ctx["waf_custom_rules"][0]["domain"] == "shop.example.com"
+
+
+def test_render_vhost_conf_disables_symlink_following():
+    """Security fix (Phase 6a research finding): this was hardcoded to
+    `allowSymbolLink 1` (follow unconditionally) -- confirmed via this
+    box's own installed OLS docs (VirtualHosts_Help.html) that this is a
+    whole-vhost, not per-context, setting, and that 0 is the documented
+    security-hardened choice. No Forgehost automation creates or relies on
+    a symlink under an account's docroot (confirmed by grep across every
+    daemon/*.py), so disabling it has no legitimate functionality to
+    break."""
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert "allowSymbolLink           0" in content
+    assert "allowSymbolLink           1" not in content
+
+
+def test_render_vhost_conf_open_basedir_excludes_shared_system_tmp():
+    """Security fix (Phase 6a research finding): every account's
+    open_basedir used to include the shared, world-writable-sticky system
+    /tmp, letting one account enumerate another's temp/upload-in-progress
+    filenames. The account's own private tmp dir was already in this
+    string before the fix -- only the shared ":/tmp" fallback is removed."""
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert 'php_admin_value open_basedir "/home/demo1/public_html:/home/demo1/tmp"' in content
+    assert ":/tmp\"" not in content
+
+
+def test_render_vhost_conf_sets_upload_tmp_dir_to_account_tmp():
+    """upload_tmp_dir defaults to empty in the real lsphp build (confirmed
+    via `lsphp -i`), which falls through to the system /tmp open_basedir
+    now excludes -- without this override, uploads would fail with an
+    open_basedir violation."""
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert 'php_admin_value upload_tmp_dir "/home/demo1/tmp"' in content
+
+
+def test_all_active_vhosts_account_procs_includes_home_dir(isolated_db):
+    """Feeds templates/httpd_config.conf.j2's new per-account TMPDIR env
+    line (see test_render_httpd_config_includes_one_extprocessor_per_account) --
+    without this key present, rendering would raise (StrictUndefined)."""
+    from shared.db import write_session
+    from shared.models import Account as AccountModel
+    from shared.models import Domain as DomainModel
+
+    with write_session() as session:
+        account = AccountModel(username="demo1", uid=5001, gid=5001, status="active", php_version="8.3")
+        session.add(account)
+        session.flush()
+        session.add(DomainModel(account_id=account.id, domain="demo1.example", docroot="/home/demo1/public_html", ssl_status="none"))
+
+    with write_session() as session:
+        _, account_procs = ols._all_active_vhosts(session)
+    assert account_procs == [{
+        "username": "demo1",
+        "php_app_name": "demo1_php83",
+        "lsphp_path": "/usr/local/lsws/lsphp83/bin/lsphp",
+        "home_dir": "/home/demo1",
+    }]
+
+
+def test_refresh_all_vhosts_bootstraps_tmp_dir_and_refreshes_active_accounts(isolated_db, monkeypatch):
+    """Security fix migration (Phase 6a research finding): backfills
+    pre-existing accounts (created before this fix) with both the tmp dir
+    their new open_basedir depends on and a re-rendered vhost -- not just
+    accounts created after the fix. Terminated accounts must be excluded,
+    same as _all_active_vhosts already excludes them from httpd_config.conf."""
+    from shared.db import write_session
+    from shared.models import Account as AccountModel
+
+    with write_session() as session:
+        session.add(AccountModel(username="active1", uid=5001, gid=5001, status="active", php_version="8.3"))
+        session.add(AccountModel(username="suspended1", uid=5002, gid=5002, status="suspended", php_version="8.3"))
+        session.add(AccountModel(username="terminated1", uid=5003, gid=5003, status="terminated", php_version="8.3"))
+
+    tmp_dir_calls = []
+    refresh_calls = []
+    monkeypatch.setattr(ols.sysops, "ensure_tmp_dir", lambda username: tmp_dir_calls.append(username))
+    monkeypatch.setattr(ols, "refresh_vhost", lambda account: refresh_calls.append(account.username))
+
+    ols.refresh_all_vhosts()
+
+    assert sorted(tmp_dir_calls) == ["active1", "suspended1"]
+    assert sorted(refresh_calls) == ["active1", "suspended1"]

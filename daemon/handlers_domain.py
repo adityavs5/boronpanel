@@ -16,7 +16,7 @@ from shared.db import write_session
 from shared.models import Account, Domain
 from shared.validation import validate_domain, validate_username
 
-from daemon import handlers_redirect, ols, powerdns
+from daemon import handlers_redirect, ols, powerdns, sysops
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 
 
@@ -191,10 +191,10 @@ def ensure_docroot(username: str, docroot: str) -> None:
     logs_dir = f"{settings.home_base}/{username}/logs"
     os.makedirs(logs_dir, exist_ok=True)
     os.chown(logs_dir, pw.pw_uid, pw.pw_gid)
-    tmp_dir = f"{settings.home_base}/{username}/tmp"
-    os.makedirs(tmp_dir, exist_ok=True)
-    os.chown(tmp_dir, pw.pw_uid, pw.pw_gid)
-    os.chmod(tmp_dir, 0o750)
+    # Shared with sysops.create_linux_user (account-creation time) and
+    # ols.refresh_all_vhosts's migration pass (pre-existing accounts) --
+    # one place owns this directory's creation/perms.
+    sysops.ensure_tmp_dir(username)
 
 
 def _grant_webserver_acl(docroot: str) -> None:

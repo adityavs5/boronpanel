@@ -23,6 +23,7 @@ from shared.models import Account, Domain, FileAuthDir, PhpIniOverride, Redirect
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
+from daemon import sysops
 
 logger = logging.getLogger("forgehostd.ols")
 
@@ -249,6 +250,7 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
             "username": account.username,
             "php_app_name": _php_app_name(account.username, account.php_version),
             "lsphp_path": _lsphp_path(account.php_version),
+            "home_dir": account_home,
         })
         for domain_name in domains:
             domain_vhosts.append({
@@ -639,6 +641,32 @@ def refresh_main_config() -> None:
     with write_session() as session:
         domain_vhosts, account_procs = _all_active_vhosts(session)
     _apply_main_only(domain_vhosts, account_procs, context="waf_settings_change")
+
+
+def refresh_all_vhosts() -> None:
+    """One-time (idempotent, safe to re-run) migration for a shared-
+    template security fix (per-account /tmp + allowSymbolLink hardening,
+    Phase 6a research findings): re-renders every active/suspended
+    account's own vhost.conf(s) + httpd_config.conf from the current
+    templates, and backfills sysops.ensure_tmp_dir for every one of them --
+    so an account created before this fix picks up both the new template
+    content and the private tmp dir it now depends on, not just accounts
+    created after. Same category as bootstrap_webmail/bootstrap_pma: run
+    explicitly once, not wired into any hook or RPC op, since a config-
+    mutating action with no trigger event would be surprising there.
+
+    Uses refresh_vhost's own account_snapshot pattern (handlers_account.
+    set_php_version): accounts are queried and detached before use here,
+    matching the established convention for reading scalar attributes off
+    an Account row after its session has closed.
+    """
+    with write_session() as session:
+        accounts = list(session.scalars(
+            select(Account).where(Account.status.in_(["active", "suspended"]))
+        ).all())
+    for account in accounts:
+        sysops.ensure_tmp_dir(account.username)
+        refresh_vhost(account)
 
 
 def bootstrap_baseline() -> None:

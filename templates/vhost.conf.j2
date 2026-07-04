@@ -1,5 +1,15 @@
 docRoot                   {{ docroot }}
-allowSymbolLink           1
+{# Security fix (Phase 6a research finding): this was hardcoded to 1
+   (follow symlinks unconditionally), the maximally-permissive setting --
+   independent of namespace isolation, this let an account plant a symlink
+   under its own docroot pointing at another customer's files and have OLS
+   serve the target. 0 (never follow) is the correct default for shared
+   hosting per this box's own installed OLS docs ("For better security,
+   disable this feature" -- VirtualHosts_Help.html); no legitimate
+   Forgehost automation (app installer, git deploy) creates or relies on a
+   symlink under an account's docroot -- confirmed by grepping every
+   daemon/*.py for symlink creation before making this change. #}
+allowSymbolLink           0
 enableGzip                1
 enableIpGeo               0
 
@@ -57,7 +67,22 @@ context / {
   addDefaultCharset       off
 
   phpIniOverride  {
-    php_admin_value open_basedir "{{ docroot }}:{{ home_dir }}/tmp:/tmp"
+    {# Security fix (Phase 6a research finding): dropped the trailing
+       ":/tmp" -- every account's open_basedir used to include the shared,
+       world-writable-sticky system /tmp, letting one account enumerate
+       every other account's temp/upload-in-progress filenames (content
+       itself is uid-protected, but existence/naming/timing wasn't).
+       "{{ home_dir }}/tmp" (0750, owned by this account -- created by
+       sysops.ensure_tmp_dir at account-creation time, and by this same
+       call from handlers_domain.ensure_docroot at domain-add time) is
+       this account's own private replacement, already referenced here
+       before this fix -- only the shared fallback is newly removed. #}
+    php_admin_value open_basedir "{{ docroot }}:{{ home_dir }}/tmp"
+    {# upload_tmp_dir defaults to empty in this build (confirmed via
+       `lsphp -i`), which falls through to the same system-/tmp default
+       open_basedir just excluded -- without this override, a file upload
+       would immediately fail with an open_basedir violation. #}
+    php_admin_value upload_tmp_dir "{{ home_dir }}/tmp"
     {# Phase 3 feature 9: a real, persistent per-account PHP error log --
        lsphp's own compiled-in php.ini has no error_log path configured
        at all (confirmed empirically: PHP fatal errors went nowhere

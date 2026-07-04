@@ -10,6 +10,7 @@ authorization.
 from __future__ import annotations
 
 import grp
+import os
 import pwd
 
 from shared.config import settings
@@ -79,7 +80,28 @@ def create_linux_user(username: str) -> tuple[int, int]:
     run(["chmod", "711", home_dir], check=True)
 
     pw = pwd.getpwnam(username)
+    ensure_tmp_dir(username)
     return pw.pw_uid, pw.pw_gid
+
+
+def ensure_tmp_dir(username: str) -> str:
+    """Creates (idempotently) this account's own private tmp dir, used by
+    the rendered vhost's open_basedir/upload_tmp_dir/TMPDIR in place of the
+    shared system /tmp (security fix: every account's open_basedir used to
+    include the shared, world-writable-sticky system /tmp, letting one
+    account enumerate another's temp/session-adjacent filenames). Mirrors
+    handlers_domain.ensure_docroot's identical tmp_dir creation (0750,
+    owned by the account) -- that call site only fires at domain-add time,
+    so this one covers account creation itself and, via
+    ols.refresh_all_vhosts's migration pass, every pre-existing account
+    that predates this fix."""
+    _assert_safe_username(username)
+    pw = pwd.getpwnam(username)
+    tmp_dir = f"{settings.home_base}/{username}/tmp"
+    os.makedirs(tmp_dir, exist_ok=True)
+    os.chown(tmp_dir, pw.pw_uid, pw.pw_gid)
+    os.chmod(tmp_dir, 0o750)
+    return tmp_dir
 
 
 def set_initial_password(username: str, password: str) -> None:

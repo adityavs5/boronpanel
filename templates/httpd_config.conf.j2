@@ -241,6 +241,16 @@ extProcessor {{ acc.php_app_name }}{
     address                         uds://tmp/lshttpd/{{ acc.php_app_name }}.sock
     maxConns                        10
     env                              PHP_LSAPI_CHILDREN=10
+    {# Security fix (Phase 6a research finding): confirmed empirically
+       (lsphp -i / a live test script) that this build's sys_temp_dir ini
+       directive is empty, so sys_get_temp_dir() -- and anything that
+       calls it, e.g. tempnam()/Imagick/PHPMailer attachment scratch files
+       -- falls back to the system /tmp that vhost.conf.j2's open_basedir
+       no longer includes. Confirmed TMPDIR is honored by this exact lsphp
+       build (same live test) -- setting it here redirects that fallback
+       to this account's own private tmp dir instead of failing with an
+       open_basedir violation. #}
+    env                              TMPDIR={{ acc.home_dir }}/tmp
     initTimeout                     60
     retryTimeout                    0
     persistConn                     1

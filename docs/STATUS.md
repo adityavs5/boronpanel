@@ -166,6 +166,132 @@ to shared production state (see "What's honestly still open" below).
 
 ---
 
+## Security fix (2026-07-04): shared /tmp + symlink policy gaps found by
+Phase 6a research, fixed and verified live
+
+Two live security gaps surfaced by `docs/NAMESPACE-DESIGN.md`'s own
+research (not part of that goal's own scope, which was design-only) were
+fixed here, live-verified against this real server, before any namespace
+implementation work begins.
+
+### Gap 1 — every account's open_basedir included the shared system /tmp
+
+`templates/vhost.conf.j2`'s `open_basedir` used to be
+`"<docroot>:<home>/tmp:/tmp"` — the trailing `:/tmp` meant every hosted
+account's PHP could read/enumerate the shared, world-writable-sticky
+system `/tmp`, alongside every other account's PHP. Fixed:
+
+- Dropped the shared `:/tmp` clause — `open_basedir` is now
+  `"<docroot>:<home>/tmp"` only.
+- Added `php_admin_value upload_tmp_dir "<home>/tmp"` — confirmed via a
+  real `lsphp -i` that `upload_tmp_dir` defaults to empty in this build,
+  which falls through to the system `/tmp` default that was just
+  excluded; without this override, file uploads would immediately start
+  failing with an open_basedir violation.
+- Added `env TMPDIR=<home>/tmp` to each account's `extProcessor` block
+  (`templates/httpd_config.conf.j2`) — confirmed live (a real PHP script
+  executed through the real LSAPI worker) that this build's
+  `sys_temp_dir` ini directive is empty and that `TMPDIR` is honored by
+  `sys_get_temp_dir()`, so anything calling it directly (Imagick/PHPMailer
+  attachment scratch files, some CMS plugins) also resolves to the
+  account's own tmp dir instead of failing.
+- `session.save_path` was deliberately left unchanged after checking: it
+  already points at a separate, dedicated `/var/lib/php/sessions`
+  directory (mode `drwx-wx-wt`, same sticky-bit profile as `/tmp`), never
+  included in `open_basedir` at all — sessions were never part of this
+  gap. This resolves Phase 6a's Open Question #10 (`NAMESPACE-DESIGN.md`
+  §8): the answer is favorable, no separate fix needed here.
+- `sysops.ensure_tmp_dir(username)` (new, shared by `create_linux_user`
+  at account-creation time and `handlers_domain.ensure_docroot` at
+  domain-add time — one implementation, not two copies) creates this
+  directory (0750, account-owned) idempotently.
+- **Existing accounts, not just new ones**: `ols.refresh_all_vhosts()`
+  (new, `system.refresh_all_vhosts` RPC op, same not-wired-to-any-UI-
+  button category as `bootstrap_webmail`/`bootstrap_pma`) backfills every
+  active/suspended account's tmp dir and re-renders its vhost(s) +
+  `httpd_config.conf` from the fixed templates. Run live against this
+  real server: the one pre-existing active account (`adityascn`, no
+  domains yet) got its tmp dir created; a disposable test account+domain
+  (`p6symtest`/`p6symtest.local`, terminated after verification) exercised
+  the full re-render path.
+
+### Gap 2 — allowSymbolLink was hardcoded to 1 (follow every symlink)
+
+`templates/vhost.conf.j2` hardcoded `allowSymbolLink 1` for every vhost —
+maximally permissive, independent of namespace isolation entirely (the
+finding `NAMESPACE-DESIGN.md`'s own threat-model section already flagged
+as confirmed-live). Changed to `allowSymbolLink 0` — this box's own
+installed OLS docs (`VirtualHosts_Help.html`) state this directive
+explicitly for security ("For better security, disable this feature").
+Confirmed via grep that no Forgehost automation (app installer, git
+deploy) creates or depends on a symlink under an account's docroot.
+
+**`enableScript` was not changed.** The goal asked for "enableScript 0
+where not needed," but this server's own installed OLS docs
+(`VirtualHosts_Help.html`) confirm `enableScript` is a whole-**vhost**
+switch ("Specifies whether scripting... is allowed in this **virtual
+host**"), not a per-context/per-path directive — OLS has no per-context
+equivalent at all (confirmed by reading every `Context_Help.html`/
+`Static_Context.html` field list: the only per-context script-execution
+control is choosing a context's **type**, e.g. an explicit `type Static`
+override, not a boolean flag). Every vhost Forgehost renders needs PHP
+execution (the account's own site), so there is no vhost in this system
+where disabling it "where not needed" has a legitimate target — applying
+it anywhere would break that vhost's PHP entirely. Not implemented rather
+than guessed at incorrectly on a live, shared, production web-server
+config. A real, well-known, but separate hardening technique (declaring
+an explicit Static-type context for paths that should never execute
+PHP, e.g. `.well-known/acme-challenge/`) was identified as a legitimate
+future improvement but was **not** implemented here — it wasn't part of
+the literal request, and shipping unverified OLS context-type syntax
+against the live ACME-renewal path carried real regression risk this fix
+didn't need to take on.
+
+### Live verification (the real Definition of Done)
+
+All against this real server, a real disposable test account
+(`p6symtest.local`, uid 1001, terminated after use):
+
+- `open_basedir`/`allowSymbolLink`/`upload_tmp_dir`/`TMPDIR` all render
+  exactly as expected in the real, deployed `vhconf.conf`/
+  `httpd_config.conf` — confirmed by reading the live files directly.
+- A real PHP script executed through the real LSAPI worker: writing to
+  `/tmp` → **blocked** (open_basedir violation, `file_put_contents`
+  returned `false`, confirmed no stray file ever landed in the real
+  `/tmp`); writing to `sys_get_temp_dir()` (now the account's own tmp,
+  confirmed by the script's own output) → **allowed**.
+  - Also confirmed via real `curl`: `index.php` returns `sys_get_temp_dir()
+  == /home/p6symtest/tmp`, HTTP 200.
+- A real symlink planted at the docroot root pointing at `/etc/passwd`
+  (a safe, non-sensitive target chosen specifically for this test) →
+  real `curl --resolve` request → **HTTP 403**, not the target's content.
+- **WordPress still installs and serves correctly** with both fixes live:
+  triggered a real `apps.install.trigger` (app installer, Phase 4 feature
+  8) against the test account, polled to completion, then loaded the
+  real front page via `curl` → HTTP 200, full real WordPress HTML
+  (confirms PHP execution, MySQL connectivity, and file writes under the
+  new open_basedir/tmp regime all still work for a real, unmodified,
+  popular CMS — not just a synthetic test script).
+- Git-deploy was not independently re-verified end-to-end this pass —
+  reasoned through instead: `daemon/gitrepo.py` never creates or depends
+  on a symlink (confirmed by the same grep as the app installer), and its
+  deploy mechanism doesn't touch `/tmp` or PHP's `open_basedir` at all
+  (it's a git-hook-driven file copy into the docroot, running as the
+  account's own shell user) — judged low-risk given neither of this fix's
+  two changes intersects with how it works.
+
+### Test suite
+
+902 pytest tests, up from 895 at the end of Phase 5 --
+zero regressions. New/updated coverage: `tests/test_sysops.py` (2 new
+tests for `ensure_tmp_dir`'s ownership/mode/idempotency), `tests/
+test_ols.py` (5 new/updated tests: symlink-disabled rendering,
+open_basedir no longer includes `/tmp`, `upload_tmp_dir` override,
+`account_procs` carrying `home_dir` through to the TMPDIR env line, and
+`refresh_all_vhosts`'s active/suspended-only account selection).
+
+---
+
 ## Security audit (2026-07-03): full-codebase re-audit, all Critical/High
 findings fixed and (mostly) live-verified
 

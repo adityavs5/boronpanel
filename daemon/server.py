@@ -47,6 +47,11 @@ OP_TABLE = {
     "usage.get": handlers_usage.get_account_usage,
     "system.bootstrap_ols": lambda params: (ols.bootstrap_baseline(), {"status": "ok"})[1],
     "system.bootstrap_webmail": lambda params: (ols.bootstrap_webmail(), {"status": "ok"})[1],
+    # Security fix (Phase 6a research finding): one-time migration backfilling
+    # pre-existing accounts with the per-account-/tmp + allowSymbolLink-0
+    # template fix -- same "system.*", not-wired-to-any-UI-button category as
+    # the bootstrap_* ops above.
+    "system.refresh_all_vhosts": lambda params: (ols.refresh_all_vhosts(), {"status": "ok"})[1],
     "dns.create_zone": handlers_dns.create_zone,
     "dns.delete_zone": handlers_dns.delete_zone,
     "dns.list_records": handlers_dns.list_records,
