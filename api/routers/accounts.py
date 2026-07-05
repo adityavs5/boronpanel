@@ -96,6 +96,40 @@ def set_limits(username: str, body: SetLimitsBody, identity: Identity = Depends(
     return call_daemon("account.set_limits", identity, username=username, **body.model_dump())
 
 
+class SetNamespaceBody(BaseModel):
+    enabled: bool
+
+
+@api_router.get("/{username}/namespace")
+def get_namespace_status(username: str, identity: Identity = Depends(get_identity)):
+    # Readable by the account owner too (like php-version, unlike the
+    # write side below) -- a customer can see their own isolation posture,
+    # they just can't change it themselves.
+    require_account_access(identity, username)
+    return call_daemon("namespace.status", identity, username=username)
+
+
+@api_router.patch("/{username}/namespace")
+def set_namespace(username: str, body: SetNamespaceBody, identity: Identity = Depends(get_identity)):
+    # Admin-only, same category as limits: a security/infra posture
+    # decision, not a customer self-service convenience.
+    require_admin(identity)
+    op = "namespace.enable" if body.enabled else "namespace.disable"
+    return call_daemon(op, identity, username=username)
+
+
+@api_router.post("/namespace/bulk-enable")
+def trigger_namespace_bulk_enable(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("namespace.bulk_enable.trigger", identity)
+
+
+@api_router.get("/namespace/bulk-enable/{job_id}")
+def get_namespace_bulk_enable(job_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("namespace.bulk_enable.get", identity, job_id=job_id)
+
+
 # --- server-rendered UI (ARCHITECTURE.md SS1: Jinja2 + htmx, forms POST-Redirect-GET) ---
 
 
@@ -141,6 +175,7 @@ def ui_account_detail(request: Request, username: str, identity: Identity = Depe
     # "refresh now" link for that.
     usage = call_daemon("usage.get", identity, username=username, force_refresh=False)
     php_ini_result = call_daemon("php_ini.get", identity, username=username)
+    namespace_status = call_daemon("namespace.status", identity, username=username)
     return templates.TemplateResponse(
         request,
         "account_detail.html",
@@ -153,6 +188,7 @@ def ui_account_detail(request: Request, username: str, identity: Identity = Depe
             "usage": usage,
             "php_ini": php_ini_result["php_ini"] or php_ini_result["defaults"],
             "php_ini_is_custom": php_ini_result["php_ini"] is not None,
+            "namespace_status": namespace_status,
         },
     )
 
@@ -197,3 +233,25 @@ def ui_set_limits(
     require_admin(identity)
     call_daemon("account.set_limits", identity, username=username, cpu_pct=cpu_pct, mem_mb=mem_mb, io_mb=io_mb, pids_max=pids_max)
     return RedirectResponse(f"/ui/accounts/{username}", status_code=303)
+
+
+@ui_router.post("/{username}/namespace")
+def ui_set_namespace(username: str, enabled: str = Form(...), identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    op = "namespace.enable" if enabled == "1" else "namespace.disable"
+    call_daemon(op, identity, username=username)
+    return RedirectResponse(f"/ui/accounts/{username}", status_code=303)
+
+
+@ui_router.get("/namespace/bulk-enable")
+def ui_namespace_bulk_enable(request: Request, job_id: int | None = None, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    job = call_daemon("namespace.bulk_enable.get", identity, job_id=job_id) if job_id else None
+    return templates.TemplateResponse(request, "namespace_bulk_enable.html", {"identity": identity, "job": job})
+
+
+@ui_router.post("/namespace/bulk-enable")
+def ui_trigger_namespace_bulk_enable(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    job = call_daemon("namespace.bulk_enable.trigger", identity)
+    return RedirectResponse(f"/ui/accounts/namespace/bulk-enable?job_id={job['id']}", status_code=303)

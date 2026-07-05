@@ -22,6 +22,18 @@ adminEmails                       {{ admin_email }}
 indexFiles                        index.html, index.php
 disableWebAdmin                   0
 
+# Phase 6b: OLS native Namespace Container feature (docs/NAMESPACE-DESIGN.md,
+# docs/NAMESPACE-ANSWERS.md). This is a server-level, opt-OUT mechanism --
+# confirmed via OLS's own docs/source (lsnsctl) that there is no per-account
+# allowlist, only a denylist (ns_disabled_uids.conf) gated by a min_uid floor
+# (lsns.conf). Setting this to 2 does not itself namespace every account: the
+# min_uid floor (set to 1001, above every real account's uid at the time this
+# was enabled) plus explicit lsnsctl disable-uid entries are what keep this
+# scoped to Step 1's disposable test account only, until Step 4's deliberate,
+# per-account-verified migration lowers the floor / clears the denylist.
+namespace                         2
+namespaceConf                     conf/nsconf.conf
+
 errorlog logs/error.log {
         logLevel             WARN
         debugLevel           0

@@ -73,6 +73,29 @@
     <button type="submit">Update limits</button>
   </form>
 </div>
+
+<div class="card">
+  <h2>Namespace isolation</h2>
+  <p class="muted">OLS native mount-namespace isolation (Phase 6b) &mdash; per-account private <code>/tmp</code>,
+    filtered <code>/etc/passwd</code>/<code>/etc/group</code>. Does not isolate <code>/proc</code>
+    (accepted scope limitation, see docs/NAMESPACE-ANSWERS.md).</p>
+  {% if namespace_status.enabled %}
+  <p class="status active">Enabled</p>
+  {% elif not namespace_status.eligible %}
+  <p class="status">Not yet eligible (uid {{ namespace_status.uid }} is below the current min_uid floor of {{ namespace_status.min_uid }})</p>
+  {% else %}
+  <p class="status error">Disabled</p>
+  {% endif %}
+  <form method="post" action="/ui/accounts/{{ account.username }}/namespace">
+    {% if namespace_status.enabled %}
+    <input type="hidden" name="enabled" value="0">
+    <button type="submit">Disable</button>
+    {% else %}
+    <input type="hidden" name="enabled" value="1">
+    <button type="submit">Enable</button>
+    {% endif %}
+  </form>
+</div>
 {% endif %}
 
 <div class="card">

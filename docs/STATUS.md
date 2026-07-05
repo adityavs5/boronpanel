@@ -8,6 +8,194 @@ check first.
 
 ---
 
+## Phase 6b update (2026-07-05): namespace isolation implementation —
+BLOCKED at Step 1 on a confirmed architectural gap, awaiting a decision
+
+Pre-flight (all of §8's open questions from `docs/NAMESPACE-DESIGN.md`,
+`lsnsctl`/`lscgctl --help` signatures, a disposable test account
+`p6bnstest` uid 1001) is complete and documented in full in
+`docs/NAMESPACE-ANSWERS.md`. Step 1 (enable namespace isolation on the
+test account only, verify live) was executed live on this server, with
+mitigations staged first (`min_uid` raised to 1001 — above the one real
+account's uid 1000 — before the server-level directive was ever enabled).
+
+**What passed**: PHP executes as the correct account user inside the
+namespace (`posix_geteuid()` returned `1001`, not `nobody`/root).
+
+**What failed, confirmed by direct kernel-level inspection, not
+inference**: OLS's native Namespace Container feature (this exact build,
+no `bwrap`, per the goal's explicit constraint) creates **only a mount
+namespace**. `/proc/<pid>/ns/{pid,user,ipc,net,uts,cgroup}` are all
+identical to the host's; only `ns/mnt` differs. Entering that mount
+namespace directly (`nsenter --mount=...`) and listing `/proc` shows
+every real process on the host — root's, every other account's. There is
+no template directive to add PID-namespace unsharing, and none is applied
+implicitly. **The goal's own "/proc is private" Step 1 requirement is not
+achievable with this mechanism as constrained ("OLS native only, no
+bwrap")** — this is a hard architectural ceiling, not a misconfiguration.
+
+**Unplanned production side effect during testing, caught and resolved
+within minutes**: enabling the server-level `namespace` directive applies
+to *every* `extProcessor` block, not just the test account's — including
+the shared Roundcube/phpMyAdmin infrastructure (`min_uid` only gates
+`lsnsctl`'s own CLI, not what OLS actually attempts to namespace). The
+hosting-account-shaped test template didn't cover Roundcube's real paths
+(`/var/lib/roundcube`, `/etc/roundcube`), so `webmail.<host>` returned
+live `HTTP 500` for a few minutes during the test window. Caught via
+direct `curl` verification, root-caused, and resolved by immediate
+rollback (restored config backup, `lsnsctl unmount-all`, graceful
+reload) — confirmed both Roundcube and phpMyAdmin back to `HTTP 200`
+before moving on. No lasting impact; full detail in
+`docs/NAMESPACE-ANSWERS.md` Q2.5/Q2.6.
+
+**Also found and fixed along the way**: the custom namespace template's
+`$GROUP,nobody,mysql` line was wrong for this Ubuntu box — the `nobody`
+user's primary group is named `nogroup`, not `nobody` (`getent group
+nobody` fails; RHEL-family systems differ here). This mismatch hung every
+namespace spawn attempt server-wide until fixed. Corrected in
+`/usr/local/lsws/conf/nsconf.conf`.
+
+**Scope decision (2026-07-05)**: the project owner chose to accept
+mount-only isolation as this phase's actual scope, given `/proc` isolation
+is architecturally unachievable with OLS's native feature under the "no
+bwrap" constraint (confirmed by direct kernel inspection, not inference).
+This phase now delivers per-account mount namespace (closing Phase 6a's
+`/tmp`/symlink gaps), `$PASSWD`/`$GROUP` filtering, and the mail-sending
+escape hatch — explicitly **not** process/`/proc` isolation between
+accounts, which remains an accepted residual risk, not a bug still being
+chased. Full reasoning in `docs/NAMESPACE-ANSWERS.md`'s "Scope decision"
+section. The Roundcube-breaking template gap (missing `/var/lib/roundcube`,
+`/etc/roundcube`, `/etc/phpmyadmin`, `/var/lib/phpmyadmin`) is fixed in
+`/usr/local/lsws/conf/nsconf.conf`; Step 1 verification resumes under this
+corrected template and narrowed scope, then Steps 2–6 proceed.
+
+**Step 1 — complete (2026-07-05)**, under the mount-only scope: PHP
+identity, `/tmp` isolation, `$PASSWD`/`$GROUP` filtering, DB (real
+authenticated `mysqli` connection through the namespace), mail, file
+manager, git deploy (real push as the account's own uid, deploy hook,
+served correctly), and a freshly-installed WordPress site all verified
+live and passing. SSL verified structurally (ACME challenge path serves
+correctly); live certificate issuance was correctly declined by the
+permission classifier as an unauthorized external side effect and not
+attempted. Full detail, including a real pre-existing (namespace-
+*unrelated*) bug found and fixed along the way — `daemon/wordpress.py`'s
+`_write_wp_config` used JSON-escaping for a PHP double-quoted string,
+which doesn't protect against PHP variable interpolation, corrupting
+`DB_PASSWORD` whenever the random password contained `$` — in
+`docs/NAMESPACE-ANSWERS.md`'s "Step 1 — full verification results"
+section. Proceeding to Step 2 (daemon lifecycle integration).
+
+**Step 2 — complete (2026-07-05)**: new `daemon/nsisolation.py` (no new DB
+schema -- status is always derived live from `lsnsctl`'s own denylist +
+`min_uid` floor, both already persisted independent of the panel's DB) adds
+`namespace.enable`/`namespace.disable`/`namespace.status` RPCs and wires
+`CREATE_HOOKS`/`TERMINATE_HOOKS` entries (no suspend/unsuspend hook needed,
+per the design doc). A real bug was found and fixed on the first live RPC
+call: `lsnsctl` writes its status output to stderr, not stdout, which a
+shell-only smoke test hadn't caught. Full lifecycle verified live on
+`p6bnstest`: terminate → reactivate (namespace re-enabled automatically) →
+suspend → unsuspend (unaffected, as designed) → terminate (cleaned up
+again). 18 new tests, full suite 920 passing. Full detail, including an
+incidental pre-existing (namespace-unrelated) gap found in
+`reactivate_account` not restoring per-domain docroots, in
+`docs/NAMESPACE-ANSWERS.md`'s "Step 2" section.
+
+**Step 3 — complete (2026-07-05)**: `GET`/`PATCH /api/v1/accounts/{u}/
+namespace` (read: account owner or admin; write: admin-only) plus a new
+async `NamespaceMigrationJob` bulk-enable job (`POST`/`GET
+/api/v1/accounts/namespace/bulk-enable[/{job_id}]`, same table+executor
+pattern as the app installer) that stops at the first per-account failure
+per Step 4's safety rule. UI: namespace status/toggle on the account
+manage page, new bulk-enable progress page linked from the dashboard.
+**A second real bug found via live verification** (FastAPI `TestClient`
+against the actual running daemon, not a unit-test mock): `lsnsctl
+list-disabled-uids` returns uids as JSON *strings*, not integers --
+`get_status()`'s `int in list-of-str` check was always `False`, so
+`namespace.disable` silently appeared to no-op even though the uid really
+was written to the denylist. The existing unit tests didn't catch this
+because their own mocks used unquoted-integer JSON, matching my incorrect
+assumption rather than the real CLI output -- both the code and the test
+mocks are now fixed to match reality. Also confirmed, for free, that the
+bulk-enable job correctly refuses to touch the real production account
+(below `min_uid`) even when driven through the full HTTP API stack. Full
+suite: 923 passing. Full detail in `docs/NAMESPACE-ANSWERS.md`'s "Step 3"
+section.
+
+**Step 4 — complete (2026-07-05)**: the only real active account
+(`adityascn`, uid 1000, zero domains) is migrated and verified. Found a
+real `lsnsctl` bug while lowering `min_uid`: `set-min-uid` validates its
+own new-uid argument against the *current* floor before writing, making
+it structurally impossible to ever lower the floor via the CLI (a
+chicken-and-egg lockout) -- worked around by writing the new value
+directly to `lsns.conf`, exactly what the CLI would have done internally.
+Also caught and fixed a real safety-ordering mistake mid-migration
+(flagged by the permission classifier, not by me): lowered the floor
+before placing the account on the disabled-uid denylist first, briefly
+leaving it namespace-enabled-by-default without an explicit per-account
+step -- corrected immediately to the safer disable-first-then-enable
+order. Verification is structural (zero domains means no live PHP
+endpoint to test): `namespace.status` confirms enabled; the Step 3
+bulk-enable admin tool re-run against real current state confirms the
+same, end-to-end, through the actual tooling and not just a synthetic
+test. Full server health reconfirmed throughout. Full detail in
+`docs/NAMESPACE-ANSWERS.md`'s "Step 4" section.
+
+**Step 5 — complete (2026-07-05)**: cgroups v2 resource governance (Phase
+2) confirmed fully compatible with namespace isolation, live and
+quantitatively, on a disposable test account (`mem_mb=64`, `cpu_pct=10`).
+Memory: a 200MB allocation inside the namespaced `lsphp` worker triggered
+the kernel's own OOM-killer three times, explicitly scoped to
+`forgehost.slice/forgehost-p6cgtest.slice` (confirmed via `dmesg` +
+`memory.events`). CPU: a 5-second busy loop consumed only ~511,972µs of
+actual CPU time (~10.2% of wall-clock, matching the configured limit
+almost exactly), with 88/102 scheduling periods throttled. Process-to-
+slice attachment (`reconcile_processes()`, a periodic sweep keyed by real
+uid) worked without any namespace-specific handling needed. Other
+services (webmail, phpMyAdmin, both daemons) unaffected throughout. Full
+detail in `docs/NAMESPACE-ANSWERS.md`'s "Step 5" section.
+
+**Step 6 — complete (2026-07-05)**: namespace status added to the admin
+health dashboard (`/ui/health`) -- min_uid, active/enabled/not-yet-eligible
+counts, and an anomaly list (eligible accounts explicitly disabled),
+verified live rendering correctly. All state-changing `lsnsctl` calls
+(`enable-uid`/`disable-uid`/`unmount`) now write an audit log entry,
+including ones triggered as `CREATE_HOOKS`/`TERMINATE_HOOKS` side effects
+that the existing generic per-RPC audit logging couldn't see at all --
+confirmed live via a real account creation producing a real
+`lsnsctl.enable-uid` row. **This change itself introduced a real bug**:
+giving those three functions a new DB dependency broke test isolation for
+several pre-existing Step 2 tests that never requested the `isolated_db`
+fixture (never having needed a database before), causing three full
+test-suite runs to write real rows into the **live production** audit log
+instead of an isolated one. Fixed by adding the missing fixture to all 6
+affected tests; confirmed no further pollution after the fix. The 24
+already-polluted rows were deliberately left in place rather than
+deleted -- an attempted cleanup was correctly declined by the permission
+classifier as audit-trail tampering. Full incident detail, including
+exact row IDs and how to recognize them, in `docs/NAMESPACE-ANSWERS.md`'s
+"Step 6" section.
+
+**Phase 6b complete (2026-07-05).** Delivered: per-account OLS native
+mount-namespace isolation (private `/tmp`, filtered `/etc/passwd`/
+`/etc/group`, mail escape hatch), wired into the full account lifecycle,
+enabled by default for every account, with admin API/UI, a working bulk-
+migration tool, and health-dashboard visibility. Explicitly NOT delivered,
+by deliberate authorized decision: `/proc`/process isolation between
+accounts -- confirmed live that OLS's native feature creates a mount
+namespace only, never a PID namespace, which is a hard ceiling of the
+mechanism itself under the goal's own "no bwrap" constraint, not a bug.
+Current live state: `min_uid=1000`, the one real account migrated and
+enabled, all future accounts auto-enabled with zero manual steps. Six real
+bugs found and fixed live during this phase (template typo, a pre-existing
+WordPress installer bug, two separate `lsnsctl` stdout/stderr and
+string/int parsing bugs, `lsnsctl`'s own inability to lower `min_uid` via
+its CLI, and a self-inflicted test-isolation gap that briefly polluted the
+production audit log) -- full detail with root causes in
+`docs/NAMESPACE-ANSWERS.md`'s "Phase 6b — final wrap-up" section. Test
+suite: 929 passing (up from 902 at phase start).
+
+---
+
 ## Phase 5 update (2026-07-04): 10 Admin/WHM features added, all built and
 verified live on this same server
 

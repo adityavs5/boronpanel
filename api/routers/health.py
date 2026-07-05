@@ -52,6 +52,7 @@ def ui_health(request: Request, hours: int = 24, identity: Identity = Depends(ge
     require_admin(identity)
     live = call_daemon("health.get", identity)
     history = call_daemon("health.history", identity, hours=hours)["points"]
+    namespace = call_daemon("namespace.health_summary", identity)
 
     uptime_seconds = live["uptime_seconds"]
     days, rem = divmod(uptime_seconds, 86400)
@@ -78,5 +79,6 @@ def ui_health(request: Request, hours: int = 24, identity: Identity = Depends(ge
             "mem_points": mem_points,
             "net_rx_points": net_rx_points,
             "net_tx_points": net_tx_points,
+            "namespace": namespace,
         },
     )

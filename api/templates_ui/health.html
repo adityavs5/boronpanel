@@ -18,6 +18,30 @@
 </div>
 
 <div class="card">
+  <h2>Namespace isolation (Phase 6b)</h2>
+  {% if namespace.anomaly_count > 0 %}
+  <p class="status error">{{ namespace.anomaly_count }} account(s) namespace-eligible but explicitly disabled &mdash; investigate.</p>
+  <table>
+    <thead><tr><th>Account</th><th>uid</th></tr></thead>
+    {% for a in namespace.anomalies %}
+    <tr><td><a href="/ui/accounts/{{ a.username }}">{{ a.username }}</a></td><td>{{ a.uid }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="status active">No anomalies &mdash; every eligible active account has namespace isolation enabled.</p>
+  {% endif %}
+  <table>
+    <tbody>
+      <tr><td>min_uid floor</td><td>{{ namespace.min_uid }}</td></tr>
+      <tr><td>Active accounts</td><td>{{ namespace.total_active_accounts }}</td></tr>
+      <tr><td>Enabled</td><td>{{ namespace.enabled_count }}</td></tr>
+      <tr><td>Not yet eligible (below floor)</td><td>{{ namespace.not_yet_eligible_count }}</td></tr>
+    </tbody>
+  </table>
+  <p class="muted"><a href="/ui/accounts/namespace/bulk-enable">Bulk-enable existing accounts &rarr;</a></p>
+</div>
+
+<div class="card">
   <h2>Disk usage per mount</h2>
   <table>
     <thead><tr><th>Mount</th><th>Device</th><th>FS</th><th>Used</th><th>Total</th><th>%</th></tr></thead>

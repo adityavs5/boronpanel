@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, cgroups, disktree, fail2ban, fileauth, filemanager, firewall, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, health, ipwhitelist, logs, mailqueue, nameservers, ols, pma, servicemgr, slowquery, spamfilter, sshkeys, ssl, totp, waf, wordpress
+from daemon import appinstaller, audit, backup, cgroups, disktree, fail2ban, fileauth, filemanager, firewall, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, health, ipwhitelist, logs, mailqueue, nameservers, nsisolation, ols, pma, servicemgr, slowquery, spamfilter, sshkeys, ssl, totp, waf, wordpress
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -45,6 +45,12 @@ OP_TABLE = {
     "domain.remove": handlers_domain.remove_domain,
     "domain.list": handlers_domain.list_domains,
     "usage.get": handlers_usage.get_account_usage,
+    "namespace.enable": nsisolation.enable_namespace,
+    "namespace.disable": nsisolation.disable_namespace,
+    "namespace.status": nsisolation.namespace_status,
+    "namespace.bulk_enable.trigger": nsisolation.trigger_bulk_enable,
+    "namespace.bulk_enable.get": nsisolation.get_bulk_enable_job,
+    "namespace.health_summary": nsisolation.health_summary,
     "system.bootstrap_ols": lambda params: (ols.bootstrap_baseline(), {"status": "ok"})[1],
     "system.bootstrap_webmail": lambda params: (ols.bootstrap_webmail(), {"status": "ok"})[1],
     # Security fix (Phase 6a research finding): one-time migration backfilling
@@ -52,6 +58,12 @@ OP_TABLE = {
     # template fix -- same "system.*", not-wired-to-any-UI-button category as
     # the bootstrap_* ops above.
     "system.refresh_all_vhosts": lambda params: (ols.refresh_all_vhosts(), {"status": "ok"})[1],
+    # Phase 6b: template-only fix (namespace/namespaceConf directives added to
+    # httpd_config.conf.j2) needs the shared main config re-rendered from the
+    # current DB state, same one-off "system.*" category as the ops above --
+    # refresh_main_config() touches only httpd_config.conf, not per-account
+    # vhost.conf files, since no per-account template content changed.
+    "system.refresh_main_config": lambda params: (ols.refresh_main_config(), {"status": "ok"})[1],
     "dns.create_zone": handlers_dns.create_zone,
     "dns.delete_zone": handlers_dns.delete_zone,
     "dns.list_records": handlers_dns.list_records,
@@ -273,6 +285,13 @@ handlers_account.LIMITS_HOOKS.append(
     lambda account: cgroups.apply_limits(account.username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
 )
 handlers_account.TERMINATE_HOOKS.append(lambda account: cgroups.remove_slice(account.username))
+# Phase 6b: new accounts (and reactivated ones, same CREATE_HOOKS list) get
+# namespace isolation by default; termination tears down the per-uid
+# lsnsctl gate + any persisted /var/lsns/<uid> state. No suspend/unsuspend
+# hook -- docs/NAMESPACE-DESIGN.md SS5 explicitly recommends no change there,
+# mirroring how suspend already leaves a warm LSAPI worker running.
+handlers_account.CREATE_HOOKS.append(lambda account: nsisolation.enable_for_account(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: nsisolation.teardown_account(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_ftp.terminate_account_ftp(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_php_ini.terminate_account_php_ini(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_redirect.terminate_account_redirects(account))

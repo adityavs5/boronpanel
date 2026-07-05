@@ -153,14 +153,28 @@ def _docroot_is_empty_enough(docroot: str) -> bool:
     return not visible
 
 
+def _php_str(value: str) -> str:
+    """Single-quoted PHP string literal -- unlike a JSON/double-quoted
+    string, this is immune to PHP's own `$var`/`{$var}` interpolation,
+    which a generated DB password can trigger if it happens to contain a
+    literal `$` (confirmed live, Phase 6b Step 1: `json.dumps()`'s output
+    dropped into a PHP double-quoted string corrupted DB_PASSWORD with an
+    `Undefined variable $LU` warning, breaking every fresh WordPress
+    install whose random password happened to contain `$`). Matches the
+    same pattern already used in daemon/appinstaller.py's Joomla config
+    writer -- duplicated here rather than imported to avoid a circular
+    import (appinstaller imports wordpress.install)."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
 def _write_wp_config(docroot: str, db_name: str, db_user: str, db_password: str) -> None:
     salts = _fetch_salts()
     content = (
         "<?php\n"
-        f"define('DB_NAME', {json.dumps(db_name)});\n"
-        f"define('DB_USER', {json.dumps(db_user)});\n"
-        f"define('DB_PASSWORD', {json.dumps(db_password)});\n"
-        f"define('DB_HOST', {json.dumps('localhost:' + settings.mariadb_socket)});\n"
+        f"define('DB_NAME', {_php_str(db_name)});\n"
+        f"define('DB_USER', {_php_str(db_user)});\n"
+        f"define('DB_PASSWORD', {_php_str(db_password)});\n"
+        f"define('DB_HOST', {_php_str('localhost:' + settings.mariadb_socket)});\n"
         "define('DB_CHARSET', 'utf8mb4');\n"
         "define('DB_COLLATE', '');\n"
         "$table_prefix = 'wp_';\n\n"

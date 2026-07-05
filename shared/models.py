@@ -712,3 +712,27 @@ class AppInstallJob(Base):
     admin_password: Mapped[str | None] = mapped_column(String(128), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NamespaceMigrationJob(Base):
+    """Phase 6b Step 3/4: admin bulk-enable job, same async-job-table
+    pattern as AppInstallJob above (not per-account state -- see
+    daemon/nsisolation.py's module docstring for why per-account "enabled"
+    status is deliberately NOT stored in the DB; this table exists only
+    because a multi-step, potentially-long-running *migration run* has no
+    other natural home for its own progress state). Stops at the first
+    per-account failure (Step 4's explicit safety rule) rather than
+    skipping and continuing -- `results` records every account attempted
+    up to and including the one that failed, in order."""
+
+    __tablename__ = "namespace_migration_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    completed_count: Mapped[int] = mapped_column(Integer, default=0)
+    current_username: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    results: Mapped[list] = mapped_column(JSON, default=list)  # [{username, ok, detail}]
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
