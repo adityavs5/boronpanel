@@ -32,6 +32,20 @@ _executor = ThreadPoolExecutor(max_workers=settings.webhook_concurrency, thread_
 # exponential backoff").
 _BACKOFF_SECONDS = (5, 30)
 
+# Security-audit-2 (High): a webhook payload leaves the trust boundary
+# entirely (POSTed to an admin-configured *external* URL) and also persists in
+# WebhookDelivery.payload (plaintext in the control-plane DB). Lifecycle-event
+# context must therefore never carry a live secret. The `account.created`
+# event in particular is emitted with the account's initial plaintext password
+# (for the notification-email channel, which legitimately sends it to the
+# account owner's own mailbox) -- that key must be stripped before it reaches a
+# webhook. Denylist known-sensitive context keys here, at the webhook boundary,
+# so this holds for any current or future event without every emit() call site
+# needing to remember it.
+_SENSITIVE_CONTEXT_KEYS = frozenset(
+    {"initial_password", "password", "new_password", "secret", "token", "api_token", "recovery_codes"}
+)
+
 
 class WebhookError(Exception):
     pass
@@ -223,7 +237,7 @@ def maybe_trigger(event_type: str, account, **context) -> list[int]:
     events are webhook-eligible."""
     if event_type not in WEBHOOK_EVENT_TYPES:
         return []
-    payload = dict(context)
+    payload = {k: v for k, v in context.items() if k not in _SENSITIVE_CONTEXT_KEYS}
     if account is not None:
         payload["username"] = account.username
     with write_session() as session:

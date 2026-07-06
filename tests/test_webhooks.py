@@ -261,6 +261,27 @@ def test_maybe_trigger_queues_matching_webhook(isolated_db, monkeypatch):
     with write_session() as session:
         delivery = session.get(WebhookDelivery, result[0])
         assert delivery.payload["username"] == "demo1"
+        # Security-audit-2 (High): a live credential in the event context must
+        # never reach the webhook payload (which is POSTed to an external URL
+        # AND persisted plaintext in WebhookDelivery.payload).
+        assert "initial_password" not in delivery.payload
+
+
+def test_maybe_trigger_strips_all_sensitive_context_keys(isolated_db, monkeypatch):
+    """Security-audit-2 (High): the sensitive-key denylist guards the webhook
+    boundary for any current or future event, not just account.created."""
+    wh.create_webhook({"url": "https://example.com/hook", "events": ["account.created"]})
+    monkeypatch.setattr(wh._executor, "submit", lambda fn, *a: None)
+    result = wh.maybe_trigger(
+        "account.created", _account(),
+        initial_password="pw", password="pw", secret="s", token="t", recovery_codes=["a"],
+        safe_field="keep-me",
+    )
+    with write_session() as session:
+        payload = session.get(WebhookDelivery, result[0]).payload
+    assert payload.get("safe_field") == "keep-me"
+    for leaked in ("initial_password", "password", "secret", "token", "recovery_codes"):
+        assert leaked not in payload, f"{leaked} must be stripped from the webhook payload"
 
 
 def test_test_webhook_bypasses_event_subscription(isolated_db, monkeypatch):
