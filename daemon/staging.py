@@ -28,7 +28,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, StagingEnvironment, utcnow
+from shared.models import Account, DatabaseGrant, Domain, StagingEnvironment, utcnow
 from shared.validation import validate_domain, validate_username
 
 from daemon import backup, handlers_database, handlers_domain, mariadb, ssl
@@ -90,6 +90,36 @@ def _source_db_name(source_docroot: str) -> str:
     if not m:
         raise StagingError(f"could not determine the production database name from '{path}'")
     return m.group(1)
+
+
+def _assert_source_db_owned_by_account(username: str, db_name: str) -> None:
+    """Security-audit-2 (Critical): the source database name comes from the
+    account's OWN wp-config.php (`_source_db_name`), which the account can
+    freely rewrite (file manager / FTP / its own PHP). `backup._dump_database`
+    runs `mysqldump` as the MariaDB *admin* (forgehost_daemon), which has
+    access to every database on the instance -- so without this check an
+    account could point its wp-config's DB_NAME at ANOTHER account's database
+    (or the internal `forgehost_mail` schema) and have staging dump it and
+    restore it into a database the attacker fully controls: full cross-account
+    database exfiltration.
+
+    DatabaseGrant is the authoritative record of which databases an account
+    owns (every account DB is created through handlers_database.create_database,
+    which writes exactly one grant row) -- require the source DB to be present
+    there for this account, rather than trusting the wp-config string or the
+    `<username>_` naming convention alone."""
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise StagingError(f"account '{username}' not found")
+        owned = session.scalar(
+            select(DatabaseGrant).where(DatabaseGrant.db_name == db_name, DatabaseGrant.account_id == account.id)
+        )
+    if owned is None:
+        raise StagingError(
+            f"wp-config.php references database '{db_name}', which is not owned by account "
+            f"'{username}' -- refusing to clone a database this account does not own into staging"
+        )
 
 
 def _rewrite_staging_wp_config(docroot: str, db_name: str, db_user: str, db_password: str, staging_url: str) -> None:
@@ -192,6 +222,7 @@ def _allocate_staging_database(username: str) -> dict:
 
 def _clone_database_for_staging(username: str, source_docroot: str, staging_docroot: str, staging_domain: str) -> dict:
     source_db_name = _source_db_name(source_docroot)
+    _assert_source_db_owned_by_account(username, source_db_name)
     grant = _allocate_staging_database(username)
     try:
         _dump_and_restore(source_db_name, grant["db_name"])
@@ -293,6 +324,7 @@ def sync_staging(params: dict) -> dict:
 
     if is_wp and db_name and db_user:
         source_db_name = _source_db_name(source_docroot)
+        _assert_source_db_owned_by_account(username, source_db_name)
         _dump_and_restore(source_db_name, db_name)
         # The staging DB password was never persisted anywhere (this
         # project's "passwords are never stored" rule, applied here the

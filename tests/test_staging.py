@@ -10,7 +10,7 @@ from daemon import handlers_account as ha
 from daemon import handlers_domain as hd
 from daemon import staging
 from shared.db import write_session
-from shared.models import Account, Domain, StagingEnvironment
+from shared.models import Account, DatabaseGrant, Domain, StagingEnvironment
 
 
 # --- small pure helpers -------------------------------------------------
@@ -237,7 +237,18 @@ def test_create_staging_non_wordpress_files_only(account_with_domain, stub_ols, 
         assert row.staging_domain == "staging.demo1.example"
 
 
+def _grant_db(username: str, db_name: str) -> None:
+    """Record that `username` owns `db_name`, the way
+    handlers_database.create_database would -- staging's source-DB ownership
+    guard (security-audit-2) consults DatabaseGrant as the authoritative
+    owner record."""
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        session.add(DatabaseGrant(account_id=account.id, db_name=db_name, db_user=db_name))
+
+
 def test_create_staging_wordpress_clones_database(account_with_domain, stub_ols, stub_filesystem, stub_copy_files, stub_ssl, stub_database, stub_db_clone, monkeypatch):
+    _grant_db("demo1", "demo1_wp")  # the account genuinely owns its production DB
     (account_with_domain["docroot"] / "wp-config.php").write_text("<?php\ndefine('DB_NAME', 'demo1_wp');\n")
     monkeypatch.setattr(staging, "_rewrite_staging_wp_config", lambda *a, **k: None)
 
@@ -246,6 +257,26 @@ def test_create_staging_wordpress_clones_database(account_with_domain, stub_ols,
     assert result["db_name"] == "demo1_stg"
     assert stub_database["created"] == ["demo1_stg"]
     assert stub_db_clone == [("demo1_wp", "demo1_stg")]
+
+
+def test_create_staging_rejects_foreign_source_database(account_with_domain, stub_ols, stub_filesystem, stub_copy_files, stub_ssl, stub_database, stub_db_clone, monkeypatch):
+    """Security-audit-2 (Critical): an account whose wp-config.php names a
+    database it does NOT own (another account's DB, or the internal mail
+    schema) must NOT have staging dump it. The clone runs mysqldump as the
+    MariaDB admin, which can read every DB, so ownership must be enforced
+    against DatabaseGrant before any dump."""
+    # 'victim_wp' belongs to a different account, not demo1.
+    ha.create_account({"username": "victim"})
+    with write_session() as session:
+        victim = session.scalar(select(Account).where(Account.username == "victim"))
+        session.add(DatabaseGrant(account_id=victim.id, db_name="victim_wp", db_user="victim_wp"))
+    (account_with_domain["docroot"] / "wp-config.php").write_text("<?php\ndefine('DB_NAME', 'victim_wp');\n")
+    monkeypatch.setattr(staging, "_rewrite_staging_wp_config", lambda *a, **k: None)
+
+    with pytest.raises(staging.StagingError, match="not owned by account"):
+        staging.create_staging({"username": "demo1", "domain": "demo1.example"})
+    # Nothing from the victim's DB was ever dumped.
+    assert stub_db_clone == []
 
 
 def test_create_staging_rejects_duplicate(account_with_domain, stub_ols, stub_filesystem, stub_copy_files, stub_ssl, stub_database):
@@ -279,6 +310,7 @@ def test_create_staging_compensates_domain_on_copy_failure(account_with_domain, 
 
 
 def test_create_staging_compensates_database_on_rewrite_failure(account_with_domain, stub_ols, stub_filesystem, stub_copy_files, stub_ssl, stub_database, stub_db_clone, monkeypatch):
+    _grant_db("demo1", "demo1_wp")
     (account_with_domain["docroot"] / "wp-config.php").write_text("<?php\ndefine('DB_NAME', 'demo1_wp');\n")
 
     def boom(*a, **k):
@@ -309,6 +341,7 @@ def test_get_staging_reports_existing(account_with_domain, stub_ols, stub_filesy
 
 
 def test_delete_staging_removes_domain_database_and_row(account_with_domain, stub_ols, stub_filesystem, stub_copy_files, stub_ssl, stub_database, monkeypatch):
+    _grant_db("demo1", "demo1_wp")
     (account_with_domain["docroot"] / "wp-config.php").write_text("<?php\ndefine('DB_NAME', 'demo1_wp');\n")
     monkeypatch.setattr(staging, "_dump_and_restore", lambda *a: None)
     monkeypatch.setattr(staging, "_rewrite_staging_wp_config", lambda *a, **k: None)
@@ -331,6 +364,7 @@ def test_delete_staging_missing_raises(account_with_domain):
 
 
 def test_sync_staging_recopies_and_reclone_database(account_with_domain, stub_ols, stub_filesystem, stub_copy_files, stub_ssl, stub_database, stub_db_clone, monkeypatch):
+    _grant_db("demo1", "demo1_wp")
     (account_with_domain["docroot"] / "wp-config.php").write_text("<?php\ndefine('DB_NAME', 'demo1_wp');\n")
     monkeypatch.setattr(staging, "_rewrite_staging_wp_config", lambda *a, **k: None)
     monkeypatch.setattr(staging.mariadb, "generate_password", lambda: "freshpass123!")
