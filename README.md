@@ -746,3 +746,34 @@ After editing code that the running services need, redeploy:
 bash scripts/deploy.sh
 systemctl restart forgehost-provisiond forgehost-api
 ```
+
+### 21. SSL expiry notifications (Phase 7b feature 3)
+
+Daily cron so the 14-day expiry-warning email actually goes out on its
+own, not just when someone happens to open the SSL dashboard:
+
+```bash
+cat > /etc/cron.d/forgehost-ssl-expiry << 'EOF'
+0 6 * * * root /opt/forgehost/scripts/ssl_expiry_check.py >> /var/log/forgehost/ssl-expiry-check.log 2>&1
+EOF
+chmod 644 /etc/cron.d/forgehost-ssl-expiry
+```
+
+Also requires `notifications.settings.set` (admin) to configure a sender
+address and `notifications.prefs.set` (per account) to set a customer
+email before any notification actually sends — see
+`docs/CHECKPOINT-phase7b-3-email-notifications.md`.
+
+### 22. Account usage alerts (Phase 7b feature 5)
+
+Same "server infrastructure, not a per-account crontab" category as
+`forgehost-usage`'s own entry above — needs no explicit ordering relative
+to it, since `usage.get_usage()` already lazily refreshes stale data
+itself when read:
+
+```bash
+cat > /etc/cron.d/forgehost-usage-alerts << 'EOF'
+*/15 * * * * root /opt/forgehost/scripts/usage_alert_check.py >> /var/log/forgehost/usage-alert-check.log 2>&1
+EOF
+chmod 644 /etc/cron.d/forgehost-usage-alerts
+```

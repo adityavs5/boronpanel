@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, cgroups, disktree, fail2ban, fileauth, filemanager, firewall, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, health, ipwhitelist, logs, mailqueue, nameservers, nsisolation, ols, pma, servicemgr, slowquery, spamfilter, sshkeys, ssl, totp, waf, wordpress
+from daemon import appinstaller, audit, backup, cgroups, cpanel_import, disktree, events, fail2ban, fileauth, filemanager, firewall, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, health, ipwhitelist, logs, lscache, mailqueue, nameservers, nodeapps, notifications, nsisolation, ols, pma, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, totp, usage_alerts, waf, webhooks, wordpress
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -44,7 +44,10 @@ OP_TABLE = {
     "domain.add": handlers_domain.add_domain,
     "domain.remove": handlers_domain.remove_domain,
     "domain.list": handlers_domain.list_domains,
+    "domain.set_php_version": handlers_domain.set_domain_php_version,
     "usage.get": handlers_usage.get_account_usage,
+    "bandwidth.get": handlers_usage.get_bandwidth,
+    "bandwidth.ranking": handlers_usage.get_bandwidth_ranking,
     "namespace.enable": nsisolation.enable_namespace,
     "namespace.disable": nsisolation.disable_namespace,
     "namespace.status": nsisolation.namespace_status,
@@ -98,6 +101,7 @@ OP_TABLE = {
     "spamfilter.global_default.get": lambda params: {"default_threshold": spamfilter.get_global_default_threshold()},
     "spamfilter.global_default.set": lambda params: spamfilter.set_global_default_threshold(params["threshold"]),
     "ssl.issue": ssl.issue_certificate,
+    "ssl.issue_wildcard": ssl.issue_wildcard_certificate,
     "ssl.status": ssl.certificate_status,
     "ssl.dashboard": ssl.get_ssl_dashboard,
     "file.list": filemanager.list_dir,
@@ -237,6 +241,66 @@ OP_TABLE = {
     "totp.verify": totp.verify_totp,
     "totp.disable": totp.disable_totp,
     "totp.check_login_code": totp.check_login_code,
+    # Phase 7a feature 1: NodeJS app hosting
+    "apps.node.create": nodeapps.create_app,
+    "apps.node.update": nodeapps.update_app,
+    "apps.node.delete": nodeapps.delete_app,
+    "apps.node.start": nodeapps.start_app,
+    "apps.node.stop": nodeapps.stop_app,
+    "apps.node.restart": nodeapps.restart_app,
+    "apps.node.npm_install": nodeapps.npm_install,
+    "apps.node.get": nodeapps.get_app,
+    "apps.node.list": nodeapps.list_apps,
+    "apps.node.logs": nodeapps.get_logs,
+    # Phase 7a feature 2: Python app hosting
+    "apps.python.create": pythonapps.create_app,
+    "apps.python.update": pythonapps.update_app,
+    "apps.python.delete": pythonapps.delete_app,
+    "apps.python.start": pythonapps.start_app,
+    "apps.python.stop": pythonapps.stop_app,
+    "apps.python.restart": pythonapps.restart_app,
+    "apps.python.pip_install": pythonapps.pip_install,
+    "apps.python.get": pythonapps.get_app,
+    "apps.python.list": pythonapps.list_apps,
+    "apps.python.logs": pythonapps.get_logs,
+    # Phase 7a feature 3: per-account Redis
+    "redis.enable": redisacct.enable_redis,
+    "redis.disable": redisacct.disable_redis,
+    "redis.set_mem_limit": redisacct.set_mem_limit,
+    "redis.flush": redisacct.flush,
+    "redis.status": redisacct.get_status,
+    "redis.connection_info": redisacct.get_connection_info,
+    # Phase 7a feature 4: LSCache
+    "lscache.get": lscache.get_settings,
+    "lscache.set": lscache.set_settings,
+    "lscache.purge": lscache.purge,
+    "lscache.stats": lscache.get_stats,
+    # Phase 7b feature 1: cPanel backup import
+    "cpanel_import.trigger": cpanel_import.trigger_import,
+    "cpanel_import.get": cpanel_import.get_job,
+    "cpanel_import.list": cpanel_import.list_jobs,
+    # Phase 7b feature 3: email notifications
+    "notifications.settings.get": notifications.get_settings,
+    "notifications.settings.set": notifications.set_settings,
+    "notifications.prefs.get": notifications.get_prefs,
+    "notifications.prefs.set": notifications.set_prefs,
+    # Phase 7b feature 4: webhooks
+    "webhooks.create": webhooks.create_webhook,
+    "webhooks.list": webhooks.list_webhooks,
+    "webhooks.get": webhooks.get_webhook,
+    "webhooks.update": webhooks.update_webhook,
+    "webhooks.delete": webhooks.delete_webhook,
+    "webhooks.deliveries.list": webhooks.list_deliveries,
+    "webhooks.test": webhooks.test_webhook,
+    # Phase 7b feature 5: account usage alerts
+    "usage.limits.get": usage_alerts.get_limits,
+    "usage.limits.set": usage_alerts.set_limits,
+    "usage.alerts.get": usage_alerts.get_alerts,
+    # Phase 7b feature 6: staging environments
+    "staging.create": staging.create_staging,
+    "staging.sync": staging.sync_staging,
+    "staging.get": staging.get_staging,
+    "staging.delete": staging.delete_staging,
 }
 
 # Security audit finding F7: disktree.get/top_files and usage.get run real
@@ -263,6 +327,12 @@ REPORTING_OPS = {
     "fail2ban.list_jails", "fail2ban.get_jail", "fail2ban.recent_events",
     "waf.status", "waf.blocked_requests",
     "slowquery.list", "slowquery.status",
+    # Phase 7a feature 3: redis.status shells out to `redis-cli INFO` --
+    # same dashboard-polling isolation reasoning as services.status above.
+    "redis.status",
+    # Phase 7a feature 4: lscache.stats walks the domain's cache-storage
+    # directory tree -- same reasoning as disktree.get/top_files above.
+    "lscache.stats",
 }
 
 # Each phase wires its own account-scoped teardown/suspend behavior here
@@ -299,6 +369,44 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: fileauth.terminate_accou
 handlers_account.TERMINATE_HOOKS.append(lambda account: gitrepo.terminate_account_git(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: sshkeys.terminate_account_sshkeys(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: appinstaller.terminate_account_apps(account))
+# Phase 7a feature 1: NodeJS app hosting. Runs after ols.terminate_vhost
+# (already appended above) so the proxying vhost contexts are gone before
+# each app's own systemd unit/env file is removed -- order doesn't change
+# correctness here (removing the unit first would just mean a brief window
+# where the vhost still points at a now-stopped backend), but matches this
+# list's existing convention of tearing down the thing a later hook
+# references before the thing that referenced it.
+handlers_account.TERMINATE_HOOKS.append(lambda account: nodeapps.terminate_account_node_apps(account))
+# Phase 7a feature 2: Python app hosting -- same ordering reasoning as
+# NodeJS apps above.
+handlers_account.TERMINATE_HOOKS.append(lambda account: pythonapps.terminate_account_python_apps(account))
+# Phase 7a feature 3: per-account Redis -- same ordering reasoning as
+# NodeJS/Python apps above.
+handlers_account.TERMINATE_HOOKS.append(lambda account: redisacct.terminate_account_redis(account))
+# Phase 7a feature 4: LSCache -- cleans up the primary domain's row/cache
+# dir (addon/subdomain rows are already handled by handlers_domain.
+# remove_domain, which never runs for a terminated account's own primary
+# domain, same as Redirect/FileAuthDir before it).
+handlers_account.TERMINATE_HOOKS.append(lambda account: lscache.terminate_account_lscache(account))
+# Phase 7b features 3/4: account-lifecycle email notifications + webhooks,
+# fanned out through the single daemon/events.py entry point (each channel
+# does its own enabled/subscribed filtering, so this wiring never needs to
+# change when a new notification/webhook event type is added elsewhere).
+# CREATE_HOOKS' account_snapshot carries a transient `.initial_password`
+# attribute (see handlers_account.create_account/reactivate_account) that
+# only the "account created" email actually uses.
+handlers_account.CREATE_HOOKS.append(
+    lambda account: events.emit("account.created", account, initial_password=getattr(account, "initial_password", None))
+)
+handlers_account.SUSPEND_HOOKS.append(lambda account: events.emit("account.suspended", account))
+handlers_account.UNSUSPEND_HOOKS.append(lambda account: events.emit("account.unsuspended", account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: events.emit("account.terminated", account))
+# Phase 7b feature 6: staging environments -- the staging domain/database
+# themselves are already torn down by the existing ols.terminate_vhost/
+# handlers_database.terminate_account_databases hooks above (ordinary
+# Domain/DatabaseGrant rows scoped to this account); this only cleans up
+# this feature's own bookkeeping row.
+handlers_account.TERMINATE_HOOKS.append(lambda account: staging.terminate_account_staging(account))
 
 
 def register_op(name: str, handler) -> None:
@@ -384,6 +492,18 @@ async def amain() -> None:
     except Exception:
         logger.exception("cgroup slice bootstrap failed at startup")
     asyncio.create_task(_cgroup_reconcile_loop())
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, nodeapps.bootstrap_all_node_apps)
+    except Exception:
+        logger.exception("NodeJS app bootstrap failed at startup")
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, pythonapps.bootstrap_all_python_apps)
+    except Exception:
+        logger.exception("Python app bootstrap failed at startup")
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, redisacct.bootstrap_all_redis)
+    except Exception:
+        logger.exception("Redis bootstrap failed at startup")
 
     socket_path = settings.rpc_socket
     Path(socket_path).parent.mkdir(parents=True, exist_ok=True)

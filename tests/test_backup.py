@@ -332,6 +332,49 @@ def test_run_backup_job_full_to_local_destination(isolated_db, fake_home, fake_m
         assert completed.size_bytes > 0
 
 
+def test_run_backup_job_full_emits_backup_completed_event(isolated_db, fake_home, fake_mail_base, fake_staging, stub_dump_database, stub_cron_and_dns, tmp_path, monkeypatch):
+    with write_session() as session:
+        account = make_account(session)
+        session.add(Domain(account_id=account.id, domain="demo1.example", kind="primary", docroot=f"{fake_home}/demo1/public_html"))
+    (fake_home / "demo1").mkdir()
+    dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(tmp_path / "dest")})
+
+    emitted = []
+    monkeypatch.setattr(backup.events, "emit", lambda event_type, account, **ctx: emitted.append((event_type, ctx)))
+
+    with write_session() as session:
+        job = BackupJob(account_id=account.id, kind="full", destination_id=dest["id"], status="pending", progress_message="queued")
+        session.add(job)
+        session.flush()
+        job_id = job.id
+
+    backup._run_backup_job(job_id)
+    assert emitted == [("backup.completed", {"job_id": job_id})]
+
+
+def test_run_backup_job_granular_does_not_emit_event(isolated_db, fake_home, fake_staging, stub_dump_database, tmp_path, monkeypatch):
+    """The goal's own scope is full-account backups only -- a granular
+    database/file/mailbox backup (a much more routine, frequent action) must
+    not fire the "backup completed" channel."""
+    with write_session() as session:
+        account = make_account(session)
+    dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(tmp_path / "dest")})
+
+    emitted = []
+    monkeypatch.setattr(backup.events, "emit", lambda event_type, account, **ctx: emitted.append(event_type))
+
+    with write_session() as session:
+        job = BackupJob(account_id=account.id, kind="database", item_ref="demo1_app", destination_id=dest["id"], status="pending", progress_message="queued")
+        session.add(job)
+        session.flush()
+        job_id = job.id
+
+    backup._run_backup_job(job_id)
+    with write_session() as session:
+        assert session.get(BackupJob, job_id).status == "completed"
+    assert emitted == []
+
+
 def test_run_backup_job_marks_failed_on_error(isolated_db, fake_home, fake_staging, tmp_path, monkeypatch):
     with write_session() as session:
         account = make_account(session)

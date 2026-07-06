@@ -21,9 +21,10 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, DnsZone
+from shared.models import Account, Domain, DnsZone, SslExpiryNotice
 from shared.validation import validate_domain, validate_username
 
+from daemon import events
 from daemon.ols import letsencrypt_cert_paths
 from daemon.procutil import run
 
@@ -33,6 +34,20 @@ _VENV_PYTHON = str(Path(settings.certbot_bin).parent / "python")
 
 class SslError(Exception):
     pass
+
+
+def _dns01_args() -> list[str]:
+    """certbot-dns-powerdns plugin args -- shared by the auto-detected
+    DNS-01 path (_challenge_plan, when a domain's zone happens to be
+    Forgehost-managed) and the explicit wildcard-issuance path
+    (issue_wildcard_certificate), which REQUIRES DNS-01 unconditionally
+    (Let's Encrypt has no HTTP-01 path for wildcard names at all -- this
+    isn't a Forgehost design choice, it's an ACME protocol constraint)."""
+    return [
+        "--authenticator", "dns-powerdns",
+        "--dns-powerdns-credentials", settings.powerdns_credentials_file,
+        "--dns-powerdns-propagation-seconds", "30",
+    ]
 
 
 def _challenge_plan(domain: str) -> tuple[str, list[str]]:
@@ -49,11 +64,7 @@ def _challenge_plan(domain: str) -> tuple[str, list[str]]:
         zone_managed = session.scalar(select(DnsZone).where(DnsZone.zone == domain)) is not None
 
     if zone_managed:
-        return "dns-01", [
-            "--authenticator", "dns-powerdns",
-            "--dns-powerdns-credentials", settings.powerdns_credentials_file,
-            "--dns-powerdns-propagation-seconds", "30",
-        ]
+        return "dns-01", _dns01_args()
 
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain))
@@ -96,6 +107,58 @@ def issue_certificate(params: dict) -> dict:
         raise SslError(f"certbot failed ({mode}): {result.stderr.strip() or result.stdout.strip()}")
 
     return {"domain": domain, "challenge": mode, "status": "issued"}
+
+
+def issue_wildcard_certificate(params: dict) -> dict:
+    """Phase 7a feature 5: `*.<domain>` + `<domain>` in one cert, via
+    DNS-01 + the PowerDNS API hook -- the same certbot-dns-powerdns plugin
+    ARCHITECTURE.md SS8 already wires for the auto-detected DNS-01 path,
+    just unconditional here (a wildcard SAN has no HTTP-01 option at all,
+    so this never falls back to webroot the way issue_certificate does).
+    Requires the domain's own zone to be Forgehost-managed (a real
+    PowerDNS zone this server can create/delete the `_acme-challenge` TXT
+    record in) -- an externally-DNS-managed domain has no hook for
+    Forgehost to create that record in, so wildcard issuance for it is
+    rejected with a clear reason rather than silently trying and failing
+    deep inside certbot."""
+    raw_domain = params["domain"]
+    if isinstance(raw_domain, str) and raw_domain.strip().startswith("*."):
+        raise SslError("pass the base domain (e.g. 'example.com'), not '*.example.com' -- the wildcard SAN is added automatically")
+    domain = validate_domain(raw_domain)
+    if not settings.letsencrypt_email:
+        raise SslError("letsencrypt_email is not set in forgehost.toml")
+
+    with write_session() as session:
+        zone_managed = session.scalar(select(DnsZone).where(DnsZone.zone == domain)) is not None
+        domain_row = session.scalar(select(Domain).where(Domain.domain == domain))
+    if domain_row is None:
+        raise SslError(f"domain '{domain}' is not provisioned in Forgehost")
+    if not zone_managed:
+        raise SslError(
+            f"wildcard SSL for '{domain}' requires its DNS zone to be managed by Forgehost's own PowerDNS "
+            "(DNS-01 is the only ACME challenge type that supports wildcard names, and it needs the "
+            "_acme-challenge TXT record to be creatable through Forgehost's own DNS API hook) -- "
+            "create a Forgehost-managed zone for this domain first."
+        )
+
+    force_args = ["--force-renewal"] if params.get("force") else []
+    args = [
+        settings.certbot_bin, "certonly",
+        "--non-interactive",
+        "--agree-tos",
+        "--email", settings.letsencrypt_email,
+        "--cert-name", domain,
+        "-d", domain,
+        "-d", f"*.{domain}",
+        "--deploy-hook", f"{_VENV_PYTHON} {DEPLOY_HOOK_SCRIPT}",
+        *force_args,
+        *_dns01_args(),
+    ]
+    result = run(args, timeout=180)
+    if not result.ok:
+        raise SslError(f"certbot failed (wildcard dns-01): {result.stderr.strip() or result.stdout.strip()}")
+
+    return {"domain": domain, "wildcard_domain": f"*.{domain}", "challenge": "dns-01", "status": "issued"}
 
 
 def certificate_status(params: dict) -> dict:
@@ -194,17 +257,18 @@ def get_ssl_dashboard(params: dict) -> dict:
         if account is None:
             raise SslError(f"account '{username}' not found")
         domains = session.scalars(select(Domain).where(Domain.account_id == account.id)).all()
-        domain_data = [(d.domain, d.ssl_status) for d in domains]
+        domain_data = [(d.domain, d.ssl_status, d.ssl_is_wildcard) for d in domains]
 
     timer_active = run(["systemctl", "is-active", "certbot.timer"], timeout=10).stdout.strip() == "active"
 
     entries = []
-    for domain_name, ssl_status in domain_data:
+    for domain_name, ssl_status, ssl_is_wildcard in domain_data:
         details = _cert_file_details(domain_name)
         entries.append(
             {
                 "domain": domain_name,
                 "ssl_status": ssl_status,
+                "is_wildcard": ssl_is_wildcard,
                 "cert_status": details["cert_status"] if details else "missing",
                 "expiry_date": details["expiry_date"] if details else None,
                 "days_remaining": details["days_remaining"] if details else None,
@@ -214,3 +278,52 @@ def get_ssl_dashboard(params: dict) -> dict:
         )
 
     return {"username": username, "certbot_timer_active": timer_active, "domains": entries}
+
+
+# --- SSL expiry notifications (Phase 7b feature 3) --------------------------
+
+SSL_EXPIRY_WARNING_DAYS = 14
+
+
+def check_expiring_certificates() -> int:
+    """Entry point for scripts/ssl_expiry_check.py (system cron, daily).
+    Scans every domain with an active cert, and for one within
+    SSL_EXPIRY_WARNING_DAYS of expiry, fires "ssl.expiring" through
+    daemon/events.py exactly once per (domain, expiry-date) pair --
+    SslExpiryNotice is the dedup marker, keyed on the cert's own not-after
+    date so a *renewed* cert (new expiry date) is correctly treated as a
+    fresh notice-worthy event rather than never notifying again. Returns
+    the number of notices actually sent."""
+    with write_session() as session:
+        domains = session.scalars(select(Domain).where(Domain.ssl_status == "active")).all()
+        domain_data = [(d.domain, d.account_id) for d in domains]
+
+    sent = 0
+    for domain_name, account_id in domain_data:
+        details = _cert_file_details(domain_name)
+        # Deliberately NOT details["cert_status"] == "expiring" -- that
+        # flag uses the SSL *dashboard's* own EXPIRING_SOON_DAYS (30, a
+        # different, UI-only concern), while this feature's own goal text
+        # specifies a 14-day warning window. A cert already "expired" is
+        # also still notice-worthy (renewal likely failed silently).
+        if details is None or details["days_remaining"] > SSL_EXPIRY_WARNING_DAYS:
+            continue
+        expiry_date = details["expiry_date"]
+        with write_session() as session:
+            already_notified = session.scalar(
+                select(SslExpiryNotice).where(SslExpiryNotice.domain == domain_name, SslExpiryNotice.expiry_date == expiry_date)
+            )
+            if already_notified is not None:
+                continue
+            account = session.get(Account, account_id)
+            if account is None:
+                continue
+            session.add(SslExpiryNotice(domain=domain_name, expiry_date=expiry_date))
+            account_snapshot = account
+
+        events.emit(
+            "ssl.expiring", account_snapshot,
+            domain=domain_name, days_remaining=details["days_remaining"], expiry_date=expiry_date,
+        )
+        sent += 1
+    return sent

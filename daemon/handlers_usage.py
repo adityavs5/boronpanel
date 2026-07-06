@@ -19,3 +19,20 @@ def get_account_usage(params: dict) -> dict:
             raise RuntimeError(f"account '{username}' not found")
         account_snapshot = account
     return usage.get_usage(account_snapshot, force_refresh=force_refresh)
+
+
+def get_bandwidth(params: dict) -> dict:
+    username = validate_username(params["username"])
+    period = params.get("period", "daily")
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found")
+        account_snapshot = account
+    return usage.get_bandwidth_report(account_snapshot, period)
+
+
+def get_bandwidth_ranking(params: dict | None = None) -> dict:
+    params = params or {}
+    period = params.get("period", "monthly")
+    return usage.get_bandwidth_ranking(period)

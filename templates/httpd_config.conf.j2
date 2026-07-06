@@ -281,6 +281,31 @@ extProcessor {{ acc.php_app_name }}{
 }
 {% endfor %}
 
+{# Phase 7a features 1/2: NodeJS/Python app hosting. One "Web Server
+   (Proxy)" external app per app-bound domain, declared server-wide (same
+   reason account_procs is: referenced by name from that domain's own
+   vhost Proxy Context) -- address is always 127.0.0.1, never a wildcard
+   or externally-reachable interface, so the app's own port is only ever
+   reachable through this OLS-terminated vhost, never directly from
+   another account or the public internet. #}
+{% for vh in domain_vhosts %}
+{% if vh.get('app_proxy') %}
+{# type "proxy", not the admin-console label "Web Server (Proxy)" --
+   confirmed empirically against this server's real openlitespeed binary:
+   "type web" fails `openlitespeed -t` with "Unknown external processor
+   <type>: web"; `strings` on the binary itself lists "proxy" as the real
+   accepted keyword, matching the Proxy Context's own `type proxy` value. #}
+extProcessor {{ vh.app_proxy.handler_name }}{
+    type                            proxy
+    address                         127.0.0.1:{{ vh.app_proxy.port }}
+    maxConns                        50
+    initTimeout                     60
+    retryTimeout                    0
+    respBuffer                      0
+}
+{% endif %}
+{% endfor %}
+
 {# One vhost per DOMAIN, not per account -- the actual fix for Phase 1's
    gap (every domain under an account used to serve the same public_html
    content regardless of its own docroot). vhRoot stays the account's home

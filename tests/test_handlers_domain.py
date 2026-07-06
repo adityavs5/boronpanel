@@ -203,3 +203,58 @@ def test_subdomain_label_computation():
     assert hd._subdomain_label("blog.example.com", "example.com") == "blog"
     assert hd._subdomain_label("example.com", "example.com") == "@"
     assert hd._subdomain_label("a.b.example.com", "example.com") == "a.b"
+
+
+# --- Phase 7a feature 6: per-domain PHP version override -------------------
+
+
+def test_set_domain_php_version_sets_override_and_refreshes_vhost(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    calls = []
+    monkeypatch.setattr(hd.ols, "refresh_vhost", lambda account: calls.append(account.username))
+    monkeypatch.setattr(hd.ols, "provision_vhost", lambda account: None)
+
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+
+    result = hd.set_domain_php_version({"username": "demo1", "domain": "demo1.example", "php_version": "8.1"})
+    assert result["php_version"] == "8.1"
+    assert "demo1" in calls
+
+    with write_session() as session:
+        domain = session.scalar(select(Domain).where(Domain.domain == "demo1.example"))
+        assert domain.php_version == "8.1"
+
+
+def test_set_domain_php_version_empty_string_clears_override(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    monkeypatch.setattr(hd.ols, "refresh_vhost", lambda account: None)
+    monkeypatch.setattr(hd.ols, "provision_vhost", lambda account: None)
+
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.set_domain_php_version({"username": "demo1", "domain": "demo1.example", "php_version": "8.1"})
+
+    result = hd.set_domain_php_version({"username": "demo1", "domain": "demo1.example", "php_version": ""})
+    assert result["php_version"] is None
+
+    with write_session() as session:
+        domain = session.scalar(select(Domain).where(Domain.domain == "demo1.example"))
+        assert domain.php_version is None
+
+
+def test_set_domain_php_version_rejects_unsupported_version(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    monkeypatch.setattr(hd.ols, "provision_vhost", lambda account: None)
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+
+    with pytest.raises(Exception):
+        hd.set_domain_php_version({"username": "demo1", "domain": "demo1.example", "php_version": "5.6"})
+
+
+def test_set_domain_php_version_rejects_domain_not_owned_by_account(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    monkeypatch.setattr(hd.ols, "provision_vhost", lambda account: None)
+    ha.create_account({"username": "demo1"})
+    ha.create_account({"username": "demo2"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+
+    with pytest.raises(RuntimeError):
+        hd.set_domain_php_version({"username": "demo2", "domain": "demo1.example", "php_version": "8.1"})

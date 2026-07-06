@@ -19,7 +19,7 @@ from sqlalchemy import select
 from shared.db import read_session
 from shared.models import IpWhitelistEntry
 
-from api.routers import account_backups, accounts, apps, auditlog, auth, backups, cron, databases, disktree, dns, domains, email, fail2ban, fileauth, files, firewall, ftp, git, health, hotlink, ipblock, ipwhitelist, logs_router, mail, mailqueue, nameservers, php_ini, pma, redirects, services, slowquery, sshkeys, ssl_router, tokens, twofactor, usage, waf, wordpress
+from api.routers import account_backups, accounts, apps, auditlog, auth, backups, bandwidth, cpanel_import, cron, databases, disktree, dns, domains, email, fail2ban, fileauth, files, firewall, ftp, git, health, hotlink, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, nameservers, nodeapps, notifications, php_ini, pma, pythonapps, redirects, redis_router, services, slowquery, sshkeys, ssl_router, staging, tokens, twofactor, usage, usage_alerts, waf, webhooks, wordpress
 
 app = FastAPI(title="Forgehost", docs_url="/api/docs", redoc_url=None)
 
@@ -91,9 +91,27 @@ async def _security_headers(request, call_next):
     return response
 
 app.include_router(auth.router)
-for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor):
+for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor, nodeapps, pythonapps, redis_router, lscache_router, cpanel_import, bandwidth, webhooks, usage_alerts, staging):
     app.include_router(module.api_router)
     app.include_router(module.ui_router)
+# Phase 7b feature 5: usage_alerts.py has an extra pair (GET /accounts/{u}/
+# alerts, its own separate resource from /usage-limits) -- same "extra
+# router object" pattern as ssl_router/mail/email/bandwidth above.
+app.include_router(usage_alerts.alerts_api_router)
+app.include_router(usage_alerts.alerts_ui_router)
+# Phase 7b feature 2: bandwidth.py has an extra admin-only pair (cross-
+# account ranking) alongside its main account-scoped api_router/ui_router --
+# same "extra router object" pattern as ssl_router/mail/email above.
+app.include_router(bandwidth.admin_api_router)
+app.include_router(bandwidth.admin_ui_router)
+# Phase 7b feature 3: notifications.py has FOUR router objects (admin-wide
+# settings + per-account prefs, each with an api_router/ui_router pair) --
+# doesn't fit the uniform loop above at all, same reason apps.py gets its
+# own explicit calls below.
+app.include_router(notifications.admin_api_router)
+app.include_router(notifications.admin_ui_router)
+app.include_router(notifications.api_router)
+app.include_router(notifications.ui_router)
 # Phase 4 feature 8: apps.py has three router objects (account-scoped
 # "list installed", domain-scoped "install"/"jobs", and its UI) --
 # doesn't fit the uniform api_router/ui_router pair the loop above

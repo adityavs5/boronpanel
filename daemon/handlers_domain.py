@@ -14,9 +14,9 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain
-from shared.validation import validate_domain, validate_username
+from shared.validation import validate_domain, validate_php_version, validate_username
 
-from daemon import handlers_redirect, ols, powerdns, sysops
+from daemon import handlers_redirect, lscache, ols, powerdns, sysops
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 
 
@@ -28,6 +28,13 @@ def _domain_to_dict(domain: Domain) -> dict:
         "kind": domain.kind,
         "docroot": domain.docroot,
         "ssl_status": domain.ssl_status,
+        "ssl_is_wildcard": domain.ssl_is_wildcard,
+        # None means "inherit the account's own PHP version" (Phase 7a
+        # feature 6) -- the account's own default is not resolved/inlined
+        # here, since this dict has no access to the owning Account row;
+        # callers that need the *effective* version already have the
+        # account loaded (e.g. ols.py's own render path).
+        "php_version": domain.php_version,
         "created_at": domain.created_at.isoformat() if domain.created_at else None,
     }
 
@@ -143,6 +150,7 @@ def remove_domain(params: dict) -> dict:
 
     ols.remove_domain_vhost(account_snapshot, domain_name)
     handlers_redirect.delete_redirects_for_domain(domain_name)
+    lscache.delete_settings_for_domain(domain_name)
 
     return {"domain": domain_name, "kind": kind, "status": "removed"}
 
@@ -155,6 +163,45 @@ def list_domains(params: dict) -> dict:
             raise RuntimeError(f"account '{username}' not found")
         domains = session.scalars(select(Domain).where(Domain.account_id == account.id)).all()
         return {"domains": [_domain_to_dict(d) for d in domains]}
+
+
+def set_domain_php_version(params: dict) -> dict:
+    """Phase 7a feature 6: per-domain PHP version override. `php_version`
+    empty/None clears the override (back to inheriting Account.php_version)
+    -- the same "empty means reset to default" convention
+    handlers_php_ini.reset_php_ini's absence-of-a-row already establishes,
+    applied here as a column value instead of a whole row's presence,
+    since Domain itself is not a new-table-per-override the way
+    PhpIniOverride is (a domain already has a row for other reasons).
+
+    ols.refresh_vhost regenerates this account's ENTIRE vhost set (this
+    project's established declarative-full-regen pattern, ARCHITECTURE.md
+    SS6/SS7) -- functionally this only changes the touched domain's own
+    scripthandler target and, if no other domain under the account still
+    uses the previous effective version, removes that now-unused
+    extProcessor block; every other domain (this account's and every other
+    account's) keeps serving throughout, the same "no impact to other
+    domains/accounts" guarantee every other account-level config change in
+    this project already provides via the shared reload-safety pipeline."""
+    username = validate_username(params["username"])
+    domain_name = validate_domain(params["domain"])
+    raw_version = params.get("php_version") or None
+    version = validate_php_version(raw_version, settings.php_versions) if raw_version else None
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found")
+        domain = session.scalar(select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id))
+        if domain is None:
+            raise RuntimeError(f"domain '{domain_name}' not found for account '{username}'")
+        domain.php_version = version
+        session.flush()
+        result = _domain_to_dict(domain)
+        account_snapshot = account
+
+    ols.refresh_vhost(account_snapshot)
+    return result
 
 
 def ensure_docroot(username: str, docroot: str) -> None:

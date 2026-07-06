@@ -12,6 +12,12 @@ running daemon over the RPC socket.
 
 certbot sets RENEWED_DOMAINS (space-separated) and RENEWED_LINEAGE (the
 /etc/letsencrypt/live/<name> path) in the environment for deploy-hooks.
+
+Phase 7a feature 5 (wildcard SSL): a wildcard cert's RENEWED_DOMAINS
+contains BOTH "example.com" and "*.example.com" in the same invocation --
+only the bare name is ever a real Domain row (Forgehost never stores a
+"*."-prefixed domain), so the "*."-prefixed entry is used only to detect
+that this issuance covers a wildcard SAN, not looked up as its own row.
 """
 from __future__ import annotations
 
@@ -40,17 +46,20 @@ def main() -> int:
         logger.error("RENEWED_DOMAINS not set -- not invoked by certbot?")
         return 1
 
+    non_wildcard_domains = [d for d in renewed_domains if not d.startswith("*.")]
+    wildcard_bases = {d[2:] for d in renewed_domains if d.startswith("*.")}
+
     exit_code = 0
-    for domain_name in renewed_domains:
+    for domain_name in non_wildcard_domains:
         try:
-            _apply_for_domain(domain_name)
+            _apply_for_domain(domain_name, is_wildcard=domain_name in wildcard_bases)
         except Exception:
             logger.exception("failed to apply new certificate for %s", domain_name)
             exit_code = 1
     return exit_code
 
 
-def _apply_for_domain(domain_name: str) -> None:
+def _apply_for_domain(domain_name: str, is_wildcard: bool = False) -> None:
     # Phase 2 feature 3: the static webmail hostname isn't a Domain row --
     # same reasoning as ssl.py's _challenge_plan special case.
     if domain_name == settings.webmail_hostname:
@@ -64,6 +73,7 @@ def _apply_for_domain(domain_name: str) -> None:
             logger.warning("domain '%s' not found in Forgehost DB, skipping", domain_name)
             return
         domain_row.ssl_status = "active"
+        domain_row.ssl_is_wildcard = is_wildcard
         account = session.get(Account, domain_row.account_id)
         if account is None:
             logger.warning("account for domain '%s' not found, skipping reload", domain_name)
@@ -71,7 +81,10 @@ def _apply_for_domain(domain_name: str) -> None:
         account_snapshot = account
 
     ols.refresh_vhost(account_snapshot)
-    logger.info("applied new certificate for %s (account %s)", domain_name, account_snapshot.username)
+    logger.info(
+        "applied new certificate for %s (account %s, wildcard=%s)",
+        domain_name, account_snapshot.username, is_wildcard,
+    )
 
 
 if __name__ == "__main__":

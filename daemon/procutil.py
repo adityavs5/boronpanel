@@ -42,7 +42,8 @@ class ProcResult:
 
 
 def run(
-    args: list[str], *, input_text: str | None = None, timeout: float = 30.0, check: bool = False, redact: list[str] | None = None
+    args: list[str], *, input_text: str | None = None, timeout: float = 30.0, check: bool = False,
+    redact: list[str] | None = None, cwd: str | None = None,
 ) -> ProcResult:
     """redact: values that must appear as literal CLI arguments (a
     third-party tool's own documented flag syntax, e.g. `--password=...`,
@@ -69,6 +70,7 @@ def run(
         text=True,
         timeout=timeout,
         shell=False,
+        cwd=cwd,
     )
     result = ProcResult(args=args, returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
     if check:

@@ -71,6 +71,20 @@ class Domain(Base):
     docroot: Mapped[str] = mapped_column(String(512))
     ssl_status: Mapped[str] = mapped_column(String(16), default="none")  # none|pending|active|error
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Phase 7a feature 5: wildcard SSL. True only when the live cert at
+    # letsencrypt_cert_paths(domain) actually covers "*.<domain>" (issued
+    # via DNS-01 -d '<domain>' -d '*.<domain>') -- a separate flag from
+    # ssl_status rather than overloading its existing none|pending|active|
+    # error vocabulary with a fifth value every other reader of ssl_status
+    # (dashboard, vhost render) would need to special-case.
+    ssl_is_wildcard: Mapped[bool] = mapped_column(default=False)
+    # Phase 7a feature 6: per-domain PHP version override. NULL (the
+    # default for every pre-existing and newly-created domain) means
+    # "inherit the account's own Account.php_version", exactly matching
+    # how PhpIniOverride's absence already means "use server defaults" --
+    # so a domain that never sets this renders identically to before this
+    # feature existed.
+    php_version: Mapped[str | None] = mapped_column(String(8), nullable=True)
     # Phase 4 feature 2: hotlink protection. Off by default -- this is an
     # opt-in feature that can break legitimate embedding (the account's
     # own other domains, a CDN, etc.), so a fresh domain must not suddenly
@@ -736,3 +750,351 @@ class NamespaceMigrationJob(Base):
     error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CpanelImportJob(Base):
+    """Phase 7b feature 1: async cPanel full-backup import. Same async-job
+    table shape as AppInstallJob/NamespaceMigrationJob (status/progress_
+    message/error/started_at/completed_at) -- `results` is the per-item
+    success/fail/skip report the goal explicitly requires ("per-item
+    success/fail report"), appended to incrementally as each backup
+    component (account/domain/database/mailbox/dns/ssl/ftp/cron) is
+    attempted, so a poll mid-run already shows partial progress, not just
+    a final summary. `source_ref` holds the uploaded tarball's staging path
+    or the given URL only until the job starts extracting it -- cleared
+    afterward (same "don't keep more than needed" posture as
+    WordPressJob.admin_password's one-time reveal, just for an input
+    artifact instead of a generated secret)."""
+
+    __tablename__ = "cpanel_import_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(16), index=True)
+    source: Mapped[str] = mapped_column(String(8))  # upload | url
+    source_ref: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
+    progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    results: Mapped[list] = mapped_column(JSON, default=list)  # [{item, status: ok|failed|skipped, detail}]
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NodeApp(Base):
+    """Phase 7a feature 1: per-account NodeJS app hosting. One row per app,
+    bound 1:1 to one of the account's own domains -- that domain's vhost
+    context `/` becomes a pure reverse proxy to this app's local port
+    (daemon/ols.py's `_app_proxy_for_domain`), so an app and PHP/WordPress/
+    the app installer can never both serve the same domain at once (the
+    same "one thing owns this vhost's context /" invariant the suspended-
+    page swap already relies on). Supervised by a real systemd unit
+    (forgehost-node-{username}-{id}.service, daemon/nodeapps.py) assigned
+    directly to the account's own cgroup slice via `Slice=` at spawn time
+    -- unlike LSAPI PHP workers (daemon/cgroups.py's periodic reconciler),
+    a systemd-spawned unit can be told its target slice directly, no
+    privilege-elevation workaround needed.
+
+    env_vars is the Fernet-encrypted (daemon/appcrypto.py), JSON-encoded
+    dict of this app's own environment variables -- decrypted only at
+    unit-render time into a root-only (0600) EnvironmentFile that systemd
+    itself reads before dropping to the account's own uid, so a decrypted
+    secret is never written anywhere the hosting account's own uid can
+    read it (goal: "env vars stored encrypted")."""
+
+    __tablename__ = "node_apps"
+    __table_args__ = (
+        UniqueConstraint("domain", name="uq_node_app_domain"),
+        UniqueConstraint("account_id", "name", name="uq_node_app_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    entry_point: Mapped[str] = mapped_column(String(512))
+    port: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    node_version: Mapped[str] = mapped_column(String(8))
+    env_vars: Mapped[str] = mapped_column(String(8000), default="")
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PythonApp(Base):
+    """Phase 7a feature 2: per-account Python WSGI/ASGI app hosting -- same
+    shape and lifecycle as NodeApp (one row per app, 1:1 domain binding,
+    systemd-supervised, cgroup-sliced, Fernet-encrypted env vars), the
+    Node-specific fields (node_version) replaced with `app_type` (wsgi via
+    gunicorn, asgi via uvicorn -- daemon/pythonapps.py picks the launch
+    command from this) and a per-app virtualenv under the account's own
+    home (`<home>/pythonapps/<name>/venv`), never a shared/system venv."""
+
+    __tablename__ = "python_apps"
+    __table_args__ = (
+        UniqueConstraint("domain", name="uq_python_app_domain"),
+        UniqueConstraint("account_id", "name", name="uq_python_app_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    entry_point: Mapped[str] = mapped_column(String(512))  # "module:callable", e.g. "app:app"
+    app_type: Mapped[str] = mapped_column(String(8), default="wsgi")  # wsgi (gunicorn) | asgi (uvicorn)
+    port: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    env_vars: Mapped[str] = mapped_column(String(8000), default="")
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class RedisInstance(Base):
+    """Phase 7a feature 3: per-account Redis via systemd (one instance per
+    ACCOUNT, not per-app like NodeApp/PythonApp -- Redis here is shared
+    account-level cache/session storage, matching how PhpIniOverride/
+    cgroup limits are one row per account too). Reachable only via a
+    private Unix socket at /run/redis/<username>.sock, mode 700 owned by
+    the account's own uid -- no TCP listener at all, so there is no port
+    to firewall or misconfigure; a second account's own process can
+    `connect()` to the socket path but the filesystem permission itself
+    (0700, not the account's own group) is what makes that fail, the same
+    DAC-based isolation model this whole project already relies on for
+    account separation. No persistence by default (`save ""` in the
+    rendered redis.conf, goal's explicit v1 default) -- data_dir
+    (~/.redis/) is still created for an admin who deliberately enables
+    persistence later via a config override, just never written to by
+    Forgehost itself otherwise."""
+
+    __tablename__ = "redis_instances"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), unique=True, index=True)
+    mem_mb: Mapped[int] = mapped_column(Integer, default=64)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BandwidthDailyDomain(Base):
+    """Phase 7b feature 2: per-domain daily bandwidth breakdown, alongside
+    (not replacing) the existing per-account BandwidthDaily -- needed for
+    "top 5 domains by bandwidth" without changing the meaning or reader
+    contract of the account-level totals Phase 2 feature 5 already
+    shipped. Populated by the same daemon/usage.py refresh_bandwidth()
+    access-log parse pass, just keyed one level finer."""
+
+    __tablename__ = "bandwidth_daily_domain"
+    __table_args__ = (UniqueConstraint("account_id", "domain", "date", name="uq_bandwidth_daily_domain"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    date: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD
+    bytes_served: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# Phase 7b features 3/4/5: the canonical set of lifecycle events every
+# notification/webhook/alert-driven email can fire for. A plain module-level
+# tuple (not a DB-backed enum table) -- matches this project's existing
+# convention for closed, code-defined vocabularies (BACKUP_KINDS,
+# FREQUENCIES in daemon/backup.py) rather than a table nothing else needs to
+# query.
+NOTIFICATION_EVENT_TYPES = (
+    "account.created",
+    "account.suspended",
+    "account.unsuspended",
+    "account.terminated",
+    "backup.completed",
+    "backup.failed",
+    "ssl.expiring",
+    "usage.limit.reached",
+    "login.new",
+)
+
+
+def _default_event_prefs() -> dict:
+    return {event: True for event in NOTIFICATION_EVENT_TYPES}
+
+
+class NotificationSettings(Base):
+    """Phase 7b feature 3: single-row (id=1) admin-configured sender
+    address + global per-event-type enable/disable -- same single-row
+    shape as SpamGlobalSettings/WafSettings, since there is genuinely only
+    one server-wide notification configuration. A per-account send still
+    requires BOTH this global switch and the account's own
+    AccountNotificationPrefs to allow the event, so an admin can kill a
+    noisy event type server-wide without visiting every account."""
+
+    __tablename__ = "notification_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sender_address: Mapped[str] = mapped_column(String(253), default="")
+    events: Mapped[dict] = mapped_column(JSON, default=_default_event_prefs)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class AccountNotificationPrefs(Base):
+    """Phase 7b feature 3: per-account customer email + opt-outs. A row is
+    created lazily on first read/write (same "no row = defaults" pattern
+    as PhpIniOverride) -- customer_email is None until the admin or
+    customer sets one, in which case no notification email is ever sent
+    for that account (there is nowhere to send it), independent of the
+    events dict."""
+
+    __tablename__ = "account_notification_prefs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), unique=True, index=True)
+    customer_email: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    events: Mapped[dict] = mapped_column(JSON, default=_default_event_prefs)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+WEBHOOK_EVENT_TYPES = (
+    "account.created",
+    "account.suspended",
+    "account.terminated",
+    "backup.completed",
+    "ssl.expiring",
+    "usage.limit.reached",
+)
+
+
+class Webhook(Base):
+    """Phase 7b feature 4: an admin-configured outbound webhook. `secret`
+    is stored in plain text (not hashed) -- unlike a login credential, it
+    has to be used to *compute* an HMAC on every delivery, not just
+    compared, so it can't be one-way-hashed; same documented tradeoff
+    TotpCredential.secret already accepts in this same file, protected by
+    the DB file's own root:forgehost-api permission boundary."""
+
+    __tablename__ = "webhooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    url: Mapped[str] = mapped_column(String(2048))
+    secret: Mapped[str] = mapped_column(String(128))
+    events: Mapped[list] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WebhookDelivery(Base):
+    """One row per delivery attempt series for one (webhook, event
+    occurrence) pair -- `attempt_count` increments in place rather than
+    inserting a new row per retry, so the delivery log shows one entry per
+    real-world event with its final outcome, not three near-duplicate rows
+    for a single retried delivery."""
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    webhook_id: Mapped[int] = mapped_column(ForeignKey("webhooks.id"), index=True)
+    event: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|success|failed
+    response_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_attempted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AccountResourceLimits(Base):
+    """Phase 7b feature 5: alert-facing limits for the resources that have
+    no existing quota column -- disk already has Account.quota_soft_mb/
+    quota_hard_mb (Phase a, OS-enforced), reused directly as the "disk"
+    resource's 80/90/100% reference rather than duplicated here. A row is
+    created lazily (no row = every *_limit is "not tracked", i.e. that
+    resource is never alerted on for this account) -- matches
+    PhpIniOverride's own lazy-row convention."""
+
+    __tablename__ = "account_resource_limits"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), unique=True, index=True)
+    bandwidth_limit_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    database_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    email_account_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    subdomain_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    auto_suspend_at_100: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class UsageAlert(Base):
+    """Phase 7b feature 5: one row per (account, resource) alert episode.
+    `resolved_at` NULL means still active -- a fresh check_usage_alerts()
+    pass that finds usage back under 80% resolves it rather than deleting
+    it, so the alert history (goal: "alert history") stays a durable log,
+    the same "never delete, keep history" posture BackupJob/Account rows
+    already use in this project."""
+
+    __tablename__ = "usage_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    resource: Mapped[str] = mapped_column(String(32))  # disk|bandwidth|databases|email_accounts|subdomains
+    threshold_pct: Mapped[int] = mapped_column(Integer)  # 80|90|100
+    triggered_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged: Mapped[bool] = mapped_column(default=False)
+
+
+class StagingEnvironment(Base):
+    """Phase 7b feature 6: bookkeeping for a domain's staging clone.
+    `source_domain`/`staging_domain` are unique (one staging environment
+    per production domain, and a staging domain can never collide with
+    any other Domain row since Domain.domain itself is globally unique) --
+    `db_name`/`db_user` are None when the source domain has no detected
+    WordPress install (goal's DB-clone step is WordPress-specific; a
+    non-WP staging clone is files-only)."""
+
+    __tablename__ = "staging_environments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    source_domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    staging_domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    is_wordpress: Mapped[bool] = mapped_column(default=False)
+    db_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    db_user: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_synced_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SslExpiryNotice(Base):
+    """Phase 7b feature 3: dedup marker so the daily SSL-expiry cron
+    (scripts/ssl_expiry_check.py) sends exactly one "expiring in <=14
+    days" notice per certificate issuance, not once per day for two
+    straight weeks. Keyed on the cert's own not-after date, not just the
+    domain -- a renewed certificate has a new expiry date and is therefore
+    correctly treated as a fresh notice-worthy event."""
+
+    __tablename__ = "ssl_expiry_notices"
+    __table_args__ = (UniqueConstraint("domain", "expiry_date", name="uq_ssl_expiry_notice"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    expiry_date: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD, from the cert's own not_valid_after
+    notified_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LscacheSettings(Base):
+    """Phase 7a feature 4: per-domain LSCache (OLS's native page-cache
+    module, ARCHITECTURE.md SS10.5-adjacent -- unlike ModSecurity, LSCache
+    IS genuinely configurable per-vhost on OpenLiteSpeed, confirmed against
+    this server's own `module cache {}` block already present in every
+    vhost's rendered config (daemon/ols.py) with `enableCache 0` by
+    default). One row per domain, created lazily on first enable -- a
+    domain that never touches this feature has no row and renders with
+    caching off, identical to before this feature existed."""
+
+    __tablename__ = "lscache_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    ttl_seconds: Mapped[int] = mapped_column(Integer, default=3600)
+    exclude_paths: Mapped[list] = mapped_column(JSON, default=list)
+    last_purged_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

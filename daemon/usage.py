@@ -23,7 +23,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, BandwidthDaily, DatabaseGrant, Domain, MailDomain, UsageSnapshot, utcnow
+from shared.models import Account, BandwidthDaily, BandwidthDailyDomain, DatabaseGrant, Domain, MailDomain, UsageSnapshot, utcnow
 
 from daemon import mariadb, ols
 from daemon.procutil import run
@@ -145,11 +145,17 @@ def _parse_access_log(path: Path) -> dict[str, int]:
 def refresh_bandwidth(account: Account) -> None:
     home_dir = _account_home(account.username)
     aggregate: dict[str, int] = defaultdict(int)
+    # Phase 7b feature 2: bandwidth graphs need "top 5 domains by bandwidth"
+    # -- per_domain keeps the identical (date -> bytes) breakdown the
+    # account-level `aggregate` above already computes, just one level
+    # finer, from the exact same access-log parse pass (no second log read).
+    per_domain: dict[tuple[str, str], int] = defaultdict(int)
     for domain_name in _domains_for_account(account.id):
         vhost_name = ols._vhost_name(domain_name)
         for log_file in _all_access_log_files(home_dir, vhost_name):
             for date_key, byte_count in _parse_access_log(log_file).items():
                 aggregate[date_key] += byte_count
+                per_domain[(domain_name, date_key)] += byte_count
 
     if not aggregate:
         return
@@ -163,6 +169,21 @@ def refresh_bandwidth(account: Account) -> None:
                 existing.bytes_served = byte_count
             else:
                 session.add(BandwidthDaily(account_id=account.id, date=date_key, bytes_served=byte_count))
+
+        for (domain_name, date_key), byte_count in per_domain.items():
+            existing_domain = session.scalar(
+                select(BandwidthDailyDomain).where(
+                    BandwidthDailyDomain.account_id == account.id,
+                    BandwidthDailyDomain.domain == domain_name,
+                    BandwidthDailyDomain.date == date_key,
+                )
+            )
+            if existing_domain is not None:
+                existing_domain.bytes_served = byte_count
+            else:
+                session.add(
+                    BandwidthDailyDomain(account_id=account.id, domain=domain_name, date=date_key, bytes_served=byte_count)
+                )
 
 
 def _snapshot_to_dict(snap: UsageSnapshot) -> dict:
@@ -223,6 +244,102 @@ def get_usage(account: Account, force_refresh: bool = False) -> dict:
             b.bytes_served for b in bandwidth_rows if b.date.startswith(utcnow().strftime("%Y-%m"))
         ),
     }
+
+
+# --- Phase 7b feature 2: bandwidth graphs (daily/weekly/monthly + top 5
+# domains + admin cross-account ranking), built entirely on the BandwidthDaily/
+# BandwidthDailyDomain rows refresh_bandwidth() above already populates from
+# real OLS access-log bytes -- no separate data collection, just different
+# ways of bucketing/ranking numbers that are already independently
+# verifiable against the same logs an operator would grep by hand. ---------
+
+BANDWIDTH_PERIODS = ("daily", "weekly", "monthly")
+_PERIOD_LOOKBACK_DAYS = {"daily": 30, "weekly": 84, "monthly": 365}
+TOP_DOMAINS_LIMIT = 5
+
+
+def _validate_period(period: str) -> str:
+    if period not in BANDWIDTH_PERIODS:
+        raise ValueError(f"period must be one of {BANDWIDTH_PERIODS}")
+    return period
+
+
+def _period_cutoff(period: str) -> str:
+    return (utcnow().date() - dt.timedelta(days=_PERIOD_LOOKBACK_DAYS[period])).isoformat()
+
+
+def _bucket_label(date_str: str, period: str) -> str:
+    if period == "daily":
+        return date_str
+    d = dt.date.fromisoformat(date_str)
+    if period == "weekly":
+        iso_year, iso_week, _ = d.isocalendar()
+        return f"{iso_year}-W{iso_week:02d}"
+    return date_str[:7]  # monthly: "YYYY-MM"
+
+
+def get_bandwidth_report(account: Account, period: str) -> dict:
+    _validate_period(period)
+    cutoff = _period_cutoff(period)
+
+    with write_session() as session:
+        daily_rows = session.scalars(
+            select(BandwidthDaily).where(BandwidthDaily.account_id == account.id, BandwidthDaily.date >= cutoff)
+        ).all()
+        domain_rows = session.scalars(
+            select(BandwidthDailyDomain).where(
+                BandwidthDailyDomain.account_id == account.id, BandwidthDailyDomain.date >= cutoff
+            )
+        ).all()
+
+    buckets: dict[str, int] = defaultdict(int)
+    for row in daily_rows:
+        buckets[_bucket_label(row.date, period)] += row.bytes_served
+
+    domain_totals: dict[str, int] = defaultdict(int)
+    for row in domain_rows:
+        domain_totals[row.domain] += row.bytes_served
+    top_domains = sorted(domain_totals.items(), key=lambda kv: kv[1], reverse=True)[:TOP_DOMAINS_LIMIT]
+
+    return {
+        "username": account.username,
+        "period": period,
+        "buckets": [{"label": label, "bytes_served": total} for label, total in sorted(buckets.items())],
+        "top_domains": [{"domain": d, "bytes_served": total} for d, total in top_domains],
+        "total_bytes_served": sum(buckets.values()),
+    }
+
+
+def get_bandwidth_ranking(period: str) -> dict:
+    """Admin-wide view: every account ranked by total bandwidth served in
+    the period, highest first -- built from the same account-level
+    BandwidthDaily rows the per-account report uses, just summed across
+    every account instead of scoped to one."""
+    _validate_period(period)
+    cutoff = _period_cutoff(period)
+
+    with write_session() as session:
+        rows = session.scalars(select(BandwidthDaily).where(BandwidthDaily.date >= cutoff)).all()
+        account_ids = {r.account_id for r in rows}
+        accounts_by_id = (
+            {a.id: a.username for a in session.scalars(select(Account).where(Account.id.in_(account_ids))).all()}
+            if account_ids
+            else {}
+        )
+
+    totals: dict[int, int] = defaultdict(int)
+    for row in rows:
+        totals[row.account_id] += row.bytes_served
+
+    ranking = sorted(
+        (
+            {"username": accounts_by_id.get(account_id, f"#{account_id}"), "bytes_served": total}
+            for account_id, total in totals.items()
+        ),
+        key=lambda entry: entry["bytes_served"],
+        reverse=True,
+    )
+    return {"period": period, "ranking": ranking}
 
 
 def refresh_all_accounts() -> int:

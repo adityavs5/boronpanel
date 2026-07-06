@@ -8,7 +8,7 @@ from daemon import handlers_domain as hd
 from daemon import usage
 from daemon.procutil import ProcResult
 from shared.db import write_session
-from shared.models import BandwidthDaily, DatabaseGrant, MailDomain, UsageSnapshot, utcnow
+from shared.models import Account, BandwidthDaily, BandwidthDailyDomain, DatabaseGrant, MailDomain, UsageSnapshot, utcnow
 
 
 @pytest.fixture()
@@ -190,3 +190,142 @@ def test_refresh_all_accounts_skips_terminated(isolated_db, stub_sysops, stub_fi
     count = usage.refresh_all_accounts()
     assert count == 1
     assert refreshed == ["demo1"]
+
+
+# --- Phase 7b feature 2: bandwidth graphs -----------------------------------
+
+
+def test_refresh_bandwidth_populates_per_domain_breakdown(isolated_db, stub_sysops, stub_filesystem, stub_ols, monkeypatch, tmp_path):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "shop.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "blog.example", "kind": "addon"})
+    account = _account()
+
+    home_dir = tmp_path / "demo1"
+    (home_dir / "logs").mkdir(parents=True)
+    monkeypatch.setattr(usage.settings, "home_base", str(tmp_path))
+
+    (home_dir / "logs" / "shop_example-access.log").write_text(
+        '1.2.3.4 - - [01/Jul/2026:06:35:50 +0000] "GET / HTTP/1.1" 200 3000 "-" "curl"\n'
+    )
+    (home_dir / "logs" / "blog_example-access.log").write_text(
+        '1.2.3.4 - - [01/Jul/2026:06:35:50 +0000] "GET / HTTP/1.1" 200 1000 "-" "curl"\n'
+    )
+
+    usage.refresh_bandwidth(account)
+
+    with write_session() as session:
+        rows = {
+            r.domain: r.bytes_served
+            for r in session.scalars(
+                select(BandwidthDailyDomain).where(BandwidthDailyDomain.account_id == account.id, BandwidthDailyDomain.date == "2026-07-01")
+            ).all()
+        }
+        assert rows == {"shop.example": 3000, "blog.example": 1000}
+        # Account-level total must still equal the sum across domains.
+        total_row = session.scalar(
+            select(BandwidthDaily).where(BandwidthDaily.account_id == account.id, BandwidthDaily.date == "2026-07-01")
+        )
+        assert total_row.bytes_served == 4000
+
+    # Re-running must UPDATE the per-domain rows too, not duplicate them.
+    (home_dir / "logs" / "shop_example-access.log").write_text(
+        '1.2.3.4 - - [01/Jul/2026:06:35:50 +0000] "GET / HTTP/1.1" 200 3000 "-" "curl"\n'
+        '1.2.3.4 - - [01/Jul/2026:07:00:00 +0000] "GET /a HTTP/1.1" 200 500 "-" "curl"\n'
+    )
+    usage.refresh_bandwidth(account)
+    with write_session() as session:
+        shop_rows = session.scalars(
+            select(BandwidthDailyDomain).where(
+                BandwidthDailyDomain.account_id == account.id,
+                BandwidthDailyDomain.domain == "shop.example",
+                BandwidthDailyDomain.date == "2026-07-01",
+            )
+        ).all()
+        assert len(shop_rows) == 1
+        assert shop_rows[0].bytes_served == 3500
+
+
+def test_bucket_label_daily_weekly_monthly():
+    assert usage._bucket_label("2026-07-05", "daily") == "2026-07-05"
+    assert usage._bucket_label("2026-07-05", "monthly") == "2026-07"
+    # 2026-07-05 is a Sunday -- ISO week belongs to the week containing it.
+    label = usage._bucket_label("2026-07-05", "weekly")
+    assert label.startswith("2026-W")
+
+
+def test_validate_period_rejects_unknown():
+    with pytest.raises(ValueError):
+        usage._validate_period("yearly")
+
+
+def test_get_bandwidth_report_buckets_and_top_domains(isolated_db):
+    with write_session() as session:
+        account = Account(username="demo1", status="active")
+        session.add(account)
+        session.flush()
+        account_id = account.id
+        for date_str, total in (("2026-07-01", 5000), ("2026-07-02", 3000)):
+            session.add(BandwidthDaily(account_id=account_id, date=date_str, bytes_served=total))
+        session.add(BandwidthDailyDomain(account_id=account_id, domain="shop.example", date="2026-07-01", bytes_served=4000))
+        session.add(BandwidthDailyDomain(account_id=account_id, domain="blog.example", date="2026-07-01", bytes_served=1000))
+        session.add(BandwidthDailyDomain(account_id=account_id, domain="shop.example", date="2026-07-02", bytes_served=3000))
+
+    account = _account()
+    report = usage.get_bandwidth_report(account, "daily")
+    assert report["period"] == "daily"
+    assert report["total_bytes_served"] == 8000
+    assert {"label": "2026-07-01", "bytes_served": 5000} in report["buckets"]
+    assert {"label": "2026-07-02", "bytes_served": 3000} in report["buckets"]
+    assert report["top_domains"][0] == {"domain": "shop.example", "bytes_served": 7000}
+    assert report["top_domains"][1] == {"domain": "blog.example", "bytes_served": 1000}
+
+
+def test_get_bandwidth_report_rejects_unknown_period(isolated_db):
+    with write_session() as session:
+        session.add(Account(username="demo1", status="active"))
+    account = _account()
+    with pytest.raises(ValueError):
+        usage.get_bandwidth_report(account, "hourly")
+
+
+def test_get_bandwidth_report_top_domains_capped_at_five(isolated_db):
+    with write_session() as session:
+        account = Account(username="demo1", status="active")
+        session.add(account)
+        session.flush()
+        for i in range(8):
+            session.add(
+                BandwidthDailyDomain(account_id=account.id, domain=f"site{i}.example", date="2026-07-01", bytes_served=(8 - i) * 100)
+            )
+    account = _account()
+    report = usage.get_bandwidth_report(account, "daily")
+    assert len(report["top_domains"]) == 5
+    assert report["top_domains"][0]["domain"] == "site0.example"
+
+
+def test_get_bandwidth_ranking_orders_accounts_by_total(isolated_db):
+    with write_session() as session:
+        a1 = Account(username="demo1", status="active")
+        a2 = Account(username="demo2", status="active")
+        session.add_all([a1, a2])
+        session.flush()
+        session.add(BandwidthDaily(account_id=a1.id, date="2026-07-01", bytes_served=1000))
+        session.add(BandwidthDaily(account_id=a2.id, date="2026-07-01", bytes_served=9000))
+        session.add(BandwidthDaily(account_id=a1.id, date="2026-07-02", bytes_served=500))
+
+    ranking = usage.get_bandwidth_ranking("monthly")
+    assert ranking["ranking"][0] == {"username": "demo2", "bytes_served": 9000}
+    assert ranking["ranking"][1] == {"username": "demo1", "bytes_served": 1500}
+
+
+def test_get_bandwidth_ranking_excludes_old_data_outside_period(isolated_db):
+    with write_session() as session:
+        account = Account(username="demo1", status="active")
+        session.add(account)
+        session.flush()
+        old_date = (utcnow().date() - dt.timedelta(days=400)).isoformat()
+        session.add(BandwidthDaily(account_id=account.id, date=old_date, bytes_served=99999))
+
+    ranking = usage.get_bandwidth_ranking("monthly")
+    assert ranking["ranking"] == []

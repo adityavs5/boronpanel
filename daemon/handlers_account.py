@@ -135,6 +135,15 @@ def create_account(params: dict) -> dict:
         result = _account_to_dict(account)
         account_snapshot = account
 
+    # Phase 7b feature 3: the "account created" email needs the plaintext
+    # initial password, which exists only in this function's own local
+    # scope (never persisted -- PanelUser/Account never store it) and is
+    # gone the moment this call returns. CREATE_HOOKS callables only ever
+    # receive the Account row (every other hook -- cgroups, namespace --
+    # only needs fields already on it), so a transient, non-mapped
+    # attribute is stashed here rather than widening that shared signature
+    # for every other hook consumer just for this one's sake.
+    account_snapshot.initial_password = password
     for hook in CREATE_HOOKS:
         try:
             hook(account_snapshot)
@@ -218,6 +227,7 @@ def reactivate_account(params: dict) -> dict:
         result = _account_to_dict(account)
         account_snapshot = account
 
+    account_snapshot.initial_password = password
     for hook in CREATE_HOOKS:
         try:
             hook(account_snapshot)

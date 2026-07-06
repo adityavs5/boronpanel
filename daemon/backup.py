@@ -46,7 +46,7 @@ from shared.models import (
 )
 from shared.validation import ValidationError, validate_domain, validate_username
 
-from daemon import cron, mariadb, powerdns, rclone
+from daemon import cron, events, mariadb, powerdns, rclone
 from daemon.procutil import run
 
 logger = logging.getLogger("forgehostd.backup")
@@ -531,6 +531,7 @@ def _run_backup_job(job_id: int) -> None:
         dest_local_path = destination.local_path
         dest_remote = destination.rclone_remote
         dest_prefix = destination.rclone_path_prefix
+        account_snapshot = account
 
     _update_job(job_id, status="running", progress_message="starting")
     staging_dir = Path(settings.backup_staging_dir) / f"job-{job_id}"
@@ -575,9 +576,19 @@ def _run_backup_job(job_id: int) -> None:
             completed_at=utcnow(),
         )
         _enforce_retention(job_id)
+        # Phase 7b features 3/4: "backup completed" notification/webhook.
+        # Only "manual"/"scheduled" full-account backups fire this -- a
+        # granular file/database/mailbox backup is a much more routine
+        # action (e.g. before a risky change) that this project's own
+        # goal text doesn't ask to notify on, and would otherwise make the
+        # channel noisy for an account with frequent granular backups.
+        if kind == "full":
+            events.emit("backup.completed", account_snapshot, job_id=job_id)
     except Exception as exc:  # noqa: BLE001
         logger.exception("backup job %d failed", job_id)
         _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
+        if kind == "full":
+            events.emit("backup.failed", account_snapshot, job_id=job_id, error=str(exc))
     finally:
         if staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)

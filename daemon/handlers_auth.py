@@ -16,9 +16,11 @@ import string
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import ApiToken, LoginAttempt, PanelUser, Session
+from shared.models import Account, ApiToken, LoginAttempt, PanelUser, Session
 from shared.passwords import hash_password
 from shared.validation import ValidationError, validate_password_strength
+
+from daemon import events
 
 SESSION_TTL_HOURS = 24 * 7
 TOKEN_PREFIX_LEN = 8
@@ -154,6 +156,17 @@ def create_session(params: dict) -> dict:
             raise RuntimeError("panel user not found or disabled")
         row = Session(session_id=session_id, panel_user_id=panel_user_id, expires_at=expires_at)
         db.add(row)
+        # Phase 7b feature 3: "new login to customer panel" notification --
+        # admin logins are deliberately excluded (goal names only the
+        # *customer* panel; an admin has no AccountNotificationPrefs row to
+        # notify anyway, since that table is keyed by account, not by
+        # panel_user). account_snapshot is read inside this same session
+        # so it's fully loaded before the session closes.
+        account_snapshot = None
+        if user.role == "customer" and user.account_id is not None:
+            account_snapshot = db.get(Account, user.account_id)
+    if account_snapshot is not None:
+        events.emit("login.new", account_snapshot)
     return {"session_id": session_id, "expires_at": expires_at.isoformat()}
 
 

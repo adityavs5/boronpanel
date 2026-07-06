@@ -122,6 +122,41 @@ def test_create_session_rejects_disabled_user(isolated_db):
         hauth.create_session({"panel_user_id": user["id"]})
 
 
+# --- Phase 7b feature 3: "new login to customer panel" notification --------
+
+
+def _make_account(username="demo1"):
+    from shared.db import write_session
+    from shared.models import Account
+
+    with write_session() as db:
+        account = Account(username=username, status="active")
+        db.add(account)
+        db.flush()
+        return account.id
+
+
+def test_create_session_emits_login_event_for_customer(isolated_db, monkeypatch):
+    account_id = _make_account()
+    user = hauth.create_panel_user({"username": "cust1", "password": "SuperSecret123!", "role": "customer", "account_id": account_id})
+
+    emitted = []
+    monkeypatch.setattr(hauth.events, "emit", lambda event_type, account, **ctx: emitted.append((event_type, account.id)))
+    hauth.create_session({"panel_user_id": user["id"]})
+
+    assert emitted == [("login.new", account_id)]
+
+
+def test_create_session_does_not_emit_login_event_for_admin(isolated_db, monkeypatch):
+    user = hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
+
+    emitted = []
+    monkeypatch.setattr(hauth.events, "emit", lambda *a, **k: emitted.append(a))
+    hauth.create_session({"panel_user_id": user["id"]})
+
+    assert emitted == []
+
+
 def test_create_api_token_returns_raw_token_once(isolated_db):
     result = hauth.create_api_token({"label": "billing-system", "role": "admin"})
     assert result["token"].startswith("fh_admin_")

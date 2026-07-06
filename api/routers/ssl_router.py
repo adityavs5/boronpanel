@@ -52,6 +52,13 @@ def issue_or_renew_certificate(username: str, domain: str, body: DomainIssueCert
     return call_daemon("ssl.issue", identity, domain=domain, force=body.force)
 
 
+@account_api_router.post("/domains/{domain}/ssl/wildcard")
+def issue_wildcard_certificate(username: str, domain: str, body: DomainIssueCertBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("ssl.issue_wildcard", identity, domain=domain, force=body.force)
+
+
 @ui_router.get("")
 def ui_ssl_dashboard(request: Request, username: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
@@ -74,4 +81,12 @@ def ui_renew_certificate(username: str, domain: str, identity: Identity = Depend
     require_account_access(identity, username)
     require_domain_access(identity, domain)
     call_daemon("ssl.issue", identity, domain=domain, force=True)
+    return RedirectResponse(f"/ui/accounts/{username}/ssl", status_code=303)
+
+
+@ui_router.post("/{domain}/wildcard")
+def ui_issue_wildcard_certificate(username: str, domain: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    call_daemon("ssl.issue_wildcard", identity, domain=domain)
     return RedirectResponse(f"/ui/accounts/{username}/ssl", status_code=303)

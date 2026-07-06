@@ -171,6 +171,73 @@ class Settings:
     pma_token_dir: str = "/var/lib/forgehost-pma-tokens"
     pma_token_ttl_seconds: int = 900
 
+    # Phase 7a feature 1/2: NodeJS/Python app hosting. Node versions are
+    # installed side-by-side under node_base_dir/<version>/bin/{node,npm},
+    # the same "several full runtime installs side by side, selected per
+    # account/app at render time" pattern lsphp already uses for PHP
+    # (ARCHITECTURE.md SS6) -- not a single system-wide `node` via apt,
+    # which would give only one version and no per-app choice.
+    # Deliberately OUTSIDE /opt/forgehost (the deployed-application-code
+    # tree scripts/deploy.sh rsync's with --delete from the git checkout,
+    # ARCHITECTURE.md SS3): a first attempt put this at
+    # /opt/forgehost/nodejs and the very next deploy would have silently
+    # deleted every installed Node runtime, since it isn't part of the
+    # source repo -- caught before it happened, moved to its own sibling
+    # directory instead.
+    node_base_dir: str = "/opt/forgehost-nodejs"
+    node_versions: tuple[str, ...] = ("18", "20", "22")
+    default_node_version: str = "20"
+    # Python has no per-app version selector in this goal (only Node does) --
+    # every app venv is built with whatever `python3` this host has.
+    python_bin: str = "/usr/bin/python3"
+    # Shared port range for both NodeApp and PythonApp local backends that
+    # OLS's Web-Server(proxy) external app connects to on 127.0.0.1 -- one
+    # allocator (daemon/portalloc.py) checks both tables so a Node app and a
+    # Python app can never collide on the same port.
+    app_port_range_start: int = 30000
+    app_port_range_end: int = 31999
+    # Root-only (0700): systemd reads each unit's EnvironmentFile itself (as
+    # root, before dropping to the app's own uid via User=), so decrypted
+    # env vars are never written anywhere the hosting account's own uid can
+    # read -- the DB row keeps only the Fernet-encrypted form (goal: "env
+    # vars stored encrypted").
+    app_env_dir: str = "/etc/forgehost/app-env"
+    # Phase 7a feature 3: per-account Redis. Unix-socket only (no TCP port
+    # at all, so there is no port to firewall/misconfigure) -- goal's own
+    # explicit path convention.
+    redis_bin: str = "/usr/bin/redis-server"
+    redis_cli_bin: str = "/usr/bin/redis-cli"
+    redis_run_dir: str = "/run/redis"
+    redis_default_mem_mb: int = 64
+
+    # Phase 7b feature 1: cPanel backup import. Separate staging dir from
+    # backup_staging_dir/wp_staging_dir/app_staging_dir (same "own scratch
+    # space per feature" convention those establish) -- holds the uploaded/
+    # downloaded tarball and its extracted contents for the lifetime of one
+    # import job only, cleaned up (success or failure) when the job ends.
+    cpanel_import_staging_dir: str = "/var/lib/forgehost/cpanel-import-staging"
+    cpanel_import_concurrency: int = 1
+    cpanel_import_max_upload_bytes: int = 10 * 1024 * 1024 * 1024  # 10GB
+
+    # Phase 7b feature 3: email notifications. Postfix on this same server
+    # relays outbound transactional mail -- no external SMTP credentials
+    # needed (matches this server's own existing Postfix install, already a
+    # hard dependency for hosted mail), submitted via the standard
+    # MTA-on-localhost pattern every one of this project's reference panels
+    # also uses for its own transactional mail.
+    smtp_relay_host: str = "127.0.0.1"
+    smtp_relay_port: int = 25
+    notifications_default_sender: str = "forgehost@localhost"
+
+    # Phase 7b feature 4: webhooks. Bounded so a slow/hanging external
+    # endpoint can never stall the shared delivery worker pool indefinitely.
+    webhook_delivery_timeout_seconds: float = 10.0
+    webhook_max_attempts: int = 3
+    webhook_concurrency: int = 2
+
+    # Phase 7b feature 6: staging environments.
+    staging_db_prefix: str = "stg_"
+
     secrets: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -184,6 +251,15 @@ class Settings:
     @property
     def powerdns_api_key(self) -> str:
         return self.secrets.get("POWERDNS_API_KEY", "")
+
+    @property
+    def app_env_key(self) -> str:
+        """Fernet key encrypting NodeApp/PythonApp env vars at rest
+        (daemon/appcrypto.py). Empty when secrets.env hasn't been
+        bootstrapped with one yet -- appcrypto.get_key() generates and
+        persists one on first use rather than requiring a manual step,
+        the same auto-provisioning appcrypto.py documents."""
+        return self.secrets.get("APP_ENV_KEY", "")
 
 
 def load_settings() -> Settings:

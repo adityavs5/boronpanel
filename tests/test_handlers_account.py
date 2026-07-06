@@ -287,6 +287,36 @@ def test_create_account_fires_create_hooks(isolated_db, stub_sysops):
         ha.CREATE_HOOKS.clear()
 
 
+def test_create_account_stashes_initial_password_for_create_hooks(isolated_db, stub_sysops):
+    """Phase 7b feature 3: the "account created" notification needs the
+    plaintext initial password, which exists only in this function's local
+    scope (never persisted) -- confirms CREATE_HOOKS callables can read it
+    off the account row passed to them, and that a fixed custom password
+    (not just an auto-generated one) is stashed identically."""
+    captured = []
+    ha.CREATE_HOOKS.append(lambda account: captured.append(getattr(account, "initial_password", "MISSING")))
+    try:
+        result = ha.create_account({"username": "demo1", "password": "Str0ng!Passw0rdXY"})
+        assert captured == ["Str0ng!Passw0rdXY"]
+        assert result["initial_password"] == "Str0ng!Passw0rdXY"
+    finally:
+        ha.CREATE_HOOKS.clear()
+
+
+def test_reactivate_account_stashes_initial_password_for_create_hooks(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo1"})
+
+    captured = []
+    ha.CREATE_HOOKS.append(lambda account: captured.append(getattr(account, "initial_password", "MISSING")))
+    try:
+        result = ha.reactivate_account({"username": "demo1"})
+        assert captured == [result["initial_password"]]
+        assert captured[0] != "MISSING"
+    finally:
+        ha.CREATE_HOOKS.clear()
+
+
 def test_set_limits_updates_and_fires_hooks(isolated_db, stub_sysops):
     ha.create_account({"username": "demo1"})
     calls = []

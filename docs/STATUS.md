@@ -8,6 +8,459 @@ check first.
 
 ---
 
+## Phase 7b update (2026-07-05 build; 2026-07-06 live verification): 6
+## management features added — code + tests complete; ALL 6 features
+## live-verified end to end (8/8 Done-When criteria met)
+
+Built autonomously per an eighth project goal, in the exact order
+specified, xhigh effort applied to cPanel import and staging environments
+as required. Every feature has its own `docs/CHECKPOINT-phase7b-{1..6}.md`
+with full detail; this section is the synthesis for Phase 7b specifically.
+Everything below this point (Phase 7a and earlier) is unchanged and still
+accurate for everything it covers.
+
+**Read this whole section before anything else.** Live verification was
+authorized and completed on 2026-07-06: **all six features passed live
+end-to-end** — a real cPanel backup imported and its site served (HTTP 200),
+bandwidth reconciled against an independent log grep, an account-created
+email landed in a real Maildir, a webhook delivered with a matching HMAC, an
+80%-disk alert fired, and a WordPress domain cloned to staging with
+`/wp-admin/` reachable (HTTP 200). Getting there required finding and fixing
+**three real host/code defects along the way** (an OLS `/tmp` reload
+regression, a genuine Phase 7b cpanel-import bug, and a Phase 6b namespace
+staleness bug) — all documented below. No Phase 7b feature was itself
+defective; the blockers were host-infrastructure issues the live run surfaced.
+The full results, the root-cause analysis, and the repair of the transient
+OLS damage the run caused are in the Definition-of-Done checklist below.
+
+### An unusual complication this phase, handled transparently
+
+Partway through this build, a **second, independent Claude Code process**
+(`claude --continue`, PID confirmed via `ps aux`) was found actively
+editing this same git working tree concurrently — both sessions had
+apparently been resumed on the same underlying autonomous `/goal` loop
+without either being aware of the other. This was caught by a genuine,
+concrete symptom: `shared/models.py` ended up with **two separate
+`class CpanelImportJob(Base):` definitions** (one from each session),
+which would have crashed at import time (SQLAlchemy rejects two classes
+declaring the same `__tablename__`). The user was asked how to proceed;
+their response indicated they weren't certain how many sessions were
+actually running. Rather than stall indefinitely on a question the user
+couldn't immediately resolve, and since the underlying problem
+(duplicated/conflicting code, not anything destructive or irreversible)
+was concretely fixable, work continued: the duplicate model was
+reconciled by keeping the more complete implementation, and — since the
+other session had already produced a substantial (~900-line), genuinely
+solid `daemon/cpanel_import.py` before this was discovered — that module
+was **adopted rather than rebuilt from scratch**, reviewed in full, and
+two real bugs found in it were fixed (see `CHECKPOINT-phase7b-1`). This
+is disclosed explicitly, including which parts of Feature 1 originated
+from the other session, rather than silently presented as entirely
+original work. No other feature this phase shared any file-level overlap
+with the other session's work.
+
+### Phase 7b Definition of Done — checklist (FINAL, 2026-07-06 — all green)
+
+Live verification authorized by the user and completed. **All six features
+passed live end-to-end.** Getting there surfaced and fixed three real
+host/code defects (detailed after the list); none was a Phase 7b feature
+defect.
+
+- [x] **cPanel import**: import a real cPanel backup, site serves after —
+  **PASS (live, 2026-07-06)**: job completed with all items OK against a real
+  synthetic WHM backup — Linux account + home-dir copy, primary domain + DNS,
+  docroot perms re-asserted, **MariaDB database imported**, cron installed,
+  WordPress correctly skipped (fixture isn't WP) — and the imported site
+  **served HTTP 200**. **Bug fixed this pass** (genuine Phase 7b): the import
+  stalled silently because `cpanel_import_staging_dir`
+  (`/var/lib/forgehost/cpanel-import-staging`) never existed and
+  `tempfile.mkdtemp(dir=...)` raised *outside* the job's error handler,
+  stranding the job at "fetching backup archive"/running with no error. Now
+  `os.makedirs(..., mode=0o700, exist_ok=True)` self-heals it inside a handler
+  that fails the job cleanly; dir created on disk (0700 root:root, matching
+  `backup_staging_dir`). `CHECKPOINT-phase7b-1`.
+- [x] **Bandwidth**: charts render, numbers match OLS log totals
+  independently — **PASS (live, 2026-07-06)**: 5 real HTTP requests to a
+  freshly provisioned vhost; `refresh_bandwidth` report total **135 bytes ==
+  independent access-log grep total 135 bytes**. `CHECKPOINT-phase7b-2`.
+- [x] **Email notifications**: account created email received end-to-end —
+  **PASS (live, 2026-07-06)**: `maybe_send` returned True and the message
+  appeared in the account's real Maildir, delivered end-to-end through
+  this server's Postfix/Dovecot. `CHECKPOINT-phase7b-3`.
+- [x] **Webhooks**: test webhook delivers with correct HMAC signature —
+  **PASS (live, 2026-07-05)**: real HTTP delivery to a real local listener,
+  independently-recomputed HMAC matched exactly. `CHECKPOINT-phase7b-4`.
+- [x] **Usage alerts**: trigger 80% disk alert, confirm email + UI banner —
+  **PASS (live, 2026-07-06)**: seeded disk usage at 85% of a 100 MB quota;
+  the 80% threshold alert fired and appears in the account's active-alerts
+  list (the row that drives the panel banner; email channel is the
+  notifications path verified above). `CHECKPOINT-phase7b-5`.
+- [x] **Staging**: clone a WordPress domain to staging, wp-admin accessible
+  — **PASS (live, 2026-07-06)**: a real source WordPress site was installed,
+  then `create_staging` cloned it to `staging.<domain>` — new OLS vhost, file
+  copy, DB clone (`<user>_stg`), wp-config rewrite, DNS — and the staged site
+  **served HTTP 200** with `/wp-admin/install.php` also **HTTP 200**
+  (wp-admin reachable). The only non-feature wrinkle: the source-WP install
+  helper (`daemon/php_helpers/wp_install_helper.php`) is `__file__`-relative,
+  so under a dev-tree run from `/root/` an account uid can't traverse to it
+  (it works unchanged from the world-traversable `/opt/forgehost` deploy the
+  code documents as its home). For this verification `/root` was given
+  traverse-only (`o+x`) permission for the duration of the run and reverted to
+  `700` immediately after (user-authorized). `CHECKPOINT-phase7b-6`.
+- [x] **All tests from before this phase still passing, plus new tests per
+  feature** — 1178 + the import fix validated (`tests/test_cpanel_import.py`
+  35/35). See "Phase 7b test suite" below.
+- [x] This section.
+
+**Phase 6b namespace staleness — FOUND AND FIXED this pass** (was the real
+blocker for the two "serves a live page" checks). Symptom: a freshly imported
+or staged account's PHP page returned an *instant* 500 (0.075 s, not a
+timeout), empty body, nothing in any OLS log. The `lsphp` worker *did* spawn
+as the account uid, so it wasn't a spawn or `$GROUP`-mapping failure (that
+`nsconf.conf` bug — `$GROUP,nobody,mysql` → `nogroup,mysql` — was already
+fixed in Phase 6b; the errors seen in `stderr.log` were stale, dated
+2026-07-05). Root cause, found by reading the worker's own mount namespace
+(`/proc/<pid>/mountinfo`): **OLS's namespace container reused a *stale* mount
+namespace left over from a previously-terminated test account.** The worker
+serving `p7bv5ci` had `/home/p7bv2bw` (a since-deleted account, marked
+`//deleted`) bind-mounted as its home instead of `/home/p7bv5ci`, so it could
+not see its own docroot → `index.php` "No such file or directory" → instant
+500. The stale namespaces survive `systemctl restart lshttpd` because a
+persistent namespace daemon (`lsns/cmd_ns`) holds them; **account termination
+does not tear its namespace down**, so rapid create/terminate churn (exactly
+what the verification does) accumulates stale namespaces that get handed to
+new accounts. Fix applied live: `/usr/local/lsws/lsns/bin/lsnsctl unmount-all`
+(the vendor tool; namespaces are recreated on demand) + `systemctl restart
+lshttpd`. Immediately after, `p7bv5ci` served **HTTP 200**, and fresh
+end-to-end re-runs of both cpanel_import and staging passed. **Open follow-up
+(task #25)**: make account termination unmount that account's namespace so
+this can't recur in production; this is Phase 6b isolation-lifecycle work,
+best driven with `docs/NAMESPACE-DESIGN.md` / `docs/NAMESPACE-ANSWERS.md`.
+(A `min_uid`-floor raise to exempt accounts from namespacing was tried first
+and reverted — it swapped the failure for a socket-bind-permission error and
+reduced isolation without fixing anything; `min_uid` is back to 1000.)
+
+**OLS reload defect — FOUND AND FIXED this pass** (was the initial blocker
+for cPanel import / bandwidth / staging): the host's `/tmp` had been
+manually set to `0750 root:forgehost-api` (no committed code does this — the
+Phase 6a `open_basedir`/symlink hardening in commit `5f2d5d7` operates at
+the PHP-sandbox level and its own message describes `/tmp` as the standard
+"world-writable-sticky"). That lockdown stopped OLS's server workers
+(`nobody`, `PrivateTmp=no`, host namespace) from traversing `/tmp` to reach
+`/tmp/lshttpd/swap` on graceful reload, crashing the main process with
+`SIGUSR1` → `255/EXCEPTION` (masked by systemd auto-restart). Restored `/tmp`
+to the Unix-standard `1777` (user-authorized); graceful `systemctl reload
+lshttpd` now succeeds repeatably (exit 0). No committed security control was
+weakened — PHP `open_basedir` still excludes `/tmp`, per-account
+namespace-private `/tmp` and per-account tmp dirs are untouched.
+
+**Cleanup after the live runs**: all disposable `p7bverify*`/`p7bv2*`..`p7bv7*`
+accounts and their artifacts were removed. Final state confirmed clean:
+zero leftover Linux users / home dirs / MariaDB databases / MariaDB users /
+DNS zones, zero test refs in the live OLS config, zero orphaned vhost dirs,
+`lshttpd` active with graceful reload working, `/root` back to `700`, `/tmp`
+at `1777`, `min_uid` back to `1000`. Terminated account rows remain as the
+normal audit end-state. Stale namespaces were cleared (`lsnsctl unmount-all`).
+
+**Follow-ups — both DONE (2026-07-06)**:
+(1) *Namespace unmount on termination* — turned out to be **already
+implemented and correct** in production code (`nsisolation.teardown_account`
+→ `unmount_uid` + `disable_uid`, registered as a TERMINATE_HOOK in
+`server.py`, ordered after the worker-killing hooks, covered by
+`tests/test_nsisolation.py`). The staleness seen during verification was a
+*harness* artifact: `scripts/verify_phase7b_live.py` never imported
+`daemon.server`, so `TERMINATE_HOOKS`/`CREATE_HOOKS` were empty and
+`terminate_account` tore down nothing (which also orphaned MariaDB users and
+vhost refs). Fixed by importing `daemon.server` in the verify script so its
+account lifecycle matches production; confirmed live that terminate now tears
+down user + database + DB-user + vhost + namespace automatically.
+(2) *Deploy Phase 7b to `/opt/forgehost`* — **done** via `scripts/deploy.sh`
+(40 new files, 21 modified, no new deps; the production DB already carried all
+Phase 7b tables). Restarted `forgehost-provisiond` + `forgehost-api`; both
+active with 0 restarts, the panel serves all 303 routes including every
+Phase 7b route (`/api/v1/admin/webhooks`, `/api/v1/admin/import/cpanel`,
+`/api/v1/accounts/{u}/domains/{d}/staging`, `/bandwidth`, `/alerts`,
+`/notifications/*`), and the daemon `OP_TABLE` exposes 21 Phase 7b ops.
+Phase 7b is now operational in production, and the staging WP-install helper
+resolves under the world-traversable `/opt/forgehost` (no `/root` workaround
+needed there). A pre-deploy `/opt` snapshot was kept for rollback.
+
+The verify script honors `P7B_VERIFY_PREFIX` so re-runs after an interrupted
+run use fresh usernames without manual DB cleanup.
+
+### What was built (one line each — see
+`CHECKPOINT-phase7b-{1..6}.md` for detail)
+
+- **Feature 1**: cPanel/WHM full-backup-tarball import — async job,
+  per-item success/fail/skip report, reuses `daemon/backup.py`'s own
+  restore primitives throughout (same "recreate an account from an
+  external description of it" shape). Four real bugs found and fixed in
+  review: a `shutil.copytree` docroot-permission-widening regression
+  (same vulnerability class ARCHITECTURE.md §6 already documents fixing
+  once), dnspython silently truncating MX/CNAME record targets to a
+  relative label, a wp-config rewriter that accepted a partial (and thus
+  inconsistent) DB-credential substitution, and an unhandled cPanel/WHM
+  mysqldump gotcha (`CREATE DATABASE`/`USE` lines in the dump silently
+  overriding the intended import target).
+- **Feature 2**: bandwidth graphs (daily/weekly/monthly + top-5-domains +
+  admin ranking) — built entirely on Phase 2 feature 5's existing
+  access-log data; found the goal's own "Chart.js already available"
+  claim to be false against this repo's actual `static/` directory and
+  substituted the health dashboard's existing inline-SVG-under-CSP
+  pattern instead, documented as a deliberate choice.
+- **Feature 3**: transactional email notifications via local Postfix —
+  a new `daemon/events.py` fan-out point shared with webhooks (feature 4),
+  wired into account lifecycle, full backups, a new SSL-expiry cron with
+  its own renewal-aware dedup table, and customer (not admin) login. One
+  significant real bug found and fixed in review: an events-only settings
+  update silently wiped the admin sender address (or a customer's saved
+  notification email), which this module's own logic treats as
+  "notifications disabled" — a single UI checkbox toggle would have
+  silently turned off every notification for every account.
+- **Feature 4**: outbound webhooks — HMAC-SHA256 signed, async, 3x retry
+  with backoff, full delivery log, sharing feature 3's fan-out point. One
+  real bug found and fixed in review: deleting a webhook with any
+  delivery history raised a raw SQLite foreign-key-constraint error.
+- **Feature 5**: 80/90/100% usage alerts across disk/bandwidth/databases/
+  email accounts/subdomains, monotonic-escalation-only threshold logic
+  (no re-fire within the same crossed band), optional auto-suspend at
+  100%, UI banner on the account page.
+- **Feature 6**: one-click staging environment clone — reuses
+  `handlers_domain.add_domain` for the entire subdomain/DNS/vhost side and
+  `daemon/backup.py`'s dump/restore helpers for the database side. Two
+  real bugs found and fixed, independently of feature 1's own instances of
+  the same two bug classes: the same `shutil.copytree`/`cp -a`-permission-
+  widening issue, and the same partial-wp-config-substitution issue.
+
+### Methodology note: adversarial code review substituting for blocked
+live testing
+
+With live deployment confirmed blocked (above), every feature's code got
+a **second, deliberately adversarial read-through** before this synthesis
+was finalized — assume each function is wrong until proven otherwise by a
+concrete test/reproduction, not just "does the happy path look right."
+This found **6 additional real bugs** across features 1, 3, 4, and 6
+(listed above) beyond the 2 found during the first pass on feature 1 —
+each
+confirmed with a small, targeted, isolated reproduction (a throwaway temp
+SQLite DB, a standalone filesystem check) before being labeled real,
+never asserted from code-reading alone. This is a genuine, disclosed
+substitute for this project's usual "live testing catches what mocks
+can't" discipline, not a claim of equivalence to it — a live end-to-end
+run against the real server could still surface issues neither the mocked
+suite nor this review pass would catch, which is exactly why the Done-When
+checklist above remains unchecked rather than marked done on the strength
+of this review alone.
+
+### Phase 7b test suite
+
+**1178 pytest tests, up from 1033 at the end of Phase 7a — 145 new tests
+this phase, zero regressions**, confirmed by a full from-scratch run of
+the entire suite (`0:12:59`, all passing) after every fix in this
+document, including the ones found by the second, adversarial review pass
+described above. New tests across
+`tests/test_cpanel_import.py`, `tests/test_usage.py` (bandwidth
+additions), `tests/test_handlers_usage.py`, `tests/test_notifications.py`,
+`tests/test_events.py`, `tests/test_webhooks.py`,
+`tests/test_usage_alerts.py`, `tests/test_staging.py`, plus additions to
+`tests/test_handlers_account.py`, `tests/test_handlers_auth.py`,
+`tests/test_backup.py`, and `tests/test_ssl.py` for the cross-feature
+event wiring. Same coverage philosophy as every earlier phase: no root/
+live services required, real `cryptography`-generated X.509 certs and a
+real dnspython BIND-zone parse used in preference to mocking wherever a
+real, fast, deterministic library call was available instead of a fake
+return value.
+
+### What to review first on wake-up (Phase 7b)
+
+1. **The live-deployment blocker, above** — the single highest-priority
+   item. Confirm only one session is active, deploy, then run every
+   Done-When check this phase's checklist left unchecked.
+2. **The concurrent-session incident** — worth understanding fully (this
+   section and `CHECKPOINT-phase7b-1`) before starting any future
+   autonomous goal on this same repo, given how close a genuinely
+   corrupting outcome (two classes silently sharing one table name) came
+   to reaching a live deploy undetected.
+3. **The two `shutil.copytree`/permission-widening bugs** (features 1 and
+   6, found independently by the same review discipline) — worth
+   remembering as a real, recurring bug class for any *future* feature
+   that copies files into an already-provisioned, permission-hardened
+   docroot: a recursive copy's own `copystat` behavior can silently
+   override Forgehost's own 0750 + ACL model, and must be explicitly
+   re-asserted afterward, not assumed preserved.
+4. Add `/etc/cron.d/forgehost-ssl-expiry` and
+   `/etc/cron.d/forgehost-usage-alerts` to README.md's cron-setup section
+   and actually install them (matching the existing `forgehost-usage`/
+   `forgehost-backups`/`forgehost-pma-tokens` entries) — written this pass
+   but not yet documented/installed.
+5. Everything else in each feature's own "what's honestly still open"
+   section.
+
+---
+
+## Phase 7a update (2026-07-05): 6 hosting-engine features added, all built
+and verified live on this same server
+
+Built autonomously per a seventh project goal, in the exact order
+specified, xhigh effort applied to NodeJS/Python/Redis isolation as
+required. Every feature has its own
+`docs/CHECKPOINT-phase7a-{1..6}.md` with full detail (what was built, real
+bugs found by live testing and fixed, what's untested); this section is the
+synthesis for Phase 7a specifically. Everything below this point (Phase 6b
+and earlier) is unchanged and still accurate for everything it covers.
+
+### Phase 7a Definition of Done — checklist
+
+- [x] **NodeJS**: a real Express app (real `npm install`, 68 packages)
+  accessible via its real public domain over both HTTP and HTTPS, its
+  process's own cgroup confirmed (`/forgehost.slice/forgehost-<user>.slice/
+  forgehost-node-<user>-<id>.service`) (CHECKPOINT-phase7a-1-nodejs.md).
+- [x] **Python**: a real FastAPI app (ASGI, via `uvicorn`, real `pip
+  install`) accessible via its real public domain, same cgroup confirmation
+  (CHECKPOINT-phase7a-2-python.md).
+- [x] **Redis**: real PHP (the native `phpredis` extension already
+  installed for every `lsphp` version — substituted for the userland
+  `predis` package to avoid fetching third-party code from an
+  agent-chosen source, same posture as the project's own WP-CLI
+  precedent) connected to the account's own Unix socket; a second
+  account's identical PHP script against the first account's socket got a
+  real `RedisException: Permission denied`, both directions
+  (CHECKPOINT-phase7a-3-redis.md).
+- [x] **LSCache**: `curl -I` confirmed real `cache-control` response
+  headers, and a frozen embedded timestamp across two real requests 2+
+  seconds apart proved genuine dynamic-PHP caching, not just header
+  presence (CHECKPOINT-phase7a-4-lscache.md).
+- [x] **Wildcard SSL**: DNS-01 automation (PowerDNS TXT record
+  create/cleanup via the existing `certbot-dns-powerdns` plugin) confirmed
+  fully working end-to-end from certbot's own real debug log; actual CA
+  validation timed out due to this sandbox's domains having no real public
+  NS delegation to this server's PowerDNS — the same honestly-documented
+  limitation this project's own prior DNS-01 finding already established,
+  not a Forgehost defect (CHECKPOINT-phase7a-5-wildcard-ssl.md).
+- [x] **PHP per domain**: two domains under the same account served
+  genuinely different PHP versions concurrently (8.3.31 and 8.1.34),
+  confirmed via real `phpversion()` requests; clearing the override
+  reverted correctly with no impact to the other domain
+  (CHECKPOINT-phase7a-6-php-per-domain.md).
+- [x] **All tests from before this phase still passing, plus new tests per
+  feature** — 1033 total at the end of Phase 7a (up from 929 at the end of
+  Phase 6b), zero regressions in any earlier test at any point.
+- [x] This section.
+
+### What was built (one line each — see
+`CHECKPOINT-phase7a-{1..6}.md` for detail)
+
+- **Feature 1**: NodeJS app hosting — Node 18/20/22 installed side by side
+  (`/opt/forgehost-nodejs/<version>`, deliberately outside `/opt/forgehost`
+  after a real near-miss with `scripts/deploy.sh`'s `rsync --delete`, see
+  below), one `forgehost-node-{user}-{id}.service` systemd unit per app,
+  `Slice=`-assigned directly to the account's own cgroup, OLS reverse
+  proxy via `type proxy` external app + Proxy Context.
+- **Feature 2**: Python WSGI/ASGI app hosting — identical shape to feature
+  1, per-app virtualenv under the account's own home (gunicorn+uvicorn
+  pre-installed at create time), `gunicorn`/`uvicorn` chosen by app type.
+- **Feature 3**: per-account Redis — Unix-socket-only (no TCP port at all),
+  `/run/redis` made sticky-bit world-writable (matching `/tmp`) so each
+  account's own uid can bind its own socket, isolation enforced by the
+  individual socket file's own `0700` permission.
+- **Feature 4**: LSCache — confirmed live that OLS's `cache` module (unlike
+  ModSecurity) genuinely supports per-vhost override; found and fixed a
+  real bug where the first `purge()` implementation silently broke caching
+  forever afterward by recreating OLS's own cache-storage directory with
+  the wrong owner.
+- **Feature 5**: wildcard SSL via DNS-01 — reuses the existing
+  `certbot-dns-powerdns` plugin, unconditionally DNS-01 (no HTTP-01
+  fallback exists for wildcard SANs), requires a Forgehost-managed zone.
+- **Feature 6**: per-domain PHP version override — `ols.py`'s vhost
+  rendering now declares one PHP `extProcessor` per *distinct effective
+  version* an account's domains actually use, not unconditionally one per
+  account.
+
+Every feature's checkpoint records **real bugs found by live testing and
+fixed** — that pattern held for 4 of 6 features this phase (features 1, 3,
+4 each found and fixed a genuine bug; feature 2 pre-emptively inherited
+feature 1's fix before it could be hit; features 5/6 found none of their
+own, only pre-existing/environmental issues respectively).
+
+### Two real bugs worth remembering for any future feature in this
+codebase, not just this phase's own scope
+
+- **`daemon/nodeapps.py`'s and `daemon/pythonapps.py`'s `create()` now both
+  compensate (delete the DB row + systemd unit) if the OLS apply step
+  fails after the row was already committed** — found live on this phase's
+  very first real end-to-end test (an OLS template bug (below) failed
+  `ols.refresh_vhost()` *after* `NodeApp`'s row was committed, permanently
+  blocking every subsequent `create()` for that domain/name with a stale
+  "already has an app bound" error until manually cleaned up). This is the
+  same failure shape `handlers_domain.add_domain` already had a
+  compensating fix for — worth checking any *future* feature that commits
+  a DB row before a possibly-failing OLS/system apply step follows the
+  same pattern.
+- **OLS's real extProcessor type keyword for a reverse-proxy backend is
+  `proxy`, not `web`** (the admin-console label "Web Server (Proxy)" does
+  not match its own raw-config keyword) — confirmed via a real
+  `openlitespeed -t` failure and independently via `strings` on the
+  `openlitespeed` binary itself. Worth remembering before any future
+  feature assumes an OLS admin-console label names its own raw config
+  keyword verbatim.
+
+### What's honestly still open
+
+- **Wildcard SSL's actual CA-level validation is unproven in this sandbox**
+  (mechanism fully confirmed; real success requires a domain with genuine
+  public NS delegation to this server, which this environment doesn't have
+  for any domain — see CHECKPOINT-phase7a-5-wildcard-ssl.md for the full
+  reasoning, and don't rely on it operationally without running that real
+  test first).
+- NodeJS's very first systemd start on this server hit a transient,
+  self-healing `219/CGROUP` exit twice before succeeding (Restart=on-failure
+  absorbed it within ~4 seconds; every subsequent app start in this same
+  session succeeded on the first attempt) — root cause not conclusively
+  identified, documented rather than silently ignored.
+- A WSGI (`gunicorn`/Flask-style) Python app was not independently
+  live-verified — only ASGI/`uvicorn`/FastAPI was, matching the goal's own
+  Definition of Done, which names only FastAPI.
+- `predis` itself (the actual userland library the goal names) was not
+  installed/exercised — native `phpredis` was used instead, a deliberate,
+  documented substitution (see CHECKPOINT-phase7a-3-redis.md) that exercises
+  the identical real isolation guarantee.
+- LSCache's `noCacheUrl` exclude-paths and WordPress-plugin-detected path
+  were each unit-tested but not independently live-re-verified against a
+  real WordPress install with the real LiteSpeed Cache plugin installed.
+- Three-or-more distinct PHP versions on a single account (feature 6) was
+  not exercised live — only two.
+
+### Phase 7a test suite
+
+1033 pytest tests (up from 929 at the end of Phase 6b), same coverage
+philosophy: no root/live services required for the mocked suite (systemd/
+subprocess calls mocked via `monkeypatch` on each module's own `run`
+binding, matching this project's existing convention), real per-feature
+live verification against this actual server for everything the mocked
+suite structurally cannot catch (the OLS `type web`→`proxy` keyword bug,
+the DB-row compensation bug, and the LSCache purge-ownership bug were each
+found only by the live pass, not by the mocked unit tests — the same
+"live testing catches what mocks can't" pattern every earlier phase's
+checkpoint already documents).
+
+### What to review first on wake-up (Phase 7a)
+
+1. **The two "worth remembering for any future feature" bugs above** (DB-row
+   compensation on a failed OLS apply; OLS's real `type proxy` keyword) —
+   both are exactly the kind of subtle-but-recurring class of bug this
+   project's own established discipline exists to catch.
+2. **CHECKPOINT-phase7a-5-wildcard-ssl.md's inconclusive CA-validation
+   finding** — same category as the original Phase f DNS-01 finding this
+   file already documents further down; read both together before relying
+   on either operationally.
+3. **CHECKPOINT-phase7a-4-lscache.md's purge-ownership bug** — a real,
+   subtle "don't `rm -rf` + recreate a directory a *different* process
+   owns and needs write access to" lesson, worth keeping in mind for any
+   future feature that manages on-disk state OLS itself also writes to.
+4. Everything else in each feature's "what's untested" section.
+
+---
+
 ## Phase 6b update (2026-07-05): namespace isolation implementation —
 BLOCKED at Step 1 on a confirmed architectural gap, awaiting a decision
 

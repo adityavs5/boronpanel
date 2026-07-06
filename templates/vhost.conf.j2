@@ -27,6 +27,26 @@ scripthandler {
   add                     lsapi:{{ php_app_name }} php
 }
 
+{% if lscache and not suspended %}
+{# Phase 7a feature 4: LSCache, per-vhost override of the server-level
+   `module cache {}` default (httpd_config.conf.j2, enableCache 0) --
+   confirmed against this server's own installed OLS docs/module
+   definition that module parameters ARE overridable at the Virtual Host
+   level for this specific module (unlike ModSecurity, ARCHITECTURE.md
+   SS10.5). storagepath is unique per vhost so daemon/lscache.py's purge()
+   can delete exactly this domain's cached objects without touching any
+   other domain's cache. #}
+module cache {
+  enableCache             1
+  expireInSeconds         {{ lscache.ttl_seconds }}
+  storagepath             {{ lscache.storagepath }}
+  purgeUri                {{ lscache.purge_uri }}
+{% for path in lscache.exclude_paths %}
+  noCacheUrl              {{ path }}
+{% endfor %}
+}
+{% endif %}
+
 {% if protected_dirs and not suspended %}
 {# Phase 4 feature 4: directory privacy, OLS's native realm/userDB
    mechanism (syntax confirmed empirically against this server's real
@@ -57,6 +77,19 @@ context / {
 {% if suspended %}
   location                {{ suspended_page_root }}
   allowBrowse             1
+{% elif app_proxy %}
+  {# Phase 7a features 1/2: NodeJS/Python app hosting. This whole domain
+     is reverse-proxied to a systemd-supervised local backend via OLS's
+     native "Web Server (Proxy)" external app (extProcessor type "web",
+     declared server-wide in httpd_config.conf.j2) + this Proxy Context --
+     confirmed against this server's own installed OLS docs
+     (docs/Proxy_Context.html, docs/External_WS.html). Suspended still
+     wins over this (checked above): a suspended account's app-backed
+     domain shows the same static suspended page as a PHP one, not a
+     stopped/crashing proxy target. #}
+  type                    proxy
+  handler                 {{ app_proxy.handler_name }}
+  addDefaultCharset       off
 {% else %}
   location                {{ docroot }}
   allowBrowse             1

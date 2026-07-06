@@ -283,3 +283,177 @@ def test_get_ssl_dashboard_reports_valid_cert_and_auto_renew(isolated_db, stub_s
     assert entry["cert_status"] == "valid"
     assert entry["auto_renew"] is True
     assert entry["issuer"] == "CN=Test CA"
+
+
+# --- Phase 7a feature 5: wildcard SSL via DNS-01 ---------------------------
+
+
+def test_issue_wildcard_requires_managed_zone(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    monkeypatch.setattr(fssl.settings, "letsencrypt_email", "ops@example.com")
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+
+    with pytest.raises(fssl.SslError, match="requires its DNS zone to be managed"):
+        fssl.issue_wildcard_certificate({"domain": "demo1.example"})
+
+
+def test_issue_wildcard_requires_email(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    monkeypatch.setattr(fssl.settings, "letsencrypt_email", "")
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    with write_session() as session:
+        session.add(DnsZone(account_id=1, zone="demo1.example"))
+
+    with pytest.raises(fssl.SslError):
+        fssl.issue_wildcard_certificate({"domain": "demo1.example"})
+
+
+def test_issue_wildcard_rejects_domain_already_wildcard_prefixed(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    monkeypatch.setattr(fssl.settings, "letsencrypt_email", "ops@example.com")
+    with pytest.raises(fssl.SslError, match="pass the base domain"):
+        fssl.issue_wildcard_certificate({"domain": "*.demo1.example"})
+
+
+def test_issue_wildcard_calls_certbot_with_both_sans_and_dns01(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    monkeypatch.setattr(fssl.settings, "letsencrypt_email", "ops@example.com")
+    captured = {}
+
+    def fake_run(args, timeout=180):
+        captured["args"] = args
+        from daemon.procutil import ProcResult
+
+        return ProcResult(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(fssl, "run", fake_run)
+
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    with write_session() as session:
+        session.add(DnsZone(account_id=1, zone="demo1.example"))
+
+    result = fssl.issue_wildcard_certificate({"domain": "demo1.example"})
+    assert result["status"] == "issued"
+    assert result["wildcard_domain"] == "*.demo1.example"
+    args = captured["args"]
+    assert "demo1.example" in args
+    assert "*.demo1.example" in args
+    assert "--authenticator" in args
+    assert "dns-powerdns" in args
+    # never falls back to webroot/http-01 -- wildcard has no HTTP-01 path
+    assert "--webroot" not in args
+
+
+def test_issue_wildcard_raises_on_certbot_failure(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    monkeypatch.setattr(fssl.settings, "letsencrypt_email", "ops@example.com")
+
+    def fake_run(args, timeout=180):
+        from daemon.procutil import ProcResult
+
+        return ProcResult(args=args, returncode=1, stdout="", stderr="PowerDNS API error")
+
+    monkeypatch.setattr(fssl, "run", fake_run)
+
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    with write_session() as session:
+        session.add(DnsZone(account_id=1, zone="demo1.example"))
+
+    with pytest.raises(fssl.SslError):
+        fssl.issue_wildcard_certificate({"domain": "demo1.example"})
+
+
+# --- Phase 7b feature 3: SSL expiry notifications ---------------------------
+
+
+def _activate_domain_ssl(domain_name: str) -> None:
+    from sqlalchemy import select as _select
+
+    from shared.models import Domain
+
+    with write_session() as session:
+        d = session.scalar(_select(Domain).where(Domain.domain == domain_name))
+        d.ssl_status = "active"
+
+
+def _stub_cert_paths_per_domain(monkeypatch, tmp_path, cert_paths: dict):
+    def fake_paths(domain):
+        return str(tmp_path / f"{domain}.key"), str(cert_paths.get(domain, tmp_path / f"{domain}-missing.pem"))
+
+    monkeypatch.setattr(fssl, "letsencrypt_cert_paths", fake_paths)
+
+
+def _stub_events_emit(monkeypatch, sink: list):
+    monkeypatch.setattr(fssl, "events", type("E", (), {"emit": staticmethod(lambda *a, **k: sink.append((a, k)))})())
+
+
+def test_check_expiring_certificates_sends_for_domain_within_window(isolated_db, stub_sysops, stub_filesystem, tmp_path, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    _activate_domain_ssl("demo1.example")
+
+    cert_path = tmp_path / "demo1.example.pem"
+    _generate_self_signed_cert(cert_path, days_valid=10)
+    _stub_cert_paths_per_domain(monkeypatch, tmp_path, {"demo1.example": cert_path})
+
+    emitted = []
+    _stub_events_emit(monkeypatch, emitted)
+
+    sent = fssl.check_expiring_certificates()
+    assert sent == 1
+    assert emitted[0][0][0] == "ssl.expiring"
+    assert emitted[0][1]["domain"] == "demo1.example"
+
+
+def test_check_expiring_certificates_skips_domain_far_from_expiry(isolated_db, stub_sysops, stub_filesystem, tmp_path, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    _activate_domain_ssl("demo1.example")
+
+    cert_path = tmp_path / "demo1.example.pem"
+    _generate_self_signed_cert(cert_path, days_valid=60)
+    _stub_cert_paths_per_domain(monkeypatch, tmp_path, {"demo1.example": cert_path})
+
+    assert fssl.check_expiring_certificates() == 0
+
+
+def test_check_expiring_certificates_deduplicates_same_expiry(isolated_db, stub_sysops, stub_filesystem, tmp_path, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    _activate_domain_ssl("demo1.example")
+
+    cert_path = tmp_path / "demo1.example.pem"
+    _generate_self_signed_cert(cert_path, days_valid=10)
+    _stub_cert_paths_per_domain(monkeypatch, tmp_path, {"demo1.example": cert_path})
+
+    emitted = []
+    _stub_events_emit(monkeypatch, emitted)
+
+    first = fssl.check_expiring_certificates()
+    second = fssl.check_expiring_certificates()
+    assert first == 1
+    assert second == 0, "must not re-notify for the same certificate's expiry date twice"
+    assert len(emitted) == 1
+
+
+def test_check_expiring_certificates_renewed_cert_notifies_again(isolated_db, stub_sysops, stub_filesystem, tmp_path, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    _activate_domain_ssl("demo1.example")
+
+    cert_path = tmp_path / "demo1.example.pem"
+    _generate_self_signed_cert(cert_path, days_valid=10)
+    _stub_cert_paths_per_domain(monkeypatch, tmp_path, {"demo1.example": cert_path})
+    _stub_events_emit(monkeypatch, [])
+    assert fssl.check_expiring_certificates() == 1
+
+    # Simulate a renewal: a new cert with a different (still soon) expiry
+    # date must be treated as a fresh notice-worthy event, not silently
+    # suppressed by the dedup marker from the OLD expiry date.
+    _generate_self_signed_cert(cert_path, days_valid=11)
+    assert fssl.check_expiring_certificates() == 1
+
+
+def test_check_expiring_certificates_no_active_domains_returns_zero(isolated_db, stub_sysops, stub_filesystem):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    assert fssl.check_expiring_certificates() == 0

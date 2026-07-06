@@ -176,6 +176,11 @@ def ui_account_detail(request: Request, username: str, identity: Identity = Depe
     usage = call_daemon("usage.get", identity, username=username, force_refresh=False)
     php_ini_result = call_daemon("php_ini.get", identity, username=username)
     namespace_status = call_daemon("namespace.status", identity, username=username)
+    # Phase 7b feature 5: reads already-computed UsageAlert rows (the
+    # periodic cron does the actual 80/90/100% check) -- cheap, no fresh
+    # computation on every page load, same "just display stored state"
+    # posture as the rest of this already-busy dashboard page.
+    active_alerts = call_daemon("usage.alerts.get", identity, username=username)["active"]
     return templates.TemplateResponse(
         request,
         "account_detail.html",
@@ -189,6 +194,7 @@ def ui_account_detail(request: Request, username: str, identity: Identity = Depe
             "php_ini": php_ini_result["php_ini"] or php_ini_result["defaults"],
             "php_ini_is_custom": php_ini_result["php_ini"] is not None,
             "namespace_status": namespace_status,
+            "active_alerts": active_alerts,
         },
     )
 

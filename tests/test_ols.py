@@ -591,3 +591,178 @@ def test_refresh_all_vhosts_bootstraps_tmp_dir_and_refreshes_active_accounts(iso
 
     assert sorted(tmp_dir_calls) == ["active1", "suspended1"]
     assert sorted(refresh_calls) == ["active1", "suspended1"]
+
+
+# --- Phase 7a features 1/2: NodeJS/Python app reverse-proxy rendering ------
+
+
+def test_render_vhost_conf_renders_proxy_context_when_app_proxy_set():
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(
+        account, domain, suspended=False,
+        app_proxy={"handler_name": "proxy_demo1_example", "port": 30000},
+    )
+    assert "type                    proxy" in content
+    assert "handler                 proxy_demo1_example" in content
+    # PHP-specific directives must not appear for a pure-proxy domain
+    assert "phpIniOverride" not in content
+    assert "open_basedir" not in content
+
+
+def test_render_vhost_conf_suspended_wins_over_app_proxy():
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(
+        account, domain, suspended=True,
+        app_proxy={"handler_name": "proxy_demo1_example", "port": 30000},
+    )
+    assert "type                    proxy" not in content
+    assert "_suspended" in content
+
+
+def test_render_vhost_conf_falls_back_to_domain_dict_app_proxy():
+    """_apply_targets doesn't pass app_proxy as an explicit kwarg -- it
+    relies on the domain dict itself (from ols._domains_as_plain) already
+    carrying an "app_proxy" key, populated via ols._app_proxy_map."""
+    account = make_account()
+    domain = make_domain(app_proxy={"handler_name": "proxy_demo1_example", "port": 30001})
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert "handler                 proxy_demo1_example" in content
+
+
+def test_render_httpd_config_includes_web_extprocessor_for_app_proxy_domain():
+    domain_vhosts = [{
+        "vhost_name": "demo1_example", "domain": "demo1.example", "account_home": "/home/demo1",
+        "app_proxy": {"handler_name": "proxy_demo1_example", "port": 30000},
+    }]
+    content = ols.render_httpd_config(domain_vhosts, [])
+    assert "extProcessor proxy_demo1_example{" in content
+    assert "address                         127.0.0.1:30000" in content
+    # "proxy", not "web" -- confirmed empirically against this server's
+    # real openlitespeed binary during live E2E verification: "type web"
+    # fails `openlitespeed -t` with "Unknown external processor <type>:
+    # web"; `strings` on the binary lists "proxy" as the real accepted
+    # keyword (daemon/ols.py's own comment in the template has the detail).
+    assert "type                            proxy" in content
+
+
+def test_render_httpd_config_omits_extprocessor_for_plain_domains():
+    domain_vhosts = [{"vhost_name": "demo1_example", "domain": "demo1.example", "account_home": "/home/demo1", "app_proxy": None}]
+    content = ols.render_httpd_config(domain_vhosts, [])
+    assert "extProcessor proxy_demo1_example" not in content
+
+
+def test_app_proxy_map_reflects_node_and_python_apps(isolated_db):
+    from shared.db import write_session
+    from shared.models import Account as AccountModel
+    from shared.models import Domain as DomainModel
+    from shared.models import NodeApp, PythonApp
+
+    with write_session() as session:
+        account = AccountModel(username="demo1", uid=5001, gid=5001, status="active")
+        session.add(account)
+        session.flush()
+        session.add(DomainModel(account_id=account.id, domain="node.example", docroot="/home/demo1/node.example"))
+        session.add(DomainModel(account_id=account.id, domain="py.example", docroot="/home/demo1/py.example"))
+        session.add(NodeApp(account_id=account.id, domain="node.example", name="n1", entry_point="a.js", port=30000, node_version="20", env_vars=""))
+        session.add(PythonApp(account_id=account.id, domain="py.example", name="p1", entry_point="app:app", app_type="asgi", port=30001, env_vars=""))
+
+    with write_session() as session:
+        mapping = ols._app_proxy_map(session)
+
+    assert mapping["node.example"]["port"] == 30000
+    assert mapping["node.example"]["kind"] == "node"
+    assert mapping["py.example"]["port"] == 30001
+    assert mapping["py.example"]["kind"] == "python"
+
+
+def test_all_active_vhosts_includes_app_proxy_per_domain(isolated_db):
+    from shared.db import write_session
+    from shared.models import Account as AccountModel
+    from shared.models import Domain as DomainModel
+    from shared.models import NodeApp
+
+    with write_session() as session:
+        account = AccountModel(username="demo1", uid=5001, gid=5001, status="active", php_version="8.3")
+        session.add(account)
+        session.flush()
+        session.add(DomainModel(account_id=account.id, domain="demo1.example", docroot="/home/demo1/public_html"))
+        session.add(NodeApp(account_id=account.id, domain="demo1.example", name="n1", entry_point="a.js", port=30000, node_version="20", env_vars=""))
+
+    with write_session() as session:
+        domain_vhosts, _ = ols._all_active_vhosts(session)
+
+    assert domain_vhosts[0]["app_proxy"]["port"] == 30000
+
+
+# --- Phase 7a feature 4: LSCache rendering ---------------------------------
+
+
+def test_render_vhost_conf_renders_lscache_override_when_set():
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(
+        account, domain, suspended=False,
+        lscache={"ttl_seconds": 7200, "exclude_paths": ["/cart"], "storagepath": "/usr/local/lsws/cachedata/x", "purge_uri": "/.purge"},
+    )
+    assert "module cache {" in content
+    assert "enableCache             1" in content
+    assert "expireInSeconds         7200" in content
+    assert "noCacheUrl              /cart" in content
+    assert "storagepath             /usr/local/lsws/cachedata/x" in content
+
+
+def test_render_vhost_conf_omits_lscache_block_when_not_set():
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert "module cache {" not in content
+
+
+def test_render_vhost_conf_suspended_skips_lscache_block():
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(
+        account, domain, suspended=True,
+        lscache={"ttl_seconds": 3600, "exclude_paths": [], "storagepath": "/x", "purge_uri": "/.purge"},
+    )
+    assert "module cache {" not in content
+
+
+# --- Phase 7a feature 6: per-domain PHP version override -------------------
+
+
+def test_render_vhost_conf_uses_domain_php_override_when_set():
+    account = make_account(php_version="8.3")
+    domain = make_domain(php_version="8.1")
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert "lsapi:demo1_php81 php" in content
+    assert "lsapi:demo1_php83 php" not in content
+
+
+def test_render_vhost_conf_falls_back_to_account_version_when_no_override():
+    account = make_account(php_version="8.3")
+    domain = make_domain(php_version=None)
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+    assert "lsapi:demo1_php83 php" in content
+
+
+def test_all_active_vhosts_declares_separate_extprocessor_per_effective_version(isolated_db):
+    from shared.db import write_session
+    from shared.models import Account as AccountModel
+    from shared.models import Domain as DomainModel
+
+    with write_session() as session:
+        account = AccountModel(username="demo1", uid=5001, gid=5001, status="active", php_version="8.3")
+        session.add(account)
+        session.flush()
+        session.add(DomainModel(account_id=account.id, domain="a.example", docroot="/home/demo1/a", php_version=None))
+        session.add(DomainModel(account_id=account.id, domain="b.example", docroot="/home/demo1/b", php_version="8.1"))
+        session.add(DomainModel(account_id=account.id, domain="c.example", docroot="/home/demo1/c", php_version="8.1"))
+
+    with write_session() as session:
+        _domain_vhosts, account_procs = ols._all_active_vhosts(session)
+
+    php_app_names = sorted(p["php_app_name"] for p in account_procs)
+    assert php_app_names == ["demo1_php81", "demo1_php83"]  # one per DISTINCT effective version, not per domain

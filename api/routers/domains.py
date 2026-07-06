@@ -16,6 +16,10 @@ class AddDomainBody(BaseModel):
     kind: str = "addon"
 
 
+class SetDomainPhpVersionBody(BaseModel):
+    php_version: str | None = None
+
+
 @api_router.get("")
 def list_domains(username: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
@@ -35,6 +39,15 @@ def remove_domain(username: str, domain: str, identity: Identity = Depends(get_i
     return call_daemon("domain.remove", identity, username=username, domain=domain)
 
 
+@api_router.patch("/{domain}/php-version")
+def set_domain_php_version(username: str, domain: str, body: SetDomainPhpVersionBody, identity: Identity = Depends(get_identity)):
+    # Self-service, not admin-only -- same posture as
+    # accounts.py's account-level set_php_version.
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("domain.set_php_version", identity, username=username, domain=domain, php_version=body.php_version)
+
+
 @ui_router.post("")
 def ui_add_domain(
     username: str,
@@ -52,4 +65,12 @@ def ui_remove_domain(username: str, domain: str, identity: Identity = Depends(ge
     require_account_access(identity, username)
     require_domain_access(identity, domain)
     call_daemon("domain.remove", identity, username=username, domain=domain)
+    return RedirectResponse(f"/ui/accounts/{username}", status_code=303)
+
+
+@ui_router.post("/{domain}/php-version")
+def ui_set_domain_php_version(username: str, domain: str, php_version: str = Form(""), identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    call_daemon("domain.set_php_version", identity, username=username, domain=domain, php_version=php_version or None)
     return RedirectResponse(f"/ui/accounts/{username}", status_code=303)

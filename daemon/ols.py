@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, FileAuthDir, PhpIniOverride, Redirect, WafCustomRule, WafDomainOverride, WafSettings
+from shared.models import Account, Domain, FileAuthDir, LscacheSettings, NodeApp, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
@@ -91,6 +91,9 @@ def _domain_row_to_plain(d: Domain) -> dict:
         "hotlink_protection_enabled": d.hotlink_protection_enabled,
         "hotlink_allowed_domains": d.hotlink_allowed_domains or [],
         "ip_block_list": d.ip_block_list or [],
+        # Phase 7a feature 6: None means "inherit Account.php_version" --
+        # render_vhost_conf resolves the effective version itself.
+        "php_version": d.php_version,
     }
 
 
@@ -106,6 +109,48 @@ def _ssl_paths_for_domain(domain: dict) -> tuple[str, str]:
         if Path(key).exists() and Path(cert).exists():
             return key, cert
     return DEFAULT_SSL_KEY, DEFAULT_SSL_CERT
+
+
+def _app_proxy_map(session) -> dict[str, dict]:
+    """Phase 7a features 1/2: domain -> the NodeJS/Python app bound to it,
+    if any. NodeApp.domain/PythonApp.domain are each already unique
+    (daemon/nodeapps.py's/pythonapps.py's own _assert_domain_free), so at
+    most one of the two loops below ever contributes a given domain key.
+    handler_name is derived from the domain's own vhost_name (already
+    guaranteed collision-free, see _vhost_name's docstring) rather than
+    the app's own customer-chosen `name`, since two different accounts'
+    apps could otherwise pick the identical name."""
+    result: dict[str, dict] = {}
+    for row in session.scalars(select(NodeApp)).all():
+        result[row.domain] = {"handler_name": f"proxy_{_vhost_name(row.domain)}", "port": row.port, "kind": "node"}
+    for row in session.scalars(select(PythonApp)).all():
+        result[row.domain] = {"handler_name": f"proxy_{_vhost_name(row.domain)}", "port": row.port, "kind": "python"}
+    return result
+
+
+CACHE_STORE_ROOT = "/usr/local/lsws/cachedata"
+
+
+def _lscache_for_domain(session, domain_name: str) -> dict | None:
+    """Phase 7a feature 4. None (no override block rendered at all) unless
+    a row exists AND is enabled -- an untouched domain renders identically
+    to before this feature existed, same "absence means default behavior"
+    convention as _php_ini_for_account."""
+    row = session.scalar(select(LscacheSettings).where(LscacheSettings.domain == domain_name))
+    if row is None or not row.enabled:
+        return None
+    vhost_name = _vhost_name(domain_name)
+    return {
+        "ttl_seconds": row.ttl_seconds,
+        "exclude_paths": row.exclude_paths or [],
+        "storagepath": f"{CACHE_STORE_ROOT}/{vhost_name}",
+        # Manual/secondary purge mechanism (daemon/lscache.py's own
+        # purge() uses direct filesystem deletion of storagepath instead,
+        # which doesn't depend on this URI's exact live HTTP semantics) --
+        # rendered anyway since it's a real, documented OLS cache-module
+        # parameter and costs nothing to also expose.
+        "purge_uri": f"/.forgehost-lscache-purge-{vhost_name}",
+    }
 
 
 def _php_ini_for_account(session, account_id: int) -> dict | None:
@@ -191,6 +236,8 @@ def render_vhost_conf(
     php_ini: dict | None = None,
     redirects: list[dict] | None = None,
     protected_dirs: list[dict] | None = None,
+    app_proxy: dict | None = None,
+    lscache: dict | None = None,
 ) -> str:
     home_dir = f"{settings.home_base}/{account.username}"
     template = _env.get_template("vhost.conf.j2")
@@ -198,7 +245,12 @@ def render_vhost_conf(
         vhost_name=_vhost_name(domain["domain"]),
         docroot=domain["docroot"],
         home_dir=home_dir,
-        php_app_name=_php_app_name(account.username, account.php_version),
+        # Phase 7a feature 6: this domain's own PHP version override, if
+        # any, else the account's own default -- must match whichever
+        # extProcessor _all_active_vhosts actually declared for this
+        # (account, effective-version) pair in httpd_config.conf, or this
+        # scripthandler would reference an extProcessor that doesn't exist.
+        php_app_name=_php_app_name(account.username, domain.get("php_version") or account.php_version),
         suspended=suspended,
         suspended_page_root=settings.suspended_page_root,
         ssl_key_file=ssl_key_file,
@@ -208,6 +260,8 @@ def render_vhost_conf(
         hotlink=_hotlink_context(domain),
         ip_block_list=domain.get("ip_block_list") or [],
         protected_dirs=protected_dirs or [],
+        app_proxy=app_proxy or domain.get("app_proxy"),
+        lscache=lscache or domain.get("lscache"),
     )
 
 
@@ -233,6 +287,7 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
     accounts = session.scalars(
         select(Account).where(Account.status.in_(["active", "suspended"]))
     ).all()
+    app_proxies = _app_proxy_map(session)
     domain_vhosts = []
     account_procs = []
     for account in accounts:
@@ -242,21 +297,33 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
         # to be regenerated after a failed domain.add's compensation logic
         # deleted the Domain row but raced with this read, found during
         # Phase b's real end-to-end testing.
-        domains = session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all()
+        domains = session.scalars(select(Domain).where(Domain.account_id == account.id)).all()
         if not domains:
             continue  # an account with no domain yet has no vhost/listener entry
         account_home = f"{settings.home_base}/{account.username}"
-        account_procs.append({
-            "username": account.username,
-            "php_app_name": _php_app_name(account.username, account.php_version),
-            "lsphp_path": _lsphp_path(account.php_version),
-            "home_dir": account_home,
-        })
-        for domain_name in domains:
+        # Phase 7a feature 6: one extProcessor per distinct EFFECTIVE PHP
+        # version actually in use across this account's own domains, not
+        # unconditionally one per account -- most accounts still have
+        # exactly one entry here (every domain inheriting Account.php_version,
+        # the pre-existing behavior), but a domain with its own override
+        # contributes a second, separate extProcessor block if no sibling
+        # domain already uses that same effective version.
+        versions_seen: set[str] = set()
+        for d in domains:
+            effective_version = d.php_version or account.php_version
+            if effective_version not in versions_seen:
+                versions_seen.add(effective_version)
+                account_procs.append({
+                    "username": account.username,
+                    "php_app_name": _php_app_name(account.username, effective_version),
+                    "lsphp_path": _lsphp_path(effective_version),
+                    "home_dir": account_home,
+                })
             domain_vhosts.append({
-                "vhost_name": _vhost_name(domain_name),
-                "domain": domain_name,
+                "vhost_name": _vhost_name(d.domain),
+                "domain": d.domain,
                 "account_home": account_home,
+                "app_proxy": app_proxies.get(d.domain),
             })
     return domain_vhosts, account_procs
 
@@ -490,7 +557,14 @@ def _verify() -> StepResult:
 def _domains_as_plain(account_id: int) -> list[dict]:
     with write_session() as session:
         rows = session.scalars(select(Domain).where(Domain.account_id == account_id)).all()
-        return [_domain_row_to_plain(d) for d in rows]
+        app_proxies = _app_proxy_map(session)
+        plain = []
+        for d in rows:
+            entry = _domain_row_to_plain(d)
+            entry["app_proxy"] = app_proxies.get(d.domain)
+            entry["lscache"] = _lscache_for_domain(session, d.domain)
+            plain.append(entry)
+        return plain
 
 
 def _apply_targets(account: Account, domains: list[dict], suspended: bool, context: str) -> None:

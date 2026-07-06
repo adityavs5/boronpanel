@@ -456,6 +456,42 @@ def validate_ssh_key_text(value: str) -> str:
 # and having their cron output routed to the server operator's own
 # mailbox -- an information-disclosure surprise on a shared box, not
 # something cron's own syntax prevents on its own.
+# Phase 7a feature 4: LSCache. Bounds keep an admin/customer from
+# configuring an effectively-infinite (or effectively-zero, i.e.
+# pointless) cache TTL -- the same "obvious fat-finger input" guard
+# validate_spam_threshold already applies to its own numeric range.
+MIN_CACHE_TTL_SECONDS = 30
+MAX_CACHE_TTL_SECONDS = 604800  # 7 days
+MAX_LSCACHE_EXCLUDE_PATHS = 50
+
+
+def validate_cache_ttl_seconds(value) -> int:
+    try:
+        ttl = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError("ttl_seconds must be an integer") from None
+    if not (MIN_CACHE_TTL_SECONDS <= ttl <= MAX_CACHE_TTL_SECONDS):
+        raise ValidationError(f"ttl_seconds must be between {MIN_CACHE_TTL_SECONDS} and {MAX_CACHE_TTL_SECONDS}")
+    return ttl
+
+
+def validate_lscache_exclude_paths(values) -> list[str]:
+    if not isinstance(values, list):
+        raise ValidationError("exclude_paths must be a list")
+    if len(values) > MAX_LSCACHE_EXCLUDE_PATHS:
+        raise ValidationError(f"exclude_paths must have at most {MAX_LSCACHE_EXCLUDE_PATHS} entries")
+    seen = set()
+    result = []
+    for value in values:
+        # Same charset/shape as a redirect path -- both are rendered
+        # directly into an OLS vhost config as a bare path value.
+        path = validate_redirect_path(value)
+        if path not in seen:
+            seen.add(path)
+            result.append(path)
+    return result
+
+
 def validate_cron_mailto(value: str) -> str:
     value = (value or "").strip()
     if not value:
@@ -464,3 +500,131 @@ def validate_cron_mailto(value: str) -> str:
     if local_part == "root":
         raise ValidationError("MAILTO must not be 'root' -- shared hosting crontabs must never target the server's root mailbox")
     return validate_email_address(value)
+
+
+# Phase 7a features 1/2: NodeJS/Python app hosting. App name is used both
+# as a DB-unique-per-account key and as a path segment (<home>/nodeapps/
+# <name>, <home>/logs/node/<name>.log) -- same conservative charset as
+# validate_git_repo_name, for the identical "never itself looks like a
+# path segment" reason.
+APP_NAME_RE = re.compile(r"\A[a-z][a-z0-9-]{0,62}\Z")
+
+
+def validate_app_name(value: str) -> str:
+    if not isinstance(value, str) or not APP_NAME_RE.match(value):
+        raise ValidationError("app name must start with a lowercase letter and contain only lowercase letters, digits, hyphens (max 63 chars)")
+    return value
+
+
+# The entry point is rendered into a systemd unit's ExecStart argument list
+# (never shell=True, daemon/procutil.py's own hard rule) and is always
+# joined onto the app's own directory before use -- still validated here as
+# a relative, traversal-free path (no leading '/', no '..' segment, no NUL/
+# newline) so a crafted value can never escape the app's own directory or
+# inject an extra argv entry via a newline the way a raw string might.
+def validate_app_entry_point(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("entry point must not be empty")
+    value = value.strip()
+    if "\x00" in value or "\n" in value:
+        raise ValidationError("entry point must not contain a NUL byte or newline")
+    if value.startswith("/") or value.startswith("~"):
+        raise ValidationError("entry point must be a path relative to the app's own directory")
+    parts = value.split("/")
+    if any(p in ("..", "") for p in parts):
+        raise ValidationError("entry point must not contain '..' or empty path segments")
+    if len(value) > 512:
+        raise ValidationError("entry point must be at most 512 characters")
+    return value
+
+
+# Phase 7a feature 2: Python WSGI/ASGI entry point, gunicorn/uvicorn's own
+# "module:callable" syntax (e.g. "app:app", "myproject.wsgi:application") --
+# passed as a plain argv element to gunicorn/uvicorn (never shell=True,
+# daemon/procutil.py's own hard rule), but still charset-restricted the
+# same conservative way validate_app_entry_point is, rather than accepting
+# arbitrary text.
+PYTHON_ENTRY_POINT_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def validate_python_entry_point(value: str) -> str:
+    if not isinstance(value, str) or not PYTHON_ENTRY_POINT_RE.match(value.strip()):
+        raise ValidationError("entry point must look like 'module:callable' (e.g. 'app:app'), letters/digits/underscore/dots only")
+    return value.strip()
+
+
+ENV_VAR_KEY_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
+MAX_ENV_VARS = 50
+# Reserved: Forgehost's own app-hosting machinery sets PORT itself (from
+# the allocated port, not a customer-supplied value) -- letting a customer
+# override it would silently break the very reverse-proxy binding OLS was
+# configured to expect.
+RESERVED_ENV_KEYS = {"PORT"}
+
+
+# Phase 7b feature 4: webhooks. The URL is dereferenced by forgehostd itself
+# (an outbound HTTP POST, daemon/webhooks.py) -- restricted to http/https
+# with a real netloc, same shape as validate_redirect_target, so a crafted
+# value can't smuggle a newline/control character into the request line a
+# raw string might otherwise allow through httpx.
+def validate_webhook_url(url: str) -> str:
+    import urllib.parse
+
+    if not isinstance(url, str) or len(url) > 2000 or any(c in url for c in ("\n", "\r", " ")):
+        raise ValidationError(f"'{url}' is not a valid webhook URL")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValidationError(f"'{url}' must be an absolute http:// or https:// URL")
+    return url
+
+
+# Phase 7b feature 5: account usage-alert limits (bandwidth/database/email
+# account/subdomain counts). None means "not tracked" (no alert ever fires
+# for that resource) -- the same "no row/no value = feature not engaged"
+# convention validate_php_size's callers already rely on elsewhere in this
+# module, just at the single-field level here instead of a whole row.
+def validate_resource_limit(value, field: str) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{field} must be an integer or empty (untracked)") from None
+    if limit < 1:
+        raise ValidationError(f"{field} must be at least 1 (use empty/None for 'not tracked')")
+    return limit
+
+
+def validate_webhook_events(values, allowed: tuple[str, ...]) -> list[str]:
+    if not isinstance(values, list) or not values:
+        raise ValidationError("events must be a non-empty list")
+    seen = set()
+    result = []
+    for value in values:
+        if value not in allowed:
+            raise ValidationError(f"event '{value}' is not one of {allowed}")
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def validate_env_vars(value) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValidationError("env vars must be a JSON object of string -> string")
+    if len(value) > MAX_ENV_VARS:
+        raise ValidationError(f"at most {MAX_ENV_VARS} env vars are allowed")
+    result: dict[str, str] = {}
+    for key, val in value.items():
+        if not isinstance(key, str) or not ENV_VAR_KEY_RE.match(key):
+            raise ValidationError(f"env var name '{key}' is invalid (letters, digits, underscore, must not start with a digit)")
+        if key in RESERVED_ENV_KEYS:
+            raise ValidationError(f"env var name '{key}' is reserved by Forgehost")
+        if not isinstance(val, str):
+            raise ValidationError(f"env var '{key}' value must be a string")
+        if "\x00" in val or "\n" in val:
+            raise ValidationError(f"env var '{key}' value must not contain a NUL byte or newline")
+        if len(val) > 4000:
+            raise ValidationError(f"env var '{key}' value is too long (max 4000 characters)")
+        result[key] = val
+    return result
