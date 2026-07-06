@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import secrets
+import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
@@ -136,6 +139,49 @@ def delete_webhook(params: dict) -> dict:
     return {"id": webhook_id, "status": "deleted"}
 
 
+def _ip_is_blocked(ip: ipaddress._BaseAddress) -> bool:
+    # Covers loopback (127/8, ::1), private (10/8, 172.16/12, 192.168/16, fc00::/7),
+    # link-local INCLUDING the 169.254.169.254 cloud-metadata endpoint
+    # (169.254/16, fe80::/10), reserved, multicast, and 0.0.0.0/::.
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _assert_public_destination(url: str) -> None:
+    """Security-audit-2 (Medium) SSRF guard: webhook delivery is an outbound
+    HTTP POST made by forgehostd (root), to an admin-configured URL. Without
+    this, an admin (or an over-scoped admin token) could point a webhook at an
+    internal-only service (127.0.0.1:8081 PowerDNS, the panel, other
+    loopback services) or the cloud metadata endpoint (169.254.169.254) and
+    have the root daemon reach it.
+
+    Checked here at *delivery* time (not only at create/validate time) so that
+    a hostname which resolved to a public IP when the webhook was created but
+    later resolves to an internal one (DNS rebinding) is still refused. httpx's
+    `post` does not follow redirects by default, so a 3xx to an internal target
+    cannot bypass this either."""
+    host = urlparse(url).hostname
+    if not host:
+        raise WebhookError(f"webhook URL has no host: {url!r}")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise WebhookError(f"could not resolve webhook host '{host}': {exc}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if _ip_is_blocked(ip):
+            raise WebhookError(
+                f"refusing to deliver webhook to non-public address {ip} (host '{host}') -- "
+                "internal/loopback/link-local/metadata endpoints are blocked (SSRF protection)"
+            )
+
+
 def _sign(secret: str, body: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
@@ -180,6 +226,22 @@ def _deliver(delivery_id: int) -> None:
 
     body = json.dumps({"event": event, "data": payload}).encode()
     signature = _sign(secret, body)
+
+    # SSRF guard (security-audit-2): resolve + block internal targets before
+    # the root daemon makes any outbound request. A blocked destination is a
+    # terminal failure (not retried -- the address will not become public on a
+    # retry) recorded on the delivery for operator visibility.
+    try:
+        _assert_public_destination(url)
+    except WebhookError as exc:
+        with write_session() as session:
+            delivery = session.get(WebhookDelivery, delivery_id)
+            delivery.status = "failed"
+            delivery.error = str(exc)
+            delivery.attempt_count = 1
+            delivery.last_attempted_at = utcnow()
+        logger.warning("webhook delivery %s blocked by SSRF guard: %s", delivery_id, exc)
+        return
 
     for attempt in range(1, settings.webhook_max_attempts + 1):
         with write_session() as session:

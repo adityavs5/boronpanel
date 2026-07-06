@@ -20,6 +20,18 @@ def no_real_sleep(monkeypatch):
     monkeypatch.setattr(wh.time, "sleep", lambda seconds: None)
 
 
+@pytest.fixture(autouse=True)
+def stub_public_dns(monkeypatch):
+    """The delivery-time SSRF guard (security-audit-2) resolves the webhook
+    host; by default make it resolve to a public IP so unit tests need no real
+    DNS. The dedicated SSRF tests below override this to return an internal
+    address."""
+    monkeypatch.setattr(
+        wh.socket, "getaddrinfo",
+        lambda host, *a, **k: [(0, 0, 0, "", ("93.184.216.34", 0))],
+    )
+
+
 def _account(username="demo1"):
     with write_session() as session:
         account = Account(username=username, status="active")
@@ -218,6 +230,56 @@ def test_deliver_handles_connection_error(isolated_db, monkeypatch):
     status, attempts, code, error = _poll_delivery(delivery_id)
     assert status == "failed"
     assert "connection refused" in error
+
+
+# --- SSRF guard (security-audit-2) ------------------------------------------
+
+
+def test_create_webhook_rejects_literal_internal_ip(isolated_db):
+    for url in (
+        "http://127.0.0.1/hook",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://10.0.0.5/hook",
+        "http://192.168.1.1/hook",
+    ):
+        with pytest.raises(Exception):
+            wh.create_webhook({"url": url, "events": ["account.created"]})
+
+
+@pytest.mark.parametrize(
+    "internal_ip", ["127.0.0.1", "10.1.2.3", "172.16.9.9", "192.168.0.5", "169.254.169.254", "::1"]
+)
+def test_assert_public_destination_blocks_internal(monkeypatch, internal_ip):
+    monkeypatch.setattr(wh.socket, "getaddrinfo", lambda host, *a, **k: [(0, 0, 0, "", (internal_ip, 0))])
+    with pytest.raises(wh.WebhookError):
+        wh._assert_public_destination("https://sneaky.example/hook")
+
+
+def test_assert_public_destination_allows_public(monkeypatch):
+    monkeypatch.setattr(wh.socket, "getaddrinfo", lambda host, *a, **k: [(0, 0, 0, "", ("93.184.216.34", 0))])
+    wh._assert_public_destination("https://example.com/hook")  # must not raise
+
+
+def test_deliver_blocked_when_host_resolves_to_internal(isolated_db, monkeypatch):
+    """DNS-rebinding defense: a webhook whose host passed literal validation at
+    creation but resolves to an internal IP at delivery time must be refused,
+    with NO outbound request made."""
+    created = wh.create_webhook({"url": "https://rebind.example/hook", "events": ["account.created"]})
+    monkeypatch.setattr(wh.socket, "getaddrinfo", lambda host, *a, **k: [(0, 0, 0, "", ("169.254.169.254", 0))])
+    posts = []
+    monkeypatch.setattr(wh.httpx, "post", lambda *a, **k: posts.append(1))
+    with write_session() as session:
+        webhook = session.get(Webhook, created["id"])
+        delivery = WebhookDelivery(webhook_id=webhook.id, event="account.created", payload={}, status="pending")
+        session.add(delivery)
+        session.flush()
+        delivery_id = delivery.id
+
+    wh._deliver(delivery_id)
+    status, attempts, code, error = _poll_delivery(delivery_id)
+    assert status == "failed"
+    assert posts == [], "no outbound request may be made to a blocked destination"
+    assert "SSRF" in error or "non-public" in error
 
 
 # --- maybe_trigger / test_webhook -------------------------------------------

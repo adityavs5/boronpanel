@@ -575,6 +575,26 @@ def validate_webhook_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ValidationError(f"'{url}' must be an absolute http:// or https:// URL")
+    # Security-audit-2 (Medium) SSRF guard, creation-time half: reject an
+    # obvious literal internal IP up front for immediate operator feedback.
+    # daemon/webhooks.py additionally re-resolves + re-checks the destination
+    # at *delivery* time (the authoritative guard -- it also catches
+    # hostname-based targets and DNS-rebinding, which a literal-IP check here
+    # cannot).
+    host = parsed.hostname
+    if host:
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None and (
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+        ):
+            raise ValidationError(
+                f"'{url}' points at a non-public address -- internal/loopback/link-local/"
+                "metadata endpoints are not allowed as webhook targets"
+            )
     return url
 
 

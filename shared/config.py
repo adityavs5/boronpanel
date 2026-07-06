@@ -218,6 +218,14 @@ class Settings:
     cpanel_import_staging_dir: str = "/var/lib/forgehost/cpanel-import-staging"
     cpanel_import_concurrency: int = 1
     cpanel_import_max_upload_bytes: int = 10 * 1024 * 1024 * 1024  # 10GB
+    # Security-audit-2 (Medium): the compressed-upload/download cap above does
+    # not bound the *decompressed* size, so a tar.gz decompression bomb could
+    # exhaust the (root-owned, outside any account quota) staging disk before
+    # any account limit applies. This caps the summed declared member size,
+    # checked before extraction. Generous vs. a real cPanel account (bounded
+    # by its own hosting quota, a few-to-tens of GB) while refusing multi-TB
+    # bombs.
+    cpanel_import_max_extracted_bytes: int = 50 * 1024 * 1024 * 1024  # 50GB
 
     # Phase 7b feature 3: email notifications. Postfix on this same server
     # relays outbound transactional mail -- no external SMTP credentials

@@ -232,6 +232,23 @@ def _obtain_archive(job_id: int, source: str, source_ref: str, work_dir: Path) -
 def _extract_archive(archive_path: Path, extract_dir: Path) -> None:
     try:
         with tarfile.open(archive_path) as tf:
+            # Security-audit-2 (Medium): bound the *decompressed* size before
+            # extracting. The upload/download path only caps the compressed
+            # bytes, so a tar.gz decompression bomb could otherwise fill the
+            # root-owned staging disk (outside any account quota) as this runs
+            # as root. Summing the declared member sizes is exactly what
+            # extractall() will write, and reading the index does not
+            # decompress the member data.
+            max_bytes = settings.cpanel_import_max_extracted_bytes
+            total = 0
+            for member in tf.getmembers():
+                if member.isreg():
+                    total += member.size
+                    if total > max_bytes:
+                        raise CpanelImportError(
+                            f"backup expands to more than the {max_bytes} byte extraction limit "
+                            "(possible decompression bomb) -- refusing to extract"
+                        )
             # filter="data" (Python 3.12+): rejects absolute paths, ".."
             # traversal, and device/special files -- the same tar-slip
             # defense daemon/backup.py's own restore path uses for an

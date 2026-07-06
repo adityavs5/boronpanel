@@ -533,3 +533,46 @@ def test_extract_archive_rejects_path_traversal(tmp_path):
     with pytest.raises(ci.CpanelImportError):
         ci._extract_archive(archive_path, extract_dir)
     assert not os.path.exists("/tmp/forgehost_cpanel_zipslip.txt")
+
+
+def test_extract_archive_rejects_decompression_bomb(tmp_path, monkeypatch):
+    """Security-audit-2 (Medium): the compressed-size cap does not bound the
+    decompressed size, so extraction must refuse an archive whose declared
+    member sizes exceed the extraction limit before writing it to the
+    root-owned staging disk."""
+    import io
+
+    from shared.config import settings
+
+    monkeypatch.setattr(settings, "cpanel_import_max_extracted_bytes", 1024)  # 1KB cap for the test
+
+    archive_path = tmp_path / "bomb.tar"
+    with tarfile.open(archive_path, "w") as tf:
+        info = tarfile.TarInfo(name="homedir/big.bin")
+        payload = b"A" * 4096  # declared 4KB > 1KB cap
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+
+    extract_dir = tmp_path / "extracted"
+    extract_dir.mkdir()
+    with pytest.raises(ci.CpanelImportError, match="extraction limit"):
+        ci._extract_archive(archive_path, extract_dir)
+    # Nothing was extracted.
+    assert not (extract_dir / "homedir").exists()
+
+
+def test_extract_archive_allows_normal_size(tmp_path):
+    """A legitimately-sized archive still extracts normally under the cap."""
+    import io
+
+    archive_path = tmp_path / "ok.tar"
+    with tarfile.open(archive_path, "w") as tf:
+        info = tarfile.TarInfo(name="homedir/index.php")
+        payload = b"<?php echo 'hi';"
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+
+    extract_dir = tmp_path / "extracted"
+    extract_dir.mkdir()
+    ci._extract_archive(archive_path, extract_dir)
+    assert (extract_dir / "homedir" / "index.php").read_bytes() == b"<?php echo 'hi';"
