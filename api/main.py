@@ -12,7 +12,7 @@ from pathlib import Path
 import ipaddress
 
 from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
@@ -84,58 +84,73 @@ async def _security_headers(request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
-    )
+    # The legacy Jinja UI keeps `script-src 'none'` (audit finding F10 — it has
+    # no scripts at all). The React SPA under /app is a bundled, same-origin app
+    # so it needs `script-src 'self'` to load its own hashed bundle from
+    # /static/dist. It still forbids inline/remote scripts, so the hardening
+    # intent (no injected/CDN JS) is preserved; only same-origin bundled JS is
+    # permitted, and only for the SPA's own document.
+    path = request.url.path
+    if path == "/app" or path.startswith("/app/"):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        )
     return response
 
 app.include_router(auth.router)
+# UI revamp (2026-07-06): the legacy Jinja `ui_router`s are no longer
+# registered -- the React SPA at /app is the panel now. Only the JSON
+# `api_router`s (and their extra-router-object siblings) are mounted; the SPA
+# consumes the same /api/v1/... surface. The ui_router objects still exist in
+# each module (harmless dead code) but templates_ui/ has been removed.
 for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor, nodeapps, pythonapps, redis_router, lscache_router, cpanel_import, bandwidth, webhooks, usage_alerts, staging):
     app.include_router(module.api_router)
-    app.include_router(module.ui_router)
-# Phase 7b feature 5: usage_alerts.py has an extra pair (GET /accounts/{u}/
-# alerts, its own separate resource from /usage-limits) -- same "extra
-# router object" pattern as ssl_router/mail/email/bandwidth above.
+# Extra JSON router objects that don't fit the uniform api_router/ui_router
+# pair (see each module): account-scoped alerts, admin bandwidth ranking,
+# notifications (admin + per-account), apps (list + install), ssl account
+# surface, mail password manager, SpamAssassin admin default.
 app.include_router(usage_alerts.alerts_api_router)
-app.include_router(usage_alerts.alerts_ui_router)
-# Phase 7b feature 2: bandwidth.py has an extra admin-only pair (cross-
-# account ranking) alongside its main account-scoped api_router/ui_router --
-# same "extra router object" pattern as ssl_router/mail/email above.
 app.include_router(bandwidth.admin_api_router)
-app.include_router(bandwidth.admin_ui_router)
-# Phase 7b feature 3: notifications.py has FOUR router objects (admin-wide
-# settings + per-account prefs, each with an api_router/ui_router pair) --
-# doesn't fit the uniform loop above at all, same reason apps.py gets its
-# own explicit calls below.
 app.include_router(notifications.admin_api_router)
-app.include_router(notifications.admin_ui_router)
 app.include_router(notifications.api_router)
-app.include_router(notifications.ui_router)
-# Phase 4 feature 8: apps.py has three router objects (account-scoped
-# "list installed", domain-scoped "install"/"jobs", and its UI) --
-# doesn't fit the uniform api_router/ui_router pair the loop above
-# assumes, same reason ssl_router/mail get an explicit extra
-# app.include_router call each.
 app.include_router(apps.api_router)
 app.include_router(apps.domain_api_router)
-app.include_router(apps.ui_router)
-# Phase 3 feature 8: ssl_router's account-scoped API surface
-# (/accounts/{u}/ssl, /accounts/{u}/domains/{d}/ssl/issue) is a separate
-# router object, not the module's main api_router/ui_router pair.
 app.include_router(ssl_router.account_api_router)
-# Phase 3 feature 10: same pattern for mail's account-scoped password
-# manager endpoint (/accounts/{u}/email/{m}/password).
 app.include_router(mail.account_api_router)
-# Phase 4 feature 1: SpamAssassin's server-wide admin default threshold.
 app.include_router(email.admin_router)
 
 
 @app.get("/")
 def root():
-    return RedirectResponse("/ui/accounts")
+    # The React SPA is the primary panel.
+    return RedirectResponse("/app")
 
 
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
+
+
+# --- React SPA (Vite build in static/dist) --------------------------------
+# The new control panel is a single-page app mounted under /app. Its assets are
+# served by the /static mount above (they live in static/dist/assets/*); this
+# catch-all returns the SPA's index.html for every /app/* path so client-side
+# (React Router) deep links resolve. It is intentionally scoped to /app so it
+# never shadows /api, /ui, /login, /logout, /static, or /healthz. No API
+# behavior changes — this is pure static delivery of the built bundle.
+SPA_INDEX = STATIC_DIR / "dist" / "index.html"
+
+
+@app.get("/app")
+@app.get("/app/{spa_path:path}")
+def spa(spa_path: str = ""):
+    if SPA_INDEX.is_file():
+        return FileResponse(str(SPA_INDEX))
+    return PlainTextResponse("SPA build not found. Run `npm run build` in frontend/.", status_code=503)

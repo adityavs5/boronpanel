@@ -8,6 +8,54 @@ check first.
 
 ---
 
+## UI revamp (2026-07-06): React SPA control panel — LIVE in production
+
+The Jinja2 admin UI has been superseded by a **React 18 single-page app**
+(Vite + Tailwind + React Query + React Router v6 + Recharts + Zustand + Axios),
+Cloudways-inspired (dark `#111827` sidebar, `#F9FAFB` content, teal `#1FBED6`
+accent, Inter). Source in `frontend/`; built to `static/dist/` and served by
+FastAPI at **`/app`** (catch-all in `api/main.py`). **No API-endpoint behavior
+changed** — the SPA calls the same `/api/v1/...` and authenticates with the
+existing signed-session cookie. See `frontend/PAGE_GUIDE.md` +
+`frontend/API_CONTRACT.md`, and `docs/CHECKPOINT-ui-revamp.md`.
+
+**Status: deployed to production and verified live** (2026-07-06):
+- Design system: 16 shared components (Button/Card/DataTable/Dialog/Toast/
+  Badge/StatusBadge/Skeleton/EmptyState/ErrorState/Tabs/Dropdown/Select/
+  Toggle/Progress/PageHeader), all tables with loading/empty/error states.
+- Shell: collapsible dark sidebar (240↔64px, localStorage) + role-aware nav +
+  live server-health mini-widget, topbar (breadcrumb/account-switcher/theme/
+  user menu), mobile bottom-nav <768px, dark mode.
+- Pages: **31 pages** — customer (dashboard, domains+detail, email, databases,
+  files, backups, apps, redis, dns, ssl, cron, ftp, git, ssh) and admin
+  (accounts + tabbed detail, server health w/ 24h Recharts, services, mail
+  queue, firewall, fail2ban, IP whitelist, audit log, WAF, slow queries,
+  webhooks, notifications, cPanel import, bandwidth).
+- Auth: cookie-session (NOT JWT — the existing model). Added `GET
+  /api/v1/whoami` (additive) so the SPA resolves identity robustly; `GET /`
+  and `GET /login` now redirect to the SPA; login/2FA/change-password/logout
+  handlers return JSON instead of rendering templates.
+- Verified live (puppeteer against prod `:9443`): login → `/app/accounts`,
+  `whoami` returns identity, pages render **real data** (84 accounts, live
+  CPU/RAM/disk, firewall rules), change-password works, mobile at 375px, dark
+  mode. Screenshots in `docs/ui-screenshots/`.
+
+**Jinja templates — FULLY REMOVED.** All 58 `api/templates_ui/*.html` were
+deleted and every `ui_router` registration dropped from `api/main.py` (only
+the JSON `api_router`s remain; the `/ui/*` routes now 404). Before removing,
+the ~8 utilities that had no SPA page were ported: **API tokens** and **2FA
+setup** (new `Security`/`ApiTokens` pages), **log viewer** and **disk-tree**
+(new `Logs`/`DiskUsage` pages), **admin usage-limits** (AccountDetail card),
+**namespace bulk-enable** (Accounts action), **backup browse** (Backups
+action), and **nameservers + WordPress installer** (DomainDetail tabs). The
+SPA is now the *only* UI. Building it: `cd frontend && npm install && npm run
+build` (Node 18+); the build lands in `static/dist/` and `scripts/deploy.sh`
+syncs it to `/opt/forgehost` (`frontend/node_modules` excluded from the sync).
+The `ui_router` objects still exist in each router module as harmless,
+unregistered dead code.
+
+---
+
 ## Phase 7b update (2026-07-05 build; 2026-07-06 live verification): 6
 ## management features added — code + tests complete; ALL 6 features
 ## live-verified end to end (8/8 Done-When criteria met)

@@ -26,7 +26,7 @@ phase; `docs/STATUS.md` for the current state and what to check first.
 | FTP | Pure-FTPd |
 | SSL | certbot (HTTP-01 webroot or DNS-01 via PowerDNS) |
 | Backend | Python 3.12, FastAPI + a separate root daemon |
-| Frontend | Server-rendered Jinja2, plain HTML forms, no JS framework |
+| Frontend | React 18 SPA (Vite + Tailwind + React Query), served by FastAPI at `/app` |
 
 ## Fresh-Ubuntu setup
 
@@ -177,6 +177,37 @@ python3 -m venv /opt/forgehost/.venv
 (there's nothing sensitive in the code tree — secrets live under
 `/etc/forgehost`) but does **not** touch `.venv`; re-run the pip install
 above yourself if `requirements.txt` changes.
+
+### 7b. Build the web UI (React SPA)
+
+The control panel is a React single-page app (`frontend/`, Vite + Tailwind +
+React Query) that is compiled to `static/dist/` and served by FastAPI. The
+build output is a static bundle — the running Python services do not need
+Node at runtime, only at build time.
+
+```bash
+# one-time: Node 18+ and npm
+apt-get install -y nodejs npm            # Ubuntu 24.04 ships Node 18.19 (fine)
+
+cd frontend
+npm install                              # installs the SPA's dependencies
+npm run build                            # -> ../static/dist/{index.html,assets/*}
+```
+
+`npm run build` writes `static/dist/`, which `scripts/deploy.sh` then syncs to
+`/opt/forgehost/static/dist/` like the rest of the tree. FastAPI serves the SPA
+at **`/app`** (a catch-all in `api/main.py` returns `index.html` for every
+`/app/*` path so client-side routes deep-link correctly); its assets are served
+by the existing `/static` mount. There are **no backend/API changes** — the SPA
+talks to the same `/api/v1/...` endpoints and authenticates with the existing
+signed-session cookie.
+
+For local UI development against the live API:
+
+```bash
+cd frontend
+npm run dev        # Vite dev server on :5173, proxies /api + /login to :9443
+```
 
 ### 8. Configuration files
 

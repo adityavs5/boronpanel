@@ -23,6 +23,7 @@ DST=/opt/forgehost
 rsync -a --delete \
   --exclude='.venv' --exclude='.git' --exclude='__pycache__' \
   --exclude='.pytest_cache' --exclude='*.pyc' \
+  --exclude='frontend/node_modules' --exclude='frontend/.vite' \
   "$SRC"/ "$DST"/
 
 # Excludes .venv: it's not touched by rsync above either, and a previous

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
 from starlette.requests import Request
 
@@ -20,14 +20,15 @@ from api.security import (
     unsign_session_id,
     unsign_twofactor_pending,
 )
-from api.templates import templates
 
 router = APIRouter(tags=["auth"])
 
 
 @router.get("/login")
-def login_form(request: Request):
-    return templates.TemplateResponse(request, "login.html", {"error": None})
+def login_form():
+    # The interactive login UI is the React SPA. Keep GET /login as a
+    # convenience entry point that lands on the SPA's login route.
+    return RedirectResponse("/app/login", status_code=307)
 
 
 @router.post("/login")
@@ -53,10 +54,8 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
     lockout = call_daemon("auth.check_login_lockout", login_identity, username=username)
     if lockout.get("locked"):
         retry_minutes = lockout.get("retry_after_seconds", 0) // 60 + 1
-        return templates.TemplateResponse(
-            request,
-            "login.html",
-            {"error": f"too many failed attempts -- try again in {retry_minutes} minute(s)"},
+        return JSONResponse(
+            {"detail": f"too many failed attempts -- try again in {retry_minutes} minute(s)"},
             status_code=429,
         )
 
@@ -64,15 +63,16 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
     call_daemon("auth.record_login_result", login_identity, username=username, success=valid)
 
     if not valid:
-        return templates.TemplateResponse(request, "login.html", {"error": "invalid username or password"}, status_code=401)
+        return JSONResponse({"detail": "invalid username or password"}, status_code=401)
 
     # Phase 5 feature 10: TOTP 2FA. Password is correct, but if this user
     # has 2FA enabled the session must not be created yet -- a second
-    # step (code or recovery code) is required first.
+    # step (code or recovery code) is required first. The SPA reads this JSON
+    # and shows its inline 2FA step.
     totp_status = call_daemon("totp.status", login_identity, panel_user_id=user_id)
     if totp_status["enabled"]:
         pending_token = sign_twofactor_pending(user_id)
-        return templates.TemplateResponse(request, "twofactor_login.html", {"pending_token": pending_token, "error": None})
+        return JSONResponse({"needs_2fa": True, "pending_token": pending_token})
 
     return _complete_login(user_id, role, account_id)
 
@@ -82,32 +82,42 @@ def _complete_login(user_id: int, role: str, account_id: int | None):
     session_result = call_daemon("auth.create_session", login_identity, panel_user_id=user_id)
     cookie_value = sign_session_id(session_result["session_id"])
 
-    destination = "/ui/accounts" if role == "admin" else f"/ui/accounts/{_customer_account_username(account_id)}"
-    response = RedirectResponse(destination, status_code=303)
+    # Land in the React SPA. The SPA calls GET /api/v1/whoami after login to
+    # resolve role + account, so it no longer depends on parsing this redirect.
+    response = RedirectResponse("/app", status_code=303)
     response.set_cookie(
         COOKIE_NAME, cookie_value, max_age=COOKIE_MAX_AGE_SECONDS, httponly=True, samesite="lax", secure=True
     )
     return response
 
 
+@router.get("/api/v1/whoami")
+def whoami(identity: Identity = Depends(get_identity)):
+    """Current-session identity for the SPA. For customers, `username` is the
+    hosting-account username (what the account-scoped API paths use), not the
+    panel login name; admins have no bound account."""
+    if identity.role == "admin":
+        return {"role": "admin", "username": identity.username, "account_username": None}
+    account_username = _customer_account_username(identity.account_id)
+    return {"role": "customer", "username": account_username, "account_username": account_username}
+
+
 @router.post("/login/2fa")
 def login_2fa_submit(request: Request, pending_token: str = Form(...), code: str = Form(...)):
     panel_user_id = unsign_twofactor_pending(pending_token)
     if panel_user_id is None:
-        return templates.TemplateResponse(request, "login.html", {"error": "2FA session expired -- please log in again"}, status_code=401)
+        return JSONResponse({"detail": "2FA session expired -- please log in again"}, status_code=401)
 
     with read_session() as db:
         user = db.get(PanelUser, panel_user_id)
         if user is None or user.disabled:
-            return templates.TemplateResponse(request, "login.html", {"error": "invalid username or password"}, status_code=401)
+            return JSONResponse({"detail": "invalid username or password"}, status_code=401)
         role, account_id = user.role, user.account_id
 
     check_identity = Identity(panel_user_id=panel_user_id, username=user.username, role=role, account_id=account_id, auth_method="session")
     result = call_daemon("totp.check_login_code", check_identity, panel_user_id=panel_user_id, code=code)
     if not result["valid"]:
-        return templates.TemplateResponse(
-            request, "twofactor_login.html", {"pending_token": pending_token, "error": "invalid code"}, status_code=401
-        )
+        return JSONResponse({"detail": "invalid code"}, status_code=401)
 
     return _complete_login(panel_user_id, role, account_id)
 
@@ -120,14 +130,9 @@ def logout(request: Request, identity: Identity = Depends(get_identity)):
         if session_id:
             call_daemon("auth.revoke_session", identity, session_id=session_id)
 
-    response = RedirectResponse("/login", status_code=303)
+    response = JSONResponse({"status": "logged_out"})
     response.delete_cookie(COOKIE_NAME)
     return response
-
-
-@router.get("/change-password")
-def change_password_form(request: Request, identity: Identity = Depends(get_identity)):
-    return templates.TemplateResponse(request, "change_password.html", {"identity": identity, "error": None})
 
 
 @router.post("/change-password")
@@ -150,22 +155,16 @@ def change_password_submit(
         current_ok = user is not None and verify_password(current_password, user.password_hash)
 
     if not current_ok:
-        return templates.TemplateResponse(
-            request, "change_password.html", {"identity": identity, "error": "current password is incorrect"}, status_code=401
-        )
+        return JSONResponse({"detail": "current password is incorrect"}, status_code=401)
     if new_password != confirm_password:
-        return templates.TemplateResponse(
-            request, "change_password.html", {"identity": identity, "error": "new password and confirmation do not match"}, status_code=400
-        )
+        return JSONResponse({"detail": "new password and confirmation do not match"}, status_code=400)
 
     try:
         call_daemon("panel_user.set_password", identity, username=identity.username, password=new_password)
     except HTTPException as exc:
-        return templates.TemplateResponse(
-            request, "change_password.html", {"identity": identity, "error": exc.detail}, status_code=exc.status_code
-        )
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
-    return templates.TemplateResponse(request, "change_password.html", {"identity": identity, "error": None, "success": True})
+    return JSONResponse({"status": "password_changed"})
 
 
 def _customer_account_username(account_id: int | None) -> str:
