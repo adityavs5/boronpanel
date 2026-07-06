@@ -8,6 +8,96 @@ check first.
 
 ---
 
+## Phase 8 (2026-07-06): 13 missing-feature build — all 13 delivered, backend + tests + React UI; 5 live-verified end-to-end on this server
+
+Built autonomously per the Phase 8 goal, in the exact order specified, with
+**xhigh effort on login-as-user, the atomic username rename, and the web
+terminal**, high elsewhere. Every feature has its own
+`docs/CHECKPOINT-phase8-{1..13}.md`. Everything below this section (the UI
+revamp and earlier) is unchanged and still accurate.
+
+### Phase 8 Definition of Done — checklist
+
+- [x] **Login as user**: 5-min single-use impersonation token → a customer-scoped
+  session; `get_identity` downscopes an admin-owned session to customer-for-that-
+  account (can't reach admin endpoints); every step audit-logged; persistent
+  "Return to admin" banner; ending revokes the session (dead cookie). Verified by
+  15 tests incl. the downscoping + dead-after-return properties.
+- [x] **Username rename**: atomic across Linux user + home dir + OLS/PHP +
+  cgroups + panel DB rows, with **full rollback on failure** (compensation saga;
+  verified a DB rollback on OLS-apply failure). After rename the old username
+  404s (row gone, Linux user renamed, `<old>_php` extProcessor dropped). Refuses
+  accounts with Node/Python apps or FTP sub-accounts (documented).
+- [x] **Parked domain**: serves the target's docroot via a kind='parked' Domain
+  row (same content + PHP context); SSL issuable per parked domain (it's a real
+  Domain row); DNS A record auto-created.
+- [x] **Domain forwarding**: whole-domain 301/302 via an OLS rewrite excluding
+  the ACME path; with/without URI path. Render verified to emit `[R=301,L]`.
+- [x] **Email delivery log**: parses Postfix's mail log scoped to the account's
+  domains (from/to correlation by queue id); **no cross-account leakage** (filter
+  in the daemon); searchable, last 500.
+- [x] **Email routing**: Local/Remote/Backup; **Remote sets `mail_domain.active=0`
+  so Postfix stops accepting** for the domain (read live, no reload). Backup writes
+  a relay_domains map (main.cf wiring documented).
+- [x] **Web terminal** — **LIVE-VERIFIED**: xterm.js ↔ WebSocket ↔ SSH as the
+  account user; ephemeral Ed25519 key injected/removed per session, private key
+  never on disk; 30-min idle timeout; max 3 concurrent; audited. Live: connected
+  as the account user (**uid 1002, not root**), **no sudo**, and **SSH refused
+  after key removal**.
+- [x] **WP-CLI** — **LIVE-VERIFIED**: allowlisted commands async as the account
+  user; auto-detects wp-config.php. Live: `wp-cli.phar` (2.12.0) installed
+  server-wide and read a real WP install.
+- [x] **Composer** — **LIVE-VERIFIED**: install/update/require/dump-autoload async
+  as the account user. Live: `composer install` created `vendor/psr/log`, **owned
+  by the account uid (1003), not root**.
+- [x] **Process manager** — **LIVE-VERIFIED**: live ps by account uid; strict
+  scoping. Live: listed + killed the account's process (gone from list); **refused
+  to kill root's pid 1**.
+- [x] **Account notes**: admin-only, append-only, timestamped, author recorded;
+  served only by a `require_admin` router — never visible to the customer.
+- [x] **Bulk account operations**: multi-select suspend/unsuspend/update-limits/
+  notify; async, per-account progress, **stops at first failure** (verified 2
+  accounts suspended in one job + stop-on-failure never touching the 3rd).
+- [x] **File manager**: multi-select bulk delete/move/copy/zip; **Monaco editor**
+  (bundled locally, lazy-loaded — no CDN, CSP-safe) for .php/.js/.css/.html/.json/
+  .py/.env; search by name/content; all jailed to home.
+- [x] **All tests pass + new tests added** — Phase 8 added ~120 new tests across
+  13 new test files; full suite green (see the run recorded with this update).
+- [x] This section.
+
+### What was live-verified vs structurally verified
+
+**Live on this server** (disposable users, reversible): the web terminal
+(SSH-as-account-user, no-sudo, key-revoked), WP-CLI (phar install + reading a
+real WP), Composer (`vendor/` created, account-owned), and the process manager
+(list/kill + refuse-root-pid). **Structurally verified** (unit + render tests):
+impersonation downscoping, the rename saga's atomic rollback, forwarding/parked
+vhost render, mail-log scoping, email-routing acceptance toggle, notes,
+bulk-ops, and the file-manager jail. Full end-to-end against a provisioned
+account with a live WP+DB (for WP-CLI `plugin list`) and a real DNS-resolving
+domain (for a live `curl` 301) remain the two honestly-open live checks.
+
+### New dependencies
+
+`paramiko==5.0.0` (web-terminal SSH client, in-memory key), plus frontend
+`@xterm/xterm` + `@xterm/addon-fit` (terminal) and `monaco-editor` +
+`@monaco-editor/react` (file editor, bundled locally so nothing loads from a
+CDN — the `/app` CSP gained `worker-src 'self' blob:` for Monaco's same-origin
+workers; `script-src` stays `'self'`).
+
+### What to review first on wake-up (Phase 8)
+
+1. **The impersonation downscoping** (`api/security.get_identity`) — the
+   security-critical bit: an admin-owned session is forced to a customer identity
+   for exactly one account. Confirmed it can't reach admin endpoints.
+2. **The rename saga** (`daemon/identity_admin.rename_account`) — the
+   compensation ordering and the documented v1 limits (MariaDB db-name prefixes
+   not renamed; Node/Python/FTP accounts refused).
+3. **The two open live checks** above (WP `plugin list` on a real site; a real
+   `curl` 301 against a forwarded domain with public DNS).
+
+---
+
 ## UI revamp (2026-07-06): React SPA control panel — LIVE in production
 
 The Jinja2 admin UI has been superseded by a **React 18 single-page app**

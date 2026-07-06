@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge } from 'lucide-react'
-import { get, post, patch } from '@/lib/api'
+import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog } from 'lucide-react'
+import { get, post, patch, impersonate as apiImpersonate } from '@/lib/api'
 import { formatMB } from '@/lib/utils'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { PHP_VERSIONS } from '@/config/constants'
@@ -26,6 +26,9 @@ import Email from '@/pages/customer/Email'
 import Ssl from '@/pages/customer/Ssl'
 import Backups from '@/pages/customer/Backups'
 import Apps from '@/pages/customer/Apps'
+import AccountIdentity from '@/pages/admin/AccountIdentity'
+import AccountNotes from '@/pages/admin/AccountNotes'
+import Processes from '@/pages/customer/Processes'
 
 function AdminActions({ username, account }) {
   const qc = useQueryClient()
@@ -47,9 +50,21 @@ function AdminActions({ username, account }) {
     onSuccess: () => { toast.success('Account terminated'); invalidate(); setConfirm(null) },
     onError: (e) => { toast.error('Could not terminate', e.message); setConfirm(null) },
   })
+  // Phase 8 feature 1: "Login as user" -> mint+redeem an impersonation token,
+  // then hard-navigate to the customer view as that account.
+  const impersonateMut = useMutation({
+    mutationFn: () => apiImpersonate(username),
+    onSuccess: () => { window.location.assign('/app') },
+    onError: (e) => toast.error('Could not log in as user', e.message),
+  })
 
   return (
     <div className="flex flex-wrap gap-2">
+      {['active', 'suspended'].includes(account.status) && (
+        <Button variant="secondary" size="sm" loading={impersonateMut.isPending} onClick={() => impersonateMut.mutate()}>
+          <UserCog className="h-4 w-4" /> Login as user
+        </Button>
+      )}
       {account.status === 'active' && (
         <Button variant="warning" size="sm" loading={suspendMut.isPending} onClick={() => suspendMut.mutate()}>
           <Pause className="h-4 w-4" /> Suspend
@@ -269,12 +284,15 @@ export default function AccountDetail() {
           <Tabs defaultValue="overview">
             <TabsList>
               <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="identity">Identity</TabsTrigger>
               <TabsTrigger value="domains">Domains</TabsTrigger>
               <TabsTrigger value="databases">Databases</TabsTrigger>
               <TabsTrigger value="email">Email</TabsTrigger>
               <TabsTrigger value="ssl">SSL</TabsTrigger>
               <TabsTrigger value="backups">Backups</TabsTrigger>
               <TabsTrigger value="apps">Apps</TabsTrigger>
+              <TabsTrigger value="processes">Processes</TabsTrigger>
+              <TabsTrigger value="notes">Notes</TabsTrigger>
             </TabsList>
 
             <TabsContent value="overview" className="space-y-6">
@@ -287,12 +305,15 @@ export default function AccountDetail() {
               <UsageLimitsCard />
             </TabsContent>
 
+            <TabsContent value="identity"><AccountIdentity username={username} account={account} /></TabsContent>
             <TabsContent value="domains"><Domains /></TabsContent>
             <TabsContent value="databases"><Databases /></TabsContent>
             <TabsContent value="email"><Email /></TabsContent>
             <TabsContent value="ssl"><Ssl /></TabsContent>
             <TabsContent value="backups"><Backups /></TabsContent>
             <TabsContent value="apps"><Apps /></TabsContent>
+            <TabsContent value="processes"><Processes embedded /></TabsContent>
+            <TabsContent value="notes"><AccountNotes username={username} /></TabsContent>
           </Tabs>
         </>
       ) : null}

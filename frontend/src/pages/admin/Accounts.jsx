@@ -1,25 +1,112 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Users, ShieldCheck } from 'lucide-react'
+import { Plus, Users, ShieldCheck, Play } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
-import { Input, FormField } from '@/components/ui/Input'
+import { Input, Textarea, FormField } from '@/components/ui/Input'
+import { Select } from '@/components/ui/Select'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter,
   ConfirmDialog,
 } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
 
+// Phase 8 feature 12: bulk action bar (suspend/unsuspend/update-limits/notify),
+// async with per-account progress, stops on first failure.
+function BulkActionBar({ selected, clearSelection }) {
+  const qc = useQueryClient()
+  const [action, setAction] = useState('suspend')
+  const [limits, setLimits] = useState({ cpu_pct: '', mem_mb: '', io_mb: '', pids_max: '' })
+  const [notify, setNotify] = useState({ subject: '', body: '' })
+  const [jobId, setJobId] = useState(null)
+
+  const triggerMut = useMutation({
+    mutationFn: () => {
+      const action_params = {}
+      if (action === 'update_limits') for (const k of ['cpu_pct', 'mem_mb', 'io_mb', 'pids_max']) if (limits[k] !== '') action_params[k] = Number(limits[k])
+      if (action === 'notify') { action_params.subject = notify.subject.trim(); action_params.body = notify.body.trim() }
+      return post('/api/v1/admin/accounts/bulk-action', { action, usernames: [...selected], action_params })
+    },
+    onSuccess: (job) => { setJobId(job.id); toast.success('Bulk action started', `${selected.size} accounts`) },
+    onError: (e) => toast.error('Could not start bulk action', e.message),
+  })
+
+  const { data: job } = useQuery({
+    queryKey: ['bulk-action', jobId],
+    queryFn: () => get(`/api/v1/admin/accounts/bulk-action/${jobId}`),
+    enabled: jobId != null,
+    refetchInterval: (q) => { const s = q.state.data?.status; return s === 'pending' || s === 'running' ? 1500 : false },
+  })
+  const finished = job && (job.status === 'completed' || job.status === 'failed')
+  if (finished && jobId) { qc.invalidateQueries({ queryKey: ['accounts'] }) }
+
+  return (
+    <div className="mb-4 rounded-card border border-accent/40 bg-accent/5 p-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <span className="text-sm font-medium text-foreground">{selected.size} selected</span>
+        <FormField label="Action" className="w-48">
+          <Select value={action} onChange={(e) => { setAction(e.target.value); setJobId(null) }}>
+            <option value="suspend">Suspend</option>
+            <option value="unsuspend">Unsuspend</option>
+            <option value="update_limits">Update limits</option>
+            <option value="notify">Send notification</option>
+          </Select>
+        </FormField>
+        <Button loading={triggerMut.isPending} onClick={() => triggerMut.mutate()}><Play className="h-4 w-4" /> Apply</Button>
+        <Button variant="ghost" onClick={clearSelection}>Clear</Button>
+      </div>
+
+      {action === 'update_limits' && (
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {['cpu_pct', 'mem_mb', 'io_mb', 'pids_max'].map((k) => (
+            <FormField key={k} label={k}>
+              <Input type="number" placeholder="unchanged" value={limits[k]} onChange={(e) => setLimits((l) => ({ ...l, [k]: e.target.value }))} />
+            </FormField>
+          ))}
+        </div>
+      )}
+      {action === 'notify' && (
+        <div className="mt-3 space-y-2">
+          <Input placeholder="Subject" value={notify.subject} onChange={(e) => setNotify((n) => ({ ...n, subject: e.target.value }))} />
+          <Textarea rows={2} placeholder="Message body" value={notify.body} onChange={(e) => setNotify((n) => ({ ...n, body: e.target.value }))} />
+        </div>
+      )}
+
+      {job && (
+        <div className="mt-3 text-sm">
+          <StatusBadge status={job.status} /> <span className="text-muted-foreground">{job.completed_count} / {job.total}{job.current_username ? ` · ${job.current_username}` : ''}</span>
+          {job.error && <p className="mt-1 text-danger">{job.error}</p>}
+          {(job.results || []).length > 0 && (
+            <ul className="mt-2 max-h-40 space-y-0.5 overflow-auto text-xs">
+              {job.results.map((r) => (
+                <li key={r.username} className={r.ok ? 'text-success' : 'text-danger'}>{r.ok ? '✓' : '✗'} {r.username} — {r.detail}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Accounts() {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState({ username: '', primary_domain: '' })
+  const [selected, setSelected] = useState(() => new Set())
+
+  const toggle = (username) => setSelected((prev) => {
+    const next = new Set(prev)
+    next.has(username) ? next.delete(username) : next.add(username)
+    return next
+  })
+  const clearSelection = () => setSelected(new Set())
 
   // Namespace bulk-enable (admin migration). Trigger returns a job we then
   // poll every 2s while it runs; progress is surfaced in the ConfirmDialog.
@@ -105,7 +192,16 @@ export default function Accounts() {
     nsDescription = 'Enables mount-namespace isolation for every currently active account that is not already enabled, one at a time. It stops at the first account that fails verification. This runs in the background and may take a while.'
   }
 
+  const allOnPage = (data || []).map((r) => r.username)
+  const allSelected = allOnPage.length > 0 && allOnPage.every((u) => selected.has(u))
   const columns = [
+    {
+      key: 'select', header: '', searchable: false, sortable: false,
+      render: (r) => (
+        <input type="checkbox" checked={selected.has(r.username)} onClick={(e) => e.stopPropagation()}
+          onChange={() => toggle(r.username)} aria-label={`Select ${r.username}`} />
+      ),
+    },
     { key: 'username', header: 'Username', sortable: true, searchable: true, render: (r) => <span className="font-medium text-foreground">{r.username}</span> },
     { key: 'status', header: 'Status', sortable: true, render: (r) => <StatusBadge status={r.status} /> },
     { key: 'primary_domain', header: 'Primary domain', searchable: true, render: (r) => r.primary_domain || <span className="text-muted-foreground">—</span> },
@@ -122,6 +218,15 @@ export default function Accounts() {
           <Plus className="h-4 w-4" /> Create account
         </Button>
       </PageHeader>
+
+      <div className="mb-3 flex items-center gap-3">
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(allOnPage))} />
+          Select all
+        </label>
+      </div>
+
+      {selected.size > 0 && <BulkActionBar selected={selected} clearSelection={clearSelection} />}
 
       <DataTable
         columns={columns}

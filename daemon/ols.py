@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, FileAuthDir, LscacheSettings, NodeApp, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings
+from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, NodeApp, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
@@ -167,6 +167,17 @@ def _php_ini_for_account(session, account_id: int) -> dict | None:
     }
 
 
+def _forwarding_for_domain(session, domain_name: str) -> dict | None:
+    """Phase 8 feature 4. None (no whole-domain redirect rendered) unless a
+    DomainForwarding row exists. The target URL is a plain replacement string
+    (not a regex), already validated http(s) with no newline/bracket/space by
+    validate_redirect_target, so it's safe to interpolate into the rewrite."""
+    row = session.scalar(select(DomainForwarding).where(DomainForwarding.domain == domain_name))
+    if row is None:
+        return None
+    return {"target_url": row.target_url, "status_code": row.status_code, "keep_path": row.keep_path}
+
+
 def _redirects_for_domain(session, domain_name: str) -> list[dict]:
     rows = session.scalars(select(Redirect).where(Redirect.domain == domain_name)).all()
     return [
@@ -238,6 +249,7 @@ def render_vhost_conf(
     protected_dirs: list[dict] | None = None,
     app_proxy: dict | None = None,
     lscache: dict | None = None,
+    forwarding: dict | None = None,
 ) -> str:
     home_dir = f"{settings.home_base}/{account.username}"
     template = _env.get_template("vhost.conf.j2")
@@ -245,6 +257,7 @@ def render_vhost_conf(
         vhost_name=_vhost_name(domain["domain"]),
         docroot=domain["docroot"],
         home_dir=home_dir,
+        forwarding=forwarding or domain.get("forwarding"),
         # Phase 7a feature 6: this domain's own PHP version override, if
         # any, else the account's own default -- must match whichever
         # extProcessor _all_active_vhosts actually declared for this
@@ -578,6 +591,7 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
         domain_vhosts, account_procs = _all_active_vhosts(session)
         php_ini = _php_ini_for_account(session, account.id)
         redirects_by_domain = {domain["domain"]: _redirects_for_domain(session, domain["domain"]) for domain in domains}
+        forwarding_by_domain = {domain["domain"]: _forwarding_for_domain(session, domain["domain"]) for domain in domains}
         protected_dirs_by_domain = {
             domain["domain"]: _protected_dirs_for_domain(session, account.username, account.id, domain["docroot"])
             for domain in domains
@@ -595,6 +609,7 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
             ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file,
             php_ini=php_ini, redirects=redirects_by_domain[domain["domain"]],
             protected_dirs=protected_dirs_by_domain[domain["domain"]],
+            forwarding=forwarding_by_domain[domain["domain"]],
         )
 
     writer = ConfigWriterMulti(

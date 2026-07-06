@@ -128,6 +128,20 @@ export async function logout() {
   }
 }
 
+// --- impersonation (Phase 8 feature 1) ------------------------------------
+// Admin "Login as user": mint a single-use token, then immediately redeem it
+// for a customer-scoped session cookie. The two calls are kept separate on the
+// server (mint is authorized on the account path; redeem captures the admin's
+// current session to restore) but the UI always chains them.
+export async function impersonate(username) {
+  const { token } = await post(`/api/v1/admin/accounts/${username}/impersonate`)
+  return post('/api/v1/impersonate/redeem', { token })
+}
+
+export async function returnToAdmin() {
+  return post('/api/v1/impersonate/return')
+}
+
 export async function changePassword(current_password, new_password, confirm_password) {
   const form = new URLSearchParams({ current_password, new_password, confirm_password })
   const res = await api.post('/change-password', form, {

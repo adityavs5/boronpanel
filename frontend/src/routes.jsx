@@ -23,6 +23,9 @@ import Cron from '@/pages/customer/Cron'
 import Ftp from '@/pages/customer/Ftp'
 import Git from '@/pages/customer/Git'
 import SshKeys from '@/pages/customer/SshKeys'
+import Terminal from '@/pages/customer/Terminal'
+import DevTools from '@/pages/customer/DevTools'
+import Processes from '@/pages/customer/Processes'
 import MoreMenu from '@/pages/customer/MoreMenu'
 import Security from '@/pages/customer/Security'
 import Logs from '@/pages/customer/Logs'
@@ -84,6 +87,9 @@ export const router = createBrowserRouter(
         { path: 'ftp', element: <Ftp /> },
         { path: 'git', element: <Git /> },
         { path: 'ssh', element: <SshKeys /> },
+        { path: 'terminal', element: <Terminal /> },
+        { path: 'devtools', element: <DevTools /> },
+        { path: 'processes', element: <Processes /> },
         { path: 'more', element: <MoreMenu /> },
         { path: 'change-password', element: <ChangePassword /> },
         { path: 'security', element: <Security /> },

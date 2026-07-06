@@ -19,6 +19,26 @@ class WriteFileBody(BaseModel):
     encoding: str = "utf-8"
 
 
+# Phase 8 feature 13 bodies.
+class MovePathsBody(BaseModel):
+    paths: list[str]
+    dest: str = ""
+
+
+class CopyBody(BaseModel):
+    src: str
+    dst: str
+
+
+class BulkDeleteBody(BaseModel):
+    paths: list[str]
+
+
+class ZipBody(BaseModel):
+    paths: list[str]
+    archive: str
+
+
 @api_router.get("")
 def list_dir(username: str, path: str = "", identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
@@ -47,6 +67,45 @@ def mkdir(username: str, path: str, identity: Identity = Depends(get_identity)):
 def delete(username: str, path: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     return call_daemon("file.delete", identity, username=username, path=path)
+
+
+# --- Phase 8 feature 13: copy / bulk / zip / search ------------------------
+
+
+@api_router.post("/copy")
+def copy_file(username: str, body: CopyBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("file.copy", identity, username=username, src=body.src, dst=body.dst)
+
+
+@api_router.post("/bulk-delete")
+def bulk_delete(username: str, body: BulkDeleteBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("file.bulk_delete", identity, username=username, paths=body.paths)
+
+
+@api_router.post("/bulk-move")
+def bulk_move(username: str, body: MovePathsBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("file.bulk_move", identity, username=username, paths=body.paths, dest=body.dest)
+
+
+@api_router.post("/bulk-copy")
+def bulk_copy(username: str, body: MovePathsBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("file.bulk_copy", identity, username=username, paths=body.paths, dest=body.dest)
+
+
+@api_router.post("/zip")
+def zip_files(username: str, body: ZipBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("file.zip", identity, username=username, paths=body.paths, archive=body.archive)
+
+
+@api_router.get("/search")
+def search_files(username: str, query: str, mode: str = "name", path: str = "", identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("file.search", identity, username=username, query=query, mode=mode, path=path)
 
 
 @ui_router.get("")

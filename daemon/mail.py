@@ -112,6 +112,22 @@ def delete_mail_domain(domain: str) -> None:
     run(["rm", "-rf", "--", domain_dir], check=False)
 
 
+def set_domain_active(domain: str, active: bool) -> bool:
+    """Phase 8 feature 6: toggle whether Postfix accepts mail for this domain.
+    Postfix's virtual_mailbox_domains map queries `mail_domain WHERE active=1`
+    live at mail time (no reload needed), so setting active=0 makes Postfix
+    immediately stop accepting mail for the domain (it flows to the external
+    MX per DNS). Returns True if a mail_domain row existed to toggle."""
+    validate_domain(domain)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE mail_domain SET active = %s WHERE domain = %s", (1 if active else 0, domain))
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def _domain_id(domain: str) -> int:
     conn = _connect()
     try:

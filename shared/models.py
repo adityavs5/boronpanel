@@ -1078,6 +1078,192 @@ class SslExpiryNotice(Base):
     notified_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ImpersonationToken(Base):
+    """Phase 8 feature 1: a single-use, 5-minute "login as user" token an
+    admin mints to open a scoped customer session for an account. Stored
+    hashed (SHA-256, same "never store the raw token" rule as ApiToken/
+    PmaToken) with `used_at` set on first redemption so a captured token
+    can never be replayed even inside its 5-minute window (a signed-cookie
+    token alone couldn't guarantee single-use -- that needs server-side
+    state, which is why this is a DB row and not just an itsdangerous
+    token). `admin_username` is recorded so only the issuing admin can
+    redeem it, and so the whole impersonation is attributable in the audit
+    log from issuance through every action taken while impersonating."""
+
+    __tablename__ = "impersonation_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    admin_username: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ImpersonationSession(Base):
+    """Phase 8 feature 1: the live "admin is currently acting as customer X"
+    record, created when an ImpersonationToken is redeemed. The underlying
+    `Session` row is owned by the ADMIN's own panel_user_id (so it stays
+    revocable and attributable to a real user), and this row is what
+    api/security.get_identity consults to DOWNSCOPE that session to a
+    customer identity for `account_id` -- an impersonation session can
+    therefore never reach an admin-only endpoint, even though it belongs to
+    an admin panel user. `admin_session_id` is the admin's original session
+    to restore when they click "Return to admin"; `ended_at` set (plus the
+    impersonation Session revoked in the same transaction) marks it
+    finished so a stale cookie can never silently keep customer access."""
+
+    __tablename__ = "impersonation_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    admin_panel_user_id: Mapped[int] = mapped_column(ForeignKey("panel_users.id"))
+    admin_username: Mapped[str] = mapped_column(String(64))
+    admin_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AccountNote(Base):
+    """Phase 8 feature 11: admin-only, append-only account notes. Never
+    exposed on any customer-scoped endpoint (the router that serves these
+    is admin-only, and no customer-facing dict ever includes them) -- the
+    goal's explicit "never visible to customer" requirement. Append-only:
+    there is no update/delete op at all, so the note history is a durable
+    record, matching the same "never delete, keep history" posture
+    AuditLog/UsageAlert already use. `author` is the admin panel username
+    captured at write time."""
+
+    __tablename__ = "account_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    author: Mapped[str] = mapped_column(String(64))
+    body: Mapped[str] = mapped_column(String(8000))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DomainForwarding(Base):
+    """Phase 8 feature 4: whole-domain 301/302 redirect to an external URL,
+    rendered into that domain's own vhost as a top-level rewrite
+    (daemon/ols.py). A NEW table keyed by domain NAME (unique), not new
+    columns on Domain -- same reasoning as Redirect/LscacheSettings/
+    WafDomainOverride (Base.metadata.create_all only creates missing
+    tables, never ALTERs). Distinct from the existing `Redirect` model,
+    which is a per-PATH rewrite within an otherwise-normal site; this
+    replaces the ENTIRE domain's serving with a redirect, so a domain can
+    have at most one forwarding row (the UNIQUE domain constraint) and it
+    is mutually exclusive with normal PHP/app serving for that domain.
+    `keep_path` controls whether the original request URI is appended to
+    the target (cPanel's "redirect with/without path")."""
+
+    __tablename__ = "domain_forwardings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    target_url: Mapped[str] = mapped_column(String(2048))
+    status_code: Mapped[int] = mapped_column(Integer, default=301)
+    keep_path: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ParkedDomain(Base):
+    """Phase 8 feature 3: an alias ("parked") domain that serves the SAME
+    docroot + PHP context as an existing target domain on the same account.
+    Implemented as an ordinary `Domain` row with kind='parked' whose docroot
+    points at the target domain's docroot (so it reuses the whole existing
+    one-vhost-per-domain + shared-extProcessor machinery, daemon/ols.py) --
+    this row is the bookkeeping that records which target each parked domain
+    aliases, for the UI and for correct teardown. Keyed by the parked domain
+    name (globally unique, like every Domain)."""
+
+    __tablename__ = "parked_domains"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    parked_domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    target_domain: Mapped[str] = mapped_column(String(253), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EmailRouting(Base):
+    """Phase 8 feature 6: per-domain mail routing mode (local | remote |
+    backup). Stored in the SQLite control plane (not the forgehost_mail
+    MariaDB schema) because the *authoritative* Postfix acceptance switch is
+    the `mail_domain.active` flag the daemon already toggles -- this row is
+    the panel's own record of the operator's chosen mode, which
+    daemon/handlers_email_routing.py reconciles into that flag (+ a
+    regenerated relay_domains map for 'backup'). Default (no row) = 'local',
+    matching the pre-existing behavior where a provisioned mail domain is
+    always accepted locally. Keyed by domain name, the same domain-scoped
+    convention as every other per-domain mail feature."""
+
+    __tablename__ = "email_routing"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    mode: Mapped[str] = mapped_column(String(8), default="local")  # local | remote | backup
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BulkActionJob(Base):
+    """Phase 8 feature 12: async multi-account operation (suspend / unsuspend /
+    update-limits / notify). Same async-job table shape as
+    NamespaceMigrationJob (status/total/completed_count/current_username/results/
+    error) and, like it, **stops at the first per-account failure** rather than
+    skipping and continuing -- `results` records every account attempted up to
+    and including the one that failed, in order, so the UI shows exactly where a
+    run stopped. `action_params` carries the action's payload (limits values, or
+    the notification subject/body)."""
+
+    __tablename__ = "bulk_action_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    action: Mapped[str] = mapped_column(String(24))  # suspend|unsuspend|update_limits|notify
+    action_params: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    completed_count: Mapped[int] = mapped_column(Integer, default=0)
+    current_username: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    results: Mapped[list] = mapped_column(JSON, default=list)  # [{username, ok, detail}]
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CommandRun(Base):
+    """Phase 8 features 8/9: one async WP-CLI or Composer run, executed as the
+    account user (daemon/cmdjobs.py). Same async-job shape as WordPressJob/
+    AppInstallJob (status/error/started_at/completed_at) plus captured
+    stdout/stderr/exit_code for the UI to show. `command_display` is the
+    human-readable command (secrets already stripped -- a reset-password run
+    never records the password); `kind` is 'wpcli' or 'composer', `target` is
+    the docroot/app directory it ran in. Never deleted -- a durable run history,
+    matching the same posture the other job tables use."""
+
+    __tablename__ = "command_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # wpcli | composer
+    target: Mapped[str] = mapped_column(String(1024))
+    command_display: Mapped[str] = mapped_column(String(1024))
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stdout: Mapped[str | None] = mapped_column(String(200000), nullable=True)
+    stderr: Mapped[str | None] = mapped_column(String(200000), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    # For a WP-CLI user-reset-password run, the generated password is surfaced
+    # once (cleared on first read, same one-time-reveal pattern as
+    # WordPressJob.admin_password).
+    revealed_secret: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class LscacheSettings(Base):
     """Phase 7a feature 4: per-domain LSCache (OLS's native page-cache
     module, ARCHITECTURE.md SS10.5-adjacent -- unlike ModSecurity, LSCache

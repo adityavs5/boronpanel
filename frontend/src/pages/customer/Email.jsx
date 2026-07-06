@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Mail, Plus, Trash2, Inbox, Forward, ShieldAlert, AtSign } from 'lucide-react'
+import { Mail, Plus, Trash2, Inbox, Forward, ShieldAlert, AtSign, Network, ScrollText } from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatMB } from '@/lib/utils'
@@ -519,6 +519,104 @@ function SpamTab({ username, domain }) {
   )
 }
 
+// --- Routing (Phase 8 feature 6) -----------------------------------------
+
+const ROUTING_MODES = [
+  { value: 'local', label: 'Local', desc: 'This server accepts and delivers mail for the domain to its mailboxes here.' },
+  { value: 'remote', label: 'Remote', desc: 'This server stops accepting mail for the domain — it flows to the external MX in DNS.' },
+  { value: 'backup', label: 'Backup MX', desc: 'This server queues mail and relays it to the primary (external) MX.' },
+]
+
+function RoutingTab({ username, domain }) {
+  const qc = useQueryClient()
+  const base = `/api/v1/accounts/${username}/domains/${domain}/email/routing`
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['email-routing', username, domain],
+    queryFn: () => get(base),
+    enabled: !!username && !!domain,
+  })
+  const mut = useMutation({
+    mutationFn: (mode) => patch(base, { mode }),
+    onSuccess: (res) => { toast.success('Email routing updated', `${domain} → ${res.mode}`); qc.invalidateQueries({ queryKey: ['email-routing', username, domain] }) },
+    onError: (e) => toast.error('Could not update routing', e.message),
+  })
+
+  if (isLoading) return <CenteredSpinner />
+  if (error) return <ErrorState error={error} onRetry={refetch} />
+  const current = data?.mode || 'local'
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Mail routing for {domain}</CardTitle>
+        <CardDescription>Where mail for this domain is accepted and delivered.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {ROUTING_MODES.map((m) => (
+          <label key={m.value}
+            className={`flex cursor-pointer items-start gap-3 rounded-card border px-4 py-3 ${current === m.value ? 'border-accent bg-accent/5' : 'border-border'}`}>
+            <input type="radio" name="routing" className="mt-1" checked={current === m.value}
+              disabled={mut.isPending} onChange={() => mut.mutate(m.value)} />
+            <div>
+              <div className="text-sm font-medium text-foreground">{m.label}</div>
+              <div className="text-xs text-muted-foreground">{m.desc}</div>
+            </div>
+          </label>
+        ))}
+      </CardContent>
+    </Card>
+  )
+}
+
+// --- Delivery log (Phase 8 feature 5) ------------------------------------
+
+function DeliveryLogTab({ username }) {
+  const [search, setSearch] = useState('')
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
+    queryKey: ['email-delivery-log', username, search],
+    queryFn: () => get(`/api/v1/accounts/${username}/email/delivery-log`, { params: { search } }),
+    enabled: !!username,
+  })
+
+  const STATUS_VARIANT = { sent: 'success', bounced: 'danger', deferred: 'warning', rejected: 'danger', expired: 'danger' }
+  const columns = [
+    { key: 'timestamp', header: 'Time', render: (r) => <span className="whitespace-nowrap font-mono text-xs">{r.timestamp}</span> },
+    { key: 'from', header: 'From', searchable: true, render: (r) => <span className="break-all font-mono text-xs">{r.from || '—'}</span> },
+    { key: 'to', header: 'To', searchable: true, render: (r) => <span className="break-all font-mono text-xs">{r.to}</span> },
+    { key: 'status', header: 'Status', render: (r) => <Badge variant={STATUS_VARIANT[r.status] || 'neutral'}>{r.status}</Badge> },
+    { key: 'reason', header: 'Reason', render: (r) => <span className="break-all text-xs text-muted-foreground">{r.reason}</span> },
+  ]
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-3">
+        <div>
+          <CardTitle>Delivery log</CardTitle>
+          <CardDescription>The last {500} Postfix delivery events touching your domains.</CardDescription>
+        </div>
+        <div className="flex items-center gap-2">
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search address/status…" className="w-56" />
+          <Button variant="secondary" onClick={() => refetch()} loading={isFetching}>Refresh</Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <DataTable
+          columns={columns}
+          data={data?.entries}
+          loading={isLoading}
+          error={error}
+          onRetry={refetch}
+          getRowKey={(r, i) => `${r.queue_id || 'nq'}-${r.to}-${i}`}
+          pageSize={25}
+          emptyTitle="No delivery events"
+          emptyDescription="No recent Postfix activity for this account's domains."
+          emptyIcon={Mail}
+        />
+      </CardContent>
+    </Card>
+  )
+}
+
 // --- Page ----------------------------------------------------------------
 
 export default function Email() {
@@ -571,6 +669,8 @@ export default function Email() {
             <TabsTrigger value="forwarders"><Forward className="h-4 w-4" /> Forwarders</TabsTrigger>
             <TabsTrigger value="catchall"><AtSign className="h-4 w-4" /> Catch-all</TabsTrigger>
             <TabsTrigger value="spam"><ShieldAlert className="h-4 w-4" /> Spam filter</TabsTrigger>
+            <TabsTrigger value="routing"><Network className="h-4 w-4" /> Routing</TabsTrigger>
+            <TabsTrigger value="delivery"><ScrollText className="h-4 w-4" /> Delivery log</TabsTrigger>
           </TabsList>
           <TabsContent value="mailboxes">
             <MailboxesTab domain={domain} />
@@ -583,6 +683,12 @@ export default function Email() {
           </TabsContent>
           <TabsContent value="spam">
             <SpamTab username={username} domain={domain} />
+          </TabsContent>
+          <TabsContent value="routing">
+            <RoutingTab username={username} domain={domain} />
+          </TabsContent>
+          <TabsContent value="delivery">
+            <DeliveryLogTab username={username} />
           </TabsContent>
         </Tabs>
       )}

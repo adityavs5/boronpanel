@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, cgroups, cpanel_import, disktree, events, fail2ban, fileauth, filemanager, firewall, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_php_ini, handlers_redirect, handlers_usage, health, ipwhitelist, logs, lscache, mailqueue, nameservers, nodeapps, notifications, nsisolation, ols, pma, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, totp, usage_alerts, waf, webhooks, wordpress
+from daemon import appinstaller, audit, backup, bulkops, cgroups, cmdjobs, composerui, cpanel_import, disktree, events, fail2ban, fileauth, filemanager, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, health, identity_admin, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, nameservers, nodeapps, notifications, nsisolation, ols, parked, pma, procmanager, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -110,6 +110,13 @@ OP_TABLE = {
     "file.mkdir": filemanager.mkdir,
     "file.delete": filemanager.delete,
     "file.move": filemanager.move,
+    # Phase 8 feature 13: copy, multi-select bulk ops, zip, and search
+    "file.copy": filemanager.copy,
+    "file.bulk_delete": filemanager.bulk_delete,
+    "file.bulk_move": filemanager.bulk_move,
+    "file.bulk_copy": filemanager.bulk_copy,
+    "file.zip": filemanager.make_zip,
+    "file.search": filemanager.search,
     "panel_user.create": handlers_auth.create_panel_user,
     "panel_user.set_password": handlers_auth.set_panel_user_password,
     "auth.create_session": handlers_auth.create_session,
@@ -296,6 +303,50 @@ OP_TABLE = {
     "usage.limits.get": usage_alerts.get_limits,
     "usage.limits.set": usage_alerts.set_limits,
     "usage.alerts.get": usage_alerts.get_alerts,
+    # Phase 8 feature 1: login-as-user (admin impersonation)
+    "impersonation.create_token": impersonation.create_token,
+    "impersonation.redeem_token": impersonation.redeem_token,
+    "impersonation.end": impersonation.end,
+    # Phase 8 feature 2: admin account editor (identity + passwords)
+    "account.set_password": identity_admin.set_account_password,
+    "account.set_contact_email": identity_admin.set_contact_email,
+    "account.set_primary_domain": identity_admin.set_primary_domain,
+    "account.rename": identity_admin.rename_account,
+    # Phase 8 feature 3: parked (alias) domains
+    "parked.add": parked.add_parked_domain,
+    "parked.list": parked.list_parked_domains,
+    "parked.remove": parked.remove_parked_domain,
+    # Phase 8 feature 4: whole-domain forwarding
+    "forwarding.set": forwarding.set_forwarding,
+    "forwarding.get": forwarding.get_forwarding,
+    "forwarding.delete": forwarding.delete_forwarding,
+    # Phase 8 feature 5: email delivery log (Postfix log, scoped per account)
+    "maillog.delivery": maillog.get_delivery_log,
+    # Phase 8 feature 6: per-domain email routing (Local/Remote/Backup MX)
+    "email_routing.get": handlers_email_routing.get_routing,
+    "email_routing.set": handlers_email_routing.set_routing,
+    # Phase 8 feature 7: web terminal (ephemeral SSH key inject/remove)
+    "terminal.open": terminal.open_session,
+    "terminal.close": terminal.close_session,
+    "terminal.list": terminal.list_sessions,
+    # Phase 8 feature 8: WP-CLI UI (async, as the account user)
+    "wpcli.detect": wpcli.detect_installs,
+    "wpcli.run": wpcli.run_wpcli,
+    "wpcli.get": wpcli.get_run,
+    "wpcli.list": wpcli.list_runs,
+    # Phase 8 feature 9: Composer UI (async, as the account user)
+    "composer.run": composerui.run_composer,
+    "composer.get": composerui.get_run,
+    "composer.list": composerui.list_runs,
+    # Phase 8 feature 10: process manager (strictly uid-scoped)
+    "processes.list": procmanager.list_processes,
+    "processes.kill": procmanager.kill_process,
+    # Phase 8 feature 11: admin-only account notes (append-only)
+    "notes.add": handlers_notes.add_note,
+    "notes.list": handlers_notes.list_notes,
+    # Phase 8 feature 12: bulk account operations (async, stop on first failure)
+    "bulk.trigger": bulkops.trigger_bulk_action,
+    "bulk.get": bulkops.get_bulk_action,
     # Phase 7b feature 6: staging environments
     "staging.create": staging.create_staging,
     "staging.sync": staging.sync_staging,
@@ -333,6 +384,15 @@ REPORTING_OPS = {
     # Phase 7a feature 4: lscache.stats walks the domain's cache-storage
     # directory tree -- same reasoning as disktree.get/top_files above.
     "lscache.stats",
+    # Phase 8 feature 5: parses up to ~12MB of the Postfix mail log -- same
+    # isolation reasoning as disktree/usage above.
+    "maillog.delivery",
+    # Phase 8 feature 10: samples live process state (psutil, ~0.1s CPU sample)
+    # -- same dashboard-polling isolation reasoning as health/services above.
+    "processes.list",
+    # Phase 8 feature 13: file search walks the account's home tree -- same
+    # isolation reasoning as disktree.get/top_files above.
+    "file.search",
 }
 
 # Each phase wires its own account-scoped teardown/suspend behavior here
@@ -407,6 +467,9 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: events.emit("account.ter
 # Domain/DatabaseGrant rows scoped to this account); this only cleans up
 # this feature's own bookkeeping row.
 handlers_account.TERMINATE_HOOKS.append(lambda account: staging.terminate_account_staging(account))
+# Phase 8 feature 3: drop ParkedDomain bookkeeping rows on termination (the
+# parked Domain rows + vhosts are already handled by ols.terminate_vhost).
+handlers_account.TERMINATE_HOOKS.append(lambda account: parked.terminate_account_parked(account))
 
 
 def register_op(name: str, handler) -> None:

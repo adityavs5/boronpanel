@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   FolderTree, Folder, FolderUp, File as FileIcon, FileText, Link2,
   Home, ChevronRight, Plus, Upload, Trash2, RefreshCw, Save,
+  Copy, FolderInput, Archive, Search as SearchIcon, X,
 } from 'lucide-react'
+
+// Monaco is lazy-loaded so it only enters the bundle when the editor opens.
+const CodeEditor = lazy(() => import('@/components/CodeEditor'))
+// Extensions that get the Monaco code editor (goal: .php/.js/.css/.html/.json/.py/.env).
+const CODE_EXT = /\.(php|js|jsx|mjs|cjs|ts|tsx|css|scss|less|html?|json|py|env|ini|md|xml|ya?ml|sh|sql)$/i
+function isCodeFile(name) { return name === '.env' || CODE_EXT.test(name) }
 import { get, post, put, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatBytes, formatDate } from '@/lib/utils'
@@ -12,6 +19,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { Input, Textarea, FormField } from '@/components/ui/Input'
+import { Select } from '@/components/ui/Select'
 import { Badge } from '@/components/ui/Badge'
 import { CenteredSpinner } from '@/components/ui/Spinner'
 import { ErrorState } from '@/components/ui/States'
@@ -60,6 +68,22 @@ export default function Files() {
   const [editFile, setEditFile] = useState(null) // { name, path }
   const [editContent, setEditContent] = useState('')
   const uploadRef = useRef(null)
+  // Phase 8 feature 13: multi-select + search + bulk ops.
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulkDialog, setBulkDialog] = useState(null) // 'move' | 'copy' | 'zip'
+  const [bulkDest, setBulkDest] = useState('')
+  const [zipName, setZipName] = useState('archive')
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [searchTerm, setSearchTerm] = useState('')
+  const [searchMode, setSearchMode] = useState('name')
+  const [activeSearch, setActiveSearch] = useState(null) // { term, mode }
+
+  const toggleSel = (p) => setSelected((prev) => {
+    const next = new Set(prev)
+    next.has(p) ? next.delete(p) : next.add(p)
+    return next
+  })
+  const clearSel = () => setSelected(new Set())
 
   const dirKey = ['files', username, path]
 
@@ -88,6 +112,9 @@ export default function Files() {
   }, [path])
 
   const invalidateDir = () => qc.invalidateQueries({ queryKey: dirKey })
+
+  // Clear multi-selection whenever we change directory.
+  useEffect(() => { setSelected(new Set()) }, [path])
 
   // --- mutations -----------------------------------------------------------
   const mkdirMut = useMutation({
@@ -140,6 +167,38 @@ export default function Files() {
     onError: (e) => toast.error('Could not save file', e.message),
   })
 
+  // --- bulk ops + search (Phase 8 feature 13) ------------------------------
+  const selectedPaths = () => [...selected]
+  const afterBulk = (msg) => (res) => {
+    const failed = (res?.results || []).filter((r) => !r.ok)
+    if (failed.length) toast.error('Some items failed', failed.map((f) => f.path).join(', '))
+    else toast.success(msg)
+    clearSel(); invalidateDir(); setBulkDialog(null); setBulkDeleteOpen(false)
+  }
+  const bulkDeleteMut = useMutation({
+    mutationFn: () => post(`/api/v1/accounts/${username}/files/bulk-delete`, { paths: selectedPaths() }),
+    onSuccess: afterBulk('Deleted'), onError: (e) => toast.error('Bulk delete failed', e.message),
+  })
+  const bulkMoveMut = useMutation({
+    mutationFn: () => post(`/api/v1/accounts/${username}/files/bulk-move`, { paths: selectedPaths(), dest: bulkDest.trim() }),
+    onSuccess: afterBulk('Moved'), onError: (e) => toast.error('Bulk move failed', e.message),
+  })
+  const bulkCopyMut = useMutation({
+    mutationFn: () => post(`/api/v1/accounts/${username}/files/bulk-copy`, { paths: selectedPaths(), dest: bulkDest.trim() }),
+    onSuccess: afterBulk('Copied'), onError: (e) => toast.error('Bulk copy failed', e.message),
+  })
+  const zipMut = useMutation({
+    mutationFn: () => post(`/api/v1/accounts/${username}/files/zip`, {
+      paths: selectedPaths(), archive: joinPath(path, zipName.trim()),
+    }),
+    onSuccess: afterBulk('Archive created'), onError: (e) => toast.error('Zip failed', e.message),
+  })
+  const searchQ = useQuery({
+    queryKey: ['file-search', username, activeSearch?.term, activeSearch?.mode, path],
+    queryFn: () => get(`/api/v1/accounts/${username}/files/search`, { params: { query: activeSearch.term, mode: activeSearch.mode, path } }),
+    enabled: !!activeSearch,
+  })
+
   // --- editor content ------------------------------------------------------
   const contentQ = useQuery({
     queryKey: ['file-content', username, editFile?.path],
@@ -177,6 +236,20 @@ export default function Files() {
   }
 
   const columns = [
+    {
+      key: 'select',
+      header: '',
+      searchable: false,
+      render: (r) => (
+        <input
+          type="checkbox"
+          checked={selected.has(joinPath(path, r.name))}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => toggleSel(joinPath(path, r.name))}
+          aria-label={`Select ${r.name}`}
+        />
+      ),
+    },
     {
       key: 'name',
       header: 'Name',
@@ -278,6 +351,67 @@ export default function Files() {
           </span>
         ))}
       </nav>
+
+      {/* Search bar (Phase 8 f13) */}
+      <form
+        className="mb-4 flex flex-wrap items-center gap-2"
+        onSubmit={(e) => { e.preventDefault(); if (searchTerm.trim()) setActiveSearch({ term: searchTerm.trim(), mode: searchMode }) }}
+      >
+        <div className="relative flex-1 min-w-[220px]">
+          <SearchIcon className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input className="pl-8" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder={`Search by ${searchMode} under /${path || 'home'}…`} />
+        </div>
+        <Select value={searchMode} onChange={(e) => setSearchMode(e.target.value)} className="w-36">
+          <option value="name">By name</option>
+          <option value="content">By content</option>
+        </Select>
+        <Button type="submit" variant="secondary" loading={searchQ.isFetching}>Search</Button>
+        {activeSearch && (
+          <Button type="button" variant="ghost" onClick={() => { setActiveSearch(null); setSearchTerm('') }}>
+            <X className="h-4 w-4" /> Clear
+          </Button>
+        )}
+      </form>
+
+      {/* Search results (Phase 8 f13) */}
+      {activeSearch && (
+        <Card className="mb-4">
+          <CardHeader><CardTitle className="text-sm">
+            Results for “{activeSearch.term}” ({activeSearch.mode}){searchQ.data?.truncated ? ' — showing first 500' : ''}
+          </CardTitle></CardHeader>
+          <CardContent>
+            {searchQ.isLoading ? <CenteredSpinner /> : searchQ.error ? (
+              <ErrorState error={searchQ.error} onRetry={searchQ.refetch} />
+            ) : (searchQ.data?.results || []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">No matches.</p>
+            ) : (
+              <ul className="max-h-72 space-y-1 overflow-auto">
+                {searchQ.data.results.map((r, i) => (
+                  <li key={`${r.path}-${i}`} className="rounded px-2 py-1 text-sm hover:bg-muted">
+                    <button type="button" className="text-left" onClick={() => { setPath(parentPath(r.path)); }}>
+                      <span className="font-mono text-xs text-foreground">{r.path}</span>
+                      {r.line ? <span className="ml-2 text-xs text-muted-foreground">:{r.line} {r.text}</span> : null}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Bulk action bar (Phase 8 f13) */}
+      {selected.size > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-card border border-accent/40 bg-accent/5 px-4 py-2.5">
+          <span className="text-sm font-medium text-foreground">{selected.size} selected</span>
+          <Button size="sm" variant="secondary" onClick={() => { setBulkDest(''); setBulkDialog('move') }}><FolderInput className="h-4 w-4" /> Move</Button>
+          <Button size="sm" variant="secondary" onClick={() => { setBulkDest(''); setBulkDialog('copy') }}><Copy className="h-4 w-4" /> Copy</Button>
+          <Button size="sm" variant="secondary" onClick={() => { setZipName('archive'); setBulkDialog('zip') }}><Archive className="h-4 w-4" /> Zip</Button>
+          <Button size="sm" variant="danger" onClick={() => setBulkDeleteOpen(true)}><Trash2 className="h-4 w-4" /> Delete</Button>
+          <Button size="sm" variant="ghost" onClick={clearSel}>Clear</Button>
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-4">
         {/* LEFT: directory navigation */}
@@ -392,6 +526,12 @@ export default function Files() {
               <div className="rounded-card border border-border bg-muted/40 p-6 text-center text-sm text-muted-foreground">
                 This looks like a binary file ({formatBytes(contentQ.data?.size)}) and can't be edited as text.
               </div>
+            ) : editFile && isCodeFile(editFile.name) ? (
+              <div className="overflow-hidden rounded-card border border-border">
+                <Suspense fallback={<div className="p-6"><CenteredSpinner label="Loading editor…" /></div>}>
+                  <CodeEditor value={editContent} onChange={setEditContent} filename={editFile.name} height="60vh" />
+                </Suspense>
+              </div>
             ) : (
               <Textarea
                 value={editContent}
@@ -425,6 +565,61 @@ export default function Files() {
         variant="danger"
         loading={deleteMut.isPending}
         onConfirm={() => deleteMut.mutate(deleteTarget)}
+      />
+
+      {/* Bulk move / copy (Phase 8 f13) */}
+      <Dialog open={bulkDialog === 'move' || bulkDialog === 'copy'} onOpenChange={(o) => { if (!o) setBulkDialog(null) }}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>{bulkDialog === 'copy' ? 'Copy' : 'Move'} {selected.size} item(s)</DialogTitle>
+            <DialogDescription>Destination folder (relative to your home).</DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <FormField label="Destination folder" hint="Blank = home directory.">
+              <Input autoFocus value={bulkDest} onChange={(e) => setBulkDest(e.target.value)} placeholder="public_html/backup" />
+            </FormField>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
+            <Button
+              loading={bulkMoveMut.isPending || bulkCopyMut.isPending}
+              onClick={() => (bulkDialog === 'copy' ? bulkCopyMut : bulkMoveMut).mutate()}
+            >
+              {bulkDialog === 'copy' ? 'Copy here' : 'Move here'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk zip (Phase 8 f13) */}
+      <Dialog open={bulkDialog === 'zip'} onOpenChange={(o) => { if (!o) setBulkDialog(null) }}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>Zip {selected.size} item(s)</DialogTitle>
+            <DialogDescription>Creates a .zip in the current folder.</DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <FormField label="Archive name">
+              <Input autoFocus value={zipName} onChange={(e) => setZipName(e.target.value)} placeholder="archive" />
+            </FormField>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
+            <Button loading={zipMut.isPending} disabled={!zipName.trim()} onClick={() => zipMut.mutate()}>Create archive</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk delete confirmation (Phase 8 f13) */}
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onOpenChange={setBulkDeleteOpen}
+        title={`Delete ${selected.size} selected item(s)?`}
+        description="This permanently removes the selected files and folders. This cannot be undone."
+        confirmLabel="Delete all"
+        variant="danger"
+        loading={bulkDeleteMut.isPending}
+        onConfirm={() => bulkDeleteMut.mutate()}
       />
     </div>
   )

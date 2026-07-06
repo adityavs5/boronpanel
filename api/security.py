@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import read_session
-from shared.models import Account, ApiToken, Domain, PanelUser, Session
+from shared.models import Account, ApiToken, Domain, ImpersonationSession, PanelUser, Session
 
 COOKIE_NAME = "fh_session"
 COOKIE_MAX_AGE_SECONDS = 7 * 24 * 3600
@@ -66,6 +66,20 @@ class Identity:
     role: str  # admin | customer
     account_id: int | None
     auth_method: str  # session | token
+    # Phase 8 feature 1: set only while an admin is impersonating a customer.
+    # `impersonator` is the admin's panel username (also carried as this
+    # Identity's audit `username`, so actions taken while impersonating are
+    # attributable to the admin); `impersonated_account` is the account being
+    # acted as. When set, `role` is forced to "customer" and `account_id` to
+    # the impersonated account, so an impersonation session can never reach an
+    # admin-only endpoint even though its underlying session belongs to an
+    # admin panel user.
+    impersonator: str | None = None
+    impersonated_account: str | None = None
+
+    @property
+    def is_impersonating(self) -> bool:
+        return self.impersonator is not None
 
 
 def _identity_from_session_cookie(cookie_value: str) -> Identity | None:
@@ -81,6 +95,29 @@ def _identity_from_session_cookie(cookie_value: str) -> Identity | None:
         user = db.get(PanelUser, row.panel_user_id)
         if user is None or user.disabled:
             return None
+        # Phase 8 feature 1: if this session is an active impersonation, the
+        # underlying PanelUser is the ADMIN, but the identity must be
+        # downscoped to a customer for the impersonated account -- so it can
+        # only touch that one account and can never reach an admin endpoint.
+        imp = db.scalar(
+            select(ImpersonationSession).where(
+                ImpersonationSession.session_id == session_id,
+                ImpersonationSession.ended_at.is_(None),
+            )
+        )
+        if imp is not None:
+            account = db.get(Account, imp.account_id)
+            if account is None:
+                return None
+            return Identity(
+                panel_user_id=user.id,
+                username=imp.admin_username,
+                role="customer",
+                account_id=imp.account_id,
+                auth_method="session",
+                impersonator=imp.admin_username,
+                impersonated_account=account.username,
+            )
         return Identity(user.id, user.username, user.role, user.account_id, "session")
 
 

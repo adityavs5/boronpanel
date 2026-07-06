@@ -1,16 +1,18 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Globe, Plus, Trash2, Settings, MoreHorizontal } from 'lucide-react'
+import { Globe, Plus, Trash2, Settings, MoreHorizontal, Copy } from 'lucide-react'
 import { get, post, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Input, FormField } from '@/components/ui/Input'
+import { Select } from '@/components/ui/Select'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter,
   ConfirmDialog,
@@ -21,7 +23,108 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { toast } from '@/components/ui/Toast'
 
-const KIND_VARIANT = { primary: 'accent', addon: 'neutral', subdomain: 'info' }
+const KIND_VARIANT = { primary: 'accent', addon: 'neutral', subdomain: 'info', parked: 'warning' }
+
+// Phase 8 feature 3: parked (alias) domains — serve the same docroot as a target.
+function ParkedDomainsCard({ username, domains }) {
+  const qc = useQueryClient()
+  const base = `/api/v1/accounts/${username}/parked-domains`
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState({ parked_domain: '', target_domain: '' })
+  const [toDelete, setToDelete] = useState(null)
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['parked-domains', username],
+    queryFn: () => get(base),
+    enabled: !!username,
+  })
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['parked-domains', username] })
+
+  const addMut = useMutation({
+    mutationFn: () => post(base, { parked_domain: form.parked_domain.trim(), target_domain: form.target_domain || null }),
+    onSuccess: () => { toast.success('Parked domain added'); setForm({ parked_domain: '', target_domain: '' }); setOpen(false); invalidate() },
+    onError: (e) => toast.error('Could not park domain', e.message),
+  })
+  const deleteMut = useMutation({
+    mutationFn: (row) => del(`${base}/${row.parked_domain}`),
+    onSuccess: () => { toast.success('Parked domain removed'); invalidate(); setToDelete(null) },
+    onError: (e) => { toast.error('Could not remove parked domain', e.message); setToDelete(null) },
+  })
+
+  const targetable = (domains || []).filter((d) => d.kind !== 'parked')
+  const columns = [
+    { key: 'parked_domain', header: 'Parked domain', searchable: true, render: (r) => <span className="font-medium text-foreground">{r.parked_domain}</span> },
+    { key: 'target_domain', header: 'Serves', render: (r) => <span className="font-mono text-xs text-muted-foreground">{r.target_domain}</span> },
+    { key: 'ssl_status', header: 'SSL', render: (r) => <StatusBadge status={r.ssl_status || 'none'} /> },
+    {
+      key: 'actions', header: '', align: 'right', render: (r) => (
+        <Button variant="ghost" size="icon-sm" title="Remove" onClick={() => setToDelete(r)}>
+          <Trash2 className="h-4 w-4 text-danger" />
+        </Button>
+      ),
+    },
+  ]
+
+  return (
+    <Card className="mt-6">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle className="flex items-center gap-2"><Copy className="h-4 w-4" /> Parked (alias) domains</CardTitle>
+          <CardDescription>Extra domains that serve the same site as one of your existing domains.</CardDescription>
+        </div>
+        <Button size="sm" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Park a domain</Button>
+      </CardHeader>
+      <CardContent>
+        <DataTable
+          columns={columns}
+          data={data?.parked_domains}
+          loading={isLoading}
+          error={error}
+          onRetry={refetch}
+          getRowKey={(r) => r.parked_domain}
+          pageSize={10}
+          emptyTitle="No parked domains"
+          emptyDescription="Park a domain to point it at an existing site."
+          emptyIcon={Copy}
+        />
+      </CardContent>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent size="sm">
+          <DialogHeader><DialogTitle>Park a domain</DialogTitle></DialogHeader>
+          <form onSubmit={(e) => { e.preventDefault(); if (form.parked_domain.trim()) addMut.mutate() }}>
+            <DialogBody className="space-y-4">
+              <FormField label="Domain to park" required>
+                <Input autoFocus value={form.parked_domain} placeholder="alias.com"
+                  onChange={(e) => setForm((f) => ({ ...f, parked_domain: e.target.value }))} required />
+              </FormField>
+              <FormField label="Serves the same site as" hint="Defaults to your primary domain.">
+                <Select value={form.target_domain} onChange={(e) => setForm((f) => ({ ...f, target_domain: e.target.value }))}>
+                  <option value="">Primary domain</option>
+                  {targetable.map((d) => <option key={d.domain} value={d.domain}>{d.domain}</option>)}
+                </Select>
+              </FormField>
+            </DialogBody>
+            <DialogFooter>
+              <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
+              <Button type="submit" loading={addMut.isPending} disabled={!form.parked_domain.trim()}>Park domain</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={!!toDelete}
+        onOpenChange={(o) => !o && setToDelete(null)}
+        title={toDelete ? `Remove parked domain ${toDelete.parked_domain}?` : ''}
+        confirmLabel="Remove"
+        variant="danger"
+        loading={deleteMut.isPending}
+        onConfirm={() => deleteMut.mutate(toDelete)}
+      />
+    </Card>
+  )
+}
 
 export default function Domains() {
   const username = useAccountUsername()
@@ -147,6 +250,8 @@ export default function Domains() {
         emptyIcon={Globe}
         emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Add domain</Button>}
       />
+
+      <ParkedDomainsCard username={username} domains={data?.domains} />
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent size="sm">

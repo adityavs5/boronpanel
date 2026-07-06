@@ -425,6 +425,90 @@ function RedirectsTab({ username, domain }) {
 }
 
 // ---------------------------------------------------------------------------
+// Forwarding (whole-domain 301/302) — Phase 8 feature 4
+// ---------------------------------------------------------------------------
+function ForwardingTab({ username, domain }) {
+  const qc = useQueryClient()
+  const base = `/api/v1/accounts/${username}/domains/${domain}/forwarding`
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['forwarding', username, domain],
+    queryFn: () => get(base),
+    enabled: !!username && !!domain,
+  })
+  const fwd = data?.forwarding || null
+  const [seeded, setSeeded] = useState(false)
+  const [form, setForm] = useState({ target_url: '', status_code: '301', keep_path: true })
+  if (!seeded && data) {
+    if (fwd) setForm({ target_url: fwd.target_url, status_code: String(fwd.status_code), keep_path: fwd.keep_path })
+    setSeeded(true)
+  }
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['forwarding', username, domain] })
+
+  const saveMut = useMutation({
+    mutationFn: () => put(base, { target_url: form.target_url.trim(), status_code: Number(form.status_code), keep_path: form.keep_path }),
+    onSuccess: () => { toast.success('Forwarding saved', `${domain} now redirects.`); invalidate() },
+    onError: (e) => toast.error('Could not save forwarding', e.message),
+  })
+  const removeMut = useMutation({
+    mutationFn: () => del(base),
+    onSuccess: () => { toast.success('Forwarding removed'); setForm({ target_url: '', status_code: '301', keep_path: true }); invalidate() },
+    onError: (e) => toast.error('Could not remove forwarding', e.message),
+  })
+
+  if (isLoading) return <CardSkeleton />
+  if (error) return <ErrorState error={error} onRetry={refetch} />
+
+  return (
+    <div className="max-w-2xl">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><ExternalLink className="h-4 w-4" /> Domain forwarding</CardTitle>
+          <CardDescription>
+            Redirect this ENTIRE domain to another URL. Replaces normal serving (the ACME challenge path is kept, so
+            SSL still works). For redirecting a single path, use the Redirects tab instead.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {fwd && (
+            <p className="rounded-btn border border-accent/40 bg-accent/10 px-3 py-2 text-sm text-foreground">
+              Currently forwarding to <span className="font-mono">{fwd.target_url}</span> ({fwd.status_code}
+              {fwd.keep_path ? ', keeping path' : ''}).
+            </p>
+          )}
+          <FormField label="Destination URL" required hint="Absolute http(s) URL, e.g. https://example.org">
+            <Input required type="url" value={form.target_url} placeholder="https://example.org"
+              onChange={(e) => setForm((f) => ({ ...f, target_url: e.target.value }))} />
+          </FormField>
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Redirect type">
+              <Select value={form.status_code} onChange={(e) => setForm((f) => ({ ...f, status_code: e.target.value }))}>
+                <option value="301">301 (permanent)</option>
+                <option value="302">302 (temporary)</option>
+              </Select>
+            </FormField>
+            <FormField label="Keep request path" hint="Append the original URI to the target.">
+              <div className="flex h-10 items-center">
+                <Switch checked={form.keep_path} onCheckedChange={(v) => setForm((f) => ({ ...f, keep_path: v }))} />
+              </div>
+            </FormField>
+          </div>
+        </CardContent>
+        <CardFooter className="flex gap-2">
+          <Button loading={saveMut.isPending} disabled={!form.target_url.trim()} onClick={() => saveMut.mutate()}>
+            <Save className="h-4 w-4" /> {fwd ? 'Update forwarding' : 'Enable forwarding'}
+          </Button>
+          {fwd && (
+            <Button variant="outline" loading={removeMut.isPending} onClick={() => removeMut.mutate()}>
+              <Trash2 className="h-4 w-4" /> Remove forwarding
+            </Button>
+          )}
+        </CardFooter>
+      </Card>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Cache (LSCache)
 // ---------------------------------------------------------------------------
 function LscacheForm({ username, domain, settings }) {
@@ -1097,6 +1181,7 @@ export default function DomainDetail() {
           <TabsTrigger value="dns">DNS</TabsTrigger>
           <TabsTrigger value="nameservers">Nameservers</TabsTrigger>
           <TabsTrigger value="redirects">Redirects</TabsTrigger>
+          <TabsTrigger value="forwarding">Forwarding</TabsTrigger>
           <TabsTrigger value="cache">Cache</TabsTrigger>
           <TabsTrigger value="php">PHP</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
@@ -1106,6 +1191,7 @@ export default function DomainDetail() {
         <TabsContent value="dns"><DnsTab domain={domain} /></TabsContent>
         <TabsContent value="nameservers"><NameserversTab username={username} domain={domain} /></TabsContent>
         <TabsContent value="redirects"><RedirectsTab username={username} domain={domain} /></TabsContent>
+        <TabsContent value="forwarding"><ForwardingTab username={username} domain={domain} /></TabsContent>
         <TabsContent value="cache"><CacheTab username={username} domain={domain} /></TabsContent>
         <TabsContent value="php"><PhpTab username={username} domain={domain} /></TabsContent>
         <TabsContent value="security"><SecurityTab username={username} domain={domain} /></TabsContent>

@@ -99,6 +99,27 @@ def _send_email(sender: str, recipient: str, subject: str, body: str) -> None:
         smtp.send_message(msg)
 
 
+def send_direct(account, subject: str, body: str) -> bool:
+    """Phase 8 feature 12: send an ad-hoc admin notification to an account's
+    contact email (used by the bulk 'notify' action). Uses the global sender;
+    returns False (not an error) if no sender or no customer_email is set --
+    there is simply nowhere to send it. Raises on an actual SMTP failure so the
+    bulk job records it and stops."""
+    if account is None:
+        return False
+    with write_session() as session:
+        settings_row = _get_settings(session)
+        if not settings_row.sender_address:
+            return False
+        prefs = _get_prefs(session, account.id)
+        if not prefs.customer_email:
+            return False
+        sender = settings_row.sender_address
+        recipient = prefs.customer_email
+    _send_email(sender, recipient, subject, body)
+    return True
+
+
 def maybe_send(event_type: str, account, **context) -> bool:
     """Returns True only if an email was actually handed to the local MTA
     -- callers don't need the result today, but tests do, to distinguish

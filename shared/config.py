@@ -246,6 +246,31 @@ class Settings:
     # Phase 7b feature 6: staging environments.
     staging_db_prefix: str = "stg_"
 
+    # Phase 8 feature 5: email delivery log. Postfix's mail log on Ubuntu.
+    # Read by forgehostd (root) only -- it's mode 0640 syslog:adm, so the
+    # unprivileged forgehost-api can't read it, matching the "only the daemon
+    # touches privileged files, every access is an audited RPC" invariant.
+    mail_log_path: str = "/var/log/mail.log"
+    mail_delivery_log_max_entries: int = 500
+    # How much of the tail of the mail log to parse. Bounded so a huge,
+    # un-rotated log can never make one request read gigabytes.
+    mail_log_scan_max_bytes: int = 12 * 1024 * 1024
+
+    # Phase 8 feature 6: email routing. 'backup' MX mode writes accepted
+    # domains into this Postfix relay-domains map (postmap'd + reload).
+    postfix_relay_domains_map: str = "/etc/postfix/forgehost_relay_domains"
+
+    # Phase 8 features 8/9: WP-CLI + Composer, run async as the account user.
+    # composer is already installed on this box (2.7.x); wp-cli.phar is fetched
+    # server-wide on first use if missing ("install server-wide if missing").
+    composer_bin: str = "/usr/bin/composer"
+    composer_download_url: str = "https://getcomposer.org/download/latest-stable/composer.phar"
+    composer_phar_fallback: str = "/usr/local/bin/composer.phar"
+    wpcli_phar_path: str = "/usr/local/bin/wp-cli.phar"
+    wpcli_download_url: str = "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"
+    command_run_concurrency: int = 3
+    command_run_timeout_seconds: int = 600
+
     secrets: dict[str, str] = field(default_factory=dict)
 
     @property

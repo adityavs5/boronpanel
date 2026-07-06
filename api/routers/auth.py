@@ -97,9 +97,18 @@ def whoami(identity: Identity = Depends(get_identity)):
     hosting-account username (what the account-scoped API paths use), not the
     panel login name; admins have no bound account."""
     if identity.role == "admin":
-        return {"role": "admin", "username": identity.username, "account_username": None}
+        return {"role": "admin", "username": identity.username, "account_username": None, "impersonating": False}
     account_username = _customer_account_username(identity.account_id)
-    return {"role": "customer", "username": account_username, "account_username": account_username}
+    # Phase 8 feature 1: surface impersonation so the SPA can show a persistent
+    # "Return to admin" banner even across a hard refresh (the flag is derived
+    # server-side from the session, never trusted from the client).
+    return {
+        "role": "customer",
+        "username": account_username,
+        "account_username": account_username,
+        "impersonating": identity.is_impersonating,
+        "impersonator": identity.impersonator,
+    }
 
 
 @router.post("/login/2fa")

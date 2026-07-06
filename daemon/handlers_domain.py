@@ -151,6 +151,14 @@ def remove_domain(params: dict) -> dict:
     ols.remove_domain_vhost(account_snapshot, domain_name)
     handlers_redirect.delete_redirects_for_domain(domain_name)
     lscache.delete_settings_for_domain(domain_name)
+    # Phase 8 feature 4: drop any whole-domain forwarding row for this domain.
+    from daemon import forwarding
+
+    forwarding.delete_forwarding_for_domain(domain_name)
+    # Phase 8 feature 6: drop any email-routing row (refreshes the relay map).
+    from daemon import handlers_email_routing
+
+    handlers_email_routing.delete_routing_for_domain(domain_name)
 
     return {"domain": domain_name, "kind": kind, "status": "removed"}
 

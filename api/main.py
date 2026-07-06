@@ -19,7 +19,7 @@ from sqlalchemy import select
 from shared.db import read_session
 from shared.models import IpWhitelistEntry
 
-from api.routers import account_backups, accounts, apps, auditlog, auth, backups, bandwidth, cpanel_import, cron, databases, disktree, dns, domains, email, fail2ban, fileauth, files, firewall, ftp, git, health, hotlink, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, nameservers, nodeapps, notifications, php_ini, pma, pythonapps, redirects, redis_router, services, slowquery, sshkeys, ssl_router, staging, tokens, twofactor, usage, usage_alerts, waf, webhooks, wordpress
+from api.routers import account_backups, accounts, apps, auditlog, auth, backups, bandwidth, bulkops, cpanel_import, cron, databases, devtools, disktree, dns, domains, email, email_extras, fail2ban, fileauth, files, firewall, forwarding, ftp, git, health, hotlink, identity_admin, impersonation, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, nameservers, nodeapps, notes, notifications, parked, php_ini, pma, processes, pythonapps, redirects, redis_router, services, slowquery, sshkeys, ssl_router, staging, terminal, tokens, twofactor, usage, usage_alerts, waf, webhooks, wordpress
 
 app = FastAPI(title="Forgehost", docs_url="/api/docs", redoc_url=None)
 
@@ -92,8 +92,14 @@ async def _security_headers(request, call_next):
     # permitted, and only for the SPA's own document.
     path = request.url.path
     if path == "/app" or path.startswith("/app/"):
+        # worker-src 'self' blob:  — the Monaco code editor (Phase 8 f13) loads
+        # its bundled, same-origin language workers as blob Workers; still no
+        # external/CDN script. script-src keeps 'self' (+ 'unsafe-inline' is NOT
+        # granted). connect-src 'self' also covers the terminal's same-origin
+        # WebSocket (Phase 8 f7).
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "default-src 'self'; script-src 'self'; worker-src 'self' blob:; "
+            "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
             "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         )
@@ -125,6 +131,28 @@ app.include_router(apps.domain_api_router)
 app.include_router(ssl_router.account_api_router)
 app.include_router(mail.account_api_router)
 app.include_router(email.admin_router)
+# Phase 8 feature 1: login-as-user. admin_api_router mints the token under
+# /api/v1/admin/accounts/{u}/impersonate; api_router redeems/returns.
+app.include_router(impersonation.admin_api_router)
+app.include_router(impersonation.api_router)
+# Phase 8 feature 2: admin account editor (identity + passwords).
+app.include_router(identity_admin.api_router)
+# Phase 8 feature 3/4: parked domains + whole-domain forwarding.
+app.include_router(parked.api_router)
+app.include_router(forwarding.api_router)
+# Phase 8 feature 5/6: email delivery log + per-domain email routing.
+app.include_router(email_extras.delivery_log_router)
+app.include_router(email_extras.routing_router)
+# Phase 8 feature 7: web terminal (WebSocket + a small session-count endpoint).
+app.include_router(terminal.router)
+app.include_router(terminal.http_router)
+# Phase 8 features 8/9: WP-CLI + Composer.
+app.include_router(devtools.wpcli_router)
+app.include_router(devtools.composer_router)
+# Phase 8 features 10/11/12: process manager, account notes, bulk actions.
+app.include_router(processes.api_router)
+app.include_router(notes.api_router)
+app.include_router(bulkops.api_router)
 
 
 @app.get("/")

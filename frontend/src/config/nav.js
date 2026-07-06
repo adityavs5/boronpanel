@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Users, Globe, Mail, Database, FolderOpen, Archive, Boxes,
   Server, Network, ShieldCheck, Clock, Upload, GitBranch, KeyRound, Activity,
   Cog, Inbox, Flame, ShieldAlert, ScrollText, ShieldHalf, Gauge, ListChecks,
-  Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive,
+  Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
 } from 'lucide-react'
 
 // Customer nav — resource pages scoped to the signed-in account. Paths are
@@ -27,6 +27,9 @@ export const customerNav = [
   { label: 'FTP', to: '/ftp', icon: Upload },
   { label: 'Git', to: '/git', icon: GitBranch },
   { label: 'SSH Keys', to: '/ssh', icon: KeyRound },
+  { label: 'Terminal', to: '/terminal', icon: TerminalSquare },
+  { label: 'Dev Tools', to: '/devtools', icon: Wrench },
+  { label: 'Processes', to: '/processes', icon: Cpu },
   { label: 'Logs', to: '/logs', icon: ScrollText },
   { label: 'Security', to: '/security', icon: ShieldCheck },
 ]

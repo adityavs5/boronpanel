@@ -121,6 +121,33 @@ def set_shell(username: str, shell: str) -> None:
     run(["usermod", "-s", shell, username], check=True)
 
 
+def rename_login(old_username: str, new_username: str) -> None:
+    """Phase 8 feature 2: rename a Linux login (`usermod -l`). uid/gid are
+    preserved (so quotas and namespace, both keyed by uid, need no change).
+    Does NOT move the home dir -- see move_home. Split into discrete
+    primitives so the rename saga (daemon/identity_admin.py) can compensate
+    each step independently on failure."""
+    _assert_safe_username(old_username)
+    _assert_safe_username(new_username)
+    run(["usermod", "-l", new_username, old_username], check=True)
+
+
+def rename_group(old_name: str, new_name: str) -> None:
+    """Rename the account's primary group (same name as the login on Ubuntu
+    with USERGROUPS_ENAB) via `groupmod -n`."""
+    _assert_safe_username(old_name)
+    _assert_safe_username(new_name)
+    run(["groupmod", "-n", new_name, old_name], check=True)
+
+
+def move_home(login: str, new_home: str) -> None:
+    """Move `login`'s home dir to `new_home` (`usermod -d <new_home> -m`).
+    Same-filesystem move preserves ownership/mode/POSIX ACLs (the
+    setfacl u:nobody:rX grant survives), so no re-ACL is needed afterward."""
+    _assert_safe_username(login)
+    run(["usermod", "-d", new_home, "-m", login], check=True)
+
+
 def lock_user(username: str) -> None:
     _assert_safe_username(username)
     run(["usermod", "-L", username], check=True)

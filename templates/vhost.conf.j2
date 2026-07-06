@@ -161,11 +161,26 @@ context /{{ pd.relative_path }}/ {
 
 rewrite {
   enable                  1
-  autoLoadHtaccess        {{ 0 if suspended else 1 }}
+  autoLoadHtaccess        {{ 0 if (suspended or forwarding) else 1 }}
 {% if suspended %}
   rules                   <<<END_forgehost_rules
 RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
 RewriteRule ^(.*)$ /index.html [L]
+END_forgehost_rules
+{% elif forwarding %}
+{# Phase 8 feature 4: whole-domain 301/302 forwarding. Everything except the
+   ACME HTTP-01 challenge path (so SSL stays issuable/renewable for a forwarded
+   domain) is redirected to the target URL. keep_path appends the original
+   request URI; otherwise every path collapses to the bare target. The target
+   is validated http(s) with no regex metacharacters (validate_redirect_target),
+   so it's a safe rewrite replacement string. #}
+  rules                   <<<END_forgehost_rules
+RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+{% if forwarding.keep_path %}
+RewriteRule ^/?(.*)$ {{ forwarding.target_url }}/$1 [R={{ forwarding.status_code }},L]
+{% else %}
+RewriteRule ^/?(.*)$ {{ forwarding.target_url }} [R={{ forwarding.status_code }},L]
+{% endif %}
 END_forgehost_rules
 {% elif hotlink or redirects %}
   {# Phase 4 feature 2 (hotlink) and Phase 3 feature 7 (redirects) are
