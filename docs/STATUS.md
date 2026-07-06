@@ -56,6 +56,62 @@ unregistered dead code.
 
 ---
 
+## Security Audit 2 (2026-07-06): new-attack-surface re-audit since Audit 1
+
+Second full security audit, scoped to **everything added since Audit 1**
+(which covered the codebase as of Phase 4): the React SPA, Node/Python app
+hosting, per-account Redis, per-domain LSCache, namespace isolation, cPanel
+import, email notifications, webhooks, staging, and the 2FA/auth changes.
+Threat model: `docs/AUDIT2-THREATMODEL.md` (written before any fixes).
+Findings: `docs/AUDIT2-FINDINGS.md` (all 10 focus areas documented).
+
+**Result: 1 Critical, 1 High, 2 Medium fixed (all with regression tests); the
+route-ownership sweep found no IDOR regression across the 10 new routers.**
+
+- **A2-1 (Critical) — Staging cross-account DB exfiltration.** `daemon/staging.py`
+  read the source DB name from the account's own (attacker-writable)
+  `wp-config.php` and dumped it via `mysqldump` running as the MariaDB admin
+  (access to every DB). A customer could set `DB_NAME` to another account's
+  database (or the `forgehost_mail` schema) and have staging clone it into a DB
+  they control. **Fixed:** `_assert_source_db_owned_by_account` requires the
+  source DB to be in `DatabaseGrant` for the acting account, on both create and
+  sync paths.
+- **A2-2 (High) — Webhook leaks the initial account password.** `account.created`
+  is emitted with the initial plaintext password (for the email channel) and
+  fanned to webhooks, where `maybe_trigger` put it into the payload — POSTed to
+  an external URL and stored plaintext in `WebhookDelivery`. **Fixed:** strip a
+  denylist of sensitive context keys at the webhook boundary.
+- **A2-3 (Medium) — Webhook SSRF.** The root daemon POSTed to any admin URL with
+  no internal-IP block. **Fixed:** reject literal internal IPs at creation +
+  authoritatively resolve-and-block private/loopback/link-local/metadata
+  addresses at delivery time (DNS-rebinding-safe; httpx does not follow
+  redirects).
+- **A2-4 (Medium) — cPanel import decompression bomb.** Extraction size was
+  unbounded (only compressed size capped), risking root-owned staging-disk
+  exhaustion. **Fixed:** cap summed declared member size
+  (`cpanel_import_max_extracted_bytes`, 50GB) before extraction.
+- **Low/Info (documented, not fixed):** `/run/redis` (1777) socket-squatting
+  DoS [design tradeoff]; cPanel-import URL-source redirect-follow [admin-only];
+  2FA opt-in for admins; webhook secret/payload plaintext at rest [accepted,
+  like TOTP secret]; CSRF still SameSite-only (Audit 1 F14); API tokens no
+  expiry (Audit 1 F16).
+
+**Areas confirmed clean:** React frontend (no `dangerouslySetInnerHTML`/
+`innerHTML`/`eval`, no `console.*`, httpOnly-cookie not localStorage-JWT, CSP
+scoped `script-src 'self'` for `/app` only); Node/Python unit generation
+(entry-point/name/env validators block systemd-directive injection; runs as
+account uid; dedicated port range); Redis (socket path derived, `unixsocketperm
+700` + account-owned, mem-capped); LSCache (collision-free per-vhost cache
+path); namespace (`lsnsctl` uid is an int arg, no `set-min-uid` RPC); email
+(header values validated/static, plain-text body — no header/template
+injection); auth (no 2FA bypass on enabled 2FA, no session fixation, no
+customer-reachable account switcher, tokens admin-issued/scoped).
+
+Test suite: full `pytest` run green after fixes (see the run recorded with
+this update); new regression tests added for A2-1..A2-4.
+
+---
+
 ## Phase 7b update (2026-07-05 build; 2026-07-06 live verification): 6
 ## management features added — code + tests complete; ALL 6 features
 ## live-verified end to end (8/8 Done-When criteria met)
