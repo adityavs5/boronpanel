@@ -27,7 +27,7 @@ import pwd
 from shared.config import settings
 from shared.validation import ValidationError, validate_ssh_key_text, validate_username
 
-from daemon import sysops
+from daemon import safeio, sysops
 from daemon.procutil import run
 
 SSH_KEYGEN_BIN = "/usr/bin/ssh-keygen"
@@ -35,6 +35,17 @@ SSH_KEYGEN_BIN = "/usr/bin/ssh-keygen"
 
 class SshKeyError(Exception):
     pass
+
+
+def _read_authorized_lines(username: str) -> list[str]:
+    """Existing non-blank authorized_keys lines, read symlink-safely: if the
+    account planted a symlink at ~/.ssh/authorized_keys (or ~/.ssh itself),
+    secure_read_text returns None and we treat it as empty rather than reading
+    -- and later rewriting -- the contents of whatever it pointed at."""
+    text = safeio.secure_read_text(_ssh_dir(username), "authorized_keys")
+    if text is None:
+        return []
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
 
 
 def _account_home(username: str) -> str:
@@ -81,20 +92,15 @@ def _inspect(key_text: str) -> dict:
 
 def list_keys(params: dict) -> dict:
     username = validate_username(params["username"])
-    path = _authorized_keys_path(username)
-    if not os.path.isfile(path):
-        return {"keys": []}
     keys = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            try:
-                info = _inspect(line)
-            except ValidationError:
-                continue  # skip a line this module didn't write rather than fail the whole listing
-            keys.append(info)
+    for line in _read_authorized_lines(username):
+        if line.startswith("#"):
+            continue
+        try:
+            info = _inspect(line)
+        except ValidationError:
+            continue  # skip a line this module didn't write rather than fail the whole listing
+        keys.append(info)
     return {"keys": keys}
 
 
@@ -103,23 +109,19 @@ def add_key(params: dict) -> dict:
     key_text = validate_ssh_key_text(params["key"])
     info = _inspect(key_text)  # raises ValidationError if malformed -- never written if so
 
-    path = _authorized_keys_path(username)
-    existing_lines: list[str] = []
-    if os.path.isfile(path):
-        with open(path) as f:
-            existing_lines = [ln.strip() for ln in f if ln.strip()]
+    pw = pwd.getpwnam(username)
+    # Create ~/.ssh symlink-safely BEFORE reading/writing authorized_keys: the
+    # account can write its own home, so a naive makedirs+chown of ~/.ssh is a
+    # root privesc primitive (see daemon/safeio.py).
+    home = os.path.realpath(f"{settings.home_base}/{username}")
+    safeio.secure_mkdirs(home, ".ssh", pw.pw_uid, pw.pw_gid, 0o700)
 
+    existing_lines = _read_authorized_lines(username)
     if _key_blob(key_text) in {_key_blob(ln) for ln in existing_lines}:
         raise ValidationError("this SSH key is already added for this account")
 
-    pw = pwd.getpwnam(username)
-    ssh_dir = _ssh_dir(username)
-    os.makedirs(ssh_dir, exist_ok=True)
-    os.chmod(ssh_dir, 0o700)
-    os.chown(ssh_dir, pw.pw_uid, pw.pw_gid)
-
     existing_lines.append(key_text)
-    _write_authorized_keys(path, existing_lines, pw.pw_uid, pw.pw_gid)
+    _write_authorized_keys(username, existing_lines, pw.pw_uid, pw.pw_gid)
 
     if sysops.get_shell(username) == sysops.NOLOGIN_SHELL:
         sysops.set_shell(username, sysops.LOGIN_SHELL)
@@ -131,12 +133,9 @@ def delete_key(params: dict) -> dict:
     username = validate_username(params["username"])
     fingerprint = params["fingerprint"]
 
-    path = _authorized_keys_path(username)
-    if not os.path.isfile(path):
+    lines = _read_authorized_lines(username)
+    if not lines:
         raise SshKeyError("no SSH keys configured for this account")
-
-    with open(path) as f:
-        lines = [ln.strip() for ln in f if ln.strip()]
 
     remaining = []
     removed = False
@@ -155,7 +154,7 @@ def delete_key(params: dict) -> dict:
         raise SshKeyError(f"no key with fingerprint '{fingerprint}' found for this account")
 
     pw = pwd.getpwnam(username)
-    _write_authorized_keys(path, remaining, pw.pw_uid, pw.pw_gid)
+    _write_authorized_keys(username, remaining, pw.pw_uid, pw.pw_gid)
 
     if not remaining and sysops.get_shell(username) == sysops.LOGIN_SHELL:
         sysops.set_shell(username, sysops.NOLOGIN_SHELL)
@@ -163,14 +162,12 @@ def delete_key(params: dict) -> dict:
     return {"status": "deleted"}
 
 
-def _write_authorized_keys(path: str, lines: list[str], uid: int, gid: int) -> None:
-    tmp_path = f"{path}.tmp.{os.getpid()}"
+def _write_authorized_keys(username: str, lines: list[str], uid: int, gid: int) -> None:
+    # Atomic + symlink-safe: the temp file is created O_EXCL|O_NOFOLLOW inside
+    # ~/.ssh and renamed over authorized_keys, so neither a pre-planted temp
+    # symlink nor a symlinked destination can redirect this root-owned write.
     content = ("\n".join(lines) + "\n") if lines else ""
-    with open(tmp_path, "w") as f:
-        f.write(content)
-    os.chmod(tmp_path, 0o600)
-    os.chown(tmp_path, uid, gid)
-    os.replace(tmp_path, path)
+    safeio.secure_replace_file(_ssh_dir(username), "authorized_keys", content, uid, gid, 0o600)
 
 
 def terminate_account_sshkeys(account) -> None:

@@ -38,6 +38,7 @@ _SUBJECTS = {
     "ssl.expiring": "SSL certificate expiring soon",
     "usage.limit.reached": "Resource usage alert",
     "login.new": "New login to your hosting panel",
+    "dns.zone_activated": "Your domain is now active on Cloudflare",
 }
 
 
@@ -68,6 +69,11 @@ def _render_body(event_type: str, username: str, context: dict) -> str:
         )
     if event_type == "login.new":
         return f"A new login to the hosting panel for account '{username}' was just recorded."
+    if event_type == "dns.zone_activated":
+        return (
+            f"The DNS zone '{context.get('zone')}' is now active on Cloudflare. "
+            "Its records are served from Cloudflare's network; manage them from the DNS section as before."
+        )
     return f"Event: {event_type}"
 
 

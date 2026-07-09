@@ -19,11 +19,11 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, NodeApp, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings
+from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, NodeApp, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
-from daemon import sysops
+from daemon import phpdirectives, sysops
 
 logger = logging.getLogger("forgehostd.ols")
 
@@ -155,15 +155,27 @@ def _lscache_for_domain(session, domain_name: str) -> dict | None:
 
 def _php_ini_for_account(session, account_id: int) -> dict | None:
     row = session.scalar(select(PhpIniOverride).where(PhpIniOverride.account_id == account_id))
-    if row is None:
+    extra_rows = session.scalars(select(PhpIniDirective).where(PhpIniDirective.account_id == account_id)).all()
+    if row is None and not extra_rows:
         return None
-    return {
+    # An account can have extras (PhpIniDirective rows) without the legacy
+    # six-column row -- render the legacy fields at their php.ini defaults
+    # then (semantically a no-op: they equal what PHP would use anyway),
+    # so the template keeps one flat shape either way.
+    legacy = phpdirectives.DEFAULTS if row is None else {
         "memory_limit": row.memory_limit,
         "upload_max_filesize": row.upload_max_filesize,
         "post_max_size": row.post_max_size,
         "max_execution_time": row.max_execution_time,
         "display_errors": row.display_errors,
         "error_reporting": row.error_reporting,
+    }
+    return {
+        **legacy,
+        # Names are EXTRA_DIRECTIVES registry keys and values passed
+        # phpdirectives.validate() at write time -- that pair is what makes
+        # interpolating them into php_admin_value lines safe.
+        "extras": [{"name": r.name, "value": r.value} for r in extra_rows],
     }
 
 
@@ -301,6 +313,10 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
         select(Account).where(Account.status.in_(["active", "suspended"]))
     ).all()
     app_proxies = _app_proxy_map(session)
+    # Accounts with a per-account extension selection get a PHP_INI_SCAN_DIR
+    # env line on their extProcessor (daemon/phpext.py's mechanism); everyone
+    # else keeps the compiled-in stock scan dir by rendering nothing.
+    ext_override_ids = set(session.scalars(select(PhpExtensionSet.account_id)).all())
     domain_vhosts = []
     account_procs = []
     for account in accounts:
@@ -331,6 +347,10 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
                     "php_app_name": _php_app_name(account.username, effective_version),
                     "lsphp_path": _lsphp_path(effective_version),
                     "home_dir": account_home,
+                    "php_scan_dir": (
+                        phpdirectives.php_scan_dir(account.username, effective_version)
+                        if account.id in ext_override_ids else None
+                    ),
                 })
             domain_vhosts.append({
                 "vhost_name": _vhost_name(d.domain),
@@ -394,10 +414,32 @@ _WAF_DISABLED_CONTEXT = {
 }
 
 
-def render_httpd_config(domain_vhosts: list[dict], account_procs: list[dict], waf: dict | None = None) -> str:
+def cloudflare_trusted_ips() -> list[str]:
+    """Phase 2+3 feature 3: the Cloudflare edge CIDRs to mark trusted in the
+    OLS real-IP config, read from the materialized ranges file
+    (settings.cloudflare_ranges_file, refreshed by cf.refresh_ranges). Absent
+    / unreadable -> [] so the render is byte-identical to pre-feature (the
+    rollback path). Kept a pure read here so render_httpd_config stays a
+    function of its inputs for every existing dict-only test."""
+    import json
+
+    try:
+        data = json.loads(Path(settings.cloudflare_ranges_file).read_text())
+    except (OSError, ValueError):
+        return []
+    return list(data.get("ipv4_cidrs") or []) + list(data.get("ipv6_cidrs") or [])
+
+
+def render_httpd_config(
+    domain_vhosts: list[dict],
+    account_procs: list[dict],
+    waf: dict | None = None,
+    cloudflare_ranges: list[str] | None = None,
+) -> str:
     template = _env.get_template("httpd_config.conf.j2")
     return template.render(
         server_name="forgehost",
+        cloudflare_trusted_ips=cloudflare_trusted_ips() if cloudflare_ranges is None else cloudflare_ranges,
         admin_email="root@localhost",
         min_uid=11,
         min_gid=10,

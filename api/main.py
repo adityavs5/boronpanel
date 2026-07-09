@@ -11,17 +11,30 @@ from pathlib import Path
 
 import ipaddress
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
+from shared.config import require_secure_session_secret, settings
 from shared.db import read_session
 from shared.models import IpWhitelistEntry
 
-from api.routers import account_backups, accounts, apps, auditlog, auth, backups, bandwidth, bulkops, cpanel_import, cron, databases, devtools, disktree, dns, domains, email, email_extras, fail2ban, fileauth, files, firewall, forwarding, ftp, git, health, hotlink, identity_admin, impersonation, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, nameservers, nodeapps, notes, notifications, parked, php_ini, pma, processes, pythonapps, redirects, redis_router, services, slowquery, sshkeys, ssl_router, staging, terminal, tokens, twofactor, usage, usage_alerts, waf, webhooks, wordpress
+from api.routers import account_backups, accounts, apps, auditlog, auth, backups, bandwidth, bulkops, cloudflare, cpanel_import, cron, databases, devtools, disktree, dns, domains, email, email_extras, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, impersonation, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, nameservers, nodeapps, notes, notifications, parked, php_ini, pma, processes, pythonapps, redirects, redis_router, services, slowquery, sshkeys, ssl_router, staging, terminal, tokens, twofactor, usage, usage_alerts, waf, webhooks, wordpress
 
-app = FastAPI(title="Forgehost", docs_url="/api/docs", redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Refuse to serve with a missing/insecure session-signing key -- see
+    # shared.config.require_secure_session_secret. A hard boot failure here is
+    # the whole point: a forgeable session cookie is a full auth bypass.
+    require_secure_session_secret()
+    yield
+
+
+app = FastAPI(title="Forgehost", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -103,6 +116,23 @@ async def _security_headers(request, call_next):
             "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
             "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         )
+    elif path == settings.filebrowser_base_url or path.startswith(settings.filebrowser_base_url + "/"):
+        # FileBrowser Quantum's own bundled SPA, served same-origin through the
+        # /files proxy. HTML responses get their CSP from the proxy itself
+        # (api/routers/filebrowser.html_csp — it hashes the page's own inline
+        # bootstrap script, which a static policy here can't allow without
+        # breaking on every FB upgrade); don't overwrite it. Non-HTML /files
+        # responses get this static fallback: same posture as /app (no
+        # inline/remote scripts) plus blob workers + wasm for file previews
+        # and data:/blob: media.
+        if "content-security-policy" not in response.headers:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; "
+                "worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: blob:; font-src 'self' data:; "
+                "media-src 'self' blob:; connect-src 'self'; "
+                "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+            )
     else:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; "
@@ -116,13 +146,14 @@ app.include_router(auth.router)
 # `api_router`s (and their extra-router-object siblings) are mounted; the SPA
 # consumes the same /api/v1/... surface. The ui_router objects still exist in
 # each module (harmless dead code) but templates_ui/ has been removed.
-for module in (accounts, domains, dns, databases, mail, ssl_router, files, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor, nodeapps, pythonapps, redis_router, lscache_router, cpanel_import, bandwidth, webhooks, usage_alerts, staging):
+for module in (accounts, domains, dns, databases, mail, ssl_router, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor, nodeapps, pythonapps, redis_router, lscache_router, cpanel_import, bandwidth, webhooks, usage_alerts, staging, cloudflare):
     app.include_router(module.api_router)
 # Extra JSON router objects that don't fit the uniform api_router/ui_router
 # pair (see each module): account-scoped alerts, admin bandwidth ranking,
 # notifications (admin + per-account), apps (list + install), ssl account
 # surface, mail password manager, SpamAssassin admin default.
 app.include_router(usage_alerts.alerts_api_router)
+app.include_router(php_ini.ext_api_router)
 app.include_router(bandwidth.admin_api_router)
 app.include_router(notifications.admin_api_router)
 app.include_router(notifications.api_router)
@@ -153,6 +184,15 @@ app.include_router(devtools.composer_router)
 app.include_router(processes.api_router)
 app.include_router(notes.api_router)
 app.include_router(bulkops.api_router)
+# Cloudflare zone lifecycle (docs/PLAN-cloudflare.md Phase 1): zone-scoped
+# enable/status/disable/purge under /api/v1/dns/zones/{domain}/cloudflare.
+app.include_router(cloudflare.zone_api_router)
+# File manager v2 (FileBrowser Quantum): the /launch entry point + the
+# authenticated reverse proxy at /files. Registered explicitly (mixed prefixes:
+# one under /api/v1, one at the /files root). The /files proxy is not shadowed
+# by the /app SPA catch-all below, which is scoped to /app only.
+app.include_router(filebrowser.api_router)
+app.include_router(filebrowser.proxy_router)
 
 
 @app.get("/")
@@ -180,5 +220,8 @@ SPA_INDEX = STATIC_DIR / "dist" / "index.html"
 @app.get("/app/{spa_path:path}")
 def spa(spa_path: str = ""):
     if SPA_INDEX.is_file():
-        return FileResponse(str(SPA_INDEX))
+        # index.html must revalidate on every load: its asset URLs are content-
+        # hashed, so a cached copy keeps serving an entire stale bundle after a
+        # deploy. The hashed assets themselves stay long-cacheable.
+        return FileResponse(str(SPA_INDEX), headers={"Cache-Control": "no-cache"})
     return PlainTextResponse("SPA build not found. Run `npm run build` in frontend/.", status_code=503)

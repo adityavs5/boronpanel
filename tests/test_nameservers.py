@@ -6,17 +6,18 @@ from shared.validation import ValidationError
 
 @pytest.fixture()
 def fake_powerdns(monkeypatch):
-    """In-memory stand-in for PowerDNS's zone/record state, keyed the same
-    way daemon/powerdns.py's own list_records/upsert_record already
-    shape their return values -- matches the established
-    monkeypatch.setattr(<module>.powerdns, ...) pattern used elsewhere in
-    this suite (tests/test_handlers_domain.py, tests/test_dkim.py)."""
+    """In-memory stand-in for the DNS backend's zone/record state, keyed
+    the same way daemon/powerdns.py's own list_records/upsert_record
+    already shape their return values. nameservers.py now goes through
+    daemon/dnsprovider.py (the Cloudflare dispatch layer), so that's what
+    gets patched -- including cloudflare_zone_row, pinned to None ("local
+    zone"), which also keeps these unit tests off the database entirely."""
     zones: dict[str, dict] = {}
 
     def zone_exists(zone):
         return zone in zones
 
-    def upsert_record(zone, subdomain, rtype, values, ttl=3600):
+    def upsert_record(zone, subdomain, rtype, values, ttl=3600, proxied=False):
         name = zone if subdomain in ("@", "") else f"{subdomain}.{zone}"
         zones.setdefault(zone, {})[(name, rtype)] = list(values)
 
@@ -26,9 +27,10 @@ def fake_powerdns(monkeypatch):
             records.append({"name": name, "type": rtype, "ttl": 3600, "values": values})
         return records
 
-    monkeypatch.setattr(ns.powerdns, "zone_exists", zone_exists)
-    monkeypatch.setattr(ns.powerdns, "upsert_record", upsert_record)
-    monkeypatch.setattr(ns.powerdns, "list_records", list_records)
+    monkeypatch.setattr(ns.dnsprovider, "zone_exists", zone_exists)
+    monkeypatch.setattr(ns.dnsprovider, "upsert_record", upsert_record)
+    monkeypatch.setattr(ns.dnsprovider, "list_records", list_records)
+    monkeypatch.setattr(ns.dnsprovider, "cloudflare_zone_row", lambda zone: None)
     zones["example.com"] = {}
     return zones
 

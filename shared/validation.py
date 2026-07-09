@@ -177,6 +177,34 @@ def validate_php_error_reporting(value: str) -> str:
     return value
 
 
+def validate_php_bounded_int(value, field: str, minimum: int, maximum: int) -> int:
+    """Shared shape for the newer integer php.ini directives
+    (max_input_vars, max_file_uploads, ...) -- same conservative
+    hard-ceiling posture as validate_php_max_execution_time above, just
+    parameterized instead of one bespoke function per directive."""
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{field} must be an integer") from None
+    if not (minimum <= value <= maximum):
+        raise ValidationError(f"{field} must be between {minimum} and {maximum}")
+    return value
+
+
+def validate_php_timezone(value: str) -> str:
+    """date.timezone is interpolated into an OLS config file
+    (`php_admin_value date.timezone "<value>"`), so like error_reporting
+    this is the actual injection defense -- membership in the system tz
+    database, checked against zoneinfo, not just a charset regex."""
+    import zoneinfo
+
+    if not isinstance(value, str) or not re.match(r"\A[A-Za-z0-9_+/-]{1,64}\Z", value):
+        raise ValidationError(f"'{value}' is not a valid timezone identifier")
+    if value not in zoneinfo.available_timezones():
+        raise ValidationError(f"'{value}' is not a known timezone (expected e.g. 'Asia/Kolkata' or 'UTC')")
+    return value
+
+
 # Phase 3 feature 7: redirect manager. The path is rendered directly
 # into an OLS RewriteRule pattern (daemon/ols.py) -- deliberately
 # restricted to a small, safe charset that excludes every regex/rewrite-
@@ -199,7 +227,7 @@ def validate_redirect_path(path: str) -> str:
 def validate_redirect_target(url: str) -> str:
     import urllib.parse
 
-    if not isinstance(url, str) or len(url) > 2000 or any(c in url for c in ("\n", "\r", "[", "]", " ")):
+    if not isinstance(url, str) or len(url) > 2000 or any(c in url for c in ("\n", "\r", "\t", "[", "]", " ")):
         raise ValidationError(f"'{url}' is not a valid redirect target URL")
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
@@ -570,7 +598,7 @@ RESERVED_ENV_KEYS = {"PORT"}
 def validate_webhook_url(url: str) -> str:
     import urllib.parse
 
-    if not isinstance(url, str) or len(url) > 2000 or any(c in url for c in ("\n", "\r", " ")):
+    if not isinstance(url, str) or len(url) > 2000 or any(c in url for c in ("\n", "\r", "\t", " ")):
         raise ValidationError(f"'{url}' is not a valid webhook URL")
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:

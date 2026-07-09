@@ -1,0 +1,12 @@
+# Forgehost Cloudflare periodic jobs (docs/PLAN-cloudflare.md Phases 1-2).
+# Install to /etc/cron.d/forgehost-cloudflare (root:root, 0644):
+#   install -m 0644 deploy/forgehost-cloudflare.cron /etc/cron.d/forgehost-cloudflare
+#
+# Zone activation poll (Phase 1): detects a pending->active registrar NS flip
+# within ~15 min without a panel visit, then runs the resync barrier + flip.
+*/15 * * * * root /opt/forgehost/scripts/cloudflare_zone_check.py >> /var/log/forgehost/cloudflare-zone-check.log 2>&1
+#
+# Edge-range refresh (Phase 2 features 3+4): re-fetch Cloudflare's edge IP
+# ranges daily; on change, re-render the OLS real-IP trusted list + fail2ban
+# ignoreip and reload both. Cheap when unchanged (one HTTPS GET + file diff).
+17 4 * * * root /opt/forgehost/scripts/cloudflare_ranges.py >> /var/log/forgehost/cloudflare-ranges.log 2>&1

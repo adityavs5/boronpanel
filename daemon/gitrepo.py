@@ -31,7 +31,7 @@ from shared.db import write_session
 from shared.models import Account, GitRepo
 from shared.validation import ValidationError, validate_git_repo_name, validate_protected_dir_relative_path, validate_username
 
-from daemon import filemanager
+from daemon import filemanager, safeio
 from daemon.procutil import run
 
 REPOS_SUBDIR = "repos"
@@ -138,8 +138,12 @@ def set_deploy_target(params: dict) -> dict:
         result = _repo_to_dict(row)
 
     pw = pwd.getpwnam(username)
-    os.makedirs(resolved_target, exist_ok=True)
-    os.chown(resolved_target, pw.pw_uid, pw.pw_gid)
+    # Symlink-safe create+chown. _resolve() jail-checked the target, but that
+    # was a check-then-act against a live path the account can still race a
+    # symlink into before this makedirs/chown; secure_mkdirs re-derives it
+    # under the account's home through O_NOFOLLOW fds (see daemon/safeio.py).
+    home = filemanager._account_home(username)
+    safeio.secure_mkdirs(home, normalized_relative, pw.pw_uid, pw.pw_gid, 0o750)
 
     repo_path = _repo_path(username, name)
     push_log_path = os.path.join(repo_path, PUSH_LOG_FILENAME)

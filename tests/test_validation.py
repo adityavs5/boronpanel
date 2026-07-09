@@ -460,3 +460,36 @@ def test_generate_strong_password_is_random():
     from shared.validation import generate_strong_password
 
     assert len({generate_strong_password() for _ in range(20)}) == 20
+
+
+def test_validate_php_bounded_int_accepts_in_range():
+    from shared.validation import validate_php_bounded_int
+
+    assert validate_php_bounded_int("5000", "max_input_vars", 100, 100000) == 5000
+
+
+def test_validate_php_bounded_int_rejects_out_of_range_and_garbage():
+    from shared.validation import validate_php_bounded_int
+
+    with pytest.raises(ValidationError):
+        validate_php_bounded_int(10, "max_input_vars", 100, 100000)
+    with pytest.raises(ValidationError):
+        validate_php_bounded_int("lots", "max_input_vars", 100, 100000)
+
+
+def test_validate_php_timezone_accepts_iana_names():
+    from shared.validation import validate_php_timezone
+
+    assert validate_php_timezone("Asia/Kolkata") == "Asia/Kolkata"
+    assert validate_php_timezone("UTC") == "UTC"
+
+
+def test_validate_php_timezone_rejects_injection_and_unknown():
+    """The value lands inside a quoted php_admin_value line in an OLS conf
+    file -- newlines/quotes must never survive validation."""
+    from shared.validation import validate_php_timezone
+
+    with pytest.raises(ValidationError):
+        validate_php_timezone('UTC"\nphp_admin_value evil "1')
+    with pytest.raises(ValidationError):
+        validate_php_timezone("Atlantis/Underwater")

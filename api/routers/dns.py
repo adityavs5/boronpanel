@@ -29,6 +29,10 @@ class SetRecordBody(BaseModel):
     type: str
     values: list[str]
     ttl: int = 3600
+    # Cloudflare proxy (orange-cloud) flag, A/AAAA/CNAME on Cloudflare-active
+    # zones only. Accepted end-to-end but forced false at write time until
+    # the Phase 2 real-IP rails exist (docs/PLAN-cloudflare.md SS1.5).
+    proxied: bool = False
 
 
 @api_router.post("/zones")
@@ -65,7 +69,21 @@ def list_records(domain: str, identity: Identity = Depends(get_identity)):
 @api_router.put("/zones/{domain}/records")
 def set_record(domain: str, body: SetRecordBody, identity: Identity = Depends(get_identity)):
     require_domain_access(identity, domain)
-    return call_daemon("dns.set_record", identity, **body.model_dump())
+    # Authorize AND act on the path `domain` (the value require_domain_access
+    # just checked) -- never body.domain, which the client could set to a
+    # domain it doesn't own to overwrite that zone's records (IDOR). body.domain
+    # is ignored here on purpose; list_records/delete_record already pass the
+    # path domain explicitly for the same reason.
+    return call_daemon(
+        "dns.set_record",
+        identity,
+        domain=domain,
+        subdomain=body.subdomain,
+        type=body.type,
+        values=body.values,
+        ttl=body.ttl,
+        proxied=body.proxied,
+    )
 
 
 @api_router.delete("/zones/{domain}/records")

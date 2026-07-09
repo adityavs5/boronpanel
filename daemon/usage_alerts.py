@@ -27,7 +27,7 @@ from shared.models import (
 )
 from shared.validation import validate_resource_limit, validate_username
 
-from daemon import events, handlers_account, usage
+from daemon import audit, events, handlers_account, usage
 
 logger = logging.getLogger("forgehostd.usage_alerts")
 
@@ -218,6 +218,10 @@ def check_usage_alerts(account: Account) -> list[dict]:
     if should_auto_suspend:
         try:
             handlers_account.suspend_account({"username": account.username})
+            audit.record_account_event(
+                "suspended", account.username, actor="system", role="system",
+                detail="automatic: usage reached 100% of its limit",
+            )
         except Exception:  # noqa: BLE001 - alerting itself must not fail if auto-suspend can't apply
             logger.exception("auto-suspend at 100%% failed for account '%s'", account.username)
 

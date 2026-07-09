@@ -46,7 +46,7 @@ from shared.models import (
 )
 from shared.validation import ValidationError, validate_domain, validate_username
 
-from daemon import cron, events, mariadb, powerdns, rclone
+from daemon import cron, dnsprovider, events, mariadb, rclone
 from daemon.procutil import run
 
 logger = logging.getLogger("forgehostd.backup")
@@ -438,8 +438,10 @@ def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
     if zone_name:
         _update_job(job_id, progress_message="backing up DNS zone")
         try:
-            manifest["dns_zone"] = {"zone": zone_name, "records": powerdns.list_records(zone_name)}
-        except powerdns.PowerDnsError:
+            # Provider-agnostic: dnsprovider routes to PowerDNS or Cloudflare
+            # per zone; both return the same generic record dicts.
+            manifest["dns_zone"] = {"zone": zone_name, "records": dnsprovider.list_records(zone_name)}
+        except dnsprovider.DnsError:
             manifest["dns_zone"] = None
 
     (staging_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -745,6 +747,21 @@ def trigger_restore(params: dict) -> dict:
         if backup_job.kind != "full" and not item_ref:
             item_ref = backup_job.item_ref
 
+        # Same guard trigger_backup applies (F9): a restore rewrites the
+        # account's home dir and databases in place, so two concurrent restores
+        # for one account would race on the same files/DBs and corrupt the
+        # result. Refuse to queue a second while one is pending/running.
+        existing_active = session.scalar(
+            select(RestoreJob).where(
+                RestoreJob.account_id == account.id,
+                RestoreJob.status.in_(("pending", "running")),
+            )
+        )
+        if existing_active is not None:
+            raise BackupError(
+                f"a restore is already in progress for this account (job {existing_active.id}, status '{existing_active.status}')"
+            )
+
         restore_job = RestoreJob(
             backup_job_id=backup_job_id,
             account_id=account.id,
@@ -839,6 +856,7 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
     manifest = json.loads(manifest_path.read_text())
 
     from daemon import handlers_account, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail
+    from daemon.dns_zone_lookup import label_within_zone
 
     if account_status in ("terminated", "error"):
         # reactivate_account, not create_account: terminating an account
@@ -939,13 +957,20 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
                 pass
             for rec in dns_zone.get("records", []):
                 try:
+                    # Manifest records carry the FULL record name (that's
+                    # what list_records returns); set_record wants the label
+                    # relative to the zone. Passing the FQDN straight
+                    # through created "www.example.com.example.com" records
+                    # -- pre-existing bug fixed as part of the Cloudflare
+                    # work (docs/PLAN-cloudflare.md SS2).
                     handlers_dns.set_record(
                         {
                             "domain": dns_zone["zone"],
-                            "subdomain": rec.get("name", "@"),
+                            "subdomain": label_within_zone(rec.get("name") or dns_zone["zone"], dns_zone["zone"]),
                             "type": rec["type"],
                             "values": rec["values"],
                             "ttl": rec.get("ttl", 3600),
+                            "proxied": rec.get("proxied", False),
                         }
                     )
                 except Exception:  # noqa: BLE001

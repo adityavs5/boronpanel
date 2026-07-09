@@ -260,6 +260,22 @@ class Settings:
     # domains into this Postfix relay-domains map (postmap'd + reload).
     postfix_relay_domains_map: str = "/etc/postfix/forgehost_relay_domains"
 
+    # Cloudflare DNS/CDN provider (docs/PLAN-cloudflare.md). The token itself
+    # is a secret (secrets.env CLOUDFLARE_API_TOKEN -> cloudflare_api_token
+    # property below); these are the non-secret knobs. default_dns_provider
+    # selects the backend for NEWLY created zones only ("local" = PowerDNS,
+    # the default until the operator explicitly flips it -- plan SS1.9);
+    # existing zones migrate per-zone via explicit ops, never automatically.
+    cloudflare_account_id: str = ""
+    default_dns_provider: str = "local"  # local | cloudflare
+    # Written by us (0600) from the same API token for certbot-dns-cloudflare
+    # DNS-01 challenges -- sibling of powerdns_credentials_file above.
+    cloudflare_credentials_file: str = "/etc/forgehost/ssl/cloudflare-credentials.ini"
+    # Materialized Cloudflare edge IP ranges (GET /ips), refreshed by cron
+    # (plan SS1.7); consumed by the OLS real-IP trust list, fail2ban ignoreip,
+    # and (lockdown mode) UFW. Staleness is surfaced in cf.health.
+    cloudflare_ranges_file: str = "/etc/forgehost/cloudflare-ranges.json"
+
     # Phase 8 features 8/9: WP-CLI + Composer, run async as the account user.
     # composer is already installed on this box (2.7.x); wp-cli.phar is fetched
     # server-wide on first use if missing ("install server-wide if missing").
@@ -271,11 +287,38 @@ class Settings:
     command_run_concurrency: int = 3
     command_run_timeout_seconds: int = 600
 
+    # File manager: FileBrowser Quantum (github.com/gtsteffaniak/filebrowser),
+    # replaces the custom file manager. A single Go binary run as root (it must
+    # read/write across account homes under the 711/750 perms model, exactly as
+    # ARCHITECTURE.md §10 decided for the old manager), bound to loopback only —
+    # never public — and reached exclusively through forgehost-api's
+    # authenticated proxy, which injects the trusted X-Fb-User header
+    # server-side. One shared source at /home + createUserDir gives each
+    # proxy-authenticated account its own /home/<user> scope (see
+    # docs/CHECKPOINT-filebrowser-quantum.md for why per-account sources are the
+    # wrong primitive here). Config is static (FB Quantum does not hot-reload),
+    # so account create/terminate never rewrites it.
+    filebrowser_bin: str = "/usr/local/bin/filebrowser-quantum"
+    filebrowser_config: str = "/etc/forgehost/filebrowser.yaml"
+    filebrowser_data_dir: str = "/var/lib/forgehost/filebrowser"
+    filebrowser_bind_host: str = "127.0.0.1"
+    filebrowser_bind_port: int = 8088
+    filebrowser_base_url: str = "/files"
+    # The one header FB Quantum trusts for identity. forgehost-api strips any
+    # client-supplied copy and sets it from the authenticated session.
+    filebrowser_header: str = "X-Fb-User"
+    filebrowser_brand: str = "Forgehost Files"
+
     secrets: dict[str, str] = field(default_factory=dict)
 
     @property
+    def filebrowser_internal_url(self) -> str:
+        """Base URL forgehost-api's proxy forwards to (loopback only)."""
+        return f"http://{self.filebrowser_bind_host}:{self.filebrowser_bind_port}"
+
+    @property
     def session_secret(self) -> str:
-        return self.secrets.get("SESSION_SECRET", "dev-insecure-change-me")
+        return self.secrets.get("SESSION_SECRET", INSECURE_SESSION_SECRET_DEFAULT)
 
     @property
     def mariadb_admin_password(self) -> str:
@@ -286,6 +329,10 @@ class Settings:
         return self.secrets.get("POWERDNS_API_KEY", "")
 
     @property
+    def cloudflare_api_token(self) -> str:
+        return self.secrets.get("CLOUDFLARE_API_TOKEN", "")
+
+    @property
     def app_env_key(self) -> str:
         """Fernet key encrypting NodeApp/PythonApp env vars at rest
         (daemon/appcrypto.py). Empty when secrets.env hasn't been
@@ -293,6 +340,35 @@ class Settings:
         persists one on first use rather than requiring a manual step,
         the same auto-provisioning appcrypto.py documents."""
         return self.secrets.get("APP_ENV_KEY", "")
+
+
+# The session-signing key falls back to this well-known value only so the
+# codebase can be imported/tested/run in dev without a secrets file. It signs
+# session cookies AND the 2FA-pending token, so if it ever reached production
+# anyone could forge an admin session -- require_secure_session_secret() below
+# makes both real entrypoints refuse to start while it (or an empty/weak value)
+# is in effect. Kept out of import-time so tests/tooling can still import this
+# module with no secrets file present.
+INSECURE_SESSION_SECRET_DEFAULT = "dev-insecure-change-me"
+MIN_SESSION_SECRET_LENGTH = 32
+
+
+def require_secure_session_secret() -> None:
+    """Fail loudly at process startup if SESSION_SECRET is missing, still the
+    built-in dev default, or too short to be a real key. Called by BOTH
+    forgehost-api (ASGI startup) and forgehostd (main) so a misconfigured or
+    empty secrets file is a hard boot failure, never a silent, forgeable
+    session-signing default."""
+    secret = settings.secrets.get("SESSION_SECRET", "")
+    if not secret or secret == INSECURE_SESSION_SECRET_DEFAULT:
+        raise RuntimeError(
+            "SESSION_SECRET is unset or still the insecure built-in dev default. "
+            "Set a strong random SESSION_SECRET in the secrets file before starting."
+        )
+    if len(secret) < MIN_SESSION_SECRET_LENGTH:
+        raise RuntimeError(
+            f"SESSION_SECRET must be at least {MIN_SESSION_SECRET_LENGTH} characters of entropy."
+        )
 
 
 def load_settings() -> Settings:

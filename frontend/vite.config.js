@@ -17,6 +17,25 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        // Stable vendor chunks: the framework core changes far less often than
+        // app code, so returning users keep it cached across panel updates.
+        // Monaco/xterm/recharts are NOT listed — they stay inside the lazy
+        // page chunks that use them and never block first paint.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('recharts') || id.includes('/d3-') || id.includes('victory-vendor')) return 'charts'
+          if (id.includes('@radix-ui')) return 'radix'
+          if (id.includes('lucide-react')) return 'icons'
+          if (
+            id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/') ||
+            id.includes('react-router') || id.includes('@remix-run')
+          ) return 'react'
+          return undefined
+        },
+      },
+    },
   },
   server: {
     // `npm run dev` proxies API + auth calls to the live FastAPI (self-signed

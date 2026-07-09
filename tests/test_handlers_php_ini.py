@@ -116,8 +116,64 @@ def test_reset_php_ini_idempotent_when_never_set(account, stub_ols, stub_recycle
     hpi.reset_php_ini({"username": "demo1"})  # must not raise
 
 
+def test_set_php_ini_extra_directives_roundtrip(account, stub_ols, stub_recycle):
+    result = hpi.set_php_ini({
+        "username": "demo1",
+        "directives": {"max_input_vars": 5000, "date.timezone": "Asia/Kolkata", "allow_url_fopen": False},
+    })
+    assert result["extras"] == {
+        "max_input_vars": "5000",
+        "date.timezone": "Asia/Kolkata",
+        "allow_url_fopen": "Off",
+    }
+    # extras alone must NOT materialize a legacy six-column override row
+    assert result["php_ini"] is None
+
+    fetched = hpi.get_php_ini({"username": "demo1"})
+    assert fetched["extras"]["max_input_vars"] == "5000"
+    by_name = {d["name"]: d for d in fetched["directives"]}
+    assert by_name["max_input_vars"]["value"] == "5000"
+    assert by_name["max_input_vars"]["default"] == "1000"
+    assert by_name["memory_limit"]["value"] is None  # no legacy override set
+
+
+def test_set_php_ini_directives_dict_carries_legacy_fields_too(account, stub_ols, stub_recycle):
+    """The UI sends every field through the one `directives` dict -- legacy
+    names in it must land on the legacy row exactly as top-level kwargs do."""
+    result = hpi.set_php_ini({"username": "demo1", "directives": {"memory_limit": "512M"}})
+    assert result["php_ini"]["memory_limit"] == "512M"
+    assert result["extras"] == {}
+
+
+def test_set_php_ini_extra_none_reverts_to_default(account, stub_ols, stub_recycle):
+    hpi.set_php_ini({"username": "demo1", "directives": {"max_input_vars": 5000}})
+    result = hpi.set_php_ini({"username": "demo1", "directives": {"max_input_vars": None}})
+    assert result["extras"] == {}
+
+
+def test_set_php_ini_rejects_unknown_directive(account, stub_ols):
+    with pytest.raises(ValidationError):
+        hpi.set_php_ini({"username": "demo1", "directives": {"disable_functions": ""}})
+
+
+def test_set_php_ini_rejects_out_of_range_max_input_vars(account, stub_ols):
+    with pytest.raises(ValidationError):
+        hpi.set_php_ini({"username": "demo1", "directives": {"max_input_vars": 10}})
+
+
+def test_set_php_ini_rejects_bogus_timezone_injection_attempt(account, stub_ols):
+    with pytest.raises(ValidationError):
+        hpi.set_php_ini({"username": "demo1", "directives": {"date.timezone": 'UTC"\nphp_admin_value evil "1'}})
+
+
+def test_reset_php_ini_clears_extras_too(account, stub_ols, stub_recycle):
+    hpi.set_php_ini({"username": "demo1", "directives": {"max_input_vars": 5000}})
+    hpi.reset_php_ini({"username": "demo1"})
+    assert hpi.get_php_ini({"username": "demo1"})["extras"] == {}
+
+
 def test_terminate_account_php_ini(account, stub_ols):
-    hpi.set_php_ini({"username": "demo1", "memory_limit": "512M"})
+    hpi.set_php_ini({"username": "demo1", "memory_limit": "512M", "directives": {"max_input_vars": 5000}})
 
     from sqlalchemy import select
 
@@ -128,4 +184,6 @@ def test_terminate_account_php_ini(account, stub_ols):
         acct = session.scalar(select(Account).where(Account.username == "demo1"))
         hpi.terminate_account_php_ini(acct)
 
-    assert hpi.get_php_ini({"username": "demo1"})["php_ini"] is None
+    result = hpi.get_php_ini({"username": "demo1"})
+    assert result["php_ini"] is None
+    assert result["extras"] == {}

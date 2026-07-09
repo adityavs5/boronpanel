@@ -346,6 +346,41 @@ def test_render_httpd_config_includes_one_extprocessor_per_account():
     assert "TMPDIR=/home/demo2/tmp" in content
 
 
+def test_render_httpd_config_scan_dir_env_only_when_extension_override():
+    """PHP_INI_SCAN_DIR must be rendered for exactly the accounts with an
+    extension override (php_scan_dir set) -- an account without one keeps
+    the compiled-in stock scan dir by having NO env line at all."""
+    account_procs = [
+        {"username": "demo1", "php_app_name": "demo1_php83", "lsphp_path": "/usr/local/lsws/lsphp83/bin/lsphp", "home_dir": "/home/demo1", "php_scan_dir": "/home/demo1/.php/83/conf.d"},
+        {"username": "demo2", "php_app_name": "demo2_php81", "lsphp_path": "/usr/local/lsws/lsphp81/bin/lsphp", "home_dir": "/home/demo2", "php_scan_dir": None},
+    ]
+    content = ols.render_httpd_config([], account_procs)
+    assert "PHP_INI_SCAN_DIR=/home/demo1/.php/83/conf.d" in content
+    assert "PHP_INI_SCAN_DIR=/home/demo2" not in content
+
+
+def test_render_vhost_conf_includes_extra_directives():
+    """PhpIniDirective key/value rows (max_input_vars etc.) render as
+    php_admin_value lines alongside the legacy six."""
+    account = make_account()
+    domain = make_domain()
+    php_ini = {
+        "memory_limit": "128M",
+        "upload_max_filesize": "2M",
+        "post_max_size": "8M",
+        "max_execution_time": 30,
+        "display_errors": False,
+        "error_reporting": "E_ALL",
+        "extras": [
+            {"name": "max_input_vars", "value": "5000"},
+            {"name": "date.timezone", "value": "Asia/Kolkata"},
+        ],
+    }
+    content = ols.render_vhost_conf(account, domain, suspended=False, php_ini=php_ini)
+    assert 'php_admin_value max_input_vars "5000"' in content
+    assert 'php_admin_value date.timezone "Asia/Kolkata"' in content
+
+
 def test_php_app_name_and_lsphp_path_helpers():
     assert ols._php_app_name("demo1", "8.3") == "demo1_php83"
     assert ols._lsphp_path("8.1") == "/usr/local/lsws/lsphp81/bin/lsphp"
@@ -565,6 +600,9 @@ def test_all_active_vhosts_account_procs_includes_home_dir(isolated_db):
         "php_app_name": "demo1_php83",
         "lsphp_path": "/usr/local/lsws/lsphp83/bin/lsphp",
         "home_dir": "/home/demo1",
+        # None (no PhpExtensionSet row) means no PHP_INI_SCAN_DIR env line
+        # is rendered -- stock compiled-in extension behavior.
+        "php_scan_dir": None,
     }]
 
 

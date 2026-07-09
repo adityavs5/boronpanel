@@ -50,12 +50,21 @@ export function Toaster() {
     <ToastPrimitive.Provider swipeDirection="right">
       {toasts.map((t) => {
         const Icon = ICONS[t.variant] || Info
+        const rail = {
+          success: 'border-l-success',
+          error: 'border-l-danger',
+          warning: 'border-l-warning',
+          info: 'border-l-info',
+        }[t.variant] || 'border-l-border'
         return (
           <ToastPrimitive.Root
             key={t.id}
             duration={t.duration}
             onOpenChange={(open) => !open && dismiss(t.id)}
-            className="pointer-events-auto flex w-full items-start gap-3 rounded-card border border-border bg-card p-4 shadow-dropdown data-[state=open]:animate-slide-in-right data-[swipe=end]:animate-fade-in"
+            className={cn(
+              'pointer-events-auto flex w-full items-start gap-3 rounded-card border border-border border-l-2 bg-card p-4 shadow-dropdown data-[state=open]:animate-slide-in-right data-[swipe=end]:animate-fade-in',
+              rail,
+            )}
           >
             <Icon className={cn('mt-0.5 h-5 w-5 shrink-0', ACCENTS[t.variant])} />
             <div className="flex-1 min-w-0">

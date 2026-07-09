@@ -204,6 +204,84 @@ def get_status(params: dict) -> dict:
     return {"active": active, "raw": result.stdout}
 
 
+# --- Phase 2+3 feature 9: Cloudflare-only web lockdown ----------------------
+# CF-only mode makes ports 80/443 reachable ONLY from Cloudflare edge ranges,
+# so the origin IP is useless to a direct attacker. This is the one managed
+# mode allowed to touch the otherwise hard-protected web ports -- and ONLY
+# 80/443: SSH and the panel port are never involved here, so a bug in this
+# path can't lock the operator out of the box.
+CF_LOCKDOWN_COMMENT = "forgehost-cf-lockdown"
+CF_LOCKDOWN_PORTS = (80, 443)
+
+
+def _current_rules() -> list[dict]:
+    return _parse_added_rules(run(["ufw", "show", "added"], timeout=15).stdout)
+
+
+def apply_cf_lockdown(cf_ranges: list[str]) -> None:
+    """Scope 80/443 to the Cloudflare edge ranges: add a scoped allow per
+    (port, CF cidr) tagged CF_LOCKDOWN_COMMENT, then drop the general
+    allow-from-any for those ports. Idempotent -- existing scoped rules are
+    kept, only missing ones added, and stale scoped rules for CIDRs no longer
+    in the set are pruned (so a ranges refresh converges)."""
+    if not cf_ranges:
+        raise ValidationError(
+            "refusing to lock down web ports with an empty Cloudflare allowlist -- "
+            "run cf.refresh_ranges first so the ranges file exists"
+        )
+    wanted = set(cf_ranges)
+    existing = _current_rules()
+    have = {(r["port"], r["from"]) for r in existing if r["action"] == "allow" and r["from"] != "any"}
+    for port in CF_LOCKDOWN_PORTS:
+        for cidr in cf_ranges:
+            if (port, cidr) not in have:
+                run(["ufw", "allow", "from", cidr, "to", "any", "port", str(port), "proto", "tcp",
+                     "comment", CF_LOCKDOWN_COMMENT], timeout=20)
+    # Re-read AFTER the adds so the general-allow removal is gated on the
+    # scoped rules actually being in place. Removing the general (from-any)
+    # allow while no scoped CF allow exists for that port would blackhole the
+    # web from everywhere -- the one lockout this safety-critical path must
+    # never cause. So only drop the general allow for a port that now has at
+    # least one scoped CF allow.
+    current = _current_rules()
+    scoped_by_port: dict[int, list[dict]] = {p: [] for p in CF_LOCKDOWN_PORTS}
+    for r in current:
+        if r["action"] == "allow" and r["port"] in CF_LOCKDOWN_PORTS and r["from"] != "any":
+            scoped_by_port[r["port"]].append(r)
+    for port in CF_LOCKDOWN_PORTS:
+        if not scoped_by_port[port]:
+            # scoped adds didn't take -- leave the general allow in place
+            # (fail safe: web stays reachable) rather than locking everyone out.
+            continue
+        for r in current:
+            if r["action"] == "allow" and r["port"] == port and r["from"] == "any":
+                run(["ufw", "--force", "delete"] + _rule_spec_args("allow", port, r["protocol"], "any"), timeout=20)
+        # prune stale scoped lockdown rules whose CIDR is no longer wanted
+        for r in scoped_by_port[port]:
+            if r["comment"] == CF_LOCKDOWN_COMMENT and r["from"] not in wanted:
+                run(["ufw", "--force", "delete"] + _rule_spec_args("allow", port, r["protocol"], r["from"]), timeout=20)
+
+
+def remove_cf_lockdown() -> None:
+    """Reverse apply_cf_lockdown. Restores the general allow for 80/443 FIRST
+    (so web is reachable even if the scoped-rule cleanup below fails partway),
+    then deletes every scoped lockdown rule."""
+    for port in CF_LOCKDOWN_PORTS:
+        run(["ufw", "allow", str(port)], timeout=20)  # idempotent restore
+    for r in _current_rules():
+        if (
+            r["action"] == "allow"
+            and r["port"] in CF_LOCKDOWN_PORTS
+            and r["from"] != "any"
+            and r["comment"] == CF_LOCKDOWN_COMMENT
+        ):
+            run(["ufw", "--force", "delete"] + _rule_spec_args("allow", r["port"], r["protocol"], r["from"]), timeout=20)
+
+
+def cf_lockdown_active() -> bool:
+    return any(r.get("comment") == CF_LOCKDOWN_COMMENT for r in _current_rules())
+
+
 def _ensure_baseline_allow_rules() -> None:
     """Called before ever flipping UFW to active -- adds an allow rule
     for every hard-protected port that doesn't already have one. Without

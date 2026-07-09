@@ -31,7 +31,7 @@ def call_daemon(op: str, identity: "Identity", **params) -> dict:
     just renaming around it.
     """
     try:
-        return _client.call(op, _actor=identity.username, _role=identity.role, **params)
+        return _client.call(op, _actor=identity.username, _role=identity.role, _ip=getattr(identity, "ip", None), **params)
     except RpcError as exc:
         status = 400 if exc.code == "bad_request" else 502
         raise HTTPException(status_code=status, detail=exc.message) from exc

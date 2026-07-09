@@ -1,0 +1,71 @@
+"""Symlink-safety of daemon.safeio, the shared create+chown primitive that
+closes the root-daemon privilege-escalation class (a planted symlink in an
+account's home making root chown/chmod/write an arbitrary target)."""
+import os
+
+import pytest
+
+from daemon import safeio
+
+
+def test_secure_mkdirs_happy_path(tmp_path):
+    root = tmp_path / "home"
+    root.mkdir()
+    leaf = safeio.secure_mkdirs(str(root), "a/b/c", os.getuid(), os.getgid(), 0o750)
+    assert os.path.isdir(leaf)
+    assert leaf == str(root / "a/b/c")
+    assert (os.stat(leaf).st_mode & 0o777) == 0o750
+
+
+def test_secure_mkdirs_refuses_symlinked_component(tmp_path):
+    root = tmp_path / "home"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    # Account pre-plants a symlink where root is about to makedirs+chown.
+    os.symlink(str(outside), str(root / "evil"))
+    with pytest.raises(safeio.UnsafePathError):
+        safeio.secure_mkdirs(str(root), "evil/sub", os.getuid(), os.getgid(), 0o750)
+    # The symlink target must NOT have been chowned/chmod'd/created into.
+    assert not (outside / "sub").exists()
+
+
+def test_secure_mkdirs_rejects_dotdot(tmp_path):
+    root = tmp_path / "home"
+    root.mkdir()
+    with pytest.raises(safeio.UnsafePathError):
+        safeio.secure_mkdirs(str(root), "../escape", os.getuid(), os.getgid())
+
+
+def test_secure_ensure_file_refuses_symlink(tmp_path):
+    d = tmp_path / "d"
+    d.mkdir()
+    target = tmp_path / "target"
+    target.write_text("secret")
+    os.symlink(str(target), str(d / "log"))
+    with pytest.raises(safeio.UnsafePathError):
+        safeio.secure_ensure_file(str(d), "log", os.getuid(), os.getgid(), 0o640)
+    # Target untouched (mode not changed to 0640).
+    assert (os.stat(target).st_mode & 0o777) != 0o640
+
+
+def test_secure_ensure_file_creates_and_sets_mode(tmp_path):
+    d = tmp_path / "d"
+    d.mkdir()
+    safeio.secure_ensure_file(str(d), "app.log", os.getuid(), os.getgid(), 0o640)
+    assert (d / "app.log").is_file()
+    assert (os.stat(d / "app.log").st_mode & 0o777) == 0o640
+
+
+def test_secure_replace_file_replaces_symlink_dest_without_following(tmp_path):
+    d = tmp_path / "d"
+    d.mkdir()
+    target = tmp_path / "target"
+    target.write_text("original")
+    # Destination is a symlink to a sensitive file; replace must overwrite the
+    # link entry, never the target's contents.
+    os.symlink(str(target), str(d / "authorized_keys"))
+    safeio.secure_replace_file(str(d), "authorized_keys", b"new-key\n", os.getuid(), os.getgid(), 0o600)
+    assert target.read_text() == "original"  # target untouched
+    assert not os.path.islink(d / "authorized_keys")
+    assert (d / "authorized_keys").read_text() == "new-key\n"

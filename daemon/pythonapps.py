@@ -36,7 +36,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import appcrypto, appunits, ols
+from daemon import appcrypto, appunits, ols, safeio
 from daemon.portalloc import allocate_port
 from daemon.procutil import run
 
@@ -116,21 +116,14 @@ def _row_to_dict(row: PythonApp, username: str) -> dict:
 
 def _provision_filesystem(username: str, name: str) -> None:
     pw = pwd.getpwnam(username)
-    app_dir = Path(_app_dir(username, name))
-    app_dir.mkdir(parents=True, exist_ok=True)
-    os.chown(app_dir, pw.pw_uid, pw.pw_gid)
-    os.chmod(app_dir, 0o750)
+    # Symlink-safe create+chown: these dirs are inside the account-writable
+    # home, so a naive mkdir+chown is a root privesc primitive (daemon/safeio.py).
+    home = os.path.realpath(f"{settings.home_base}/{username}")
+    app_rel = os.path.relpath(_app_dir(username, name), home)
+    safeio.secure_mkdirs(home, app_rel, pw.pw_uid, pw.pw_gid, 0o750)
 
-    log_dir = Path(f"{settings.home_base}/{username}/logs/python")
-    log_dir.mkdir(parents=True, exist_ok=True)
-    os.chown(log_dir, pw.pw_uid, pw.pw_gid)
-    os.chmod(log_dir, 0o750)
-
-    log_path = Path(_log_path(username, name))
-    if not log_path.exists():
-        log_path.touch()
-    os.chown(log_path, pw.pw_uid, pw.pw_gid)
-    os.chmod(log_path, 0o640)
+    log_dir = safeio.secure_mkdirs(home, "logs/python", pw.pw_uid, pw.pw_gid, 0o750)
+    safeio.secure_ensure_file(log_dir, os.path.basename(_log_path(username, name)), pw.pw_uid, pw.pw_gid, 0o640)
 
 
 def _create_venv(username: str, name: str) -> None:

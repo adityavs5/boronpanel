@@ -104,46 +104,61 @@ def set_panel_user_password(params: dict) -> dict:
 
 
 def check_login_lockout(params: dict) -> dict:
-    """Security audit finding F2. Called before password verification
-    (which happens in forgehost-api against a read-only PanelUser row --
-    this RPC exists only for the write side of throttling, same reason
-    create_session/revoke_session are here rather than in forgehost-api
-    directly)."""
+    """Security audit finding F2, hardened against the check-then-act race the
+    original two-call (read-only check + separate increment) design had: enough
+    concurrent attempts all passed a stale read-only check before any of them
+    recorded a failure, so the lock only ever engaged for the *next* burst --
+    letting one burst try N passwords where N is the concurrency.
+
+    This is now the atomic gate. It RESERVES one attempt: under the row's write
+    lock it increments the failure counter and returns locked=True as soon as
+    the threshold is exceeded, so the (THRESHOLD+1)-th concurrent attempt is
+    refused *before* forgehost-api spends a bcrypt/TOTP verify on it. A
+    subsequent successful verification calls record_login_result(success=True)
+    to clear the counter; a failed one leaves the reservation counted (no
+    second increment needed -- and no double count). Called before password
+    verification AND before the 2FA-code check, so both steps are throttled by
+    the same per-username budget."""
     username = params["username"]
+    now = dt.datetime.now(dt.timezone.utc)
     with write_session() as session:
         row = session.scalar(select(LoginAttempt).where(LoginAttempt.username == username))
-        if row is None or row.locked_until is None:
-            return {"locked": False}
-        locked_until = row.locked_until
-        if locked_until.tzinfo is None:
-            locked_until = locked_until.replace(tzinfo=dt.timezone.utc)
-        now = dt.datetime.now(dt.timezone.utc)
-        if locked_until <= now:
-            return {"locked": False}
-        return {"locked": True, "retry_after_seconds": int((locked_until - now).total_seconds())}
-
-
-def record_login_result(params: dict) -> dict:
-    """The write half of the same lockout: success clears the counter,
-    failure increments it and locks the username out once
-    LOCKOUT_THRESHOLD is reached."""
-    username = params["username"]
-    success = bool(params["success"])
-    with write_session() as session:
-        row = session.scalar(select(LoginAttempt).where(LoginAttempt.username == username))
-        if success:
-            if row is not None:
-                session.delete(row)
-            return {"status": "ok"}
+        if row is not None and row.locked_until is not None:
+            locked_until = row.locked_until
+            if locked_until.tzinfo is None:
+                locked_until = locked_until.replace(tzinfo=dt.timezone.utc)
+            if locked_until > now:
+                return {"locked": True, "retry_after_seconds": int((locked_until - now).total_seconds())}
+            # Lock expired -- start a fresh window.
+            row.locked_until = None
+            row.failed_count = 0
         if row is None:
             row = LoginAttempt(username=username, failed_count=0)
             session.add(row)
             session.flush()
         row.failed_count += 1
-        if row.failed_count >= LOCKOUT_THRESHOLD:
-            row.locked_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=LOCKOUT_DURATION_SECONDS)
+        if row.failed_count > LOCKOUT_THRESHOLD:
+            row.locked_until = now + dt.timedelta(seconds=LOCKOUT_DURATION_SECONDS)
             row.failed_count = 0
+            return {"locked": True, "retry_after_seconds": LOCKOUT_DURATION_SECONDS}
+        return {"locked": False}
+
+
+def record_login_result(params: dict) -> dict:
+    """Finalize an attempt reserved by check_login_lockout. Success clears the
+    counter so a legitimate user who eventually authenticates isn't penalized
+    for earlier typos. A failure needs no action here: the attempt was already
+    counted at reservation time, so skipping it avoids the double-count the old
+    check-then-record split would now introduce."""
+    username = params["username"]
+    success = bool(params["success"])
+    if not success:
         return {"status": "ok"}
+    with write_session() as session:
+        row = session.scalar(select(LoginAttempt).where(LoginAttempt.username == username))
+        if row is not None:
+            session.delete(row)
+    return {"status": "ok"}
 
 
 def create_session(params: dict) -> dict:

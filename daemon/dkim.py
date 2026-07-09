@@ -32,7 +32,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import DkimKey
 
-from daemon import powerdns
+from daemon import dnsprovider
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from daemon.procutil import run
 
@@ -120,11 +120,11 @@ def setup_dns_signing(domain: str, selector: str = DEFAULT_SELECTOR) -> dict:
         dkim_label = f"{selector}._domainkey" if label == "@" else f"{selector}._domainkey.{label}"
         dmarc_label = "_dmarc" if label == "@" else f"_dmarc.{label}"
         try:
-            powerdns.upsert_record(zone, label, "TXT", [_quote(spf_value)])
-            powerdns.upsert_record(zone, dkim_label, "TXT", [_quote(dkim_value)])
-            powerdns.upsert_record(zone, dmarc_label, "TXT", [_quote(dmarc_value)])
+            dnsprovider.upsert_record(zone, label, "TXT", [_quote(spf_value)])
+            dnsprovider.upsert_record(zone, dkim_label, "TXT", [_quote(dkim_value)])
+            dnsprovider.upsert_record(zone, dmarc_label, "TXT", [_quote(dmarc_value)])
             dns_published = True
-        except powerdns.PowerDnsError:
+        except dnsprovider.DnsError:
             logger.exception("failed to publish SPF/DKIM/DMARC records for '%s'", domain)
 
     with write_session() as session:
@@ -168,8 +168,8 @@ def teardown_dns_signing(domain: str) -> None:
         dmarc_label = "_dmarc" if label == "@" else f"_dmarc.{label}"
         for rec_label in (label, dkim_label, dmarc_label):
             try:
-                powerdns.delete_record(zone, rec_label, "TXT")
-            except powerdns.PowerDnsError:
+                dnsprovider.delete_record(zone, rec_label, "TXT")
+            except dnsprovider.DnsError:
                 pass  # best-effort cleanup; already gone or zone unreachable
 
     import shutil

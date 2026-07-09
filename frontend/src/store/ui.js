@@ -9,6 +9,10 @@ export const useUI = create(
       sidebarCollapsed: false,
       theme: 'light', // 'light' | 'dark'
       accountSwitcher: null, // admin: username currently being managed (for topbar switcher)
+      paletteOpen: false, // command palette (Ctrl/Cmd+K) — not persisted
+
+      setPaletteOpen: (v) => set({ paletteOpen: v }),
+      togglePalette: () => set({ paletteOpen: !get().paletteOpen }),
 
       toggleSidebar: () => set({ sidebarCollapsed: !get().sidebarCollapsed }),
       setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),

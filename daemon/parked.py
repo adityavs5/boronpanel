@@ -19,7 +19,7 @@ from shared.db import write_session
 from shared.models import Account, Domain, ParkedDomain
 from shared.validation import validate_domain, validate_username
 
-from daemon import ols, powerdns
+from daemon import dnsprovider, ols
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from daemon.handlers_domain import ensure_docroot
 
@@ -82,14 +82,14 @@ def add_parked_domain(params: dict) -> dict:
     dns_created = False
     try:
         if parent_zone and settings.server_public_ip:
-            powerdns.upsert_record(parent_zone, dns_label, "A", [settings.server_public_ip])
+            dnsprovider.upsert_record(parent_zone, dns_label, "A", [settings.server_public_ip])
             dns_created = True
         ols.provision_vhost(account_snapshot)
     except Exception:
         if dns_created:
             try:
-                powerdns.delete_record(parent_zone, dns_label, "A")
-            except powerdns.PowerDnsError:
+                dnsprovider.delete_record(parent_zone, dns_label, "A")
+            except dnsprovider.DnsError:
                 pass
         with write_session() as session:
             for row in session.scalars(select(Domain).where(Domain.domain == parked_domain)).all():
@@ -148,8 +148,8 @@ def remove_parked_domain(params: dict) -> dict:
     parent_zone = find_managed_zone(parked_domain)
     if parent_zone:
         try:
-            powerdns.delete_record(parent_zone, label_within_zone(parked_domain, parent_zone), "A")
-        except powerdns.PowerDnsError:
+            dnsprovider.delete_record(parent_zone, label_within_zone(parked_domain, parent_zone), "A")
+        except dnsprovider.DnsError:
             pass
 
     ols.remove_domain_vhost(account_snapshot, parked_domain)

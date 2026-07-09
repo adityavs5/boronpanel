@@ -70,7 +70,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import handlers_account, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, mariadb, ols
+from daemon import audit, handlers_account, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, mariadb, ols
 from daemon.backup import _write_mysql_defaults_file
 from daemon.procutil import run
 from daemon.wordpress import _php_str
@@ -446,7 +446,17 @@ def _relocate_addon_docroot(root: Path, username: str, domain: str, docroot: str
         return None
     source = home_base / relative
     target = Path(docroot)
-    if not source.is_dir() or source.resolve() == target.resolve():
+    # `recorded` comes from the untrusted backup's userdata/<domain>.yaml, so
+    # `relative` can still contain '..' after the prefix strip. Resolve and
+    # require `source` to stay within the copied account home before reading
+    # anything from it -- otherwise a crafted documentroot (e.g. a value
+    # resolving to /etc) would copy arbitrary root-readable files straight into
+    # the account's live docroot.
+    home_base_real = home_base.resolve()
+    source_real = source.resolve()
+    if not source_real.is_relative_to(home_base_real):
+        return None
+    if not source.is_dir() or source_real == target.resolve():
         return None
     target.mkdir(parents=True, exist_ok=True)
     for item in source.iterdir():
@@ -937,6 +947,7 @@ def _run_import_job(job_id: int, params: dict) -> None:
         account_password = generate_strong_password()
         try:
             handlers_account.create_account({"username": username, "password": account_password, "primary_domain": primary_domain})
+            audit.record_account_event("created", username, actor="system", role="system", detail="cPanel import")
             _append_result(
                 job_id, "account", "ok",
                 f"created account '{username}'" + (f" (source domain hint: {info.get('main_domain')})" if info.get("main_domain") else ""),

@@ -13,10 +13,12 @@ export function Table({ className, ...props }) {
     </div>
   )
 }
-export const THead = (p) => <thead className={cn('[&_th]:border-b [&_th]:border-border', p.className)} {...p} />
+export const THead = (p) => (
+  <thead className={cn('[&_th]:border-b [&_th]:border-border [&_tr]:bg-muted/40', p.className)} {...p} />
+)
 export const TBody = (p) => <tbody className={cn('divide-y divide-border', p.className)} {...p} />
 export const TR = ({ className, clickable, ...p }) => (
-  <tr className={cn(clickable && 'cursor-pointer hover:bg-muted/60 transition-colors', className)} {...p} />
+  <tr className={cn('transition-colors hover:bg-muted/40', clickable && 'cursor-pointer hover:bg-muted/60', className)} {...p} />
 )
 export const TH = ({ className, ...p }) => (
   <th className={cn('px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground', className)} {...p} />

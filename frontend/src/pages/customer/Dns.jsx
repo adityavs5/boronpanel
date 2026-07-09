@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Network, Plus, Pencil, Trash2 } from 'lucide-react'
+import { Network, Plus, Pencil, Trash2, Cloud } from 'lucide-react'
 import { get, put, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { Badge } from '@/components/ui/Badge'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
@@ -12,6 +13,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter, ConfirmDialog,
 } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
+import { EmptyState } from '@/components/ui/States'
 
 const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS']
 const linesToList = (text) => (text || '').split('\n').map((s) => s.trim()).filter(Boolean)
@@ -50,7 +52,11 @@ export default function Dns() {
     if (name === zone || !name) subdomain = '@'
     else if (zone && name.endsWith(`.${zone}`)) subdomain = name.slice(0, -(zone.length + 1))
     else subdomain = name
-    const values = Array.isArray(r.records) ? r.records.map((x) => (typeof x === 'string' ? x : x.content)) : []
+    const values = Array.isArray(r.values)
+      ? r.values
+      : Array.isArray(r.records)
+        ? r.records.map((x) => (typeof x === 'string' ? x : x.content))
+        : []
     return { subdomain, type: r.type, ttl: r.ttl, values, _key: `${subdomain}|${r.type}` }
   })
 
@@ -96,47 +102,84 @@ export default function Dns() {
   ]
 
   const isEdit = dialog?.mode === 'edit'
+  // A DNS zone (local or Cloudflare) only exists for the exact domain
+  // dns.create_zone was called on — never for a subdomain/addon that just
+  // lives inside another domain's zone. See docs/PLAN-cloudflare.md.
+  const unmanaged = data?.managed === false
 
   return (
     <div>
       <PageHeader title="DNS" description="Manage the DNS zone records for your domains." icon={Network}>
         <Button
           onClick={() => setDialog({ mode: 'add', subdomain: '@', type: 'A', ttl: '3600', values: '' })}
-          disabled={!domain}
+          disabled={!domain || unmanaged}
         >
           <Plus className="h-4 w-4" /> Add record
         </Button>
       </PageHeader>
 
-      <div className="mb-4 max-w-sm">
-        <FormField label="Domain" hint="Choose which zone to manage.">
-          <Select
-            value={domain}
-            onChange={(e) => setDomain(e.target.value)}
-            disabled={domainsQuery.isLoading || !domains.length}
-          >
-            {!domains.length && <option value="">No domains available</option>}
-            {domains.map((d) => (
-              <option key={d.domain} value={d.domain}>{d.domain}</option>
-            ))}
-          </Select>
-        </FormField>
+      <div className="mb-4 flex items-end gap-3">
+        <div className="max-w-sm flex-1">
+          <FormField label="Domain" hint="Choose which zone to manage.">
+            <Select
+              value={domain}
+              onChange={(e) => setDomain(e.target.value)}
+              disabled={domainsQuery.isLoading || !domains.length}
+            >
+              {!domains.length && <option value="">No domains available</option>}
+              {domains.map((d) => (
+                <option key={d.domain} value={d.domain}>{d.domain}</option>
+              ))}
+            </Select>
+          </FormField>
+        </div>
+        {/* Provider badge (docs/PLAN-cloudflare.md Phase 1); enable/revert lives in the domain's DNS tab. */}
+        {data?.cloudflare ? (
+          <Badge variant={data.cloudflare.status === 'active' ? 'accent' : 'warning'} className="mb-7">
+            <Cloud className="h-3 w-3" /> Cloudflare{data.cloudflare.status === 'pending' ? ' · pending' : ''}
+          </Badge>
+        ) : data && !unmanaged ? (
+          <Badge variant="neutral" className="mb-7">Local DNS</Badge>
+        ) : null}
       </div>
 
-      <DataTable
-        columns={columns}
-        data={rows}
-        loading={!!domain && isLoading}
-        error={domain ? error : null}
-        onRetry={refetch}
-        getRowKey={(r) => r._key}
-        filterable
-        pageSize={15}
-        searchPlaceholder="Search records…"
-        emptyTitle={domain ? 'No DNS records' : 'Select a domain'}
-        emptyDescription={domain ? "Add a record to start managing this domain's zone." : 'Pick a domain above to view its DNS records.'}
-        emptyIcon={Network}
-      />
+      {unmanaged ? (
+        <EmptyState
+          icon={Network}
+          title={data.parent_zone ? 'Managed under a different zone' : 'No DNS zone for this domain'}
+          description={
+            data.parent_zone ? (
+              <>
+                <span className="font-mono">{domain}</span> doesn't have its own DNS zone — its records (and any
+                Cloudflare proxying) live inside <span className="font-medium text-foreground">{data.parent_zone}</span>'s
+                zone. Select that domain above to manage records or enable Cloudflare; this subdomain follows
+                automatically.
+              </>
+            ) : (
+              <>
+                <span className="font-mono">{domain}</span> isn't a Forgehost-managed DNS zone, and no managed zone
+                covers it as a subdomain either. DNS (and Cloudflare) is only available for a domain Forgehost
+                manages as its own zone.
+              </>
+            )
+          }
+        />
+      ) : (
+        <DataTable
+          columns={columns}
+          data={rows}
+          loading={!!domain && isLoading}
+          error={domain ? error : null}
+          onRetry={refetch}
+          getRowKey={(r) => r._key}
+          filterable
+          pageSize={15}
+          searchPlaceholder="Search records…"
+          emptyTitle={domain ? 'No DNS records' : 'Select a domain'}
+          emptyDescription={domain ? "Add a record to start managing this domain's zone." : 'Pick a domain above to view its DNS records.'}
+          emptyIcon={Network}
+        />
+      )}
 
       <Dialog open={!!dialog} onOpenChange={(o) => !o && setDialog(null)}>
         <DialogContent size="md">

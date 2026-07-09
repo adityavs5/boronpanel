@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft, Globe, Plus, Pencil, Trash2, Save, RefreshCw,
   ShieldOff, Ban, Lock, Users, Network, ShieldCheck,
-  Server, Copy, ExternalLink, CheckCircle2, AlertCircle, Download, RotateCcw,
+  Server, Copy, ExternalLink, CheckCircle2, AlertCircle, Download, RotateCcw, Cloud,
 } from 'lucide-react'
 import { get, post, put, patch, del } from '@/lib/api'
 import { relativeTime, copyToClipboard } from '@/lib/utils'
@@ -21,14 +21,176 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter, ConfirmDialog,
 } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
+import { Badge } from '@/components/ui/Badge'
 import { CardSkeleton } from '@/components/ui/Skeleton'
-import { ErrorState } from '@/components/ui/States'
+import { ErrorState, EmptyState } from '@/components/ui/States'
 import { ProgressBar } from '@/components/ui/Progress'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { useAccountUsername } from '@/hooks/useAccount'
 
 const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV', 'CAA']
+// Record types Cloudflare can proxy (orange cloud).
+const PROXYABLE_TYPES = new Set(['A', 'AAAA', 'CNAME'])
 const linesToList = (text) => (text || '').split('\n').map((s) => s.trim()).filter(Boolean)
+
+// ---------------------------------------------------------------------------
+// DNS — Cloudflare provider card (docs/PLAN-cloudflare.md Phase 1)
+// ---------------------------------------------------------------------------
+function NameserverPair({ nameservers }) {
+  return (
+    <div className="space-y-2">
+      {(nameservers || []).map((ns) => (
+        <div key={ns} className="flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2">
+          <span className="font-mono text-sm">{ns}</span>
+          <Button variant="ghost" size="icon-sm" title="Copy"
+            onClick={() => { copyToClipboard(ns); toast.success('Copied', ns) }}>
+            <Copy className="h-4 w-4" />
+          </Button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function CloudflareZoneCard({ domain, cloudflare, proxyAvailable, onChanged }) {
+  const base = `/api/v1/dns/zones/${domain}/cloudflare`
+  const [enableOpen, setEnableOpen] = useState(false)
+  const [revertOpen, setRevertOpen] = useState(false)
+
+  const status = cloudflare?.status // undefined | 'pending' | 'active'
+
+  const enableMut = useMutation({
+    mutationFn: () => post(`${base}/enable`),
+    onSuccess: () => { setEnableOpen(false); onChanged() },
+    onError: (e) => toast.error('Could not enable Cloudflare', e.message),
+  })
+  const checkMut = useMutation({
+    mutationFn: () => post(`${base}/check`),
+    onSuccess: (res) => {
+      if (res.activated) toast.success('Zone is now active on Cloudflare')
+      else toast.info('Still pending', 'Cloudflare has not seen the nameserver change yet. Registrar updates can take a while to propagate.')
+      onChanged()
+    },
+    onError: (e) => toast.error('Activation check failed', e.message),
+  })
+  const revertMut = useMutation({
+    mutationFn: () => post(`${base}/disable`),
+    onSuccess: (res) => { setRevertOpen(false); toast.success('Reverted to local DNS', res.message); onChanged() },
+    onError: (e) => { setRevertOpen(false); toast.error('Could not revert', e.message) },
+  })
+  const purgeMut = useMutation({
+    mutationFn: () => post(`${base}/purge`),
+    onSuccess: () => toast.success('Cloudflare cache purged'),
+    onError: (e) => toast.error('Could not purge cache', e.message),
+  })
+  const proxyAllMut = useMutation({
+    mutationFn: () => post(`${base}/proxy-all`),
+    onSuccess: (res) => { toast.success('Records proxied', `${res.proxied_records ?? 0} record(s) now proxied through Cloudflare.`); onChanged() },
+    onError: (e) => toast.error('Could not proxy records', e.message),
+  })
+
+  return (
+    <Card className="mb-4">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <div>
+          <CardTitle className="flex items-center gap-2"><Cloud className="h-4 w-4" /> Cloudflare</CardTitle>
+          <CardDescription>
+            {status === 'active'
+              ? 'This zone is served by Cloudflare (anycast DNS). Records are managed here as usual.'
+              : status === 'pending'
+                ? 'Waiting for the registrar nameserver change. Local DNS keeps serving until activation.'
+                : 'Serve this zone from Cloudflare’s global network: anycast DNS, CDN caching and DDoS protection.'}
+          </CardDescription>
+        </div>
+        {status === 'active' && <Badge variant="success">Active</Badge>}
+        {status === 'pending' && <Badge variant="warning">Pending activation</Badge>}
+        {!status && <Badge variant="neutral">Local DNS</Badge>}
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {status === 'pending' && (
+          <>
+            <p className="text-sm text-muted-foreground">
+              Set these two nameservers for <span className="font-medium text-foreground">{domain}</span> at your
+              domain registrar. Activation is detected automatically (checked every 15 minutes).
+            </p>
+            <NameserverPair nameservers={cloudflare.name_servers} />
+          </>
+        )}
+        {status === 'active' && (
+          <p className="text-sm text-muted-foreground">
+            Nameservers: <span className="font-mono text-xs">{(cloudflare.name_servers || []).join(' · ')}</span>
+          </p>
+        )}
+      </CardContent>
+      <CardFooter className="flex flex-wrap gap-2">
+        {!status && (
+          <Button size="sm" onClick={() => setEnableOpen(true)}>
+            <Cloud className="h-4 w-4" /> Enable Cloudflare
+          </Button>
+        )}
+        {status === 'pending' && (
+          <Button size="sm" variant="secondary" loading={checkMut.isPending} onClick={() => checkMut.mutate()}>
+            <RefreshCw className="h-4 w-4" /> Check activation
+          </Button>
+        )}
+        {status === 'active' && (
+          <Button size="sm" variant="secondary" loading={purgeMut.isPending} onClick={() => purgeMut.mutate()}>
+            <RefreshCw className="h-4 w-4" /> Purge cache
+          </Button>
+        )}
+        {status === 'active' && (
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={proxyAllMut.isPending}
+            disabled={!proxyAvailable}
+            title={proxyAvailable ? undefined : 'Enable Cloudflare real-IP rails first (admin → Cloudflare)'}
+            onClick={() => proxyAllMut.mutate()}
+          >
+            <Cloud className="h-4 w-4" /> Proxy all records
+          </Button>
+        )}
+        {status && (
+          <Button size="sm" variant="outline" onClick={() => setRevertOpen(true)}>
+            <RotateCcw className="h-4 w-4" /> Revert to local DNS
+          </Button>
+        )}
+      </CardFooter>
+
+      <Dialog open={enableOpen} onOpenChange={setEnableOpen}>
+        <DialogContent size="md">
+          <DialogHeader>
+            <DialogTitle>Enable Cloudflare for {domain}?</DialogTitle>
+            <DialogDescription>
+              The zone is created on Cloudflare and seeded with a copy of its current records. Nothing changes for
+              visitors until you point the domain's registrar nameservers at the pair Cloudflare assigns — local DNS
+              keeps serving until then, and you can revert at any time.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setEnableOpen(false)}>Cancel</Button>
+            <Button loading={enableMut.isPending} onClick={() => enableMut.mutate()}>Enable Cloudflare</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={revertOpen}
+        onOpenChange={setRevertOpen}
+        title="Revert to local DNS?"
+        description={
+          status === 'active'
+            ? 'Records are synced back from Cloudflare, the Cloudflare zone is removed, and this server serves DNS again. Remember to point the registrar nameservers back to the defaults afterwards.'
+            : 'The pending Cloudflare zone is removed. Local DNS was never interrupted.'
+        }
+        confirmLabel="Revert to local DNS"
+        variant="danger"
+        loading={revertMut.isPending}
+        onConfirm={() => revertMut.mutate()}
+      />
+    </Card>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // DNS
@@ -44,6 +206,42 @@ function DnsTab({ domain }) {
     enabled: !!domain,
   })
 
+  // A DNS zone (local or Cloudflare) only ever exists for the exact domain
+  // dns.create_zone was called on — never for a subdomain/addon that just
+  // lives inside another domain's zone. Cloudflare in particular can only
+  // be enabled per whole zone, so a subdomain never gets its own "Enable
+  // Cloudflare" control; it rides along automatically once its parent
+  // zone is active (docs/PLAN-cloudflare.md).
+  if (data && data.managed === false) {
+    return (
+      <Card>
+        <CardContent>
+          <EmptyState
+            icon={Network}
+            title={data.parent_zone ? 'Managed under a different zone' : 'No DNS zone for this domain'}
+            description={
+              data.parent_zone ? (
+                <>
+                  <span className="font-mono">{domain}</span> doesn't have its own DNS zone — its records (and any
+                  Cloudflare proxying) live inside <span className="font-medium text-foreground">{data.parent_zone}</span>'s
+                  zone. Open that domain's DNS tab to manage records or enable Cloudflare; this subdomain will follow
+                  automatically.
+                </>
+              ) : (
+                <>
+                  <span className="font-mono">{domain}</span> isn't a Forgehost-managed DNS zone, and no managed zone
+                  covers it as a subdomain either. DNS (and Cloudflare) is only available for a domain Forgehost
+                  manages as its own zone — if this domain's DNS is hosted elsewhere, add a record there pointing at
+                  this server instead.
+                </>
+              )
+            }
+          />
+        </CardContent>
+      </Card>
+    )
+  }
+
   const zone = (data?.zone || domain || '').replace(/\.$/, '')
   const rows = (data?.records || []).map((r) => {
     const name = (r.name || '').replace(/\.$/, '')
@@ -56,10 +254,30 @@ function DnsTab({ domain }) {
       : Array.isArray(r.records)
         ? r.records.map((x) => (typeof x === 'string' ? x : x.content))
         : []
-    return { subdomain, type: r.type, ttl: r.ttl, values, _key: `${subdomain}|${r.type}` }
+    return { subdomain, type: r.type, ttl: r.ttl, values, proxied: !!r.proxied, _key: `${subdomain}|${r.type}` }
   })
 
+  // Top-level gate from dns.list_records: the record proxy toggle only unlocks
+  // once the admin has the Cloudflare real-IP rails green (docs/PLAN-cloudflare.md SS1.5/SS1.7).
+  const proxyAvailable = !!data?.proxy_available
+
   const invalidate = () => qc.invalidateQueries({ queryKey: ['dns-records', domain] })
+
+  const proxyMut = useMutation({
+    // Toggling the orange cloud re-sends the whole rrset with the new proxied
+    // flag — the same set-record endpoint used to save records.
+    mutationFn: ({ row, proxied }) =>
+      put(`/api/v1/dns/zones/${domain}/records`, {
+        domain,
+        subdomain: row.subdomain,
+        type: row.type,
+        values: row.values,
+        ttl: row.ttl,
+        proxied,
+      }),
+    onSuccess: (_res, { proxied }) => { toast.success(proxied ? 'Proxying enabled' : 'Proxying disabled'); invalidate() },
+    onError: (e) => toast.error('Could not update proxy status', e.message),
+  })
 
   const saveMut = useMutation({
     mutationFn: (form) =>
@@ -86,6 +304,33 @@ function DnsTab({ domain }) {
     { key: 'ttl', header: 'TTL', sortable: true, render: (r) => r.ttl },
     { key: 'values', header: 'Value(s)', render: (r) => <div className="whitespace-pre-line break-all font-mono text-xs">{r.values.join('\n')}</div> },
     {
+      key: 'proxied', header: 'Proxy', align: 'center', searchable: false, render: (r) => {
+        const eligible = PROXYABLE_TYPES.has(r.type)
+        const canToggle = eligible && proxyAvailable
+        const pending = proxyMut.isPending && proxyMut.variables?.row?._key === r._key
+        const title = !eligible
+          ? 'Only A, AAAA and CNAME records can be proxied'
+          : !proxyAvailable
+            ? 'Enable Cloudflare real-IP rails first (admin → Cloudflare)'
+            : r.proxied
+              ? 'Proxied through Cloudflare — click for DNS only'
+              : 'DNS only — click to proxy through Cloudflare'
+        return (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title={title}
+            loading={pending}
+            disabled={!canToggle || pending}
+            className={eligible && r.proxied ? 'text-orange-500 hover:text-orange-600' : 'text-muted-foreground'}
+            onClick={() => proxyMut.mutate({ row: r, proxied: !r.proxied })}
+          >
+            {!pending && <Cloud className="h-4 w-4" fill={eligible && r.proxied ? 'currentColor' : 'none'} />}
+          </Button>
+        )
+      },
+    },
+    {
       key: 'actions', header: '', align: 'right', render: (r) => (
         <div className="flex justify-end gap-1">
           <Button variant="ghost" size="icon-sm" title="Edit"
@@ -104,6 +349,15 @@ function DnsTab({ domain }) {
 
   return (
     <div>
+      {data && (
+        <CloudflareZoneCard
+          domain={domain}
+          cloudflare={data.cloudflare}
+          proxyAvailable={proxyAvailable}
+          onChanged={() => { invalidate(); qc.invalidateQueries({ queryKey: ['nameservers'] }) }}
+        />
+      )}
+
       <div className="mb-3 flex justify-end">
         <Button size="sm" onClick={() => setDialog({ mode: 'add', subdomain: '@', type: 'A', ttl: '3600', values: '' })}>
           <Plus className="h-4 w-4" /> Add record
@@ -270,6 +524,30 @@ function NameserversTab({ username, domain }) {
 
   const nameservers = data?.nameservers || []
   const glue = data?.glue || {}
+
+  // Cloudflare zones: the NS pair is assigned by Cloudflare, not edited here
+  // (docs/PLAN-cloudflare.md SS1.8) — show it instead of the glue form.
+  if (data?.provider === 'cloudflare') {
+    return (
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle className="flex items-center gap-2"><Cloud className="h-4 w-4" /> Cloudflare nameservers</CardTitle>
+            <CardDescription>
+              This zone is on Cloudflare — set these at your registrar. Custom nameservers require reverting
+              to local DNS first (DNS tab).
+            </CardDescription>
+          </div>
+          {data.cloudflare_status === 'active'
+            ? <Badge variant="success">Active</Badge>
+            : <Badge variant="warning">Pending activation</Badge>}
+        </CardHeader>
+        <CardContent>
+          <NameserverPair nameservers={nameservers} />
+        </CardContent>
+      </Card>
+    )
+  }
   const rows = nameservers.map((ns) => {
     const g = glue[ns]
     const ips = g ? [...(g.a || []), ...(g.aaaa || [])] : []

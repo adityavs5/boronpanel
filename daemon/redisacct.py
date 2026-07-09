@@ -37,7 +37,7 @@ from shared.db import write_session
 from shared.models import Account, RedisInstance
 from shared.validation import ValidationError, validate_username
 
-from daemon import appunits
+from daemon import appunits, safeio
 from daemon.procutil import run
 
 KIND = "redis"
@@ -56,7 +56,13 @@ def _validate_mem_mb(value) -> int:
 
 
 def socket_path(username: str) -> str:
-    return f"{settings.redis_run_dir}/{username}.sock"
+    # The socket lives in the account's HOME, not /run: namespaced accounts
+    # (OLS mount isolation, the default for new accounts) only see their own
+    # home tree — a socket under /run/redis is invisible inside the jail, so
+    # PHP connects to nothing and object caching silently no-ops. The home
+    # dir is bind-mounted into the namespace, so this path works both inside
+    # (lsphp) and outside (redis-server itself, redis-cli status probes).
+    return f"{_data_dir(username)}/redis.sock"
 
 
 def _data_dir(username: str) -> str:
@@ -68,7 +74,7 @@ def _conf_path(unit: str) -> Path:
 
 
 def _pid_path(username: str) -> str:
-    return f"{settings.redis_run_dir}/{username}.pid"
+    return f"{_data_dir(username)}/redis.pid"
 
 
 def _get_account(session, username: str) -> Account:
@@ -98,10 +104,11 @@ def _row_to_dict(row: RedisInstance, username: str) -> dict:
 
 def _provision_filesystem(username: str) -> None:
     pw = pwd.getpwnam(username)
-    data_dir = Path(_data_dir(username))
-    data_dir.mkdir(parents=True, exist_ok=True)
-    os.chown(data_dir, pw.pw_uid, pw.pw_gid)
-    os.chmod(data_dir, 0o700)
+    # Symlink-safe: _data_dir is ~/.redis, inside the account-writable home, so
+    # a naive mkdir+chown is a root privesc primitive (see daemon/safeio.py).
+    home = os.path.realpath(f"{settings.home_base}/{username}")
+    rel = os.path.relpath(_data_dir(username), home)
+    safeio.secure_mkdirs(home, rel, pw.pw_uid, pw.pw_gid, 0o700)
 
 
 def _render_conf(username: str, mem_mb: int) -> str:
@@ -128,16 +135,11 @@ def _write_unit(username: str, instance_id: int, mem_mb: int) -> str:
     conf_path.write_text(_render_conf(username, mem_mb))
     os.chmod(conf_path, 0o644)
 
-    log_dir = Path(f"{settings.home_base}/{username}/logs/redis")
-    log_dir.mkdir(parents=True, exist_ok=True)
     pw = pwd.getpwnam(username)
-    os.chown(log_dir, pw.pw_uid, pw.pw_gid)
-    os.chmod(log_dir, 0o750)
-    log_path = log_dir / f"{username}.log"
-    if not log_path.exists():
-        log_path.touch()
-    os.chown(log_path, pw.pw_uid, pw.pw_gid)
-    os.chmod(log_path, 0o640)
+    home = os.path.realpath(f"{settings.home_base}/{username}")
+    log_dir = safeio.secure_mkdirs(home, "logs/redis", pw.pw_uid, pw.pw_gid, 0o750)
+    safeio.secure_ensure_file(log_dir, f"{username}.log", pw.pw_uid, pw.pw_gid, 0o640)
+    log_path = f"{log_dir}/{username}.log"
 
     content = (
         "[Unit]\n"

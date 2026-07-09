@@ -146,7 +146,7 @@ def test_deliver_success_on_first_attempt(isolated_db, monkeypatch):
         calls.append((url, content, headers))
         return httpx.Response(200, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(wh.httpx, "post", fake_post)
+    monkeypatch.setattr(wh, "_pinned_post", fake_post)
     with write_session() as session:
         webhook = session.get(Webhook, created["id"])
         delivery = WebhookDelivery(webhook_id=webhook.id, event="account.created", payload={"username": "demo1"}, status="pending")
@@ -176,7 +176,7 @@ def test_deliver_retries_then_succeeds(isolated_db, monkeypatch):
             return httpx.Response(500, request=httpx.Request("POST", url))
         return httpx.Response(200, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(wh.httpx, "post", flaky_post)
+    monkeypatch.setattr(wh, "_pinned_post", flaky_post)
     with write_session() as session:
         webhook = session.get(Webhook, created["id"])
         delivery = WebhookDelivery(webhook_id=webhook.id, event="account.created", payload={}, status="pending")
@@ -197,7 +197,7 @@ def test_deliver_exhausts_retries_and_marks_failed(isolated_db, monkeypatch):
     def always_fails(url, content=None, headers=None, timeout=None):
         return httpx.Response(503, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(wh.httpx, "post", always_fails)
+    monkeypatch.setattr(wh, "_pinned_post", always_fails)
     with write_session() as session:
         webhook = session.get(Webhook, created["id"])
         delivery = WebhookDelivery(webhook_id=webhook.id, event="account.created", payload={}, status="pending")
@@ -218,7 +218,7 @@ def test_deliver_handles_connection_error(isolated_db, monkeypatch):
     def raises(url, content=None, headers=None, timeout=None):
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(wh.httpx, "post", raises)
+    monkeypatch.setattr(wh, "_pinned_post", raises)
     with write_session() as session:
         webhook = session.get(Webhook, created["id"])
         delivery = WebhookDelivery(webhook_id=webhook.id, event="account.created", payload={}, status="pending")

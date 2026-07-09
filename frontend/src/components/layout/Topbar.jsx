@@ -1,6 +1,6 @@
 import { useNavigate, useLocation, Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Menu, Bell, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck } from 'lucide-react'
+import { Menu, Search, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck } from 'lucide-react'
 import { get } from '@/lib/api'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
@@ -10,6 +10,36 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/DropdownMenu'
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+
+// Opens the Ctrl/Cmd+K command palette: a full search pill on md+, icon below.
+function SearchTrigger() {
+  const setPaletteOpen = useUI((s) => s.setPaletteOpen)
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setPaletteOpen(true)}
+        className="hidden h-8 w-56 items-center gap-2 rounded-btn border border-border bg-surface px-2.5 text-sm text-muted-foreground transition-colors hover:border-accent/60 hover:text-foreground md:flex"
+      >
+        <Search className="h-3.5 w-3.5 shrink-0" />
+        <span className="flex-1 text-left">Search…</span>
+        <kbd className="rounded border border-border px-1 py-px text-[10px] font-medium uppercase text-muted-foreground">
+          {isMac ? '⌘K' : 'Ctrl K'}
+        </kbd>
+      </button>
+      <button
+        type="button"
+        onClick={() => setPaletteOpen(true)}
+        className="rounded-btn p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:hidden"
+        title="Search"
+      >
+        <Search className="h-[18px] w-[18px]" />
+      </button>
+    </>
+  )
+}
 
 function Breadcrumb() {
   const { pathname } = useLocation()
@@ -87,11 +117,8 @@ export function Topbar() {
       </div>
 
       <div className="flex items-center gap-2">
+        <SearchTrigger />
         {isAdmin && <AccountSwitcher />}
-
-        <button className="relative rounded-btn p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" title="Notifications">
-          <Bell className="h-[18px] w-[18px]" />
-        </button>
 
         <button
           onClick={toggleTheme}

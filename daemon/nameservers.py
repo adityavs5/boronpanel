@@ -26,11 +26,22 @@ import ipaddress
 from shared.config import settings
 from shared.validation import ValidationError, validate_domain
 
-from daemon import powerdns
+from daemon import dnsprovider
 
 
 class NameserverError(Exception):
     pass
+
+
+def _require_local_zone(domain: str, action: str) -> None:
+    """Custom NS / glue management only applies to local (PowerDNS) zones:
+    a Cloudflare zone's nameservers ARE the CF-assigned pair -- delegating
+    anywhere else simply takes the zone off Cloudflare (plan SS1.8)."""
+    if dnsprovider.cloudflare_zone_row(domain) is not None:
+        raise NameserverError(
+            f"'{domain}' is on Cloudflare -- its nameservers are assigned by Cloudflare. "
+            f"To {action}, revert the zone to local DNS first."
+        )
 
 
 def _needs_glue(domain: str, ns_hostname: str) -> bool:
@@ -53,7 +64,21 @@ def _validate_glue_ip(value: str) -> str:
 
 def list_nameservers(params: dict) -> dict:
     domain = validate_domain(params["domain"])
-    records = powerdns.list_records(domain)
+
+    cf_row = dnsprovider.cloudflare_zone_row(domain)
+    if cf_row is not None:
+        # A Cloudflare zone's NS pair is assigned by Cloudflare, not edited
+        # here -- report it (plus activation status) instead of the local
+        # apex NS rrset, which is only the stale revert target.
+        return {
+            "domain": domain,
+            "provider": "cloudflare",
+            "cloudflare_status": cf_row.status,
+            "nameservers": [ns.rstrip(".") for ns in (cf_row.name_servers or [])],
+            "glue": {},
+        }
+
+    records = dnsprovider.list_records(domain)
     ns_rrset = next((r for r in records if r["type"] == "NS" and r["name"] == domain), None)
     nameservers = [v.rstrip(".") for v in (ns_rrset["values"] if ns_rrset else [])]
 
@@ -67,7 +92,7 @@ def list_nameservers(params: dict) -> dict:
                 "a": a_rrset["values"] if a_rrset else [],
                 "aaaa": aaaa_rrset["values"] if aaaa_rrset else [],
             }
-    return {"domain": domain, "nameservers": nameservers, "glue": glue}
+    return {"domain": domain, "provider": "local", "nameservers": nameservers, "glue": glue}
 
 
 def set_nameservers(params: dict) -> dict:
@@ -83,6 +108,8 @@ def set_nameservers(params: dict) -> dict:
     if not isinstance(glue_in, dict):
         raise ValidationError("glue must be a mapping of nameserver hostname -> IP address")
 
+    _require_local_zone(domain, "set custom nameservers")
+
     resolved_glue: dict[str, str] = {}
     for ns in nameservers:
         if _needs_glue(domain, ns):
@@ -93,15 +120,15 @@ def set_nameservers(params: dict) -> dict:
                 )
             resolved_glue[ns] = _validate_glue_ip(ip)
 
-    if not powerdns.zone_exists(domain):
+    if not dnsprovider.zone_exists(domain):
         raise NameserverError(f"no Forgehost-managed DNS zone for '{domain}' -- create one first")
 
     for ns, ip in resolved_glue.items():
         sub = _relative_subdomain(domain, ns)
         rtype = "AAAA" if ":" in ip else "A"
-        powerdns.upsert_record(domain, sub, rtype, [ip])
+        dnsprovider.upsert_record(domain, sub, rtype, [ip])
 
-    powerdns.upsert_record(domain, "@", "NS", [f"{ns}." for ns in nameservers])
+    dnsprovider.upsert_record(domain, "@", "NS", [f"{ns}." for ns in nameservers])
 
     return {"domain": domain, "nameservers": nameservers, "glue": resolved_glue}
 
@@ -113,13 +140,14 @@ def reset_nameservers(params: dict) -> dict:
     zones must always have at least one NS record; leaving the zone with
     none would break resolution entirely, not just "reset" it)."""
     domain = validate_domain(params["domain"])
-    if not powerdns.zone_exists(domain):
+    _require_local_zone(domain, "reset nameservers")
+    if not dnsprovider.zone_exists(domain):
         raise NameserverError(f"no Forgehost-managed DNS zone for '{domain}'")
 
     ip = settings.server_public_ip
     default_nameservers = [f"ns1.{domain}", f"ns2.{domain}"]
     if ip:
-        powerdns.upsert_record(domain, "ns1", "A", [ip])
-        powerdns.upsert_record(domain, "ns2", "A", [ip])
-    powerdns.upsert_record(domain, "@", "NS", [f"{ns}." for ns in default_nameservers])
+        dnsprovider.upsert_record(domain, "ns1", "A", [ip])
+        dnsprovider.upsert_record(domain, "ns2", "A", [ip])
+    dnsprovider.upsert_record(domain, "@", "NS", [f"{ns}." for ns in default_nameservers])
     return {"domain": domain, "nameservers": default_nameservers, "status": "reset_to_defaults"}

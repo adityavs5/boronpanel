@@ -5,8 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#111827" />
     <title>Forgehost</title>
-    <script type="module" crossorigin src="/static/dist/assets/index-DxpEaQAX.js"></script>
-    <link rel="stylesheet" crossorigin href="/static/dist/assets/index-CgwmJq_v.css">
+    <style>
+      /* First-paint background while the JS bundle loads, so a hard refresh
+         never flashes white in dark mode (theme class is applied below,
+         before the bundle runs). */
+      html { background: #f9fafb; }
+      html.dark { background: #0f141e; }
+    </style>
+    <script src="/static/dist/theme-init.js"></script>
+    <script type="module" crossorigin src="/static/dist/assets/index-7vySZyJ_.js"></script>
+    <link rel="modulepreload" crossorigin href="/static/dist/assets/react-D1JdhiE6.js">
+    <link rel="modulepreload" crossorigin href="/static/dist/assets/charts-B1vKynjs.js">
+    <link rel="modulepreload" crossorigin href="/static/dist/assets/icons-Or9bMIuo.js">
+    <link rel="modulepreload" crossorigin href="/static/dist/assets/radix-eVuNYuH8.js">
+    <link rel="stylesheet" crossorigin href="/static/dist/assets/index-Dz8TzeUW.css">
   </head>
   <body class="h-full">
     <div id="root" class="h-full"></div>

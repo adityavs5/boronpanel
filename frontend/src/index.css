@@ -1,3 +1,8 @@
+/* Self-hosted Inter (variable) — the design system always specified Inter but
+ * never shipped it, so the panel rendered with OS fallbacks. No CDN: the
+ * panel must render offline on the box it manages. */
+@import '@fontsource-variable/inter';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -62,6 +67,18 @@
   ::-webkit-scrollbar-track {
     background: transparent;
   }
+
+  /* Accessibility floor: animate sparingly, and not at all when the OS asks
+   * for reduced motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
 
 @layer utilities {
@@ -78,10 +95,19 @@
     background: linear-gradient(
       90deg,
       transparent,
-      rgb(255 255 255 / 0.14),
+      rgb(255 255 255 / 0.35),
       transparent
     );
     animation: shimmer 1.4s infinite;
+  }
+  /* White highlight is invisible on dark surfaces — use a faint one there. */
+  .dark .shimmer::after {
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgb(255 255 255 / 0.07),
+      transparent
+    );
   }
   @keyframes shimmer {
     100% {

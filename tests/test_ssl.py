@@ -44,6 +44,60 @@ def test_challenge_plan_dns01_when_zone_managed(isolated_db, stub_sysops, stub_f
     assert "dns-powerdns" in args
 
 
+def _make_cf_active_zone(tmp_path, monkeypatch, domain="demo1.example"):
+    """A CF-active zone (local DnsZone kept as revert target) + a creds path
+    inside tmp_path + a token to write into it. Phase 2+3 feature 5."""
+    from shared.config import settings
+    from shared.models import CloudflareZone
+
+    monkeypatch.setattr(settings, "cloudflare_credentials_file", str(tmp_path / "cf-creds.ini"))
+    monkeypatch.setitem(settings.secrets, "CLOUDFLARE_API_TOKEN", "cf-secret-token")
+    with write_session() as session:
+        session.add(DnsZone(account_id=1, zone=domain))
+        session.add(
+            CloudflareZone(
+                account_id=1, zone=domain, cf_zone_id="z1", status="active", name_servers=[], cf_account_id=None
+            )
+        )
+
+
+def test_challenge_plan_uses_dns_cloudflare_when_zone_cf_active(isolated_db, stub_sysops, stub_filesystem, tmp_path, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    _make_cf_active_zone(tmp_path, monkeypatch)
+
+    mode, args = fssl._challenge_plan("demo1.example")
+    assert mode == "dns-01"
+    assert "dns-cloudflare" in args
+    assert "dns-powerdns" not in args
+    creds = tmp_path / "cf-creds.ini"
+    assert creds.exists()
+    assert oct(creds.stat().st_mode)[-3:] == "600"  # certbot requires 0600
+    assert "cf-secret-token" in creds.read_text()
+
+
+def test_wildcard_uses_cloudflare_authenticator_when_active(isolated_db, stub_sysops, stub_filesystem, tmp_path, monkeypatch):
+    monkeypatch.setattr(fssl.settings, "letsencrypt_email", "ops@example.com")
+    captured = {}
+
+    def fake_run(args, timeout=180):
+        captured["args"] = args
+        from daemon.procutil import ProcResult
+
+        return ProcResult(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(fssl, "run", fake_run)
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    _make_cf_active_zone(tmp_path, monkeypatch)
+
+    result = fssl.issue_wildcard_certificate({"domain": "demo1.example"})
+    assert result["status"] == "issued"
+    assert "dns-cloudflare" in captured["args"]
+    assert "*.demo1.example" in captured["args"]
+    assert "demo1.example" in captured["args"]
+
+
 def test_challenge_plan_unprovisioned_domain_raises(isolated_db, stub_sysops, stub_filesystem):
     with pytest.raises(fssl.SslError):
         fssl._challenge_plan("nope.example")

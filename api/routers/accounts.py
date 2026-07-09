@@ -36,10 +36,20 @@ def create_account(body: CreateAccountBody, identity: Identity = Depends(get_ide
 @api_router.get("")
 def list_accounts(identity: Identity = Depends(get_identity)):
     require_admin(identity)
+    # Terminated accounts are gone for good: they never appear in any list —
+    # their only remaining trace is the account-events log.
     with read_session() as db:
-        accounts = db.scalars(select(Account).order_by(Account.username)).all()
+        accounts = db.scalars(
+            select(Account).where(Account.status != "terminated").order_by(Account.username)
+        ).all()
         return [
-            {"id": a.id, "username": a.username, "status": a.status, "primary_domain": a.primary_domain}
+            {
+                "id": a.id,
+                "username": a.username,
+                "status": a.status,
+                "primary_domain": a.primary_domain,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
             for a in accounts
         ]
 

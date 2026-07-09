@@ -16,7 +16,7 @@ from shared.db import write_session
 from shared.models import Account, Domain
 from shared.validation import validate_domain, validate_php_version, validate_username
 
-from daemon import handlers_redirect, lscache, ols, powerdns, sysops
+from daemon import dnsprovider, handlers_redirect, lscache, ols, sysops
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 
 
@@ -90,14 +90,14 @@ def add_domain(params: dict) -> dict:
     try:
         ensure_docroot(username, docroot)
         if parent_zone and settings.server_public_ip:
-            powerdns.upsert_record(parent_zone, dns_label, "A", [settings.server_public_ip])
+            dnsprovider.upsert_record(parent_zone, dns_label, "A", [settings.server_public_ip])
             dns_record_created = True
         ols.provision_vhost(account_snapshot)
     except Exception:
         if dns_record_created:
             try:
-                powerdns.delete_record(parent_zone, dns_label, "A")
-            except powerdns.PowerDnsError:
+                dnsprovider.delete_record(parent_zone, dns_label, "A")
+            except dnsprovider.DnsError:
                 pass  # best-effort; the DB-row compensation below is authoritative
         with write_session() as session:
             orphan = session.scalar(select(Domain).where(Domain.domain == domain_name))
@@ -144,8 +144,8 @@ def remove_domain(params: dict) -> dict:
     if parent_zone:
         label = _subdomain_label(domain_name, parent_zone)
         try:
-            powerdns.delete_record(parent_zone, label, "A")
-        except powerdns.PowerDnsError:
+            dnsprovider.delete_record(parent_zone, label, "A")
+        except dnsprovider.DnsError:
             pass  # already gone or zone unreachable -- vhost removal below is what actually matters
 
     ols.remove_domain_vhost(account_snapshot, domain_name)
@@ -216,9 +216,18 @@ def ensure_docroot(username: str, docroot: str) -> None:
     import os
     import pwd
 
+    from daemon import safeio
+
     pw = pwd.getpwnam(username)
-    os.makedirs(docroot, exist_ok=True)
-    os.chown(docroot, pw.pw_uid, pw.pw_gid)
+    home = f"{settings.home_base}/{username}"
+    rel = os.path.relpath(docroot, home)
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        raise RuntimeError(f"docroot '{docroot}' is not inside account home '{home}'")
+    # Symlink-safe create+chown. The account can write its own home, so a naive
+    # os.makedirs(exist_ok=True)+os.chown here is a root privilege-escalation
+    # primitive (a symlink planted at docroot makes root chown its target) --
+    # secure_mkdirs creates/re-owns each component through O_NOFOLLOW fds.
+    #
     # 750, not world-readable: confirmed by real testing that OLS's
     # "DocRoot UID" vhost setting only affects the LSAPI/PHP external app's
     # uid (extUser/extGroup, already set) -- the main worker process that
@@ -231,24 +240,21 @@ def ensure_docroot(username: str, docroot: str) -> None:
     # pattern cPanel/DirectAdmin use: grant read+traverse via a POSIX ACL
     # scoped to the one shared web-server uid ("nobody"), not by loosening
     # the "other" bits for every local user.
-    os.chmod(docroot, 0o750)
+    safeio.secure_mkdirs(home, rel, pw.pw_uid, pw.pw_gid, 0o750)
     _grant_webserver_acl(docroot)
 
     # vhost.conf.j2 always declares a context for this path (ACME HTTP-01
     # webroot, Phase f) -- OLS's `-t` rejects a context whose location
     # doesn't exist yet, so it must be created at domain-add time, not
-    # deferred until SSL issuance.
-    acme_dir = f"{docroot}/.well-known/acme-challenge"
-    os.makedirs(acme_dir, exist_ok=True)
-    os.chown(f"{docroot}/.well-known", pw.pw_uid, pw.pw_gid)
-    os.chown(acme_dir, pw.pw_uid, pw.pw_gid)
+    # deferred until SSL issuance. 0755 (like the original makedirs default)
+    # so the challenge stays reachable; `nobody` is granted read via the
+    # default ACL _grant_webserver_acl just set recursively on docroot.
+    safeio.secure_mkdirs(docroot, ".well-known/acme-challenge", pw.pw_uid, pw.pw_gid, 0o755)
 
-    logs_dir = f"{settings.home_base}/{username}/logs"
-    os.makedirs(logs_dir, exist_ok=True)
-    os.chown(logs_dir, pw.pw_uid, pw.pw_gid)
     # Shared with sysops.create_linux_user (account-creation time) and
     # ols.refresh_all_vhosts's migration pass (pre-existing accounts) --
     # one place owns this directory's creation/perms.
+    safeio.secure_mkdirs(home, "logs", pw.pw_uid, pw.pw_gid, 0o750)
     sysops.ensure_tmp_dir(username)
 
 

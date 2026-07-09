@@ -3,14 +3,14 @@ import * as LabelPrimitive from '@radix-ui/react-label'
 import { cn } from '@/lib/cn'
 
 const baseField =
-  'flex w-full rounded-btn border border-input bg-surface px-3 text-sm text-foreground placeholder:text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-accent disabled:cursor-not-allowed disabled:opacity-50'
+  'flex w-full rounded-btn border border-input bg-surface px-3 text-sm text-foreground shadow-sm placeholder:text-muted-foreground/70 transition-[border-color,box-shadow] focus-visible:outline-none focus-visible:border-accent focus-visible:ring-[3px] focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50'
 
 export const Input = forwardRef(function Input({ className, invalid, type = 'text', ...props }, ref) {
   return (
     <input
       ref={ref}
       type={type}
-      className={cn(baseField, 'h-9', invalid && 'border-danger focus-visible:ring-danger/40', className)}
+      className={cn(baseField, 'h-9', invalid && 'border-danger focus-visible:border-danger focus-visible:ring-danger/20', className)}
       {...props}
     />
   )
@@ -21,7 +21,7 @@ export const Textarea = forwardRef(function Textarea({ className, invalid, rows 
     <textarea
       ref={ref}
       rows={rows}
-      className={cn(baseField, 'py-2 min-h-[72px] font-mono text-xs leading-relaxed', invalid && 'border-danger focus-visible:ring-danger/40', className)}
+      className={cn(baseField, 'py-2 min-h-[72px] font-mono text-xs leading-relaxed', invalid && 'border-danger focus-visible:border-danger focus-visible:ring-danger/20', className)}
       {...props}
     />
   )

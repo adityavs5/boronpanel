@@ -2,10 +2,11 @@ import { useQuery } from '@tanstack/react-query'
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
-import { Cpu, MemoryStick, HardDrive, Activity, ArrowDownUp, Clock } from 'lucide-react'
+import { Cpu, MemoryStick, HardDrive, Activity, ArrowDownUp, Clock, Cloud } from 'lucide-react'
 import { get } from '@/lib/api'
 import { formatBytes, formatDuration, formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { Badge } from '@/components/ui/Badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { ProgressBar } from '@/components/ui/Progress'
 import { CardSkeleton } from '@/components/ui/Skeleton'
@@ -57,6 +58,61 @@ function ChartCard({ title, data, dataKey, color, formatY }) {
             </AreaChart>
           </ResponsiveContainer>
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function CloudflareCard() {
+  // Cloudflare DNS/CDN provider health (docs/PLAN-cloudflare.md Phase 0).
+  // Polled gently — every probe makes a real outbound API call.
+  const cf = useQuery({ queryKey: ['cloudflare-health'], queryFn: () => get('/api/v1/cloudflare/health'), refetchInterval: 60_000 })
+  const d = cf.data
+  const badge = cf.isLoading
+    ? <Badge variant="neutral">Checking…</Badge>
+    : cf.isError
+      ? <Badge variant="danger">Unavailable</Badge>
+      : !d.configured
+        ? <Badge variant="neutral">Not configured</Badge>
+        : d.ok
+          ? <Badge variant="success">Healthy</Badge>
+          : <Badge variant="danger">Error</Badge>
+
+  return (
+    <Card className="mt-6">
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="flex items-center gap-2"><Cloud className="h-4 w-4" /> Cloudflare</CardTitle>
+        {badge}
+      </CardHeader>
+      <CardContent>
+        {cf.isError ? (
+          <p className="text-sm text-muted-foreground">Could not query the daemon for Cloudflare status.</p>
+        ) : cf.isLoading ? null : !d.configured ? (
+          <p className="text-sm text-muted-foreground">
+            No API token set. Add <code className="font-mono text-xs">CLOUDFLARE_API_TOKEN</code> to secrets.env to
+            enable Cloudflare DNS/CDN for customer zones.
+          </p>
+        ) : (
+          <div className="space-y-1 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">API token</span>
+              <span className="font-medium">{d.token_valid ? 'valid' : 'invalid'}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">API reachable</span>
+              <span className="font-medium">{d.api_ok ? 'yes' : 'no'}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Edge IP ranges</span>
+              <span className="font-medium">
+                {d.ranges_file?.exists
+                  ? `updated ${formatDuration(d.ranges_file.age_seconds)} ago${d.ranges_file.stale ? ' (stale)' : ''}`
+                  : 'not fetched yet'}
+              </span>
+            </div>
+            {d.error && <p className="pt-1 text-xs text-danger">{d.error}</p>}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -125,6 +181,8 @@ export default function ServerHealth() {
           </CardContent>
         </Card>
       )}
+
+      <CloudflareCard />
 
       {/* 24h charts */}
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">

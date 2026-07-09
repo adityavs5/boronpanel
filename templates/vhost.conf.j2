@@ -138,6 +138,13 @@ context / {
     php_admin_value max_execution_time "{{ php_ini.max_execution_time }}"
     php_admin_value display_errors "{{ "On" if php_ini.display_errors else "Off" }}"
     php_admin_value error_reporting "{{ php_ini.error_reporting }}"
+{% for e in php_ini.get('extras') or [] %}
+    {# Newer key/value directives (PhpIniDirective rows): names are
+       EXTRA_DIRECTIVES registry keys only, values already validated to
+       their rendered string form by phpdirectives.validate() -- neither
+       side is ever raw user text. #}
+    php_admin_value {{ e.name }} "{{ e.value }}"
+{% endfor %}
 {% endif %}
   }
 {% endif %}

@@ -165,7 +165,7 @@ def test_delete_settings_for_domain_removes_row_and_cache_dir(account_with_domai
 
 def test_remove_domain_cleans_up_lscache_settings(account_with_domain, monkeypatch):
     monkeypatch.setattr(hd.ols, "remove_domain_vhost", lambda account, domain_name: None)
-    monkeypatch.setattr(hd.powerdns, "delete_record", lambda *a, **k: None)
+    monkeypatch.setattr(hd.dnsprovider, "delete_record", lambda *a, **k: None)
     monkeypatch.setattr(hd, "_find_parent_zone", lambda domain_name: None)
 
     with write_session() as session:

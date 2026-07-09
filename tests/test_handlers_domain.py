@@ -42,8 +42,8 @@ def _add_zone_owned_by(username: str, zone: str) -> None:
 @pytest.fixture()
 def stub_powerdns(monkeypatch):
     calls = {"upsert": [], "delete": []}
-    monkeypatch.setattr(hd.powerdns, "upsert_record", lambda zone, sub, rtype, values, ttl=None: calls["upsert"].append((zone, sub, rtype, tuple(values))))
-    monkeypatch.setattr(hd.powerdns, "delete_record", lambda zone, sub, rtype: calls["delete"].append((zone, sub, rtype)))
+    monkeypatch.setattr(hd.dnsprovider, "upsert_record", lambda zone, sub, rtype, values, ttl=None, proxied=False: calls["upsert"].append((zone, sub, rtype, tuple(values))))
+    monkeypatch.setattr(hd.dnsprovider, "delete_record", lambda zone, sub, rtype: calls["delete"].append((zone, sub, rtype)))
     return calls
 
 
@@ -127,8 +127,8 @@ def test_add_subdomain_skips_dns_when_zone_not_managed(isolated_db, stub_sysops,
 def test_add_domain_dns_failure_is_compensated(isolated_db, stub_sysops, stub_filesystem, stub_ols, monkeypatch):
     monkeypatch.setattr(hd.settings, "server_public_ip", "203.0.113.10")
     deleted = []
-    monkeypatch.setattr(hd.powerdns, "upsert_record", lambda zone, sub, rtype, values, ttl=None: None)
-    monkeypatch.setattr(hd.powerdns, "delete_record", lambda zone, sub, rtype: deleted.append((zone, sub, rtype)))
+    monkeypatch.setattr(hd.dnsprovider, "upsert_record", lambda zone, sub, rtype, values, ttl=None, proxied=False: None)
+    monkeypatch.setattr(hd.dnsprovider, "delete_record", lambda zone, sub, rtype: deleted.append((zone, sub, rtype)))
 
     ha.create_account({"username": "demo1"})
     _add_zone_owned_by("demo1", "demo1.example")

@@ -22,6 +22,12 @@ from shared.validation import (
 
 from daemon import autoresponder, dkim, mail, spamfilter
 
+# Bounds for a single mailbox's quota. 100 GB is a generous shared-hosting
+# ceiling that still rejects an accidental/absurd value or an overflow, and the
+# 1 MB floor rejects 0/negative (which Dovecot would read as "unlimited").
+MAILBOX_QUOTA_MIN_MB = 1
+MAILBOX_QUOTA_MAX_MB = 100 * 1024
+
 
 def create_mail_domain(params: dict) -> dict:
     username = params.get("username")
@@ -103,7 +109,15 @@ def create_mailbox(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
     password = validate_password_strength(params["password"])
-    quota_mb = int(params.get("quota_mb", 1024))
+    # Bound the quota like every other numeric resource limit in this codebase:
+    # an unbounded int(...) accepts 0/negative (a broken or effectively-unlimited
+    # mailbox) or an absurd value with no ceiling on shared storage.
+    try:
+        quota_mb = int(params.get("quota_mb", 1024))
+    except (TypeError, ValueError):
+        raise ValidationError("quota_mb must be an integer") from None
+    if not (MAILBOX_QUOTA_MIN_MB <= quota_mb <= MAILBOX_QUOTA_MAX_MB):
+        raise ValidationError(f"quota_mb must be between {MAILBOX_QUOTA_MIN_MB} and {MAILBOX_QUOTA_MAX_MB}")
 
     with write_session() as session:
         mail_domain = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))

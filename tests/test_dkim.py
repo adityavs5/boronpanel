@@ -51,7 +51,7 @@ def test_setup_dns_signing_publishes_when_zone_managed(dkim_tmp_dir, isolated_db
     published = []
     monkeypatch.setattr(dkim, "find_managed_zone", lambda domain: "example.com")
     monkeypatch.setattr(dkim, "label_within_zone", lambda domain, zone: "demo1")
-    monkeypatch.setattr(dkim.powerdns, "upsert_record", lambda zone, label, rtype, values, **kw: published.append((zone, label, rtype)))
+    monkeypatch.setattr(dkim.dnsprovider, "upsert_record", lambda zone, label, rtype, values, **kw: published.append((zone, label, rtype)))
 
     result = dkim.setup_dns_signing("demo1.example.com")
     assert result["dns_published"] is True
@@ -80,8 +80,8 @@ def test_teardown_dns_signing_deletes_dns_records_when_managed(dkim_tmp_dir, iso
     deleted = []
     monkeypatch.setattr(dkim, "find_managed_zone", lambda domain: "example.com")
     monkeypatch.setattr(dkim, "label_within_zone", lambda domain, zone: "demo1")
-    monkeypatch.setattr(dkim.powerdns, "upsert_record", lambda *a, **kw: None)
-    monkeypatch.setattr(dkim.powerdns, "delete_record", lambda zone, label, rtype: deleted.append((zone, label, rtype)))
+    monkeypatch.setattr(dkim.dnsprovider, "upsert_record", lambda *a, **kw: None)
+    monkeypatch.setattr(dkim.dnsprovider, "delete_record", lambda zone, label, rtype: deleted.append((zone, label, rtype)))
 
     dkim.setup_dns_signing("demo1.example.com")
     dkim.teardown_dns_signing("demo1.example.com")

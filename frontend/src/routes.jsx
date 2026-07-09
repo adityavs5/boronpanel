@@ -1,3 +1,4 @@
+import { lazy } from 'react'
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 import { BASE_PATH } from '@/lib/api'
 import { useAuth } from '@/store/auth'
@@ -5,48 +6,52 @@ import { AppShell } from '@/components/layout/AppShell'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
 import Login from '@/pages/Login'
 import ChangePassword from '@/pages/ChangePassword'
-import { Maintenance, NotFound } from '@/pages/system'
+import { Maintenance, NotFound, RouteError } from '@/pages/system'
 
-// Real pages (filled in progressively).
-import Dashboard from '@/pages/customer/Dashboard'
-import Domains from '@/pages/customer/Domains'
-import DomainDetail from '@/pages/customer/DomainDetail'
-import Email from '@/pages/customer/Email'
-import Databases from '@/pages/customer/Databases'
-import Files from '@/pages/customer/Files'
-import Backups from '@/pages/customer/Backups'
-import Apps from '@/pages/customer/Apps'
-import Redis from '@/pages/customer/Redis'
-import Dns from '@/pages/customer/Dns'
-import Ssl from '@/pages/customer/Ssl'
-import Cron from '@/pages/customer/Cron'
-import Ftp from '@/pages/customer/Ftp'
-import Git from '@/pages/customer/Git'
-import SshKeys from '@/pages/customer/SshKeys'
-import Terminal from '@/pages/customer/Terminal'
-import DevTools from '@/pages/customer/DevTools'
-import Processes from '@/pages/customer/Processes'
-import MoreMenu from '@/pages/customer/MoreMenu'
-import Security from '@/pages/customer/Security'
-import Logs from '@/pages/customer/Logs'
-import DiskUsage from '@/pages/customer/DiskUsage'
+// Every page is code-split: the shell paints immediately and each page loads
+// on first visit (then stays cached). AppShell provides the Suspense fallback.
+const Dashboard = lazy(() => import('@/pages/customer/Dashboard'))
+const Domains = lazy(() => import('@/pages/customer/Domains'))
+const DomainDetail = lazy(() => import('@/pages/customer/DomainDetail'))
+const Email = lazy(() => import('@/pages/customer/Email'))
+const Databases = lazy(() => import('@/pages/customer/Databases'))
+const Files = lazy(() => import('@/pages/customer/Files'))
+const Backups = lazy(() => import('@/pages/customer/Backups'))
+const Apps = lazy(() => import('@/pages/customer/Apps'))
+const Redis = lazy(() => import('@/pages/customer/Redis'))
+const Php = lazy(() => import('@/pages/customer/Php'))
+const Dns = lazy(() => import('@/pages/customer/Dns'))
+const Ssl = lazy(() => import('@/pages/customer/Ssl'))
+const Cron = lazy(() => import('@/pages/customer/Cron'))
+const Ftp = lazy(() => import('@/pages/customer/Ftp'))
+const Git = lazy(() => import('@/pages/customer/Git'))
+const SshKeys = lazy(() => import('@/pages/customer/SshKeys'))
+const Terminal = lazy(() => import('@/pages/customer/Terminal'))
+const DevTools = lazy(() => import('@/pages/customer/DevTools'))
+const Processes = lazy(() => import('@/pages/customer/Processes'))
+const MoreMenu = lazy(() => import('@/pages/customer/MoreMenu'))
+const Security = lazy(() => import('@/pages/customer/Security'))
+const Logs = lazy(() => import('@/pages/customer/Logs'))
+const DiskUsage = lazy(() => import('@/pages/customer/DiskUsage'))
 
-import Accounts from '@/pages/admin/Accounts'
-import AccountDetail from '@/pages/admin/AccountDetail'
-import ServerHealth from '@/pages/admin/ServerHealth'
-import Services from '@/pages/admin/Services'
-import BandwidthRanking from '@/pages/admin/BandwidthRanking'
-import MailQueue from '@/pages/admin/MailQueue'
-import Firewall from '@/pages/admin/Firewall'
-import Fail2ban from '@/pages/admin/Fail2ban'
-import IpWhitelist from '@/pages/admin/IpWhitelist'
-import AuditLog from '@/pages/admin/AuditLog'
-import Waf from '@/pages/admin/Waf'
-import SlowQueries from '@/pages/admin/SlowQueries'
-import Webhooks from '@/pages/admin/Webhooks'
-import NotificationSettings from '@/pages/admin/NotificationSettings'
-import CpanelImport from '@/pages/admin/CpanelImport'
-import ApiTokens from '@/pages/admin/ApiTokens'
+const Accounts = lazy(() => import('@/pages/admin/Accounts'))
+const AccountDetail = lazy(() => import('@/pages/admin/AccountDetail'))
+const ServerHealth = lazy(() => import('@/pages/admin/ServerHealth'))
+const Services = lazy(() => import('@/pages/admin/Services'))
+const BandwidthRanking = lazy(() => import('@/pages/admin/BandwidthRanking'))
+const MailQueue = lazy(() => import('@/pages/admin/MailQueue'))
+const Firewall = lazy(() => import('@/pages/admin/Firewall'))
+const Fail2ban = lazy(() => import('@/pages/admin/Fail2ban'))
+const IpWhitelist = lazy(() => import('@/pages/admin/IpWhitelist'))
+const AuditLog = lazy(() => import('@/pages/admin/AuditLog'))
+const AccountLog = lazy(() => import('@/pages/admin/AccountLog'))
+const Waf = lazy(() => import('@/pages/admin/Waf'))
+const SlowQueries = lazy(() => import('@/pages/admin/SlowQueries'))
+const Webhooks = lazy(() => import('@/pages/admin/Webhooks'))
+const NotificationSettings = lazy(() => import('@/pages/admin/NotificationSettings'))
+const CpanelImport = lazy(() => import('@/pages/admin/CpanelImport'))
+const ApiTokens = lazy(() => import('@/pages/admin/ApiTokens'))
+const Cloudflare = lazy(() => import('@/pages/admin/Cloudflare'))
 
 function IndexRedirect() {
   const role = useAuth.getState().role
@@ -57,9 +62,15 @@ function admin(el) {
   return <ProtectedRoute adminOnly>{el}</ProtectedRoute>
 }
 
+// A crash inside one page renders an inline error while the shell (sidebar,
+// topbar) stays intact and usable.
+function withPageErrors(children) {
+  return children.map((r) => ({ ...r, errorElement: <RouteError /> }))
+}
+
 export const router = createBrowserRouter(
   [
-    { path: '/login', element: <Login /> },
+    { path: '/login', element: <Login />, errorElement: <RouteError /> },
     { path: '/maintenance', element: <Maintenance /> },
     {
       path: '/',
@@ -68,13 +79,15 @@ export const router = createBrowserRouter(
           <AppShell />
         </ProtectedRoute>
       ),
-      children: [
+      errorElement: <RouteError />,
+      children: withPageErrors([
         { index: true, element: <IndexRedirect /> },
 
         // Customer resource pages (scoped to the signed-in account).
         { path: 'dashboard', element: <Dashboard /> },
         { path: 'domains', element: <Domains /> },
         { path: 'domains/:domain', element: <DomainDetail /> },
+        { path: 'php', element: <Php /> },
         { path: 'email', element: <Email /> },
         { path: 'databases', element: <Databases /> },
         { path: 'files', element: <Files /> },
@@ -107,7 +120,9 @@ export const router = createBrowserRouter(
         { path: 'firewall', element: admin(<Firewall />) },
         { path: 'fail2ban', element: admin(<Fail2ban />) },
         { path: 'ip-whitelist', element: admin(<IpWhitelist />) },
+        { path: 'cloudflare', element: admin(<Cloudflare />) },
         { path: 'audit-log', element: admin(<AuditLog />) },
+        { path: 'account-log', element: admin(<AccountLog />) },
         { path: 'waf', element: admin(<Waf />) },
         { path: 'slow-queries', element: admin(<SlowQueries />) },
         { path: 'webhooks', element: admin(<Webhooks />) },
@@ -116,7 +131,7 @@ export const router = createBrowserRouter(
         { path: 'tokens', element: admin(<ApiTokens />) },
 
         { path: '*', element: <NotFound /> },
-      ],
+      ]),
     },
     { path: '*', element: <NotFound /> },
   ],

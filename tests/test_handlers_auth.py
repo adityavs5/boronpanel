@@ -208,9 +208,11 @@ def test_check_login_lockout_unlocked_when_no_history(isolated_db):
     assert hauth.check_login_lockout({"username": "nobody"}) == {"locked": False}
 
 
-def test_record_login_result_success_clears_failures(isolated_db):
+def test_login_success_clears_reserved_failures(isolated_db):
+    # check_login_lockout now RESERVES (counts) each attempt; a later success
+    # clears the counter so earlier typos don't accumulate toward a lockout.
     for _ in range(3):
-        hauth.record_login_result({"username": "admin", "success": False})
+        assert hauth.check_login_lockout({"username": "admin"})["locked"] is False
     hauth.record_login_result({"username": "admin", "success": True})
 
     from sqlalchemy import select
@@ -223,20 +225,37 @@ def test_record_login_result_success_clears_failures(isolated_db):
         assert row is None
 
 
-def test_record_login_result_locks_out_after_threshold(isolated_db):
+def test_reserving_attempts_locks_out_after_threshold(isolated_db):
+    # The first THRESHOLD attempts proceed; the next one is refused atomically
+    # (this is the gate that a concurrent burst can no longer slip past).
     for _ in range(hauth.LOCKOUT_THRESHOLD):
-        hauth.record_login_result({"username": "admin", "success": False})
+        assert hauth.check_login_lockout({"username": "admin"})["locked"] is False
 
     lockout = hauth.check_login_lockout({"username": "admin"})
     assert lockout["locked"] is True
     assert lockout["retry_after_seconds"] > 0
 
 
-def test_record_login_result_below_threshold_does_not_lock(isolated_db):
+def test_below_threshold_does_not_lock(isolated_db):
+    # THRESHOLD-1 reserved, then the THRESHOLD-th attempt still proceeds.
     for _ in range(hauth.LOCKOUT_THRESHOLD - 1):
-        hauth.record_login_result({"username": "admin", "success": False})
-
+        assert hauth.check_login_lockout({"username": "admin"})["locked"] is False
     assert hauth.check_login_lockout({"username": "admin"}) == {"locked": False}
+
+
+def test_failed_result_does_not_double_count(isolated_db):
+    # A failed attempt is already counted at reservation time, so
+    # record_login_result(success=False) must be a no-op (no second increment).
+    from sqlalchemy import select
+
+    from shared.db import write_session
+    from shared.models import LoginAttempt
+
+    hauth.check_login_lockout({"username": "admin"})  # reserve one attempt
+    hauth.record_login_result({"username": "admin", "success": False})
+    with write_session() as db:
+        row = db.scalar(select(LoginAttempt).where(LoginAttempt.username == "admin"))
+        assert row.failed_count == 1
 
 
 def test_check_login_lockout_clears_after_expiry(isolated_db):
@@ -247,11 +266,13 @@ def test_check_login_lockout_clears_after_expiry(isolated_db):
     from shared.db import write_session
     from shared.models import LoginAttempt
 
-    for _ in range(hauth.LOCKOUT_THRESHOLD):
-        hauth.record_login_result({"username": "admin", "success": False})
+    for _ in range(hauth.LOCKOUT_THRESHOLD + 1):
+        hauth.check_login_lockout({"username": "admin"})
 
     with write_session() as db:
         row = db.scalar(select(LoginAttempt).where(LoginAttempt.username == "admin"))
+        assert row.locked_until is not None
         row.locked_until = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
 
+    # A fresh attempt after expiry starts a new window (reserved, not locked).
     assert hauth.check_login_lockout({"username": "admin"}) == {"locked": False}

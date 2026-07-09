@@ -1,0 +1,24 @@
+# Reference copy of the FileBrowser Quantum unit. forgehostd's fb.bootstrap op
+# writes an identical file to /etc/systemd/system/forgehost-filebrowser.service
+# at daemon startup (daemon/filebrowser.py::_unit_content), so manual install of
+# this file is optional -- it's here for operator visibility alongside the other
+# deploy/*.service units. Runs as root by necessity (cross-account home access
+# under the 711/750 perms model, per ARCHITECTURE.md §10); the actual network
+# boundary is the loopback bind in /etc/forgehost/filebrowser.yaml, never a
+# public port.
+[Unit]
+Description=Forgehost File Manager (FileBrowser Quantum)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/filebrowser-quantum -c /etc/forgehost/filebrowser.yaml
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:/var/log/forgehost/filebrowser.log
+StandardError=append:/var/log/forgehost/filebrowser.log
+
+[Install]
+WantedBy=multi-user.target

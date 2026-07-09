@@ -24,7 +24,7 @@ from shared.db import write_session
 from shared.models import Account, Domain, DnsZone, SslExpiryNotice
 from shared.validation import validate_domain, validate_username
 
-from daemon import events
+from daemon import cloudflare_accounts, dnsprovider, events
 from daemon.ols import letsencrypt_cert_paths
 from daemon.procutil import run
 
@@ -50,6 +50,55 @@ def _dns01_args() -> list[str]:
     ]
 
 
+def _cf_credentials_path(cf_account_pk: int | None) -> str:
+    """One certbot-dns-cloudflare credentials file per pool account (or the
+    configured single file for a legacy/None account), so multi-account
+    issuance uses the right token. certbot stores this path in the renewal
+    conf, so `certbot renew` keeps using the correct per-domain
+    authenticator + creds automatically."""
+    if cf_account_pk is not None:
+        base = settings.cloudflare_credentials_file
+        return base[:-4] + f"-{cf_account_pk}.ini" if base.endswith(".ini") else f"{base}-{cf_account_pk}"
+    return settings.cloudflare_credentials_file
+
+
+def _ensure_cf_credentials(row) -> str:
+    """Write the certbot-dns-cloudflare credentials INI (0600) for the pool
+    account serving `row`'s zone, and return its path."""
+    token = cloudflare_accounts.token_for_id(getattr(row, "cf_account_id", None)) or settings.cloudflare_api_token
+    if not token:
+        raise SslError(f"no Cloudflare API token available for zone '{row.zone}' -- cannot issue via DNS-01")
+    path = Path(_cf_credentials_path(getattr(row, "cf_account_id", None)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"dns_cloudflare_api_token = {token}\n")
+    path.chmod(0o600)  # certbot refuses world/group-readable credentials files
+    return str(path)
+
+
+def _cf_dns01_args(row) -> list[str]:
+    return [
+        "--authenticator", "dns-cloudflare",
+        "--dns-cloudflare-credentials", _ensure_cf_credentials(row),
+        "--dns-cloudflare-propagation-seconds", "30",
+    ]
+
+
+def _dns01_plan(domain: str) -> list[str] | None:
+    """Phase 2+3 feature 5: pick the DNS-01 authenticator by the zone's live
+    provider. A Cloudflare-ACTIVE zone MUST use dns-cloudflare (Cloudflare is
+    authoritative, so the _acme-challenge TXT has to be created there, not in
+    the stale local PowerDNS zone Forgehost keeps as the revert target). A
+    local Forgehost-managed zone uses dns-powerdns. Anything else -> None
+    (no DNS-01 hook available)."""
+    row = dnsprovider.cloudflare_zone_row(domain)
+    if row is not None and row.status == "active":
+        return _cf_dns01_args(row)
+    with write_session() as session:
+        if session.scalar(select(DnsZone).where(DnsZone.zone == domain)) is not None:
+            return _dns01_args()
+    return None
+
+
 def _challenge_plan(domain: str) -> tuple[str, list[str]]:
     """Returns (mode, certbot_args). mode is "dns-01" or "http-01", purely
     for logging/the RPC response -- the actual behavior is in the args."""
@@ -60,11 +109,9 @@ def _challenge_plan(domain: str) -> tuple[str, list[str]]:
     if domain == settings.webmail_hostname:
         return "http-01", ["--webroot", "-w", settings.webmail_docroot]
 
-    with write_session() as session:
-        zone_managed = session.scalar(select(DnsZone).where(DnsZone.zone == domain)) is not None
-
-    if zone_managed:
-        return "dns-01", _dns01_args()
+    dns01 = _dns01_plan(domain)  # CF-active -> dns-cloudflare, local zone -> dns-powerdns
+    if dns01 is not None:
+        return "dns-01", dns01
 
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain))
@@ -129,16 +176,20 @@ def issue_wildcard_certificate(params: dict) -> dict:
         raise SslError("letsencrypt_email is not set in forgehost.toml")
 
     with write_session() as session:
-        zone_managed = session.scalar(select(DnsZone).where(DnsZone.zone == domain)) is not None
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain))
     if domain_row is None:
         raise SslError(f"domain '{domain}' is not provisioned in Forgehost")
-    if not zone_managed:
+    # Phase 2+3 feature 5: wildcards work on either DNS-01 provider now
+    # (dns-cloudflare for a CF-active zone, dns-powerdns for a local managed
+    # zone). Still requires a Forgehost-managed zone -- an externally-DNS
+    # domain has no hook to create the _acme-challenge TXT in.
+    dns01 = _dns01_plan(domain)
+    if dns01 is None:
         raise SslError(
-            f"wildcard SSL for '{domain}' requires its DNS zone to be managed by Forgehost's own PowerDNS "
-            "(DNS-01 is the only ACME challenge type that supports wildcard names, and it needs the "
-            "_acme-challenge TXT record to be creatable through Forgehost's own DNS API hook) -- "
-            "create a Forgehost-managed zone for this domain first."
+            f"wildcard SSL for '{domain}' requires its DNS zone to be managed by Forgehost "
+            "(local PowerDNS or a Cloudflare-active zone) -- DNS-01 is the only ACME challenge type that "
+            "supports wildcard names, and it needs the _acme-challenge TXT to be creatable through the "
+            "zone's own DNS API. Create a Forgehost-managed zone for this domain first."
         )
 
     force_args = ["--force-renewal"] if params.get("force") else []
@@ -152,7 +203,7 @@ def issue_wildcard_certificate(params: dict) -> dict:
         "-d", f"*.{domain}",
         "--deploy-hook", f"{_VENV_PYTHON} {DEPLOY_HOOK_SCRIPT}",
         *force_args,
-        *_dns01_args(),
+        *dns01,
     ]
     result = run(args, timeout=180)
     if not result.ok:

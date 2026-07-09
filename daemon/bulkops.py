@@ -18,7 +18,7 @@ from shared.db import write_session
 from shared.models import Account, BulkActionJob, utcnow
 from shared.validation import ValidationError, validate_username
 
-from daemon import handlers_account, notifications
+from daemon import audit, handlers_account, notifications
 
 logger = logging.getLogger("forgehostd.bulkops")
 
@@ -66,23 +66,30 @@ def trigger_bulk_action(params: dict) -> dict:
         if not any(k in action_params for k in ("cpu_pct", "mem_mb", "io_mb", "pids_max")):
             raise ValidationError("update_limits requires at least one limit field")
 
+    # Attribution for the account-events log: the API passes who triggered the
+    # bulk action and from which IP, since the job itself runs detached.
+    requested_by = str(params.get("requested_by") or "unknown")
+    requested_ip = params.get("requested_ip") or None
+
     with write_session() as session:
         job = BulkActionJob(action=action, action_params=action_params, status="pending", total=len(usernames))
         session.add(job)
         session.flush()
         job_id = job.id
 
-    _executor.submit(_run_job, job_id, action, usernames, action_params)
+    _executor.submit(_run_job, job_id, action, usernames, action_params, requested_by, requested_ip)
     with write_session() as session:
         return _job_to_dict(session.get(BulkActionJob, job_id))
 
 
-def _apply(action: str, username: str, action_params: dict) -> str:
+def _apply(action: str, username: str, action_params: dict, requested_by: str = "unknown", requested_ip: str | None = None) -> str:
     if action == "suspend":
         handlers_account.suspend_account({"username": username})
+        audit.record_account_event("suspended", username, actor=requested_by, role="admin", ip=requested_ip, detail="bulk action")
         return "suspended"
     if action == "unsuspend":
         handlers_account.unsuspend_account({"username": username})
+        audit.record_account_event("unsuspended", username, actor=requested_by, role="admin", ip=requested_ip, detail="bulk action")
         return "unsuspended"
     if action == "update_limits":
         handlers_account.set_limits({"username": username, **action_params})
@@ -96,7 +103,7 @@ def _apply(action: str, username: str, action_params: dict) -> str:
     raise ValidationError(f"unknown action '{action}'")
 
 
-def _run_job(job_id: int, action: str, usernames: list[str], action_params: dict) -> None:
+def _run_job(job_id: int, action: str, usernames: list[str], action_params: dict, requested_by: str = "unknown", requested_ip: str | None = None) -> None:
     results: list[dict] = []
     with write_session() as session:
         session.get(BulkActionJob, job_id).status = "running"
@@ -106,7 +113,7 @@ def _run_job(job_id: int, action: str, usernames: list[str], action_params: dict
             job = session.get(BulkActionJob, job_id)
             job.current_username = username
         try:
-            detail = _apply(action, username, action_params)
+            detail = _apply(action, username, action_params, requested_by, requested_ip)
             results.append({"username": username, "ok": True, "detail": detail})
             with write_session() as session:
                 job = session.get(BulkActionJob, job_id)

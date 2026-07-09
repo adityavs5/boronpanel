@@ -23,6 +23,9 @@ def bulk_action(body: BulkActionBody, identity: Identity = Depends(get_identity)
     return call_daemon(
         "bulk.trigger", identity,
         action=body.action, usernames=body.usernames, action_params=body.action_params,
+        # Attribution for the account-events log — the job runs detached, so
+        # who triggered it (and from where) must travel with it.
+        requested_by=identity.username, requested_ip=identity.ip,
     )
 
 

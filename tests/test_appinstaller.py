@@ -24,8 +24,12 @@ def account_with_domain(isolated_db, tmp_path, monkeypatch):
     fake_pw = real_pwd.struct_passwd(("demo1", "x", os.getuid(), os.getgid(), "", "/home/demo1", "/usr/sbin/nologin"))
     monkeypatch.setattr(ai.pwd, "getpwnam", lambda name: fake_pw)
 
-    docroot = tmp_path / "public_html"
-    docroot.mkdir()
+    # docroot must live under the account's own home (home_base/<user>) -- the
+    # installer now refuses a docroot that resolves outside it (a symlink-escape
+    # / cross-tenant guard), so mirror the real layout here.
+    monkeypatch.setattr(ai.settings, "home_base", str(tmp_path))
+    docroot = tmp_path / "demo1" / "public_html"
+    docroot.mkdir(parents=True)
     with __import__("shared.db", fromlist=["write_session"]).write_session() as session:
         from sqlalchemy import select
 

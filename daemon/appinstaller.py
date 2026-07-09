@@ -92,7 +92,19 @@ def _account_and_domain(username: str, domain_name: str) -> tuple[int, str]:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id))
         if domain_row is None:
             raise AppInstallError(f"domain '{domain_name}' not found for account '{username}'")
-        return account.id, domain_row.docroot
+        # The account can write its own home, so it may have replaced its
+        # docroot with a symlink after domain-add. Extraction and `chown -R`
+        # below run as ROOT and follow symlinks, so a docroot symlinked to /etc
+        # (or another tenant's home) would be an arbitrary root-write / cross-
+        # tenant clobber. Resolve it and require it to stay within this
+        # account's own home before any install touches it.
+        home = os.path.realpath(f"{settings.home_base}/{username}")
+        real_docroot = os.path.realpath(domain_row.docroot)
+        if real_docroot != home and not real_docroot.startswith(home + os.sep):
+            raise AppInstallError(
+                f"docroot '{domain_row.docroot}' does not resolve within the account home -- refusing to install"
+            )
+        return account.id, real_docroot
 
 
 def _docroot_is_empty_enough(docroot: str) -> bool:

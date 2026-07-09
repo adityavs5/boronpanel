@@ -24,7 +24,7 @@ from starlette.requests import Request
 from api.security import Identity, get_identity, require_admin
 from api.templates import templates
 from shared.db import read_session
-from shared.models import AuditLog
+from shared.models import AccountEvent, AuditLog
 
 api_router = APIRouter(prefix="/api/v1/audit-log", tags=["audit-log"])
 ui_router = APIRouter(prefix="/ui/audit-log", tags=["ui:audit-log"])
@@ -90,6 +90,102 @@ def list_audit_log(
     require_admin(identity)
     rows, total = _query_rows(actor, op, result, target, q, page, page_size)
     return {"entries": [_row_dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
+
+
+ACCOUNT_EVENT_ACTIONS = ("created", "suspended", "unsuspended", "terminated")
+
+
+def _event_dict(row: AccountEvent) -> dict:
+    return {
+        "id": row.id,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "action": row.action,
+        "username": row.username,
+        "actor": row.actor,
+        "actor_role": row.actor_role,
+        "ip": row.ip,
+        "detail": row.detail,
+    }
+
+
+@api_router.get("/account-events")
+def list_account_events(
+    action: str = "",
+    username: str = "",
+    q: str = "",
+    page: int = 1,
+    page_size: int = 100,
+    identity: Identity = Depends(get_identity),
+):
+    """Account lifecycle log: who created/suspended/unsuspended/terminated
+    which account, when, from which IP. Read-only by design — terminated
+    accounts exist nowhere else in the panel."""
+    require_admin(identity)
+    page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+    page = max(1, page)
+    with read_session() as db:
+        base = select(AccountEvent)
+        if action:
+            base = base.where(AccountEvent.action == action)
+        if username:
+            base = base.where(AccountEvent.username.contains(username))
+        if q:
+            like = f"%{q}%"
+            base = base.where(
+                AccountEvent.username.like(like)
+                | AccountEvent.actor.like(like)
+                | AccountEvent.ip.like(like)
+                | AccountEvent.detail.like(like)
+            )
+        total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+        rows = db.scalars(
+            base.order_by(AccountEvent.id.desc()).offset((page - 1) * page_size).limit(page_size)
+        ).all()
+        return {
+            "entries": [_event_dict(r) for r in rows],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "actions": list(ACCOUNT_EVENT_ACTIONS),
+        }
+
+
+@api_router.get("/account-events/export.csv")
+def export_account_events_csv(
+    action: str = "",
+    username: str = "",
+    identity: Identity = Depends(get_identity),
+):
+    require_admin(identity)
+    with read_session() as db:
+        base = select(AccountEvent)
+        if action:
+            base = base.where(AccountEvent.action == action)
+        if username:
+            base = base.where(AccountEvent.username.contains(username))
+        rows = db.scalars(base.order_by(AccountEvent.id.desc())).all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "created_at", "action", "username", "actor", "actor_role", "ip", "detail"])
+    for row in rows:
+        writer.writerow(
+            [
+                row.id,
+                row.created_at.isoformat() if row.created_at else "",
+                row.action,
+                row.username,
+                row.actor,
+                row.actor_role,
+                row.ip or "",
+                row.detail or "",
+            ]
+        )
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=forgehost-account-events.csv"},
+    )
 
 
 @api_router.get("/export.csv")

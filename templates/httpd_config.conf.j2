@@ -130,8 +130,15 @@ CGIRLimit{
     procHardLimit                           450
 }
 
+{# Phase 2+3 feature 3 (real-IP rails): Cloudflare edge ranges are marked
+   TRUSTED (trailing "T") so the listeners' `useIpInProxyHeader 2` restores
+   the real visitor IP from X-Forwarded-For ONLY when the request actually
+   came from a Cloudflare edge -- spoofing the header from anywhere else is
+   ignored. Absent ranges (feature not yet configured / rolled back) -> plain
+   `allow ALL`, byte-identical to before this feature. #}
 accessControl{
-	allow                                   ALL
+	allow                                   ALL{% for cidr in cloudflare_trusted_ips %}, {{ cidr }}T{% endfor %}
+
 	deny
 }
 
@@ -263,6 +270,14 @@ extProcessor {{ acc.php_app_name }}{
        to this account's own private tmp dir instead of failing with an
        open_basedir violation. #}
     env                              TMPDIR={{ acc.home_dir }}/tmp
+{% if acc.get('php_scan_dir') %}
+    {# Per-account extension selection (daemon/phpext.py): PHP_INI_SCAN_DIR
+       *replaces* the compiled-in mods-available dir, so this account's own
+       root-owned ~/.php/<ver>/conf.d -- populated with symlinks to exactly
+       the stock snippets it enabled -- decides what loads. Under the HOME
+       (not /etc) because that's all a namespaced account can see. #}
+    env                              PHP_INI_SCAN_DIR={{ acc.php_scan_dir }}
+{% endif %}
     initTimeout                     60
     retryTimeout                    0
     persistConn                     1
@@ -325,6 +340,9 @@ virtualHost {{ vh.vhost_name }}{
 listener HTTP{
     address                  *:80
     secure                   0
+{% if cloudflare_trusted_ips %}
+    useIpInProxyHeader       2
+{% endif %}
 {% if webmail_hostname %}
     map                      roundcube {{ webmail_hostname }}
 {% endif %}
@@ -341,6 +359,9 @@ listener HTTPS{
     secure                   1
     keyFile                  {{ default_ssl_key }}
     certFile                 {{ default_ssl_cert }}
+{% if cloudflare_trusted_ips %}
+    useIpInProxyHeader       2
+{% endif %}
 {% if webmail_hostname %}
     map                      roundcube {{ webmail_hostname }}
 {% endif %}

@@ -15,6 +15,7 @@ import hashlib
 from dataclasses import dataclass
 
 from fastapi import Cookie, Header, HTTPException
+from starlette.requests import Request
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from sqlalchemy import select
 
@@ -76,6 +77,10 @@ class Identity:
     # admin panel user.
     impersonator: str | None = None
     impersonated_account: str | None = None
+    # Client IP of the request this identity was resolved for — stamped by
+    # get_identity, forwarded to the daemon (`_ip`) so the account-events log
+    # can record where lifecycle actions came from.
+    ip: str | None = None
 
     @property
     def is_impersonating(self) -> bool:
@@ -131,18 +136,26 @@ def _identity_from_bearer_token(token: str) -> Identity | None:
 
 
 def get_identity(
+    request: Request,
     authorization: str | None = Header(default=None),
     fh_session: str | None = Cookie(default=None),
 ) -> Identity:
+    # uvicorn serves clients directly (no trusted reverse proxy), so the
+    # socket peer address IS the client address; X-Forwarded-For would be
+    # client-spoofable here and is deliberately ignored.
+    client_ip = request.client.host if request.client else None
+
     if authorization and authorization.lower().startswith("bearer "):
         identity = _identity_from_bearer_token(authorization[7:].strip())
         if identity is not None:
+            identity.ip = client_ip
             return identity
         raise HTTPException(status_code=401, detail="invalid or revoked API token")
 
     if fh_session:
         identity = _identity_from_session_cookie(fh_session)
         if identity is not None:
+            identity.ip = client_ip
             return identity
 
     raise HTTPException(status_code=401, detail="authentication required")

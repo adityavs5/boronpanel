@@ -60,8 +60,38 @@ def init_db() -> None:
     global _write_engine, _WriteSession
     _write_engine = make_engine()
     Base.metadata.create_all(_write_engine)
+    _apply_additive_migrations(_write_engine)
     _WriteSession = sessionmaker(bind=_write_engine, future=True, expire_on_commit=False)
     _grant_api_group_read()
+
+
+# create_all() creates whole tables but never ALTERs an existing one (the
+# project's stated schema convention -- new state normally goes in NEW
+# tables). The rare exception is an additive, nullable column on a table that
+# predates it: cloudflare_zones shipped in Phase 1, and Phase 2+3 links each
+# zone to a CloudflareAccount pool row via cloudflare_zones.cf_account_id.
+# SQLite's ADD COLUMN is a cheap metadata-only operation and is safe here
+# (the column is nullable, the table is empty until a zone is enabled). This
+# helper stays tiny and strictly additive -- it only ever ADDs a declared
+# missing column, never drops/renames/retypes anything.
+_ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
+    "cloudflare_zones": {"cf_account_id": "INTEGER", "last_purge_at": "DATETIME"},
+}
+
+
+def _apply_additive_migrations(engine) -> None:
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        for table, columns in _ADDITIVE_COLUMNS.items():
+            if table not in existing_tables:
+                continue  # create_all just made it with every column already
+            present = {col["name"] for col in inspector.get_columns(table)}
+            for name, coltype in columns.items():
+                if name not in present:
+                    conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {coltype}'))
 
 
 def _grant_api_group_read() -> None:

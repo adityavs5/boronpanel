@@ -107,6 +107,88 @@ class DnsZone(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class CloudflareZone(Base):
+    """docs/PLAN-cloudflare.md SS1.1: a DNS zone served by Cloudflare
+    instead of local PowerDNS. Absence of a row = local (the project-wide
+    "absence means default" convention, and create_all friendly). While
+    status='pending' (registrar NS not yet flipped to the assigned pair),
+    PowerDNS remains authoritative and all panel writes go to PowerDNS
+    only; the pending->active transition does a full one-shot resync
+    PowerDNS->Cloudflare, then routing flips (daemon/dnsprovider.py). The
+    PowerDNS zone is deliberately kept (stale) as the revert target."""
+
+    __tablename__ = "cloudflare_zones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    zone: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    cf_zone_id: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | active
+    name_servers: Mapped[list] = mapped_column(JSON, default=list)  # CF-assigned NS pair
+    # Phase 2+3: which CloudflareAccount (pool row) serves this zone. NULL for
+    # zones enabled under the legacy single-token config (before the pool
+    # existed) -- those fall back to settings.cloudflare_api_token. Added as a
+    # nullable column on this pre-existing table via shared/db.py's additive
+    # migration (create_all never ALTERs -- plan SS0), safe because the table
+    # is empty until a zone is enabled.
+    cf_account_id: Mapped[int | None] = mapped_column(ForeignKey("cloudflare_accounts.id"), nullable=True, index=True)
+    # Phase 2+3 feature 8: last successful cache purge, shown in the admin
+    # zone overview. Nullable additive column (see shared/db.py).
+    last_purge_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class CloudflareAccount(Base):
+    """Phase 2+3: one row per Cloudflare account in the pool (goal feature 1).
+
+    Replaces the single global token with a pool so a provider can spread
+    customer zones across several Cloudflare accounts (free plan caps a
+    zone-per-account; `max_zones` is the soft cap this pool round-robins
+    under). `api_token` is stored Fernet-encrypted at rest (daemon/appcrypto.py,
+    same mechanism as NodeApp/PythonApp env vars) -- never in plaintext in
+    the DB, never returned to the UI. `account_id` is Cloudflare's own
+    account identifier (the value that used to live in
+    forgehost.toml:cloudflare_account_id), needed on the POST /zones payload.
+    `zone_count` is a denormalized cache of active+pending zones assigned to
+    this account, kept in step by daemon/cloudflare_accounts.py on every
+    enable/disable and recomputable from the CloudflareZone rows."""
+
+    __tablename__ = "cloudflare_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    api_token_enc: Mapped[str] = mapped_column(String(512))  # Fernet token, never plaintext
+    account_id: Mapped[str] = mapped_column(String(64))  # Cloudflare's account id
+    zone_count: Mapped[int] = mapped_column(Integer, default=0)  # denormalized cache
+    max_zones: Mapped[int] = mapped_column(Integer, default=800)
+    active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class CloudflareSettings(Base):
+    """Single-row (id=1) table for the runtime-toggleable Cloudflare admin
+    settings (goal features 6 + 9), following the SpamGlobalSettings
+    single-row convention. These are distinct from forgehost.toml knobs
+    (operator-edited, static): they flip from the admin UI at runtime.
+
+    `auto_enable`: when true, dns.create_zone auto-triggers cf.zone_enable
+    for new domains if a pool account has capacity (feature 6). Off by
+    default -- turning proxy/DNS on for every new domain is an explicit
+    operator decision (plan SS1.9).
+    `lockdown_enabled`: whether UFW CF-only web mode is currently engaged
+    (feature 9); the marker of record so a daemon restart / status read
+    knows the intended state without parsing UFW rules."""
+
+    __tablename__ = "cloudflare_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    auto_enable: Mapped[bool] = mapped_column(default=False)
+    lockdown_enabled: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class DkimKey(Base):
     """Phase 3 feature 1: one DKIM signing keypair per mail domain,
     generated automatically the first time a mail domain is created
@@ -253,6 +335,24 @@ class AuditLog(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AccountEvent(Base):
+    """Dedicated account lifecycle log: who created / suspended / unsuspended /
+    terminated which account, when, from which client IP. Terminated accounts
+    disappear from every list in the panel -- rows here (plus the append-only
+    file mirror in daemon/audit.py) are their only remaining record."""
+
+    __tablename__ = "account_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    action: Mapped[str] = mapped_column(String(16), index=True)  # created | suspended | unsuspended | terminated
+    username: Mapped[str] = mapped_column(String(64), index=True)
+    actor: Mapped[str] = mapped_column(String(64))
+    actor_role: Mapped[str] = mapped_column(String(16), default="system")
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)  # IPv4/IPv6 of the client, None for system actions
+    detail: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 class UsageSnapshot(Base):
     """Phase 2 feature 5: point-in-time gauge metrics (disk/inodes/process
     count), refreshed at most every 15 min (daemon/usage.py) -- never
@@ -332,6 +432,49 @@ class PhpIniOverride(Base):
     max_execution_time: Mapped[int] = mapped_column(Integer, default=30)
     display_errors: Mapped[bool] = mapped_column(default=False)
     error_reporting: Mapped[str] = mapped_column(String(128), default="E_ALL & ~E_DEPRECATED & ~E_STRICT")
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PhpIniDirective(Base):
+    """Additional per-account php.ini overrides beyond PhpIniOverride's six
+    original typed columns (max_input_vars, session.gc_maxlifetime, ...).
+    One row per (account, directive) -- a key/value table rather than more
+    columns on PhpIniOverride for the same create_all-never-ALTERs reason
+    that table itself documents, with the bonus that future directives need
+    no schema change at all. `name` is only ever one of the keys in
+    daemon/handlers_php_ini.py's EXTRA_DIRECTIVES registry (enforced at
+    write time); `value` is stored already-validated in its rendered string
+    form ("5000", "On", "Asia/Kolkata")."""
+
+    __tablename__ = "php_ini_directives"
+    __table_args__ = (UniqueConstraint("account_id", "name", name="uq_php_ini_directive"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    value: Mapped[str] = mapped_column(String(64))
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PhpExtensionSet(Base):
+    """Per-account PHP extension selection. `enabled` is the full list of
+    extension names this account wants loaded (e.g. ["curl", "mysqli"]) --
+    the daemon materializes it as a root-owned per-version scan directory
+    under the account's HOME (~/.php/<ver>/conf.d, symlinks into the stock
+    mods-available dir) and points that account's own extProcessor at it
+    via a PHP_INI_SCAN_DIR env line (daemon/phpext.py). Under the HOME, not
+    /etc or /run, because namespaced accounts (nsisolation, the default)
+    only see their own home tree inside the jail -- same lesson
+    daemon/redisacct.py's socket path learned, and /etc/forgehost was
+    confirmed invisible from a live jailed lsphp before choosing this. No
+    row at all means stock behavior (the compiled-in scan dir), the
+    project-wide "absence means default" convention."""
+
+    __tablename__ = "php_extension_sets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), unique=True, index=True)
+    enabled: Mapped[list] = mapped_column(JSON, default=list)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
@@ -909,6 +1052,7 @@ NOTIFICATION_EVENT_TYPES = (
     "ssl.expiring",
     "usage.limit.reached",
     "login.new",
+    "dns.zone_activated",
 )
 
 
@@ -957,6 +1101,7 @@ WEBHOOK_EVENT_TYPES = (
     "backup.completed",
     "ssl.expiring",
     "usage.limit.reached",
+    "dns.zone_activated",
 )
 
 

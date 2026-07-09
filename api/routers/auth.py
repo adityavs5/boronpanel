@@ -124,7 +124,20 @@ def login_2fa_submit(request: Request, pending_token: str = Form(...), code: str
         role, account_id = user.role, user.account_id
 
     check_identity = Identity(panel_user_id=panel_user_id, username=user.username, role=role, account_id=account_id, auth_method="session")
+
+    # Throttle the 2FA code check with the same per-username lockout the
+    # password step uses -- otherwise a holder of a valid password (or a stolen
+    # 5-minute pending token) could brute-force the 6-digit code unbounded.
+    lockout = call_daemon("auth.check_login_lockout", check_identity, username=user.username)
+    if lockout.get("locked"):
+        retry_minutes = lockout.get("retry_after_seconds", 0) // 60 + 1
+        return JSONResponse(
+            {"detail": f"too many failed attempts -- try again in {retry_minutes} minute(s)"},
+            status_code=429,
+        )
+
     result = call_daemon("totp.check_login_code", check_identity, panel_user_id=panel_user_id, code=code)
+    call_daemon("auth.record_login_result", check_identity, username=user.username, success=bool(result["valid"]))
     if not result["valid"]:
         return JSONResponse({"detail": "invalid code"}, status_code=401)
 

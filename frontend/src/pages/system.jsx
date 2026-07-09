@@ -1,6 +1,28 @@
-import { Link } from 'react-router-dom'
-import { ServerCrash, Compass } from 'lucide-react'
+import { Link, useRouteError } from 'react-router-dom'
+import { ServerCrash, Compass, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
+
+// Route-level error boundary: a crash in one page renders here while the
+// rest of the panel (sidebar, topbar) stays usable. Set via errorElement.
+export function RouteError() {
+  const error = useRouteError()
+  const message = error?.statusText || error?.message || 'The page hit an unexpected error.'
+  return (
+    <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 p-6 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-danger/10 text-danger">
+        <AlertTriangle className="h-6 w-6" />
+      </div>
+      <h1 className="text-2xl font-semibold text-foreground">This page couldn't render</h1>
+      <p className="max-w-md break-words font-mono text-xs text-muted-foreground">{message}</p>
+      <div className="flex items-center gap-2">
+        <Button onClick={() => window.location.reload()}>Reload page</Button>
+        <Button asChild variant="secondary">
+          <Link to="/">Back to panel</Link>
+        </Button>
+      </div>
+    </div>
+  )
+}
 
 export function Maintenance() {
   return (

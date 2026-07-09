@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#111827" />
     <title>Forgehost</title>
+    <style>
+      /* First-paint background while the JS bundle loads, so a hard refresh
+         never flashes white in dark mode (theme class is applied below,
+         before the bundle runs). */
+      html { background: #f9fafb; }
+      html.dark { background: #0f141e; }
+    </style>
+    <script src="/static/dist/theme-init.js"></script>
   </head>
   <body class="h-full">
     <div id="root" class="h-full"></div>

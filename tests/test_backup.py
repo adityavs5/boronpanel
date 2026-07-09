@@ -69,7 +69,7 @@ def stub_dump_database(monkeypatch):
 @pytest.fixture()
 def stub_cron_and_dns(monkeypatch):
     monkeypatch.setattr(backup.cron, "list_jobs", lambda username: [])
-    monkeypatch.setattr(backup.powerdns, "list_records", lambda zone: [])
+    monkeypatch.setattr(backup.dnsprovider, "list_records", lambda zone: [])
 
 
 @pytest.fixture()

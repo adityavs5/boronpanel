@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog } from 'lucide-react'
+import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog, FolderOpen } from 'lucide-react'
 import { get, post, patch, impersonate as apiImpersonate } from '@/lib/api'
 import { formatMB } from '@/lib/utils'
 import { useAccountUsername } from '@/hooks/useAccount'
@@ -63,6 +63,18 @@ function AdminActions({ username, account }) {
       {['active', 'suspended'].includes(account.status) && (
         <Button variant="secondary" size="sm" loading={impersonateMut.isPending} onClick={() => impersonateMut.mutate()}>
           <UserCog className="h-4 w-4" /> Login as user
+        </Button>
+      )}
+      {/* File manager v2: full-page nav to the launch endpoint, which authorizes
+          this admin for the account, audits the access, and opens FileBrowser
+          Quantum scoped to the account's home. */}
+      {['active', 'suspended'].includes(account.status) && (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => window.location.assign(`/api/v1/accounts/${username}/files/launch`)}
+        >
+          <FolderOpen className="h-4 w-4" /> File Manager
         </Button>
       )}
       {account.status === 'active' && (

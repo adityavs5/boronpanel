@@ -1,7 +1,10 @@
 export const APP_VERSION = 'v1.0'
 
-// PHP versions offered in switchers (matches the backend's supported set).
-export const PHP_VERSIONS = ['8.3', '8.2', '8.1', '8.0', '7.4']
+// PHP versions offered in switchers. Must match shared/config.py's
+// php_versions (the backend rejects anything else) -- this list previously
+// offered uninstalled 8.0/7.4 (guaranteed server-side error) and omitted
+// installed 8.4/8.5.
+export const PHP_VERSIONS = ['8.5', '8.4', '8.3', '8.2', '8.1']
 
 export const NODE_VERSIONS = ['20', '18']
 

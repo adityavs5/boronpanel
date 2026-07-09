@@ -13,7 +13,8 @@ from shared.db import write_session
 from shared.models import Account, DnsZone
 from shared.validation import ValidationError, validate_domain, validate_record_type
 
-from daemon import powerdns
+from daemon import cloudflare_ops, dnsprovider
+from daemon.dns_zone_lookup import find_managed_zone
 
 RECORD_VALUE_VALIDATORS = {
     "A": lambda v: _validate_ipv4(v),
@@ -126,29 +127,38 @@ def create_zone(params: dict) -> dict:
         if existing is not None:
             raise RuntimeError(f"zone '{domain_name}' already managed by Forgehost")
 
-    if powerdns.zone_exists(domain_name):
+    if dnsprovider.zone_exists(domain_name):
         raise RuntimeError(f"zone '{domain_name}' already exists in PowerDNS")
 
     ns_records = [f"ns1.{domain_name}.", f"ns2.{domain_name}."]
-    powerdns.create_zone(domain_name, ns_records)
+    dnsprovider.create_zone(domain_name, ns_records)
 
     ip = settings.server_public_ip
     if ip:
-        powerdns.upsert_record(domain_name, "ns1", "A", [ip])
-        powerdns.upsert_record(domain_name, "ns2", "A", [ip])
-        powerdns.upsert_record(domain_name, "@", "A", [ip])
-        powerdns.upsert_record(domain_name, "www", "CNAME", [f"{domain_name}."])
+        dnsprovider.upsert_record(domain_name, "ns1", "A", [ip])
+        dnsprovider.upsert_record(domain_name, "ns2", "A", [ip])
+        dnsprovider.upsert_record(domain_name, "@", "A", [ip])
+        dnsprovider.upsert_record(domain_name, "www", "CNAME", [f"{domain_name}."])
 
     with write_session() as session:
         zone_row = DnsZone(account_id=account.id if account else None, zone=domain_name)
         session.add(zone_row)
         session.flush()
-        return _zone_dict(zone_row)
+        result = _zone_dict(zone_row)
+
+    # Phase 2+3 feature 6: auto-enable Cloudflare for the new zone when the
+    # admin toggle / default_dns_provider says so and a pool account has
+    # capacity -- so the customer gets the nameserver pair to set at their
+    # registrar immediately. Best-effort: never fails the zone creation.
+    cf = cloudflare_ops.maybe_auto_enable(domain_name)
+    if cf is not None:
+        result["cloudflare"] = cf
+    return result
 
 
 def delete_zone(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
-    powerdns.delete_zone(domain_name)
+    dnsprovider.delete_zone(domain_name)
     with write_session() as session:
         zone_row = session.scalar(select(DnsZone).where(DnsZone.zone == domain_name))
         if zone_row is not None:
@@ -158,7 +168,35 @@ def delete_zone(params: dict) -> dict:
 
 def list_records(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
-    return {"zone": domain_name, "records": powerdns.list_records(domain_name)}
+    if not dnsprovider.zone_exists(domain_name):
+        # This domain name isn't itself a Forgehost-managed DNS zone -- a
+        # zone (local or Cloudflare) only ever exists for the domain
+        # dns.create_zone was called on, never for a subdomain/addon that
+        # merely lives inside another domain's zone (find_managed_zone).
+        # Report which one that is (if any) instead of letting a raw 404
+        # from the DNS backend bubble up -- the UI needs to tell these two
+        # very different situations apart.
+        return {
+            "zone": domain_name,
+            "managed": False,
+            "parent_zone": find_managed_zone(domain_name),
+            "records": [],
+            "provider": None,
+            "proxy_available": dnsprovider.proxied_allowed(),
+            "cloudflare": None,
+        }
+
+    result = {
+        "zone": domain_name,
+        "managed": True,
+        "records": dnsprovider.list_records(domain_name),
+        "provider": dnsprovider.provider_for_zone(domain_name),
+        "proxy_available": dnsprovider.proxied_allowed(),
+    }
+    cf_row = dnsprovider.cloudflare_zone_row(domain_name)
+    if cf_row is not None:
+        result["cloudflare"] = {"status": cf_row.status, "name_servers": cf_row.name_servers}
+    return result
 
 
 def set_record(params: dict) -> dict:
@@ -168,14 +206,17 @@ def set_record(params: dict) -> dict:
     raw_values = params["values"]
     if not isinstance(raw_values, list) or not raw_values:
         raise ValidationError("values must be a non-empty list")
-    ttl = int(params.get("ttl", powerdns.DEFAULT_TTL))
+    ttl = int(params.get("ttl", dnsprovider.DEFAULT_TTL))
     if ttl < 60:
         raise ValidationError("ttl must be >= 60 seconds")
+    # Accepted end-to-end but forced false inside dnsprovider.upsert_record
+    # until the Phase 2 real-IP rails report configured (plan SS1.5/SS1.7).
+    proxied = bool(params.get("proxied", False))
 
     validator = RECORD_VALUE_VALIDATORS[rtype]
     values = [validator(v) for v in raw_values]
 
-    powerdns.upsert_record(domain_name, subdomain, rtype, values, ttl=ttl)
+    dnsprovider.upsert_record(domain_name, subdomain, rtype, values, ttl=ttl, proxied=proxied)
     return {"zone": domain_name, "subdomain": subdomain, "type": rtype, "values": values, "ttl": ttl}
 
 
@@ -183,7 +224,7 @@ def delete_record(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     subdomain = params.get("subdomain", "@") or "@"
     rtype = validate_record_type(params["type"])
-    powerdns.delete_record(domain_name, subdomain, rtype)
+    dnsprovider.delete_record(domain_name, subdomain, rtype)
     return {"zone": domain_name, "subdomain": subdomain, "type": rtype, "status": "deleted"}
 
 
@@ -194,8 +235,8 @@ def terminate_account_zones(account: Account) -> None:
         zones = session.scalars(select(DnsZone.zone).where(DnsZone.account_id == account.id)).all()
     for zone in zones:
         try:
-            powerdns.delete_zone(zone)
-        except powerdns.PowerDnsError:
+            dnsprovider.delete_zone(zone)
+        except dnsprovider.DnsError:
             pass  # already gone server-side; still drop our cache row below
         with write_session() as session:
             zone_row = session.scalar(select(DnsZone).where(DnsZone.zone == zone))

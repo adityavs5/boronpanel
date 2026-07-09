@@ -34,7 +34,7 @@ from shared.config import settings  # noqa: E402
 from shared.db import write_session  # noqa: E402
 from shared.models import Account, Domain  # noqa: E402
 
-from daemon import ols  # noqa: E402
+from daemon import cloudflare_ops, ols  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s ssl_deploy_hook: %(message)s")
 logger = logging.getLogger("ssl_deploy_hook")
@@ -85,6 +85,15 @@ def _apply_for_domain(domain_name: str, is_wildcard: bool = False) -> None:
         "applied new certificate for %s (account %s, wildcard=%s)",
         domain_name, account_snapshot.username, is_wildcard,
     )
+
+    # Phase 2+3 feature 5: a browser-trusted origin cert now exists, so if the
+    # zone is on Cloudflare, upgrade edge SSL to Full (strict). Best-effort --
+    # an unreachable Cloudflare must never fail cert deployment.
+    try:
+        if cloudflare_ops.upgrade_ssl_strict(domain_name):
+            logger.info("upgraded Cloudflare edge SSL to strict for %s", domain_name)
+    except Exception:
+        logger.exception("could not upgrade Cloudflare SSL mode for %s", domain_name)
 
 
 if __name__ == "__main__":

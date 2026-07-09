@@ -153,7 +153,7 @@ def _ip_is_blocked(ip: ipaddress._BaseAddress) -> bool:
     )
 
 
-def _assert_public_destination(url: str) -> None:
+def _assert_public_destination(url: str) -> str:
     """Security-audit-2 (Medium) SSRF guard: webhook delivery is an outbound
     HTTP POST made by forgehostd (root), to an admin-configured URL. Without
     this, an admin (or an over-scoped admin token) could point a webhook at an
@@ -165,7 +165,13 @@ def _assert_public_destination(url: str) -> None:
     a hostname which resolved to a public IP when the webhook was created but
     later resolves to an internal one (DNS rebinding) is still refused. httpx's
     `post` does not follow redirects by default, so a 3xx to an internal target
-    cannot bypass this either."""
+    cannot bypass this either.
+
+    Returns one validated public IP for the caller to PIN the connection to
+    (see _pinned_post): every resolved address is checked, and the address that
+    was checked is the exact one the request then connects to -- closing the
+    check-then-reconnect (DNS-rebinding) TOCTOU where httpx would otherwise
+    re-resolve the hostname independently a moment after this check passed."""
     host = urlparse(url).hostname
     if not host:
         raise WebhookError(f"webhook URL has no host: {url!r}")
@@ -173,13 +179,40 @@ def _assert_public_destination(url: str) -> None:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
         raise WebhookError(f"could not resolve webhook host '{host}': {exc}") from exc
+    pinned_ip: str | None = None
     for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
+        addr = info[4][0]
+        ip = ipaddress.ip_address(addr)
         if _ip_is_blocked(ip):
             raise WebhookError(
                 f"refusing to deliver webhook to non-public address {ip} (host '{host}') -- "
                 "internal/loopback/link-local/metadata endpoints are blocked (SSRF protection)"
             )
+        if pinned_ip is None:
+            pinned_ip = addr
+    if pinned_ip is None:
+        raise WebhookError(f"could not resolve webhook host '{host}'")
+    return pinned_ip
+
+
+def _pinned_post(url: str, body: bytes, headers: dict, timeout: float) -> httpx.Response:
+    """POST to `url` but connect to a freshly-resolved, validated-public IP,
+    pinning the TLS server hostname (SNI + certificate verification) and the
+    Host header to the original hostname. Resolving/validating and connecting
+    as one step -- rather than validating a hostname and letting httpx re-resolve
+    it moments later -- is what actually closes the DNS-rebinding TOCTOU: the
+    address vetted by _assert_public_destination IS the address connected to."""
+    parsed = urlparse(url)
+    host = parsed.hostname
+    pinned_ip = _assert_public_destination(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    netloc_ip = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+    pinned_url = parsed._replace(netloc=f"{netloc_ip}:{port}").geturl()
+    req_headers = {**headers, "Host": parsed.netloc}
+    extensions = {"sni_hostname": host} if parsed.scheme == "https" else {}
+    with httpx.Client(timeout=timeout) as client:
+        request = client.build_request("POST", pinned_url, content=body, headers=req_headers, extensions=extensions)
+        return client.send(request)
 
 
 def _sign(secret: str, body: bytes) -> str:
@@ -250,15 +283,18 @@ def _deliver(delivery_id: int) -> None:
             delivery.last_attempted_at = utcnow()
 
         try:
-            resp = httpx.post(
+            # Re-validate + pin on every attempt (not just once before the
+            # loop): a hostname that rebinds to an internal address between
+            # retries is refused here too, and the vetted IP is the one hit.
+            resp = _pinned_post(
                 url,
-                content=body,
-                headers={
+                body,
+                {
                     "Content-Type": "application/json",
                     "X-Forgehost-Signature": signature,
                     "X-Forgehost-Event": event,
                 },
-                timeout=settings.webhook_delivery_timeout_seconds,
+                settings.webhook_delivery_timeout_seconds,
             )
             with write_session() as session:
                 delivery = session.get(WebhookDelivery, delivery_id)
@@ -268,7 +304,7 @@ def _deliver(delivery_id: int) -> None:
                     delivery.error = None
                     return
                 delivery.error = f"HTTP {resp.status_code}"
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, WebhookError) as exc:
             with write_session() as session:
                 delivery = session.get(WebhookDelivery, delivery_id)
                 delivery.error = str(exc)

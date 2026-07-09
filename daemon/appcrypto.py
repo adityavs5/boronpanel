@@ -82,3 +82,23 @@ def decrypt_env(token: str) -> dict[str, str]:
     except InvalidToken as exc:
         raise AppCryptoError("env vars could not be decrypted (corrupt row or rotated key)") from exc
     return json.loads(payload.decode("utf-8"))
+
+
+def encrypt_secret(value: str) -> str:
+    """Encrypt a single opaque secret string (e.g. a CloudflareAccount API
+    token) with the same Fernet key. Sibling of encrypt_env for the "one
+    string, not a dict" case -- Cloudflare pool tokens (shared/models.py
+    CloudflareAccount.api_token_enc) must be recoverable in full to make
+    API calls, exactly the reversible-at-rest property Fernet gives."""
+    if not isinstance(value, str):
+        raise AppCryptoError("secret must be a string")
+    return _fernet().encrypt(value.encode("utf-8")).decode("ascii")
+
+
+def decrypt_secret(token: str) -> str:
+    if not token:
+        return ""
+    try:
+        return _fernet().decrypt(token.encode("ascii")).decode("utf-8")
+    except InvalidToken as exc:
+        raise AppCryptoError("secret could not be decrypted (corrupt row or rotated key)") from exc

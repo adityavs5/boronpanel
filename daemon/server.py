@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, bulkops, cgroups, cmdjobs, composerui, cpanel_import, disktree, events, fail2ban, fileauth, filemanager, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, health, identity_admin, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, nameservers, nodeapps, notifications, nsisolation, ols, parked, pma, procmanager, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import appinstaller, audit, backup, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, disktree, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, health, identity_admin, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, nameservers, nodeapps, notifications, nsisolation, ols, parked, phpext, pma, procmanager, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -75,6 +75,30 @@ OP_TABLE = {
     "nameservers.list": nameservers.list_nameservers,
     "nameservers.set": nameservers.set_nameservers,
     "nameservers.reset": nameservers.reset_nameservers,
+    # Cloudflare DNS/CDN provider (docs/PLAN-cloudflare.md Phases 0/1)
+    "cf.health": cloudflare_ops.health,
+    "cf.zone_enable": cloudflare_ops.zone_enable,
+    "cf.zone_status": cloudflare_ops.zone_status,
+    "cf.zone_disable": cloudflare_ops.zone_disable,
+    "cf.purge_cache": cloudflare_ops.purge_cache,
+    # Phase 2+3 features 2/3/4: proxy toggle rails + edge-range materialization
+    "cf.rails_status": cloudflare_ops.rails_status,
+    "cf.refresh_ranges": cloudflare_ops.refresh_ranges,
+    "cf.enable_proxy": cloudflare_ops.enable_proxy,
+    # Phase 2+3 feature 6: auto-enable settings
+    "cf.settings_get": cloudflare_ops.settings_get,
+    "cf.settings_set": cloudflare_ops.settings_set,
+    # Phase 2+3 features 7/8/9: bulk migrate, fleet overview, UFW lockdown
+    "cf.bulk_migrate": cloudflare_ops.bulk_migrate,
+    "cf.zones_overview": cloudflare_ops.zones_overview,
+    "cf.bulk_purge": cloudflare_ops.bulk_purge,
+    "cf.lockdown": cloudflare_ops.lockdown,
+    # Phase 2+3 feature 1: Cloudflare account pool (multi-account)
+    "cf.account_list": cloudflare_accounts.list_accounts,
+    "cf.account_add": cloudflare_accounts.add_account,
+    "cf.account_set": cloudflare_accounts.set_account,
+    "cf.account_delete": cloudflare_accounts.delete_account,
+    "cf.account_test": cloudflare_accounts.test_account,
     "db.create": handlers_database.create_database,
     "db.list": handlers_database.list_databases,
     "db.drop": handlers_database.drop_database,
@@ -104,19 +128,17 @@ OP_TABLE = {
     "ssl.issue_wildcard": ssl.issue_wildcard_certificate,
     "ssl.status": ssl.certificate_status,
     "ssl.dashboard": ssl.get_ssl_dashboard,
-    "file.list": filemanager.list_dir,
-    "file.read": filemanager.read_file,
-    "file.write": filemanager.write_file,
-    "file.mkdir": filemanager.mkdir,
-    "file.delete": filemanager.delete,
-    "file.move": filemanager.move,
-    # Phase 8 feature 13: copy, multi-select bulk ops, zip, and search
-    "file.copy": filemanager.copy,
-    "file.bulk_delete": filemanager.bulk_delete,
-    "file.bulk_move": filemanager.bulk_move,
-    "file.bulk_copy": filemanager.bulk_copy,
-    "file.zip": filemanager.make_zip,
-    "file.search": filemanager.search,
+    # File manager: FileBrowser Quantum (the custom file.* ops that used to live
+    # here were retired 2026-07-09 after FB Quantum was verified live end-to-end;
+    # daemon/filemanager.py now only provides the shared path-jail helpers that
+    # fileauth/composer/disktree/gitrepo reuse). One shared /home source,
+    # proxy-header auth, per-account scope.
+    "fb.bootstrap": filebrowser.bootstrap,
+    "fb.add_source": filebrowser.add_source,
+    "fb.remove_source": filebrowser.remove_source,
+    "fb.refresh_all": filebrowser.refresh_all_sources,
+    "fb.status": filebrowser.status,
+    "fb.open": filebrowser.open_access,
     "panel_user.create": handlers_auth.create_panel_user,
     "panel_user.set_password": handlers_auth.set_panel_user_password,
     "auth.create_session": handlers_auth.create_session,
@@ -161,6 +183,10 @@ OP_TABLE = {
     "php_ini.get": handlers_php_ini.get_php_ini,
     "php_ini.set": handlers_php_ini.set_php_ini,
     "php_ini.reset": handlers_php_ini.reset_php_ini,
+    # Phase 8 follow-up: per-account PHP extension enable/disable
+    "php_ext.list": phpext.list_extensions,
+    "php_ext.set": phpext.set_extensions,
+    "php_ext.reset": phpext.reset_extensions,
     # Phase 3 feature 7: per-domain redirects
     "redirect.create": handlers_redirect.create_redirect,
     "redirect.update": handlers_redirect.update_redirect,
@@ -393,6 +419,19 @@ REPORTING_OPS = {
     # Phase 8 feature 13: file search walks the account's home tree -- same
     # isolation reasoning as disktree.get/top_files above.
     "file.search",
+    # Cloudflare health makes outbound HTTPS calls to api.cloudflare.com --
+    # a slow/unreachable external API polled by a dashboard must never
+    # stall the default executor (same reasoning as services.status above).
+    "cf.health",
+    # Phase 2+3 feature 1: adding/testing a pool account live-verifies its
+    # token against api.cloudflare.com -- same outbound-HTTPS isolation.
+    "cf.account_add", "cf.account_test",
+    # Phase 2+3 feature 3: refresh_ranges fetches GET /ips over HTTPS then
+    # re-renders OLS/fail2ban -- keep off the default executor.
+    "cf.refresh_ranges",
+    # Phase 2+3 features 7/8: fleet ops that make O(zones) outbound HTTPS
+    # calls (migrate/purge, live overview) -- keep off the default executor.
+    "cf.bulk_migrate", "cf.bulk_purge", "cf.zones_overview",
 }
 
 # Each phase wires its own account-scoped teardown/suspend behavior here
@@ -404,6 +443,11 @@ handlers_account.UNSUSPEND_HOOKS.append(lambda account: ols.unsuspend_vhost(acco
 handlers_account.PHP_VERSION_HOOKS.append(lambda account: ols.refresh_vhost(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ols.terminate_vhost(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_dns.terminate_account_zones(account))
+# Cloudflare zones (docs/PLAN-cloudflare.md SS2): terminate_account_zones
+# above already deletes both backends per zone via dnsprovider.delete_zone;
+# this hook additionally sweeps any CloudflareZone row whose DnsZone cache
+# row is missing (belt and braces -- both are idempotent).
+handlers_account.TERMINATE_HOOKS.append(lambda account: cloudflare_ops.terminate_account_cloudflare(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_database.terminate_account_databases(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_mail.terminate_account_mail(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ssl.terminate_account_certs(account))
@@ -424,6 +468,7 @@ handlers_account.CREATE_HOOKS.append(lambda account: nsisolation.enable_for_acco
 handlers_account.TERMINATE_HOOKS.append(lambda account: nsisolation.teardown_account(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_ftp.terminate_account_ftp(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_php_ini.terminate_account_php_ini(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: phpext.terminate_account_php_extensions(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_redirect.terminate_account_redirects(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: fileauth.terminate_account_fileauth(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: gitrepo.terminate_account_git(account))
@@ -470,6 +515,14 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: staging.terminate_accoun
 # Phase 8 feature 3: drop ParkedDomain bookkeeping rows on termination (the
 # parked Domain rows + vhosts are already handled by ols.terminate_vhost).
 handlers_account.TERMINATE_HOOKS.append(lambda account: parked.terminate_account_parked(account))
+# File manager v2 (FileBrowser Quantum): on create, make the account available
+# (apply the ownership-mitigation ACL so FB-created files stay account-usable);
+# on terminate, the shared /home source needs no per-account teardown (the home
+# dir + its index entries are removed by userdel), so remove_source is an
+# idempotent lifecycle/audit marker. Both are best-effort (CREATE/TERMINATE
+# hooks are already wrapped in try/except by handlers_account).
+handlers_account.CREATE_HOOKS.append(lambda account: filebrowser.add_source_for_account(account))
+handlers_account.TERMINATE_HOOKS.append(lambda account: filebrowser.remove_source_for_account(account))
 
 
 def register_op(name: str, handler) -> None:
@@ -479,9 +532,25 @@ def register_op(name: str, handler) -> None:
     OP_TABLE[name] = handler
 
 
+# Ops that change an account's lifecycle state. Successful dispatches of
+# these additionally land in the dedicated account-events log (who/when/IP) —
+# see audit.record_account_event.
+LIFECYCLE_OPS = {
+    "account.create": "created",
+    "account.suspend": "suspended",
+    "account.unsuspend": "unsuspended",
+    "account.terminate": "terminated",
+    # Reactivation recreates the Linux user and re-enables every associated
+    # PanelUser login -- at least as security-relevant as the events above, so
+    # it belongs in the who/when/IP account-events log too.
+    "account.reactivate": "reactivated",
+}
+
+
 async def dispatch(op: str, params: dict) -> dict:
     actor = params.pop("_actor", "unknown")
     role = params.pop("_role", "unknown")
+    ip = params.pop("_ip", None)
     handler = OP_TABLE.get(op)
     if handler is None:
         audit.record(actor, role, op, None, params, "failed", "unknown op")
@@ -500,6 +569,8 @@ async def dispatch(op: str, params: dict) -> dict:
         raise
     else:
         audit.record(actor, role, op, params.get("username"), params, "ok")
+        if op in LIFECYCLE_OPS and params.get("username"):
+            audit.record_account_event(LIFECYCLE_OPS[op], params["username"], actor=actor, role=role, ip=ip)
         return result
 
 
@@ -568,6 +639,33 @@ async def amain() -> None:
     except Exception:
         logger.exception("Redis bootstrap failed at startup")
 
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, phpext.bootstrap_all_php_extensions)
+    except Exception:
+        logger.exception("PHP extension scan-dir bootstrap failed at startup")
+
+    # File manager v2: ensure FileBrowser Quantum's config + systemd service
+    # are in place and running (no-op/idempotent once bootstrapped; logged, not
+    # fatal, if the binary isn't installed yet -- same pattern as above).
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, filebrowser.bootstrap)
+    except Exception:
+        logger.exception("FileBrowser Quantum bootstrap failed at startup")
+
+    # Phase 2+3 feature 1: fold a legacy single-token config into the account
+    # pool on first start after upgrade (idempotent; no-op once pooled).
+    try:
+        cloudflare_accounts.migrate_single_token()
+    except Exception:
+        logger.exception("Cloudflare single-token pool migration failed at startup")
+
+    # Cloudflare: catch any pending->active transition that happened while
+    # the daemon was down (the */15 cron covers steady-state).
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, cloudflare_ops.reconcile_pending_zones)
+    except Exception:
+        logger.exception("Cloudflare pending-zone reconcile failed at startup")
+
     socket_path = settings.rpc_socket
     Path(socket_path).parent.mkdir(parents=True, exist_ok=True)
     if Path(socket_path).exists():
@@ -605,6 +703,11 @@ async def amain() -> None:
 def main() -> None:
     if os.geteuid() != 0:
         raise SystemExit("forgehostd must run as root")
+    # Same guard as forgehost-api's startup: the daemon signs the 2FA-pending
+    # token with this key too, so refuse to run on the insecure default.
+    from shared.config import require_secure_session_secret
+
+    require_secure_session_secret()
     configure_logging(settings.log_dir)
     asyncio.run(amain())
 

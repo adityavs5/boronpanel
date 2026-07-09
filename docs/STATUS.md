@@ -8,6 +8,131 @@ check first.
 
 ---
 
+## File manager v2 (2026-07-09): custom file manager → FileBrowser Quantum — COMPLETE, deployed to production, verified live end-to-end, old manager retired
+
+Replaces Forgehost's custom file manager (`daemon/filemanager.py`,
+`api/routers/files.py`, the in-SPA `Files.jsx`) with **FileBrowser Quantum
+v1.4.0-stable** (a single Go binary), fronted by forgehost-api's authenticated
+reverse proxy. Full detail + the empirical verification behind every decision:
+**docs/CHECKPOINT-filebrowser-quantum.md**.
+
+**Architecture (all verified against the real binary):**
+- One `forgehost-filebrowser.service` (root, 127.0.0.1:8088 only, never public),
+  config `/etc/forgehost/filebrowser.yaml`. Runs as root by necessity —
+  cross-account home access under the 711/750 perms model, exactly as
+  ARCHITECTURE §10 decided for the old manager.
+- **Isolation = one shared `/home` source + `createUserDir`**, not per-account
+  sources (FB Quantum can't auto-bind a source to a same-named user without
+  per-user DB writes, and doesn't hot-reload config). A proxy-authenticated
+  account `alice` auto-provisions scoped to `/home/alice`; listing, `..`
+  traversal, URL-encoded traversal, alternate source names, and search are all
+  clamped to the account's own scope (proven live, both directions).
+- **Auto-login**: the SPA (customer "Files" / admin "File Manager") navigates to
+  `GET /api/v1/accounts/{u}/files/launch`, which authorizes, records an audited
+  `fb.open` RPC (**how admin file access is logged**), sets a signed
+  `fh_fb_target` cookie, and 302s to `/files`. The `/files` proxy re-authorizes
+  every request, **strips any client `X-Fb-User` and injects the trusted one
+  server-side** (ARCHITECTURE §2: the panel, not OLS, holds the session, so the
+  injection lives in forgehost-api). FB Quantum is unreachable except through
+  this authenticated proxy.
+
+**Security bug caught + fixed by live testing (the headline finding):**
+FB Quantum runs as root and chmods new files to **0644 (world-readable)**; under
+the world-traversable 711 homes that is a **cross-tenant read leak** (a second
+real account could `cat` a file the first uploaded via FileBrowser). Fixed
+config-only with `server.filesystem.createFilePermission: 660` /
+`createDirectoryPermission: 770` (other = none) plus a default POSIX ACL
+(`fb.add_source`) granting the account rwX so it keeps full access to the
+root-owned files, and `nobody` still serves public_html via that dir's own ACL.
+Re-verified live: leak closed, owner keeps read/write/create/delete. No change
+to the locked §6 perms model.
+
+**Status: DONE.** Deployed to production (user-approved), all three services
+active with 0 restarts. **~23 new tests** (`tests/test_filebrowser.py`,
+`tests/test_filebrowser_api.py`); full suite **1446 passing** after retirement
+(the two `test_filemanager*` files were removed with the retired ops).
+
+**Verified live end-to-end on this box (21/21 checks, `scratchpad/e2e_verify.py`
+against two real disposable accounts driven through the deployed daemon+panel):**
+account create fires the CREATE_HOOK → ownership ACL applied automatically;
+customer auto-login (launch → signed cookie → proxy) sees only its own home;
+customer launching/forging-cookie for another account → 403 both ways; admin
+opens any account's files via the same flow; upload via the proxy lands `0660`
+(no cross-tenant read; owner keeps rw via ACL); delete works; terminate fires
+`remove_source` + cleanup. Existing accounts backfilled via `fb.refresh_all`.
+
+**Old file manager retired** (only after the above passed, per the goal's
+rollback rule): removed the `file.*` daemon ops + `api/routers/files.py` + their
+registrations, trimmed `daemon/filemanager.py` to just the shared realpath jail
+helpers (`_resolve`/`_account_home`) that fileauth/composer/disktree/gitrepo
+still reuse, replaced the customer `Files.jsx` with a launch-redirect, deleted
+the two old test files. Confirmed live: old REST endpoint 404s, old `file.list`
+RPC is "unknown op". Monaco/`CodeEditor.jsx` retained (unused) — code editing is
+handled by FileBrowser Quantum's own built-in editor. Rollback snapshot at
+`/opt/forgehost.pre-filebrowser`.
+
+**Post-rollout fix (same day, user-reported "stuck on loading"):** the /files
+CSP blocked FB's inline bootstrap script (its SPA never booted — only visible
+in a real browser, every API probe returned 200). Fixed by having the proxy
+hash the served HTML's own inline script(s) into a per-response CSP (no
+`unsafe-inline` — hostile-filename XSS still can't execute, which matters
+because an admin browsing a hostile account's files shares the panel origin),
+plus `realtime: true` (FB live updates are SSE, not websockets; disabled it
+403-looped). Browser-verified with puppeteer: renders the real account's
+files, zero console errors. See the checkpoint's post-rollout section.
+
+---
+
+## Cloudflare Phase 2+3 (2026-07-09): multi-account + proxy + real-IP rails + SSL + fleet — backend + tests COMPLETE; live gates deferred to operator (no CF token on box)
+
+Extends the Phase 0/1 Cloudflare integration (docs/CHECKPOINT-cloudflare-phase01.md)
+with all 9 goal features. Full detail: **docs/CHECKPOINT-cloudflare-phase02.md**.
+
+**⚠️ Phase gate status:** the goal's gate ("configure a real CLOUDFLARE_API_TOKEN,
+run cf.health green before any code") is **blocked on operator credentials** —
+there is no `CLOUDFLARE_API_TOKEN` in `/etc/forgehost/secrets.env` and no
+`cloudflare_account_id` in `forgehost.toml`. A real token + a sacrificial
+domain are exactly PLAN §4's "what I need from the operator" and cannot be
+fabricated. Per the same model Phases 0/1 shipped under, all code + unit tests
+landed now and the live gates (cf.health green, CF-Ray header, OLS real-IP,
+real cert issuance) are documented as operator run-book items in the Phase 2
+checkpoint.
+
+**What shipped (all backend + unit-tested):**
+1. Multi-account pool — `CloudflareAccount` table (token Fernet-encrypted),
+   round-robin capacity-aware assignment, CRUD ops/API, legacy single-token
+   auto-migration into the pool at startup.
+2. Proxy (orange cloud) — `proxied_allowed()` now gated on the real-IP rails
+   being green; per-record proxied respected; `cf.enable_proxy` bulk toggle.
+3. Real-IP rails — OLS `useIpInProxyHeader` + trusted CF ranges (rollback =
+   empty ranges); `cf.refresh_ranges` (writes ranges file first, then reloads
+   OLS + fail2ban); `cf.rails_status` gate; daily cron.
+4. fail2ban ignoreip — CF ranges in a `[DEFAULT] ignoreip`, refreshed with the
+   ranges.
+5. SSL — certbot-dns-cloudflare routing in `_challenge_plan`/wildcard by live
+   provider, per-account creds INI (0600), Full(strict) upgrade in the deploy
+   hook.
+6. Auto-enable new domains — `CloudflareSettings.auto_enable` + `default_dns_provider`,
+   `create_zone` returns the NS pair; skips when no capacity.
+7. Bulk migrate — `cf.bulk_migrate` one-at-a-time, stops on failure, never
+   flips registrar NS.
+8. Admin zone overview — `cf.zones_overview` (+live), `cf.bulk_purge`,
+   `last_purge_at`.
+9. UFW CF-only lockdown — `cf.lockdown` (confirm-gated, safety-refuses,
+   reversible, never touches SSH/panel), re-scoped on ranges refresh.
+
+**Schema:** new tables `cloudflare_accounts`, `cloudflare_settings`; additive
+columns `cloudflare_zones.cf_account_id` + `.last_purge_at` via a new
+idempotent `_apply_additive_migrations` in `shared/db.py` (create_all never
+ALTERs; safe — the table is empty until a zone is enabled).
+
+**Tests:** +43 Cloudflare unit tests (`test_cloudflare_accounts` 17,
+`test_cloudflare_rails` 16, `test_cloudflare_fleet` 12) + `test_ssl` CF
+routing; touched-suite regression = 374 passing. Frontend (admin Cloudflare
+page + DNS proxy toggle) built against these APIs in the same phase.
+
+---
+
 ## Phase 8 (2026-07-06): 13 missing-feature build — all 13 delivered, backend + tests + React UI; 5 live-verified end-to-end on this server
 
 Built autonomously per the Phase 8 goal, in the exact order specified, with

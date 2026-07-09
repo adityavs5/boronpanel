@@ -3,6 +3,7 @@ import {
   Server, Network, ShieldCheck, Clock, Upload, GitBranch, KeyRound, Activity,
   Cog, Inbox, Flame, ShieldAlert, ScrollText, ShieldHalf, Gauge, ListChecks,
   Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
+  History, FileCode2, Cloud,
 } from 'lucide-react'
 
 // Customer nav — resource pages scoped to the signed-in account. Paths are
@@ -12,6 +13,7 @@ export const customerNav = [
   { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard },
   { section: 'Hosting' },
   { label: 'Domains', to: '/domains', icon: Globe },
+  { label: 'PHP', to: '/php', icon: FileCode2 },
   { label: 'Email', to: '/email', icon: Mail },
   { label: 'Databases', to: '/databases', icon: Database },
   { label: 'Files', to: '/files', icon: FolderOpen },
@@ -46,8 +48,10 @@ export const adminNav = [
   { label: 'Firewall', to: '/firewall', icon: Flame },
   { label: 'Fail2ban', to: '/fail2ban', icon: ShieldAlert },
   { label: 'IP Whitelist', to: '/ip-whitelist', icon: LockKeyhole },
+  { label: 'Cloudflare', to: '/cloudflare', icon: Cloud },
   { section: 'Security & Logs' },
   { label: 'Audit Log', to: '/audit-log', icon: ScrollText },
+  { label: 'Account Log', to: '/account-log', icon: History },
   { label: 'WAF', to: '/waf', icon: ShieldHalf },
   { label: 'Slow Queries', to: '/slow-queries', icon: ListChecks },
   { label: 'API Tokens', to: '/tokens', icon: KeyRound },

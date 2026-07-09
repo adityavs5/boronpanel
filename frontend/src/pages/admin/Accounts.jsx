@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Input, Textarea, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
+import { Checkbox } from '@/components/ui/Toggle'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter,
   ConfirmDialog,
@@ -192,14 +193,30 @@ export default function Accounts() {
     nsDescription = 'Enables mount-namespace isolation for every currently active account that is not already enabled, one at a time. It stops at the first account that fails verification. This runs in the background and may take a while.'
   }
 
-  const allOnPage = (data || []).map((r) => r.username)
+  // Terminated accounts are gone for good — the API already excludes them,
+  // this is a belt-and-braces filter. Their record lives in the Account Log.
+  const accounts = (data || []).filter((a) => a.status !== 'terminated')
+  const allOnPage = accounts.map((r) => r.username)
   const allSelected = allOnPage.length > 0 && allOnPage.every((u) => selected.has(u))
   const columns = [
     {
-      key: 'select', header: '', searchable: false, sortable: false,
+      key: 'select', searchable: false, sortable: false,
+      headerClassName: 'w-10',
+      header: (
+        <Checkbox
+          checked={allSelected}
+          onCheckedChange={() => setSelected(allSelected ? new Set() : new Set(allOnPage))}
+          aria-label="Select all accounts"
+        />
+      ),
       render: (r) => (
-        <input type="checkbox" checked={selected.has(r.username)} onClick={(e) => e.stopPropagation()}
-          onChange={() => toggle(r.username)} aria-label={`Select ${r.username}`} />
+        <span onClick={(e) => e.stopPropagation()} className="flex items-center">
+          <Checkbox
+            checked={selected.has(r.username)}
+            onCheckedChange={() => toggle(r.username)}
+            aria-label={`Select ${r.username}`}
+          />
+        </span>
       ),
     },
     { key: 'username', header: 'Username', sortable: true, searchable: true, render: (r) => <span className="font-medium text-foreground">{r.username}</span> },
@@ -219,18 +236,11 @@ export default function Accounts() {
         </Button>
       </PageHeader>
 
-      <div className="mb-3 flex items-center gap-3">
-        <label className="flex items-center gap-2 text-sm text-muted-foreground">
-          <input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(allOnPage))} />
-          Select all
-        </label>
-      </div>
-
       {selected.size > 0 && <BulkActionBar selected={selected} clearSelection={clearSelection} />}
 
       <DataTable
         columns={columns}
-        data={data}
+        data={accounts}
         loading={isLoading}
         error={error}
         onRetry={refetch}
