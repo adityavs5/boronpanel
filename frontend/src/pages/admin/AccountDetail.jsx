@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog, FolderOpen } from 'lucide-react'
+import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog, FolderOpen, Layers } from 'lucide-react'
 import { get, post, patch, impersonate as apiImpersonate } from '@/lib/api'
 import { formatMB } from '@/lib/utils'
 import { useAccountUsername } from '@/hooks/useAccount'
@@ -153,6 +153,46 @@ function PhpAndLimits({ username, account }) {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+function PlanCard({ username, account }) {
+  const qc = useQueryClient()
+  const [planId, setPlanId] = useState('')
+  const { data: plansData } = useQuery({
+    queryKey: ['plans'],
+    queryFn: () => get('/api/v1/admin/plans'),
+  })
+  const plans = plansData?.plans || []
+  const currentPlan = plans.find((p) => p.id === account.plan_id)
+
+  const applyMut = useMutation({
+    mutationFn: (id) => post(`/api/v1/admin/accounts/${username}/apply-plan/${id}`),
+    onSuccess: () => {
+      toast.success('Plan applied', 'CPU/RAM/IO/pids, disk quota, usage limits and Redis were all updated.')
+      qc.invalidateQueries({ queryKey: ['account', username] })
+      qc.invalidateQueries({ queryKey: ['usage-limits', username] })
+    },
+    onError: (e) => toast.error('Could not apply plan', e.message),
+  })
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="flex items-center gap-2"><Layers className="h-4 w-4" /> Plan</CardTitle></CardHeader>
+      <CardContent className="flex items-end gap-3">
+        <div className="flex-1 text-sm">
+          <div className="text-muted-foreground">Current plan</div>
+          <div className="font-medium text-foreground">{currentPlan ? currentPlan.name : 'Custom (no plan applied)'}</div>
+        </div>
+        <FormField label="Apply plan" className="flex-1">
+          <Select value={planId} onChange={(e) => setPlanId(e.target.value)}>
+            <option value="">Select a plan…</option>
+            {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </Select>
+        </FormField>
+        <Button loading={applyMut.isPending} disabled={!planId} onClick={() => applyMut.mutate(planId)}>Apply</Button>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -313,6 +353,7 @@ export default function AccountDetail() {
                 <CardContent><AdminActions username={username} account={account} /></CardContent>
               </Card>
               <PhpAndLimits username={username} account={account} />
+              <PlanCard username={username} account={account} />
               <NamespaceCard username={username} />
               <UsageLimitsCard />
             </TabsContent>

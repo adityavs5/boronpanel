@@ -25,12 +25,23 @@ class CreateAccountBody(BaseModel):
     quota_soft_mb: int | None = None
     quota_hard_mb: int | None = None
     password: str | None = None
+    # Run A feature 1: optional plan to apply immediately after creation.
+    plan_id: int | None = None
 
 
 @api_router.post("")
 def create_account(body: CreateAccountBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
-    return call_daemon("account.create", identity, **body.model_dump(exclude_none=True))
+    fields = body.model_dump(exclude_none=True)
+    plan_id = fields.pop("plan_id", None)
+    result = call_daemon("account.create", identity, **fields)
+    if plan_id is not None:
+        # The account exists at this point even if plan application fails --
+        # same "a failed step doesn't silently undo the previous one"
+        # philosophy as terminate_account's fixed-order teardown
+        # (ARCHITECTURE.md SS5). The error surfaces to the caller as-is.
+        result = call_daemon("plan.apply", identity, username=result["username"], plan_id=plan_id)
+    return result
 
 
 @api_router.get("")

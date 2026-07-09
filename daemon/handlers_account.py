@@ -55,6 +55,7 @@ def _account_to_dict(account: Account) -> dict:
         "mem_mb": account.mem_mb,
         "io_mb": account.io_mb,
         "pids_max": account.pids_max,
+        "plan_id": account.plan_id,
         "last_error": account.last_error,
         "created_at": account.created_at.isoformat() if account.created_at else None,
         "suspended_at": account.suspended_at.isoformat() if account.suspended_at else None,

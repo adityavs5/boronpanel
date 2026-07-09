@@ -54,6 +54,12 @@ def _limits_to_dict(row: AccountResourceLimits) -> dict:
         "database_limit": row.database_limit,
         "email_account_limit": row.email_account_limit,
         "subdomain_limit": row.subdomain_limit,
+        # Run A feature 1 (plan templates): same nullable-means-untracked
+        # fields as the four above, just with no alerting logic wired to
+        # them yet (RESOURCES below stays as-is) -- they exist so a Plan's
+        # ftp/app limits have somewhere to land when applied.
+        "ftp_account_limit": row.ftp_account_limit,
+        "app_limit": row.app_limit,
         "auto_suspend_at_100": row.auto_suspend_at_100,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -83,6 +89,10 @@ def set_limits(params: dict) -> dict:
             row.email_account_limit = validate_resource_limit(params["email_account_limit"], "email_account_limit")
         if "subdomain_limit" in params:
             row.subdomain_limit = validate_resource_limit(params["subdomain_limit"], "subdomain_limit")
+        if "ftp_account_limit" in params:
+            row.ftp_account_limit = validate_resource_limit(params["ftp_account_limit"], "ftp_account_limit")
+        if "app_limit" in params:
+            row.app_limit = validate_resource_limit(params["app_limit"], "app_limit")
         if "auto_suspend_at_100" in params:
             row.auto_suspend_at_100 = bool(params["auto_suspend_at_100"])
         session.flush()

@@ -3,7 +3,7 @@ import {
   Server, Network, ShieldCheck, Clock, Upload, GitBranch, KeyRound, Activity,
   Cog, Inbox, Flame, ShieldAlert, ScrollText, ShieldHalf, Gauge, ListChecks,
   Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
-  History, FileCode2, Cloud,
+  History, FileCode2, Cloud, Layers,
 } from 'lucide-react'
 
 // Customer nav — resource pages scoped to the signed-in account. Paths are
@@ -40,6 +40,7 @@ export const customerNav = [
 export const adminNav = [
   { section: 'Administration' },
   { label: 'Accounts', to: '/accounts', icon: Users },
+  { label: 'Plans', to: '/plans', icon: Layers },
   { label: 'Server Health', to: '/health', icon: Activity },
   { label: 'Services', to: '/services', icon: Cog },
   { label: 'Bandwidth', to: '/bandwidth', icon: Gauge },

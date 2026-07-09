@@ -56,6 +56,13 @@ class Account(Base):
     )
     suspended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     terminated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Run A feature 1 (plan templates): which named preset (if any) this
+    # account currently sits on -- NULL means "custom" (never had a plan
+    # applied, or its limits were hand-edited since). Purely informational
+    # (the UI's "current plan" label); the actual enforced state always
+    # lives on the columns a plan writes to (cpu_pct/mem_mb/... above,
+    # AccountResourceLimits, RedisInstance), never read back from here.
+    plan_id: Mapped[int | None] = mapped_column(ForeignKey("plans.id"), nullable=True)
 
     domains: Mapped[list["Domain"]] = relationship(back_populates="account", cascade="all, delete-orphan")
 
@@ -1161,6 +1168,12 @@ class AccountResourceLimits(Base):
     database_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     email_account_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     subdomain_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Run A feature 1 (plan templates): the same nullable-means-untracked
+    # convention as the four fields above, added so a Plan's "max FTP
+    # sub-accounts" / "max apps" fields have somewhere to land -- FTP/app
+    # counts had no existing quota column anywhere else in the schema.
+    ftp_account_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    app_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     auto_suspend_at_100: Mapped[bool] = mapped_column(default=False)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -1427,5 +1440,43 @@ class LscacheSettings(Base):
     ttl_seconds: Mapped[int] = mapped_column(Integer, default=3600)
     exclude_paths: Mapped[list] = mapped_column(JSON, default=list)
     last_purged_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Plan(Base):
+    """Run A feature 1: named hosting-plan presets (Basic/Pro/Business/...)
+    an admin defines once and applies to many accounts, cPanel-package
+    style. Deliberately holds its OWN copy of every limit value rather than
+    a foreign key into a single "current limits" row -- a plan is a
+    template, edited independently of any account that was ever built from
+    it (matches this project's Account.plan_id docstring: applying a plan
+    copies values onto the account at that moment, it does not keep the
+    account permanently bound to the plan's row). cpu_pct/mem_mb/io_mb/
+    pids_max/quota_soft_mb/quota_hard_mb mirror Account's own columns
+    exactly; bandwidth/database/email/subdomain/ftp/app limits mirror
+    AccountResourceLimits' nullable-means-unlimited convention. Redis is a
+    plain enabled/disabled bit applied via redisacct.enable_redis/
+    disable_redis -- RedisInstance.enabled remains the single source of
+    truth for actual state, this is only "what the plan specifies".
+    """
+
+    __tablename__ = "plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    cpu_pct: Mapped[int] = mapped_column(Integer)
+    mem_mb: Mapped[int] = mapped_column(Integer)
+    io_mb: Mapped[int] = mapped_column(Integer)
+    pids_max: Mapped[int] = mapped_column(Integer)
+    quota_soft_mb: Mapped[int] = mapped_column(Integer)
+    quota_hard_mb: Mapped[int] = mapped_column(Integer)
+    bandwidth_limit_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    database_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    email_account_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    subdomain_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ftp_account_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    app_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    redis_enabled: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

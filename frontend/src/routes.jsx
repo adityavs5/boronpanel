@@ -36,6 +36,7 @@ const DiskUsage = lazy(() => import('@/pages/customer/DiskUsage'))
 
 const Accounts = lazy(() => import('@/pages/admin/Accounts'))
 const AccountDetail = lazy(() => import('@/pages/admin/AccountDetail'))
+const Plans = lazy(() => import('@/pages/admin/Plans'))
 const ServerHealth = lazy(() => import('@/pages/admin/ServerHealth'))
 const Services = lazy(() => import('@/pages/admin/Services'))
 const BandwidthRanking = lazy(() => import('@/pages/admin/BandwidthRanking'))
@@ -112,6 +113,7 @@ export const router = createBrowserRouter(
         // Admin pages.
         { path: 'accounts', element: admin(<Accounts />) },
         { path: 'accounts/:username', element: admin(<AccountDetail />) },
+        { path: 'plans', element: admin(<Plans />) },
         { path: 'accounts/:username/domains/:domain', element: admin(<DomainDetail />) },
         { path: 'health', element: admin(<ServerHealth />) },
         { path: 'services', element: admin(<Services />) },

@@ -22,7 +22,7 @@ from shared.config import require_secure_session_secret, settings
 from shared.db import read_session
 from shared.models import IpWhitelistEntry
 
-from api.routers import account_backups, accounts, apps, auditlog, auth, backups, bandwidth, bulkops, cloudflare, cpanel_import, cron, databases, devtools, disktree, dns, domains, email, email_extras, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, impersonation, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, nameservers, nodeapps, notes, notifications, parked, php_ini, pma, processes, pythonapps, redirects, redis_router, services, slowquery, sshkeys, ssl_router, staging, terminal, tokens, twofactor, usage, usage_alerts, waf, webhooks, wordpress
+from api.routers import account_backups, accounts, apps, auditlog, auth, backups, bandwidth, bulkops, cloudflare, cpanel_import, cron, databases, devtools, disktree, dns, domains, email, email_extras, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, impersonation, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, nameservers, nodeapps, notes, notifications, parked, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, slowquery, sshkeys, ssl_router, staging, terminal, tokens, twofactor, usage, usage_alerts, waf, webhooks, wordpress
 
 
 @asynccontextmanager
@@ -193,6 +193,9 @@ app.include_router(cloudflare.zone_api_router)
 # by the /app SPA catch-all below, which is scoped to /app only.
 app.include_router(filebrowser.api_router)
 app.include_router(filebrowser.proxy_router)
+# Run A feature 1: plan templates (CRUD + apply-to-account).
+app.include_router(plans.api_router)
+app.include_router(plans.apply_api_router)
 
 
 @app.get("/")

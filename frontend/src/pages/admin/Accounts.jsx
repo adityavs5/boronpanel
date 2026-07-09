@@ -99,8 +99,15 @@ export default function Accounts() {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState({ username: '', primary_domain: '' })
+  const [form, setForm] = useState({ username: '', primary_domain: '', plan_id: '' })
   const [selected, setSelected] = useState(() => new Set())
+
+  // Run A feature 1: optional plan applied atomically right after creation.
+  const { data: plansData } = useQuery({
+    queryKey: ['plans'],
+    queryFn: () => get('/api/v1/admin/plans'),
+  })
+  const plans = plansData?.plans || []
 
   const toggle = (username) => setSelected((prev) => {
     const next = new Set(prev)
@@ -126,7 +133,7 @@ export default function Accounts() {
       toast.success('Account created', `${acc.username} is being provisioned.`)
       qc.invalidateQueries({ queryKey: ['accounts'] })
       setOpen(false)
-      setForm({ username: '', primary_domain: '' })
+      setForm({ username: '', primary_domain: '', plan_id: '' })
       navigate(`/accounts/${acc.username}`)
     },
     onError: (e) => toast.error('Could not create account', e.message),
@@ -263,7 +270,11 @@ export default function Accounts() {
           <form
             onSubmit={(e) => {
               e.preventDefault()
-              createMut.mutate({ username: form.username, primary_domain: form.primary_domain || undefined })
+              createMut.mutate({
+                username: form.username,
+                primary_domain: form.primary_domain || undefined,
+                plan_id: form.plan_id ? Number(form.plan_id) : undefined,
+              })
             }}
           >
             <DialogBody className="space-y-4">
@@ -283,6 +294,12 @@ export default function Accounts() {
                   onChange={(e) => setForm((f) => ({ ...f, primary_domain: e.target.value }))}
                   placeholder="example.com"
                 />
+              </FormField>
+              <FormField label="Plan" hint="Optional — applies the plan's limits immediately after creation.">
+                <Select value={form.plan_id} onChange={(e) => setForm((f) => ({ ...f, plan_id: e.target.value }))}>
+                  <option value="">No plan (default limits)</option>
+                  {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </Select>
               </FormField>
             </DialogBody>
             <DialogFooter>

@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, disktree, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, health, identity_admin, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, nameservers, nodeapps, notifications, nsisolation, ols, parked, phpext, pma, procmanager, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import appinstaller, audit, backup, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, disktree, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, health, identity_admin, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, nameservers, nodeapps, notifications, nsisolation, ols, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -378,6 +378,13 @@ OP_TABLE = {
     "staging.sync": staging.sync_staging,
     "staging.get": staging.get_staging,
     "staging.delete": staging.delete_staging,
+    # Run A feature 1: plan templates
+    "plan.create": plans.create_plan,
+    "plan.list": plans.list_plans,
+    "plan.get": plans.get_plan,
+    "plan.update": plans.update_plan,
+    "plan.delete": plans.delete_plan,
+    "plan.apply": plans.apply_plan,
 }
 
 # Security audit finding F7: disktree.get/top_files and usage.get run real

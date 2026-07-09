@@ -76,6 +76,9 @@ def init_db() -> None:
 # missing column, never drops/renames/retypes anything.
 _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     "cloudflare_zones": {"cf_account_id": "INTEGER", "last_purge_at": "DATETIME"},
+    # Run A feature 1 (plan templates): both tables predate the Plan model.
+    "accounts": {"plan_id": "INTEGER"},
+    "account_resource_limits": {"ftp_account_limit": "INTEGER", "app_limit": "INTEGER"},
 }
 
 
