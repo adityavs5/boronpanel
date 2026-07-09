@@ -1480,3 +1480,26 @@ class Plan(Base):
     redis_enabled: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BrandingSettings(Base):
+    """Run A feature 3: white-label branding. Single-row (id=1) shape, same
+    convention as NotificationSettings/WafSettings -- there is genuinely
+    only one server-wide branding configuration. `logo_filename`/
+    `favicon_filename` name the actual file under
+    `settings.branding_dir` (daemon-written, group-readable by
+    forgehost-api so the unprivileged API process can stream it back out
+    over HTTP to anonymous visitors -- same 0640 root:forgehost-api
+    pattern as the control-plane DB file itself, shared/db.py's
+    `_grant_api_group_read`); NULL means "no custom asset, use the
+    built-in default" for that asset specifically."""
+
+    __tablename__ = "branding_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    panel_name: Mapped[str] = mapped_column(String(64), default="Forgehost")
+    logo_filename: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    favicon_filename: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    support_email: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    support_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

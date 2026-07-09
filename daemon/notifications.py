@@ -19,7 +19,7 @@ from email.message import EmailMessage
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, AccountNotificationPrefs, NOTIFICATION_EVENT_TYPES, NotificationSettings
+from shared.models import Account, AccountNotificationPrefs, BrandingSettings, NOTIFICATION_EVENT_TYPES, NotificationSettings
 from shared.validation import ValidationError, validate_email_address, validate_username
 
 logger = logging.getLogger("forgehostd.notifications")
@@ -28,18 +28,29 @@ SMTP_HOST = "localhost"
 SMTP_PORT = 25
 SMTP_TIMEOUT = 10
 
-_SUBJECTS = {
-    "account.created": "Your Forgehost hosting account has been created",
-    "account.suspended": "Your Forgehost hosting account has been suspended",
-    "account.unsuspended": "Your Forgehost hosting account has been reactivated",
-    "account.terminated": "Your Forgehost hosting account has been terminated",
-    "backup.completed": "Backup completed",
-    "backup.failed": "Backup failed",
-    "ssl.expiring": "SSL certificate expiring soon",
-    "usage.limit.reached": "Resource usage alert",
-    "login.new": "New login to your hosting panel",
-    "dns.zone_activated": "Your domain is now active on Cloudflare",
-}
+
+def _panel_name(session) -> str:
+    # Run A feature 3: branding applied to email notifications. Reads the
+    # same BrandingSettings singleton row branding.py owns -- this module
+    # only reads it (never writes), same read-only cross-feature reuse as
+    # e.g. usage_alerts reading Account.quota_hard_mb.
+    row = session.get(BrandingSettings, 1)
+    return row.panel_name if row and row.panel_name else "Forgehost"
+
+
+def _subjects(panel_name: str) -> dict:
+    return {
+        "account.created": f"Your {panel_name} hosting account has been created",
+        "account.suspended": f"Your {panel_name} hosting account has been suspended",
+        "account.unsuspended": f"Your {panel_name} hosting account has been reactivated",
+        "account.terminated": f"Your {panel_name} hosting account has been terminated",
+        "backup.completed": "Backup completed",
+        "backup.failed": "Backup failed",
+        "ssl.expiring": "SSL certificate expiring soon",
+        "usage.limit.reached": "Resource usage alert",
+        "login.new": "New login to your hosting panel",
+        "dns.zone_activated": "Your domain is now active on Cloudflare",
+    }
 
 
 def _render_body(event_type: str, username: str, context: dict) -> str:
@@ -148,9 +159,10 @@ def maybe_send(event_type: str, account, **context) -> bool:
             return False
         sender = settings_row.sender_address
         recipient = prefs.customer_email
+        panel_name = _panel_name(session)
 
-    subject = _SUBJECTS.get(event_type, f"Forgehost notification: {event_type}")
-    body = _render_body(event_type, username, context)
+    subject = _subjects(panel_name).get(event_type, f"{panel_name} notification: {event_type}")
+    body = _render_body(event_type, username, context) + f"\n\n— {panel_name}"
     try:
         _send_email(sender, recipient, subject, body)
     except (OSError, smtplib.SMTPException):

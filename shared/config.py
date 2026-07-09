@@ -143,6 +143,10 @@ class Settings:
     # Phase 3 feature 1: DKIM keypair storage
     dkim_base_dir: str = "/etc/forgehost/dkim"
 
+    # Run A feature 3: white-label branding assets (logo/favicon)
+    branding_dir: str = "/etc/forgehost/branding"
+    branding_max_upload_bytes: int = 2 * 1024 * 1024  # 2MB
+
     # Phase 3 feature 2: one-click WordPress installer
     php_cli_bin: str = "/usr/bin/php"
     wp_version_check_url: str = "https://api.wordpress.org/core/version-check/1.7/"

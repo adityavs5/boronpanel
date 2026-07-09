@@ -5,9 +5,11 @@ import { useAuth } from '@/store/auth'
 import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { APP_VERSION } from '@/config/constants'
+import { useBranding } from '@/hooks/useBranding'
 
 export default function Login() {
   const { login, verify2fa, role, pending2fa } = useAuth()
+  const { panelName, logoUrl } = useBranding()
   const navigate = useNavigate()
   const location = useLocation()
   const [username, setUsername] = useState('')
@@ -55,8 +57,14 @@ export default function Login() {
       {/* Brand panel (hidden on small screens) */}
       <div className="hidden w-1/2 flex-col justify-between bg-sidebar p-12 lg:flex">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-btn bg-accent text-lg font-bold text-accent-foreground">F</div>
-          <span className="text-xl font-semibold text-white">Forgehost</span>
+          {logoUrl ? (
+            <img src={logoUrl} alt={panelName} className="h-10 w-10 rounded-btn object-contain" />
+          ) : (
+            <div className="flex h-10 w-10 items-center justify-center rounded-btn bg-accent text-lg font-bold text-accent-foreground">
+              {panelName.charAt(0).toUpperCase()}
+            </div>
+          )}
+          <span className="text-xl font-semibold text-white">{panelName}</span>
         </div>
         <div className="space-y-4">
           <h1 className="text-3xl font-semibold leading-tight text-white">
@@ -68,7 +76,7 @@ export default function Login() {
             Provision accounts, manage domains, databases, email, SSL and applications from a single fast control panel.
           </p>
         </div>
-        <p className="text-xs text-gray-600">Forgehost {APP_VERSION}</p>
+        <p className="text-xs text-gray-600">{panelName} {APP_VERSION}</p>
       </div>
 
       {/* Form panel */}
@@ -76,8 +84,14 @@ export default function Login() {
         <div className="w-full max-w-sm">
           <div className="mb-8 lg:hidden">
             <div className="flex items-center gap-2.5">
-              <div className="flex h-9 w-9 items-center justify-center rounded-btn bg-accent font-bold text-accent-foreground">F</div>
-              <span className="text-lg font-semibold text-foreground">Forgehost</span>
+              {logoUrl ? (
+                <img src={logoUrl} alt={panelName} className="h-9 w-9 rounded-btn object-contain" />
+              ) : (
+                <div className="flex h-9 w-9 items-center justify-center rounded-btn bg-accent font-bold text-accent-foreground">
+                  {panelName.charAt(0).toUpperCase()}
+                </div>
+              )}
+              <span className="text-lg font-semibold text-foreground">{panelName}</span>
             </div>
           </div>
 

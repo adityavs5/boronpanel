@@ -94,13 +94,24 @@ Accounts in **light mode** (no theme override) to confirm the dark-only
 changes didn't regress light mode — unchanged, as intended (light-mode
 CSS vars were never touched).
 
-Not individually screenshotted (all 31 pages is a lot of manual
-screenshots for one pass): every other page. Confidence for those rests
-on the token-level fix propagating automatically, per the grep-verified
-absence of hardcoded-color exceptions, not a claim that every single page
-was eyeballed. Screenshots saved under
-`scratchpad/darkqa/*.png` during this session and are not part of the
-commit (scratchpad, not `docs/ui-screenshots/`).
+**Second screenshot pass (same session, closing the goal's "verify every
+page: dashboard, accounts, domains, email, files, backups, apps, admin
+pages" list):** logged in as a disposable admin, used the real
+login-as-user impersonation flow against the live account, and
+screenshotted the customer **Dashboard, Domains, Email, Backups, and
+Applications** pages in dark mode — all flat gray-800-on-gray-900, real
+data (domain list, mailbox tabs, stat tiles), impersonation banner
+rendering correctly above the themed shell. **Files** navigates to the
+FileBrowser Quantum launch flow (`/files/...`) — that page is FB
+Quantum's own bundled UI, not this SPA, so this feature's token changes
+deliberately don't apply to it (it ships its own dark theme); screenshot
+captured to confirm the handoff works, not to assert Forgehost styling.
+With this pass plus the first one, every page category the goal names has
+been visually verified. Remaining unverified: the long tail of low-risk
+pages that share 100% of their surface with verified ones (e.g. Cron/FTP/
+Git are the same DataTable+Dialog pattern as verified Firewall/Webhooks).
+Screenshots saved under `scratchpad/darkqa/*.png` during this session and
+are not part of the commit (scratchpad, not `docs/ui-screenshots/`).
 
 ## Tests
 

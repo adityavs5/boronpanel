@@ -9,6 +9,7 @@ import { useAuth } from './store/auth'
 import { useUI, applyTheme } from './store/ui'
 import { TooltipProvider } from './components/ui/Tooltip'
 import { Toaster } from './components/ui/Toast'
+import { BrandingBootstrap } from './components/layout/BrandingBootstrap'
 import './index.css'
 
 // Apply persisted theme before first paint.
@@ -29,6 +30,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={200}>
+        <BrandingBootstrap />
         <RouterProvider router={router} />
         <Toaster />
       </TooltipProvider>
