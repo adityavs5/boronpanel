@@ -11,7 +11,9 @@ export function DialogContent({ className, children, size = 'md', ...props }) {
   const sizes = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl' }
   return (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-[1px] data-[state=open]:animate-fade-in" />
+      {/* Run A feature 2: no backdrop-blur (goal: remove all blur/glass) —
+          the dim scrim alone is enough to focus the modal. */}
+      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-fade-in" />
       <DialogPrimitive.Content
         className={cn(
           'fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-card border border-border bg-card shadow-dropdown focus:outline-none data-[state=open]:animate-scale-in',

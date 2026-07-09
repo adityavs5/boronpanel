@@ -29,9 +29,12 @@ export default {
         warning: { DEFAULT: '#F59E0B', foreground: '#3A2A05' },
         success: { DEFAULT: '#10B981', foreground: '#03291E' },
         info: { DEFAULT: '#3B82F6', foreground: '#FFFFFF' },
-        // Sidebar is always the dark slate (#111827 = gray-900) in both themes.
+        // Sidebar is always the darkest slate (#030712 = gray-950, Run A
+        // feature 2 spec) in both themes -- deliberately darker than the
+        // gray-800 content cards it sits beside, so the sidebar/content
+        // split reads as two distinct flat panels rather than one surface.
         sidebar: {
-          DEFAULT: '#111827',
+          DEFAULT: '#030712',
           hover: '#1F2937',
           active: '#1FBED6',
           muted: '#9CA3AF',
@@ -43,6 +46,12 @@ export default {
         card: 'rgb(var(--card) / <alpha-value>)',
         border: 'rgb(var(--border) / <alpha-value>)',
         input: 'rgb(var(--input) / <alpha-value>)',
+        // Run A feature 2: inputs sit recessed relative to their containing
+        // card (bg-gray-900 vs. cards' bg-gray-800 in dark mode) -- a
+        // distinct token from `surface`/`card`, not a reuse, so the
+        // distinction only exists where it's asked for (dark mode) and
+        // leaves light mode's input background unchanged.
+        'input-surface': 'rgb(var(--input-surface) / <alpha-value>)',
         ring: 'rgb(var(--ring) / <alpha-value>)',
         foreground: 'rgb(var(--fg) / <alpha-value>)',
         muted: {
@@ -55,11 +64,13 @@ export default {
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
       },
       borderRadius: {
-        // 8px cards, 6px buttons/inputs per the token spec.
-        card: '8px',
-        btn: '6px',
-        lg: '8px',
-        md: '6px',
+        // Run A feature 2: 6px cards, 4px buttons per the goal's exact spec
+        // (was 8px/6px) -- lg/md follow card/btn so nothing that used the
+        // generic Tailwind scale silently keeps the old radius.
+        card: '6px',
+        btn: '4px',
+        lg: '6px',
+        md: '4px',
         sm: '4px',
       },
       boxShadow: {

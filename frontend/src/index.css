@@ -17,6 +17,7 @@
     --bg: 249 250 251;        /* gray-50  — content background */
     --surface: 255 255 255;   /* white    — raised surfaces */
     --card: 255 255 255;
+    --input-surface: 255 255 255; /* unchanged in light mode */
     --fg: 17 24 39;           /* gray-900 — headings */
     --muted: 243 244 246;     /* gray-100 — subtle fills */
     --muted-fg: 107 114 128;  /* gray-500 — body / secondary text */
@@ -25,15 +26,22 @@
     --ring: 31 190 214;       /* accent */
   }
 
+  /* Run A feature 2: dark mode overhaul. Flat solid cards (bg-gray-800 on
+     bg-gray-900), no glass/blur/translucency, no shadows (borders only —
+     see the .dark .shadow-* resets under @layer utilities below).
+     Typography: white headings (forced explicitly below, since --fg now
+     drives ordinary body/label text too), gray-300 body, gray-500
+     secondary. Inputs recessed to gray-900 with a gray-600 border. */
   .dark {
-    --bg: 15 20 30;
-    --surface: 31 41 55;      /* gray-800 */
-    --card: 31 41 55;
-    --fg: 243 244 246;        /* gray-100 */
-    --muted: 55 65 81;        /* gray-700 */
-    --muted-fg: 156 163 175;  /* gray-400 */
-    --border: 55 65 81;
-    --input: 55 65 81;
+    --bg: 17 24 39;            /* gray-900 */
+    --surface: 31 41 55;       /* gray-800 */
+    --card: 31 41 55;          /* gray-800 */
+    --input-surface: 17 24 39; /* gray-900 — recessed relative to cards */
+    --fg: 209 213 219;         /* gray-300 — body text (headings forced white below) */
+    --muted: 55 65 81;         /* gray-700 */
+    --muted-fg: 107 114 128;   /* gray-500 — secondary text */
+    --border: 55 65 81;        /* gray-700 */
+    --input: 75 85 99;         /* gray-600 */
     --ring: 31 190 214;
   }
 
@@ -53,7 +61,11 @@
   }
 
   h1, h2, h3, h4 {
-    @apply text-foreground font-semibold tracking-tight;
+    @apply font-semibold tracking-tight;
+    color: rgb(var(--fg));
+  }
+  .dark h1, .dark h2, .dark h3, .dark h4 {
+    color: #FFFFFF; /* white headings, per spec — distinct from --fg (gray-300 body) */
   }
 
   /* Thin, unobtrusive scrollbars that respect the theme. */
@@ -82,6 +94,18 @@
 }
 
 @layer utilities {
+  /* Run A feature 2: no shadows in dark mode — every surface that carries a
+     shadow utility already has a border (border-border) as well, which
+     becomes the sole depth cue once the shadow is neutralized. Box-shadow
+     utilities are static (not CSS-variable-driven), so this is done as a
+     targeted override here rather than editing every component that uses
+     shadow-sm/shadow-card/shadow-dropdown. */
+  .dark .shadow-sm,
+  .dark .shadow-card,
+  .dark .shadow-dropdown {
+    box-shadow: none;
+  }
+
   /* Skeleton shimmer used by the Skeleton component. */
   .shimmer {
     position: relative;

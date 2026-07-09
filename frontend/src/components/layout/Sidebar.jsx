@@ -62,7 +62,8 @@ function HealthMiniWidget({ collapsed }) {
     { icon: HardDrive, label: 'Disk', pct: disk?.pct },
   ]
   return (
-    <div className="rounded-card bg-sidebar-hover/60 p-3 space-y-2">
+    // Run A feature 2: flat solid fill, not a translucent overlay over the sidebar.
+    <div className="rounded-card bg-sidebar-hover p-3 space-y-2">
       <div className="flex items-center gap-2 text-xs font-medium text-white">
         <Server className="h-3.5 w-3.5 text-accent-400" /> Server Health
       </div>

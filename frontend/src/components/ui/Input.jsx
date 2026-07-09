@@ -3,7 +3,7 @@ import * as LabelPrimitive from '@radix-ui/react-label'
 import { cn } from '@/lib/cn'
 
 const baseField =
-  'flex w-full rounded-btn border border-input bg-surface px-3 text-sm text-foreground shadow-sm placeholder:text-muted-foreground/70 transition-[border-color,box-shadow] focus-visible:outline-none focus-visible:border-accent focus-visible:ring-[3px] focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50'
+  'flex w-full rounded-btn border border-input bg-input-surface px-3 text-sm text-foreground shadow-sm placeholder:text-muted-foreground/70 transition-[border-color,box-shadow] focus-visible:outline-none focus-visible:border-accent focus-visible:ring-[3px] focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50'
 
 export const Input = forwardRef(function Input({ className, invalid, type = 'text', ...props }, ref) {
   return (
