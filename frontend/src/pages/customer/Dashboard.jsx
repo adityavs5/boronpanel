@@ -13,6 +13,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Badge } from '@/components/ui/Badge'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/States'
+import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard'
 
 const QUICK_ACTIONS = [
   { label: 'Domains', to: '/domains', icon: Globe },
@@ -59,6 +60,9 @@ export default function Dashboard() {
 
   return (
     <div>
+      {/* Run A feature 4: first-login onboarding (renders nothing once completed). */}
+      {username && <OnboardingWizard username={username} account={acc} />}
+
       <PageHeader title={`Welcome back${username ? `, ${username}` : ''}`} description="Here's an overview of your hosting account.">
         {acc && <StatusBadge status={acc.status} />}
       </PageHeader>

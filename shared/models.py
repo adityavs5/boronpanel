@@ -1482,6 +1482,24 @@ class Plan(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class OnboardingState(Base):
+    """Run A feature 4: client onboarding wizard. One row per account,
+    created lazily on first read (no row = wizard not yet completed, so a
+    brand-new account shows it on first login -- same "no row = defaults"
+    pattern as PhpIniOverride/AccountResourceLimits). `skipped`
+    distinguishes "clicked through all three steps" from "dismissed it" --
+    same completed-once-only outcome either way, kept for operator
+    visibility, never re-triggers the wizard."""
+
+    __tablename__ = "onboarding_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), unique=True, index=True)
+    completed: Mapped[bool] = mapped_column(default=False)
+    skipped: Mapped[bool] = mapped_column(default=False)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class BrandingSettings(Base):
     """Run A feature 3: white-label branding. Single-row (id=1) shape, same
     convention as NotificationSettings/WafSettings -- there is genuinely
