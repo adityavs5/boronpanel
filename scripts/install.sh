@@ -38,6 +38,12 @@ readonly REQUIRED_PORTS=(9443 8081 80 443 21 25 587 143 993 3306 53)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
 
+# Panel version -- read from version.py, the repo-wide single source of truth
+# (scripts/release.sh bumps it; the API and SPA display the same value).
+FORGEHOST_VERSION="$(sed -n 's/^FORGEHOST_VERSION = "\(.*\)"$/\1/p' "${REPO_ROOT}/version.py" 2>/dev/null || true)"
+FORGEHOST_VERSION="${FORGEHOST_VERSION:-unknown}"
+readonly FORGEHOST_VERSION
+
 # --- runtime flags -----------------------------------------------------------
 
 DRY_RUN=false
@@ -730,7 +736,12 @@ parse_args() {
 main() {
     parse_args "$@"
 
-    printf '%s\n' "${C_BOLD}Forgehost installer${C_RESET}${DRY_RUN:+ ${C_YELLOW}(dry-run)${C_RESET}}"
+    # NB: this line previously used ${DRY_RUN:+...}, which expands whenever
+    # DRY_RUN is non-empty -- and it's always the non-empty string
+    # "true"/"false", so every run printed "(dry-run)". Fixed to a real test.
+    local dry_marker=""
+    $DRY_RUN && dry_marker=" ${C_YELLOW}(dry-run)${C_RESET}"
+    printf '%s\n' "${C_BOLD}Forgehost installer v${FORGEHOST_VERSION}${C_RESET}${dry_marker}"
     _logline "=== install run start (dry_run=${DRY_RUN} uninstall=${UNINSTALL}) ==="
 
     if $UNINSTALL; then
@@ -759,7 +770,7 @@ main() {
 
     summary
     if [[ "$STEP_FAIL" -eq 0 ]]; then
-        info "Done. Panel: https://${PANEL_DOMAIN:-${SERVER_IP:-<server-ip>}}:9443/login"
+        info "Done. Forgehost v${FORGEHOST_VERSION} -- Panel: https://${PANEL_DOMAIN:-${SERVER_IP:-<server-ip>}}:9443/login"
         $DRY_RUN && info "This was a dry-run -- nothing was changed."
     else
         die "${STEP_FAIL} step(s) failed -- see ${INSTALL_LOG}"

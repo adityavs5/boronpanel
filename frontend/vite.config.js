@@ -1,6 +1,23 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+import fs from 'fs'
+
+// The panel version's single source of truth is version.py at the repo root
+// (see that file's docstring). Read it at build time so the bundle -- built
+// from the same tree scripts/release.sh tarballs -- always carries the
+// matching version for pre-auth display (the login page can't call the
+// authenticated /api/v1/version).
+function readForgehostVersion() {
+  try {
+    const text = fs.readFileSync(path.resolve(__dirname, '../version.py'), 'utf8')
+    const m = text.match(/FORGEHOST_VERSION\s*=\s*"([^"]+)"/)
+    if (m) return m[1]
+  } catch {
+    /* fall through */
+  }
+  return '0.0.0-dev'
+}
 
 // Build output lands in ../static/dist so FastAPI (which already mounts
 // /static) serves the SPA bundle; `base` makes every asset URL absolute under
@@ -9,6 +26,9 @@ import path from 'path'
 export default defineConfig({
   plugins: [react()],
   base: '/static/dist/',
+  define: {
+    __FORGEHOST_VERSION__: JSON.stringify(readForgehostVersion()),
+  },
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },
   },

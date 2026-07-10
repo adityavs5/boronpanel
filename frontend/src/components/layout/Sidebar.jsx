@@ -8,8 +8,8 @@ import { useAuth } from '@/store/auth'
 import { customerNav, adminNav } from '@/config/nav'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { ProgressBar } from '@/components/ui/Progress'
-import { APP_VERSION } from '@/config/constants'
 import { useBranding } from '@/hooks/useBranding'
+import { useVersion } from '@/hooks/useVersion'
 
 function NavItem({ item, collapsed }) {
   const Icon = item.icon
@@ -102,6 +102,7 @@ export function Sidebar() {
   const isAdmin = useAuth((s) => s.role === 'admin')
   const nav = isAdmin ? adminNav : customerNav
   const { panelName, logoUrl } = useBranding()
+  const version = useVersion()
 
   return (
     <aside
@@ -123,7 +124,7 @@ export function Sidebar() {
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold leading-tight text-white">{panelName}</div>
             <div className="text-[11px] leading-tight text-sidebar-muted">
-              {isAdmin ? 'Admin' : 'Customer'} · {APP_VERSION}
+              {isAdmin ? 'Admin' : 'Customer'}
             </div>
           </div>
         )}
@@ -157,6 +158,13 @@ export function Sidebar() {
           {collapsed ? <PanelLeftOpen className="h-[18px] w-[18px]" /> : <PanelLeftClose className="h-[18px] w-[18px]" />}
           {!collapsed && <span>Collapse</span>}
         </button>
+        {/* Version footer -- runtime version from the API (build-time value
+            as fallback). Hidden when collapsed, like the Collapse label. */}
+        {!collapsed && (
+          <div className="px-3 pb-1 text-center text-[11px] text-gray-500">
+            {panelName} {version}
+          </div>
+        )}
       </div>
     </aside>
   )

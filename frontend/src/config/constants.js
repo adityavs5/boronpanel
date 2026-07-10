@@ -1,4 +1,8 @@
-export const APP_VERSION = 'v1.0'
+// Injected by vite.config.js from version.py (the repo-wide single source of
+// truth) at build time; the fallback only exists for tooling that evaluates
+// this module outside a Vite build.
+export const APP_VERSION =
+  typeof __FORGEHOST_VERSION__ !== 'undefined' ? `v${__FORGEHOST_VERSION__}` : 'v0.0.0-dev'
 
 // PHP versions offered in switchers. Must match shared/config.py's
 // php_versions (the backend rejects anything else) -- this list previously
