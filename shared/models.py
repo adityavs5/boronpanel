@@ -1569,3 +1569,58 @@ class BrandingSettings(Base):
     support_email: Mapped[str | None] = mapped_column(String(253), nullable=True)
     support_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class UpdateState(Base):
+    """Panel update system: single-row (id=1) cache of the last GitHub
+    release check, same singleton convention as MonitoringSettings/
+    BrandingSettings. `update.check` serves from this row while it is
+    fresher than `settings.update_check_cache_seconds` (goal: cache 1hr)
+    so admin-dashboard polling never hammers the GitHub API.
+    `last_notified_version` makes the daily cron's admin email fire once
+    per distinct new release, not once per day forever."""
+
+    __tablename__ = "update_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    latest_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    changelog_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    tarball_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    checksum_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    last_notified_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class UpdateJob(Base):
+    """Panel update system: one row per update/rollback attempt -- both the
+    live job the admin UI polls AND the permanent update-history record
+    (goal 6: from/to version, timestamp, success/fail, duration, who).
+    Same async-job shape as CpanelImportJob; `steps` is the incremental
+    per-step log mirrored to /var/log/forgehost/updates.log.
+
+    status: pending -> running -> finalizing -> completed | failed.
+    `finalizing` is update-specific: the daemon has staged everything and
+    handed off to the detached stdlib-only finalizer (which survives the
+    daemon's own restart) for symlink swap + service restarts + health
+    check; the finalizer writes the terminal status. `rolled_back` records
+    whether the finalizer had to swap back after a failed health check.
+    old_dir/new_dir are the symlink targets involved -- old_dir is what a
+    later manual rollback returns to."""
+
+    __tablename__ = "update_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), default="update")  # update | rollback
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    from_version: Mapped[str] = mapped_column(String(32))
+    to_version: Mapped[str] = mapped_column(String(32))
+    initiated_by: Mapped[str] = mapped_column(String(64))
+    progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    steps: Mapped[list] = mapped_column(JSON, default=list)  # [{step, status, detail, at}]
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    rolled_back: Mapped[bool] = mapped_column(default=False)
+    old_dir: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    new_dir: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

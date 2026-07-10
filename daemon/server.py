@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, disktree, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, health, identity_admin, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, disktree, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, health, identity_admin, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -400,6 +400,17 @@ OP_TABLE = {
     "monitoring.settings.set": monitoring.set_settings,
     "monitoring.history": monitoring.get_history,
     "monitoring.check": monitoring.check_services,
+    # Panel update system: check/apply/rollback panel releases. start and
+    # rollback are admin-only at the API layer (require_admin + conditional
+    # 2FA confirmation before the RPC is ever sent -- ARCHITECTURE.md SS2's
+    # trust model: authorization happens in forgehost-api).
+    "update.check": updates.check,
+    "update.status": updates.get_status,
+    "update.start": updates.start_update,
+    "update.rollback": updates.start_rollback,
+    "update.history": updates.get_history,
+    "update.log": updates.get_log,
+    "update.cleanup": updates.cleanup_old_versions,
 }
 
 # Security audit finding F7: disktree.get/top_files and usage.get run real
@@ -423,6 +434,12 @@ REPORTING_OPS = {
     # Run A feature 5: history is dashboard-polled; check shells out 7x
     # systemctl -- same isolation reasoning as health/services below.
     "monitoring.history", "monitoring.check",
+    # Panel update system: check/status may do an outbound GitHub API call
+    # (1h cache expiry) and status is dashboard-polled -- same isolation
+    # reasoning as cf.health. start/rollback return instantly (their work
+    # runs on updates.py's own single-worker executor) so they stay off
+    # the reporting pool.
+    "update.check", "update.status", "update.history", "update.log",
     "services.status", "services.list",
     "mailqueue.list",
     "firewall.list",

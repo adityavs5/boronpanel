@@ -1,0 +1,8 @@
+# Forgehost daily panel-update check (panel update system).
+# Install to /etc/cron.d/forgehost-update (root:root, 0644):
+#   install -m 0644 deploy/forgehost-update.cron /etc/cron.d/forgehost-update
+#
+# Once a day: force-refresh the GitHub releases check, email the admin if a
+# new release appeared (once per release, not once per day), and prune
+# /opt/forgehost-X.Y.Z version dirs older than the rollback window (3 days).
+25 5 * * * root /opt/forgehost/scripts/update_check.py >> /var/log/forgehost/update-check.log 2>&1

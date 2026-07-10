@@ -569,6 +569,8 @@ install_cron_and_logrotate() {
     run install -m 644 "${DEST}/deploy/forgehost-monitoring.cron" /etc/cron.d/forgehost-monitoring
     # Cloudflare edge-range + zone-activation polls.
     run install -m 644 "${DEST}/deploy/forgehost-cloudflare.cron" /etc/cron.d/forgehost-cloudflare
+    # Panel update system: daily release check + admin email + old-version pruning.
+    run install -m 644 "${DEST}/deploy/forgehost-update.cron" /etc/cron.d/forgehost-update
     # The remaining infrastructure crons (usage, backups, ssl expiry, pma
     # tokens, usage alerts) -- root-owned, same trust level as the daemon.
     write_file /etc/cron.d/forgehost-jobs 644 <<'EOF'
@@ -685,7 +687,7 @@ uninstall() {
     run_sh "systemctl disable --now forgehost-api forgehost-provisiond 2>/dev/null || true"
     run_sh "rm -f /etc/systemd/system/forgehost-api.service /etc/systemd/system/forgehost-provisiond.service"
     run systemctl daemon-reload
-    run_sh "rm -f /etc/cron.d/forgehost-monitoring /etc/cron.d/forgehost-cloudflare /etc/cron.d/forgehost-jobs"
+    run_sh "rm -f /etc/cron.d/forgehost-monitoring /etc/cron.d/forgehost-cloudflare /etc/cron.d/forgehost-update /etc/cron.d/forgehost-jobs"
     run_sh "rm -f /etc/logrotate.d/forgehost-api"
     run_sh "rm -rf '${DEST}'"
     run_sh "rm -rf '${CONF_DIR}'"

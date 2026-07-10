@@ -313,6 +313,28 @@ class Settings:
     filebrowser_header: str = "X-Fb-User"
     filebrowser_brand: str = "Forgehost Files"
 
+    # Panel update system. update_github_repo ("owner/repo") is the ONLY
+    # place release downloads can come from -- empty means update checks are
+    # unconfigured and the whole feature reports "not configured" rather
+    # than guessing a repo. The tarball URL itself is never operator- or
+    # request-supplied: it must be
+    # https://github.com/{update_github_repo}/releases/download/... .
+    update_github_repo: str = ""
+    update_check_cache_seconds: int = 3600  # goal: cache update.check 1hr
+    update_download_dir: str = "/var/lib/forgehost/update-staging"
+    update_max_download_bytes: int = 500 * 1024 * 1024  # 500MB (releases are ~4MB)
+    update_backup_dir: str = "/var/backups/forgehost"
+    # Versioned install dirs live at {update_versions_root}/forgehost-X.Y.Z
+    # with {update_live_dir} an atomically-swapped symlink to the active one.
+    update_versions_root: str = "/opt"
+    update_live_dir: str = "/opt/forgehost"
+    update_keep_old_days: int = 3  # rollback window; older version dirs pruned
+    # Pre-flight "abort if test suite failing" (goal 4a). Runs the LIVE
+    # install's own pytest suite before touching anything -- slow (~13min)
+    # but explicitly required; disable only via forgehost.toml.
+    update_preflight_tests: bool = True
+    update_preflight_min_free_mb: int = 2048
+
     secrets: dict[str, str] = field(default_factory=dict)
 
     @property
