@@ -8,13 +8,22 @@ check first.
 
 ---
 
-## Panel Update System (2026-07-10): version tracking, release pipeline, update check, one-click update, rollback, history, admin UI — COMPLETE, committed, NOT deployed
+## Panel Update System (2026-07-10): version tracking, release pipeline, update check, one-click update, rollback, history, admin UI — COMPLETE, committed, DEPLOYED (user-approved same day)
 
 Built on top of Run A per the update-system goal. Seven checkpoints:
 `docs/CHECKPOINT-update-{1..5,7}-*.md` (+ RELEASING.md). Full suite green
-after every feature; ~90 new tests. **Not deployed to `/opt/forgehost`**
-(operator-gated, as ever) — everything verified by tests, a sandboxed
-finalizer, and the fixture-mode puppeteer rig.
+after every feature; ~90 new tests (**1632 total**, up from 1556).
+**Deployed to `/opt/forgehost` 2026-07-10 with user approval** (this run
+also deploys Run A's 9 features, which were pending deploy): deploy.sh +
+restart of both panel units, `NRestarts=0` after, 10/10 live post-deploy
+checks green — services active, /healthz 200, /api/v1/version and
+/admin/update/status registered + auth-gated (401 anonymous), a real
+`update.status` RPC over the production socket answered
+`configured=False current=1.0.0 symlink_layout=False`,
+`/etc/cron.d/forgehost-update` installed and its script runs cleanly in
+the unconfigured state, SPA Updates chunk served. `release.sh --dry-run`
+passed in full (1632-test suite + npm build + tarball self-verification,
+exit 0) as the final pre-deploy gate.
 
 1. **Version tracking** (`bde46a7`) — `version.py` at the repo root is the
    single source of truth (`FORGEHOST_VERSION = "1.0.0"`). Shown in the
@@ -77,17 +86,20 @@ touches `/opt/forgehost` (goal rule). `release.sh --dry-run` (full: suite
 + npm build + artifacts + self-verify) run as the final gate — see the
 run recorded below.
 
-**Deploy notes for the operator:** (1) deploy via `scripts/deploy.sh` +
-restart both units as usual — the update system itself only activates
-once `update_github_repo` is set in forgehost.toml and a GitHub repo with
-releases exists (neither is true today: no remote, no gh, repo field
-unset); (2) install the new cron:
-`install -m 0644 /opt/forgehost/deploy/forgehost-update.cron
-/etc/cron.d/forgehost-update`; (3) the FIRST one-click update converts
-`/opt/forgehost` to the symlink layout automatically (deploy.sh keeps
-working either way — rsync follows the symlink); (4) a real end-to-end
-update+rollback on a disposable box (or against a test release) is the
-one honestly-open live check, impossible here without a GitHub repo.
+**Operator notes (deploy done; activation still pending):** (1) the
+update system is deployed but DORMANT until `update_github_repo =
+"owner/repo"` is set in `/etc/forgehost/forgehost.toml` (+ daemon
+restart) and a GitHub repo with releases exists — neither exists today
+(no git remote, no gh on this box); the admin Updates page shows the
+setup hint until then. (2) `/etc/cron.d/forgehost-update` is installed;
+until configured it logs "not configured -- nothing to do" daily.
+(3) the FIRST one-click update converts `/opt/forgehost` from today's
+plain directory to the versioned-symlink layout automatically (deploy.sh
+keeps working either way — rsync follows the symlink). (4) a real
+end-to-end update+rollback against a real GitHub release remains the one
+honestly-open live check, impossible here without a repo — the /tmp
+finalizer sandbox tests are the stand-in; run the first real update on a
+disposable box if possible.
 
 ---
 
