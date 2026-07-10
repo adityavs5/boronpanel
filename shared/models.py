@@ -1482,6 +1482,54 @@ class Plan(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class MonitoringSettings(Base):
+    """Run A feature 5: single-row (id=1) service-monitoring config, same
+    convention as NotificationSettings/BrandingSettings. The alert SENDER
+    is deliberately not duplicated here -- it reuses
+    NotificationSettings.sender_address (one outbound-mail identity to
+    configure, not two that drift); only the admin RECIPIENT and the
+    re-alert cooldown are monitoring-specific."""
+
+    __tablename__ = "monitoring_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    admin_email: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    cooldown_minutes: Mapped[int] = mapped_column(Integer, default=30)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ServiceCheck(Base):
+    """Run A feature 5: one row per (service, monitoring pass) -- the 24h
+    uptime history the admin UI draws. Pruned at 48h by the check pass
+    itself, same explicit-retention reasoning as HealthSnapshot (no
+    natural cleanup event)."""
+
+    __tablename__ = "service_checks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    service: Mapped[str] = mapped_column(String(32), index=True)
+    active: Mapped[bool] = mapped_column(default=True)
+    checked_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class MonitoringAlertState(Base):
+    """Run A feature 5: per-service alert bookkeeping -- current down
+    state, when it went down, and when an alert was last SUCCESSFULLY
+    handed to the MTA (`last_alert_sent_at` only advances on a real SMTP
+    handoff; a failed send retries next pass instead of being silently
+    cooled down -- load-bearing when the down service is Postfix itself,
+    see daemon/monitoring.py's module docstring)."""
+
+    __tablename__ = "monitoring_alert_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    service: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    is_down: Mapped[bool] = mapped_column(default=False)
+    down_since: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_alert_sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class OnboardingState(Base):
     """Run A feature 4: client onboarding wizard. One row per account,
     created lazily on first read (no row = wizard not yet completed, so a

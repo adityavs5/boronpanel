@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, disktree, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, health, identity_admin, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, disktree, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, health, identity_admin, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -395,6 +395,11 @@ OP_TABLE = {
     # Run A feature 4: client onboarding wizard (once-only gate)
     "onboarding.get": onboarding.get_onboarding,
     "onboarding.set": onboarding.set_onboarding,
+    # Run A feature 5: service health monitoring + admin alert emails
+    "monitoring.settings.get": monitoring.get_settings,
+    "monitoring.settings.set": monitoring.set_settings,
+    "monitoring.history": monitoring.get_history,
+    "monitoring.check": monitoring.check_services,
 }
 
 # Security audit finding F7: disktree.get/top_files and usage.get run real
@@ -415,6 +420,9 @@ REPORTING_OPS = {
     # live system state -- same isolation reasoning as disktree/usage
     # above, just for the admin surface instead of the customer one.
     "health.get", "health.history",
+    # Run A feature 5: history is dashboard-polled; check shells out 7x
+    # systemctl -- same isolation reasoning as health/services below.
+    "monitoring.history", "monitoring.check",
     "services.status", "services.list",
     "mailqueue.list",
     "firewall.list",

@@ -22,7 +22,7 @@ from shared.config import require_secure_session_secret, settings
 from shared.db import read_session
 from shared.models import IpWhitelistEntry
 
-from api.routers import account_backups, accounts, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, devtools, disktree, dns, domains, email, email_extras, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, impersonation, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, nameservers, nodeapps, notes, notifications, onboarding, parked, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, slowquery, sshkeys, ssl_router, staging, terminal, tokens, twofactor, usage, usage_alerts, waf, webhooks, wordpress
+from api.routers import account_backups, accounts, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, devtools, disktree, dns, domains, email, email_extras, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, impersonation, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, monitoring, nameservers, nodeapps, notes, notifications, onboarding, parked, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, slowquery, sshkeys, ssl_router, staging, terminal, tokens, twofactor, usage, usage_alerts, waf, webhooks, wordpress
 
 
 @asynccontextmanager
@@ -201,6 +201,8 @@ app.include_router(branding.api_router)
 app.include_router(branding.admin_api_router)
 # Run A feature 4: client onboarding wizard (once-only, account-scoped).
 app.include_router(onboarding.api_router)
+# Run A feature 5: service health monitoring (admin-only).
+app.include_router(monitoring.api_router)
 
 
 @app.get("/")

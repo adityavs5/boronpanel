@@ -1,0 +1,8 @@
+# Forgehost service health monitoring (Run A feature 5).
+# Install to /etc/cron.d/forgehost-monitoring (root:root, 0644):
+#   install -m 0644 deploy/forgehost-monitoring.cron /etc/cron.d/forgehost-monitoring
+#
+# Every 5 minutes: systemctl is-active per monitored service (OLS, Postfix,
+# Dovecot, PowerDNS, MariaDB, Pure-FTPd, fail2ban), history row each, admin
+# alert email on down + recovery (30 min re-alert cooldown per service).
+*/5 * * * * root /opt/forgehost/scripts/monitoring_check.py >> /var/log/forgehost/monitoring-check.log 2>&1

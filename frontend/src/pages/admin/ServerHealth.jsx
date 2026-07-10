@@ -1,16 +1,21 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
-import { Cpu, MemoryStick, HardDrive, Activity, ArrowDownUp, Clock, Cloud } from 'lucide-react'
-import { get } from '@/lib/api'
+import { Cpu, MemoryStick, HardDrive, Activity, ArrowDownUp, Clock, Cloud, BellRing, Save } from 'lucide-react'
+import { get, patch } from '@/lib/api'
 import { formatBytes, formatDuration, formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Badge } from '@/components/ui/Badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card'
 import { ProgressBar } from '@/components/ui/Progress'
+import { Button } from '@/components/ui/Button'
+import { Input, FormField } from '@/components/ui/Input'
+import { Switch } from '@/components/ui/Toggle'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/States'
+import { toast } from '@/components/ui/Toast'
 
 function Gauge({ icon: Icon, label, pct, detail }) {
   const p = Math.round(pct ?? 0)
@@ -118,6 +123,130 @@ function CloudflareCard() {
   )
 }
 
+// Run A feature 5: per-service uptime sparkline drawn as inline SVG (the
+// series is 0/1 up-down data -- a step-line, not an area chart).
+function UptimeSparkline({ series }) {
+  if (!series?.length) return <span className="text-xs text-muted-foreground">No checks yet</span>
+  const w = 220, hgt = 24
+  const step = w / Math.max(series.length - 1, 1)
+  const points = series.map(([, up], i) => `${(i * step).toFixed(1)},${up ? 3 : hgt - 3}`).join(' ')
+  return (
+    <svg width={w} height={hgt} className="shrink-0" aria-hidden>
+      <polyline points={points} fill="none" stroke="#1FBED6" strokeWidth="1.5" />
+    </svg>
+  )
+}
+
+function MonitoringCard() {
+  const qc = useQueryClient()
+  const settings = useQuery({ queryKey: ['monitoring-settings'], queryFn: () => get('/api/v1/admin/monitoring/settings') })
+  const history = useQuery({
+    queryKey: ['monitoring-history'],
+    queryFn: () => get('/api/v1/admin/monitoring/history?hours=24'),
+    refetchInterval: 60_000,
+  })
+  const [form, setForm] = useState(null)
+  const active = form ?? {
+    admin_email: settings.data?.admin_email || '',
+    cooldown_minutes: settings.data?.cooldown_minutes ?? 30,
+    enabled: settings.data?.enabled ?? true,
+  }
+
+  const saveMut = useMutation({
+    mutationFn: (body) => patch('/api/v1/admin/monitoring/settings', body),
+    onSuccess: () => {
+      toast.success('Monitoring settings saved')
+      qc.invalidateQueries({ queryKey: ['monitoring-settings'] })
+      setForm(null)
+    },
+    onError: (e) => toast.error('Could not save settings', e.message),
+  })
+
+  const services = history.data?.services || []
+
+  return (
+    <Card className="mt-6">
+      <CardHeader>
+        <div>
+          <CardTitle className="flex items-center gap-2"><BellRing className="h-4 w-4" /> Service monitoring</CardTitle>
+          <CardDescription>
+            Checked every 5 minutes. The admin address gets an email when a service goes down and when it recovers
+            (re-alerts throttled per service).
+          </CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {/* Settings row */}
+        <div className="flex flex-wrap items-end gap-3">
+          <FormField label="Alert email" className="min-w-56 flex-1">
+            <Input
+              type="email"
+              placeholder="admin@example.com"
+              value={active.admin_email}
+              onChange={(e) => setForm({ ...active, admin_email: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Cooldown (min)" className="w-32">
+            <Input
+              type="number" min="1" max="1440"
+              value={active.cooldown_minutes}
+              onChange={(e) => setForm({ ...active, cooldown_minutes: e.target.value })}
+            />
+          </FormField>
+          <div className="flex h-9 items-center gap-2">
+            <Switch checked={active.enabled} onCheckedChange={(v) => setForm({ ...active, enabled: v })} />
+            <span className="text-sm text-muted-foreground">Alerts</span>
+          </div>
+          <Button
+            loading={saveMut.isPending}
+            onClick={() => saveMut.mutate({
+              admin_email: active.admin_email || null,
+              cooldown_minutes: Number(active.cooldown_minutes),
+              enabled: active.enabled,
+            })}
+          >
+            <Save className="h-4 w-4" /> Save
+          </Button>
+        </div>
+
+        {/* Per-service 24h uptime */}
+        {history.isError ? (
+          <ErrorState error={history.error} onRetry={history.refetch} />
+        ) : (
+          <div className="space-y-2">
+            {services.map((s) => (
+              <div key={s.service} className="flex flex-wrap items-center gap-3 rounded-btn border border-border px-3 py-2">
+                <div className="w-24 shrink-0">
+                  <div className="text-sm font-medium text-foreground">{s.service}</div>
+                  <div className="text-[11px] text-muted-foreground">{s.unit}</div>
+                </div>
+                {s.currently_down
+                  ? <Badge variant="danger">Down{s.down_since ? ` since ${formatDate(s.down_since)}` : ''}</Badge>
+                  : <Badge variant="success">Up</Badge>}
+                <div className="flex-1" />
+                <UptimeSparkline series={s.series} />
+                <div className="w-32 text-right">
+                  <div className="text-sm font-semibold tabular-nums text-foreground">
+                    {s.uptime_pct != null ? `${s.uptime_pct}%` : '—'}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {s.last_alert_sent_at ? `alerted ${formatDate(s.last_alert_sent_at)}` : 'no alerts sent'}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {!services.length && !history.isLoading && (
+              <p className="text-sm text-muted-foreground">
+                No checks recorded yet — the */5 cron (deploy/forgehost-monitoring.cron) hasn't run.
+              </p>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function ServerHealth() {
   const health = useQuery({ queryKey: ['health'], queryFn: () => get('/api/v1/health'), refetchInterval: 10_000 })
   const history = useQuery({ queryKey: ['health-history'], queryFn: () => get('/api/v1/health/history?hours=24') })
@@ -181,6 +310,8 @@ export default function ServerHealth() {
           </CardContent>
         </Card>
       )}
+
+      <MonitoringCard />
 
       <CloudflareCard />
 
