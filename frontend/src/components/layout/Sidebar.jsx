@@ -10,13 +10,25 @@ import { Tooltip } from '@/components/ui/Tooltip'
 import { ProgressBar } from '@/components/ui/Progress'
 import { useBranding } from '@/hooks/useBranding'
 import { useVersion } from '@/hooks/useVersion'
+import { useUpdateStatus } from '@/hooks/useUpdateStatus'
 
-function NavItem({ item, collapsed }) {
+function NavItem({ item, collapsed, showDot = false }) {
   const Icon = item.icon
   const baseClass = cn(
     'group flex items-center gap-3 rounded-btn px-3 py-2 text-sm font-medium transition-colors',
     collapsed && 'justify-center px-0',
     'text-sidebar-muted hover:bg-sidebar-hover hover:text-white',
+  )
+  // Update-available marker: a small teal dot after the label (or on the
+  // icon corner when collapsed).
+  const dot = showDot && (
+    <span
+      className={cn(
+        'h-1.5 w-1.5 shrink-0 rounded-full bg-accent',
+        collapsed && 'absolute right-1 top-1',
+      )}
+      aria-label="update available"
+    />
   )
   // An `external` item (e.g. the server-rendered API docs at /api/docs) is a
   // real page navigation, not a client route -- render a plain anchor so the
@@ -31,7 +43,7 @@ function NavItem({ item, collapsed }) {
       to={item.to}
       className={({ isActive }) =>
         cn(
-          'group flex items-center gap-3 rounded-btn px-3 py-2 text-sm font-medium transition-colors',
+          'group relative flex items-center gap-3 rounded-btn px-3 py-2 text-sm font-medium transition-colors',
           collapsed && 'justify-center px-0',
           isActive
             ? 'bg-accent/15 text-accent-300'
@@ -41,6 +53,7 @@ function NavItem({ item, collapsed }) {
     >
       <Icon className="h-[18px] w-[18px] shrink-0" />
       {!collapsed && <span className="truncate">{item.label}</span>}
+      {dot}
     </NavLink>
   )
   return collapsed ? (
@@ -103,6 +116,9 @@ export function Sidebar() {
   const nav = isAdmin ? adminNav : customerNav
   const { panelName, logoUrl } = useBranding()
   const version = useVersion()
+  // Disabled (enabled: isAdmin) inside the hook for customers.
+  const { data: updateStatus } = useUpdateStatus()
+  const updateAvailable = Boolean(updateStatus?.update_available)
 
   return (
     <aside
@@ -140,7 +156,12 @@ export function Sidebar() {
               </div>
             )
           ) : (
-            <NavItem key={item.to} item={item} collapsed={collapsed} />
+            <NavItem
+              key={item.to}
+              item={item}
+              collapsed={collapsed}
+              showDot={item.to === '/updates' && updateAvailable}
+            />
           ),
         )}
       </nav>

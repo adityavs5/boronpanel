@@ -808,3 +808,33 @@ cat > /etc/cron.d/forgehost-usage-alerts << 'EOF'
 EOF
 chmod 644 /etc/cron.d/forgehost-usage-alerts
 ```
+
+### 23. Panel update system
+
+Forgehost updates itself from **GitHub release tarballs** (never `git
+pull` on production — see `docs/RELEASING.md` for how releases are cut
+with `scripts/release.sh`). Point the panel at the releases repo in
+`/etc/forgehost/forgehost.toml`:
+
+```toml
+update_github_repo = "owner/forgehost"
+```
+
+then install the daily check (release poll + admin email once per new
+release + pruning of version dirs older than the 3-day rollback window):
+
+```bash
+install -m 0644 /opt/forgehost/deploy/forgehost-update.cron /etc/cron.d/forgehost-update
+```
+
+The admin panel's **Updates** page shows current/latest version, applies
+updates one-click (test-suite pre-flight, DB + `/etc/forgehost` backup to
+`/var/backups/forgehost/`, SHA256-verified download, staged extraction to
+`/opt/forgehost-X.Y.Z`, atomic symlink swap of `/opt/forgehost`, health
+check with automatic swap-back on failure), and can roll back to the
+previous version for 3 days. Requires a fresh 2FA code when the admin has
+TOTP enabled. Every step is logged to `/var/log/forgehost/updates.log`.
+Note: the first update converts `/opt/forgehost` from a plain directory
+to the versioned-symlink layout automatically. Only the two panel
+services restart during an update — OpenLiteSpeed and hosted sites are
+never touched.

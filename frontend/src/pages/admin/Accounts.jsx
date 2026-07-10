@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Users, ShieldCheck, Play } from 'lucide-react'
+import { Plus, Users, ShieldCheck, Play, ArrowUpCircle } from 'lucide-react'
+import { useUpdateStatus } from '@/hooks/useUpdateStatus'
+import { useVersion } from '@/hooks/useVersion'
 import { get, post } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -101,6 +103,9 @@ export default function Accounts() {
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState({ username: '', primary_domain: '', plan_id: '' })
   const [selected, setSelected] = useState(() => new Set())
+  // Panel update system: version in the dashboard header + update banner.
+  const version = useVersion()
+  const { data: updateStatus } = useUpdateStatus()
 
   // Run A feature 1: optional plan applied atomically right after creation.
   const { data: plansData } = useQuery({
@@ -234,7 +239,11 @@ export default function Accounts() {
 
   return (
     <div>
-      <PageHeader title="Accounts" description="Manage all hosting accounts on this server." icon={Users}>
+      <PageHeader
+        title="Accounts"
+        description={`Manage all hosting accounts on this server. Forgehost ${version}.`}
+        icon={Users}
+      >
         <Button variant="secondary" onClick={() => setNsOpen(true)}>
           <ShieldCheck className="h-4 w-4" /> Namespace: bulk-enable
         </Button>
@@ -242,6 +251,23 @@ export default function Accounts() {
           <Plus className="h-4 w-4" /> Create account
         </Button>
       </PageHeader>
+
+      {updateStatus?.update_available && (
+        // Panel update system: dashboard banner. Teal, informational -- the
+        // actual apply flow (2FA confirm, progress) lives on /updates.
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-card border border-accent/40 bg-accent-50 px-4 py-3 text-sm dark:bg-accent-950/40">
+          <div className="flex items-center gap-2.5 text-accent-700 dark:text-accent-300">
+            <ArrowUpCircle className="h-5 w-5 shrink-0" />
+            <span>
+              <span className="font-semibold">Forgehost v{updateStatus.latest_version} is available</span>
+              {' '}(you are on v{updateStatus.current_version}).
+            </span>
+          </div>
+          <Button size="sm" asChild>
+            <Link to="/updates">View update</Link>
+          </Button>
+        </div>
+      )}
 
       {selected.size > 0 && <BulkActionBar selected={selected} clearSelection={clearSelection} />}
 

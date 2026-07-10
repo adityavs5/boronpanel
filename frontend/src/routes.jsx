@@ -55,6 +55,7 @@ const NotificationSettings = lazy(() => import('@/pages/admin/NotificationSettin
 const CpanelImport = lazy(() => import('@/pages/admin/CpanelImport'))
 const ApiTokens = lazy(() => import('@/pages/admin/ApiTokens'))
 const Cloudflare = lazy(() => import('@/pages/admin/Cloudflare'))
+const Updates = lazy(() => import('@/pages/admin/Updates'))
 
 function IndexRedirect() {
   const role = useAuth.getState().role
@@ -135,6 +136,7 @@ export const router = createBrowserRouter(
         { path: 'notifications', element: admin(<NotificationSettings />) },
         { path: 'import/cpanel', element: admin(<CpanelImport />) },
         { path: 'tokens', element: admin(<ApiTokens />) },
+        { path: 'updates', element: admin(<Updates />) },
 
         { path: '*', element: <NotFound /> },
       ]),
