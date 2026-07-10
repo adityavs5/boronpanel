@@ -8,6 +8,74 @@ check first.
 
 ---
 
+## Run A (2026-07-10): 9 features — plans, dark mode, branding, onboarding, monitoring, rate limiting, request logging, API docs, installer — COMPLETE, committed, full suite green (NOT yet deployed)
+
+Nine features built on top of the FileBrowser/Cloudflare baseline (commit
+`d8ca799`). Each has its own `docs/CHECKPOINT-run-a-{1..9}-*.md` with the full
+detail and the honest "still open" notes; this is the synthesis. Full suite
+**1556 passing** (1446 baseline → +110 across the run). **Not yet deployed to
+`/opt/forgehost`** — deploying needs operator approval (`scripts/deploy.sh`);
+everything below is verified by tests + local build + (where noted) the
+puppeteer QA rig, not against the live `:9443` service.
+
+1. **Plan templates** (`96f45e2`) — `Plan` model (named limit presets:
+   cpu/mem/io/pids, disk quota, bandwidth, max DBs/mailboxes/subdomains/FTP/
+   apps, Redis on/off). `plan.apply` atomically writes an account's limit
+   columns + `AccountResourceLimits` in one transaction, then reconciles
+   cgroups/quota/Redis via the modules that already own each. CRUD
+   `/api/v1/admin/plans` + `POST .../accounts/{u}/apply-plan/{id}`; optional
+   `plan_id` on account create. Admin Plans page + AccountDetail apply card.
+   Additive columns registered for existing installs.
+2. **Dark mode overhaul** (`625688e`) — token-level flat redesign: sidebar
+   gray-950, cards gray-800 on gray-900, gray-700 borders, white headings /
+   gray-300 body / gray-500 secondary, recessed gray-900 inputs, 6px/4px
+   radius, all shadows suppressed in dark, backdrop-blur removed from both
+   modal overlays. Teal `#1FBED6` kept; light mode untouched. QA-rig verified.
+3. **White-label branding** (`ee210a7`) — `BrandingSettings` (panel name, logo,
+   favicon, support email/URL). Uploads go through the daemon (unprivileged API
+   never writes `/etc/forgehost/branding`); PNG/ICO by magic bytes, SVG by root
+   element with `<script>`/`on*=`/`javascript:` rejected AND served under
+   `script-src 'none'`. Public GET for login/tab; admin-only writes. Applied in
+   sidebar, login, tab title, email notifications.
+4. **Onboarding wizard** (`44db4dc`) — 3-step, once-only, skippable first-login
+   wizard (account details → DNS/NS with copy buttons → quick-start actions).
+   `GET/PATCH /accounts/{u}/onboarding`.
+5. **Health monitoring** (`21a6a54`) — daemon checks the 7-service stack every
+   5min (cron), emails admin on down + recovery with a 30min per-service
+   cooldown; `last_alert_sent_at` advances only on a successful SMTP handoff so
+   a dead Postfix retries and the recovery email carries the outage window.
+   Admin UI 24h uptime sparklines. Verified live end-to-end via a disposable
+   transient systemd unit through the real mail stack.
+6. **Rate limiting** — in-memory exact sliding window (no Redis): login
+   10/5min/IP, password-reset 5/hr/IP, authed 300/min/credential (+ per-IP
+   backstop closing the credential-rotation bypass), unauthed 30/min/IP. 429 +
+   Retry-After, all hits logged.
+7. **Request logging + rotation** — outermost middleware writes one JSON line
+   per request to `api-access.log`, 5xx also to a separate `api-error.log`,
+   unhandled exceptions captured as 500s; never takes the API down. `GET
+   /admin/logs/errors` + admin Error Log page. Logrotate (daily/30/compress);
+   the installer makes the log dir group-writable by `forgehost-api`.
+8. **API docs** — Swagger UI `/api/docs` + ReDoc `/api/redoc`, both
+   admin-session gated, served from **vendored same-origin assets** (no CDN,
+   offline) under a docs-scoped CSP; the public `/openapi.json` is disabled.
+   Schema exported to `docs/api/openapi.json` (214 paths).
+9. **Installer** — `scripts/install.sh`: one-command fresh-Ubuntu-24.04 install,
+   idempotent transcription of README.md's tested runbook. Pre-flight
+   (root/OS/RAM/disk/ports), full package + config + systemd + cron + firewall
+   setup, `--dry-run` and `--uninstall` (keeps hosting data). **shellcheck-clean
+   (0.9.0), `--dry-run` exits 0.** Not run end-to-end for real (needs a genuinely
+   fresh box).
+
+Commits 6-8 are one commit (`ddeef0e`, intertwined in `api/main.py`); feature 9
+is `e94c962`. **Done-when checklist:** plans apply atomically ✅, no glass/blur
+✅, custom name+logo on login+sidebar ✅, wizard on first login ✅, monitoring
+alert delivery ✅ (transient-unit proof; literal stop-Postfix needs operator
+run-book, blocked on prod-disruption approval), 11th login → 429 ✅, access-log
+entries ✅, `/api/docs` loads + all endpoints visible ✅, installer `--dry-run`
++ shellcheck ✅, all tests pass + new tests added ✅.
+
+---
+
 ## File manager v2 (2026-07-09): custom file manager → FileBrowser Quantum — COMPLETE, deployed to production, verified live end-to-end, old manager retired
 
 Replaces Forgehost's custom file manager (`daemon/filemanager.py`,
