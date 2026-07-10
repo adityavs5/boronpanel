@@ -3,7 +3,7 @@ import {
   Server, Network, ShieldCheck, Clock, Upload, GitBranch, KeyRound, Activity,
   Cog, Inbox, Flame, ShieldAlert, ScrollText, ShieldHalf, Gauge, ListChecks,
   Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
-  History, FileCode2, Cloud, Layers, Palette,
+  History, FileCode2, Cloud, Layers, Palette, AlertOctagon, BookOpen,
 } from 'lucide-react'
 
 // Customer nav — resource pages scoped to the signed-in account. Paths are
@@ -54,6 +54,7 @@ export const adminNav = [
   { section: 'Security & Logs' },
   { label: 'Audit Log', to: '/audit-log', icon: ScrollText },
   { label: 'Account Log', to: '/account-log', icon: History },
+  { label: 'Error Log', to: '/error-log', icon: AlertOctagon },
   { label: 'WAF', to: '/waf', icon: ShieldHalf },
   { label: 'Slow Queries', to: '/slow-queries', icon: ListChecks },
   { label: 'API Tokens', to: '/tokens', icon: KeyRound },
@@ -61,6 +62,8 @@ export const adminNav = [
   { label: 'Webhooks', to: '/webhooks', icon: Webhook },
   { label: 'Notifications', to: '/notifications', icon: BellRing },
   { label: 'cPanel Import', to: '/import/cpanel', icon: DownloadCloud },
+  // Server-rendered admin API docs (Swagger UI). external → real navigation.
+  { label: 'API Docs', to: '/api/docs', icon: BookOpen, external: true },
 ]
 
 export const navIcons = { Cpu, Server, DownloadCloud }

@@ -1,0 +1,28 @@
+# Forgehost API request logs (Run A feature 7).
+# Install to /etc/logrotate.d/forgehost-api (root:root, 0644):
+#   install -m 0644 deploy/forgehost-api.logrotate /etc/logrotate.d/forgehost-api
+#
+# The goal's spec: daily rotation, 30 days retained, compressed, with the
+# 5xx error stream kept as its own separate file.
+#
+# `copytruncate` is deliberate: forgehost-api holds these files open for the
+# life of the process (Python logging.FileHandler), so the usual
+# rename-then-create scheme would leave the daemon writing into the renamed
+# (already-rotated) file. copytruncate copies the current contents to the
+# rotated name and truncates the original in place, so the open fd keeps
+# working with no signal/reopen cooperation from the app. The tradeoff is a
+# small race window (lines written between the copy and the truncate can be
+# lost); for an access log that's an acceptable trade against making the app
+# handle SIGHUP just for logrotate.
+/var/log/forgehost/api-access.log
+/var/log/forgehost/api-error.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root forgehost-api
+    create 0640 forgehost-api forgehost-api
+}

@@ -149,6 +149,10 @@ def get_identity(
         identity = _identity_from_bearer_token(authorization[7:].strip())
         if identity is not None:
             identity.ip = client_ip
+            # Run A feature 7: let the access-log middleware name the user
+            # without repeating this resolution (it runs outside every
+            # dependency, so request.state is populated by the time it reads).
+            request.state.identity = identity
             return identity
         raise HTTPException(status_code=401, detail="invalid or revoked API token")
 
@@ -156,6 +160,7 @@ def get_identity(
         identity = _identity_from_session_cookie(fh_session)
         if identity is not None:
             identity.ip = client_ip
+            request.state.identity = identity
             return identity
 
     raise HTTPException(status_code=401, detail="authentication required")

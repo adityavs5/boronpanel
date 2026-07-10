@@ -13,7 +13,20 @@ import { useBranding } from '@/hooks/useBranding'
 
 function NavItem({ item, collapsed }) {
   const Icon = item.icon
-  const link = (
+  const baseClass = cn(
+    'group flex items-center gap-3 rounded-btn px-3 py-2 text-sm font-medium transition-colors',
+    collapsed && 'justify-center px-0',
+    'text-sidebar-muted hover:bg-sidebar-hover hover:text-white',
+  )
+  // An `external` item (e.g. the server-rendered API docs at /api/docs) is a
+  // real page navigation, not a client route -- render a plain anchor so the
+  // SPA router doesn't try to resolve it and 404.
+  const link = item.external ? (
+    <a href={item.to} target="_blank" rel="noopener noreferrer" className={baseClass}>
+      <Icon className="h-[18px] w-[18px] shrink-0" />
+      {!collapsed && <span className="truncate">{item.label}</span>}
+    </a>
+  ) : (
     <NavLink
       to={item.to}
       className={({ isActive }) =>

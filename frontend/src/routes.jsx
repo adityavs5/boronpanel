@@ -47,6 +47,7 @@ const Fail2ban = lazy(() => import('@/pages/admin/Fail2ban'))
 const IpWhitelist = lazy(() => import('@/pages/admin/IpWhitelist'))
 const AuditLog = lazy(() => import('@/pages/admin/AuditLog'))
 const AccountLog = lazy(() => import('@/pages/admin/AccountLog'))
+const ErrorLog = lazy(() => import('@/pages/admin/ErrorLog'))
 const Waf = lazy(() => import('@/pages/admin/Waf'))
 const SlowQueries = lazy(() => import('@/pages/admin/SlowQueries'))
 const Webhooks = lazy(() => import('@/pages/admin/Webhooks'))
@@ -127,6 +128,7 @@ export const router = createBrowserRouter(
         { path: 'cloudflare', element: admin(<Cloudflare />) },
         { path: 'audit-log', element: admin(<AuditLog />) },
         { path: 'account-log', element: admin(<AccountLog />) },
+        { path: 'error-log', element: admin(<ErrorLog />) },
         { path: 'waf', element: admin(<Waf />) },
         { path: 'slow-queries', element: admin(<SlowQueries />) },
         { path: 'webhooks', element: admin(<Webhooks />) },
