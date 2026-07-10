@@ -251,6 +251,15 @@ class Finalizer:
             healthy = self.health_check() if restarts_ok else False
             if restarts_ok and healthy:
                 self.log("healthcheck", "ok", "api + daemon responding")
+                # Start the rollback-retention clock NOW: a first-ever update
+                # converted a months-old directory into the rollback target,
+                # whose stale mtime would otherwise look prunable to the
+                # cleanup cron tonight (the daemon's cleanup also protects
+                # job-referenced dirs -- this is the second layer).
+                try:
+                    os.utime(a.old_dir, None)
+                except OSError:
+                    pass
                 self.finish_job("completed")
                 self.log("finalize", "ok",
                          f"{'rollback' if a.mode == 'rollback' else 'update'} applied: now running {a.new_dir}")

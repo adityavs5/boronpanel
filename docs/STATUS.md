@@ -8,6 +8,89 @@ check first.
 
 ---
 
+## Panel Update System (2026-07-10): version tracking, release pipeline, update check, one-click update, rollback, history, admin UI — COMPLETE, committed, NOT deployed
+
+Built on top of Run A per the update-system goal. Seven checkpoints:
+`docs/CHECKPOINT-update-{1..5,7}-*.md` (+ RELEASING.md). Full suite green
+after every feature; ~90 new tests. **Not deployed to `/opt/forgehost`**
+(operator-gated, as ever) — everything verified by tests, a sandboxed
+finalizer, and the fixture-mode puppeteer rig.
+
+1. **Version tracking** (`bde46a7`) — `version.py` at the repo root is the
+   single source of truth (`FORGEHOST_VERSION = "1.0.0"`). Shown in the
+   sidebar footer (runtime, via authed `GET /api/v1/version` — deliberately
+   NOT public; the login page uses the build-time value vite bakes in from
+   the same file), the admin dashboard header, and installer output.
+2. **Release pipeline** (`115f0a6`) — `scripts/release.sh` (shellcheck-
+   clean): bump → full pytest → `npm ci` build → stage via **git archive**
+   (tracked files only — secrets/DB/logs can't leak by construction) →
+   `forgehost-X.Y.Z.tar.gz` + `.sha256` → optional GPG sign → self-verify
+   (the same prefix/traversal/essentials checks the updater runs) →
+   `gh release create`. Fully-offline `--dry-run`. `docs/RELEASING.md`.
+   NB: this box has **no git remote and no gh** — publish is guarded,
+   untested live; cut the first real release with `--dry-run` first.
+3. **Update check** (`dd47d27`) — daemon op `update.check` against the
+   GitHub releases API (`update_github_repo` in forgehost.toml — currently
+   UNSET on this box, so the UI shows the setup hint), 1h cache in the
+   `UpdateState` row (failures cached too), strict x.y.z compare, asset
+   URLs must live under `github.com/{repo}/releases/download/`. Daily cron
+   (`deploy/forgehost-update.cron` → `scripts/update_check.py`): forced
+   check + admin email **once per new release** + version-dir pruning.
+4. **One-click update** (same commit) — async job (single-worker):
+   pre-flight (live suite run + disk) → backup (sqlite online-backup +
+   /etc/forgehost → /var/backups/forgehost/pre-update-*) → download
+   (github.com only; every redirect hop re-validated against GitHub-owned
+   hosts — the goal's "no redirects" is unimplementable against real
+   GitHub, deviation documented in CHECKPOINT-update-4) → **SHA256 before
+   extraction** → tarball member validation (traversal/links/devices/bombs
+   rejected; `filter="data"` as second layer) → staged extract to
+   `/opt/forgehost-X.Y.Z` + venv + additive migrations → handoff to
+   **`scripts/update_finalize.py`**, a detached stdlib-only transient
+   systemd unit that does the atomic symlink swap (first run converts the
+   plain-dir layout), restarts ONLY the two panel units, health-checks
+   (API /healthz + a real RPC round trip), and **swaps back automatically
+   on failure** + emails the admin. Every step → job `steps` JSON +
+   `/var/log/forgehost/updates.log`. 2FA confirmation required at the API
+   when the admin has TOTP enabled (first sensitive-action re-auth gate).
+5. **Rollback + history** (same commit) — `update.rollback` swaps back to
+   the previous version dir within the 3-day retention (same finalizer,
+   same 2FA gate); UpdateJob rows are the permanent history
+   (from/to/status/rolled_back/who/duration). Cleanup cron prunes
+   `/opt/forgehost-X.Y.Z` dirs after 3 days behind a strict regex that
+   can never match `/opt/forgehost-nodejs` (tested).
+6. **Admin UI** (`2d8cde0`) — sidebar Updates item + update-available dot,
+   dashboard banner, `/updates` page (version card, Check now, live 8-step
+   progress that rides out the panel restart, failed-job card, history
+   table, rollback button, confirm dialog with TOTP field). SPA rebuilt;
+   QA'd with the puppeteer rig in **fixture mode** (creating a live QA
+   admin was permission-denied, so the rig stubs all API responses — live
+   panel untouched): 3 states × light/dark, zero page errors, screenshots
+   in `docs/ui-screenshots/updates-*`.
+
+**Verification highlights:** the finalizer was exercised FOR REAL in a
+/tmp sandbox (`tests/test_update_finalizer.py`): actual symlink swaps,
+fake systemctl, real local HTTP health endpoint + real RPC-framing socket
+— success, failed-health→automatic swap-back, dir→symlink conversion,
+rollback mode, and non-symlink refusal all pass; terminal job state is
+read back through the daemon's own ORM (datetime interop proven). Never
+touches `/opt/forgehost` (goal rule). `release.sh --dry-run` (full: suite
++ npm build + artifacts + self-verify) run as the final gate — see the
+run recorded below.
+
+**Deploy notes for the operator:** (1) deploy via `scripts/deploy.sh` +
+restart both units as usual — the update system itself only activates
+once `update_github_repo` is set in forgehost.toml and a GitHub repo with
+releases exists (neither is true today: no remote, no gh, repo field
+unset); (2) install the new cron:
+`install -m 0644 /opt/forgehost/deploy/forgehost-update.cron
+/etc/cron.d/forgehost-update`; (3) the FIRST one-click update converts
+`/opt/forgehost` to the symlink layout automatically (deploy.sh keeps
+working either way — rsync follows the symlink); (4) a real end-to-end
+update+rollback on a disposable box (or against a test release) is the
+one honestly-open live check, impossible here without a GitHub repo.
+
+---
+
 ## Run A (2026-07-10): 9 features — plans, dark mode, branding, onboarding, monitoring, rate limiting, request logging, API docs, installer — COMPLETE, committed, full suite green (NOT yet deployed)
 
 Nine features built on top of the FileBrowser/Cloudflare baseline (commit

@@ -36,3 +36,19 @@ rollback_candidate found/none/pruned-dir cases; rollback job queueing;
 live rollback-mode finalizer run in the /tmp sandbox (real swap back to
 the old version dir, ORM-verified terminal state); history ordering +
 duration; API gating incl. the 2FA path on rollback.
+
+## Post-review fix (same day): cleanup could void the rollback window
+
+A fresh-eyes review pass after the feature landed found that
+`cleanup_old_versions` judged prunability by directory **mtime** alone.
+The first-ever update *converts* the months-old `/opt/forgehost`
+directory into the rollback target — whose mtime long predates the
+update — so the very next nightly cleanup would have pruned the rollback
+target immediately, silently reducing "rollback within 3 days" to
+"rollback until 05:25 tomorrow". Fixed with two layers: (1)
+cleanup now also protects any dir referenced (old_dir/new_dir) by a job
+completed within the retention window — a DB-backed guard that doesn't
+depend on filesystem timestamps at all; (2) the finalizer bumps the old
+dir's mtime on success so the timestamp becomes meaningful anyway.
+Regression test: an old-mtime dir referenced by a just-completed job
+survives cleanup; once the job ages past the window it is pruned.

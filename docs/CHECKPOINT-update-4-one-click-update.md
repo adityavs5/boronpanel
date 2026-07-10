@@ -102,6 +102,22 @@ conversion, rollback mode, non-symlink refusal. Never `/opt/forgehost`
 start_update→finalizing over a mocked transport with real extraction and
 asserts the handoff argv, staged tree, and backup contents.
 
+## Post-review fix (same day): stuck-finalizing jobs could block forever
+
+`finalizing` is terminal-state-by-another-process: the detached finalizer
+writes completed/failed directly to the job row. A review pass asked
+"what if the finalizer dies without reporting?" (kill -9, systemd-run
+accepted the unit but the box rebooted mid-swap, ...) — the job would sit
+in `finalizing` forever, and since updates AND rollbacks both refuse to
+start while any job is active, the whole update system would be bricked
+with no admin-facing recovery. Fix: `_active_job` now expires a
+finalizing job whose last recorded step is older than 30 minutes (the
+finalizer's whole window is a few minutes), marking it failed with an
+explicit "check the symlink target and updates.log before retrying"
+error. Staleness is measured from the finalize-handoff step, not job
+start — pre-flight tests alone take ~15 minutes. Regression test covers
+both directions (stale expires and unblocks; fresh keeps blocking).
+
 ## Honestly open
 
 - A real end-to-end update on THIS box (real systemd units, real GitHub

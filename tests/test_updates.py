@@ -667,3 +667,78 @@ def test_full_update_job_pipeline(update_env, monkeypatch):
     assert handoff[handoff.index("--old-dir") + 1] == str(update_env["live_target"])
     # The finalizer copy was staged.
     assert (staged_copies / f"update-finalize-{job_id}.py").exists()
+
+
+def test_cleanup_protects_recent_rollback_target_despite_old_mtime(update_env):
+    """Regression: the first-ever update CONVERTS the months-old
+    /opt/forgehost dir into the rollback target -- its mtime predates the
+    update, so an mtime-only cleanup would prune it the same night and void
+    the 3-day rollback window. Dirs referenced by a recently-completed job
+    must survive regardless of mtime; once the job ages out of the window,
+    normal pruning applies."""
+    from shared.db import write_session
+
+    root = update_env["root"]
+    old_time = time.time() - 300 * 86400  # "converted from a months-old live dir"
+
+    rollback_target = root / "forgehost-0.9.9"
+    rollback_target.mkdir()
+    os.utime(rollback_target, (old_time, old_time))
+
+    job_id = _make_job(status="completed", to_version="1.0.0",
+                       old_dir=str(rollback_target), new_dir=str(update_env["live_target"]))
+    with write_session() as session:
+        job = session.get(UpdateJob, job_id)
+        job.completed_at = job.started_at  # completed just now
+
+    out = updates.cleanup_old_versions()
+    assert rollback_target.exists()
+    assert "forgehost-0.9.9" in out["kept"]
+
+    # Age the job past the retention window -> the dir becomes prunable.
+    import datetime as dtm
+    with write_session() as session:
+        job = session.get(UpdateJob, job_id)
+        job.completed_at = job.started_at - dtm.timedelta(days=10)
+    out2 = updates.cleanup_old_versions()
+    assert not rollback_target.exists()
+    assert "forgehost-0.9.9" in out2["removed"]
+
+
+def test_stale_finalizing_job_expires_and_unblocks(update_env, monkeypatch):
+    """Regression: a finalizer that died without reporting (kill -9 etc.)
+    must not block updates/rollbacks forever. A 'finalizing' job whose last
+    step is older than STALE_FINALIZING_SECONDS is auto-failed; a fresh one
+    keeps blocking."""
+    import datetime as dtm
+
+    from shared.db import write_session
+
+    _mock_github(monkeypatch, version="99.0.0")
+    job_id = _make_job(status="finalizing")
+    stale_at = (updates.utcnow() - dtm.timedelta(seconds=updates.STALE_FINALIZING_SECONDS + 60)).isoformat()
+    with write_session() as session:
+        job = session.get(UpdateJob, job_id)
+        job.steps = [{"step": "finalize", "status": "running", "detail": "", "at": stale_at}]
+
+    # The stale job is expired on read and no longer blocks a new update.
+    monkeypatch.setattr(updates._executor, "submit", lambda *a, **k: None)
+    out = updates.start_update({"initiated_by": "admin"})
+    assert out["status"] == "pending"
+    expired = _get_job(job_id)
+    assert expired["status"] == "failed"
+    assert "never reported back" in expired["error"]
+
+    # A FRESH finalizing job still blocks.
+    fresh_id = _make_job(status="finalizing", to_version="99.0.1")
+    with write_session() as session:
+        job = session.get(UpdateJob, fresh_id)
+        job.steps = [{"step": "finalize", "status": "running", "detail": "",
+                      "at": updates.utcnow().isoformat()}]
+    # (the job queued above is pending -- complete it so only the fresh
+    # finalizing one is active)
+    with write_session() as session:
+        session.get(UpdateJob, out["id"]).status = "failed"
+    with pytest.raises(ValidationError, match="already finalizing"):
+        updates.start_update({"initiated_by": "admin"})
+    assert _get_job(fresh_id)["status"] == "finalizing"

@@ -181,7 +181,7 @@ export default function Updates() {
       if (last.status === 'completed') {
         toast.success(
           last.kind === 'rollback' ? 'Rollback complete' : 'Update complete',
-          `Panel is now on v${last.kind === 'rollback' ? last.to_version : last.to_version}.`,
+          `Panel is now on v${last.to_version}.`,
         )
         qc.invalidateQueries({ queryKey: ['panel-version'] })
       } else if (last.status === 'failed') {

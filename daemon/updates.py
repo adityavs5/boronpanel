@@ -339,12 +339,55 @@ def _step(job_id: int, step: str, status: str, detail: str = "") -> None:
     logger.info("update job %s: %s %s %s", job_id, step, status, detail)
 
 
+# How long a job may sit in "finalizing" with no news before it is declared
+# dead. The finalizer's whole window (swap + two restarts + 90s health
+# deadline + failure path) is a few minutes; 30 is very generous.
+STALE_FINALIZING_SECONDS = 1800
+
+
 def _active_job(session) -> UpdateJob | None:
-    return session.scalar(
+    """The currently-active job, expiring a stuck 'finalizing' one.
+
+    'finalizing' is terminal-state-by-another-process: the detached
+    finalizer writes completed/failed directly. If the finalizer died
+    without reporting (kill -9, systemd-run refused mid-restart, ...), the
+    job would otherwise block every future update AND rollback forever with
+    no admin-facing way out. Staleness is measured from the job's last
+    recorded step (the finalize handoff), not job start -- pre-flight tests
+    alone take ~15 minutes."""
+    job = session.scalar(
         select(UpdateJob)
         .where(UpdateJob.status.in_(("pending", "running", "finalizing")))
         .order_by(UpdateJob.id.desc())
     )
+    if job is None or job.status != "finalizing":
+        return job
+    last = None
+    for entry in reversed(job.steps or []):
+        if entry.get("at"):
+            try:
+                last = dt.datetime.fromisoformat(entry["at"])
+            except ValueError:
+                last = None
+            break
+    if last is None:
+        last = job.started_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=dt.timezone.utc)
+    if last is None or (utcnow() - last).total_seconds() <= STALE_FINALIZING_SECONDS:
+        return job
+    job.status = "failed"
+    job.error = (
+        "finalizer never reported back (stale for >30min). The symlink swap may or may "
+        "not have been applied -- check /var/log/forgehost/updates.log, the "
+        f"{settings.update_live_dir} symlink target, and both panel services before retrying."
+    )
+    job.completed_at = utcnow()
+    job.progress_message = "failed (stale finalizer)"
+    _log_file_event({"job_id": job.id, "step": "finalize", "status": "failed",
+                     "detail": "expired stale finalizing job"})
+    logger.error("update job %s expired: finalizer never reported back", job.id)
+    return None
 
 
 def _live_target() -> str | None:
@@ -939,10 +982,36 @@ def cleanup_old_versions(params: dict | None = None) -> dict:
     (goal 4k). Hard guards, in order: basename must match the strict
     version-dir regex (so /opt/forgehost-nodejs etc. can never match), must
     be a real non-symlink directory, must not be the live symlink's target,
-    and must be older than update_keep_old_days."""
+    must not be referenced by any update/rollback job completed within the
+    window, and must be older than update_keep_old_days.
+
+    The job-reference guard is load-bearing, not redundant with mtime: the
+    first-ever update CONVERTS the months-old /opt/forgehost directory into
+    the versioned rollback target -- its mtime long predates the update, so
+    an mtime-only rule would prune the rollback target the very same night
+    and silently void the 3-day rollback promise (the finalizer also bumps
+    the old dir's mtime on success, but a DB-backed guard doesn't depend on
+    that having happened)."""
     root = settings.update_versions_root
     live_target = _live_target()
     cutoff = time.time() - settings.update_keep_old_days * 86400
+
+    protected: set[str] = set()
+    with write_session() as session:
+        cutoff_dt = utcnow() - dt.timedelta(days=settings.update_keep_old_days)
+        recent = session.scalars(
+            select(UpdateJob).where(UpdateJob.completed_at.is_not(None))
+            .order_by(UpdateJob.id.desc()).limit(20)
+        ).all()
+        for job in recent:
+            completed = job.completed_at
+            if completed is not None and completed.tzinfo is None:
+                completed = completed.replace(tzinfo=dt.timezone.utc)
+            if completed is not None and completed >= cutoff_dt:
+                for d in (job.old_dir, job.new_dir):
+                    if d:
+                        protected.add(os.path.realpath(d))
+
     removed, kept = [], []
     try:
         entries = os.listdir(root)
@@ -954,7 +1023,7 @@ def cleanup_old_versions(params: dict | None = None) -> dict:
         path = os.path.join(root, name)
         if os.path.islink(path) or not os.path.isdir(path):
             continue
-        if live_target and os.path.realpath(path) == live_target:
+        if (live_target and os.path.realpath(path) == live_target) or os.path.realpath(path) in protected:
             kept.append(name)
             continue
         try:
