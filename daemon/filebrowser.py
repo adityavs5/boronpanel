@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+import pwd
 from pathlib import Path
 
 import yaml
@@ -48,6 +49,10 @@ logger = logging.getLogger("forgehostd.filebrowser")
 SERVICE_NAME = "forgehost-filebrowser.service"
 UNIT_PATH = "/etc/systemd/system/forgehost-filebrowser.service"
 SOURCE_NAME = "home"
+
+# The OS user forgehost-api's service runs as (fixed by scripts/install.sh,
+# not per-install configurable). Used to scope the loopback lockdown below.
+API_SERVICE_USER = "forgehost-api"
 
 
 class FileBrowserError(Exception):
@@ -183,8 +188,29 @@ def _unit_content() -> str:
         "Restart=on-failure\n"
         "RestartSec=2\n"
         # Runs as root by necessity (cross-account home access); it must NOT be
-        # confined away from /home, so no ProtectHome. Loopback-only bind is the
-        # actual network boundary (see build_config server.listen).
+        # confined away from /home, so no ProtectHome/ProtectSystem and no
+        # CapabilityBoundingSet narrowing (needs full DAC + chown/chmod/setfacl
+        # across every account uid). Loopback-only bind + the iptables uid-owner
+        # restriction in restrict_backend_access() are the actual network
+        # boundary (Audit 3 A3-7). The directives below (A3-8) are the subset of
+        # systemd hardening that is compatible with that requirement -- they
+        # narrow everything that ISN'T "access arbitrary files as root", so an
+        # RCE/traversal bug in the binary itself doesn't also grant kernel-module
+        # loading, namespace escapes, SUID execution, or W^X memory abuse.
+        "NoNewPrivileges=true\n"
+        "ProtectKernelModules=true\n"
+        "ProtectKernelLogs=true\n"
+        "ProtectKernelTunables=true\n"
+        "ProtectClock=true\n"
+        "ProtectHostname=true\n"
+        "ProtectControlGroups=true\n"
+        "RestrictSUIDSGID=true\n"
+        "RestrictNamespaces=true\n"
+        "RestrictRealtime=true\n"
+        "LockPersonality=true\n"
+        "MemoryDenyWriteExecute=true\n"
+        "CapabilityBoundingSet=~CAP_SYS_MODULE CAP_SYS_BOOT CAP_SYS_TIME "
+        "CAP_SYS_ADMIN CAP_NET_ADMIN CAP_MKNOD CAP_SYS_RAWIO\n"
         f"StandardOutput=append:{settings.log_dir}/filebrowser.log\n"
         f"StandardError=append:{settings.log_dir}/filebrowser.log\n"
         "\n"
@@ -219,6 +245,82 @@ def _apply_account_acl(username: str, home: str) -> None:
         logger.warning("setfacl for %s failed: %s", username, res.stderr.strip() or res.stdout.strip())
 
 
+# --- network isolation (Audit 3, A3-7) --------------------------------------
+
+
+def _uid_owner_output_rule(uid: int, verb: str) -> list[str]:
+    return [
+        "iptables", verb, "OUTPUT", "-p", "tcp", "-d", "127.0.0.1",
+        "--dport", str(settings.filebrowser_bind_port),
+        "-m", "owner", "--uid-owner", str(uid), "-j", "ACCEPT",
+    ]
+
+
+def _reject_output_rule(verb: str) -> list[str]:
+    return [
+        "iptables", verb, "OUTPUT", "-p", "tcp", "-d", "127.0.0.1",
+        "--dport", str(settings.filebrowser_bind_port),
+        "-j", "REJECT", "--reject-with", "tcp-reset",
+    ]
+
+
+def _ensure_rule(rule: list[str]) -> None:
+    """Idempotently append an iptables OUTPUT rule: -C (check) first, -A
+    (append) only if not already present. Never fatal -- logged, matching
+    _apply_account_acl's best-effort posture, since a live iptables failure
+    here must not block the daemon from starting."""
+    check = rule[:1] + ["-C"] + rule[2:]
+    if run(check, timeout=10).ok:
+        return
+    res = run(rule, timeout=10)
+    if not res.ok:
+        logger.warning(
+            "filebrowser: failed to install loopback restriction rule %s: %s",
+            rule, res.stderr.strip() or res.stdout.strip(),
+        )
+
+
+def restrict_backend_access() -> None:
+    """Audit 3 finding A3-7 (Critical): FileBrowser Quantum's own
+    proxy-auth (auth.methods.proxy) trusts whatever X-Fb-User header arrives
+    with NO authentication of its own -- confirmed live that a bare
+    unauthenticated request directly to 127.0.0.1:8088 with a forged header
+    is served in full, and createUser:true auto-provisions a scope for a
+    username it has never seen. api/routers/filebrowser.py's proxy (which
+    strips the client header and injects the trusted one) is therefore the
+    *entire* security boundary -- but nothing previously restricted which
+    local process could reach the loopback port directly, and UFW's own
+    default rule set unconditionally accepts all loopback traffic (no
+    per-uid restriction). Since every hosting account gets real local code
+    execution as its own uid (PHP/LSAPI, cron), any customer's own process
+    could otherwise bypass forgehost-api entirely and impersonate any
+    account.
+
+    Fix: an OUTPUT-chain iptables rule (not `ufw` -- uid-owner matching
+    isn't exposed by ufw's simple CLI, see daemon/firewall.py's own
+    docstring for why that module deliberately avoids raw iptables for
+    *port/CIDR* rules; this is a different, process-identity-based
+    mechanism) that only permits the forgehost-api service user to
+    originate a connection to the backend port; everything else is
+    rejected. Idempotent (checked with -C before inserting) so it's safe to
+    call on every daemon start (see bootstrap() below) -- this is how the
+    restriction survives a reboot without needing iptables-persistent,
+    matching this project's "self-healing on daemon start" convention
+    rather than relying on OS-level rule persistence.
+    """
+    try:
+        uid = pwd.getpwnam(API_SERVICE_USER).pw_uid
+    except KeyError:
+        logger.warning(
+            "filebrowser: %s system user not found, cannot install loopback "
+            "restriction (backend port remains reachable by any local uid)",
+            API_SERVICE_USER,
+        )
+        return
+    _ensure_rule(_uid_owner_output_rule(uid, "-A"))
+    _ensure_rule(_reject_output_rule("-A"))
+
+
 # --- ops -------------------------------------------------------------------
 
 
@@ -239,6 +341,7 @@ def bootstrap(params: dict | None = None) -> dict:
     _write_unit()
     run(["systemctl", "daemon-reload"], timeout=20, check=True)
     run(["systemctl", "enable", "--now", SERVICE_NAME], timeout=30, check=True)
+    restrict_backend_access()
     active = run(["systemctl", "is-active", SERVICE_NAME], timeout=10)
     return {
         "status": "ok",

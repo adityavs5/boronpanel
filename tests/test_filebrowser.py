@@ -210,3 +210,71 @@ def test_lifecycle_wrappers(fb_env):
     fb.remove_source_for_account(Account(username="demo1"))
     setfacl_calls = [c for c in fb_env["calls"] if c and c[0] == "setfacl"]
     assert setfacl_calls, "add_source_for_account should apply the ACL"
+
+
+# --- network isolation (Audit 3 A3-7) ---------------------------------------
+#
+# FileBrowser Quantum's own proxy-auth trusts ANY X-Fb-User header with no
+# authentication of its own (confirmed live) -- so restricting which local
+# uid may even reach the loopback backend port is the actual boundary once
+# the proxy's header-injection is bypassed. These tests cover
+# restrict_backend_access()'s idempotent iptables rule installation.
+
+_FakePasswd = collections.namedtuple("_FakePasswd", ["pw_uid"])
+
+
+def test_restrict_backend_access_installs_accept_then_reject(fb_env, monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        if args[1] == "-C":
+            return ProcResult(args=list(args), returncode=1, stdout="", stderr="Bad rule")  # not present yet
+        return ProcResult(args=list(args), returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(fb, "run", fake_run)
+    monkeypatch.setattr(fb.pwd, "getpwnam", lambda name: _FakePasswd(pw_uid=996))
+
+    fb.restrict_backend_access()
+
+    appended = [c for c in calls if c[1] == "-A"]
+    assert len(appended) == 2, "one ACCEPT rule for the api uid, one REJECT rule for everyone else"
+    accept, reject = appended
+    assert "--uid-owner" in accept and "996" in accept and "ACCEPT" in accept
+    assert "REJECT" in reject and "--uid-owner" not in reject
+    # ACCEPT must be inserted before REJECT -- reversed order would silently
+    # reject the legitimate forgehost-api traffic too.
+    assert calls.index(accept) < calls.index(reject)
+    assert all(str(fb.settings.filebrowser_bind_port) in c for c in appended)
+
+
+def test_restrict_backend_access_idempotent_when_rules_already_present(fb_env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(fb, "run", lambda args, **kw: calls.append(list(args)) or ProcResult(args=list(args), returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(fb.pwd, "getpwnam", lambda name: _FakePasswd(pw_uid=996))
+
+    fb.restrict_backend_access()
+
+    assert calls, "should still check"
+    assert all(c[1] == "-C" for c in calls), "rules already present -- never re-appended"
+
+
+def test_restrict_backend_access_missing_api_user_does_not_raise(fb_env, monkeypatch):
+    def _missing(name):
+        raise KeyError(name)
+
+    monkeypatch.setattr(fb.pwd, "getpwnam", _missing)
+    calls = []
+    monkeypatch.setattr(fb, "run", lambda args, **kw: calls.append(args))
+
+    fb.restrict_backend_access()  # must not raise -- daemon startup can't be blocked by this
+
+    assert calls == []
+
+
+def test_bootstrap_calls_restrict_backend_access(fb_env, monkeypatch):
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+    called = []
+    monkeypatch.setattr(fb, "restrict_backend_access", lambda: called.append(True))
+    fb.bootstrap({})
+    assert called == [True]
