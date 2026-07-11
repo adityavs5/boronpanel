@@ -769,6 +769,39 @@ def bulk_purge(params: dict) -> dict:
     return {"purged": sum(1 for r in results if r["status"] == "purged"), "total": len(zones), "results": results}
 
 
+def purge_account_zones(account: Account) -> list[dict]:
+    """SUSPEND_HOOKS / UNSUSPEND_HOOKS entry -- best-effort purge of every
+    active Cloudflare zone this account owns (same per-zone try/except
+    shape as bulk_purge above, scoped to one account), so a proxied,
+    edge-cached suspended site doesn't keep serving stale content from
+    Cloudflare's cache even after the origin's own LSCache is cleared.
+    Deliberately never raises: a flaky Cloudflare API call must not block
+    the rest of suspend/unsuspend (the account's Linux user is already
+    locked/unlocked by the time hooks run, unlike TERMINATE_HOOKS' errors
+    list, suspend/unsuspend has no equivalent partial-failure surface to
+    report into -- silently continuing is safer than aborting mid-suspend
+    over a third-party API hiccup). Idempotent/silent for accounts with no
+    domains or no Cloudflare zones at all."""
+    with write_session() as session:
+        domains = list(session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all())
+        if not domains:
+            return []
+        zones = list(
+            session.scalars(
+                select(CloudflareZone.zone).where(CloudflareZone.status == "active", CloudflareZone.zone.in_(domains))
+            ).all()
+        )
+    results = []
+    for zone in zones:
+        try:
+            purge_cache({"domain": zone})
+            results.append({"zone": zone, "status": "purged"})
+        except Exception:
+            logger.exception("suspend/unsuspend-triggered Cloudflare purge failed for zone '%s'", zone)
+            results.append({"zone": zone, "status": "error"})
+    return results
+
+
 def bulk_migrate(params: dict) -> dict:
     """cf.bulk_migrate (feature 7): move every PowerDNS-only zone to Cloudflare,
     ONE AT A TIME with verification between each. Per zone: create the CF zone,

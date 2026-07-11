@@ -177,3 +177,96 @@ def test_remove_domain_cleans_up_lscache_settings(account_with_domain, monkeypat
 
     with write_session() as session:
         assert session.scalar(select(LscacheSettings).where(LscacheSettings.domain == "addon.example")) is None
+
+
+class TestPurgeAccountDomains:
+    """QA round 2, item 8 (critical): a suspended account's site kept
+    serving stale cached content because nothing purged what was already
+    on disk when the vhost flipped to the suspended context. This is the
+    actual root-cause fix -- SUSPEND_HOOKS/UNSUSPEND_HOOKS entry."""
+
+    def test_purges_cache_even_when_never_enabled(self, account_with_domain):
+        """The key regression: purge() itself requires LscacheSettings.
+        enabled=True and raises otherwise -- but a suspended site must have
+        its on-disk cache cleared unconditionally, since content can be
+        sitting there from before LSCache was ever toggled off, or was
+        never explicitly "enabled" in Boron's settings at all."""
+        storage_dir = lscache.cache_storage_path("demo1.example")
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        (storage_dir / "stale-cached-page.html").write_text("stale")
+        assert any(storage_dir.iterdir())
+
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == "demo1"))
+            lscache.purge_account_domains(account)
+
+        assert not any(storage_dir.iterdir())
+
+    def test_purges_every_domain_the_account_owns(self, account_with_domain):
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == "demo1"))
+            session.add(Domain(account_id=account.id, domain="addon.example", kind="addon", docroot="/home/demo1/addon.example"))
+
+        primary_dir = lscache.cache_storage_path("demo1.example")
+        addon_dir = lscache.cache_storage_path("addon.example")
+        primary_dir.mkdir(parents=True, exist_ok=True)
+        addon_dir.mkdir(parents=True, exist_ok=True)
+        (primary_dir / "a").write_text("1")
+        (addon_dir / "b").write_text("2")
+
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == "demo1"))
+            lscache.purge_account_domains(account)
+
+        assert not any(primary_dir.iterdir())
+        assert not any(addon_dir.iterdir())
+
+    def test_preserves_storage_directory_ownership_and_mode(self, account_with_domain):
+        """Same real-world bug class as purge()'s own test: must clear
+        CONTENTS only, never recreate the directory (which would drop
+        OLS's own setgid/group-write ownership and silently break future
+        caching for that vhost)."""
+        import stat as statmod
+
+        storage_dir = lscache.cache_storage_path("demo1.example")
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        (storage_dir / "cached-object").write_text("data")
+        os.chmod(storage_dir, 0o2775)
+        before = os.stat(storage_dir)
+
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == "demo1"))
+            lscache.purge_account_domains(account)
+
+        after = os.stat(storage_dir)
+        assert statmod.S_IMODE(after.st_mode) == statmod.S_IMODE(before.st_mode)
+        assert after.st_ino == before.st_ino
+        assert not any(storage_dir.iterdir())
+
+    def test_idempotent_with_no_cache_directory(self, account_with_domain):
+        """No cache was ever written for this domain -- must not raise or
+        create the directory (purge()'s own documented convention)."""
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == "demo1"))
+            lscache.purge_account_domains(account)  # must not raise
+        assert not lscache.cache_storage_path("demo1.example").exists()
+
+    def test_idempotent_for_account_with_no_domains(self, isolated_db, monkeypatch):
+        monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5002, 5002))
+        monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
+        monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
+        ha.create_account({"username": "nodomains"})
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == "nodomains"))
+            lscache.purge_account_domains(account)  # must not raise
+
+    def test_does_not_touch_last_purged_at(self, account_with_domain):
+        """Automatic suspend/unsuspend purges are a different kind of
+        event from an operator-initiated purge() -- last_purged_at (shown
+        in the LSCache UI) is intentionally left untouched."""
+        lscache.set_settings({"domain": "demo1.example", "enabled": True})
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == "demo1"))
+            lscache.purge_account_domains(account)
+        result = lscache.get_settings({"domain": "demo1.example"})
+        assert result["last_purged_at"] is None

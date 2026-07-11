@@ -534,6 +534,24 @@ REPORTING_OPS = {
 # type, not the other way around).
 handlers_account.SUSPEND_HOOKS.append(lambda account: ols.suspend_vhost(account))
 handlers_account.UNSUSPEND_HOOKS.append(lambda account: ols.unsuspend_vhost(account))
+# QA round 2, item 8 (critical): ols.suspend_vhost's rewrite-all-to-
+# suspended-page context stops FUTURE requests from being served/cached,
+# but does nothing about pages LSCache (or a proxied Cloudflare zone)
+# already had cached on disk/at the edge BEFORE suspension -- a real
+# suspended site kept serving stale cached content because nothing ever
+# purged it. Run right after the vhost flip so "stop future caching" and
+# "clear what's already cached" happen together as one suspend action.
+# Also purged on unsuspend, for the same reason in reverse: caching stays
+# possible while suspended (the vhost's rewrite-all context has its own
+# cache-bypassing content, but a customer's own page could still get
+# cached under the *unsuspended* domain name by something upstream while
+# still suspended is not a real risk here -- this is about not serving a
+# stale "suspended" page to a visitor for a few minutes right after
+# reactivation).
+handlers_account.SUSPEND_HOOKS.append(lambda account: lscache.purge_account_domains(account))
+handlers_account.UNSUSPEND_HOOKS.append(lambda account: lscache.purge_account_domains(account))
+handlers_account.SUSPEND_HOOKS.append(lambda account: cloudflare_ops.purge_account_zones(account))
+handlers_account.UNSUSPEND_HOOKS.append(lambda account: cloudflare_ops.purge_account_zones(account))
 handlers_account.PHP_VERSION_HOOKS.append(lambda account: ols.refresh_vhost(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ols.terminate_vhost(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_dns.terminate_account_zones(account))

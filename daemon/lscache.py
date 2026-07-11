@@ -116,6 +116,35 @@ def set_settings(params: dict) -> dict:
     return result
 
 
+def _clear_storage_dir(domain_name: str) -> None:
+    """Removes only the directory's CONTENTS, never the directory itself --
+    a real bug found live during this feature's own verification: OLS's
+    own worker process ("nobody", per httpd_config.conf.j2's top-level
+    user/group) creates this directory itself the first time it writes a
+    cache entry, with the setgid bit and group-write permission it needs
+    to keep writing new entries later (confirmed live: `drwxrws---
+    nobody nogroup`). An earlier version of this function did
+    `shutil.rmtree(storage_dir)` followed by `storage_dir.mkdir(...)`,
+    which recreates it as `root:root 0755` (borond's own identity) --
+    "nobody" can then never write a new cache entry into it again, so
+    every purge silently broke caching for that vhost's remaining
+    lifetime, only fixable by deleting the directory outright and
+    waiting for OLS to recreate it. If the directory doesn't exist yet
+    at all (LSCache enabled but OLS never actually cached anything for
+    this vhost), there's nothing to purge -- deliberately not created
+    here either, for the identical reason. Shared by the operator-facing
+    `purge()` RPC and the suspend/unsuspend hooks below -- both need the
+    exact same filesystem operation, only the enabled-check and
+    bookkeeping around it differ."""
+    storage_dir = cache_storage_path(domain_name)
+    if storage_dir.exists():
+        for entry in storage_dir.iterdir():
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+
+
 def purge(params: dict) -> dict:
     """Removes every cached object for this domain's vhost -- a full
     purge, not selective by URL/tag (this build's OLS install has no
@@ -129,29 +158,7 @@ def purge(params: dict) -> dict:
         if row is None or not row.enabled:
             raise RuntimeError(f"LSCache is not enabled for domain '{domain_name}'")
 
-    # Removes only the directory's CONTENTS, never the directory itself --
-    # a real bug found live during this feature's own verification: OLS's
-    # own worker process ("nobody", per httpd_config.conf.j2's top-level
-    # user/group) creates this directory itself the first time it writes a
-    # cache entry, with the setgid bit and group-write permission it needs
-    # to keep writing new entries later (confirmed live: `drwxrws---
-    # nobody nogroup`). An earlier version of this function did
-    # `shutil.rmtree(storage_dir)` followed by `storage_dir.mkdir(...)`,
-    # which recreates it as `root:root 0755` (borond's own identity) --
-    # "nobody" can then never write a new cache entry into it again, so
-    # every purge silently broke caching for that vhost's remaining
-    # lifetime, only fixable by deleting the directory outright and
-    # waiting for OLS to recreate it. If the directory doesn't exist yet
-    # at all (LSCache enabled but OLS never actually cached anything for
-    # this vhost), there's nothing to purge -- deliberately not created
-    # here either, for the identical reason.
-    storage_dir = cache_storage_path(domain_name)
-    if storage_dir.exists():
-        for entry in storage_dir.iterdir():
-            if entry.is_dir() and not entry.is_symlink():
-                shutil.rmtree(entry, ignore_errors=True)
-            else:
-                entry.unlink(missing_ok=True)
+    _clear_storage_dir(domain_name)
 
     from shared.models import utcnow
 
@@ -160,6 +167,26 @@ def purge(params: dict) -> dict:
         row.last_purged_at = utcnow()
         result = _row_to_dict(row, domain_name)
     return result
+
+
+def purge_account_domains(account: Account) -> None:
+    """SUSPEND_HOOKS / UNSUSPEND_HOOKS entry -- clears on-disk LSCache
+    content for every domain this account owns, unconditionally (unlike
+    `purge()`, deliberately does NOT require LscacheSettings.enabled: a
+    page can still be sitting in the cache store from before LSCache was
+    disabled, or the vhost's own suspended-context template omission stops
+    *future* caching but never touched what OLS had already written to
+    disk before suspension -- this is the actual root-cause fix for a
+    suspended site continuing to serve stale cached content). Idempotent
+    (safe for accounts with no domains or that never used LSCache at all).
+    Bookkeeping (`last_purged_at`) is intentionally skipped here -- that
+    field means "last operator-initiated purge via the LSCache UI"; an
+    automatic suspend/unsuspend purge is a different kind of event and
+    updating it would be misleading in the UI."""
+    with write_session() as session:
+        domains = list(session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all())
+    for domain_name in domains:
+        _clear_storage_dir(domain_name)
 
 
 def get_stats(params: dict) -> dict:
