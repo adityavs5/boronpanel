@@ -1,10 +1,68 @@
-# Forgehost — Status (handoff, 2026-06-30/07-01 overnight build)
+# Boron Panel — Status (handoff, 2026-06-30/07-01 overnight build)
 
 Built autonomously per the project goal, phases a–h plus final E2E
 validation, all on this live VM (not a simulation) — `104.234.179.64`,
 Ubuntu 24.04. Every phase has its own `docs/CHECKPOINT-{a..h}.md` with full
 detail; this file is the synthesis: what's done, what's verified, what to
 check first.
+
+**Rebrand note (2026-07-11):** this product was renamed from **Forgehost**
+to **Boron Panel** — see the top entry below for what changed and why.
+Everything under this line, from this point down through the rest of the
+file, is **unmodified historical narrative** written while the product was
+still called Forgehost, and deliberately left that way (same reasoning as
+leaving `docs/CHECKPOINT-*.md` untouched — see
+`docs/REBRAND-INVENTORY.md` Decision 3). Read "Forgehost" in everything
+below this rebrand entry as the old name for what is now Boron Panel; do
+not take the paths/service names/commands quoted in that historical text
+as current — check `docs/REBRAND-INVENTORY.md` / `docs/REBRAND-MIGRATION.md`
+for the current naming.
+
+---
+
+## Rebrand (2026-07-11): Forgehost → Boron Panel — codebase complete, live migration not yet run on this box
+
+Full sweep per the rebrand goal: user-visible strings (frontend, default
+branding name, emails, installer output, error pages), code
+comments/docstrings, the one real code identifier (`FORGEHOST_VERSION` →
+`BORON_VERSION`, all 8 import sites updated), filesystem paths, the config
+file (`forgehost.toml` → `boron.toml`), the Linux system user
+(`forgehost-api` → `boron-api`), and systemd/cron/logrotate units (static
+files renamed + content updated; the three dynamic per-account unit
+patterns — Redis, Node, Python apps, cgroup slices — renamed in the
+generating code). Full detail, categorization, and the reasoning behind
+every decision: `docs/REBRAND-INVENTORY.md`. Live-server migration steps
+for an existing install (this box included): `docs/REBRAND-MIGRATION.md`.
+
+**What's deliberately unchanged**: the MariaDB identifiers
+`forgehost_daemon` (admin user), `forgehost_mailro` (read-only user), and
+`forgehost_mail` (schema) — renaming a live database user/schema is
+materially riskier than a filesystem/systemd rename for zero user-visible
+benefit; see Inventory Decision 1. `docs/CHECKPOINT-*.md` (70 files),
+`docs/AUDIT*.md` (6 files), and a handful of other point-in-time
+research/planning docs (`RESEARCH.md`, `NAMESPACE-DESIGN.md`,
+`NAMESPACE-ANSWERS.md`, `PLAN-cloudflare.md`) are left as historical
+record, same reasoning as this file's own untouched narrative below —
+see Inventory Decisions 2 and 3.
+
+**Live status: code complete, committed; the live migration on this actual
+running server (104.234.179.64) has NOT been executed.** This server
+currently has real per-account systemd state under the old naming
+(`forgehost-redis-adityascn-1.service` running,
+`forgehost-{adityascn,cust1,demo2}.slice` active,
+`forgehost-node-demo1-{1,2}.service` present) — migrating it is a genuine,
+if brief, service interruption across the panel and every account's own
+Redis/Node/Python apps, consistent with this project's standing policy
+that live infrastructure mutations need explicit operator sign-off (the
+same principle the prior security audit's A3-7 finding established).
+`scripts/migrate_to_boron.sh` + `docs/REBRAND-MIGRATION.md` document the
+exact steps and are ready to run when authorized; a fresh install via the
+now-renamed `scripts/install.sh` needs no migration at all.
+
+Frontend rebuilt (`static/dist`, "Boron"/"Boron Panel" branding
+throughout, browser tab title "Boron Panel"), `docs/api/openapi.json`
+regenerated (239 paths, 0 remaining "forgehost" mentions). Full test
+suite run after the rebrand — see the run recorded with this update.
 
 ---
 
