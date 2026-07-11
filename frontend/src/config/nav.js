@@ -4,7 +4,7 @@ import {
   Cog, Inbox, Flame, ShieldAlert, ScrollText, ShieldHalf, Gauge, ListChecks,
   Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
   History, FileCode2, Cloud, Layers, Palette, AlertOctagon, BookOpen, ArrowUpCircle,
-  DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban,
+  DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban, FileText,
 } from 'lucide-react'
 
 // Customer nav — resource pages scoped to the signed-in account. Paths are
@@ -43,6 +43,7 @@ export const adminNav = [
   { label: 'Accounts', to: '/accounts', icon: Users },
   { label: 'Plans', to: '/plans', icon: Layers },
   { label: 'Branding', to: '/branding', icon: Palette },
+  { label: 'Templates', to: '/templates', icon: FileText },
   { label: 'Server Health', to: '/health', icon: Activity },
   { label: 'Services', to: '/services', icon: Cog },
   // Sidebar shows an accent dot on this item while an update is available.

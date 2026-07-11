@@ -813,6 +813,26 @@ class PermanentIpBan(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class WelcomeEmailTemplate(Base):
+    """QA round 2, item 10: single-row (id=1) admin-editable override of the
+    "account created" welcome email's subject/body -- same single-row shape
+    as NotificationSettings/BrandingSettings, since there is genuinely only
+    one server-wide welcome-email template. NULL fields (the default,
+    unconfigured state) mean "use daemon/notifications.py's built-in
+    hardcoded text" -- same absence-means-default convention as everything
+    else in this schema. `body` supports a small, documented set of
+    {{placeholder}} tokens (username, password, primary_domain, panel_name),
+    substituted at send time by daemon/notifications.py, never by this
+    model -- this row only stores the template text."""
+
+    __tablename__ = "welcome_email_template"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subject: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    body: Mapped[str | None] = mapped_column(String(8000), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class PhpFunctionOverride(Base):
     """QA round 2, item 9: admin-only override of PHP's `disable_functions`
     directive, layered on top of the system-wide hardened default (set

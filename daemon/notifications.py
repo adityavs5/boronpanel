@@ -13,14 +13,24 @@ no-op rather than an error.
 from __future__ import annotations
 
 import logging
+import re
 import smtplib
 from email.message import EmailMessage
 
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, AccountNotificationPrefs, BrandingSettings, NOTIFICATION_EVENT_TYPES, NotificationSettings
+from shared.models import (
+    Account,
+    AccountNotificationPrefs,
+    BrandingSettings,
+    NOTIFICATION_EVENT_TYPES,
+    NotificationSettings,
+    WelcomeEmailTemplate,
+)
 from shared.validation import ValidationError, validate_email_address, validate_username
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z_]+)\s*\}\}")
 
 logger = logging.getLogger("borond.notifications")
 
@@ -38,9 +48,16 @@ def _panel_name(session) -> str:
     return row.panel_name if row and row.panel_name else "Boron"
 
 
-def _subjects(panel_name: str) -> dict:
+def _fill_placeholders(template: str, values: dict) -> str:
+    return _PLACEHOLDER_RE.sub(lambda m: str(values.get(m.group(1), m.group(0))), template)
+
+
+def _subjects(panel_name: str, welcome_subject: str | None = None) -> dict:
     return {
-        "account.created": f"Your {panel_name} hosting account has been created",
+        # QA round 2, item 10: admin-editable override (daemon/site_templates.py,
+        # WelcomeEmailTemplate) -- absence (None) falls back to this
+        # hardcoded default, same convention as every other override table.
+        "account.created": welcome_subject or f"Your {panel_name} hosting account has been created",
         "account.suspended": f"Your {panel_name} hosting account has been suspended",
         "account.unsuspended": f"Your {panel_name} hosting account has been reactivated",
         "account.terminated": f"Your {panel_name} hosting account has been terminated",
@@ -53,8 +70,15 @@ def _subjects(panel_name: str) -> dict:
     }
 
 
-def _render_body(event_type: str, username: str, context: dict) -> str:
+def _render_body(event_type: str, username: str, context: dict, welcome_body: str | None = None, panel_name: str = "Boron") -> str:
     if event_type == "account.created":
+        if welcome_body:
+            return _fill_placeholders(welcome_body, {
+                "username": username,
+                "password": context.get("initial_password") or "(set by your administrator)",
+                "primary_domain": context.get("primary_domain") or "",
+                "panel_name": panel_name,
+            })
         lines = [f"Your hosting account '{username}' has been created."]
         if context.get("initial_password"):
             lines.append(f"Initial password: {context['initial_password']}")
@@ -160,9 +184,13 @@ def maybe_send(event_type: str, account, **context) -> bool:
         sender = settings_row.sender_address
         recipient = prefs.customer_email
         panel_name = _panel_name(session)
+        welcome_template = session.get(WelcomeEmailTemplate, 1) if event_type == "account.created" else None
+        welcome_subject = welcome_template.subject if welcome_template else None
+        welcome_body = welcome_template.body if welcome_template else None
 
-    subject = _subjects(panel_name).get(event_type, f"{panel_name} notification: {event_type}")
-    body = _render_body(event_type, username, context) + f"\n\n— {panel_name}"
+    context.setdefault("primary_domain", account.primary_domain)
+    subject = _subjects(panel_name, welcome_subject).get(event_type, f"{panel_name} notification: {event_type}")
+    body = _render_body(event_type, username, context, welcome_body, panel_name) + f"\n\n— {panel_name}"
     try:
         _send_email(sender, recipient, subject, body)
     except (OSError, smtplib.SMTPException):

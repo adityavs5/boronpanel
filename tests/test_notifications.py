@@ -86,6 +86,71 @@ def test_maybe_send_returns_false_none_account(isolated_db, sent_emails):
     assert sent_emails == []
 
 
+# --- QA round 2, item 10: admin-editable welcome email template ------------
+
+
+def test_maybe_send_uses_default_welcome_text_when_no_template_set(isolated_db, sent_emails):
+    account_id = _make_account()
+    with write_session() as session:
+        session.add(NotificationSettings(id=1, sender_address="boron@example.com"))
+        session.add(AccountNotificationPrefs(account_id=account_id, customer_email="c@example.com"))
+    nt.maybe_send("account.created", _account(account_id), initial_password="Passw0rd!123")
+    assert "has been created" in sent_emails[0]["body"]
+
+
+def test_maybe_send_uses_custom_welcome_template_when_set(isolated_db, sent_emails):
+    from daemon import site_templates
+
+    account_id = _make_account(username="acme1")
+    with write_session() as session:
+        session.add(NotificationSettings(id=1, sender_address="boron@example.com"))
+        session.add(AccountNotificationPrefs(account_id=account_id, customer_email="c@example.com"))
+    site_templates.set_welcome_email_template({
+        "subject": "Welcome aboard!",
+        "body": "Hi {{username}}, your temporary password is {{password}}. Enjoy {{panel_name}}!",
+    })
+
+    nt.maybe_send("account.created", _account(account_id), initial_password="Passw0rd!123")
+
+    assert sent_emails[0]["subject"] == "Welcome aboard!"
+    assert "Hi acme1" in sent_emails[0]["body"]
+    assert "Passw0rd!123" in sent_emails[0]["body"]
+
+
+def test_maybe_send_welcome_template_substitutes_primary_domain(isolated_db, sent_emails):
+    from daemon import site_templates
+
+    with write_session() as session:
+        account = Account(username="acme1", status="active", primary_domain="acme1.example")
+        session.add(account)
+        session.flush()
+        account_id = account.id
+        session.add(NotificationSettings(id=1, sender_address="boron@example.com"))
+        session.add(AccountNotificationPrefs(account_id=account_id, customer_email="c@example.com"))
+    site_templates.set_welcome_email_template({"subject": "s", "body": "Visit {{primary_domain}} now"})
+
+    nt.maybe_send("account.created", _account(account_id))
+
+    assert "Visit acme1.example now" in sent_emails[0]["body"]
+
+
+def test_maybe_send_welcome_template_only_affects_account_created(isolated_db, sent_emails):
+    """A welcome-email override must not leak into other event types'
+    subject/body."""
+    from daemon import site_templates
+
+    account_id = _make_account()
+    with write_session() as session:
+        session.add(NotificationSettings(id=1, sender_address="boron@example.com"))
+        session.add(AccountNotificationPrefs(account_id=account_id, customer_email="c@example.com"))
+    site_templates.set_welcome_email_template({"subject": "Custom welcome", "body": "Custom body"})
+
+    nt.maybe_send("account.suspended", _account(account_id))
+
+    assert sent_emails[0]["subject"] != "Custom welcome"
+    assert "suspended" in sent_emails[0]["subject"].lower()
+
+
 def test_maybe_send_handles_smtp_failure_gracefully(isolated_db, monkeypatch):
     account_id = _make_account()
     with write_session() as session:
