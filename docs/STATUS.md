@@ -8,6 +8,145 @@ check first.
 
 ---
 
+## Security Audit 3 (2026-07-11): new-attack-surface re-audit since Audit 2 — 1 Critical + 4 High fixed, IDOR sweep clean
+
+Third full security audit, scoped to **everything added since Audit 2**
+(2026-07-06): FileBrowser Quantum, Cloudflare Phase 2+3, Run A (plans/
+branding/onboarding/monitoring/rate-limiting/etc), the panel update system,
+and the missing-features batch (imapsync/maintenance/wildcard/error-pages/
+spamfilter/sitestats/dbmonitor) below. Threat model:
+`docs/AUDIT3-THREATMODEL.md` (written before any fixes, per the goal's
+mandatory pre-work). Findings: `docs/AUDIT3-FINDINGS.md` (all 13 focus areas
+from the audit goal documented, each with independent re-verification of
+prior self-reported fix claims rather than trusting the checkpoint docs at
+face value). Work began with a `pre-audit-3 snapshot` commit of this
+section's own then-uncommitted missing-features batch, so that batch is now
+committed to git for the first time as part of this audit.
+
+**Result: 1 Critical (code fixed; live mitigation blocked, needs operator
+action — see below), 4 High fixed, 1 High deferred with reasoning, 2 Medium
+fixed (1 partially), 2 Medium + 1 Low deferred with reasoning. Full test
+suite: 1729 passing (1715 baseline + 14 new regression tests), zero
+failures/regressions. A full IDOR re-sweep across all 54 routes in the 14
+routers added since Audit 2 (Area 13) came back clean.**
+
+- **A3-7 (Critical) — FileBrowser Quantum backend has no authentication of
+  its own; any local process can impersonate any account.** Live-confirmed
+  (non-mutating GET): the loopback-only FileBrowser backend
+  (`127.0.0.1:8088`) trusts any `X-Fb-User` header unconditionally, with
+  `createUser: true` auto-provisioning a scope for a username it has never
+  seen. The proxy's own header-stripping/injection
+  (`api/routers/filebrowser.py`) is correct, but nothing previously
+  restricted which local uid could reach the port directly — and since
+  every hosting account gets real local code execution as its own uid
+  (PHP/LSAPI, cron), any customer's own process could bypass
+  `forgehost-api`'s session auth and audit trail entirely and read/write/
+  delete any other customer's home directory. **Fixed in code**:
+  `daemon/filebrowser.py` gained `restrict_backend_access()`, an idempotent
+  iptables `OUTPUT`-chain rule pair (ACCEPT for the `forgehost-api` uid,
+  REJECT for everyone else) installed on every `fb.bootstrap` call, which
+  already runs at every daemon startup — self-healing across restarts, no
+  `iptables-persistent` needed. **NOT yet applied to this box's live running
+  deployment** — attempting the equivalent live `iptables` commands directly
+  was declined by this environment's safety classifier as outside this
+  audit's explicit authorization (fix findings in the codebase + run tests,
+  not unilaterally mutate live network policy); that denial was respected.
+  **Operator action required**: deploy this fix via `scripts/deploy.sh`
+  (self-applies on the next `forgehost-provisiond` restart), or apply the
+  two `iptables` commands directly now if the exposure window is judged
+  unacceptable until the next deploy — see `docs/AUDIT3-FINDINGS.md` A3-7
+  for the exact commands.
+- **A3-8 (High) — FileBrowser's systemd unit had zero sandboxing beyond
+  running as root** (`systemd-analyze security`: 9.6/10 "UNSAFE"). Fixed:
+  added the hardening subset compatible with needing full `/home` access
+  (`NoNewPrivileges`, kernel/clock/hostname/cgroup protections, namespace/
+  SUID restrictions, W^X memory, a trimmed `CapabilityBoundingSet`).
+- **A3-3 (High) — IMAPSync had no per-account concurrency cap**, letting one
+  customer occupy the shared 2-worker executor for up to ~33 hours via a
+  slow-drip "source server," denying the feature to every other tenant.
+  Fixed with the same guard `daemon/backup.py` already uses for the
+  identical risk class (Audit 1 F9).
+- **A3-5 (High) — imapsync's own default transcript logging was never
+  disabled**, writing world-readable (0644) per-run logs containing
+  cross-tenant mailbox addresses, source host, and login-success
+  confirmation to `LOG_imapsync/` — confirmed live in `/opt/forgehost`'s
+  actual production working directory. Fixed: `--nolog` on every
+  invocation.
+- **A3-6 (High) — DB Monitor's `kill_query` had no scope restriction**
+  beyond a syntactically valid thread id once the (deliberately ungranted)
+  `CONNECTION_ADMIN` privilege is applied — capable of killing any MariaDB
+  connection server-wide, not just a hosted account's runaway query as the
+  feature describes. Fixed: cross-checks the target thread's `db` against
+  `DatabaseGrant` before issuing `KILL`.
+- **A3-4 (High, deferred) — IMAPSync's SSRF guard validates once at job
+  creation; the connection happens later, unpinned, with no re-validation**
+  (a real DNS-rebinding TOCTOU into the internal network from a root
+  process). `daemon/webhooks.py` already has the correct pattern
+  (resolve+validate+pin); porting it to imapsync's separate Perl subprocess
+  is a larger change than this pass's fix-if-quick bar allows to do safely.
+  Documented as a priority follow-up.
+- **A3-9 (Medium, partially fixed) — Branding SVG filter had 2 confirmed XSS
+  bypasses** via entity encoding (a numeric-character-reference-obfuscated
+  `javascript:` URI; a `foreignObject`+`iframe[srcdoc]` smuggling an
+  entity-encoded `<script>`), found by actually executing the filter
+  against crafted payloads, not just reading the regex. Both closed
+  (added `foreignObject` to the direct reject list + an entity-decode
+  re-check pass); a full XML-aware allowlist sanitizer remains the complete
+  fix and is documented as deferred.
+- **A3-10 (Medium, fixed) — Login rate limiter's exact-IPv6 keying** let one
+  attacker rotate through a routed `/64` prefix (a normal ISP allocation,
+  no botnet needed) to defeat both the new per-IP limiter and the Audit-1
+  per-username lockout simultaneously. Fixed: IPv6 addresses now bucket by
+  `/64` network; IPv4 unchanged.
+- **A3-1 (Medium, deferred) — Plan resource-count/bandwidth limits
+  (databases, mailboxes, subdomains, FTP accounts, apps, bandwidth) are
+  written by `plan.apply` but only ever consumed by usage-alert emails**,
+  never enforced by the customer-facing self-service creation endpoints —
+  unlike CPU/mem/IO/pids (cgroup) and disk quota, which are genuinely
+  kernel-enforced. Documented as a real follow-up (a limit check across 5+
+  creation handlers in 5 files, over this pass's 10-minute bar).
+- **A3-11 (Medium, deferred) — spam filter's per-entry global Sieve refresh
+  bypasses the project's mandatory validate→backup→rollback pattern**
+  (`ARCHITECTURE.md §7`), writing the live server-wide Sieve script directly
+  with no rollback on a post-write reload/verify failure. Not an injection
+  vector (content is pre-validated), but a reliability gap reachable by any
+  customer's routine filter edit. Documented as a priority follow-up.
+- **A3-2 (Low, deferred) — TOCTOU between update-tarball SHA256 verification
+  and extraction** (hash-by-path, then reopen-by-path rather than
+  verify-and-extract from one file handle). Narrow window, root-only staging
+  dir; documented as a hardening follow-up.
+- **Also independently re-verified (not re-derived from trust)**: both
+  self-reported IDOR fixes from `docs/CHECKPOINT-missing-features-batch.md`
+  (imapsync job ownership, spamfilter entry domain ownership) are genuinely
+  present in the daemon code; the critical `trim_blocks` Jinja2 corruption
+  fix in `httpd_config.conf.j2` was independently re-rendered through the
+  project's real template environment and confirmed safe; the error-pages
+  ACL-traversal fix was confirmed correct; the panel update system's
+  redirect-revalidation, tarball-member validation, and 2FA confirmation
+  gate all held up under direct code inspection with no bypass found.
+
+**Areas confirmed clean (no finding)**: maintenance mode and wildcard
+domains (both correctly gate every route on `require_account_access` +
+`require_domain_access`; ACME-challenge exclusion confirmed live in the
+current template); custom error pages (no path-traversal surface — the only
+writable filenames are a fixed enum, never client input); site statistics
+(log paths derived exclusively from a DB-verified domain→account chain,
+User-Agent parsed but never stored/rendered, ReDoS-safe regexes); the
+FileBrowser proxy's own header-stripping and per-request re-authorization
+logic (correct — the Critical finding above is about the *backend's* own
+lack of auth, not the proxy); plan-CRUD and update-system admin-gating
+(every route individually checked, no customer-reachable path found);
+rate-limiter's `X-Forwarded-For` handling (never read — keys on the real
+TCP peer, correct given no reverse proxy fronts `forgehost-api`) and
+middleware ordering (limiter runs before auth logic, confirmed against
+Starlette's actual wrapping order).
+
+Test suite: full `pytest` run green after fixes — 1729 passing, up from
+1715, zero regressions; new regression tests added for A3-3, A3-5, A3-6,
+A3-7 (network isolation), A3-9, and A3-10.
+
+---
+
 ## Missing-features batch (2026-07-11): IMAPSync, maintenance mode, wildcard domains, custom error pages, per-mailbox spam filters, site statistics, DB monitor — all 7 built, security-reviewed, live-verified end to end; NOT yet deployed
 
 Full detail: `docs/CHECKPOINT-missing-features-batch.md` — **read the "How
