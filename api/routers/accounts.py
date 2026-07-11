@@ -24,7 +24,8 @@ class CreateAccountBody(BaseModel):
     php_version: str | None = None
     quota_soft_mb: int | None = None
     quota_hard_mb: int | None = None
-    password: str | None = None
+    password: str | None = None  # optional -- a strong one is auto-generated if omitted; validated server-side if supplied
+    email: str | None = None  # QA round 2, item 15: admin-supplied contact email, stored as the account's notification prefs email
     # Run A feature 1: optional plan to apply immediately after creation.
     plan_id: int | None = None
 

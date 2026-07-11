@@ -51,6 +51,37 @@ def test_create_account_happy_path(isolated_db, stub_sysops):
     assert ("create_linux_user", "demo1") in stub_sysops
 
 
+def test_create_account_stores_contact_email_in_notification_prefs(isolated_db, stub_sysops):
+    """QA round 2, item 15: an admin-supplied contact email at creation
+    lands in AccountNotificationPrefs.customer_email -- the same field the
+    account.created welcome email (and every other notification) reads
+    from -- rather than a duplicate email column on Account itself."""
+    from daemon import notifications
+    from shared.models import Account
+
+    result = ha.create_account({"username": "demo1", "email": "owner@example.com"})
+    assert result["email"] == "owner@example.com"
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        prefs = notifications.get_prefs({"username": "demo1"})
+        assert prefs["customer_email"] == "owner@example.com"
+        assert account is not None  # sanity: the account row itself still exists
+
+
+def test_create_account_without_email_leaves_notification_prefs_unset(isolated_db, stub_sysops):
+    from daemon import notifications
+
+    ha.create_account({"username": "demo1"})
+    prefs = notifications.get_prefs({"username": "demo1"})
+    assert prefs["customer_email"] is None
+
+
+def test_create_account_rejects_invalid_email(isolated_db, stub_sysops):
+    with pytest.raises(ValidationError):
+        ha.create_account({"username": "demo1", "email": "not-an-email"})
+
+
 def test_create_account_rejects_duplicate(isolated_db, stub_sysops):
     ha.create_account({"username": "demo1"})
     with pytest.raises(RuntimeError):

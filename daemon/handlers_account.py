@@ -17,9 +17,15 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, ApiToken, PanelUser, Session
-from shared.validation import ValidationError, validate_password_strength, validate_php_version, validate_username
+from shared.validation import (
+    ValidationError,
+    validate_email_address,
+    validate_password_strength,
+    validate_php_version,
+    validate_username,
+)
 
-from daemon import cgroups, sysops
+from daemon import cgroups, notifications, sysops
 
 logger = logging.getLogger("borond.account")
 
@@ -100,6 +106,10 @@ def create_account(params: dict) -> dict:
     # feature 12's own verification and fixed here rather than left as a
     # known gap.
     password = validate_password_strength(params["password"]) if params.get("password") else None
+    # QA round 2, item 15: an admin-supplied contact email at creation time
+    # -- validated up front for the same reason the password is (a rejected
+    # bad email must never leave an orphaned Linux user behind).
+    email = validate_email_address(params["email"]) if params.get("email") else None
 
     with write_session() as session:
         existing = session.scalar(select(Account).where(Account.username == username))
@@ -133,7 +143,17 @@ def create_account(params: dict) -> dict:
         )
         session.add(account)
         session.flush()
+        if email:
+            # Same table the customer/admin "notification preferences" page
+            # edits later (daemon/notifications.py) -- setting it here at
+            # creation time both records the contact email AND makes the
+            # "account created" welcome email (CREATE_HOOKS below) able to
+            # actually reach someone, without a second, duplicate email
+            # column on Account itself.
+            prefs = notifications._get_prefs(session, account.id)
+            prefs.customer_email = email
         result = _account_to_dict(account)
+        result["email"] = email
         account_snapshot = account
 
     # Phase 7b feature 3: the "account created" email needs the plaintext

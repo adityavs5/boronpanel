@@ -101,7 +101,7 @@ export default function Accounts() {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState({ username: '', primary_domain: '', plan_id: '' })
+  const [form, setForm] = useState({ username: '', primary_domain: '', plan_id: '', email: '', password: '' })
   const [selected, setSelected] = useState(() => new Set())
   // Panel update system: version in the dashboard header + update banner.
   const version = useVersion()
@@ -138,7 +138,7 @@ export default function Accounts() {
       toast.success('Account created', `${acc.username} is being provisioned.`)
       qc.invalidateQueries({ queryKey: ['accounts'] })
       setOpen(false)
-      setForm({ username: '', primary_domain: '', plan_id: '' })
+      setForm({ username: '', primary_domain: '', plan_id: '', email: '', password: '' })
       navigate(`/accounts/${acc.username}`)
     },
     onError: (e) => toast.error('Could not create account', e.message),
@@ -300,6 +300,8 @@ export default function Accounts() {
                 username: form.username,
                 primary_domain: form.primary_domain || undefined,
                 plan_id: form.plan_id ? Number(form.plan_id) : undefined,
+                email: form.email.trim() || undefined,
+                password: form.password || undefined,
               })
             }}
           >
@@ -319,6 +321,28 @@ export default function Accounts() {
                   value={form.primary_domain}
                   onChange={(e) => setForm((f) => ({ ...f, primary_domain: e.target.value }))}
                   placeholder="example.com"
+                />
+              </FormField>
+              <FormField label="Contact email" hint="Optional — used for the welcome email and account notifications. Can be added/changed later.">
+                <Input
+                  type="email"
+                  value={form.email}
+                  onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                  placeholder="owner@example.com"
+                />
+              </FormField>
+              <FormField
+                label="Password"
+                hint="Optional — leave blank to auto-generate a strong password. If set: 12+ characters with upper, lower, a number, and a symbol."
+              >
+                <Input
+                  type="password"
+                  autoComplete="new-password"
+                  value={form.password}
+                  onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                  placeholder="Auto-generated if blank"
+                  pattern={form.password ? '(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}' : undefined}
+                  title="At least 12 characters, including an uppercase letter, a lowercase letter, a number, and a symbol."
                 />
               </FormField>
               <FormField label="Plan" hint="Optional — applies the plan's limits immediately after creation.">
