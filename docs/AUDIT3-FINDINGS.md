@@ -12,7 +12,7 @@ not written to imply parallel areas were already done when they weren't.
 
 | # | Severity | Area | Title | Status |
 |---|---|---|---|---|
-| A3-7 | **Critical** | 8 FileBrowser | Backend has no auth of its own; any local uid can reach it and impersonate any account | Code fix **applied**; live mitigation **NOT applied — operator action required** (classifier declined direct live firewall change) |
+| A3-7 | **Critical** | 8 FileBrowser | Backend has no auth of its own; any local uid can reach it and impersonate any account | **Fixed and live-verified** (code + live iptables rule, applied on user's explicit direction; first attempt at the live rule was ineffective — see A3-7 for the append-vs-insert root cause) |
 | A3-3 | **High** | 1 IMAPSync | No per-account concurrency cap — cross-tenant DoS | **Fixed** |
 | A3-4 | **High** | 1 IMAPSync | SSRF guard validated once at creation; connection happens later, unpinned (DNS-rebinding TOCTOU) | **Partially fixed** (re-validation before connect added; full IP-pinning DEFERRED, documented residual gap) |
 | A3-5 | **High** | 1 IMAPSync | imapsync's own transcript logging leaks cross-tenant PII, world-readable | **Fixed** |
@@ -28,10 +28,10 @@ not written to imply parallel areas were already done when they weren't.
 | — | Low | 6 Site stats | MaxMind `.mmdb` download has no hash/signature pinning beyond TLS | DEFERRED (TLS is the primary control) |
 | — | Info | 4/5/6/7/8/13 | Numerous "no finding" results with evidence — see each area section | N/A |
 
-Fixed this pass: 1 Critical (code-level; live mitigation blocked, see A3-7),
-4 High fully fixed + 1 High partially fixed (A3-4), 2 Medium fixed (1
-partially). Deferred with documented reasoning: full IP-pinning for A3-4,
-2 Medium (A3-1, A3-11, plus the remainder of A3-9), 1 Low (A3-2), plus
+Fixed this pass: 1 Critical (code + live, verified — see A3-7), 4 High
+fully fixed + 1 High partially fixed (A3-4), 2 Medium fixed (1 partially).
+Deferred with documented reasoning: full IP-pinning for A3-4, 2 Medium
+(A3-1, A3-11, plus the remainder of A3-9), 1 Low (A3-2), plus
 several Low/Info items noted above. Full per-area detail follows.
 
 ---
@@ -527,9 +527,7 @@ prevent, and it requires no bug in the proxy or in FileBrowser itself — it
 uses the intended proxy-auth mechanism exactly as designed, from an
 unintended caller.
 
-**FIX**: Code-level fix applied (see below) — **live mitigation on this box
-is NOT yet applied and requires operator action**, documented explicitly
-rather than silently left open. `daemon/filebrowser.py` gained a new
+**FIX**: Code-level fix applied. `daemon/filebrowser.py` gained a new
 `restrict_backend_access()` function: an idempotent iptables `OUTPUT`-chain
 rule pair (`-m owner --uid-owner <forgehost-api uid> -j ACCEPT` followed by
 a catch-all `REJECT` for the backend port), installed automatically on every
@@ -537,32 +535,51 @@ a catch-all `REJECT` for the backend port), installed automatically on every
 (`daemon/server.py:745`) — so it self-heals across restarts without needing
 `iptables-persistent`, matching this project's "self-healing on daemon
 start" convention. Regression tests cover installation, idempotency
-(checked via `-C` before appending), correct ACCEPT-before-REJECT ordering,
-and a missing-service-user case that logs rather than crashes daemon
-startup. **This fix has NOT been applied to this box's live, currently-
-running `forgehost-provisiond`/FileBrowser deployment** — an attempt to
-apply the equivalent `iptables` commands directly and immediately (given the
-severity) was declined by this environment's safety classifier, which
-correctly identified a direct live firewall change to shared production-
-adjacent infrastructure as outside what this audit's goal explicitly
-authorized (the goal authorizes fixing findings in the codebase + running
-tests, not unilaterally mutating live network policy). That denial was
-respected rather than worked around, per this project's standing policy.
-**Operator action required**: either (a) deploy this fix through the normal
-`scripts/deploy.sh` flow, which will self-apply via the next
-`forgehost-provisiond` restart's `fb.bootstrap` call, or (b) apply the
-mitigation directly and immediately if the live exposure window is judged
-unacceptable to leave open until the next deploy — the exact commands are
-`daemon/filebrowser.py:restrict_backend_access()`'s logic, reproducible as:
-`iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport 8088 -m owner --uid-owner
-$(id -u forgehost-api) -j ACCEPT` then `iptables -A OUTPUT -p tcp -d
-127.0.0.1 --dport 8088 -j REJECT --reject-with tcp-reset`. Separately,
-cleaned up two harmless, empty, root-owned directories
-(`/home/attacker_forged_user`, `/home/nosuchacct12345`) that were an
-unintended side effect of the investigating agent's authorized
-non-mutating GET test (FileBrowser's `createUserDir` auto-provisions a
-directory even for a bare unauthenticated GET) — confirmed empty before
-removal via `rmdir`, no account/domain/DB data was affected.
+(checked via `-C`, which is position-independent), correct
+ACCEPT-before-REJECT ordering, and a missing-service-user case that logs
+rather than crashes daemon startup.
+
+**Two rounds of live verification were needed to get this right — recorded
+here in full since the first round produced a false sense of security.**
+The initial version appended the rules (`-A OUTPUT ...`), which the audit's
+own findings write-up (and this section, in its first draft) documented as
+the fix. When later asked to apply the equivalent commands live, they were
+installed successfully but **had zero actual effect**: `curl` as three
+different local uids (the `forgehost-api` service user, a real hosting
+account, and root) all still reached the backend. Root cause: `ufw`'s own
+baseline `ufw-before-output` chain contains `ACCEPT ... out lo` as its
+*first* rule — unconditionally accepting all loopback traffic — and that
+chain is jumped to near the top of `OUTPUT`, long before anything appended
+to the *end* of `OUTPUT` is ever evaluated. **Appending to `OUTPUT` is a
+no-op for loopback traffic on this box.** The fix: insert the rules at
+positions 1 and 2 of `OUTPUT` instead (`iptables -I OUTPUT 1 ...` / `-I
+OUTPUT 2 ...`), ahead of ufw's own chain jumps. Re-verified live afterward
+with the same three-uid test: `forgehost-api` → succeeds; the real hosting
+account and root → connection refused. `daemon/filebrowser.py` and its
+tests were updated to match (insert, not append) so the code now matches
+what was actually verified to work, not what merely looked plausible.
+
+**Live status: APPLIED AND VERIFIED on this box** (2026-07-11, on the
+user's explicit direction naming this exact live change). Current live
+`OUTPUT` chain, positions 1-2:
+```
+1  ACCEPT  tcp  --  0.0.0.0/0  127.0.0.1  tcp dpt:8088 owner UID match <forgehost-api uid>
+2  REJECT  tcp  --  0.0.0.0/0  127.0.0.1  tcp dpt:8088 reject-with tcp-reset
+```
+Verified: `forgehost-api` (uid 996) → HTTP 301 (normal proxy response);
+a real hosting account uid and root → `curl: (7) Failed to connect...`
+(rejected). `forgehost-api`/`forgehost-provisiond`/`forgehost-filebrowser`
+all confirmed still active and healthy afterward (`GET /healthz` → 200).
+This live application predates the corresponding code fix landing via a
+real deploy — a future `fb.bootstrap` run (next deploy + daemon restart)
+will find the rules already present (`-C` matches) and this is a no-op,
+so there is no conflict. Separately, cleaned up two harmless, empty,
+root-owned directories (`/home/attacker_forged_user`,
+`/home/nosuchacct12345`) that were an unintended side effect of the
+investigating agent's earlier non-mutating GET test (FileBrowser's
+`createUserDir` auto-provisions a directory even for a bare unauthenticated
+GET) — confirmed empty before removal via `rmdir`, no account/domain/DB
+data was affected.
 
 ### A3-8 — High — FileBrowser Quantum's systemd unit has zero sandboxing beyond running as root
 

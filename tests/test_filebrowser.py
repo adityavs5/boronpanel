@@ -237,15 +237,20 @@ def test_restrict_backend_access_installs_accept_then_reject(fb_env, monkeypatch
 
     fb.restrict_backend_access()
 
-    appended = [c for c in calls if c[1] == "-A"]
-    assert len(appended) == 2, "one ACCEPT rule for the api uid, one REJECT rule for everyone else"
-    accept, reject = appended
+    inserted = [c for c in calls if c[1] == "-I"]
+    assert len(inserted) == 2, "one ACCEPT rule for the api uid, one REJECT rule for everyone else"
+    accept, reject = inserted
     assert "--uid-owner" in accept and "996" in accept and "ACCEPT" in accept
     assert "REJECT" in reject and "--uid-owner" not in reject
-    # ACCEPT must be inserted before REJECT -- reversed order would silently
-    # reject the legitimate forgehost-api traffic too.
+    # Must be inserted (not appended) -- ufw's own ufw-before-output chain
+    # unconditionally accepts all loopback traffic near the top of OUTPUT,
+    # so anything appended to the end is never reached (confirmed live).
+    # Position 1 must be ACCEPT, position 2 REJECT, or legitimate
+    # forgehost-api traffic gets silently rejected too.
+    assert accept[3] == "1" and accept[2] == "OUTPUT"
+    assert reject[3] == "2" and reject[2] == "OUTPUT"
     assert calls.index(accept) < calls.index(reject)
-    assert all(str(fb.settings.filebrowser_bind_port) in c for c in appended)
+    assert all(str(fb.settings.filebrowser_bind_port) in c for c in inserted)
 
 
 def test_restrict_backend_access_idempotent_when_rules_already_present(fb_env, monkeypatch):

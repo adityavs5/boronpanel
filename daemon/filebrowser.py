@@ -248,35 +248,46 @@ def _apply_account_acl(username: str, home: str) -> None:
 # --- network isolation (Audit 3, A3-7) --------------------------------------
 
 
-def _uid_owner_output_rule(uid: int, verb: str) -> list[str]:
+def _uid_owner_rulespec(uid: int) -> list[str]:
     return [
-        "iptables", verb, "OUTPUT", "-p", "tcp", "-d", "127.0.0.1",
+        "-p", "tcp", "-d", "127.0.0.1",
         "--dport", str(settings.filebrowser_bind_port),
         "-m", "owner", "--uid-owner", str(uid), "-j", "ACCEPT",
     ]
 
 
-def _reject_output_rule(verb: str) -> list[str]:
+def _reject_rulespec() -> list[str]:
     return [
-        "iptables", verb, "OUTPUT", "-p", "tcp", "-d", "127.0.0.1",
+        "-p", "tcp", "-d", "127.0.0.1",
         "--dport", str(settings.filebrowser_bind_port),
         "-j", "REJECT", "--reject-with", "tcp-reset",
     ]
 
 
-def _ensure_rule(rule: list[str]) -> None:
-    """Idempotently append an iptables OUTPUT rule: -C (check) first, -A
-    (append) only if not already present. Never fatal -- logged, matching
-    _apply_account_acl's best-effort posture, since a live iptables failure
-    here must not block the daemon from starting."""
-    check = rule[:1] + ["-C"] + rule[2:]
+def _ensure_rule_at(position: int, rulespec: list[str]) -> None:
+    """Idempotently INSERT an iptables OUTPUT rule at a fixed position --
+    NOT append (`-A`). Verified live during Audit 3 that appending has NO
+    effect: ufw's own `ufw-before-output` chain's first rule unconditionally
+    ACCEPTs all `-o lo` traffic (loopback), and that jump target is itself
+    near the top of OUTPUT -- anything appended to the *end* of OUTPUT is
+    never reached for loopback packets at all. Inserting at position 1/2
+    (ahead of ufw's own chain jumps) is the only placement that actually
+    takes effect; confirmed by testing as three different local uids
+    (forgehost-api: allowed; a real hosting account uid; root) after this
+    fix. -C (existence check, position-independent) first, -I only if not
+    already present -- idempotent and safe to call on every daemon start.
+    Never fatal -- logged, matching _apply_account_acl's best-effort
+    posture, since a live iptables failure here must not block the daemon
+    from starting."""
+    check = ["iptables", "-C", "OUTPUT"] + rulespec
     if run(check, timeout=10).ok:
         return
-    res = run(rule, timeout=10)
+    insert = ["iptables", "-I", "OUTPUT", str(position)] + rulespec
+    res = run(insert, timeout=10)
     if not res.ok:
         logger.warning(
             "filebrowser: failed to install loopback restriction rule %s: %s",
-            rule, res.stderr.strip() or res.stdout.strip(),
+            insert, res.stderr.strip() or res.stdout.strip(),
         )
 
 
@@ -302,11 +313,16 @@ def restrict_backend_access() -> None:
     *port/CIDR* rules; this is a different, process-identity-based
     mechanism) that only permits the forgehost-api service user to
     originate a connection to the backend port; everything else is
-    rejected. Idempotent (checked with -C before inserting) so it's safe to
-    call on every daemon start (see bootstrap() below) -- this is how the
-    restriction survives a reboot without needing iptables-persistent,
-    matching this project's "self-healing on daemon start" convention
-    rather than relying on OS-level rule persistence.
+    rejected. **Inserted at the top of OUTPUT (positions 1-2), not
+    appended** -- ufw's own baseline `ufw-before-output` chain
+    unconditionally ACCEPTs all loopback (`-o lo`) traffic near the top of
+    OUTPUT, so a rule appended to the *end* is never reached for loopback
+    packets at all (confirmed live: appending had zero effect). Idempotent
+    (checked with -C, which is position-independent, before inserting) so
+    it's safe to call on every daemon start (see bootstrap() below) -- this
+    is how the restriction survives a reboot without needing
+    iptables-persistent, matching this project's "self-healing on daemon
+    start" convention rather than relying on OS-level rule persistence.
     """
     try:
         uid = pwd.getpwnam(API_SERVICE_USER).pw_uid
@@ -317,8 +333,12 @@ def restrict_backend_access() -> None:
             API_SERVICE_USER,
         )
         return
-    _ensure_rule(_uid_owner_output_rule(uid, "-A"))
-    _ensure_rule(_reject_output_rule("-A"))
+    # Order matters: ACCEPT must land above REJECT, both above ufw's own
+    # chain jumps -- inserted in this sequence so position 1 ends up ACCEPT
+    # and position 2 ends up REJECT (each insert at a fixed position pushes
+    # whatever was already there down, so ACCEPT must be inserted first).
+    _ensure_rule_at(1, _uid_owner_rulespec(uid))
+    _ensure_rule_at(2, _reject_rulespec())
 
 
 # --- ops -------------------------------------------------------------------
