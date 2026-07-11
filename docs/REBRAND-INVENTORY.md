@@ -153,3 +153,42 @@ version.py, static/forgehost.css, README.md   3 files
 
 Full detail on the systemd/path/config-file rename and the live-server
 migration steps: `docs/REBRAND-MIGRATION.md`.
+
+## Final verification (after all rebrand commits landed)
+
+Re-ran the full case-insensitive sweep against the committed state
+(`grep -ril forgehost`, same exclusions as above). Result: **exactly two
+categories of hit remain, nothing else**:
+
+1. **80 historical documents** — the 70 `docs/CHECKPOINT-*.md` files plus
+   `docs/AUDIT-FINDINGS.md`, `docs/AUDIT-THREATMODEL.md`,
+   `docs/AUDIT2-FINDINGS.md`, `docs/AUDIT2-THREATMODEL.md`,
+   `docs/AUDIT3-FINDINGS.md`, `docs/AUDIT3-THREATMODEL.md`,
+   `docs/RESEARCH.md`, `docs/NAMESPACE-DESIGN.md`,
+   `docs/NAMESPACE-ANSWERS.md`, `docs/PLAN-cloudflare.md` — untouched by
+   design, see Decision 2.
+2. **20 files carrying only the 3 protected MariaDB identifiers**
+   (`forgehost_daemon`, `forgehost_mailro`, `forgehost_mail`) — see
+   Decision 1. Individually confirmed (not just counted) that each of
+   these contains *no other* form of "forgehost":
+   `daemon/{cpanel_import,dbmonitor,handlers_mail,mail,mariadb,slowquery,staging}.py`,
+   `shared/{config,models}.py`, `frontend/src/pages/admin/DbMonitor.jsx`
+   (+ its built `static/dist` bundle), `tests/{test_dbmonitor,test_handlers_mail}.py`,
+   `README.md`, `docs/ARCHITECTURE.md`, `scripts/install.sh` (all six:
+   MariaDB user/schema creation SQL and the admin UI copy describing that
+   exact, unchanged credential), plus this repo's own new
+   `docs/STATUS.md` / `docs/REBRAND-INVENTORY.md` /
+   `docs/REBRAND-MIGRATION.md` / `deploy/secrets.env.example` /
+   `scripts/migrate_to_boron.sh`, which correctly *reference* "Forgehost"
+   as the old name being migrated from or documented as historical
+   context — not leftover unrenamed occurrences.
+
+Every file in the codebase outside those two categories was confirmed
+clean — zero bare "forgehost" left anywhere in live source, user-visible
+strings, or forward-facing docs.
+
+**Rebrand work committed** in four logical commits (backend/scripts/core
+docs; frontend + deploy content + generated openapi.json; inventory +
+migration docs + STATUS.md; hardened `.gitignore`). Full test suite green
+after every commit — see `docs/STATUS.md`'s rebrand entry for the final
+count.
