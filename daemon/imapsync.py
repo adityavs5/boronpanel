@@ -385,6 +385,28 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
 
         local_part, _, domain_name = mailbox.partition("@")
 
+        # Audit 3 finding A3-4: validate_imap_source_host was previously
+        # only ever called once, at start_migration (job-creation) time --
+        # but the real connection happens here, in the background worker,
+        # after an attacker-controllable queue delay (shrunk but not
+        # eliminated by the A3-3 concurrency-cap fix above), enabling a
+        # DNS-rebinding SSRF (pass validation public, repoint DNS internal
+        # before the job runs). shared/validation.py's own docstring for
+        # validate_imap_source_host already claimed this re-check happens
+        # here ("the authoritative guard") -- it didn't, until this fix.
+        # Re-validating immediately before use shrinks the rebinding window
+        # from the full queue-wait time down to the gap between this check
+        # and imapsync's own connect (milliseconds); it does not pin the
+        # connection to a specific resolved IP (imapsync performs its own
+        # resolution as a separate process it isn't practical to override
+        # here), so a rebind landing in that much smaller residual window
+        # remains theoretically possible -- documented, not eliminated.
+        try:
+            source_host = validate_imap_source_host(source_host)
+        except ValidationError as exc:
+            _update_job(job_id, status="failed", error=str(exc), completed_at=utcnow())
+            return
+
         _update_job(job_id, status="connecting", progress_message="Listing source folders")
         try:
             folders = requested_folders or list_source_folders(source_host, source_port, source_email, source_password, use_ssl)

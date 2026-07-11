@@ -14,7 +14,7 @@ not written to imply parallel areas were already done when they weren't.
 |---|---|---|---|---|
 | A3-7 | **Critical** | 8 FileBrowser | Backend has no auth of its own; any local uid can reach it and impersonate any account | Code fix **applied**; live mitigation **NOT applied — operator action required** (classifier declined direct live firewall change) |
 | A3-3 | **High** | 1 IMAPSync | No per-account concurrency cap — cross-tenant DoS | **Fixed** |
-| A3-4 | **High** | 1 IMAPSync | SSRF guard validated once at creation; connection happens later, unpinned (DNS-rebinding TOCTOU) | DEFERRED (documented) |
+| A3-4 | **High** | 1 IMAPSync | SSRF guard validated once at creation; connection happens later, unpinned (DNS-rebinding TOCTOU) | **Partially fixed** (re-validation before connect added; full IP-pinning DEFERRED, documented residual gap) |
 | A3-5 | **High** | 1 IMAPSync | imapsync's own transcript logging leaks cross-tenant PII, world-readable | **Fixed** |
 | A3-6 | **High** | 7 DB Monitor | `kill_query` can kill any MariaDB connection once CONNECTION_ADMIN is granted, not just hosted-account queries | **Fixed** |
 | A3-8 | **High** | 8 FileBrowser | systemd unit has zero sandboxing beyond running as root (9.6/10 UNSAFE) | **Fixed** |
@@ -29,9 +29,10 @@ not written to imply parallel areas were already done when they weren't.
 | — | Info | 4/5/6/7/8/13 | Numerous "no finding" results with evidence — see each area section | N/A |
 
 Fixed this pass: 1 Critical (code-level; live mitigation blocked, see A3-7),
-4 High, 2 Medium. Deferred with documented reasoning: 1 High (A3-4), 3
-Medium (A3-1, A3-11, partial A3-9), 1 Low (A3-2) plus several Low/Info items
-noted above. Full per-area detail follows.
+4 High fully fixed + 1 High partially fixed (A3-4), 2 Medium fixed (1
+partially). Deferred with documented reasoning: full IP-pinning for A3-4,
+2 Medium (A3-1, A3-11, plus the remainder of A3-9), 1 Low (A3-2), plus
+several Low/Info items noted above. Full per-area detail follows.
 
 ---
 
@@ -290,14 +291,29 @@ partial response/error text (capped 800 chars) echoed back to the
 customer's own job-status field — an SSRF + limited internal banner-grab
 primitive from a root process.
 
-**FIX**: DEFERRED. A2-3's `webhooks.py` fix pattern is the correct model,
-but porting it here (pin to a resolved IP, handle the interaction with
-imapsync's own TLS/SNI handling since it's a separate Perl process, not an
-in-process HTTP client) requires more than the goal's 10-minute bar for a
-same-pass fix without risking an under-tested change to a root-privileged
-subprocess invocation. Re-validating `source_host` immediately before each
-connection in `_run_job` (even without full IP-pinning) would meaningfully
-shrink the window and is the recommended near-term follow-up.
+**FIX**: Partially applied. Full IP-pinning (A2-3's `webhooks.py` pattern —
+resolve, validate, and pin the connection to the literal validated IP) is
+DEFERRED: porting it here means handling the interaction with imapsync's
+own TLS/SNI handling since it's a separate Perl process, not an in-process
+HTTP client, which is more than a same-pass fix can safely do without
+risking an under-tested change to a root-privileged subprocess invocation.
+Applied instead: `_run_job` now re-calls `validate_imap_source_host`
+immediately before the real connection (previously it was only ever called
+once, at `start_migration`/job-creation time) — this is exactly what
+`shared/validation.py`'s own docstring for that function already claimed
+happened ("daemon/imapsync.py re-checks again immediately before
+connecting -- the authoritative guard"), but until this fix, it didn't.
+This shrinks the DNS-rebinding window from the full attacker-controlled
+queue-wait time (previously unbounded before A3-3's concurrency cap, now
+bounded but still real) down to the milliseconds between this check and
+imapsync's own connect — the connection is still not pinned to the
+specific resolved IP (imapsync resolves independently as a separate
+process), so a rebind landing in that much smaller residual window remains
+theoretically possible. This residual gap is honestly documented, not
+claimed as fully closed; full IP-pinning remains the recommended follow-up
+for complete closure. Covered by a new regression test
+(`test_run_job_revalidates_source_host_before_connecting`) confirming a
+detected rebind fails the job cleanly and never invokes imapsync.
 
 ### A3-5 — High — imapsync's own default transcript logging is never disabled; world-readable cross-tenant PII lands in the daemon's production working directory
 

@@ -272,6 +272,42 @@ def test_list_source_folders_raises_on_failure(monkeypatch):
         im.list_source_folders("imap.example.net", 993, "old@example.net", "wrongpw")
 
 
+def test_run_job_revalidates_source_host_before_connecting(mailbox, monkeypatch, tmp_path):
+    # Audit 3 A3-4: source_host must be re-validated immediately before the
+    # real connection (shrinking the DNS-rebinding TOCTOU window), not only
+    # once at start_migration time -- confirm a rebind detected at
+    # connect-time fails the job cleanly and imapsync is never invoked.
+    local_part, domain = mailbox
+    monkeypatch.setattr(im, "IMAPSYNC_RUN_DIR", str(tmp_path))
+
+    with im.write_session() as session:
+        from shared.models import ImapMigrationJob
+
+        job = ImapMigrationJob(account_id=1, mailbox=f"{local_part}@{domain}", source_host="imap.example.net",
+                                source_port=993, source_email="old@example.net", status="pending")
+        session.add(job)
+        session.flush()
+        job_id = job.id
+
+    revalidate_calls = []
+
+    def fake_validate(host):
+        revalidate_calls.append(host)
+        raise ValidationError(f"'{host}' resolves to a non-public address (simulated DNS rebind)")
+
+    monkeypatch.setattr(im, "validate_imap_source_host", fake_validate)
+    run_calls = []
+    monkeypatch.setattr(im, "run", lambda *a, **kw: run_calls.append(a))
+
+    im._run_job(job_id, "s3cret-source-pw", "s3cret-dest-pw", True)
+
+    status = im.get_status({"id": job_id, "username": "demo1"})
+    assert status["status"] == "failed"
+    assert "non-public" in status["error"]
+    assert revalidate_calls == ["imap.example.net"]
+    assert run_calls == [], "imapsync must never be invoked once re-validation fails"
+
+
 def test_run_job_never_logs_or_stores_passwords(mailbox, monkeypatch, tmp_path, caplog):
     local_part, domain = mailbox
     monkeypatch.setattr(im, "IMAPSYNC_RUN_DIR", str(tmp_path))
