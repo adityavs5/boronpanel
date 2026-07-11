@@ -12,7 +12,8 @@
 #
 # Non-interactive install: preseed the prompts with env vars --
 #   FH_PANEL_DOMAIN, FH_LE_EMAIL, FH_ADMIN_USER, FH_ADMIN_PASSWORD,
-#   FH_SERVER_IP, FH_NONINTERACTIVE=1
+#   FH_SERVER_IP, FH_NONINTERACTIVE=1, FH_MAXMIND_LICENSE_KEY (optional,
+#   see README.md "GeoLite2 setup")
 #
 # No external dependencies beyond bash + coreutils + the OS package manager.
 # Progress is printed per step (OK / FAIL / SKIP) and appended to
@@ -55,6 +56,12 @@ LE_EMAIL="${FH_LE_EMAIL:-}"
 ADMIN_USER="${FH_ADMIN_USER:-admin}"
 ADMIN_PASSWORD="${FH_ADMIN_PASSWORD:-}"
 SERVER_IP="${FH_SERVER_IP:-}"
+# QA round 2, item 12: optional -- MaxMind requires a free account + license
+# key for GeoLite2 downloads (no anonymous path), so this is never prompted
+# interactively (same treatment as CLOUDFLARE_API_TOKEN -- an operator
+# credential this project never acquires on the operator's behalf). Site
+# statistics' top-countries breakdown degrades gracefully without it.
+MAXMIND_LICENSE_KEY="${FH_MAXMIND_LICENSE_KEY:-}"
 
 STEP_OK=0
 STEP_FAIL=0
@@ -711,6 +718,25 @@ EOF
     ok "Pure-FTPd chroot/PureDB/passive-range configured"
 }
 
+# --- 8.6 GeoLite2 (site statistics' top-countries breakdown, item 12) ------
+
+setup_geoip() {
+    if [[ -z "$MAXMIND_LICENSE_KEY" ]]; then
+        info "GeoLite2 not configured (no MAXMIND_LICENSE_KEY set) -- site statistics' top-countries breakdown stays hidden until an admin configures one. See README.md's \"GeoLite2 setup\" section, or set one later via POST /api/v1/admin/sitestats/geoip."
+        return 0
+    fi
+    info "Fetching the MaxMind GeoLite2-Country database"
+    # Passed via the environment, never interpolated into the logged
+    # command string (run_sh logs/prints the snippet text verbatim, in
+    # both dry-run and real runs -- a real secret must never appear in it).
+    export MAXMIND_LICENSE_KEY
+    if run_sh "'${VENV}/bin/python' -c \"import sys, os; sys.path.insert(0, '${DEST}'); from daemon import geoip; geoip.download_database(os.environ['MAXMIND_LICENSE_KEY'])\""; then
+        ok "GeoLite2-Country database installed"
+    else
+        warn "GeoLite2 download failed (bad license key, or MaxMind unreachable) -- top countries will stay hidden; retry later via POST /api/v1/admin/sitestats/geoip"
+    fi
+}
+
 # --- prompts -----------------------------------------------------------------
 
 prompt_inputs() {
@@ -775,7 +801,8 @@ Usage: sudo bash scripts/install.sh [OPTIONS]
 
 Non-interactive install via env vars:
   FH_PANEL_DOMAIN, FH_LE_EMAIL, FH_ADMIN_USER, FH_ADMIN_PASSWORD,
-  FH_SERVER_IP, FH_NONINTERACTIVE=1
+  FH_SERVER_IP, FH_NONINTERACTIVE=1, FH_MAXMIND_LICENSE_KEY (optional,
+  see README.md "GeoLite2 setup")
 EOF
 }
 
@@ -826,6 +853,7 @@ main() {
     create_admin
     setup_firewall
     setup_pureftpd
+    setup_geoip
 
     summary
     if [[ "$STEP_FAIL" -eq 0 ]]; then

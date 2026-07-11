@@ -838,3 +838,46 @@ Note: the first update converts `/opt/boron` from a plain directory
 to the versioned-symlink layout automatically. Only the two panel
 services restart during an update — OpenLiteSpeed and hosted sites are
 never touched.
+
+### 24. GeoLite2 setup (site statistics' top-countries breakdown)
+
+The per-domain and server-wide site statistics pages show a "top
+countries" breakdown of visitor IPs, powered by MaxMind's free
+**GeoLite2-Country** database. This is genuinely optional — MaxMind has
+required a free account + license key for downloads since ~2019 (no
+anonymous path exists), so Boron never acquires one on the operator's
+behalf (same policy as the Cloudflare API token: real third-party
+credentials are always operator-supplied, never auto-registered). Without
+one configured, the top-countries card simply doesn't render (a small
+"GeoLite2 not configured" note takes its place); every other site-stats
+metric (pageviews, bandwidth, per-domain breakdown) works identically
+either way.
+
+**To configure at install time**: sign up for a free MaxMind account at
+<https://www.maxmind.com/en/geolite2/signup>, generate a license key under
+Account → License Keys, then run the installer with it set:
+
+```bash
+FH_MAXMIND_LICENSE_KEY=your_license_key_here ./scripts/install.sh
+```
+
+`scripts/install.sh`'s `setup_geoip()` step fetches and installs the
+database (`/var/lib/boron/GeoLite2-Country.mmdb`) automatically when the
+key is present; it's silently skipped (with a one-line note pointing back
+here) when it isn't — a missing key never fails the install.
+
+**To configure after install** (or to rotate a key), no re-install needed:
+
+```bash
+curl -sk -X POST https://<panel-host>:9443/api/v1/admin/sitestats/geoip \
+  -H 'Content-Type: application/json' \
+  -H "Cookie: <your admin session cookie>" \
+  -d '{"license_key": "your_license_key_here"}'
+```
+
+(`daemon/geoip.py`'s `download_database` — the same function the installer
+calls — verifies the key by actually downloading with it, so a bad key
+fails clearly rather than leaving a half-configured state.) The database
+is a single file with no expiry; MaxMind's own guidance is to refresh it
+periodically (their data updates roughly weekly), which isn't automated
+here — re-run either step above whenever a refresh is wanted.
