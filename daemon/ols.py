@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, NodeApp, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings
+from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings, WildcardDomain
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
@@ -29,6 +29,11 @@ logger = logging.getLogger("forgehostd.ols")
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)
+
+# Missing-features batch, goal feature 4: shared, server-wide Forgehost-branded
+# default error pages, shipped with the app -- see daemon/custom_pages.py's
+# module docstring for the full context/resolution story.
+DEFAULT_ERROR_PAGES_DIR = TEMPLATES_DIR / "error_pages"
 
 HTTPD_CONFIG_PATH = "/usr/local/lsws/conf/httpd_config.conf"
 VHOST_CONF_TEMPLATE = "{base}/conf/vhosts/{name}/vhconf.conf"
@@ -190,6 +195,55 @@ def _forwarding_for_domain(session, domain_name: str) -> dict | None:
     return {"target_url": row.target_url, "status_code": row.status_code, "keep_path": row.keep_path}
 
 
+def _maintenance_for_domain(session, domain_name: str) -> dict | None:
+    """Missing-features batch, goal feature 2. None (no rewrite-to-503
+    branch rendered at all) unless a row exists AND is enabled -- same
+    "absence means default behavior" convention _forwarding_for_domain/
+    _lscache_for_domain already use."""
+    row = session.scalar(select(MaintenanceMode).where(MaintenanceMode.domain == domain_name))
+    if row is None or not row.enabled:
+        return None
+    retry_after_seconds = row.auto_disable_minutes * 60 if row.auto_disable_minutes else 3600
+    from daemon import custom_pages
+
+    return {
+        "bypass_token": row.bypass_token,
+        "bypass_query_param": "fh_bypass",
+        "retry_after_seconds": retry_after_seconds,
+        "page_name": custom_pages.MAINTENANCE_PAGE_NAME,
+    }
+
+
+def _error_pages_for_domain(username: str, domain_name: str, maintenance_active: bool) -> dict[int, str]:
+    """Missing-features batch, goal feature 4 (+ feature 2's own forced-503
+    page, see daemon/custom_pages.py's module docstring for why that
+    override happens here). A pure filesystem-existence check, no DB row --
+    daemon/custom_pages.resolve_error_pages is the single decision point.
+
+    ensure_pages_dir is called here (not only at domain-add time) so a
+    domain created before this feature existed still gets a real, existing
+    directory backing the vhost's unconditional /.forgehost-error-pages/
+    context the next time its vhost is regenerated for any reason --
+    self-healing, rather than requiring a one-off migration script the way
+    an earlier feature's tmp-dir backfill needed (refresh_all_vhosts)."""
+    from daemon import custom_pages
+
+    try:
+        custom_pages.ensure_pages_dir(username, domain_name)
+    except (OSError, KeyError):
+        pass  # best-effort -- a failure here must not block the whole vhost regen
+    return custom_pages.resolve_error_pages(username, domain_name, maintenance_active=maintenance_active)
+
+
+def _wildcard_map(session) -> dict[str, bool]:
+    """Missing-features batch, goal feature 3: domain -> whether *.domain
+    should route to this same vhost, for every domain at once (mirrors
+    _app_proxy_map's own "look everything up in one query, not one per
+    domain" shape)."""
+    rows = session.scalars(select(WildcardDomain).where(WildcardDomain.enabled == True)).all()  # noqa: E712
+    return {r.domain: True for r in rows}
+
+
 def _redirects_for_domain(session, domain_name: str) -> list[dict]:
     rows = session.scalars(select(Redirect).where(Redirect.domain == domain_name)).all()
     return [
@@ -262,11 +316,14 @@ def render_vhost_conf(
     app_proxy: dict | None = None,
     lscache: dict | None = None,
     forwarding: dict | None = None,
+    maintenance: dict | None = None,
+    error_pages: dict[int, str] | None = None,
 ) -> str:
     home_dir = f"{settings.home_base}/{account.username}"
     template = _env.get_template("vhost.conf.j2")
     return template.render(
         vhost_name=_vhost_name(domain["domain"]),
+        domain_name=domain["domain"],
         docroot=domain["docroot"],
         home_dir=home_dir,
         forwarding=forwarding or domain.get("forwarding"),
@@ -287,6 +344,9 @@ def render_vhost_conf(
         protected_dirs=protected_dirs or [],
         app_proxy=app_proxy or domain.get("app_proxy"),
         lscache=lscache or domain.get("lscache"),
+        maintenance=maintenance or domain.get("maintenance"),
+        error_pages=error_pages or domain.get("error_pages"),
+        default_error_pages_dir=str(DEFAULT_ERROR_PAGES_DIR),
     )
 
 
@@ -313,6 +373,7 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
         select(Account).where(Account.status.in_(["active", "suspended"]))
     ).all()
     app_proxies = _app_proxy_map(session)
+    wildcard_domains = _wildcard_map(session)
     # Accounts with a per-account extension selection get a PHP_INI_SCAN_DIR
     # env line on their extProcessor (daemon/phpext.py's mechanism); everyone
     # else keeps the compiled-in stock scan dir by rendering nothing.
@@ -357,6 +418,12 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
                 "domain": d.domain,
                 "account_home": account_home,
                 "app_proxy": app_proxies.get(d.domain),
+                # Missing-features batch, goal feature 3: whether
+                # httpd_config.conf.j2's listener map should also match
+                # *.<domain> to this same vhost (confirmed against this
+                # server's own installed OLS docs that the map's domain
+                # field accepts wildcard syntax directly).
+                "wildcard": wildcard_domains.get(d.domain, False),
             })
     return domain_vhosts, account_procs
 
@@ -638,7 +705,15 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
             domain["domain"]: _protected_dirs_for_domain(session, account.username, account.id, domain["docroot"])
             for domain in domains
         }
+        maintenance_by_domain = {domain["domain"]: _maintenance_for_domain(session, domain["domain"]) for domain in domains}
         waf = waf_template_context(session)
+
+    error_pages_by_domain = {
+        domain["domain"]: _error_pages_for_domain(
+            account.username, domain["domain"], maintenance_active=bool(maintenance_by_domain[domain["domain"]])
+        )
+        for domain in domains
+    }
 
     targets = {"main": HTTPD_CONFIG_PATH}
     content = {"main": render_httpd_config(domain_vhosts, account_procs, waf=waf)}
@@ -652,6 +727,8 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
             php_ini=php_ini, redirects=redirects_by_domain[domain["domain"]],
             protected_dirs=protected_dirs_by_domain[domain["domain"]],
             forwarding=forwarding_by_domain[domain["domain"]],
+            maintenance=maintenance_by_domain[domain["domain"]],
+            error_pages=error_pages_by_domain[domain["domain"]],
         )
 
     writer = ConfigWriterMulti(

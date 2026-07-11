@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Mail, Plus, Trash2, Inbox, Forward, ShieldAlert, AtSign, Network, ScrollText } from 'lucide-react'
+import {
+  Mail, Plus, Trash2, Inbox, Forward, ShieldAlert, AtSign, Network, ScrollText,
+  ShieldBan, ShieldCheck, ArrowRightLeft, Loader2, XCircle, CheckCircle2, X,
+} from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatMB } from '@/lib/utils'
@@ -619,6 +622,355 @@ function DeliveryLogTab({ username }) {
 
 // --- Page ----------------------------------------------------------------
 
+// --- Per-mailbox spam filters (missing-features batch, goal feature 5) ---
+
+function MailboxSpamFiltersTab({ username, domain }) {
+  const qc = useQueryClient()
+  const mailboxesQ = useQuery({
+    queryKey: ['mailboxes', domain],
+    queryFn: () => get(`/api/v1/mail/domains/${domain}/mailboxes`),
+    enabled: !!domain,
+  })
+  const mailboxes = mailboxesQ.data?.mailboxes || []
+  const [mailbox, setMailbox] = useState('')
+  const [pattern, setPattern] = useState('')
+  const [importOpen, setImportOpen] = useState(false)
+  const [importKind, setImportKind] = useState('blacklist')
+  const [importText, setImportText] = useState('')
+
+  useEffect(() => {
+    if (!mailbox && mailboxes.length) setMailbox(mailboxes[0].local_part)
+  }, [mailboxes, mailbox])
+
+  const base = `/api/v1/accounts/${username}/email/${mailbox}/spam-filters`
+  const key = ['spam-filter-entries', username, mailbox, domain]
+  const entriesQ = useQuery({
+    queryKey: key,
+    queryFn: () => get(base, { params: { domain } }),
+    enabled: !!username && !!mailbox && !!domain,
+  })
+  const invalidate = () => qc.invalidateQueries({ queryKey: key })
+
+  const addMut = useMutation({
+    mutationFn: (kind) => post(base, { domain, kind, pattern: pattern.trim() }),
+    onSuccess: (_r, kind) => { toast.success(`Added to ${kind}`); setPattern(''); invalidate() },
+    onError: (e) => toast.error('Could not add entry', e.message),
+  })
+  const deleteMut = useMutation({
+    mutationFn: (id) => del(base, { data: { id, domain } }),
+    onSuccess: () => { toast.success('Entry removed'); invalidate() },
+    onError: (e) => toast.error('Could not remove entry', e.message),
+  })
+  const importMut = useMutation({
+    mutationFn: () => post(`${base}/import`, { domain, kind: importKind, text: importText }),
+    onSuccess: (res) => {
+      toast.success('Import finished', `${res.added.length} added, ${res.errors.length} skipped`)
+      setImportOpen(false); setImportText(''); invalidate()
+    },
+    onError: (e) => toast.error('Could not import list', e.message),
+  })
+
+  const entries = entriesQ.data?.entries || []
+  const blacklist = entries.filter((e) => e.kind === 'blacklist')
+  const whitelist = entries.filter((e) => e.kind === 'whitelist')
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-3">
+        <div>
+          <CardTitle className="flex items-center gap-2"><ShieldBan className="h-4 w-4" /> Per-mailbox spam filters</CardTitle>
+          <CardDescription>Always reject mail from a blacklisted address/domain, or always deliver mail from a whitelisted one — checked before spam scoring.</CardDescription>
+        </div>
+        {mailboxes.length > 0 && (
+          <Select value={mailbox} onChange={(e) => setMailbox(e.target.value)} className="w-56">
+            {mailboxes.map((m) => <option key={m.local_part} value={m.local_part}>{m.local_part}@{domain}</option>)}
+          </Select>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {mailboxes.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Create a mailbox first — spam filters are configured per mailbox.</p>
+        ) : entriesQ.isLoading ? (
+          <CenteredSpinner />
+        ) : entriesQ.error ? (
+          <ErrorState error={entriesQ.error} onRetry={entriesQ.refetch} />
+        ) : (
+          <>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="sender@example.com or example.com" className="flex-1" />
+              <Button variant="outline" disabled={!pattern.trim()} loading={addMut.isPending} onClick={() => addMut.mutate('whitelist')}>
+                <ShieldCheck className="h-4 w-4" /> Whitelist
+              </Button>
+              <Button variant="outline" disabled={!pattern.trim()} loading={addMut.isPending} onClick={() => addMut.mutate('blacklist')}>
+                <ShieldBan className="h-4 w-4" /> Blacklist
+              </Button>
+              <Button variant="ghost" onClick={() => setImportOpen(true)}>Import list</Button>
+            </div>
+            <div className="grid gap-6 md:grid-cols-2">
+              <div>
+                <h4 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground"><ShieldBan className="h-3.5 w-3.5 text-danger" /> Blacklist ({blacklist.length})</h4>
+                {blacklist.length === 0 ? <p className="text-xs text-muted-foreground">No blacklisted senders.</p> : (
+                  <ul className="space-y-1.5">
+                    {blacklist.map((e) => (
+                      <li key={e.id} className="flex items-center justify-between rounded-btn border border-border px-3 py-1.5 text-sm">
+                        <span className="font-mono text-xs">{e.pattern}</span>
+                        <button type="button" onClick={() => deleteMut.mutate(e.id)} className="text-muted-foreground hover:text-danger"><X className="h-3.5 w-3.5" /></button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div>
+                <h4 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground"><ShieldCheck className="h-3.5 w-3.5 text-success" /> Whitelist ({whitelist.length})</h4>
+                {whitelist.length === 0 ? <p className="text-xs text-muted-foreground">No whitelisted senders.</p> : (
+                  <ul className="space-y-1.5">
+                    {whitelist.map((e) => (
+                      <li key={e.id} className="flex items-center justify-between rounded-btn border border-border px-3 py-1.5 text-sm">
+                        <span className="font-mono text-xs">{e.pattern}</span>
+                        <button type="button" onClick={() => deleteMut.mutate(e.id)} className="text-muted-foreground hover:text-danger"><X className="h-3.5 w-3.5" /></button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Import list</DialogTitle></DialogHeader>
+          <DialogBody className="space-y-3">
+            <FormField label="List type">
+              <Select value={importKind} onChange={(e) => setImportKind(e.target.value)}>
+                <option value="blacklist">Blacklist</option>
+                <option value="whitelist">Whitelist</option>
+              </Select>
+            </FormField>
+            <FormField label="Addresses / domains" hint="One per line. Lines starting with # are ignored.">
+              <textarea rows={10} className="w-full rounded-btn border border-border bg-background px-3 py-2 font-mono text-xs"
+                value={importText} onChange={(e) => setImportText(e.target.value)} placeholder={'spammer@evil.com\nbad-domain.com'} />
+            </FormField>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setImportOpen(false)}>Cancel</Button>
+            <Button loading={importMut.isPending} disabled={!importText.trim()} onClick={() => importMut.mutate()}>Import</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  )
+}
+
+// --- IMAPSync migrations (missing-features batch, goal feature 1) --------
+
+const IMAP_JOB_STATUS_VARIANT = {
+  pending: 'neutral', connecting: 'info', running: 'info',
+  completed: 'success', failed: 'danger', cancelled: 'neutral',
+}
+
+function ImapMigrateTab({ username, domain }) {
+  const qc = useQueryClient()
+  const mailboxesQ = useQuery({
+    queryKey: ['mailboxes', domain],
+    queryFn: () => get(`/api/v1/mail/domains/${domain}/mailboxes`),
+    enabled: !!domain,
+  })
+  const mailboxes = mailboxesQ.data?.mailboxes || []
+  const [mailbox, setMailbox] = useState('')
+  useEffect(() => {
+    if (!mailbox && mailboxes.length) setMailbox(mailboxes[0].local_part)
+  }, [mailboxes, mailbox])
+
+  const [form, setForm] = useState({
+    source_host: '', source_port: 993, source_ssl: true,
+    source_email: '', source_password: '', dest_password: '',
+  })
+  const [folders, setFolders] = useState(null) // null = not listed yet, [] = listed, all synced
+  const [selectedFolders, setSelectedFolders] = useState(new Set())
+
+  const jobsKey = ['imap-migrations', username]
+  const jobsQ = useQuery({
+    queryKey: jobsKey,
+    queryFn: () => get(`/api/v1/accounts/${username}/email/imap-migrate`),
+    enabled: !!username,
+    refetchInterval: (q) => (q.state.data?.jobs || []).some((j) => ['pending', 'connecting', 'running'].includes(j.status)) ? 3000 : false,
+  })
+  const jobs = jobsQ.data?.jobs || []
+
+  const listMut = useMutation({
+    mutationFn: () => post(`/api/v1/accounts/${username}/email/imap-migrate/list-folders`, {
+      source_host: form.source_host, source_port: Number(form.source_port), source_ssl: form.source_ssl,
+      source_email: form.source_email, source_password: form.source_password,
+    }),
+    onSuccess: (res) => { setFolders(res.folders); setSelectedFolders(new Set(res.folders)); toast.success(`Found ${res.folders.length} folder(s)`) },
+    onError: (e) => toast.error('Could not connect to source server', e.message),
+  })
+
+  const startMut = useMutation({
+    mutationFn: () => post(`/api/v1/accounts/${username}/email/imap-migrate`, {
+      domain, local_part: mailbox,
+      source_host: form.source_host, source_port: Number(form.source_port), source_ssl: form.source_ssl,
+      source_email: form.source_email, source_password: form.source_password, dest_password: form.dest_password,
+      folders: folders ? Array.from(selectedFolders) : [],
+    }),
+    onSuccess: () => {
+      toast.success('Migration started', 'Progress will appear below.')
+      setForm({ source_host: '', source_port: 993, source_ssl: true, source_email: '', source_password: '', dest_password: '' })
+      setFolders(null); setSelectedFolders(new Set())
+      qc.invalidateQueries({ queryKey: jobsKey })
+    },
+    onError: (e) => toast.error('Could not start migration', e.message),
+  })
+
+  const cancelMut = useMutation({
+    mutationFn: (jobId) => post(`/api/v1/accounts/${username}/email/imap-migrate/${jobId}/cancel`, {}),
+    onSuccess: () => { toast.success('Migration cancelled'); qc.invalidateQueries({ queryKey: jobsKey }) },
+    onError: (e) => toast.error('Could not cancel migration', e.message),
+  })
+
+  const canStart = mailbox && form.source_host && form.source_email && form.source_password && form.dest_password
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><ArrowRightLeft className="h-4 w-4" /> Migrate mail from another server</CardTitle>
+          <CardDescription>
+            Copy mail from an external IMAP account into one of your Forgehost mailboxes. Credentials are used only
+            for this migration and are never stored or logged.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {mailboxes.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Create a mailbox first — that's the migration destination.</p>
+          ) : (
+            <>
+              <FormField label="Destination mailbox">
+                <Select value={mailbox} onChange={(e) => setMailbox(e.target.value)}>
+                  {mailboxes.map((m) => <option key={m.local_part} value={m.local_part}>{m.local_part}@{domain}</option>)}
+                </Select>
+              </FormField>
+              <FormField label="This mailbox's own (Forgehost) password" hint="Needed so the migration can log in and deliver mail here.">
+                <Input type="password" value={form.dest_password} onChange={(e) => setForm((f) => ({ ...f, dest_password: e.target.value }))} />
+              </FormField>
+              <div className="border-t border-border pt-4">
+                <p className="mb-3 text-sm font-medium text-foreground">Source server</p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FormField label="Source IMAP host">
+                    <Input value={form.source_host} onChange={(e) => setForm((f) => ({ ...f, source_host: e.target.value }))} placeholder="imap.oldprovider.com" />
+                  </FormField>
+                  <FormField label="Port">
+                    <Input type="number" value={form.source_port} onChange={(e) => setForm((f) => ({ ...f, source_port: e.target.value }))} />
+                  </FormField>
+                  <FormField label="Source email">
+                    <Input type="email" value={form.source_email} onChange={(e) => setForm((f) => ({ ...f, source_email: e.target.value }))} />
+                  </FormField>
+                  <FormField label="Source password">
+                    <Input type="password" value={form.source_password} onChange={(e) => setForm((f) => ({ ...f, source_password: e.target.value }))} />
+                  </FormField>
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <Switch checked={form.source_ssl} onCheckedChange={(v) => setForm((f) => ({ ...f, source_ssl: v }))} />
+                  <span className="text-sm text-muted-foreground">Use SSL/TLS to connect to the source server</span>
+                </div>
+              </div>
+              {folders !== null && (
+                <FormField label={`Folders to migrate (${selectedFolders.size}/${folders.length} selected)`}>
+                  <div className="max-h-48 space-y-1 overflow-y-auto rounded-btn border border-border p-2">
+                    {folders.map((f) => (
+                      <label key={f} className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={selectedFolders.has(f)}
+                          onChange={(e) => setSelectedFolders((prev) => {
+                            const next = new Set(prev)
+                            e.target.checked ? next.add(f) : next.delete(f)
+                            return next
+                          })} />
+                        <span className="font-mono text-xs">{f}</span>
+                      </label>
+                    ))}
+                  </div>
+                </FormField>
+              )}
+            </>
+          )}
+        </CardContent>
+        {mailboxes.length > 0 && (
+          <CardFooter className="flex flex-wrap gap-2">
+            <Button variant="outline" loading={listMut.isPending}
+              disabled={!form.source_host || !form.source_email || !form.source_password}
+              onClick={() => listMut.mutate()}>
+              List source folders
+            </Button>
+            <Button loading={startMut.isPending} disabled={!canStart} onClick={() => startMut.mutate()}>
+              <ArrowRightLeft className="h-4 w-4" /> Start migration
+            </Button>
+          </CardFooter>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Migration jobs</CardTitle></CardHeader>
+        <CardContent>
+          {jobsQ.isLoading ? <CenteredSpinner /> : jobs.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No migrations yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {jobs.map((job) => (
+                <div key={job.id} className="rounded-card border border-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      {['pending', 'connecting', 'running'].includes(job.status) && <Loader2 className="h-3.5 w-3.5 animate-spin text-info" />}
+                      <span className="text-sm font-medium text-foreground">{job.mailbox}</span>
+                      <span className="text-xs text-muted-foreground">from {job.source_host}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={IMAP_JOB_STATUS_VARIANT[job.status] || 'neutral'}>{job.status}</Badge>
+                      {['pending', 'connecting', 'running'].includes(job.status) && (
+                        <button type="button" onClick={() => cancelMut.mutate(job.id)} className="text-muted-foreground hover:text-danger" title="Cancel">
+                          <XCircle className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">{job.progress_message}</p>
+                  {job.folders_total > 0 && (
+                    <div className="mt-2">
+                      <ProgressBarInline value={job.folders_done} max={job.folders_total} />
+                      <p className="mt-1 text-xs text-muted-foreground">{job.folders_done}/{job.folders_total} folders, {job.messages_done} messages copied</p>
+                    </div>
+                  )}
+                  {job.results?.length > 0 && (
+                    <ul className="mt-2 space-y-0.5">
+                      {job.results.map((r) => (
+                        <li key={r.folder} className="flex items-center gap-1.5 text-xs">
+                          {r.status === 'ok' ? <CheckCircle2 className="h-3 w-3 text-success" /> : <XCircle className="h-3 w-3 text-danger" />}
+                          <span className="font-mono">{r.folder}</span>
+                          <span className="text-muted-foreground">{r.status === 'ok' ? `${r.messages} messages` : r.detail}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {job.error && <p className="mt-1 text-xs text-danger">{job.error}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function ProgressBarInline({ value, max }) {
+  const pct = max > 0 ? Math.round((value / max) * 100) : 0
+  return (
+    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+      <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${pct}%` }} />
+    </div>
+  )
+}
+
 export default function Email() {
   const username = useAccountUsername()
   const [domain, setDomain] = useState('')
@@ -669,6 +1021,8 @@ export default function Email() {
             <TabsTrigger value="forwarders"><Forward className="h-4 w-4" /> Forwarders</TabsTrigger>
             <TabsTrigger value="catchall"><AtSign className="h-4 w-4" /> Catch-all</TabsTrigger>
             <TabsTrigger value="spam"><ShieldAlert className="h-4 w-4" /> Spam filter</TabsTrigger>
+            <TabsTrigger value="spam-entries"><ShieldBan className="h-4 w-4" /> Spam Filters</TabsTrigger>
+            <TabsTrigger value="imap-migrate"><ArrowRightLeft className="h-4 w-4" /> Migrate</TabsTrigger>
             <TabsTrigger value="routing"><Network className="h-4 w-4" /> Routing</TabsTrigger>
             <TabsTrigger value="delivery"><ScrollText className="h-4 w-4" /> Delivery log</TabsTrigger>
           </TabsList>
@@ -683,6 +1037,12 @@ export default function Email() {
           </TabsContent>
           <TabsContent value="spam">
             <SpamTab username={username} domain={domain} />
+          </TabsContent>
+          <TabsContent value="spam-entries">
+            <MailboxSpamFiltersTab username={username} domain={domain} />
+          </TabsContent>
+          <TabsContent value="imap-migrate">
+            <ImapMigrateTab username={username} domain={domain} />
           </TabsContent>
           <TabsContent value="routing">
             <RoutingTab username={username} domain={domain} />

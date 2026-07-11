@@ -581,6 +581,10 @@ install_cron_and_logrotate() {
 0 6 * * * root /opt/forgehost/scripts/ssl_expiry_check.py >> /var/log/forgehost/ssl-expiry-check.log 2>&1
 */15 * * * * root /opt/forgehost/scripts/usage_alert_check.py >> /var/log/forgehost/usage-alert-check.log 2>&1
 EOF
+    # Missing-features batch, goal features 2 + 6: maintenance-mode
+    # auto-disable sweep + daily site-statistics snapshot.
+    run install -m 644 "${DEST}/deploy/forgehost-maintenance.cron" /etc/cron.d/forgehost-maintenance
+    run install -m 644 "${DEST}/deploy/forgehost-sitestats.cron" /etc/cron.d/forgehost-sitestats
     ok "logrotate + cron jobs installed"
 }
 
@@ -687,7 +691,7 @@ uninstall() {
     run_sh "systemctl disable --now forgehost-api forgehost-provisiond 2>/dev/null || true"
     run_sh "rm -f /etc/systemd/system/forgehost-api.service /etc/systemd/system/forgehost-provisiond.service"
     run systemctl daemon-reload
-    run_sh "rm -f /etc/cron.d/forgehost-monitoring /etc/cron.d/forgehost-cloudflare /etc/cron.d/forgehost-update /etc/cron.d/forgehost-jobs"
+    run_sh "rm -f /etc/cron.d/forgehost-monitoring /etc/cron.d/forgehost-cloudflare /etc/cron.d/forgehost-update /etc/cron.d/forgehost-jobs /etc/cron.d/forgehost-maintenance /etc/cron.d/forgehost-sitestats"
     run_sh "rm -f /etc/logrotate.d/forgehost-api"
     run_sh "rm -rf '${DEST}'"
     run_sh "rm -rf '${CONF_DIR}'"

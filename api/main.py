@@ -28,7 +28,7 @@ from shared.models import IpWhitelistEntry
 
 from api import logsetup, ratelimit
 from api.security import Identity, get_identity, require_admin
-from api.routers import account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, devtools, disktree, dns, domains, email, email_extras, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, impersonation, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, monitoring, nameservers, nodeapps, notes, notifications, onboarding, parked, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, slowquery, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wordpress
+from api.routers import account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, monitoring, nameservers, nodeapps, notes, notifications, onboarding, parked, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
 
 
 @asynccontextmanager
@@ -349,6 +349,26 @@ app.include_router(adminlogs.api_router)
 # Panel update system: authed version info + admin update check/apply/rollback.
 app.include_router(update.api_router)
 app.include_router(update.admin_api_router)
+# Missing-features batch, goal feature 2: per-domain maintenance mode + admin
+# overview of every domain currently in maintenance.
+app.include_router(maintenance.api_router)
+app.include_router(maintenance.admin_api_router)
+# Missing-features batch, goal feature 3: wildcard domains.
+app.include_router(wildcard.api_router)
+# Missing-features batch, goal feature 4: custom error pages.
+app.include_router(errorpages.api_router)
+# Missing-features batch, goal feature 5: per-mailbox spam filters.
+app.include_router(spamfilter.api_router)
+# Missing-features batch, goal feature 1: IMAPSync migrations (account-scoped
+# start/status/list + admin-wide view of every active job).
+app.include_router(imapsync.api_router)
+app.include_router(imapsync.admin_api_router)
+# Missing-features batch, goal feature 6: per-domain site statistics + admin
+# server-wide summary.
+app.include_router(sitestats.api_router)
+app.include_router(sitestats.admin_api_router)
+# Missing-features batch, goal feature 7: live MariaDB monitor (admin-only).
+app.include_router(dbmonitor.api_router)
 
 
 @app.get("/")

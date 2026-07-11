@@ -350,7 +350,15 @@ listener HTTP{
     map                      phpmyadmin {{ pma_hostname }}
 {% endif %}
 {% for vh in domain_vhosts %}
-    map                      {{ vh.vhost_name }} {{ vh.domain }}
+    {# Missing-features batch, goal feature 3: a wildcard-enabled domain adds
+       "*.<domain>" as a second name in the SAME map entry -- confirmed
+       against this server's installed OLS docs (Listeners_General_Help.html):
+       "'*.mydomain.com' will match all subdomains of mydomain.com", and any
+       OTHER domain/subdomain with its own explicit map entry elsewhere in
+       this listener still wins for its own exact hostname (OLS's own
+       documented most-specific-match-first lookup), so an existing explicit
+       subdomain is never shadowed by enabling this. #}
+    map                      {{ vh.vhost_name }} {{ vh.domain }}{{ (", *." + vh.domain) if vh.get('wildcard') else "" }}
 {% endfor %}
 }
 
@@ -369,7 +377,15 @@ listener HTTPS{
     map                      phpmyadmin {{ pma_hostname }}
 {% endif %}
 {% for vh in domain_vhosts %}
-    map                      {{ vh.vhost_name }} {{ vh.domain }}
+    {# Missing-features batch, goal feature 3: a wildcard-enabled domain adds
+       "*.<domain>" as a second name in the SAME map entry -- confirmed
+       against this server's installed OLS docs (Listeners_General_Help.html):
+       "'*.mydomain.com' will match all subdomains of mydomain.com", and any
+       OTHER domain/subdomain with its own explicit map entry elsewhere in
+       this listener still wins for its own exact hostname (OLS's own
+       documented most-specific-match-first lookup), so an existing explicit
+       subdomain is never shadowed by enabling this. #}
+    map                      {{ vh.vhost_name }} {{ vh.domain }}{{ (", *." + vh.domain) if vh.get('wildcard') else "" }}
 {% endfor %}
 }
 

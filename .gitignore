@@ -11,3 +11,4 @@ __pycache__/
 .env
 .claude/
 /dist/
+/LOG_imapsync/

@@ -136,6 +136,27 @@ def secure_read_text(dir_path: str, name: str, max_bytes: int = 1024 * 1024) -> 
         os.close(dir_fd)
 
 
+def secure_unlink(dir_path: str, name: str) -> None:
+    """Remove ``name`` inside the real directory ``dir_path`` without
+    following a symlink at either -- ``unlinkat`` itself never follows a
+    symlink at the final component (POSIX), so this only needs the
+    O_NOFOLLOW-opened parent to be safe against a symlink *earlier* in
+    ``dir_path``. Missing file/dir is not an error (idempotent, matching
+    every other delete_*_for_domain cleanup hook in this project)."""
+    _reject_name(name)
+    try:
+        dir_fd = _open_dir_nofollow(dir_path)
+    except OSError:
+        return
+    try:
+        try:
+            os.unlink(name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(dir_fd)
+
+
 def secure_replace_file(dir_path: str, name: str, data: bytes, uid: int, gid: int, mode: int = 0o600) -> None:
     """Atomically (re)write ``name`` inside the real directory ``dir_path`` with
     ``data``, owned (uid, gid) mode ``mode``, symlink-safe at every step:

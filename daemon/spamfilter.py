@@ -1,4 +1,5 @@
-"""SpamAssassin integration (Phase 4 feature 1).
+"""SpamAssassin integration (Phase 4 feature 1), extended by the
+missing-features batch (goal feature 5) with per-mailbox blacklist/whitelist.
 
 Architecture:
 
@@ -30,6 +31,7 @@ Architecture:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -39,8 +41,15 @@ from pathlib import Path
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import MailDomain, SpamGlobalSettings
-from shared.validation import ValidationError, validate_domain, validate_spam_threshold
+from shared.models import MailDomain, SpamFilterEntry, SpamGlobalSettings
+from shared.validation import (
+    ValidationError,
+    validate_domain,
+    validate_mailbox_local_part,
+    validate_spam_filter_kind,
+    validate_spam_filter_pattern,
+    validate_spam_threshold,
+)
 
 from daemon.configtx import ConfigWriter, StepResult
 from daemon.procutil import run
@@ -300,15 +309,74 @@ def _ensure_postfix_wiring():
 
 # --- Dovecot: one global sieve_before script -----------------------------
 
-
-GLOBAL_SIEVE_SOURCE = (
-    'require ["fileinto", "mailbox"];\n'
-    "\n"
+# Phase 4 feature 1's original static tail: files spam-flagged mail into
+# Junk. Missing-features batch, goal feature 5 (per-mailbox spam filters)
+# PREPENDS generated per-mailbox blacklist/whitelist blocks ahead of this
+# same rule (build_global_sieve_source below) rather than introducing a
+# second sieve_before script or touching SpamAssassin's own per-DOMAIN
+# virtual-config-dir wiring above -- see this module's design note in
+# docs/CHECKPOINT-imapsync-spamfilters.md for why: whitelist has to run
+# BEFORE the spam-flag decision is acted on (an already-flagged message that
+# hits this rule's own `stop` never reaches any later script, including a
+# per-mailbox PERSONAL script -- so a personal-script-based whitelist would
+# be structurally too late), and blacklist needs a real SMTP-time-visible
+# reject, which Sieve's `reject` action produces via a DSN back through the
+# Postfix->Dovecot LMTP hop this project already uses for delivery. Both are
+# therefore generated INTO this same global, envelope-recipient-scoped
+# script instead.
+SPAM_JUNK_RULE = (
     'if header :contains "X-Spam-Flag" "YES" {\n'
     '    fileinto :create "Junk";\n'
     "    stop;\n"
     "}\n"
 )
+
+
+def _sieve_string_literal(value: str) -> str:
+    """Sieve string literals use the same backslash/double-quote escaping
+    as C -- values here are already validated (validate_spam_filter_pattern:
+    a syntactically valid email address or bare domain, shared/validation.py)
+    so this is defense in depth, not the primary injection guard."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _sieve_block_for_entry(entry: SpamFilterEntry) -> str:
+    recipient = _sieve_string_literal(f"{entry.local_part}@{entry.domain}")
+    is_domain_pattern = "@" not in entry.pattern
+    if is_domain_pattern:
+        sender_test = f'address :domain :is "from" "{_sieve_string_literal(entry.pattern)}"'
+    else:
+        sender_test = f'address :all :is "from" "{_sieve_string_literal(entry.pattern)}"'
+
+    if entry.kind == "whitelist":
+        # keep+stop bypasses the spam-to-Junk rule below entirely for this
+        # (recipient, sender) pair -- delivered to the inbox regardless of
+        # whatever X-Spam-Flag SpamAssassin already set on the message.
+        action = "keep;\n    stop;"
+    else:
+        action = 'reject "This message has been blocked by the recipient\'s spam filter.";\n    stop;'
+    return (
+        f'if allof(envelope :is "to" "{recipient}", {sender_test}) {{\n'
+        f"    {action}\n"
+        f"}}\n"
+    )
+
+
+def build_global_sieve_source() -> str:
+    """The full global sieve_before script: one generated block per
+    SpamFilterEntry row (server-wide -- envelope :is "to" scopes each block
+    to its own mailbox, so one shared script is correct and simpler than a
+    per-mailbox file, matching the goal's own single-global-rule precedent
+    this function extends) followed by the original static Junk-filing
+    rule, unchanged in position and behavior."""
+    with write_session() as session:
+        entries = session.scalars(select(SpamFilterEntry).order_by(SpamFilterEntry.id)).all()
+        blocks = [_sieve_block_for_entry(e) for e in entries]
+
+    needs_reject = any(e.kind == "blacklist" for e in entries)
+    requires = ["fileinto", "mailbox", "envelope"] + (["reject"] if needs_reject else [])
+    header = f'require {json.dumps(requires)};\n\n'
+    return header + "\n".join(blocks) + ("\n" if blocks else "") + SPAM_JUNK_RULE
 
 
 def _validate_sieve(content: str) -> None:
@@ -324,11 +392,12 @@ def _validate_sieve(content: str) -> None:
         tmp_path.with_suffix(".svbin").unlink(missing_ok=True)
 
 
-def _install_global_sieve_script() -> None:
-    _validate_sieve(GLOBAL_SIEVE_SOURCE)
+def _install_global_sieve_script(content: str | None = None) -> None:
+    content = build_global_sieve_source() if content is None else content
+    _validate_sieve(content)
     Path(GLOBAL_SIEVE_DIR).mkdir(parents=True, exist_ok=True, mode=0o755)
     tmp_path = Path(f"{GLOBAL_SIEVE_PATH}.tmp.{os.getpid()}")
-    tmp_path.write_text(GLOBAL_SIEVE_SOURCE)
+    tmp_path.write_text(content)
     os.replace(tmp_path, GLOBAL_SIEVE_PATH)
     Path(GLOBAL_SIEVE_PATH).with_suffix(".svbin").unlink(missing_ok=True)
     result = run([SIEVEC_BIN, GLOBAL_SIEVE_PATH], timeout=15)
@@ -381,3 +450,166 @@ def _ensure_dovecot_sieve_wiring():
     if not result.ok:
         raise SpamFilterError(f"Dovecot sieve_before wiring failed: {result.summary()}")
     return result
+
+
+# --- Missing-features batch, goal feature 5: per-mailbox blacklist/whitelist
+# CRUD (daemon/server.py's OP_TABLE) --------------------------------------
+
+MAX_SPAM_FILTER_ENTRIES_PER_MAILBOX = 500
+MAX_IMPORT_LINES = 500
+
+
+def _entry_to_dict(row: SpamFilterEntry) -> dict:
+    return {
+        "id": row.id,
+        "domain": row.domain,
+        "local_part": row.local_part,
+        "kind": row.kind,
+        "pattern": row.pattern,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _refresh_global_sieve() -> None:
+    """Re-render + reinstall the global sieve_before script from current DB
+    state and reload dovecot -- same validate/apply/reload/verify pipeline
+    _ensure_dovecot_sieve_wiring already uses, just re-run on every entry
+    change instead of only at bootstrap time."""
+    _install_global_sieve_script()
+    reload_result = _dovecot_reload()
+    if not reload_result.ok:
+        raise SpamFilterError(f"dovecot reload failed after Sieve update: {reload_result.message}")
+    verify_result = _dovecot_verify()
+    if not verify_result.ok:
+        raise SpamFilterError(f"dovecot not active after Sieve update: {verify_result.message}")
+
+
+def list_entries(params: dict) -> dict:
+    domain = validate_domain(params["domain"])
+    local_part = validate_mailbox_local_part(params["local_part"])
+    with write_session() as session:
+        rows = session.scalars(
+            select(SpamFilterEntry).where(SpamFilterEntry.domain == domain, SpamFilterEntry.local_part == local_part)
+        ).all()
+        return {
+            "domain": domain,
+            "local_part": local_part,
+            "entries": [_entry_to_dict(r) for r in rows],
+        }
+
+
+def add_entry(params: dict) -> dict:
+    domain = validate_domain(params["domain"])
+    local_part = validate_mailbox_local_part(params["local_part"])
+    kind = validate_spam_filter_kind(params["kind"])
+    pattern = validate_spam_filter_pattern(params["pattern"])
+
+    with write_session() as session:
+        count = len(session.scalars(
+            select(SpamFilterEntry.id).where(SpamFilterEntry.domain == domain, SpamFilterEntry.local_part == local_part)
+        ).all())
+        if count >= MAX_SPAM_FILTER_ENTRIES_PER_MAILBOX:
+            raise SpamFilterError(f"mailbox already has the maximum of {MAX_SPAM_FILTER_ENTRIES_PER_MAILBOX} spam filter entries")
+        existing = session.scalar(
+            select(SpamFilterEntry).where(
+                SpamFilterEntry.domain == domain,
+                SpamFilterEntry.local_part == local_part,
+                SpamFilterEntry.kind == kind,
+                SpamFilterEntry.pattern == pattern,
+            )
+        )
+        if existing is not None:
+            result = _entry_to_dict(existing)
+        else:
+            row = SpamFilterEntry(domain=domain, local_part=local_part, kind=kind, pattern=pattern)
+            session.add(row)
+            session.flush()
+            result = _entry_to_dict(row)
+
+    _refresh_global_sieve()
+    return result
+
+
+def delete_entry(params: dict) -> dict:
+    domain = validate_domain(params["domain"])
+    with write_session() as session:
+        row = session.get(SpamFilterEntry, int(params["id"]))
+        # Cross-account IDOR guard: id is a small sequential int, not a
+        # capability. `domain` was already authorized against the caller's
+        # own account at the API layer (require_domain_access) -- checking
+        # the row's domain matches it is what actually ties "may delete
+        # this id" back to "owns this domain", so a different account can't
+        # delete another mailbox's entry by guessing an id. Same "not
+        # found" on mismatch as a genuinely missing row, not a
+        # distinguishable permission error.
+        if row is None or row.domain != domain:
+            raise RuntimeError(f"spam filter entry {params['id']} not found")
+        deleted = _entry_to_dict(row)
+        session.delete(row)
+
+    _refresh_global_sieve()
+    return {**deleted, "status": "deleted"}
+
+
+def import_entries(params: dict) -> dict:
+    """goal: "import from text list" -- one pattern per line, blank lines
+    and '#'-prefixed comments ignored. All entries in the batch share the
+    same (domain, local_part, kind), matching the goal's per-mailbox,
+    per-kind import UX (one "import blacklist" / "import whitelist" action
+    per mailbox)."""
+    domain = validate_domain(params["domain"])
+    local_part = validate_mailbox_local_part(params["local_part"])
+    kind = validate_spam_filter_kind(params["kind"])
+    raw_lines = [line.strip() for line in str(params.get("text", "")).splitlines()]
+    lines = [line for line in raw_lines if line and not line.startswith("#")]
+    if len(lines) > MAX_IMPORT_LINES:
+        raise SpamFilterError(f"import list must have at most {MAX_IMPORT_LINES} entries")
+
+    added: list[dict] = []
+    errors: list[dict] = []
+    with write_session() as session:
+        existing_count = len(session.scalars(
+            select(SpamFilterEntry.id).where(SpamFilterEntry.domain == domain, SpamFilterEntry.local_part == local_part)
+        ).all())
+        for line in lines:
+            try:
+                pattern = validate_spam_filter_pattern(line)
+            except ValidationError as exc:
+                errors.append({"line": line, "error": str(exc)})
+                continue
+            if existing_count + len(added) >= MAX_SPAM_FILTER_ENTRIES_PER_MAILBOX:
+                errors.append({"line": line, "error": "mailbox spam filter entry limit reached"})
+                continue
+            existing = session.scalar(
+                select(SpamFilterEntry).where(
+                    SpamFilterEntry.domain == domain,
+                    SpamFilterEntry.local_part == local_part,
+                    SpamFilterEntry.kind == kind,
+                    SpamFilterEntry.pattern == pattern,
+                )
+            )
+            if existing is not None:
+                continue  # already present -- not an error, just a no-op
+            row = SpamFilterEntry(domain=domain, local_part=local_part, kind=kind, pattern=pattern)
+            session.add(row)
+            session.flush()
+            added.append(_entry_to_dict(row))
+
+    if added:
+        _refresh_global_sieve()
+    return {"domain": domain, "local_part": local_part, "kind": kind, "added": added, "errors": errors}
+
+
+def delete_entries_for_mailbox(domain: str, local_part: str) -> None:
+    """Called from handlers_mail.delete_mailbox -- this project's manual-
+    cascade convention (no DB-level ON DELETE CASCADE anywhere in this
+    schema)."""
+    with write_session() as session:
+        rows = session.scalars(
+            select(SpamFilterEntry).where(SpamFilterEntry.domain == domain, SpamFilterEntry.local_part == local_part)
+        ).all()
+        any_deleted = bool(rows)
+        for row in rows:
+            session.delete(row)
+    if any_deleted:
+        _refresh_global_sieve()

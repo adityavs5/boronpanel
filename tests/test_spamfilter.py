@@ -65,11 +65,16 @@ def test_remove_domain_spam_settings_is_idempotent(fake_virtual_config_base):
     sf.remove_domain_spam_settings("demo1.example")  # second call, still no-op
 
 
-def test_global_sieve_script_is_valid_sieve():
+def test_global_sieve_script_is_valid_sieve(isolated_db):
     """Real sievec compile (fast, offline, no root) -- same "compile the
     generated script before trusting it" discipline
-    daemon/autoresponder.py's own tests use."""
-    sf._validate_sieve(sf.GLOBAL_SIEVE_SOURCE)
+    daemon/autoresponder.py's own tests use. Missing-features batch, goal
+    feature 5 replaced the old static GLOBAL_SIEVE_SOURCE constant with
+    build_global_sieve_source() (per-mailbox blacklist/whitelist blocks
+    generated ahead of the same static Junk-filing tail) -- with no
+    SpamFilterEntry rows this reduces to just that tail, so this still
+    covers the original "the static script is valid Sieve" intent."""
+    sf._validate_sieve(sf.build_global_sieve_source())
 
 
 # --- master.cf rendering (pure string transform, no subprocess) -----------

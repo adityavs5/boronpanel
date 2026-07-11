@@ -56,6 +56,14 @@ const CpanelImport = lazy(() => import('@/pages/admin/CpanelImport'))
 const ApiTokens = lazy(() => import('@/pages/admin/ApiTokens'))
 const Cloudflare = lazy(() => import('@/pages/admin/Cloudflare'))
 const Updates = lazy(() => import('@/pages/admin/Updates'))
+const DbMonitor = lazy(() => import('@/pages/admin/DbMonitor'))
+// Named MaintenanceOverview locally -- `Maintenance` (the panel's own
+// system-maintenance/downtime page) is already imported above from
+// @/pages/system; this is the unrelated missing-features-batch admin page
+// listing every hosting domain currently in maintenance mode.
+const MaintenanceOverview = lazy(() => import('@/pages/admin/Maintenance'))
+const SiteStats = lazy(() => import('@/pages/admin/SiteStats'))
+const ImapMigrations = lazy(() => import('@/pages/admin/ImapMigrations'))
 
 function IndexRedirect() {
   const role = useAuth.getState().role
@@ -137,6 +145,10 @@ export const router = createBrowserRouter(
         { path: 'import/cpanel', element: admin(<CpanelImport />) },
         { path: 'tokens', element: admin(<ApiTokens />) },
         { path: 'updates', element: admin(<Updates />) },
+        { path: 'db-monitor', element: admin(<DbMonitor />) },
+        { path: 'maintenance-mode', element: admin(<MaintenanceOverview />) },
+        { path: 'site-stats', element: admin(<SiteStats />) },
+        { path: 'imap-migrations', element: admin(<ImapMigrations />) },
 
         { path: '*', element: <NotFound /> },
       ]),

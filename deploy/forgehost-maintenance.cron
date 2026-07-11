@@ -1,0 +1,8 @@
+# Forgehost maintenance-mode auto-disable sweep (missing-features batch, goal
+# feature 2). Install to /etc/cron.d/forgehost-maintenance (root:root, 0644):
+#   install -m 0644 deploy/forgehost-maintenance.cron /etc/cron.d/forgehost-maintenance
+#
+# Every 5 minutes: disable any domain's maintenance mode whose auto-disable
+# timer (1h/4h/24h preset) has passed, and refresh its vhost immediately.
+# Manual-mode domains (no timer) are never touched by this sweep.
+*/5 * * * * root /opt/forgehost/scripts/maintenance_autodisable.py >> /var/log/forgehost/maintenance-autodisable.log 2>&1

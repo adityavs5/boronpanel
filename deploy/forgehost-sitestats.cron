@@ -1,0 +1,9 @@
+# Forgehost per-domain site statistics (missing-features batch, goal feature 6).
+# Install to /etc/cron.d/forgehost-sitestats (root:root, 0644):
+#   install -m 0644 deploy/forgehost-sitestats.cron /etc/cron.d/forgehost-sitestats
+#
+# Once daily (00:20): parse each domain's OLS access logs into SiteStatsDaily
+# rows (pageviews, unique visitors, bandwidth, top pages/referrers/countries,
+# 404 count). Logs rotate/expire after 30 days (vhost.conf.j2's keepDays), so
+# this must run at least daily or older raw log data is lost unrecovered.
+20 0 * * * root /opt/forgehost/scripts/sitestats_snapshot.py >> /var/log/forgehost/sitestats-snapshot.log 2>&1

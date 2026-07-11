@@ -843,7 +843,7 @@ def test_restore_full_reapplies_docroot_permissions_for_preexisting_domain(isola
     )
     monkeypatch.setattr(real_ols, "provision_vhost", lambda account: None)
     ensured = []
-    monkeypatch.setattr(real_handlers_domain, "ensure_docroot", lambda username, docroot: ensured.append((username, docroot)))
+    monkeypatch.setattr(real_handlers_domain, "ensure_docroot", lambda username, docroot, domain_name=None: ensured.append((username, docroot)))
 
     import os
 

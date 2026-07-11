@@ -4,6 +4,7 @@ import {
   Cog, Inbox, Flame, ShieldAlert, ScrollText, ShieldHalf, Gauge, ListChecks,
   Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
   History, FileCode2, Cloud, Layers, Palette, AlertOctagon, BookOpen, ArrowUpCircle,
+  DatabaseZap, Construction, BarChart3, ArrowRightLeft,
 } from 'lucide-react'
 
 // Customer nav — resource pages scoped to the signed-in account. Paths are
@@ -47,8 +48,11 @@ export const adminNav = [
   // Sidebar shows an accent dot on this item while an update is available.
   { label: 'Updates', to: '/updates', icon: ArrowUpCircle },
   { label: 'Bandwidth', to: '/bandwidth', icon: Gauge },
+  { label: 'Site Statistics', to: '/site-stats', icon: BarChart3 },
+  { label: 'Maintenance Mode', to: '/maintenance-mode', icon: Construction },
   { section: 'Mail & Network' },
   { label: 'Mail Queue', to: '/mail-queue', icon: Inbox },
+  { label: 'IMAP Migrations', to: '/imap-migrations', icon: ArrowRightLeft },
   { label: 'Firewall', to: '/firewall', icon: Flame },
   { label: 'Fail2ban', to: '/fail2ban', icon: ShieldAlert },
   { label: 'IP Whitelist', to: '/ip-whitelist', icon: LockKeyhole },
@@ -59,6 +63,7 @@ export const adminNav = [
   { label: 'Error Log', to: '/error-log', icon: AlertOctagon },
   { label: 'WAF', to: '/waf', icon: ShieldHalf },
   { label: 'Slow Queries', to: '/slow-queries', icon: ListChecks },
+  { label: 'DB Monitor', to: '/db-monitor', icon: DatabaseZap },
   { label: 'API Tokens', to: '/tokens', icon: KeyRound },
   { section: 'Integrations' },
   { label: 'Webhooks', to: '/webhooks', icon: Webhook },

@@ -88,7 +88,7 @@ def add_domain(params: dict) -> dict:
     dns_label = _subdomain_label(domain_name, parent_zone) if parent_zone else None
     dns_record_created = False
     try:
-        ensure_docroot(username, docroot)
+        ensure_docroot(username, docroot, domain_name)
         if parent_zone and settings.server_public_ip:
             dnsprovider.upsert_record(parent_zone, dns_label, "A", [settings.server_public_ip])
             dns_record_created = True
@@ -159,6 +159,13 @@ def remove_domain(params: dict) -> dict:
     from daemon import handlers_email_routing
 
     handlers_email_routing.delete_routing_for_domain(domain_name)
+    # Missing-features batch, goal features 2/3: drop any maintenance-mode /
+    # wildcard-domain bookkeeping row for this domain (the vhost itself is
+    # already gone, ols.remove_domain_vhost above).
+    from daemon import handlers_maintenance, handlers_wildcard
+
+    handlers_maintenance.delete_maintenance_for_domain(domain_name)
+    handlers_wildcard.delete_wildcard_for_domain(domain_name)
 
     return {"domain": domain_name, "kind": kind, "status": "removed"}
 
@@ -212,7 +219,7 @@ def set_domain_php_version(params: dict) -> dict:
     return result
 
 
-def ensure_docroot(username: str, docroot: str) -> None:
+def ensure_docroot(username: str, docroot: str, domain_name: str | None = None) -> None:
     import os
     import pwd
 
@@ -256,6 +263,17 @@ def ensure_docroot(username: str, docroot: str) -> None:
     # one place owns this directory's creation/perms.
     safeio.secure_mkdirs(home, "logs", pw.pw_uid, pw.pw_gid, 0o750)
     sysops.ensure_tmp_dir(username)
+
+    # Missing-features batch, goal feature 4: every domain's vhost
+    # unconditionally declares a context for /.forgehost-error-pages/
+    # (daemon/ols.py, daemon/custom_pages.py) -- same "OLS -t rejects a
+    # context whose location doesn't exist yet" reasoning as the
+    # acme-challenge dir above, so this has to exist at domain-add time too,
+    # not deferred until the customer first uploads a custom error page.
+    if domain_name is not None:
+        from daemon import custom_pages
+
+        custom_pages.ensure_pages_dir(username, domain_name)
 
 
 def _grant_webserver_acl(docroot: str) -> None:

@@ -1592,6 +1592,173 @@ class UpdateState(Base):
     last_notified_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
+class MaintenanceMode(Base):
+    """Missing-features batch, goal feature 2: per-domain maintenance mode.
+    A NEW table keyed by domain name (unique), not new columns on Domain --
+    same reasoning as Redirect/DomainForwarding/LscacheSettings (create_all()
+    only creates missing tables, never ALTERs an existing one; see
+    shared/db.py's module docstring). `bypass_token` is generated
+    server-side (secrets.token_urlsafe, shared/validation.py's
+    generate_bypass_token) -- never customer-chosen -- the same
+    "capability token embedded in a URL, not a password" shape as
+    ApiToken/PmaToken. `auto_disable_at` is computed once at enable time
+    from the goal's four presets (1h/4h/24h/manual -- manual leaves this
+    NULL) and swept by scripts/maintenance_autodisable.py (cron), the same
+    "compute the deadline once, sweep later" pattern SslExpiryNotice/
+    UsageAlert use elsewhere in this file."""
+
+    __tablename__ = "maintenance_modes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    title: Mapped[str] = mapped_column(String(200), default="We'll be right back")
+    message: Mapped[str] = mapped_column(
+        String(2000), default="This site is currently undergoing scheduled maintenance. Please check back soon."
+    )
+    estimated_time: Mapped[str] = mapped_column(String(100), default="")
+    bypass_token: Mapped[str] = mapped_column(String(64))
+    auto_disable_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    auto_disable_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class WildcardDomain(Base):
+    """Missing-features batch, goal feature 3: *.domain.com -> the same
+    vhost (and therefore the same docroot) as the base domain, via OLS's
+    own wildcard listener-map syntax (confirmed against this server's
+    installed docs, Listeners_General_Help.html: "'*.mydomain.com' will
+    match all subdomains of mydomain.com"), daemon/ols.py. A NEW table
+    keyed by the base domain name (unique) -- same reasoning as
+    MaintenanceMode above. Enabling requires the domain's own zone to be
+    Forgehost-managed (the same precondition ssl.issue_wildcard already
+    enforces, daemon/ssl.py _dns01_plan) since a wildcard A record has to
+    be written somewhere; `dns_record_created` tracks whether this
+    feature's own upsert_record(zone, "*", "A", ...) call has run, so
+    disabling can clean it up and re-enabling doesn't double-write."""
+
+    __tablename__ = "wildcard_domains"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    dns_record_created: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+SPAM_FILTER_KINDS = ("blacklist", "whitelist")
+
+
+class SpamFilterEntry(Base):
+    """Missing-features batch, goal feature 5: per-mailbox spam
+    blacklist/whitelist, by address or domain. Rendered into a per-mailbox
+    SpamAssassin virtual-config-dir user_prefs file as `blacklist_from`/
+    `whitelist_from` lines (daemon/spamfilter.py's existing per-DOMAIN
+    settings already use this exact spamd --virtual-config-dir mechanism,
+    Phase 4 feature 1 -- this feature extends it one level finer, to
+    %u=full recipient address, without disturbing the existing per-domain
+    file). Whitelist intervenes BEFORE SpamAssassin's own scoring, so a
+    whitelisted sender's mail never gets flagged spam in the first place
+    (the correct place to implement "never spam" -- a per-mailbox Dovecot
+    Sieve rule would run too late, since the existing GLOBAL sieve_before
+    script that files X-Spam-Flag:YES mail into Junk already issued `stop`
+    by the time any personal script would run, see CHECKPOINT for this
+    feature). Blacklist uses the same per-mailbox prefs file's
+    `blacklist_from` directive (guarantees a score far above any real
+    required_score, so it's always filed to Junk) -- see the CHECKPOINT
+    for why this project chose SpamAssassin per-mailbox rules over
+    Postfix header_checks (which has no per-recipient scoping without a
+    much larger smtpd_restriction_classes buildout the goal's effort level
+    doesn't justify)."""
+
+    __tablename__ = "spam_filter_entries"
+    __table_args__ = (
+        UniqueConstraint("domain", "local_part", "kind", "pattern", name="uq_spam_filter_entry"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    local_part: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # blacklist | whitelist
+    pattern: Mapped[str] = mapped_column(String(253))  # "user@example.com" or "example.com" (domain-wide)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+IMAP_MIGRATION_STATUSES = ("pending", "connecting", "running", "completed", "failed", "cancelled")
+
+
+class ImapMigrationJob(Base):
+    """Missing-features batch, goal feature 1: async IMAPSync migration job.
+    Same async-job table shape as WordPressJob/CpanelImportJob (status/
+    progress_message/error/started_at/completed_at, `results` as the
+    incremental per-folder report) -- deliberately holds NO source
+    credential field of any kind: the goal's explicit "credentials never
+    stored after job completes or logged anywhere" requirement is met
+    structurally, by never having a column that could hold one, rather
+    than by remembering to clear one after the fact (the same "don't keep
+    more than needed" posture WordPressJob.admin_password's one-time
+    reveal takes for a *generated* secret; here there's nothing to reveal,
+    so nothing is stored at all -- daemon/imapsync.py holds the source
+    password only as a Python local variable for the lifetime of the
+    subprocess call, passed via imapsync's own --password1 stdin-style
+    pipe, never argv, never written to this row, this table's own
+    __table_args__, or any log line)."""
+
+    __tablename__ = "imap_migration_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    mailbox: Mapped[str] = mapped_column(String(253), index=True)  # local@domain, the FORGEHOST destination mailbox
+    source_host: Mapped[str] = mapped_column(String(253))
+    source_port: Mapped[int] = mapped_column(Integer, default=993)
+    source_email: Mapped[str] = mapped_column(String(253))  # source address only -- never the password
+    folders: Mapped[list] = mapped_column(JSON, default=list)  # requested folder names, [] = all folders
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    current_folder: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    folders_total: Mapped[int] = mapped_column(Integer, default=0)
+    folders_done: Mapped[int] = mapped_column(Integer, default=0)
+    messages_total: Mapped[int] = mapped_column(Integer, default=0)
+    messages_done: Mapped[int] = mapped_column(Integer, default=0)
+    progress_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    results: Mapped[list] = mapped_column(JSON, default=list)  # [{folder, status: ok|failed, messages, detail}]
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SiteStatsDaily(Base):
+    """Missing-features batch, goal feature 6: per-domain daily site
+    statistics parsed from OLS access logs -- alongside (not replacing)
+    the existing BandwidthDaily/BandwidthDailyDomain (Phase 2 feature 5 /
+    Phase 7b feature 2), which only ever tracked bytes_served. This is a
+    NEW table (same create_all-friendly reasoning as every other table in
+    this missing-features batch) rather than added columns on
+    BandwidthDailyDomain, since site stats are a materially bigger row
+    (top-N breakdowns as JSON, matching HealthSnapshot.disks' own
+    "structured list in a JSON column" convention) that no other reader of
+    BandwidthDailyDomain needs. Upserted, not appended, by
+    daemon/sitestats.py's daily refresh pass -- same "recompute and
+    replace this day's row while the day's raw log lines are still on
+    disk" semantics BandwidthDaily already documents."""
+
+    __tablename__ = "site_stats_daily"
+    __table_args__ = (UniqueConstraint("domain", "date", name="uq_site_stats_daily"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    date: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD
+    pageviews: Mapped[int] = mapped_column(Integer, default=0)
+    unique_visitors: Mapped[int] = mapped_column(Integer, default=0)
+    bytes_served: Mapped[int] = mapped_column(Integer, default=0)
+    error_404_count: Mapped[int] = mapped_column(Integer, default=0)
+    top_pages: Mapped[list] = mapped_column(JSON, default=list)  # [{path, count}]
+    top_referrers: Mapped[list] = mapped_column(JSON, default=list)  # [{referrer, count}]
+    top_countries: Mapped[list] = mapped_column(JSON, default=list)  # [{country_code, count}]
+
+
 class UpdateJob(Base):
     """Panel update system: one row per update/rollback attempt -- both the
     live job the admin UI polls AND the permanent update-history record

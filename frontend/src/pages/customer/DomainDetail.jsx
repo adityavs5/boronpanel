@@ -2,12 +2,16 @@ import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid,
+} from 'recharts'
+import {
   ArrowLeft, Globe, Plus, Pencil, Trash2, Save, RefreshCw,
   ShieldOff, Ban, Lock, Users, Network, ShieldCheck,
   Server, Copy, ExternalLink, CheckCircle2, AlertCircle, Download, RotateCcw, Cloud,
+  Construction, Asterisk, FileWarning, Eye, KeyRound, BarChart3,
 } from 'lucide-react'
 import { get, post, put, patch, del } from '@/lib/api'
-import { relativeTime, copyToClipboard } from '@/lib/utils'
+import { relativeTime, copyToClipboard, formatBytes } from '@/lib/utils'
 import { PHP_VERSIONS } from '@/config/constants'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
@@ -1442,6 +1446,390 @@ function WordPressTab({ username, domain }) {
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Maintenance mode (missing-features batch, goal feature 2)
+// ---------------------------------------------------------------------------
+const AUTO_DISABLE_OPTIONS = [
+  { value: '', label: 'Manual (leave on until I turn it off)' },
+  { value: '60', label: '1 hour' },
+  { value: '240', label: '4 hours' },
+  { value: '1440', label: '24 hours' },
+]
+
+function MaintenanceTab({ username, domain }) {
+  const qc = useQueryClient()
+  const base = `/api/v1/accounts/${username}/domains/${domain}/maintenance`
+  const key = ['maintenance', username, domain]
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: key, queryFn: () => get(base), enabled: !!username && !!domain,
+  })
+  const [seeded, setSeeded] = useState(false)
+  const [form, setForm] = useState({ title: '', message: '', estimated_time: '', auto_disable_minutes: '' })
+  if (!seeded && data) {
+    setForm({
+      title: data.title || '', message: data.message || '', estimated_time: data.estimated_time || '',
+      auto_disable_minutes: data.auto_disable_minutes ? String(data.auto_disable_minutes) : '',
+    })
+    setSeeded(true)
+  }
+  const invalidate = () => qc.invalidateQueries({ queryKey: key })
+
+  const setMut = useMutation({
+    mutationFn: (enabled) => patch(base, {
+      enabled, title: form.title, message: form.message, estimated_time: form.estimated_time,
+      auto_disable_minutes: form.auto_disable_minutes ? Number(form.auto_disable_minutes) : null,
+    }),
+    onSuccess: (_r, enabled) => { toast.success(enabled ? 'Maintenance mode enabled' : 'Maintenance mode disabled'); invalidate() },
+    onError: (e) => toast.error('Could not update maintenance mode', e.message),
+  })
+  const regenMut = useMutation({
+    mutationFn: () => patch(base, { enabled: data?.enabled ?? true, title: form.title, message: form.message, estimated_time: form.estimated_time, regenerate_token: true }),
+    onSuccess: () => { toast.success('Bypass link regenerated'); invalidate() },
+    onError: (e) => toast.error('Could not regenerate bypass link', e.message),
+  })
+
+  if (isLoading) return <CardSkeleton />
+  if (error) return <ErrorState error={error} onRetry={refetch} />
+
+  const bypassUrl = data?.bypass_token ? `https://${domain}/?${data.bypass_query_param}=${data.bypass_token}` : null
+
+  return (
+    <div className="max-w-2xl">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Construction className="h-4 w-4" /> Maintenance mode</CardTitle>
+          <CardDescription>
+            Show visitors a 503 "under maintenance" page instead of the live site. Certbot renewals keep working while
+            enabled. Use the bypass link below to preview the real site.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {data?.enabled && (
+            <p className="rounded-btn border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground">
+              Maintenance mode is <strong>ON</strong> — visitors see a 503 page.
+              {data.auto_disable_at && <> Auto-disables at {new Date(data.auto_disable_at).toLocaleString()}.</>}
+            </p>
+          )}
+          <FormField label="Title">
+            <Input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="We'll be right back" />
+          </FormField>
+          <FormField label="Message">
+            <Textarea rows={3} value={form.message} onChange={(e) => setForm((f) => ({ ...f, message: e.target.value }))}
+              placeholder="This site is currently undergoing scheduled maintenance." />
+          </FormField>
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Estimated time" hint="Shown to visitors, e.g. '30 minutes'">
+              <Input value={form.estimated_time} onChange={(e) => setForm((f) => ({ ...f, estimated_time: e.target.value }))} placeholder="30 minutes" />
+            </FormField>
+            <FormField label="Auto-disable after">
+              <Select value={form.auto_disable_minutes} onChange={(e) => setForm((f) => ({ ...f, auto_disable_minutes: e.target.value }))}>
+                {AUTO_DISABLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </Select>
+            </FormField>
+          </div>
+          {bypassUrl && (
+            <FormField label="Bypass link" hint="Visit this URL once to preview the real site while maintenance mode is on.">
+              <div className="flex items-center gap-2">
+                <Input readOnly value={bypassUrl} className="font-mono text-xs" />
+                <Button variant="ghost" size="icon-sm" title="Copy" onClick={() => { copyToClipboard(bypassUrl); toast.success('Copied') }}>
+                  <Copy className="h-4 w-4" />
+                </Button>
+              </div>
+            </FormField>
+          )}
+        </CardContent>
+        <CardFooter className="flex flex-wrap gap-2">
+          {!data?.enabled ? (
+            <Button loading={setMut.isPending} onClick={() => setMut.mutate(true)}>
+              <Construction className="h-4 w-4" /> Enable maintenance mode
+            </Button>
+          ) : (
+            <Button variant="outline" loading={setMut.isPending} onClick={() => setMut.mutate(false)}>
+              <ShieldCheck className="h-4 w-4" /> Disable maintenance mode
+            </Button>
+          )}
+          {data?.enabled && (
+            <Button variant="ghost" loading={setMut.isPending} onClick={() => setMut.mutate(true)}>
+              <Save className="h-4 w-4" /> Save changes
+            </Button>
+          )}
+          {data?.bypass_token && (
+            <Button variant="ghost" loading={regenMut.isPending} onClick={() => regenMut.mutate()}>
+              <KeyRound className="h-4 w-4" /> Regenerate bypass link
+            </Button>
+          )}
+        </CardFooter>
+      </Card>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Wildcard domains (missing-features batch, goal feature 3)
+// ---------------------------------------------------------------------------
+function WildcardTab({ username, domain }) {
+  const qc = useQueryClient()
+  const base = `/api/v1/accounts/${username}/domains/${domain}/wildcard`
+  const key = ['wildcard', username, domain]
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: key, queryFn: () => get(base), enabled: !!username && !!domain,
+  })
+  const invalidate = () => qc.invalidateQueries({ queryKey: key })
+
+  const setMut = useMutation({
+    mutationFn: (enabled) => patch(base, { enabled }),
+    onSuccess: (_r, enabled) => { toast.success(enabled ? 'Wildcard routing enabled' : 'Wildcard routing disabled'); invalidate() },
+    onError: (e) => toast.error('Could not update wildcard routing', e.message),
+  })
+
+  if (isLoading) return <CardSkeleton />
+  if (error) return <ErrorState error={error} onRetry={refetch} />
+
+  return (
+    <div className="max-w-2xl">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Asterisk className="h-4 w-4" /> Wildcard subdomains</CardTitle>
+          <CardDescription>
+            Route any undefined subdomain of <span className="font-mono">{domain}</span> (e.g. anything.{domain}) to
+            this domain's own docroot — no need to add each subdomain individually.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!data?.zone_managed && (
+            <p className="rounded-btn border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground">
+              This domain's DNS zone isn't managed by Forgehost yet, so a wildcard A record can't be created here.
+              Manage this domain's DNS first (DNS tab), or create <span className="font-mono">*.{domain}</span>{' '}
+              manually with your DNS provider.
+            </p>
+          )}
+          <div className="flex items-center justify-between rounded-btn border border-border px-3 py-2.5">
+            <div>
+              <p className="text-sm font-medium text-foreground">Wildcard routing</p>
+              <p className="text-xs text-muted-foreground">*.{domain} → this domain's docroot</p>
+            </div>
+            <Switch checked={!!data?.enabled} disabled={!data?.zone_managed && !data?.enabled}
+              onCheckedChange={(v) => setMut.mutate(v)} />
+          </div>
+          {data?.enabled && !data?.ssl_is_wildcard && (
+            <p className="rounded-btn border border-info/40 bg-info/10 px-3 py-2 text-sm text-foreground">
+              Wildcard routing is on, but there's no wildcard SSL certificate for this domain yet — HTTPS requests to
+              undefined subdomains will show a certificate warning. Issue a wildcard certificate from the SSL page.
+            </p>
+          )}
+          {data?.existing_subdomains?.length > 0 && (
+            <FormField label="Existing explicit subdomains" hint="These keep serving their own content — wildcard routing only applies to undefined subdomains.">
+              <div className="flex flex-wrap gap-1.5">
+                {data.existing_subdomains.map((s) => <Badge key={s} variant="outline">{s}</Badge>)}
+              </div>
+            </FormField>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Custom error pages (missing-features batch, goal feature 4)
+// ---------------------------------------------------------------------------
+const ERROR_CODE_LABELS = { 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error', 503: 'Unavailable' }
+
+function ErrorPagesTab({ username, domain }) {
+  const qc = useQueryClient()
+  const base = `/api/v1/accounts/${username}/domains/${domain}/error-pages`
+  const listKey = ['error-pages', username, domain]
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: listKey, queryFn: () => get(base), enabled: !!username && !!domain,
+  })
+  const [activeCode, setActiveCode] = useState(404)
+  const [content, setContent] = useState(null)
+  const [loadedCode, setLoadedCode] = useState(null)
+
+  const pageQ = useQuery({
+    queryKey: [...listKey, activeCode],
+    queryFn: () => get(`${base}/${activeCode}`),
+    enabled: !!username && !!domain,
+  })
+  if (pageQ.data && loadedCode !== activeCode) {
+    setContent(pageQ.data.content || '')
+    setLoadedCode(activeCode)
+  }
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: listKey })
+    setLoadedCode(null)
+  }
+  const saveMut = useMutation({
+    mutationFn: () => put(`${base}/${activeCode}`, { content }),
+    onSuccess: () => { toast.success(`Custom ${activeCode} page saved`); invalidate() },
+    onError: (e) => toast.error('Could not save page', e.message),
+  })
+  const resetMut = useMutation({
+    mutationFn: () => del(`${base}/${activeCode}`),
+    onSuccess: () => { toast.success(`Reverted to the default ${activeCode} page`); invalidate() },
+    onError: (e) => toast.error('Could not reset page', e.message),
+  })
+
+  const preview = () => {
+    const blob = new Blob([content ?? ''], { type: 'text/html' })
+    const url = URL.createObjectURL(blob)
+    window.open(url, '_blank', 'noopener,noreferrer')
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  }
+
+  if (isLoading) return <CardSkeleton />
+  if (error) return <ErrorState error={error} onRetry={refetch} />
+
+  const pages = data?.pages || []
+  const activeInfo = pages.find((p) => p.code === activeCode)
+
+  return (
+    <div className="max-w-3xl">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><FileWarning className="h-4 w-4" /> Custom error pages</CardTitle>
+          <CardDescription>
+            Replace the default Forgehost-branded 403/404/500/503 pages with your own HTML, stored under this domain's
+            own error_pages/ directory.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {pages.map((p) => (
+              <button key={p.code} type="button" onClick={() => setActiveCode(p.code)}
+                className={`rounded-btn border px-3 py-1.5 text-sm font-medium transition-colors ${
+                  activeCode === p.code ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted-foreground hover:text-foreground'
+                }`}>
+                {p.code} {ERROR_CODE_LABELS[p.code]}
+                {p.has_custom && <Badge variant="accent" className="ml-1.5">custom</Badge>}
+              </button>
+            ))}
+          </div>
+          <FormField label={`${activeCode} page HTML`} hint={activeInfo?.has_custom ? 'Custom page in use.' : 'Using the default Forgehost-branded page — save to customize.'}>
+            <Textarea rows={12} className="font-mono text-xs" value={content ?? ''}
+              onChange={(e) => setContent(e.target.value)} placeholder="<html>...</html>" />
+          </FormField>
+        </CardContent>
+        <CardFooter className="flex flex-wrap gap-2">
+          <Button loading={saveMut.isPending} disabled={!content?.trim()} onClick={() => saveMut.mutate()}>
+            <Save className="h-4 w-4" /> Save {activeCode} page
+          </Button>
+          <Button variant="outline" onClick={preview}><Eye className="h-4 w-4" /> Preview</Button>
+          {activeInfo?.has_custom && (
+            <Button variant="ghost" loading={resetMut.isPending} onClick={() => resetMut.mutate()}>
+              <RotateCcw className="h-4 w-4" /> Revert to default
+            </Button>
+          )}
+        </CardFooter>
+      </Card>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Site statistics (missing-features batch, goal feature 6)
+// ---------------------------------------------------------------------------
+function StatsChartCard({ title, data, dataKey, color, formatY }) {
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-sm">{title}</CardTitle></CardHeader>
+      <CardContent>
+        <div className="h-56 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id={`g-stats-${dataKey}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={color} stopOpacity={0.35} />
+                  <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--border))" vertical={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'rgb(var(--muted-fg))' }} tickLine={false} axisLine={false} minTickGap={40} />
+              <YAxis tick={{ fontSize: 11, fill: 'rgb(var(--muted-fg))' }} tickLine={false} axisLine={false} width={48} tickFormatter={formatY} />
+              <RTooltip
+                contentStyle={{ background: 'rgb(var(--card))', border: '1px solid rgb(var(--border))', borderRadius: 8, fontSize: 12 }}
+                labelStyle={{ color: 'rgb(var(--muted-fg))' }}
+                formatter={(v) => [formatY ? formatY(v) : v, title]}
+              />
+              <Area type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} fill={`url(#g-stats-${dataKey})`} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function TopListCard({ title, rows, labelKey, icon: Icon }) {
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-sm flex items-center gap-2">{Icon && <Icon className="h-4 w-4" />} {title}</CardTitle></CardHeader>
+      <CardContent>
+        {!rows?.length ? (
+          <p className="text-sm text-muted-foreground">No data yet.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {rows.map((r) => (
+              <div key={r[labelKey]} className="flex items-center justify-between text-sm">
+                <span className="truncate font-mono text-xs text-foreground" title={r[labelKey]}>{r[labelKey]}</span>
+                <span className="shrink-0 text-muted-foreground">{r.count.toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function StatsTab({ username, domain }) {
+  const [period, setPeriod] = useState('daily')
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['sitestats', username, domain, period],
+    queryFn: () => get(`/api/v1/accounts/${username}/domains/${domain}/stats`, { params: { period } }),
+    enabled: !!username && !!domain,
+  })
+
+  if (isLoading) return <CardSkeleton />
+  if (error) return <ErrorState error={error} onRetry={refetch} />
+
+  const buckets = data?.buckets || []
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex gap-4 text-sm text-muted-foreground">
+          <span><strong className="text-foreground">{(data?.total_pageviews ?? 0).toLocaleString()}</strong> pageviews</span>
+          <span><strong className="text-foreground">{formatBytes(data?.total_bytes_served ?? 0)}</strong> served</span>
+          <span><strong className="text-foreground">{(data?.total_unique_visitors_approx ?? 0).toLocaleString()}</strong> visitors</span>
+        </div>
+        <Select value={period} onChange={(e) => setPeriod(e.target.value)} className="w-40">
+          <option value="daily">Daily (30d)</option>
+          <option value="weekly">Weekly (12w)</option>
+          <option value="monthly">Monthly (12mo)</option>
+        </Select>
+      </div>
+
+      {!data?.geoip_configured && (
+        <p className="rounded-btn border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          Top-countries breakdown needs a MaxMind GeoLite2 license key, configured by an admin.
+        </p>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <StatsChartCard title="Pageviews" data={buckets} dataKey="pageviews" color="#1FBED6" formatY={(v) => v} />
+        <StatsChartCard title="Bandwidth" data={buckets} dataKey="bytes_served" color="#10B981" formatY={(v) => formatBytes(v)} />
+      </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        <TopListCard title="Top pages" rows={data?.top_pages} labelKey="path" icon={BarChart3} />
+        <TopListCard title="Top referrers" rows={data?.top_referrers} labelKey="referrer" />
+        <TopListCard title="Top countries" rows={data?.top_countries} labelKey="country_code" />
+      </div>
+    </div>
+  )
+}
+
 export default function DomainDetail() {
   const username = useAccountUsername()
   const { domain } = useParams()
@@ -1464,6 +1852,10 @@ export default function DomainDetail() {
           <TabsTrigger value="php">PHP</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="wordpress">WordPress</TabsTrigger>
+          <TabsTrigger value="wildcard">Wildcard</TabsTrigger>
+          <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
+          <TabsTrigger value="error-pages">Error Pages</TabsTrigger>
+          <TabsTrigger value="stats">Stats</TabsTrigger>
         </TabsList>
 
         <TabsContent value="dns"><DnsTab domain={domain} /></TabsContent>
@@ -1474,6 +1866,10 @@ export default function DomainDetail() {
         <TabsContent value="php"><PhpTab username={username} domain={domain} /></TabsContent>
         <TabsContent value="security"><SecurityTab username={username} domain={domain} /></TabsContent>
         <TabsContent value="wordpress"><WordPressTab username={username} domain={domain} /></TabsContent>
+        <TabsContent value="wildcard"><WildcardTab username={username} domain={domain} /></TabsContent>
+        <TabsContent value="maintenance"><MaintenanceTab username={username} domain={domain} /></TabsContent>
+        <TabsContent value="error-pages"><ErrorPagesTab username={username} domain={domain} /></TabsContent>
+        <TabsContent value="stats"><StatsTab username={username} domain={domain} /></TabsContent>
       </Tabs>
     </div>
   )

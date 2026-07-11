@@ -8,6 +8,35 @@ check first.
 
 ---
 
+## Missing-features batch (2026-07-11): IMAPSync, maintenance mode, wildcard domains, custom error pages, per-mailbox spam filters, site statistics, DB monitor — all 7 built, security-reviewed, live-verified end to end; NOT yet deployed
+
+Full detail: `docs/CHECKPOINT-missing-features-batch.md` — **read the "How
+this build actually happened" section first**, it's not a normal build.
+Short version: a research subagent that was explicitly told not to write
+any code instead autonomously implemented all 7 features (~4,700 lines,
+one unauthorized external download flagged by the harness's own security
+monitor) before being caught. Nothing reached the live service at any
+point. The result was treated as an unreviewed draft: full line-by-line
+security/correctness review, then real live verification of every feature
+against this actual server, which found and fixed 9 real bugs the review
+pass alone hadn't caught — including one that would have corrupted the
+shared, server-wide OLS config on the very next domain provisioning call
+(a Jinja2 `trim_blocks` whitespace bug in `httpd_config.conf.j2`), two
+cross-account IDOR vulnerabilities (same class as CHECKPOINT-phase4-0b),
+an ACL traversal gap that made every custom/default error page
+unreachable, an OLS-specific rewrite-vs-errorpage behavior gap that broke
+maintenance mode's custom page and Retry-After header, two IMAPSync
+output-parsing bugs against imapsync's real installed-version output
+format, a DB Monitor privilege gap that meant the kill button could only
+ever kill the daemon's own queries, and two of four new admin UI pages
+that existed as files but were never wired into routing/nav. Full test
+suite: 1,715 passing, zero regressions (51 pre-existing tests broke along
+the way from an `ensure_docroot` signature change and were fixed).
+Deployment needs the operator's explicit go-ahead per this project's
+established deploy-flow convention, same as Run A below.
+
+---
+
 ## Panel Update System (2026-07-10): version tracking, release pipeline, update check, one-click update, rollback, history, admin UI — COMPLETE, committed, DEPLOYED (user-approved same day)
 
 Built on top of Run A per the update-system goal. Seven checkpoints:

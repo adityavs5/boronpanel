@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, disktree, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, health, identity_admin, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("forgehostd")
@@ -411,6 +411,44 @@ OP_TABLE = {
     "update.history": updates.get_history,
     "update.log": updates.get_log,
     "update.cleanup": updates.cleanup_old_versions,
+    # Missing-features batch, goal feature 2: per-domain maintenance mode.
+    "maintenance.get": handlers_maintenance.get_maintenance,
+    "maintenance.set": handlers_maintenance.set_maintenance,
+    "maintenance.list_active": handlers_maintenance.list_active_maintenance,
+    "maintenance.sweep_expired": lambda params: handlers_maintenance.sweep_expired(),
+    # Missing-features batch, goal feature 3: wildcard domains.
+    "wildcard.get": handlers_wildcard.get_wildcard,
+    "wildcard.set": handlers_wildcard.set_wildcard,
+    # Missing-features batch, goal feature 4: custom error pages.
+    "errorpages.list": custom_pages.rpc_list_error_pages,
+    "errorpages.get": custom_pages.rpc_get_error_page,
+    "errorpages.set": custom_pages.rpc_set_error_page,
+    "errorpages.delete": custom_pages.rpc_delete_error_page,
+    # Missing-features batch, goal feature 5: per-mailbox spam filters.
+    "spamfilter.entries.list": spamfilter.list_entries,
+    "spamfilter.entries.add": spamfilter.add_entry,
+    "spamfilter.entries.delete": spamfilter.delete_entry,
+    "spamfilter.entries.import": spamfilter.import_entries,
+    # Missing-features batch, goal feature 1: IMAPSync migrations.
+    "imapsync.start": imapsync.start_migration,
+    "imapsync.list_folders": imapsync.rpc_list_folders,
+    "imapsync.status": imapsync.get_status,
+    "imapsync.list": imapsync.list_jobs,
+    "imapsync.cancel": imapsync.cancel_migration,
+    "imapsync.list_active_admin": imapsync.list_active_admin,
+    # Missing-features batch, goal feature 6: per-domain site statistics.
+    "sitestats.get": sitestats.get_stats,
+    "sitestats.admin_summary": sitestats.get_admin_summary,
+    "sitestats.refresh": lambda params: sitestats.refresh_domain(params["domain"]),
+    "sitestats.configure_geoip": sitestats.configure_geoip,
+    # Missing-features batch, goal feature 7: live MariaDB monitor.
+    "dbmonitor.processlist": lambda params: dbmonitor.get_processlist(),
+    "dbmonitor.slow_queries": lambda params: dbmonitor.get_recent_slow_queries(),
+    "dbmonitor.db_sizes": lambda params: dbmonitor.get_db_sizes(),
+    "dbmonitor.connections": lambda params: dbmonitor.get_connection_summary(),
+    "dbmonitor.kill_query": lambda params: dbmonitor.kill_query(params["thread_id"]),
+    "dbmonitor.kill_privilege_status": lambda params: dbmonitor.kill_query_privilege_status(),
+    "dbmonitor.bootstrap_kill_privilege": dbmonitor.bootstrap_kill_query_privilege,
 }
 
 # Security audit finding F7: disktree.get/top_files and usage.get run real
@@ -468,6 +506,20 @@ REPORTING_OPS = {
     # Phase 2+3 feature 1: adding/testing a pool account live-verifies its
     # token against api.cloudflare.com -- same outbound-HTTPS isolation.
     "cf.account_add", "cf.account_test",
+    # Missing-features batch, goal feature 1: imapsync.list_folders makes a
+    # real outbound IMAP connection to a customer-supplied external server
+    # (could be slow/hanging); status/list/list_active_admin are polled by
+    # the migration progress UI -- same dashboard-polling isolation
+    # reasoning as slowquery.list/status above.
+    "imapsync.list_folders", "imapsync.status", "imapsync.list", "imapsync.list_active_admin",
+    # Missing-features batch, goal feature 7: DB monitor is explicitly
+    # auto-refreshed every 10s per the goal -- same isolation reasoning as
+    # processes.list/mailqueue.list above.
+    "dbmonitor.processlist", "dbmonitor.slow_queries", "dbmonitor.db_sizes", "dbmonitor.connections",
+    "dbmonitor.kill_privilege_status",
+    # Missing-features batch, goal feature 6: site stats read from disk/DB
+    # for a dashboard -- same reasoning as usage.get above.
+    "sitestats.get", "sitestats.admin_summary",
     # Phase 2+3 feature 3: refresh_ranges fetches GET /ips over HTTPS then
     # re-renders OLS/fail2ban -- keep off the default executor.
     "cf.refresh_ranges",

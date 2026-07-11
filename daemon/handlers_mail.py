@@ -149,6 +149,11 @@ def delete_mailbox(params: dict) -> dict:
         )
         if row is not None:
             session.delete(row)
+    # Missing-features batch, goal feature 5: drop any per-mailbox spam
+    # filter entries (regenerates the global Sieve script if any existed).
+    from daemon import spamfilter
+
+    spamfilter.delete_entries_for_mailbox(domain_name, local_part)
     return {"domain": domain_name, "local_part": local_part, "status": "deleted"}
 
 

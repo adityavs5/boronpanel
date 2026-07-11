@@ -11,6 +11,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import secrets
+import socket
 import string
 
 # \A/\Z, not ^/$, throughout this module: Python's $ matches either at the
@@ -655,6 +656,134 @@ def validate_webhook_events(values, allowed: tuple[str, ...]) -> list[str]:
             seen.add(value)
             result.append(value)
     return result
+
+
+# Missing-features batch, goal feature 2: maintenance mode. Bounds mirror
+# the other free-text admin-facing fields in this module (redirect target,
+# webhook URL) -- generous enough for a real message, capped so a crafted
+# huge value can't bloat the vhost's rendered error page or the audit log.
+MAINTENANCE_TITLE_MAX_LEN = 200
+MAINTENANCE_MESSAGE_MAX_LEN = 2000
+MAINTENANCE_ESTIMATED_TIME_MAX_LEN = 100
+# The goal's own four presets. None = manual (no auto_disable_at at all).
+MAINTENANCE_AUTO_DISABLE_MINUTES = (60, 240, 1440, None)
+
+
+def _validate_plain_text(value: str, field: str, max_len: int) -> str:
+    if not isinstance(value, str):
+        raise ValidationError(f"{field} must be a string")
+    value = value.strip()
+    if len(value) > max_len:
+        raise ValidationError(f"{field} must be at most {max_len} characters")
+    if "\x00" in value:
+        raise ValidationError(f"{field} must not contain a NUL byte")
+    return value
+
+
+def validate_maintenance_title(value: str) -> str:
+    return _validate_plain_text(value, "title", MAINTENANCE_TITLE_MAX_LEN)
+
+
+def validate_maintenance_message(value: str) -> str:
+    return _validate_plain_text(value, "message", MAINTENANCE_MESSAGE_MAX_LEN)
+
+
+def validate_maintenance_estimated_time(value: str) -> str:
+    return _validate_plain_text(value, "estimated_time", MAINTENANCE_ESTIMATED_TIME_MAX_LEN)
+
+
+def validate_maintenance_auto_disable_minutes(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError("auto_disable_minutes must be one of 60, 240, 1440, or null (manual)") from None
+    if minutes not in MAINTENANCE_AUTO_DISABLE_MINUTES:
+        raise ValidationError("auto_disable_minutes must be one of 60, 240, 1440, or null (manual)")
+    return minutes
+
+
+def generate_bypass_token() -> str:
+    """A capability token embedded in a URL/query string, not a login
+    credential -- generated server-side, never customer-chosen, same
+    "generated, not human-picked" posture as ApiToken/PmaToken. Not run
+    through validate_password_strength (that validator is for human-memorable
+    login passwords; this is a 32-byte random URL-safe string, already far
+    higher entropy than anything that check enforces)."""
+    return secrets.token_urlsafe(32)
+
+
+# Missing-features batch, goal feature 5: per-mailbox spam filter entries.
+# A pattern is either a full email address (validate_email_address's own
+# syntax) or a bare domain (validate_domain) -- rendered into a per-mailbox
+# SpamAssassin user_prefs file as `blacklist_from <pattern>` / `whitelist_from
+# <pattern>`, which is the actual injection-defense reason this is validated
+# as one of those two known-safe shapes rather than accepted as free text.
+def validate_spam_filter_pattern(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("pattern must not be empty")
+    value = value.strip().lower()
+    if "@" in value:
+        return validate_email_address(value)
+    return validate_domain(value)
+
+
+def validate_spam_filter_kind(value: str) -> str:
+    if value not in ("blacklist", "whitelist"):
+        raise ValidationError("kind must be 'blacklist' or 'whitelist'")
+    return value
+
+
+# Missing-features batch, goal feature 1: IMAPSync migrations. Blocks
+# 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (the goal's own
+# literal list, "127.x/10.x/192.168.x", widened to the full private/loopback/
+# link-local/reserved set already used by validate_webhook_url's SSRF guard
+# below -- the same class of check, applied to a hostname a customer supplies
+# as an IMAP migration SOURCE instead of a webhook target). Resolves the
+# hostname (never trusts a literal-IP-only check, which DNS rebinding could
+# bypass) -- same two-layer posture validate_webhook_url documents: this is
+# the creation-time half, daemon/imapsync.py re-checks again immediately
+# before connecting (the authoritative guard).
+def validate_imap_source_host(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("source host must not be empty")
+    host = value.strip().lower()
+    if len(host) > 253 or "\x00" in host or any(c in host for c in ("\n", "\r", "\t", " ")):
+        raise ValidationError(f"'{value}' is not a valid hostname")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is None:
+        try:
+            host.encode("idna")
+        except UnicodeError:
+            raise ValidationError(f"'{value}' is not a valid hostname") from None
+        try:
+            resolved = socket.getaddrinfo(host, None)
+        except OSError as exc:
+            raise ValidationError(f"could not resolve source host '{value}': {exc}") from None
+        addresses = [ipaddress.ip_address(r[4][0]) for r in resolved]
+    else:
+        addresses = [ip]
+    for addr in addresses:
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
+            raise ValidationError(
+                f"'{value}' resolves to a non-public address ({addr}) -- internal/loopback/link-local/"
+                "reserved hosts are not allowed as an IMAP migration source"
+            )
+    return host
+
+
+def validate_imap_source_port(value) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError("source port must be an integer") from None
+    if not (1 <= port <= 65535):
+        raise ValidationError("source port must be between 1 and 65535")
+    return port
 
 
 def validate_env_vars(value) -> dict[str, str]:

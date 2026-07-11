@@ -34,7 +34,7 @@ def account_with_domain(isolated_db, monkeypatch):
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
     monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
-    monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot: None)
+    monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot, domain_name=None: None)
     monkeypatch.setattr(hd.ols, "provision_vhost", lambda account: None)
     ha.create_account({"username": "demo1"})
     hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
