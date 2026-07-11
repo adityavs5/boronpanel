@@ -113,6 +113,27 @@ def test_login_limit_is_per_ip():
     assert evaluate("/login", "POST", "203.0.113.6", None, None).allowed
 
 
+def test_login_limit_ipv6_same_64_prefix_shares_bucket():
+    # Audit 3 (Area 11): a single attacker with a routed IPv6 /64 (a normal
+    # ISP allocation, not a botnet) could otherwise mint a fresh 10-attempt
+    # bucket on every request just by incrementing the host portion of the
+    # address -- confirm two distinct addresses in the same /64 share one
+    # bucket.
+    for i in range(10):
+        addr = f"2001:db8:1234:5678::{i:x}"
+        assert evaluate("/login", "POST", addr, None, None).allowed
+    d = evaluate("/login", "POST", "2001:db8:1234:5678::ffff", None, None)
+    assert not d.allowed, "a new address within the same /64 must still be capped"
+
+
+def test_login_limit_ipv6_different_64_prefix_is_independent():
+    for _ in range(10):
+        assert evaluate("/login", "POST", "2001:db8:1111::1", None, None).allowed
+    assert not evaluate("/login", "POST", "2001:db8:1111::2", None, None).allowed
+    # A genuinely different /64 prefix is a different (legitimate) client.
+    assert evaluate("/login", "POST", "2001:db8:2222::1", None, None).allowed
+
+
 def test_login_limit_applies_even_with_session_cookie():
     """A valid session must not buy extra brute-force attempts."""
     for _ in range(10):

@@ -97,6 +97,47 @@ def test_upload_logo_rejects_svg_with_script(isolated_db, tmp_path, monkeypatch)
     assert not list(tmp_path.glob("logo.*"))
 
 
+def test_upload_logo_rejects_svg_with_entity_obfuscated_javascript_uri(isolated_db, tmp_path, monkeypatch):
+    # Audit 3 (Area 12): a numeric character reference decodes to a real
+    # `javascript:` URI in a browser even though the raw bytes never
+    # contain that literal substring -- confirmed live as a working bypass
+    # of the plain substring filter before this fix.
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg">'
+        b'<a xlink:href="&#106;avascript:alert(1)"><rect/></a></svg>'
+    )
+    monkeypatch.setattr(branding.settings, "branding_dir", str(tmp_path))
+    with pytest.raises(Exception):
+        branding.upload_logo({"image_base64": _b64(svg)})
+    assert not list(tmp_path.glob("logo.*"))
+
+
+def test_upload_logo_rejects_svg_with_foreignobject_script_smuggling(isolated_db, tmp_path, monkeypatch):
+    # Audit 3 (Area 12): foreignObject can embed a nested (X)HTML document
+    # (e.g. an iframe srcdoc) whose entity-encoded content decodes to a
+    # real <script> tag the browser parses and executes -- confirmed live
+    # as a working bypass before this fix.
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><foreignObject>'
+        b'<iframe xmlns="http://www.w3.org/1999/xhtml" '
+        b'srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"/>'
+        b'</foreignObject></svg>'
+    )
+    monkeypatch.setattr(branding.settings, "branding_dir", str(tmp_path))
+    with pytest.raises(Exception):
+        branding.upload_logo({"image_base64": _b64(svg)})
+    assert not list(tmp_path.glob("logo.*"))
+
+
+def test_upload_logo_accepts_plain_svg_with_harmless_entities(isolated_db, tmp_path, monkeypatch):
+    # The entity-decode pass must not produce false positives on ordinary
+    # text content (e.g. an escaped ampersand in a <title>).
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><title>Acme &amp; Co</title><rect/></svg>'
+    monkeypatch.setattr(branding.settings, "branding_dir", str(tmp_path))
+    result = branding.upload_logo({"image_base64": _b64(svg)})
+    assert result["has_logo"] is True
+
+
 def test_upload_logo_rejects_ico(isolated_db, tmp_path, monkeypatch):
     """ICO is accepted for favicons only, not logos."""
     monkeypatch.setattr(branding.settings, "branding_dir", str(tmp_path))

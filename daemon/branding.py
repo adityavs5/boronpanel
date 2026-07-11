@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import html
 import logging
 import os
 import re
@@ -37,12 +38,33 @@ _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _ICO_MAGIC = b"\x00\x00\x01\x00"
 _SVG_ROOT_RE = re.compile(rb"<svg[\s>]", re.IGNORECASE)
 # SVG is XSS-capable (embedded <script>, on*= event handlers, javascript:
-# URIs) -- this isn't a full sanitizer, just a reject-obvious-cases guard,
-# same tradeoff level as this project's other "block the obviously
-# dangerous case, document the limit" security decisions.
-_SVG_DANGEROUS_RE = re.compile(rb"<script[\s>]|javascript:|on\w+\s*=", re.IGNORECASE)
+# URIs, <foreignObject> smuggling arbitrary (X)HTML) -- this isn't a full
+# XML-aware sanitizer (Audit 3 finding: a real allowlist-based parser is the
+# complete fix, deferred as a larger follow-up), just a reject-obvious-cases
+# guard. foreignObject is included because it lets an SVG embed a nested
+# HTML document (e.g. <foreignObject><iframe srcdoc="...">), which is not a
+# real branding-logo use case and has no legitimate reason to appear here.
+_SVG_DANGEROUS_RE = re.compile(rb"<script[\s>]|javascript:|on\w+\s*=|<foreignobject[\s>]", re.IGNORECASE)
 
 MAX_PANEL_NAME_LEN = 64
+
+
+def _entity_decoded(data: bytes) -> bytes:
+    """Best-effort XML/HTML entity decoding so an obfuscated payload can't
+    smuggle a dangerous construct past the literal substring search above --
+    confirmed live that both a numeric-character-reference-obfuscated
+    `javascript:` URI (`&#106;avascript:...`) and an entity-encoded
+    `<script>` inside a `srcdoc` attribute decode, in a real browser, to the
+    exact dangerous strings _SVG_DANGEROUS_RE already rejects, even though
+    neither contains the literal substring in the raw bytes. Not a
+    replacement for a real XML parse (attribute context still isn't
+    understood), just a second pass over the decoded text that closes the
+    two confirmed bypasses without a new dependency."""
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except Exception:
+        return data
+    return html.unescape(text).encode("utf-8", errors="replace")
 
 
 def _sniff_image(data: bytes, allow_ico: bool) -> str:
@@ -56,7 +78,7 @@ def _sniff_image(data: bytes, allow_ico: bool) -> str:
         end = stripped.find(b"?>")
         stripped = stripped[end + 2 :].lstrip() if end != -1 else stripped
     if _SVG_ROOT_RE.match(stripped) or stripped.startswith(b"<svg"):
-        if _SVG_DANGEROUS_RE.search(data):
+        if _SVG_DANGEROUS_RE.search(data) or _SVG_DANGEROUS_RE.search(_entity_decoded(data)):
             raise ValidationError("SVG contains a <script>/event-handler/javascript: URI and was rejected")
         return "svg"
     kinds = "PNG or SVG" if not allow_ico else "PNG, SVG or ICO"

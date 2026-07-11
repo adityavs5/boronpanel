@@ -41,6 +41,7 @@ path; the 429 carries Retry-After per RFC 6585.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
 import threading
 import time
@@ -166,6 +167,28 @@ def credential_fingerprint(cookie: str | None, authorization: str | None) -> str
 limiter = SlidingWindowLimiter()
 
 
+def _ip_bucket(ip: str | None) -> str:
+    """Audit 3 (Area 11) finding: keying strictly on the literal address let
+    an attacker with a routed IPv6 prefix -- a normal residential/mobile ISP
+    allocation, not a botnet -- trivially rotate addresses to defeat the
+    per-IP login/unauthenticated limiters (confirmed: each new address in
+    the prefix started a brand-new bucket). Normalize IPv6 addresses to
+    their /64 network (the standard ISP-routed allocation unit) so one
+    client maps to one bucket regardless of which address in its prefix it
+    uses; IPv4 is left as a literal address (NAT already aggregates most
+    residential IPv4 to one address per household, and /64-style
+    aggregation has no IPv4 analog at that granularity)."""
+    if not ip:
+        return "unknown"
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 6:
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return ip
+
+
 def evaluate(path: str, method: str, client_ip: str | None, cookie: str | None, authorization: str | None) -> Decision:
     """The whole per-request decision, pure enough to unit-test without an
     ASGI app (same extraction pattern as api/main.py's ip_allowed)."""
@@ -174,16 +197,17 @@ def evaluate(path: str, method: str, client_ip: str | None, cookie: str | None, 
     if rule is None:
         return Decision(allowed=True, tier="exempt")
     tier, limit, window = rule
+    ip_bucket = _ip_bucket(client_ip)
     # login/password-reset are per-IP regardless of any credential (a valid
     # session shouldn't buy extra brute-force attempts against /login).
     if tier in ("login", "password_reset") or fingerprint is None:
-        key = f"{tier}:ip:{client_ip or 'unknown'}"
+        key = f"{tier}:ip:{ip_bucket}"
         retry_after = limiter.check(key, limit, window)
     else:
         # Per-IP backstop first (see module docstring): a credential-
         # rotation flood saturates this one bucket instead of minting a
         # fresh per-credential bucket on every request.
-        key = f"{tier}:ip:{client_ip or 'unknown'}"
+        key = f"{tier}:ip:{ip_bucket}"
         retry_after = limiter.check(key, limit, window)
         if retry_after is None:
             key = f"{tier}:cred:{fingerprint}"
