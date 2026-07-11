@@ -1,8 +1,8 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Periodic usage-snapshot refresh (Phase 2 feature 5).
 
 Run via a system cron (README/CHECKPOINT-phase2-5.md), not a per-account
-Forgehost-managed crontab (daemon/cron.py, feature 2) -- this is server
+Boron-managed crontab (daemon/cron.py, feature 2) -- this is server
 infrastructure, same category as the SSL deploy-hook script, not a
 customer-facing resource. Keeps usage_snapshots/bandwidth_daily
 accumulating on a real ~15-min cadence even if nobody opens the usage

@@ -92,7 +92,7 @@ def set_wildcard(params: dict) -> dict:
         zone_managed = dnsprovider.zone_exists(domain_name)
         if enabled and not zone_managed:
             raise RuntimeError(
-                f"domain '{domain_name}' has no Forgehost-managed DNS zone -- a wildcard A record "
+                f"domain '{domain_name}' has no Boron-managed DNS zone -- a wildcard A record "
                 "cannot be created until this domain's own zone is managed here (same precondition "
                 "wildcard SSL issuance already requires)"
             )

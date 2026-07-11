@@ -1,9 +1,9 @@
 """Phase 7a feature 1: per-account NodeJS app hosting.
 
-One systemd unit per app (forgehost-node-{username}-{id}.service,
+One systemd unit per app (boron-node-{username}-{id}.service,
 daemon/appunits.py), running as the account's own Linux user (never root),
 assigned directly to that account's existing cgroup slice via `Slice=`
-(daemon/cgroups.py already creates forgehost-<username>.slice at account-
+(daemon/cgroups.py already creates boron-<username>.slice at account-
 creation time), restarted on crash (`Restart=on-failure`). Node itself is
 one of several full runtime installs living side by side under
 settings.node_base_dir/<version> (the same pattern lsphp already uses for
@@ -146,7 +146,7 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, port: i
 
     content = (
         "[Unit]\n"
-        f"Description=Forgehost NodeJS app '{name}' for account '{username}'\n"
+        f"Description=Boron NodeJS app '{name}' for account '{username}'\n"
         "After=network.target\n"
         "\n"
         "[Service]\n"
@@ -156,7 +156,7 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, port: i
         f"WorkingDirectory={app_dir}\n"
         f"EnvironmentFile={appunits.env_file_path(unit)}\n"
         f"ExecStart={_node_bin(node_version)} {entry_point}\n"
-        f"Slice=forgehost-{username}.slice\n"
+        f"Slice=boron-{username}.slice\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
         f"StandardOutput=append:{log_path}\n"
@@ -385,9 +385,9 @@ def terminate_account_node_apps(account: Account) -> None:
 
 
 def bootstrap_all_node_apps() -> None:
-    """Run once at forgehostd startup (server.py's amain(), same category
+    """Run once at borond startup (server.py's amain(), same category
     as cgroups.bootstrap_all_slices) -- re-applies every enabled app's
-    systemd unit so it survives a host reboot, not just a forgehostd
+    systemd unit so it survives a host reboot, not just a borond
     restart. A disabled (explicitly stopped) app is left stopped, matching
     stop_app's own "sticks across reboot" semantics."""
     with write_session() as session:
@@ -411,6 +411,6 @@ def bootstrap_all_node_apps() -> None:
         except Exception:
             import logging
 
-            logging.getLogger("forgehostd.nodeapps").exception(
+            logging.getLogger("borond.nodeapps").exception(
                 "failed to bootstrap NodeJS app %d for account '%s'", app_id, username
             )

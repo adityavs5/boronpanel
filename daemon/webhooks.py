@@ -26,7 +26,7 @@ from shared.db import write_session
 from shared.models import WEBHOOK_EVENT_TYPES, Webhook, WebhookDelivery, utcnow
 from shared.validation import validate_webhook_events, validate_webhook_url
 
-logger = logging.getLogger("forgehostd.webhooks")
+logger = logging.getLogger("borond.webhooks")
 
 _executor = ThreadPoolExecutor(max_workers=settings.webhook_concurrency, thread_name_prefix="webhook")
 
@@ -155,7 +155,7 @@ def _ip_is_blocked(ip: ipaddress._BaseAddress) -> bool:
 
 def _assert_public_destination(url: str) -> str:
     """Security-audit-2 (Medium) SSRF guard: webhook delivery is an outbound
-    HTTP POST made by forgehostd (root), to an admin-configured URL. Without
+    HTTP POST made by borond (root), to an admin-configured URL. Without
     this, an admin (or an over-scoped admin token) could point a webhook at an
     internal-only service (127.0.0.1:8081 PowerDNS, the panel, other
     loopback services) or the cloud metadata endpoint (169.254.169.254) and
@@ -291,8 +291,8 @@ def _deliver(delivery_id: int) -> None:
                 body,
                 {
                     "Content-Type": "application/json",
-                    "X-Forgehost-Signature": signature,
-                    "X-Forgehost-Event": event,
+                    "X-Boron-Signature": signature,
+                    "X-Boron-Event": event,
                 },
                 settings.webhook_delivery_timeout_seconds,
             )
@@ -350,5 +350,5 @@ def test_webhook(params: dict) -> dict:
         webhook = session.get(Webhook, webhook_id)
         if webhook is None:
             raise WebhookError(f"webhook {webhook_id} not found")
-    delivery_id = _trigger(webhook, "test", {"message": "This is a test delivery from Forgehost."})
+    delivery_id = _trigger(webhook, "test", {"message": "This is a test delivery from Boron."})
     return {"delivery_id": delivery_id, "status": "queued"}

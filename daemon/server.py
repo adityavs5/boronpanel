@@ -1,4 +1,4 @@
-"""forgehostd: the root-privileged provisioning daemon.
+"""borond: the root-privileged provisioning daemon.
 
 Listens only on a Unix domain socket (ARCHITECTURE.md SS2). Every accepted
 connection is dispatched to one of OP_TABLE's handlers in a worker thread
@@ -23,7 +23,7 @@ from shared.validation import ValidationError
 from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
-logger = logging.getLogger("forgehostd")
+logger = logging.getLogger("borond")
 
 OP_TABLE = {
     "account.create": handlers_account.create_account,
@@ -403,7 +403,7 @@ OP_TABLE = {
     # Panel update system: check/apply/rollback panel releases. start and
     # rollback are admin-only at the API layer (require_admin + conditional
     # 2FA confirmation before the RPC is ever sent -- ARCHITECTURE.md SS2's
-    # trust model: authorization happens in forgehost-api).
+    # trust model: authorization happens in boron-api).
     "update.check": updates.check,
     "update.status": updates.get_status,
     "update.start": updates.start_update,
@@ -767,37 +767,37 @@ async def amain() -> None:
 
     server = await asyncio.start_unix_server(handle_client, path=socket_path)
 
-    # group-readable/writable by forgehost-api, nothing for "other"
+    # group-readable/writable by boron-api, nothing for "other"
     os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP)
     try:
-        gid = grp.getgrnam("forgehost-api").gr_gid
+        gid = grp.getgrnam("boron-api").gr_gid
         os.chown(socket_path, 0, gid)
         # The socket's own group bit means nothing if the directory
         # containing it isn't traversable by that group too -- systemd's
-        # RuntimeDirectory= creates /run/forgehost as root:root (this
-        # service runs as root, no Group= override), so forgehost-api could
+        # RuntimeDirectory= creates /run/boron as root:root (this
+        # service runs as root, no Group= override), so boron-api could
         # see the socket file's permissions but never reach it, getting a
         # generic "Permission denied" with no indication why. Caught by the
-        # first real login attempt through forgehost-api, not by reasoning
+        # first real login attempt through boron-api, not by reasoning
         # about systemd's RuntimeDirectory semantics in advance.
         socket_dir = str(Path(socket_path).parent)
         os.chown(socket_dir, 0, gid)
         os.chmod(socket_dir, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
         logger.info("socket dir %s now group=%s mode=%o", socket_dir, gid, stat.S_IMODE(os.stat(socket_dir).st_mode))
     except KeyError:
-        logger.warning("forgehost-api group not found; socket left root-only")
+        logger.warning("boron-api group not found; socket left root-only")
     except OSError:
-        logger.exception("failed to chown/chmod %s for forgehost-api access", socket_path)
+        logger.exception("failed to chown/chmod %s for boron-api access", socket_path)
 
-    logger.info("forgehostd listening on %s", socket_path)
+    logger.info("borond listening on %s", socket_path)
     async with server:
         await server.serve_forever()
 
 
 def main() -> None:
     if os.geteuid() != 0:
-        raise SystemExit("forgehostd must run as root")
-    # Same guard as forgehost-api's startup: the daemon signs the 2FA-pending
+        raise SystemExit("borond must run as root")
+    # Same guard as boron-api's startup: the daemon signs the 2FA-pending
     # token with this key too, so refuse to run on the insecure default.
     from shared.config import require_secure_session_secret
 

@@ -1,24 +1,24 @@
 #!/usr/bin/python3
-"""Forgehost update finalizer -- the detached last mile of a panel update.
+"""Boron update finalizer -- the detached last mile of a panel update.
 
-Launched by forgehostd (daemon/updates.py) as a transient systemd unit via
-systemd-run, from a COPY under /var/lib/forgehost, interpreted by the SYSTEM
+Launched by borond (daemon/updates.py) as a transient systemd unit via
+systemd-run, from a COPY under /var/lib/boron, interpreted by the SYSTEM
 python3. Both of those are deliberate:
 
-- Detached, because this script restarts forgehost-provisiond -- the very
+- Detached, because this script restarts boron-provisiond -- the very
   process that launched it. An in-daemon implementation would be killed
   mid-swap.
 - A copy on the system interpreter with ONLY the standard library, because
   this is the machinery that rolls a broken update BACK. It must keep
-  working when the new tree's venv is broken, when /opt/forgehost points
+  working when the new tree's venv is broken, when /opt/boron points
   somewhere half-dead, and while either panel service is down. It imports
-  nothing from the forgehost codebase.
+  nothing from the boron codebase.
 
 What it does (goal steps g-j):
-  1. Atomically swap the /opt/forgehost symlink to the new version dir
+  1. Atomically swap the /opt/boron symlink to the new version dir
      (converting the legacy real-directory layout to a symlink on the
      first-ever update).
-  2. Restart forgehost-provisiond + forgehost-api.
+  2. Restart boron-provisiond + boron-api.
   3. Health-check both: HTTPS GET /healthz on the API, and a real
      length-prefixed JSON RPC round trip on the daemon socket (any
      well-formed reply proves the daemon event loop is serving -- the
@@ -130,7 +130,7 @@ class Finalizer:
             raise
 
     def convert_live_dir(self) -> None:
-        """First-ever update: /opt/forgehost is a plain directory. Move it to
+        """First-ever update: /opt/boron is a plain directory. Move it to
         the versioned old_dir (same filesystem -- a fast rename), then
         symlink. The services keep running through the rename (their cwd and
         open files follow the inode); they restart seconds later anyway."""
@@ -291,7 +291,7 @@ class Finalizer:
                      else "panel NOT healthy after swap-back -- manual intervention required")
         self.finish_job("failed", error=reason, rolled_back=self.swapped and swap_back_ok)
         self.alert_admin(
-            f"[Forgehost] {'Rollback' if a.mode == 'rollback' else 'Update'} FAILED"
+            f"[Boron] {'Rollback' if a.mode == 'rollback' else 'Update'} FAILED"
             + ("" if swap_back_ok else " -- MANUAL INTERVENTION REQUIRED"),
             f"Update job {a.job_id} failed: {reason}\n\n"
             + (f"The panel was automatically swapped back to {a.old_dir} and restarted.\n"
@@ -299,7 +299,7 @@ class Finalizer:
                f"Swapping back to {a.old_dir} ALSO failed -- the panel may be down. "
                f"On the server: ln -sfn {a.old_dir} {a.live} && "
                f"systemctl restart {a.units.replace(',', ' ')}\n")
-            + f"Details: /var/log/forgehost/updates.log (job {a.job_id}).\n",
+            + f"Details: /var/log/boron/updates.log (job {a.job_id}).\n",
         )
         return 1 if swap_back_ok else 2
 
@@ -319,7 +319,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--alert-recipient", default="")
     p.add_argument("--convert-live-dir", action="store_true",
                    help="first-ever update: move the real live dir aside and symlink")
-    p.add_argument("--units", default="forgehost-provisiond,forgehost-api")
+    p.add_argument("--units", default="boron-provisiond,boron-api")
     p.add_argument("--systemctl-bin", default="systemctl")
     p.add_argument("--health-timeout", type=float, default=90.0)
     return p.parse_args(argv)

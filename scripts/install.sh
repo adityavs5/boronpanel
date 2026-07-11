@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# Forgehost installer (Run A feature 9).
+# Boron installer (Run A feature 9).
 #
-# One command to stand up Forgehost on a fresh Ubuntu 24.04 server. Faithful,
+# One command to stand up Boron on a fresh Ubuntu 24.04 server. Faithful,
 # idempotent translation of the hand-tested runbook in README.md -- every step
 # here corresponds to a numbered section there, and each is safe to re-run.
 #
 #   sudo bash scripts/install.sh                 # full install (interactive)
 #   sudo bash scripts/install.sh --dry-run       # print the plan, change nothing
-#   sudo bash scripts/install.sh --uninstall     # remove Forgehost (keeps user data)
+#   sudo bash scripts/install.sh --uninstall     # remove Boron (keeps user data)
 #
 # Non-interactive install: preseed the prompts with env vars --
 #   FH_PANEL_DOMAIN, FH_LE_EMAIL, FH_ADMIN_USER, FH_ADMIN_PASSWORD,
@@ -16,17 +16,17 @@
 #
 # No external dependencies beyond bash + coreutils + the OS package manager.
 # Progress is printed per step (OK / FAIL / SKIP) and appended to
-# /var/log/forgehost-install.log.
+# /var/log/boron-install.log.
 
 set -euo pipefail
 
 # --- constants ---------------------------------------------------------------
 
-readonly DEST="/opt/forgehost"
-readonly CONF_DIR="/etc/forgehost"
-readonly DATA_DIR="/var/lib/forgehost"
-readonly LOG_DIR="/var/log/forgehost"
-readonly INSTALL_LOG="/var/log/forgehost-install.log"
+readonly DEST="/opt/boron"
+readonly CONF_DIR="/etc/boron"
+readonly DATA_DIR="/var/lib/boron"
+readonly LOG_DIR="/var/log/boron"
+readonly INSTALL_LOG="/var/log/boron-install.log"
 readonly VENV="${DEST}/.venv"
 readonly MIN_RAM_MB=1024
 readonly MIN_DISK_GB=10
@@ -40,9 +40,9 @@ readonly REPO_ROOT
 
 # Panel version -- read from version.py, the repo-wide single source of truth
 # (scripts/release.sh bumps it; the API and SPA display the same value).
-FORGEHOST_VERSION="$(sed -n 's/^FORGEHOST_VERSION = "\(.*\)"$/\1/p' "${REPO_ROOT}/version.py" 2>/dev/null || true)"
-FORGEHOST_VERSION="${FORGEHOST_VERSION:-unknown}"
-readonly FORGEHOST_VERSION
+BORON_VERSION="$(sed -n 's/^BORON_VERSION = "\(.*\)"$/\1/p' "${REPO_ROOT}/version.py" 2>/dev/null || true)"
+BORON_VERSION="${BORON_VERSION:-unknown}"
+readonly BORON_VERSION
 
 # --- runtime flags -----------------------------------------------------------
 
@@ -327,7 +327,7 @@ ensure_group() {
 }
 
 setup_system_users() {
-    info "Creating system users (vmail, forgehost-api)"
+    info "Creating system users (vmail, boron-api)"
     # vmail: fixed low uid/gid 150 -- a high uid would push every hosting
     # account's uid up after it (README §6).
     ensure_group vmail 150
@@ -342,13 +342,13 @@ setup_system_users() {
     run chown vmail:vmail /var/vmail
     run chmod 750 /var/vmail
 
-    ensure_group forgehost-api
-    if getent passwd forgehost-api >/dev/null; then
-        skip "user 'forgehost-api' exists"
+    ensure_group boron-api
+    if getent passwd boron-api >/dev/null; then
+        skip "user 'boron-api' exists"
     else
         run useradd --system --no-create-home --shell /usr/sbin/nologin \
-            -g forgehost-api forgehost-api
-        ok "user 'forgehost-api' created"
+            -g boron-api boron-api
+        ok "user 'boron-api' created"
     fi
 }
 
@@ -381,10 +381,10 @@ deploy_app() {
     fi
 
     # Run A feature 7: the API (unprivileged) must be able to create its own
-    # log files in the shared log dir -- setgid group-write for forgehost-api.
-    run chgrp forgehost-api "$LOG_DIR"
+    # log files in the shared log dir -- setgid group-write for boron-api.
+    run chgrp boron-api "$LOG_DIR"
     run chmod 2775 "$LOG_DIR"
-    ok "log dir ${LOG_DIR} group-writable by forgehost-api"
+    ok "log dir ${LOG_DIR} group-writable by boron-api"
 }
 
 # --- 5. secrets + config -----------------------------------------------------
@@ -414,25 +414,25 @@ setup_config() {
     info "Writing configuration + secrets"
     [[ -z "$SERVER_IP" ]] && SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 
-    write_file "${CONF_DIR}/forgehost.toml" 640 "root:forgehost-api" <<EOF
+    write_file "${CONF_DIR}/boron.toml" 640 "root:boron-api" <<EOF
 server_public_ip = "${SERVER_IP}"
 letsencrypt_email = "${LE_EMAIL}"
 EOF
-    ok "forgehost.toml written"
+    ok "boron.toml written"
 
     # SESSION_SECRET: the one secret the API needs; its own 0640 root:api file.
     if [[ -f "${CONF_DIR}/api-secrets.env" ]] && grep -q '^SESSION_SECRET=' "${CONF_DIR}/api-secrets.env"; then
         skip "SESSION_SECRET already set"
     else
         run_sh "install -m 640 /dev/null '${CONF_DIR}/api-secrets.env'"
-        run_sh "chown root:forgehost-api '${CONF_DIR}/api-secrets.env'"
+        run_sh "chown root:boron-api '${CONF_DIR}/api-secrets.env'"
         run_sh "printf 'SESSION_SECRET=%s\n' \"\$(openssl rand -hex 32)\" >> '${CONF_DIR}/api-secrets.env'"
         ok "SESSION_SECRET generated"
     fi
 }
 
 setup_mariadb() {
-    info "Securing MariaDB + creating Forgehost database users"
+    info "Securing MariaDB + creating Boron database users"
     run systemctl enable --now mariadb
     if [[ -f "${CONF_DIR}/secrets.env" ]] && grep -q '^MARIADB_DAEMON_PASSWORD=' "${CONF_DIR}/secrets.env"; then
         skip "MariaDB users already provisioned"
@@ -485,12 +485,12 @@ SQL
 
 setup_powerdns() {
     info "Configuring PowerDNS (gsqlite3 + REST API)"
-    if [[ -f /etc/powerdns/pdns.d/forgehost.conf ]]; then
+    if [[ -f /etc/powerdns/pdns.d/boron.conf ]]; then
         skip "PowerDNS already configured"
         return 0
     fi
     if $DRY_RUN; then
-        printf '  %s init pdns sqlite db, write forgehost.conf with a fresh API key\n' "${C_YELLOW}[dry]${C_RESET}"
+        printf '  %s init pdns sqlite db, write boron.conf with a fresh API key\n' "${C_YELLOW}[dry]${C_RESET}"
         return 0
     fi
     local pdns_key; pdns_key="$(_rand_hex 24)"
@@ -500,7 +500,7 @@ setup_powerdns() {
         chown pdns:pdns /var/lib/powerdns/pdns.sqlite3
         chmod 660 /var/lib/powerdns/pdns.sqlite3
     fi
-    cat >/etc/powerdns/pdns.d/forgehost.conf <<EOF
+    cat >/etc/powerdns/pdns.d/boron.conf <<EOF
 launch+=gsqlite3
 gsqlite3-database=/var/lib/powerdns/pdns.sqlite3
 gsqlite3-dnssec=no
@@ -510,7 +510,7 @@ webserver-port=8081
 webserver-allow-from=127.0.0.1
 api=yes
 api-key=${pdns_key}
-default-soa-content=ns1.forgehost.invalid hostmaster.@ 0 10800 3600 604800 3600
+default-soa-content=ns1.boron.invalid hostmaster.@ 0 10800 3600 604800 3600
 EOF
     printf 'POWERDNS_API_KEY=%s\n' "${pdns_key}" >>"${CONF_DIR}/secrets.env"
     mkdir -p "${CONF_DIR}/ssl"
@@ -529,15 +529,15 @@ setup_ssl_bootstrap() {
     if [[ -f "${CONF_DIR}/ssl/default.crt" ]]; then
         skip "default self-signed cert exists"
     else
-        run_sh "openssl req -x509 -nodes -newkey rsa:2048 -keyout '${CONF_DIR}/ssl/default.key' -out '${CONF_DIR}/ssl/default.crt' -days 3650 -subj '/CN=forgehost-default'"
+        run_sh "openssl req -x509 -nodes -newkey rsa:2048 -keyout '${CONF_DIR}/ssl/default.key' -out '${CONF_DIR}/ssl/default.crt' -days 3650 -subj '/CN=boron-default'"
         run chmod 600 "${CONF_DIR}/ssl/default.key"
         ok "default cert generated"
     fi
     if [[ -f "${CONF_DIR}/ssl/api/panel.crt" ]]; then
         skip "panel TLS cert exists"
     else
-        run_sh "openssl req -x509 -nodes -newkey rsa:2048 -keyout '${CONF_DIR}/ssl/api/panel.key' -out '${CONF_DIR}/ssl/api/panel.crt' -days 3650 -subj '/CN=${PANEL_DOMAIN:-forgehost-panel}'"
-        run_sh "chown forgehost-api:forgehost-api '${CONF_DIR}/ssl/api/panel.key' '${CONF_DIR}/ssl/api/panel.crt'"
+        run_sh "openssl req -x509 -nodes -newkey rsa:2048 -keyout '${CONF_DIR}/ssl/api/panel.key' -out '${CONF_DIR}/ssl/api/panel.crt' -days 3650 -subj '/CN=${PANEL_DOMAIN:-boron-panel}'"
+        run_sh "chown boron-api:boron-api '${CONF_DIR}/ssl/api/panel.key' '${CONF_DIR}/ssl/api/panel.crt'"
         run chmod 600 "${CONF_DIR}/ssl/api/panel.key"
         ok "panel cert generated"
     fi
@@ -554,37 +554,37 @@ EOF
 
 install_systemd_units() {
     info "Installing systemd units"
-    run install -m 644 "${DEST}/deploy/forgehost-provisiond.service" /etc/systemd/system/
-    run install -m 644 "${DEST}/deploy/forgehost-api.service" /etc/systemd/system/
+    run install -m 644 "${DEST}/deploy/boron-provisiond.service" /etc/systemd/system/
+    run install -m 644 "${DEST}/deploy/boron-api.service" /etc/systemd/system/
     run systemctl daemon-reload
-    run systemctl enable forgehost-provisiond
+    run systemctl enable boron-provisiond
     ok "systemd units installed + provisiond enabled"
 }
 
 install_cron_and_logrotate() {
     info "Installing periodic jobs + log rotation"
     # Run A feature 7: API access/error log rotation.
-    run install -m 644 "${DEST}/deploy/forgehost-api.logrotate" /etc/logrotate.d/forgehost-api
+    run install -m 644 "${DEST}/deploy/boron-api.logrotate" /etc/logrotate.d/boron-api
     # Run A feature 5: service health monitoring, every 5 min.
-    run install -m 644 "${DEST}/deploy/forgehost-monitoring.cron" /etc/cron.d/forgehost-monitoring
+    run install -m 644 "${DEST}/deploy/boron-monitoring.cron" /etc/cron.d/boron-monitoring
     # Cloudflare edge-range + zone-activation polls.
-    run install -m 644 "${DEST}/deploy/forgehost-cloudflare.cron" /etc/cron.d/forgehost-cloudflare
+    run install -m 644 "${DEST}/deploy/boron-cloudflare.cron" /etc/cron.d/boron-cloudflare
     # Panel update system: daily release check + admin email + old-version pruning.
-    run install -m 644 "${DEST}/deploy/forgehost-update.cron" /etc/cron.d/forgehost-update
+    run install -m 644 "${DEST}/deploy/boron-update.cron" /etc/cron.d/boron-update
     # The remaining infrastructure crons (usage, backups, ssl expiry, pma
     # tokens, usage alerts) -- root-owned, same trust level as the daemon.
-    write_file /etc/cron.d/forgehost-jobs 644 <<'EOF'
-# Forgehost infrastructure cron jobs (installed by scripts/install.sh).
-*/15 * * * * root /opt/forgehost/scripts/usage_snapshot.py >> /var/log/forgehost/usage-snapshot.log 2>&1
-0 * * * * root /opt/forgehost/scripts/backup_scheduler.py >> /var/log/forgehost/backup-scheduler.log 2>&1
-*/5 * * * * root /opt/forgehost/scripts/pma_token_cleanup.py >> /var/log/forgehost/pma-token-cleanup.log 2>&1
-0 6 * * * root /opt/forgehost/scripts/ssl_expiry_check.py >> /var/log/forgehost/ssl-expiry-check.log 2>&1
-*/15 * * * * root /opt/forgehost/scripts/usage_alert_check.py >> /var/log/forgehost/usage-alert-check.log 2>&1
+    write_file /etc/cron.d/boron-jobs 644 <<'EOF'
+# Boron infrastructure cron jobs (installed by scripts/install.sh).
+*/15 * * * * root /opt/boron/scripts/usage_snapshot.py >> /var/log/boron/usage-snapshot.log 2>&1
+0 * * * * root /opt/boron/scripts/backup_scheduler.py >> /var/log/boron/backup-scheduler.log 2>&1
+*/5 * * * * root /opt/boron/scripts/pma_token_cleanup.py >> /var/log/boron/pma-token-cleanup.log 2>&1
+0 6 * * * root /opt/boron/scripts/ssl_expiry_check.py >> /var/log/boron/ssl-expiry-check.log 2>&1
+*/15 * * * * root /opt/boron/scripts/usage_alert_check.py >> /var/log/boron/usage-alert-check.log 2>&1
 EOF
     # Missing-features batch, goal features 2 + 6: maintenance-mode
     # auto-disable sweep + daily site-statistics snapshot.
-    run install -m 644 "${DEST}/deploy/forgehost-maintenance.cron" /etc/cron.d/forgehost-maintenance
-    run install -m 644 "${DEST}/deploy/forgehost-sitestats.cron" /etc/cron.d/forgehost-sitestats
+    run install -m 644 "${DEST}/deploy/boron-maintenance.cron" /etc/cron.d/boron-maintenance
+    run install -m 644 "${DEST}/deploy/boron-sitestats.cron" /etc/cron.d/boron-sitestats
     ok "logrotate + cron jobs installed"
 }
 
@@ -592,19 +592,19 @@ EOF
 
 start_services() {
     info "Starting services + bootstrapping OLS"
-    run systemctl restart forgehost-provisiond
+    run systemctl restart boron-provisiond
     # DB schema is created by the daemon's own init_db() on first start
     # (create_all + additive migrations); give it a moment to bind its socket.
     if ! $DRY_RUN; then
         local _wait
         for _wait in 1 2 3 4 5 6 7 8 9 10; do
-            [[ -S /run/forgehost/provisiond.sock ]] && break
+            [[ -S /run/boron/provisiond.sock ]] && break
             sleep 1
         done
     fi
     # One-time: replace OLS's stock Example vhost with a clean baseline.
-    run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from shared.rpc import RpcClient; RpcClient('/run/forgehost/provisiond.sock').call('system.bootstrap_ols', _actor='setup', _role='admin')\" || true"
-    run systemctl enable --now forgehost-api
+    run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from shared.rpc import RpcClient; RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_ols', _actor='setup', _role='admin')\" || true"
+    run systemctl enable --now boron-api
     ok "provisiond + api started; OLS baseline applied"
 }
 
@@ -642,7 +642,7 @@ setup_firewall() {
     ok "UFW enabled (SSH/web/mail/DNS/FTP/panel allowed)"
 
     run systemctl enable --now fail2ban
-    write_file /etc/fail2ban/jail.d/forgehost.conf 644 <<'EOF'
+    write_file /etc/fail2ban/jail.d/boron.conf 644 <<'EOF'
 [sshd]
 enabled = true
 
@@ -680,24 +680,24 @@ prompt_inputs() {
 # --- uninstall ---------------------------------------------------------------
 
 uninstall() {
-    info "Uninstalling Forgehost"
+    info "Uninstalling Boron"
     if ! $DRY_RUN; then
-        printf '%s' "${C_YELLOW}This removes Forgehost's services, code, config and secrets. Hosting account data under /home, /var/vmail and MariaDB is left untouched. Continue? [y/N] ${C_RESET}"
+        printf '%s' "${C_YELLOW}This removes Boron's services, code, config and secrets. Hosting account data under /home, /var/vmail and MariaDB is left untouched. Continue? [y/N] ${C_RESET}"
         local reply=""
         [[ "$NONINTERACTIVE" == "true" || "$NONINTERACTIVE" == "1" ]] && reply="y"
         [[ -z "$reply" ]] && read -r reply
         [[ "$reply" =~ ^[Yy] ]] || die "aborted"
     fi
-    run_sh "systemctl disable --now forgehost-api forgehost-provisiond 2>/dev/null || true"
-    run_sh "rm -f /etc/systemd/system/forgehost-api.service /etc/systemd/system/forgehost-provisiond.service"
+    run_sh "systemctl disable --now boron-api boron-provisiond 2>/dev/null || true"
+    run_sh "rm -f /etc/systemd/system/boron-api.service /etc/systemd/system/boron-provisiond.service"
     run systemctl daemon-reload
-    run_sh "rm -f /etc/cron.d/forgehost-monitoring /etc/cron.d/forgehost-cloudflare /etc/cron.d/forgehost-update /etc/cron.d/forgehost-jobs /etc/cron.d/forgehost-maintenance /etc/cron.d/forgehost-sitestats"
-    run_sh "rm -f /etc/logrotate.d/forgehost-api"
+    run_sh "rm -f /etc/cron.d/boron-monitoring /etc/cron.d/boron-cloudflare /etc/cron.d/boron-update /etc/cron.d/boron-jobs /etc/cron.d/boron-maintenance /etc/cron.d/boron-sitestats"
+    run_sh "rm -f /etc/logrotate.d/boron-api"
     run_sh "rm -rf '${DEST}'"
     run_sh "rm -rf '${CONF_DIR}'"
     warn "kept: ${DATA_DIR} (control-plane DB), ${LOG_DIR}, /home/*, /var/vmail, MariaDB data"
     warn "to remove those too: rm -rf ${DATA_DIR} ${LOG_DIR}  (irreversible)"
-    ok "Forgehost services + code removed"
+    ok "Boron services + code removed"
     summary
     exit 0
 }
@@ -713,12 +713,12 @@ summary() {
 
 usage() {
     cat <<EOF
-Forgehost installer
+Boron Panel installer
 
 Usage: sudo bash scripts/install.sh [OPTIONS]
 
   --dry-run      Print every step without changing anything.
-  --uninstall    Remove Forgehost services, code and config (keeps user data).
+  --uninstall    Remove Boron services, code and config (keeps user data).
   -h, --help     Show this help.
 
 Non-interactive install via env vars:
@@ -747,7 +747,7 @@ main() {
     # "true"/"false", so every run printed "(dry-run)". Fixed to a real test.
     local dry_marker=""
     $DRY_RUN && dry_marker=" ${C_YELLOW}(dry-run)${C_RESET}"
-    printf '%s\n' "${C_BOLD}Forgehost installer v${FORGEHOST_VERSION}${C_RESET}${dry_marker}"
+    printf '%s\n' "${C_BOLD}Boron Panel installer v${BORON_VERSION}${C_RESET}${dry_marker}"
     _logline "=== install run start (dry_run=${DRY_RUN} uninstall=${UNINSTALL}) ==="
 
     if $UNINSTALL; then
@@ -776,7 +776,7 @@ main() {
 
     summary
     if [[ "$STEP_FAIL" -eq 0 ]]; then
-        info "Done. Forgehost v${FORGEHOST_VERSION} -- Panel: https://${PANEL_DOMAIN:-${SERVER_IP:-<server-ip>}}:9443/login"
+        info "Done. Boron Panel v${BORON_VERSION} -- https://${PANEL_DOMAIN:-${SERVER_IP:-<server-ip>}}:9443/login"
         $DRY_RUN && info "This was a dry-run -- nothing was changed."
     else
         die "${STEP_FAIL} step(s) failed -- see ${INSTALL_LOG}"

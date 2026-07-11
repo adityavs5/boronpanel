@@ -16,7 +16,7 @@ from shared.validation import ValidationError
 @pytest.fixture(autouse=True)
 def fixed_app_env_key(monkeypatch):
     """appcrypto.get_key() auto-generates and PERSISTS a key to the real
-    /etc/forgehost/secrets.env on first use if none is already configured
+    /etc/boron/secrets.env on first use if none is already configured
     (daemon/appcrypto.py) -- never acceptable as a side effect of running
     the test suite. Every test in this file gets a fixed in-memory key via
     settings.secrets instead, so encrypt_env/decrypt_env never touch disk."""
@@ -99,7 +99,7 @@ def test_create_node_app_writes_systemd_unit_and_env_file(account_with_domain):
     })
     unit_path = nodeapps.appunits.unit_path(result["unit"])
     content = unit_path.read_text()
-    assert f"forgehost-{'demo1'}.slice" in content
+    assert f"boron-{'demo1'}.slice" in content
     assert "User=demo1" in content
     assert "Restart=on-failure" in content
     env_path = nodeapps.appunits.env_file_path(result["unit"])

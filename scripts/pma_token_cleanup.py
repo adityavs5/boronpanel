@@ -1,4 +1,4 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Periodic phpMyAdmin signon-token cleanup (Phase 3 feature 3).
 
 Run via a system cron (README), same category as usage_snapshot.py/

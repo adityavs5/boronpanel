@@ -1,4 +1,4 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Periodic Cloudflare edge-range refresh (docs/PLAN-cloudflare.md Phase 2,
 features 3+4).
 
@@ -12,9 +12,9 @@ so the steady-state cost is one HTTPS GET and a file compare.
 The ranges file is written BEFORE either consumer is reloaded (goal rule:
 "CF ranges file must exist before OLS reload or fail2ban restart").
 
-Suggested /etc/cron.d/forgehost-cloudflare entry (see also the zone-check
+Suggested /etc/cron.d/boron-cloudflare entry (see also the zone-check
 line in scripts/cloudflare_zone_check.py):
-  17 4 * * * root /opt/forgehost/scripts/cloudflare_ranges.py >> /var/log/forgehost/cloudflare-ranges.log 2>&1
+  17 4 * * * root /opt/boron/scripts/cloudflare_ranges.py >> /var/log/boron/cloudflare-ranges.log 2>&1
 """
 from __future__ import annotations
 

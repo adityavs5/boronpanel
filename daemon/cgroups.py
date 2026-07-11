@@ -23,7 +23,7 @@ attack surface for the sake of closing what is at most a few-second
 placement window, and it was flagged by this environment's own safety
 review before it was ever installed. This build never installs one.
 
-Instead: forgehostd (which already runs as root, the same privilege level
+Instead: borond (which already runs as root, the same privilege level
 ARCHITECTURE.md establishes for the whole daemon) periodically scans for
 worker processes still sitting in lshttpd's own cgroup and moves each one
 into its owning account's slice -- root crossing an arbitrary cgroup
@@ -37,7 +37,7 @@ a crash/restart) and short, a reasonable trade for a hosting panel where
 the alternative is a standing root-equivalent local exploit primitive.
 
 Limits themselves are systemd slices (`Slice=` unit per account, nested
-under a static `forgehost.slice`), not hand-rolled cgroupfs writes --
+under a static `boron.slice`), not hand-rolled cgroupfs writes --
 `systemctl set-property` applies limits to the live cgroup immediately
 *and* persists them via a systemd-generated drop-in under
 /etc/systemd/system.control/ (confirmed empirically: survives daemon-reload,
@@ -58,9 +58,9 @@ from shared.models import Account
 
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.cgroups")
+logger = logging.getLogger("borond.cgroups")
 
-PARENT_SLICE = "forgehost.slice"
+PARENT_SLICE = "boron.slice"
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 LSHTTPD_CGROUP_PROCS = CGROUP_ROOT / "system.slice" / "lshttpd.service" / "cgroup.procs"
 MIN_ACCOUNT_UID = 1000  # matches useradd's default UID_MIN (Phase 1 convention)
@@ -76,7 +76,7 @@ class CgroupError(Exception):
 
 
 def slice_name(username: str) -> str:
-    return f"forgehost-{username}.slice"
+    return f"boron-{username}.slice"
 
 
 def _unit_path(username: str) -> Path:
@@ -89,13 +89,13 @@ def _cgroup_path(username: str) -> Path:
 
 def _write_unit_file(username: str) -> None:
     """A minimal, static base unit -- just enough to exist. No explicit
-    `Slice=forgehost.slice` directive: systemd nests any "foo-bar.slice"
+    `Slice=boron.slice` directive: systemd nests any "foo-bar.slice"
     unit under "foo.slice" automatically from the name alone (confirmed
-    empirically -- CGroup path is /forgehost.slice/forgehost-<user>.slice
+    empirically -- CGroup path is /boron.slice/boron-<user>.slice
     with no Slice= line at all). Asserting it explicitly turned out to be
     not just redundant but noisy: re-running daemon-reload + start against
     an *already-active* slice with an explicit Slice= line logged "Failed
-    to assign slice forgehost.slice to unit ..., ignoring: Invalid
+    to assign slice boron.slice to unit ..., ignoring: Invalid
     argument" on every subsequent apply_limits() call (harmless --
     "ignoring" means it kept the correct assignment -- but needless
     warning noise in the journal on every limit update). Actual limits are
@@ -105,7 +105,7 @@ def _write_unit_file(username: str) -> None:
     unit_path = _unit_path(username)
     content = (
         "[Unit]\n"
-        f"Description=Forgehost resource limits for account '{username}'\n"
+        f"Description=Boron resource limits for account '{username}'\n"
     )
     if unit_path.exists() and unit_path.read_text() == content:
         return
@@ -160,13 +160,13 @@ def remove_slice(username: str) -> None:
 
 
 def bootstrap_all_slices() -> None:
-    """Run once at forgehostd startup: ensures every active/suspended
+    """Run once at borond startup: ensures every active/suspended
     account's slice exists with its current DB-recorded limits applied.
     This is what makes limits survive a *host* reboot, not just a
-    forgehostd restart -- systemd itself doesn't auto-recreate a slice's
+    borond restart -- systemd itself doesn't auto-recreate a slice's
     cgroup on boot just because a unit file is present (slices without an
     [Install] section aren't "enabled"/auto-started the way services are),
-    so forgehostd's own startup is the single source of truth that
+    so borond's own startup is the single source of truth that
     reconciles cgroups back to DB state, the same role bootstrap_baseline
     plays for OLS vhosts."""
     with write_session() as session:
@@ -186,10 +186,10 @@ def _account_uid_map(session) -> dict[int, str]:
 
 
 def reconcile_processes() -> int:
-    """Periodic (called from forgehostd's own asyncio loop, every few
+    """Periodic (called from borond's own asyncio loop, every few
     seconds): moves any worker process still sitting in lshttpd's own
     cgroup into its owning account's slice, keyed by the process's real
-    uid against Account.uid. Root-privileged (forgehostd's own level), so
+    uid against Account.uid. Root-privileged (borond's own level), so
     crossing the cgroup hierarchy here needs no special capability --
     this is the safe alternative to a setuid/capability helper binary
     (see module docstring). Returns the number of processes moved."""
@@ -217,7 +217,7 @@ def reconcile_processes() -> int:
 
         username = uid_map.get(uid)
         if username is None:
-            continue  # uid doesn't belong to any known account (e.g. a non-Forgehost service)
+            continue  # uid doesn't belong to any known account (e.g. a non-Boron service)
 
         target = _cgroup_path(username) / "cgroup.procs"
         try:

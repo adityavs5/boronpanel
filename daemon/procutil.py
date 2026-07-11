@@ -1,4 +1,4 @@
-"""The only place forgehostd is allowed to shell out from.
+"""The only place borond is allowed to shell out from.
 
 Every call goes through run(), which always takes an argument list and never
 shell=True -- a direct, structural countermeasure to CyberPanel's
@@ -11,7 +11,7 @@ import logging
 import subprocess
 from dataclasses import dataclass
 
-logger = logging.getLogger("forgehostd.proc")
+logger = logging.getLogger("borond.proc")
 
 
 def _redact_value(arg: str, secrets: list[str]) -> str:

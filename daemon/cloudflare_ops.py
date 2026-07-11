@@ -33,7 +33,7 @@ from shared.validation import validate_domain
 from daemon import cloudflare, cloudflare_accounts, events, powerdns
 from daemon.dns_zone_lookup import label_within_zone
 
-logger = logging.getLogger("forgehostd.cloudflare")
+logger = logging.getLogger("borond.cloudflare")
 
 
 def _zone_token(row: CloudflareZone) -> str | None:
@@ -485,7 +485,7 @@ def zone_enable(params: dict) -> dict:
     with write_session() as session:
         dns_zone = session.scalar(select(DnsZone).where(DnsZone.zone == domain))
         if dns_zone is None:
-            raise RuntimeError(f"no Forgehost-managed DNS zone for '{domain}' -- create one first")
+            raise RuntimeError(f"no Boron-managed DNS zone for '{domain}' -- create one first")
         account_id = dns_zone.account_id
         if session.scalar(select(CloudflareZone).where(CloudflareZone.zone == domain)) is not None:
             raise RuntimeError(f"zone '{domain}' is already on Cloudflare")

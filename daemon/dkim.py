@@ -36,7 +36,7 @@ from daemon import dnsprovider
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.dkim")
+logger = logging.getLogger("borond.dkim")
 
 DEFAULT_SELECTOR = "default"
 KEY_BITS = "2048"
@@ -94,11 +94,11 @@ def dkim_txt_value(domain: str, selector: str = DEFAULT_SELECTOR) -> str:
 def setup_dns_signing(domain: str, selector: str = DEFAULT_SELECTOR) -> dict:
     """Called once when a mail domain is created (handlers_mail.py).
     Generates the keypair (idempotent), then -- only if `domain` falls
-    under a Forgehost-managed DNS zone -- publishes SPF/DKIM/DMARC TXT
+    under a Boron-managed DNS zone -- publishes SPF/DKIM/DMARC TXT
     records via the PowerDNS REST API (never raw SQL, same as every other
-    DNS write in this project). If the zone isn't Forgehost-managed,
+    DNS write in this project). If the zone isn't Boron-managed,
     the keypair is still generated/stored (so it exists for the operator
-    to publish by hand, or for Forgehost to publish later if the zone
+    to publish by hand, or for Boron to publish later if the zone
     is imported), and the response says so explicitly rather than
     pretending records were published."""
     existing = None

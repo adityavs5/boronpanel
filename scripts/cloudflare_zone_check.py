@@ -1,4 +1,4 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Periodic Cloudflare pending-zone activation poll (docs/PLAN-cloudflare.md
 Phase 1).
 
@@ -9,8 +9,8 @@ they get around to it -- this poll detects the pending->active transition
 without anyone needing to visit the panel. Exits immediately when no zone
 is pending, so the steady-state cost with Cloudflare unused is one SELECT.
 
-Suggested /etc/cron.d/forgehost-cloudflare entry:
-  */15 * * * * root /opt/forgehost/scripts/cloudflare_zone_check.py >> /var/log/forgehost/cloudflare-zone-check.log 2>&1
+Suggested /etc/cron.d/boron-cloudflare entry:
+  */15 * * * * root /opt/boron/scripts/cloudflare_zone_check.py >> /var/log/boron/cloudflare-zone-check.log 2>&1
 """
 from __future__ import annotations
 

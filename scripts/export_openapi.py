@@ -1,4 +1,4 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Run A feature 8: export the OpenAPI schema to docs/api/openapi.json.
 
 The schema is a build artifact -- committing it lets it be diffed in code

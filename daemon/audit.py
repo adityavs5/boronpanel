@@ -7,14 +7,14 @@ from pathlib import Path
 from shared.db import write_session
 from shared.models import AccountEvent, AuditLog, utcnow
 
-logger = logging.getLogger("forgehostd.audit")
+logger = logging.getLogger("borond.audit")
 
 MAX_PARAM_VALUE_LEN = 500
 
 # Append-only file mirror of the account lifecycle log. Terminated accounts
 # are gone from the panel; the account_events table plus this file are their
 # only remaining record, so the file survives even a database loss.
-ACCOUNT_EVENTS_LOG = Path("/var/log/forgehost/account-events.log")
+ACCOUNT_EVENTS_LOG = Path("/var/log/boron/account-events.log")
 
 
 # Substrings marking a param that must never be stored verbatim in the audit

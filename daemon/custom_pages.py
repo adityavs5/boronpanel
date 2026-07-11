@@ -10,10 +10,10 @@ not inside, the docroot" convention this project already uses for `logs/`),
 not inside public_html, so a customer's own deployment/git-push-to-deploy
 never accidentally overwrites or exposes them as ordinary site content.
 
-Exposed to OLS via a small per-domain context (``/.forgehost-error-pages/``,
+Exposed to OLS via a small per-domain context (``/.boron-error-pages/``,
 `daemon/ols.py`) plus a second, shared, server-wide context pointing at this
-package's own ``templates/error_pages/`` for the Forgehost-branded defaults
-(goal: "Default: Forgehost branded pages if customer hasn't set custom
+package's own ``templates/error_pages/`` for the Boron-branded defaults
+(goal: "Default: Boron branded pages if customer hasn't set custom
 ones") -- OLS's vhost-level ``errorpage <code> { url ... }`` directive then
 points at whichever of the two actually has content for that code, decided
 here (`resolve_error_pages`), not by OLS itself.
@@ -44,16 +44,16 @@ PAGES_DIR_NAME = "error_pages"
 # never listed alongside, the four goal-defined customer-manageable pages
 # (list_error_pages/get_error_page/set_error_page/delete_error_page all only
 # ever address ERROR_CODES).
-MAINTENANCE_PAGE_NAME = ".forgehost-maintenance.html"
+MAINTENANCE_PAGE_NAME = ".boron-maintenance.html"
 
 # Bundled with the app (templates/error_pages/*.html), same "resolved
 # relative to this module's own file location" trick daemon/ols.py's
 # TEMPLATES_DIR already uses -- correct whether running from a git checkout
-# or the deployed /opt/forgehost tree, with zero runtime configuration.
+# or the deployed /opt/boron tree, with zero runtime configuration.
 DEFAULT_PAGES_DIR = Path(__file__).resolve().parent.parent / "templates" / "error_pages"
 
-ERROR_PAGES_CONTEXT_URI = "/.forgehost-error-pages"
-DEFAULT_ERRORS_CONTEXT_URI = "/.forgehost-default-errors"
+ERROR_PAGES_CONTEXT_URI = "/.boron-error-pages"
+DEFAULT_ERRORS_CONTEXT_URI = "/.boron-default-errors"
 
 
 class CustomPagesError(Exception):
@@ -179,7 +179,7 @@ def list_error_pages(username: str, domain: str) -> dict:
 
 def existing_codes(username: str, domain: str) -> set[int]:
     """Filesystem-existence check, not a DB row -- matches the goal's own
-    framing ("Default: Forgehost branded pages if customer hasn't set
+    framing ("Default: Boron branded pages if customer hasn't set
     custom ones"), and is what daemon/ols.py calls at vhost-render time to
     decide each code's `errorpage ... { url ... }` target."""
     from daemon import safeio
@@ -210,7 +210,7 @@ def set_maintenance_page(username: str, domain: str, content: str) -> None:
 def resolve_error_pages(username: str, domain: str, maintenance_active: bool = False) -> dict[int, str]:
     """The single decision point daemon/ols.py's vhost render calls: one URL
     per HTTP error code, always fully populated (custom page if the
-    customer has one, else the shared Forgehost-branded default) -- with
+    customer has one, else the shared Boron-branded default) -- with
     maintenance mode's own page substituted for 503 specifically while
     maintenance is enabled (OLS has exactly one `errorpage 503` slot per
     vhost, so this is the one place that conflict is resolved, rather than

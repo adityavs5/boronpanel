@@ -1,4 +1,4 @@
-# Forgehost
+# Boron Panel
 
 A single-server Linux hosting control panel — account/domain/database/DNS/
 mail/SSL/file management with a REST API, for operators replacing cPanel
@@ -76,11 +76,11 @@ apt-get install -y mariadb-server postfix dovecot-core dovecot-imapd \
 mv /etc/powerdns/pdns.d/bind.conf /etc/powerdns/pdns.d/bind.conf.disabled 2>/dev/null || true
 ```
 
-certbot is installed into Forgehost's own venv in step 7, not via apt — see
-`daemon/ssl.py`'s `certbot_bin` setting (`/opt/forgehost/.venv/bin/certbot`),
+certbot is installed into Boron's own venv in step 7, not via apt — see
+`daemon/ssl.py`'s `certbot_bin` setting (`/opt/boron/.venv/bin/certbot`),
 which carries the `certbot-dns-powerdns` plugin alongside it.
 
-### 5. Secure MariaDB and create Forgehost's database users
+### 5. Secure MariaDB and create Boron's database users
 
 The stock `mariadb-server` package on Ubuntu ships `root` with an **empty
 password** — fix this first.
@@ -131,15 +131,15 @@ password=${ROOT_PASS}
 EOF
 chmod 600 /root/.my.cnf
 
-mkdir -p /etc/forgehost/ssl
-echo "MARIADB_ROOT_PASSWORD=${ROOT_PASS}" >> /etc/forgehost/secrets.env
-echo "MARIADB_DAEMON_PASSWORD=${DAEMON_PASS}" >> /etc/forgehost/secrets.env
-echo "MARIADB_MAILRO_PASSWORD=${MAILRO_PASS}" >> /etc/forgehost/secrets.env
-chmod 600 /etc/forgehost/secrets.env
+mkdir -p /etc/boron/ssl
+echo "MARIADB_ROOT_PASSWORD=${ROOT_PASS}" >> /etc/boron/secrets.env
+echo "MARIADB_DAEMON_PASSWORD=${DAEMON_PASS}" >> /etc/boron/secrets.env
+echo "MARIADB_MAILRO_PASSWORD=${MAILRO_PASS}" >> /etc/boron/secrets.env
+chmod 600 /etc/boron/secrets.env
 unset ROOT_PASS DAEMON_PASS MAILRO_PASS
 ```
 
-### 6. Create the `vmail` and `forgehost-api` system accounts
+### 6. Create the `vmail` and `boron-api` system accounts
 
 ```bash
 # Low system uid (NOT a high number like 30000) -- ARCHITECTURE.md SS5/
@@ -150,32 +150,32 @@ groupadd --system --gid 150 vmail
 useradd --system --uid 150 --gid 150 --home-dir /var/vmail --shell /usr/sbin/nologin vmail
 mkdir -p /var/vmail && chown vmail:vmail /var/vmail && chmod 750 /var/vmail
 
-groupadd -f forgehost-api
-useradd --system --no-create-home --shell /usr/sbin/nologin -g forgehost-api forgehost-api
+groupadd -f boron-api
+useradd --system --no-create-home --shell /usr/sbin/nologin -g boron-api boron-api
 ```
 
-### 7. Deploy Forgehost
+### 7. Deploy Boron
 
 `/root` is typically mode 700 -- never deploy the running app there
-(`forgehost-api`, the unprivileged process, must be able to traverse into
+(`boron-api`, the unprivileged process, must be able to traverse into
 it). Clone/copy this repo somewhere with a normal home-dir mode, e.g.
-`/root/forgehost-src` if developing as root, then deploy to `/opt/forgehost`:
+`/root/boron-src` if developing as root, then deploy to `/opt/boron`:
 
 ```bash
-git clone <this-repo> /root/forgehost-src   # or wherever you keep the checkout
-cd /root/forgehost-src
+git clone <this-repo> /root/boron-src   # or wherever you keep the checkout
+cd /root/boron-src
 # scripts/deploy.sh assumes the checkout is at /root/cpanel-clone --
 # edit SRC at the top if yours is elsewhere.
 bash scripts/deploy.sh
 
-python3 -m venv /opt/forgehost/.venv
-/opt/forgehost/.venv/bin/pip install --upgrade pip
-/opt/forgehost/.venv/bin/pip install -r /opt/forgehost/requirements.txt
+python3 -m venv /opt/boron/.venv
+/opt/boron/.venv/bin/pip install --upgrade pip
+/opt/boron/.venv/bin/pip install -r /opt/boron/requirements.txt
 ```
 
 `scripts/deploy.sh` re-applies world-readable permissions on every run
 (there's nothing sensitive in the code tree — secrets live under
-`/etc/forgehost`) but does **not** touch `.venv`; re-run the pip install
+`/etc/boron`) but does **not** touch `.venv`; re-run the pip install
 above yourself if `requirements.txt` changes.
 
 ### 7b. Build the web UI (React SPA)
@@ -195,7 +195,7 @@ npm run build                            # -> ../static/dist/{index.html,assets/
 ```
 
 `npm run build` writes `static/dist/`, which `scripts/deploy.sh` then syncs to
-`/opt/forgehost/static/dist/` like the rest of the tree. FastAPI serves the SPA
+`/opt/boron/static/dist/` like the rest of the tree. FastAPI serves the SPA
 at **`/app`** (a catch-all in `api/main.py` returns `index.html` for every
 `/app/*` path so client-side routes deep-link correctly); its assets are served
 by the existing `/static` mount. There are **no backend/API changes** — the SPA
@@ -212,26 +212,26 @@ npm run dev        # Vite dev server on :5173, proxies /api + /login to :9443
 ### 8. Configuration files
 
 ```bash
-cat > /etc/forgehost/forgehost.toml <<EOF
+cat > /etc/boron/boron.toml <<EOF
 server_public_ip = "104.234.179.64"
 letsencrypt_email = "you@example.com"
 EOF
 
 SESSION_SECRET=$(openssl rand -hex 32)
-echo "SESSION_SECRET=${SESSION_SECRET}" > /etc/forgehost/api-secrets.env
-chown root:forgehost-api /etc/forgehost/api-secrets.env
-chmod 640 /etc/forgehost/api-secrets.env
+echo "SESSION_SECRET=${SESSION_SECRET}" > /etc/boron/api-secrets.env
+chown root:boron-api /etc/boron/api-secrets.env
+chmod 640 /etc/boron/api-secrets.env
 unset SESSION_SECRET
 
-chown root:forgehost-api /etc/forgehost/forgehost.toml
-chmod 640 /etc/forgehost/forgehost.toml
+chown root:boron-api /etc/boron/boron.toml
+chmod 640 /etc/boron/boron.toml
 
 # PowerDNS REST API key
 PDNS_KEY=$(openssl rand -hex 24)
 mkdir -p /var/lib/powerdns
 sqlite3 /var/lib/powerdns/pdns.sqlite3 < /usr/share/pdns-backend-sqlite3/schema/schema.sqlite3.sql
 chown pdns:pdns /var/lib/powerdns/pdns.sqlite3 && chmod 660 /var/lib/powerdns/pdns.sqlite3
-cat > /etc/powerdns/pdns.d/forgehost.conf <<EOF
+cat > /etc/powerdns/pdns.d/boron.conf <<EOF
 launch+=gsqlite3
 gsqlite3-database=/var/lib/powerdns/pdns.sqlite3
 gsqlite3-dnssec=no
@@ -241,15 +241,15 @@ webserver-port=8081
 webserver-allow-from=127.0.0.1
 api=yes
 api-key=${PDNS_KEY}
-default-soa-content=ns1.forgehost.invalid hostmaster.@ 0 10800 3600 604800 3600
+default-soa-content=ns1.boron.invalid hostmaster.@ 0 10800 3600 604800 3600
 EOF
-echo "POWERDNS_API_KEY=${PDNS_KEY}" >> /etc/forgehost/secrets.env
-mkdir -p /etc/forgehost/ssl
-cat > /etc/forgehost/ssl/powerdns-credentials.ini <<EOF
+echo "POWERDNS_API_KEY=${PDNS_KEY}" >> /etc/boron/secrets.env
+mkdir -p /etc/boron/ssl
+cat > /etc/boron/ssl/powerdns-credentials.ini <<EOF
 dns_powerdns_api_url = http://127.0.0.1:8081/api/v1
 dns_powerdns_api_key = ${PDNS_KEY}
 EOF
-chmod 600 /etc/forgehost/ssl/powerdns-credentials.ini /etc/forgehost/secrets.env
+chmod 600 /etc/boron/ssl/powerdns-credentials.ini /etc/boron/secrets.env
 unset PDNS_KEY
 systemctl restart pdns
 ```
@@ -257,26 +257,26 @@ systemctl restart pdns
 ### 9. Postfix + Dovecot virtual mail
 
 ```bash
-MAILRO_PASS=$(grep MARIADB_MAILRO_PASSWORD /etc/forgehost/secrets.env | cut -d= -f2)
-mkdir -p /etc/postfix/forgehost
-cat > /etc/postfix/forgehost/mysql-virtual-domains.cf <<EOF
+MAILRO_PASS=$(grep MARIADB_MAILRO_PASSWORD /etc/boron/secrets.env | cut -d= -f2)
+mkdir -p /etc/postfix/boron
+cat > /etc/postfix/boron/mysql-virtual-domains.cf <<EOF
 user = forgehost_mailro
 password = ${MAILRO_PASS}
 hosts = unix:/run/mysqld/mysqld.sock
 dbname = forgehost_mail
 query = SELECT 1 FROM mail_domain WHERE domain='%s' AND active=1
 EOF
-cat > /etc/postfix/forgehost/mysql-virtual-mailboxes.cf <<EOF
+cat > /etc/postfix/boron/mysql-virtual-mailboxes.cf <<EOF
 user = forgehost_mailro
 password = ${MAILRO_PASS}
 hosts = unix:/run/mysqld/mysqld.sock
 dbname = forgehost_mail
 query = SELECT CONCAT(d.domain, '/', m.local_part, '/') FROM mail_user m JOIN mail_domain d ON m.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%s' AND m.active = 1 AND d.active = 1
 EOF
-chown root:postfix /etc/postfix/forgehost/*.cf && chmod 640 /etc/postfix/forgehost/*.cf
+chown root:postfix /etc/postfix/boron/*.cf && chmod 640 /etc/postfix/boron/*.cf
 
-postconf -e "virtual_mailbox_domains = proxy:mysql:/etc/postfix/forgehost/mysql-virtual-domains.cf"
-postconf -e "virtual_mailbox_maps = proxy:mysql:/etc/postfix/forgehost/mysql-virtual-mailboxes.cf"
+postconf -e "virtual_mailbox_domains = proxy:mysql:/etc/postfix/boron/mysql-virtual-domains.cf"
+postconf -e "virtual_mailbox_maps = proxy:mysql:/etc/postfix/boron/mysql-virtual-mailboxes.cf"
 postconf -e "virtual_mailbox_base = /var/vmail"
 postconf -e "virtual_uid_maps = static:150"
 postconf -e "virtual_gid_maps = static:150"
@@ -301,7 +301,7 @@ sed -i 's|^mail_location = mbox:~/mail:INBOX=/var/mail/%u|mail_location = maildi
 sed -i '/#first_valid_uid = 500/a first_valid_uid = 150\nlast_valid_uid = 150' /etc/dovecot/conf.d/10-mail.conf
 sed -i '/#first_valid_gid = 1/a first_valid_gid = 150\nlast_valid_gid = 150' /etc/dovecot/conf.d/10-mail.conf
 
-cat > /etc/dovecot/conf.d/90-forgehost.conf <<'EOF'
+cat > /etc/dovecot/conf.d/90-boron.conf <<'EOF'
 service lmtp {
   unix_listener /var/spool/postfix/private/dovecot-lmtp {
     group = postfix
@@ -325,11 +325,11 @@ systemctl restart dovecot postfix
 ### 10. SSL bootstrap cert + panel TLS cert
 
 ```bash
-mkdir -p /etc/forgehost/ssl
+mkdir -p /etc/boron/ssl
 openssl req -x509 -nodes -newkey rsa:2048 \
-  -keyout /etc/forgehost/ssl/default.key -out /etc/forgehost/ssl/default.crt \
-  -days 3650 -subj "/CN=forgehost-default"
-chmod 600 /etc/forgehost/ssl/default.key
+  -keyout /etc/boron/ssl/default.key -out /etc/boron/ssl/default.crt \
+  -days 3650 -subj "/CN=boron-default"
+chmod 600 /etc/boron/ssl/default.key
 
 mkdir -p /var/www/_suspended
 cat > /var/www/_suspended/index.html <<'EOF'
@@ -339,36 +339,36 @@ cat > /var/www/_suspended/index.html <<'EOF'
 </body></html>
 EOF
 
-mkdir -p /etc/forgehost/ssl/api
+mkdir -p /etc/boron/ssl/api
 openssl req -x509 -nodes -newkey rsa:2048 \
-  -keyout /etc/forgehost/ssl/api/panel.key -out /etc/forgehost/ssl/api/panel.crt \
-  -days 3650 -subj "/CN=forgehost-panel"
-chown forgehost-api:forgehost-api /etc/forgehost/ssl/api/panel.key /etc/forgehost/ssl/api/panel.crt
-chmod 600 /etc/forgehost/ssl/api/panel.key
+  -keyout /etc/boron/ssl/api/panel.key -out /etc/boron/ssl/api/panel.crt \
+  -days 3650 -subj "/CN=boron-panel"
+chown boron-api:boron-api /etc/boron/ssl/api/panel.key /etc/boron/ssl/api/panel.crt
+chmod 600 /etc/boron/ssl/api/panel.key
 ```
 
 The panel's own TLS cert is self-signed (browsers will warn on first visit
 — accept once, or replace with your own real cert for the panel's
 hostname). Per-customer-site certs are real, browser-trusted Let's Encrypt
-certs issued through Forgehost itself (`POST /api/v1/ssl/issue`).
+certs issued through Boron itself (`POST /api/v1/ssl/issue`).
 
 ### 11. Lock down config file permissions
 
 ```bash
-chown root:forgehost-api /etc/forgehost/forgehost.toml
-chmod 640 /etc/forgehost/forgehost.toml
+chown root:boron-api /etc/boron/boron.toml
+chmod 640 /etc/boron/boron.toml
 ```
 
-(`/var/lib/forgehost` and the control-plane `forgehost.db`/`-wal`/`-shm`
-files are created by `forgehostd` itself on first start, already owned
-`root:forgehost-api` with group-read permissions —
+(`/var/lib/boron` and the control-plane `boron.db`/`-wal`/`-shm`
+files are created by `borond` itself on first start, already owned
+`root:boron-api` with group-read permissions —
 `shared/db.py`'s `init_db()` handles this automatically.)
 
 ### 12. systemd units
 
 ```bash
-cp /opt/forgehost/deploy/forgehost-provisiond.service /etc/systemd/system/
-cp /opt/forgehost/deploy/forgehost-api.service /etc/systemd/system/
+cp /opt/boron/deploy/boron-provisiond.service /etc/systemd/system/
+cp /opt/boron/deploy/boron-api.service /etc/systemd/system/
 ```
 
 (`deploy/` ships in this repo with the exact unit files this project
@@ -377,21 +377,21 @@ reconstructed from memory.)
 
 ```bash
 systemctl daemon-reload
-systemctl enable --now forgehost-provisiond
+systemctl enable --now boron-provisiond
 # one-time: replace OLS's stock "Example" vhost with a clean baseline
 # (ARCHITECTURE.md SS7 / CHECKPOINT-b.md explain why this is required)
-/opt/forgehost/.venv/bin/python -c "
-import sys; sys.path.insert(0, '/opt/forgehost')
+/opt/boron/.venv/bin/python -c "
+import sys; sys.path.insert(0, '/opt/boron')
 from shared.rpc import RpcClient
-RpcClient('/run/forgehost/provisiond.sock').call('system.bootstrap_ols', _actor='setup', _role='admin')
+RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_ols', _actor='setup', _role='admin')
 "
-systemctl enable --now forgehost-api
+systemctl enable --now boron-api
 ```
 
 ### 13. Create the first admin login
 
 ```bash
-/opt/forgehost/.venv/bin/python /opt/forgehost/scripts/create_admin.py --username admin
+/opt/boron/.venv/bin/python /opt/boron/scripts/create_admin.py --username admin
 ```
 
 Then open `https://<server-ip>:9443/login` (accept the self-signed cert
@@ -400,9 +400,9 @@ warning on first visit, or swap in your own cert for this hostname).
 ### 14. Roundcube webmail (optional, Phase 2 feature 3)
 
 Deployed once for the whole server, not per hosting account. Any mailbox
-created via Forgehost (`mail.create_mailbox` / the mail UI) logs in
+created via Boron (`mail.create_mailbox` / the mail UI) logs in
 automatically — Roundcube authenticates straight against Dovecot, there's
-no Forgehost-side account wiring involved.
+no Boron-side account wiring involved.
 
 ```bash
 # Ubuntu ships Roundcube in universe -- skip dbconfig-common's own
@@ -453,20 +453,20 @@ chown -R www-data:www-data /var/lib/roundcube/public_html /var/lib/roundcube/tem
 #   uncomment the `submission inet ...` block + its `-o` lines in
 #   /etc/postfix/master.cf, then `postfix check && systemctl reload postfix`
 
-# set forgehost.toml's webmail_hostname (e.g. webmail.yourdomain.com, or
+# set boron.toml's webmail_hostname (e.g. webmail.yourdomain.com, or
 # webmail.<ip-with-dashes>.sslip.io for a quick real-domain test), then:
-/opt/forgehost/.venv/bin/python -c "
-import sys; sys.path.insert(0, '/opt/forgehost')
+/opt/boron/.venv/bin/python -c "
+import sys; sys.path.insert(0, '/opt/boron')
 from shared.rpc import RpcClient
-RpcClient('/run/forgehost/provisiond.sock').call('system.bootstrap_webmail', _actor='setup', _role='admin')
+RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_webmail', _actor='setup', _role='admin')
 "
 
 # optional: a real trusted cert for the webmail hostname (same RPC every
 # hosted domain uses, just pointed at this one instead)
-/opt/forgehost/.venv/bin/python -c "
-import sys; sys.path.insert(0, '/opt/forgehost')
+/opt/boron/.venv/bin/python -c "
+import sys; sys.path.insert(0, '/opt/boron')
 from shared.rpc import RpcClient
-RpcClient('/run/forgehost/provisiond.sock').call('ssl.issue', domain='<webmail_hostname>', _actor='setup', _role='admin')
+RpcClient('/run/boron/provisiond.sock').call('ssl.issue', domain='<webmail_hostname>', _actor='setup', _role='admin')
 "
 ```
 
@@ -482,34 +482,34 @@ cron keeps the historical trend data (`usage_snapshots`/`bandwidth_daily`)
 accumulating even when nobody opens it:
 
 ```bash
-cat > /etc/cron.d/forgehost-usage << 'EOF'
-*/15 * * * * root /opt/forgehost/scripts/usage_snapshot.py >> /var/log/forgehost/usage-snapshot.log 2>&1
+cat > /etc/cron.d/boron-usage << 'EOF'
+*/15 * * * * root /opt/boron/scripts/usage_snapshot.py >> /var/log/boron/usage-snapshot.log 2>&1
 EOF
-chmod 644 /etc/cron.d/forgehost-usage
+chmod 644 /etc/cron.d/boron-usage
 ```
 
-Root-owned system cron, not a per-account Forgehost-managed crontab
+Root-owned system cron, not a per-account Boron-managed crontab
 (feature 2's `daemon/cron.py`) -- this is infrastructure that needs to run
 `du`/`ps` across every account's home directory, the same trust level as
-forgehostd itself, not a customer-facing resource.
+borond itself, not a customer-facing resource.
 
 ### 16. Resource limits via cgroups v2 (Phase 2 feature 6)
 
 Per-account CPU/memory/IO/pids limits, enforced via one systemd slice per
-account (`forgehost-<username>.slice`, nested under `forgehost.slice`).
+account (`boron-<username>.slice`, nested under `boron.slice`).
 Nothing to install -- `daemon/cgroups.py` creates/updates/removes each
 account's slice automatically on `account.create`/`account.set_limits`/
-`account.terminate`, and forgehostd's own startup reconciles every active
+`account.terminate`, and borond's own startup reconciles every active
 account's slice back into existence after a host reboot.
 
-**If upgrading an existing Forgehost install** (this project uses
+**If upgrading an existing Boron install** (this project uses
 `Base.metadata.create_all()`, not a migration framework -- it only
 creates *new* tables, never adds columns to existing ones), run this once
-against the live DB before restarting `forgehost-provisiond`, or account
+against the live DB before restarting `boron-provisiond`, or account
 queries will fail with `no such column: accounts.cpu_pct`:
 
 ```bash
-sqlite3 /var/lib/forgehost/forgehost.db << 'EOF'
+sqlite3 /var/lib/boron/boron.db << 'EOF'
 ALTER TABLE accounts ADD COLUMN cpu_pct INTEGER DEFAULT 25;
 ALTER TABLE accounts ADD COLUMN mem_mb INTEGER DEFAULT 512;
 ALTER TABLE accounts ADD COLUMN io_mb INTEGER DEFAULT 50;
@@ -521,7 +521,7 @@ A **fresh** install needs no such step -- `init_db()`'s `create_all()`
 creates the `accounts` table with these columns from the start.
 
 Confirm the IO-limited block device matches this deployment target:
-`cgroup_io_device` in `forgehost.toml` defaults to `/dev/vda` (this
+`cgroup_io_device` in `boron.toml` defaults to `/dev/vda` (this
 project's own dev/test server); check `findmnt -no SOURCE /` and
 `lsblk` and set it to the actual whole-disk device (not a partition --
 e.g. `/dev/sda`, not `/dev/sda1`) if it differs.
@@ -541,7 +541,7 @@ rclone itself needs installing for remote ones:
 
 ```bash
 apt-get install -y rclone
-mkdir -p /var/lib/forgehost/backup-staging
+mkdir -p /var/lib/boron/backup-staging
 ```
 
 Create at least one destination and, optionally, a server-default
@@ -550,16 +550,16 @@ schedule (admin only, via API or `/ui/backups`):
 ```bash
 # local destination
 curl -sk -b <admin-cookie-jar> -H "Content-Type: application/json" \
-  -d '{"name":"local1","kind":"local","local_path":"/var/backups/forgehost"}' \
+  -d '{"name":"local1","kind":"local","local_path":"/var/backups/boron"}' \
   -X POST https://<host>:9443/api/v1/backups/destinations
 
 # rclone-backed remote (S3-compatible example) -- credentials are passed
 # once here and stored only in rclone's own config (/etc/rclone.conf),
-# never duplicated into Forgehost's DB
+# never duplicated into Boron's DB
 curl -sk -b <admin-cookie-jar> -H "Content-Type: application/json" -d '{
   "name": "s3backup", "kind": "rclone", "rclone_remote_type": "s3",
   "rclone_config": {"provider": "AWS", "access_key_id": "...", "secret_access_key": "...", "region": "us-east-1"},
-  "rclone_path_prefix": "forgehost-backups"
+  "rclone_path_prefix": "boron-backups"
 }' -X POST https://<host>:9443/api/v1/backups/destinations
 
 # server-wide default schedule (any account without its own override uses this)
@@ -575,10 +575,10 @@ rclone's normal interactive OAuth flow has no place in a headless daemon.
 Scheduled backups need an hourly cron to check for due accounts:
 
 ```bash
-cat > /etc/cron.d/forgehost-backups << 'EOF'
-0 * * * * root /opt/forgehost/scripts/backup_scheduler.py >> /var/log/forgehost/backup-scheduler.log 2>&1
+cat > /etc/cron.d/boron-backups << 'EOF'
+0 * * * * root /opt/boron/scripts/backup_scheduler.py >> /var/log/boron/backup-scheduler.log 2>&1
 EOF
-chmod 644 /etc/cron.d/forgehost-backups
+chmod 644 /etc/cron.d/boron-backups
 ```
 
 See `docs/CHECKPOINT-phase2-7.md` for the four related bugs found live
@@ -591,7 +591,7 @@ doesn't bring the site back up.
 
 Deployed once for the whole server, not per hosting account. There is no
 interactive username/password login for this install at all -- only
-short-lived, single-use, scoped tokens minted by Forgehost's own "Manage"
+short-lived, single-use, scoped tokens minted by Boron's own "Manage"
 button per database.
 
 ```bash
@@ -604,20 +604,20 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y phpmyadmin
 mkdir -p /usr/share/phpmyadmin/.well-known/acme-challenge
 chown -R www-data:www-data /usr/share/phpmyadmin
 
-# set forgehost.toml's pma_hostname (e.g. pma.yourdomain.com, or
+# set boron.toml's pma_hostname (e.g. pma.yourdomain.com, or
 # pma.<ip-with-dashes>.sslip.io for a quick real-domain test), then:
-/opt/forgehost/.venv/bin/python -c "
-import sys; sys.path.insert(0, '/opt/forgehost')
+/opt/boron/.venv/bin/python -c "
+import sys; sys.path.insert(0, '/opt/boron')
 from shared.rpc import RpcClient
-RpcClient('/run/forgehost/provisiond.sock').call('system.bootstrap_pma', _actor='setup', _role='admin')
+RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_pma', _actor='setup', _role='admin')
 "
 
 # optional: a real trusted cert for the phpMyAdmin hostname (same RPC
 # every hosted domain uses, just pointed at this one instead)
-/opt/forgehost/.venv/bin/python -c "
-import sys; sys.path.insert(0, '/opt/forgehost')
+/opt/boron/.venv/bin/python -c "
+import sys; sys.path.insert(0, '/opt/boron')
 from shared.rpc import RpcClient
-RpcClient('/run/forgehost/provisiond.sock').call('ssl.issue', domain='<pma_hostname>', _actor='setup', _role='admin')
+RpcClient('/run/boron/provisiond.sock').call('ssl.issue', domain='<pma_hostname>', _actor='setup', _role='admin')
 "
 ```
 
@@ -626,10 +626,10 @@ any still-present token file once a token expires, whether or not it was
 ever redeemed):
 
 ```bash
-cat > /etc/cron.d/forgehost-pma-tokens << 'EOF'
-*/5 * * * * root /opt/forgehost/scripts/pma_token_cleanup.py >> /var/log/forgehost/pma-token-cleanup.log 2>&1
+cat > /etc/cron.d/boron-pma-tokens << 'EOF'
+*/5 * * * * root /opt/boron/scripts/pma_token_cleanup.py >> /var/log/boron/pma-token-cleanup.log 2>&1
 EOF
-chmod 644 /etc/cron.d/forgehost-pma-tokens
+chmod 644 /etc/cron.d/boron-pma-tokens
 ```
 
 See `docs/CHECKPOINT-phase3-3.md` for three bugs this project hit
@@ -674,17 +674,17 @@ CREATE TABLE IF NOT EXISTS mail_autoresponder (
 ) ENGINE=InnoDB;
 SQL
 
-MAILRO_PASS=$(grep MARIADB_MAILRO_PASSWORD /etc/forgehost/secrets.env | cut -d= -f2)
-cat > /etc/postfix/forgehost/mysql-virtual-forwards.cf <<EOF
+MAILRO_PASS=$(grep MARIADB_MAILRO_PASSWORD /etc/boron/secrets.env | cut -d= -f2)
+cat > /etc/postfix/boron/mysql-virtual-forwards.cf <<EOF
 user = forgehost_mailro
 password = ${MAILRO_PASS}
 hosts = unix:/run/mysqld/mysqld.sock
 dbname = forgehost_mail
 query = SELECT GROUP_CONCAT(destination SEPARATOR ',') FROM ( SELECT f.destination AS destination FROM mail_forward f JOIN mail_domain d ON f.domain_id = d.id WHERE CONCAT(f.source_local_part, '@', d.domain) = '%s' AND f.active = 1 AND d.active = 1 UNION ALL SELECT CONCAT(m.local_part, '@', d.domain) AS destination FROM mail_user m JOIN mail_domain d ON m.domain_id = d.id JOIN mail_catchall c ON c.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%s' AND m.active = 1 AND d.active = 1 AND c.active = 1 UNION ALL SELECT c.destination AS destination FROM mail_catchall c JOIN mail_domain d ON c.domain_id = d.id WHERE CONCAT('@', d.domain) = '%s' AND c.active = 1 AND d.active = 1 ) combined
 EOF
-chown root:postfix /etc/postfix/forgehost/mysql-virtual-forwards.cf
-chmod 640 /etc/postfix/forgehost/mysql-virtual-forwards.cf
-postconf -e "virtual_alias_maps = proxy:mysql:/etc/postfix/forgehost/mysql-virtual-forwards.cf"
+chown root:postfix /etc/postfix/boron/mysql-virtual-forwards.cf
+chmod 640 /etc/postfix/boron/mysql-virtual-forwards.cf
+postconf -e "virtual_alias_maps = proxy:mysql:/etc/postfix/boron/mysql-virtual-forwards.cf"
 unset MAILRO_PASS
 postfix check && systemctl reload postfix
 
@@ -739,7 +739,7 @@ systemctl restart pure-ftpd
 ## Verifying the install
 
 ```bash
-systemctl status lshttpd postfix dovecot mariadb pdns pure-ftpd forgehost-provisiond forgehost-api
+systemctl status lshttpd postfix dovecot mariadb pdns pure-ftpd boron-provisiond boron-api
 curl -sk https://127.0.0.1:9443/healthz
 ```
 
@@ -752,8 +752,8 @@ server).
 ## Repository layout
 
 ```
-daemon/      forgehostd -- the root provisioning daemon (Unix-socket RPC only)
-api/         forgehost-api -- the unprivileged REST API + admin UI
+daemon/      borond -- the root provisioning daemon (Unix-socket RPC only)
+api/         boron-api -- the unprivileged REST API + admin UI
 shared/      code used by both (models, config, validation, RPC framing)
 templates/   Jinja2 templates for OLS/system config (not the web UI)
 api/templates_ui/  Jinja2 templates for the admin UI
@@ -775,7 +775,7 @@ After editing code that the running services need, redeploy:
 
 ```bash
 bash scripts/deploy.sh
-systemctl restart forgehost-provisiond forgehost-api
+systemctl restart boron-provisiond boron-api
 ```
 
 ### 21. SSL expiry notifications (Phase 7b feature 3)
@@ -784,10 +784,10 @@ Daily cron so the 14-day expiry-warning email actually goes out on its
 own, not just when someone happens to open the SSL dashboard:
 
 ```bash
-cat > /etc/cron.d/forgehost-ssl-expiry << 'EOF'
-0 6 * * * root /opt/forgehost/scripts/ssl_expiry_check.py >> /var/log/forgehost/ssl-expiry-check.log 2>&1
+cat > /etc/cron.d/boron-ssl-expiry << 'EOF'
+0 6 * * * root /opt/boron/scripts/ssl_expiry_check.py >> /var/log/boron/ssl-expiry-check.log 2>&1
 EOF
-chmod 644 /etc/cron.d/forgehost-ssl-expiry
+chmod 644 /etc/cron.d/boron-ssl-expiry
 ```
 
 Also requires `notifications.settings.set` (admin) to configure a sender
@@ -798,43 +798,43 @@ email before any notification actually sends — see
 ### 22. Account usage alerts (Phase 7b feature 5)
 
 Same "server infrastructure, not a per-account crontab" category as
-`forgehost-usage`'s own entry above — needs no explicit ordering relative
+`boron-usage`'s own entry above — needs no explicit ordering relative
 to it, since `usage.get_usage()` already lazily refreshes stale data
 itself when read:
 
 ```bash
-cat > /etc/cron.d/forgehost-usage-alerts << 'EOF'
-*/15 * * * * root /opt/forgehost/scripts/usage_alert_check.py >> /var/log/forgehost/usage-alert-check.log 2>&1
+cat > /etc/cron.d/boron-usage-alerts << 'EOF'
+*/15 * * * * root /opt/boron/scripts/usage_alert_check.py >> /var/log/boron/usage-alert-check.log 2>&1
 EOF
-chmod 644 /etc/cron.d/forgehost-usage-alerts
+chmod 644 /etc/cron.d/boron-usage-alerts
 ```
 
 ### 23. Panel update system
 
-Forgehost updates itself from **GitHub release tarballs** (never `git
+Boron updates itself from **GitHub release tarballs** (never `git
 pull` on production — see `docs/RELEASING.md` for how releases are cut
 with `scripts/release.sh`). Point the panel at the releases repo in
-`/etc/forgehost/forgehost.toml`:
+`/etc/boron/boron.toml`:
 
 ```toml
-update_github_repo = "owner/forgehost"
+update_github_repo = "owner/boron"
 ```
 
 then install the daily check (release poll + admin email once per new
 release + pruning of version dirs older than the 3-day rollback window):
 
 ```bash
-install -m 0644 /opt/forgehost/deploy/forgehost-update.cron /etc/cron.d/forgehost-update
+install -m 0644 /opt/boron/deploy/boron-update.cron /etc/cron.d/boron-update
 ```
 
 The admin panel's **Updates** page shows current/latest version, applies
-updates one-click (test-suite pre-flight, DB + `/etc/forgehost` backup to
-`/var/backups/forgehost/`, SHA256-verified download, staged extraction to
-`/opt/forgehost-X.Y.Z`, atomic symlink swap of `/opt/forgehost`, health
+updates one-click (test-suite pre-flight, DB + `/etc/boron` backup to
+`/var/backups/boron/`, SHA256-verified download, staged extraction to
+`/opt/boron-X.Y.Z`, atomic symlink swap of `/opt/boron`, health
 check with automatic swap-back on failure), and can roll back to the
 previous version for 3 days. Requires a fresh 2FA code when the admin has
-TOTP enabled. Every step is logged to `/var/log/forgehost/updates.log`.
-Note: the first update converts `/opt/forgehost` from a plain directory
+TOTP enabled. Every step is logged to `/var/log/boron/updates.log`.
+Note: the first update converts `/opt/boron` from a plain directory
 to the versioned-symlink layout automatically. Only the two panel
 services restart during an update — OpenLiteSpeed and hosted sites are
 never touched.

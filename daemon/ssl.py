@@ -1,15 +1,15 @@
 """SSL automation via certbot (Phase f).
 
 ARCHITECTURE.md SS8: DNS-01 (via the `certbot-dns-powerdns` plugin) when
-Forgehost manages the domain's zone, HTTP-01 webroot otherwise -- the
+Boron manages the domain's zone, HTTP-01 webroot otherwise -- the
 webroot path already exists from Phase b (every vhost declares a
 `/.well-known/acme-challenge/` context pointed at the account's docroot, no
 extra vhost config needed here). `--deploy-hook` points at
 `scripts/ssl_deploy_hook.py`, a standalone script (not a daemon method)
-because certbot's own renewal timer invokes it outside forgehostd's
+because certbot's own renewal timer invokes it outside borond's
 process -- it reuses the same shared/daemon modules directly rather than
 going through the Unix-socket RPC (it already runs as root, same as
-forgehostd, so there's no privilege boundary to cross).
+borond, so there's no privilege boundary to cross).
 """
 from __future__ import annotations
 
@@ -39,10 +39,10 @@ class SslError(Exception):
 def _dns01_args() -> list[str]:
     """certbot-dns-powerdns plugin args -- shared by the auto-detected
     DNS-01 path (_challenge_plan, when a domain's zone happens to be
-    Forgehost-managed) and the explicit wildcard-issuance path
+    Boron-managed) and the explicit wildcard-issuance path
     (issue_wildcard_certificate), which REQUIRES DNS-01 unconditionally
     (Let's Encrypt has no HTTP-01 path for wildcard names at all -- this
-    isn't a Forgehost design choice, it's an ACME protocol constraint)."""
+    isn't a Boron design choice, it's an ACME protocol constraint)."""
     return [
         "--authenticator", "dns-powerdns",
         "--dns-powerdns-credentials", settings.powerdns_credentials_file,
@@ -87,8 +87,8 @@ def _dns01_plan(domain: str) -> list[str] | None:
     """Phase 2+3 feature 5: pick the DNS-01 authenticator by the zone's live
     provider. A Cloudflare-ACTIVE zone MUST use dns-cloudflare (Cloudflare is
     authoritative, so the _acme-challenge TXT has to be created there, not in
-    the stale local PowerDNS zone Forgehost keeps as the revert target). A
-    local Forgehost-managed zone uses dns-powerdns. Anything else -> None
+    the stale local PowerDNS zone Boron keeps as the revert target). A
+    local Boron-managed zone uses dns-powerdns. Anything else -> None
     (no DNS-01 hook available)."""
     row = dnsprovider.cloudflare_zone_row(domain)
     if row is not None and row.status == "active":
@@ -116,14 +116,14 @@ def _challenge_plan(domain: str) -> tuple[str, list[str]]:
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain))
     if domain_row is None:
-        raise SslError(f"domain '{domain}' is not provisioned in Forgehost")
+        raise SslError(f"domain '{domain}' is not provisioned in Boron")
     return "http-01", ["--webroot", "-w", domain_row.docroot]
 
 
 def issue_certificate(params: dict) -> dict:
     domain = validate_domain(params["domain"])
     if not settings.letsencrypt_email:
-        raise SslError("letsencrypt_email is not set in forgehost.toml")
+        raise SslError("letsencrypt_email is not set in boron.toml")
 
     mode, challenge_args = _challenge_plan(domain)
     # Phase 3 feature 8: the SSL dashboard's "renew" button targets a
@@ -162,10 +162,10 @@ def issue_wildcard_certificate(params: dict) -> dict:
     ARCHITECTURE.md SS8 already wires for the auto-detected DNS-01 path,
     just unconditional here (a wildcard SAN has no HTTP-01 option at all,
     so this never falls back to webroot the way issue_certificate does).
-    Requires the domain's own zone to be Forgehost-managed (a real
+    Requires the domain's own zone to be Boron-managed (a real
     PowerDNS zone this server can create/delete the `_acme-challenge` TXT
     record in) -- an externally-DNS-managed domain has no hook for
-    Forgehost to create that record in, so wildcard issuance for it is
+    Boron to create that record in, so wildcard issuance for it is
     rejected with a clear reason rather than silently trying and failing
     deep inside certbot."""
     raw_domain = params["domain"]
@@ -173,23 +173,23 @@ def issue_wildcard_certificate(params: dict) -> dict:
         raise SslError("pass the base domain (e.g. 'example.com'), not '*.example.com' -- the wildcard SAN is added automatically")
     domain = validate_domain(raw_domain)
     if not settings.letsencrypt_email:
-        raise SslError("letsencrypt_email is not set in forgehost.toml")
+        raise SslError("letsencrypt_email is not set in boron.toml")
 
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain))
     if domain_row is None:
-        raise SslError(f"domain '{domain}' is not provisioned in Forgehost")
+        raise SslError(f"domain '{domain}' is not provisioned in Boron")
     # Phase 2+3 feature 5: wildcards work on either DNS-01 provider now
     # (dns-cloudflare for a CF-active zone, dns-powerdns for a local managed
-    # zone). Still requires a Forgehost-managed zone -- an externally-DNS
+    # zone). Still requires a Boron-managed zone -- an externally-DNS
     # domain has no hook to create the _acme-challenge TXT in.
     dns01 = _dns01_plan(domain)
     if dns01 is None:
         raise SslError(
-            f"wildcard SSL for '{domain}' requires its DNS zone to be managed by Forgehost "
+            f"wildcard SSL for '{domain}' requires its DNS zone to be managed by Boron "
             "(local PowerDNS or a Cloudflare-active zone) -- DNS-01 is the only ACME challenge type that "
             "supports wildcard names, and it needs the _acme-challenge TXT to be creatable through the "
-            "zone's own DNS API. Create a Forgehost-managed zone for this domain first."
+            "zone's own DNS API. Create a Boron-managed zone for this domain first."
         )
 
     force_args = ["--force-renewal"] if params.get("force") else []
@@ -221,7 +221,7 @@ def certificate_status(params: dict) -> dict:
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain))
         if domain_row is None:
-            raise SslError(f"domain '{domain}' is not provisioned in Forgehost")
+            raise SslError(f"domain '{domain}' is not provisioned in Boron")
         return {"domain": domain, "ssl_status": domain_row.ssl_status}
 
 
@@ -257,7 +257,7 @@ def _cert_file_details(domain: str) -> dict | None:
     if no certificate file exists for this domain at all ("missing" per
     the goal's own status vocabulary), otherwise the actual expiry date
     and issuer straight from the X.509 certificate itself, not from
-    Forgehost's own DB (Domain.ssl_status only records "did Forgehost's
+    Boron's own DB (Domain.ssl_status only records "did Boron's
     own issue flow succeed", not the certificate's real, independently-
     verifiable expiry -- the dashboard's whole point is showing the
     latter)."""
@@ -291,7 +291,7 @@ def _cert_file_details(domain: str) -> dict | None:
 
 def _auto_renew_enabled(domain: str) -> bool:
     """certbot's own renewal timer (`certbot.timer`, stock package unit --
-    Forgehost does not reimplement a renewal scheduler, ARCHITECTURE.md
+    Boron does not reimplement a renewal scheduler, ARCHITECTURE.md
     SS8) handles every certificate with a renewal config under
     /etc/letsencrypt/renewal/ automatically; this just reports whether
     that's true for this specific domain, not whether the timer itself

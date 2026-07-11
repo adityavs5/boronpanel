@@ -52,7 +52,7 @@ MAX_PROCESSLIST_INFO_LEN = 2000
 # broader SUPER, the same "narrowest privilege that actually does the job"
 # posture HOSTED_DB_PRIVILEGES/CHECKPOINT-d.md already established for
 # this account. Granted via the `mysql` CLI authenticating over the local
-# unix socket as the OS root user (forgehostd already runs as root, and
+# unix socket as the OS root user (borond already runs as root, and
 # MariaDB's root@localhost account uses unix_socket auth on this box,
 # confirmed live via `mysql -e "SELECT CURRENT_USER()"` returning
 # root@localhost with no password) -- forgehost_daemon itself has no
@@ -98,7 +98,7 @@ def bootstrap_kill_query_privilege(params: dict) -> dict:
 
 def _account_map_by_db(session) -> dict[str, str]:
     """db_name -> owning account's username, for attributing PROCESSLIST/DB
-    size rows back to a Forgehost account in the UI."""
+    size rows back to a Boron account in the UI."""
     rows = session.execute(select(DatabaseGrant.db_name, Account.username).join(Account, DatabaseGrant.account_id == Account.id)).all()
     return {db_name: username for db_name, username in rows}
 

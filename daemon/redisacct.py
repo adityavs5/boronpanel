@@ -15,7 +15,7 @@ building this feature: a root:root 0755 /run/redis would have blocked
 every non-root account's redis-server from ever binding its own socket at
 all, since 0755 grants no "other" write bit).
 
-One systemd unit per account (forgehost-redis-{username}-{id}.service,
+One systemd unit per account (boron-redis-{username}-{id}.service,
 daemon/appunits.py's shared naming convention, keyed by the RedisInstance
 row's own id even though there's only ever one per account -- consistent
 with NodeApp/PythonApp rather than a special case), Slice=-assigned to
@@ -70,7 +70,7 @@ def _data_dir(username: str) -> str:
 
 
 def _conf_path(unit: str) -> Path:
-    return Path("/etc/forgehost/redis") / f"{unit}.conf"
+    return Path("/etc/boron/redis") / f"{unit}.conf"
 
 
 def _pid_path(username: str) -> str:
@@ -143,7 +143,7 @@ def _write_unit(username: str, instance_id: int, mem_mb: int) -> str:
 
     content = (
         "[Unit]\n"
-        f"Description=Forgehost Redis for account '{username}'\n"
+        f"Description=Boron Redis for account '{username}'\n"
         "After=network.target\n"
         "\n"
         "[Service]\n"
@@ -152,7 +152,7 @@ def _write_unit(username: str, instance_id: int, mem_mb: int) -> str:
         f"Group={username}\n"
         f"WorkingDirectory={_data_dir(username)}\n"
         f"ExecStart={settings.redis_bin} {conf_path}\n"
-        f"Slice=forgehost-{username}.slice\n"
+        f"Slice=boron-{username}.slice\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
         f"StandardOutput=append:{log_path}\n"
@@ -308,7 +308,7 @@ def terminate_account_redis(account: Account) -> None:
 
 
 def bootstrap_all_redis() -> None:
-    """Run once at forgehostd startup, same category as
+    """Run once at borond startup, same category as
     nodeapps.bootstrap_all_node_apps -- re-applies every enabled account's
     Redis unit so it survives a host reboot."""
     with write_session() as session:
@@ -328,6 +328,6 @@ def bootstrap_all_redis() -> None:
         except Exception:
             import logging
 
-            logging.getLogger("forgehostd.redisacct").exception(
+            logging.getLogger("borond.redisacct").exception(
                 "failed to bootstrap Redis for account '%s'", username
             )

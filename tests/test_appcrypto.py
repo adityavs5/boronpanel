@@ -39,7 +39,7 @@ def test_encrypt_rejects_non_dict():
 def test_get_key_persists_a_generated_key_when_missing(tmp_path, monkeypatch):
     monkeypatch.delitem(appcrypto.settings.secrets, "APP_ENV_KEY", raising=False)
     secrets_path = tmp_path / "secrets.env"
-    monkeypatch.setenv("FORGEHOST_SECRETS", str(secrets_path))
+    monkeypatch.setenv("BORON_SECRETS", str(secrets_path))
     key = appcrypto.get_key()
     assert key
     assert secrets_path.read_text().strip() == f"APP_ENV_KEY={key}"

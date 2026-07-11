@@ -119,9 +119,9 @@ def test_create_rclone_destination(isolated_db, stub_rclone):
         {"name": "mys3", "kind": "rclone", "rclone_remote_type": "s3", "rclone_config": {"provider": "AWS"}, "rclone_path_prefix": "/backups/"}
     )
     assert result["kind"] == "rclone"
-    assert result["rclone_remote"] == "forgehost_mys3"
+    assert result["rclone_remote"] == "boron_mys3"
     assert result["rclone_path_prefix"] == "backups"
-    assert stub_rclone["create"] == [("forgehost_mys3", "s3", {"provider": "AWS"})]
+    assert stub_rclone["create"] == [("boron_mys3", "s3", {"provider": "AWS"})]
 
 
 def test_create_destination_rejects_duplicate_name(isolated_db, tmp_path):
@@ -133,7 +133,7 @@ def test_create_destination_rejects_duplicate_name(isolated_db, tmp_path):
 def test_delete_destination_removes_rclone_remote(isolated_db, stub_rclone):
     dest = backup.create_destination({"name": "mys3", "kind": "rclone", "rclone_remote_type": "s3", "rclone_config": {}})
     backup.delete_destination({"id": dest["id"]})
-    assert stub_rclone["delete"] == ["forgehost_mys3"]
+    assert stub_rclone["delete"] == ["boron_mys3"]
 
 
 def test_delete_destination_refuses_if_schedule_references_it(isolated_db, tmp_path):
@@ -420,7 +420,7 @@ def test_run_backup_job_uploads_to_rclone_destination(isolated_db, fake_home, fa
     with write_session() as session:
         completed = session.get(BackupJob, job_id)
         assert completed.status == "completed"
-        assert completed.artifact_path.startswith("forgehost_mys3:")
+        assert completed.artifact_path.startswith("boron_mys3:")
     assert len(stub_rclone["copy"]) == 1
 
 
@@ -739,7 +739,7 @@ def test_restore_full_rejects_tar_slip(isolated_db, fake_home, fake_mail_base, f
     """Security audit finding F8: tarfile.extractall() must reject a
     member that would escape the extraction directory (filter="data",
     Python 3.12+) -- the same tar-slip class as the zip-slip fix in
-    daemon/appinstaller.py/wordpress.py, applied here to Forgehost's own
+    daemon/appinstaller.py/wordpress.py, applied here to Boron's own
     backup artifacts (restore runs as root, before anything is chowned
     back to the account)."""
     import io
@@ -751,7 +751,7 @@ def test_restore_full_rejects_tar_slip(isolated_db, fake_home, fake_mail_base, f
     artifact = fake_staging / "evil.tar"
     with tarfile.open(artifact, "w") as tf:
         data = b"pwned"
-        info = tarfile.TarInfo(name="../../../../tmp/forgehost_tarslip.txt")
+        info = tarfile.TarInfo(name="../../../../tmp/boron_tarslip.txt")
         info.size = len(data)
         tf.addfile(info, io.BytesIO(data))
 
@@ -760,7 +760,7 @@ def test_restore_full_rejects_tar_slip(isolated_db, fake_home, fake_mail_base, f
 
     with pytest.raises(Exception):
         backup._restore_full("demo1", "terminated", str(artifact), tmp_dir, restore_job_id=1)
-    assert not os.path.exists("/tmp/forgehost_tarslip.txt")
+    assert not os.path.exists("/tmp/boron_tarslip.txt")
 
 
 def test_restore_full_reprovisions_vhost_even_when_domain_row_preexisted(isolated_db, fake_home, fake_mail_base, fake_staging, monkeypatch):

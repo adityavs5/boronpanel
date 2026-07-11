@@ -1,4 +1,4 @@
-"""File manager v2 — FileBrowser Quantum, fronted by forgehost-api.
+"""File manager v2 — FileBrowser Quantum, fronted by boron-api.
 
 Two surfaces:
 
@@ -19,7 +19,7 @@ Two surfaces:
 
 ARCHITECTURE.md §2 note: the panel is deliberately not fronted by OLS, and it
 is the process that holds the session — so the trusted-header injection lives
-here (forgehost-api), which is strictly stronger than an OLS-level guess. See
+here (boron-api), which is strictly stronger than an OLS-level guess. See
 docs/CHECKPOINT-filebrowser-quantum.md.
 """
 from __future__ import annotations
@@ -56,7 +56,7 @@ proxy_router = APIRouter(tags=["filebrowser-proxy"])
 # treated as absent).
 FB_TARGET_COOKIE = "fh_fb_target"
 FB_TARGET_MAX_AGE_SECONDS = 60 * 60  # a browsing session; re-launch renews it
-_target_serializer = URLSafeTimedSerializer(settings.session_secret, salt="forgehost-fb-target")
+_target_serializer = URLSafeTimedSerializer(settings.session_secret, salt="boron-fb-target")
 
 PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 

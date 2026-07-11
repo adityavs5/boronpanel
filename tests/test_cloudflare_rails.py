@@ -83,7 +83,7 @@ def test_fail2ban_jail_conf_base_only_without_ranges():
 
 def test_cloudflare_ignoreip_configured(cf, monkeypatch, tmp_path):
     _write_ranges()
-    jail_path = tmp_path / "forgehost.conf"
+    jail_path = tmp_path / "boron.conf"
     monkeypatch.setattr(fail2ban, "JAIL_D_PATH", str(jail_path))
     jail_path.write_text(fail2ban._render_jail_conf(fail2ban._cloudflare_ranges()))
     assert fail2ban.cloudflare_ignoreip_configured() is True

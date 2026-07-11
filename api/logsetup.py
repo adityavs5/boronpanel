@@ -1,11 +1,11 @@
-"""Run A feature 7: structured request logging for forgehost-api.
+"""Run A feature 7: structured request logging for boron-api.
 
 Every HTTP request is written as one JSON line to
 `{log_dir}/api-access.log`; requests that produced a 5xx are ALSO written
 to `{log_dir}/api-error.log` (the separate error stream the goal asks for,
 and what the admin "last 100 errors" view reads back). Both are plain
 append-only files rotated by logrotate out-of-process
-(deploy/forgehost-api.logrotate, `copytruncate` so this long-lived process
+(deploy/boron-api.logrotate, `copytruncate` so this long-lived process
 never has to reopen an fd -- see that file's own comment for the race
 tradeoff that buys).
 
@@ -29,14 +29,14 @@ from pathlib import Path
 
 from shared.config import settings
 
-_ACCESS_LOGGER = "forgehost.access"
-_ERROR_LOGGER = "forgehost.access.error"
+_ACCESS_LOGGER = "boron.access"
+_ERROR_LOGGER = "boron.access.error"
 
 # Configuration is done lazily on first record so it picks up the runtime
 # settings.log_dir (which tests monkeypatch) whether or not the ASGI
 # lifespan hook ran -- a bare TestClient(app) doesn't trigger lifespan.
 _configured_for: str | None = None
-_bootstrap_logger = logging.getLogger("forgehost.logsetup")
+_bootstrap_logger = logging.getLogger("boron.logsetup")
 
 
 def access_log_path(log_dir: str | None = None) -> Path:

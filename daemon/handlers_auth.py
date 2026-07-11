@@ -1,8 +1,8 @@
-"""Panel auth primitives forgehostd exposes so forgehost-api (which only
+"""Panel auth primitives borond exposes so boron-api (which only
 ever opens SQLite read-only, ARCHITECTURE.md SS4) can still create/revoke
 sessions and API tokens -- the only *writes* auth needs. Password
 verification itself is plain application logic (no privileged system
-action involved) and happens in forgehost-api directly against a read-only
+action involved) and happens in boron-api directly against a read-only
 PanelUser row; only the resulting state changes (new session row, revoked
 session, new/revoked token, new panel user) route through here.
 """
@@ -113,7 +113,7 @@ def check_login_lockout(params: dict) -> dict:
     This is now the atomic gate. It RESERVES one attempt: under the row's write
     lock it increments the failure counter and returns locked=True as soon as
     the threshold is exceeded, so the (THRESHOLD+1)-th concurrent attempt is
-    refused *before* forgehost-api spends a bcrypt/TOTP verify on it. A
+    refused *before* boron-api spends a bcrypt/TOTP verify on it. A
     subsequent successful verification calls record_login_result(success=True)
     to clear the counter; a failed one leaves the reservation counted (no
     second increment needed -- and no double count). Called before password

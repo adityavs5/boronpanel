@@ -36,27 +36,27 @@ def fake_unit_fs(tmp_path, monkeypatch):
 
 
 def test_slice_name_format():
-    assert cgroups.slice_name("demo1") == "forgehost-demo1.slice"
+    assert cgroups.slice_name("demo1") == "boron-demo1.slice"
 
 
 def test_ensure_slice_writes_unit_and_starts(fake_systemctl, fake_unit_fs):
     cgroups.ensure_slice("demo1")
-    unit_file = fake_unit_fs / "forgehost-demo1.slice"
+    unit_file = fake_unit_fs / "boron-demo1.slice"
     assert unit_file.exists()
     content = unit_file.read_text()
     assert "[Unit]" in content
     assert "demo1" in content
-    # deliberately no Slice=forgehost.slice line -- naming-convention alone
+    # deliberately no Slice=boron.slice line -- naming-convention alone
     # nests it (see _write_unit_file's docstring for why the explicit
     # directive was removed)
     assert "Slice=" not in content
     assert any(args[:2] == ["systemctl", "daemon-reload"] for args in fake_systemctl)
-    assert any(args[:3] == ["systemctl", "start", "forgehost-demo1.slice"] for args in fake_systemctl)
+    assert any(args[:3] == ["systemctl", "start", "boron-demo1.slice"] for args in fake_systemctl)
 
 
 def test_ensure_slice_is_idempotent_does_not_rewrite_unchanged_file(fake_systemctl, fake_unit_fs):
     cgroups.ensure_slice("demo1")
-    unit_file = fake_unit_fs / "forgehost-demo1.slice"
+    unit_file = fake_unit_fs / "boron-demo1.slice"
     mtime_before = unit_file.stat().st_mtime_ns
     cgroups.ensure_slice("demo1")
     assert unit_file.stat().st_mtime_ns == mtime_before
@@ -67,7 +67,7 @@ def test_apply_limits_calls_set_property_with_correct_values(fake_systemctl, fak
     cgroups.apply_limits("demo1", cpu_pct=40, mem_mb=1024, io_mb=100, pids_max=75)
 
     set_property_call = next(args for args in fake_systemctl if args[:2] == ["systemctl", "set-property"])
-    assert "forgehost-demo1.slice" in set_property_call
+    assert "boron-demo1.slice" in set_property_call
     assert "CPUQuota=40%" in set_property_call
     assert "MemoryMax=1024M" in set_property_call
     assert "MemorySwapMax=0" in set_property_call
@@ -89,12 +89,12 @@ def test_apply_limits_raises_on_set_property_failure(fake_unit_fs, monkeypatch):
 
 def test_remove_slice_stops_and_removes_unit(fake_systemctl, fake_unit_fs):
     cgroups.ensure_slice("demo1")
-    unit_file = fake_unit_fs / "forgehost-demo1.slice"
+    unit_file = fake_unit_fs / "boron-demo1.slice"
     assert unit_file.exists()
 
     cgroups.remove_slice("demo1")
     assert not unit_file.exists()
-    assert any(args[:3] == ["systemctl", "stop", "forgehost-demo1.slice"] for args in fake_systemctl)
+    assert any(args[:3] == ["systemctl", "stop", "boron-demo1.slice"] for args in fake_systemctl)
 
 
 def test_remove_slice_is_idempotent_when_never_created(fake_systemctl, fake_unit_fs):
@@ -158,10 +158,10 @@ def test_reconcile_processes_moves_matching_pids(isolated_db, tmp_path, monkeypa
 
     monkeypatch.setattr(cgroups.os, "stat", fake_stat)
 
-    target_dir = tmp_path / "forgehost.slice" / "forgehost-demo1.slice"
+    target_dir = tmp_path / "boron.slice" / "boron-demo1.slice"
     target_dir.mkdir(parents=True)
     (target_dir / "cgroup.procs").write_text("")
-    monkeypatch.setattr(cgroups, "_cgroup_path", lambda username: tmp_path / "forgehost.slice" / cgroups.slice_name(username))
+    monkeypatch.setattr(cgroups, "_cgroup_path", lambda username: tmp_path / "boron.slice" / cgroups.slice_name(username))
 
     moved = cgroups.reconcile_processes()
     assert moved == 1

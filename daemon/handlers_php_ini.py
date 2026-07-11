@@ -132,7 +132,7 @@ def set_php_ini(params: dict) -> dict:
 
     # PHP itself refuses to accept an upload larger than post_max_size --
     # a conservative, explicit check here means a customer gets a clear
-    # validation error from Forgehost instead of silently-broken uploads
+    # validation error from Boron instead of silently-broken uploads
     # discovered later.
     if _php_size_to_mb(post_max_size) < _php_size_to_mb(upload_max_filesize):
         raise ValidationError("post_max_size must be >= upload_max_filesize")

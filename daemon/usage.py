@@ -3,7 +3,7 @@
 Definition of Done requires these numbers to match what `du`/`mysql` show
 independently, so every figure here is computed straight from the same
 real sources an operator would check by hand (`du -sb`/`--inodes`,
-information_schema, `ps`) -- never estimated or derived from Forgehost's
+information_schema, `ps`) -- never estimated or derived from Boron's
 own bookkeeping.
 
 Snapshots are refreshed at most every SNAPSHOT_MAX_AGE_SECONDS (15 min):

@@ -1,8 +1,8 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Maintenance-mode auto-disable sweep (missing-features batch, goal
 feature 2's "auto-disable timer" requirement).
 
-Run via a system cron (deploy/forgehost-maintenance.cron), same "server
+Run via a system cron (deploy/boron-maintenance.cron), same "server
 infrastructure, not a per-account crontab" category as
 scripts/usage_snapshot.py. Frequent (every 5 minutes) since the goal's own
 shortest preset is 1 hour -- a 5-minute sweep interval keeps the "site comes

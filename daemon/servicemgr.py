@@ -4,7 +4,7 @@ Start/stop/restart/reload the hosting stack's own system services via
 systemctl. The service registry below is a closed allowlist, not a
 passthrough of whatever unit name a caller supplies -- this is the actual
 enforcement of "never allow stopping the panel's own process via UI"
-(ARCHITECTURE.md's forgehost-api.service/forgehost-provisiond.service are
+(ARCHITECTURE.md's boron-api.service/boron-provisiond.service are
 simply not addressable through this feature at all, not merely rejected
 after the fact) and of "no shell command built from unvalidated input"
 (daemon/procutil.py's own hard rule) applied to systemctl specifically.

@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_admin
-from version import FORGEHOST_VERSION
+from version import BORON_VERSION
 
 api_router = APIRouter(prefix="/api/v1", tags=["update"])
 admin_api_router = APIRouter(prefix="/api/v1/admin/update", tags=["update"])
@@ -27,7 +27,7 @@ admin_api_router = APIRouter(prefix="/api/v1/admin/update", tags=["update"])
 
 @api_router.get("/version")
 def get_version(identity: Identity = Depends(get_identity)):
-    return {"version": FORGEHOST_VERSION}
+    return {"version": BORON_VERSION}
 
 
 class StartUpdateBody(BaseModel):

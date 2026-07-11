@@ -21,7 +21,7 @@ from shared.validation import ValidationError, validate_resource_limit, validate
 
 from daemon import handlers_account, redisacct, sysops, usage_alerts
 
-logger = logging.getLogger("forgehostd.plans")
+logger = logging.getLogger("borond.plans")
 
 _LIMIT_FIELDS = (
     "bandwidth_limit_mb", "database_limit", "email_account_limit",

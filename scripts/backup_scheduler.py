@@ -1,12 +1,12 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Periodic scheduled-backup trigger (Phase 2 feature 7).
 
 Run via a system cron (README/CHECKPOINT-phase2-7.md), not a per-account
-Forgehost-managed crontab (feature 2's daemon/cron.py) -- this needs to
-run mysqldump/tar across every hosting account and talk to forgehostd's
-own backup engine directly, the same trust level as forgehostd itself.
+Boron-managed crontab (feature 2's daemon/cron.py) -- this needs to
+run mysqldump/tar across every hosting account and talk to borond's
+own backup engine directly, the same trust level as borond itself.
 
-Standalone, not part of forgehostd's running process, same reasoning as
+Standalone, not part of borond's running process, same reasoning as
 scripts/ssl_deploy_hook.py and scripts/usage_snapshot.py: cron fires this
 independently of whether the daemon happens to be up.
 """

@@ -5,8 +5,8 @@ row (BrandingSettings). Logo/favicon bytes arrive base64-encoded over the
 RPC channel (this project's RPC framing is JSON, ARCHITECTURE.md SS2 --
 there's no separate binary-upload path to the daemon, so uploads go
 through the same op-dispatch mechanism as everything else) and are
-written to `settings.branding_dir`, group-readable by forgehost-api (the
-same 0640 root:forgehost-api pattern shared/db.py's own
+written to `settings.branding_dir`, group-readable by boron-api (the
+same 0640 root:boron-api pattern shared/db.py's own
 `_grant_api_group_read` already uses for the control-plane DB) so the
 unprivileged API process can stream them back out over HTTP to anonymous
 visitors -- the login page needs to show the branding before any session
@@ -27,7 +27,7 @@ from shared.db import write_session
 from shared.models import BrandingSettings
 from shared.validation import ValidationError, validate_email_address, validate_redirect_target
 
-logger = logging.getLogger("forgehostd.branding")
+logger = logging.getLogger("borond.branding")
 
 # Real content-sniffed types only -- a client-supplied filename/extension is
 # not trusted (same "don't trust client-declared metadata" posture as every
@@ -109,14 +109,14 @@ def _branding_dir() -> Path:
 
 def _grant_api_group_read(path: Path) -> None:
     """Same posture as shared/db.py's `_grant_api_group_read`: only matters
-    when actually running as root (forgehostd); tests and other non-root
+    when actually running as root (borond); tests and other non-root
     callers leave ownership alone."""
     if os.geteuid() != 0:
         return
     import grp
 
     try:
-        gid = grp.getgrnam("forgehost-api").gr_gid
+        gid = grp.getgrnam("boron-api").gr_gid
     except KeyError:
         return
     os.chown(path, 0, gid)

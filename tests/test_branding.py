@@ -28,7 +28,7 @@ def _b64(data: bytes) -> str:
 
 def test_get_settings_defaults_when_no_row(isolated_db):
     data = branding.get_settings({})
-    assert data["panel_name"] == "Forgehost"
+    assert data["panel_name"] == "Boron"
     assert data["has_logo"] is False
     assert data["has_favicon"] is False
     assert data["support_email"] is None
@@ -201,7 +201,7 @@ def test_get_branding_is_public_no_auth_required(isolated_db):
     client = TestClient(main.app)
     r = client.get("/api/v1/branding")
     assert r.status_code == 200
-    assert r.json()["panel_name"] == "Forgehost"
+    assert r.json()["panel_name"] == "Boron"
 
 
 def test_get_logo_404_when_unset(isolated_db):

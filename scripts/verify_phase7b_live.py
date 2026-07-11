@@ -1,4 +1,4 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Live, real-system verification for every Phase 7b feature.
 
 NOT run automatically -- written and staged ready-to-run while live
@@ -7,9 +7,9 @@ verification was blocked by this environment's own permission classifier
 active against this same server with no clear authorization to resume
 live changes; see docs/STATUS.md's Phase 7b section for the full
 incident). This script calls the real daemon modules directly (as root,
-exactly as forgehostd itself would) against the REAL production database
+exactly as borond itself would) against the REAL production database
 and REAL system services (MariaDB, Postfix/Dovecot, PowerDNS, OLS) --
-it deliberately does NOT restart forgehostd/forgehost-api (the two
+it deliberately does NOT restart borond/boron-api (the two
 processes actually shared with any other concurrent session), so running
 it doesn't disrupt whatever the other session might be doing with those.
 
@@ -21,7 +21,7 @@ project's history already uses) -- run cleanup_all() again by hand if a
 run is interrupted partway through.
 
 Usage (once authorized to run against this live server):
-    /opt/forgehost/.venv/bin/python scripts/verify_phase7b_live.py [feature ...]
+    /opt/boron/.venv/bin/python scripts/verify_phase7b_live.py [feature ...]
     # feature in: cpanel_import bandwidth notifications webhooks usage_alerts staging all
     # no args = run all six in order, then clean up
 """
@@ -237,9 +237,9 @@ def verify_notifications() -> None:
         with write_session() as session:
             row = session.get(NotificationSettings, 1)
             if row is None:
-                session.add(NotificationSettings(id=1, sender_address=f"forgehost@{mail_domain}"))
+                session.add(NotificationSettings(id=1, sender_address=f"boron@{mail_domain}"))
             else:
-                row.sender_address = f"forgehost@{mail_domain}"
+                row.sender_address = f"boron@{mail_domain}"
 
         notifications.set_prefs({"username": username, "customer_email": customer_email})
 
@@ -301,7 +301,7 @@ def verify_webhooks() -> None:
         import hmac as hmac_mod
 
         expected_sig = "sha256=" + hmac_mod.new(created["secret"].encode(), received["body"], hashlib.sha256).hexdigest()
-        actual_sig = received["headers"].get("X-Forgehost-Signature")
+        actual_sig = received["headers"].get("X-Boron-Signature")
         ok = actual_sig == expected_sig
         _report(feature, ok, f"received body={received['body'][:80]!r}, signature match: {ok}")
     finally:

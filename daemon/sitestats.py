@@ -13,7 +13,7 @@ Daily snapshots are upserted into `SiteStatsDaily` (one row per (domain,
 date)) by `refresh_domain`/`refresh_all`, the same "recompute and replace
 this day's row while its raw log lines are still on disk" semantics
 `daemon/usage.py`'s `BandwidthDaily` already documents -- triggered by
-`scripts/sitestats_snapshot.py` on a daily cron (`deploy/forgehost-
+`scripts/sitestats_snapshot.py` on a daily cron (`deploy/boron-
 sitestats.cron`), mirroring `scripts/usage_snapshot.py`'s own thin-wrapper-
 over-a-daemon-function shape.
 """

@@ -29,7 +29,7 @@ from shared.validation import validate_resource_limit, validate_username
 
 from daemon import audit, events, handlers_account, usage
 
-logger = logging.getLogger("forgehostd.usage_alerts")
+logger = logging.getLogger("borond.usage_alerts")
 
 THRESHOLDS = (100, 90, 80)
 RESOURCES = ("disk", "bandwidth", "databases", "email_accounts", "subdomains")

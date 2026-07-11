@@ -1,5 +1,5 @@
-"""forgehost-api's only path to any privileged/write action: the Unix
-socket RPC to forgehostd (ARCHITECTURE.md SS2). Every call is stamped with
+"""boron-api's only path to any privileged/write action: the Unix
+socket RPC to borond (ARCHITECTURE.md SS2). Every call is stamped with
 the authenticated caller's identity so the daemon's audit log records who
 actually did what, even though authorization itself was already decided
 here, before the call was made.

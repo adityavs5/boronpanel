@@ -2,14 +2,14 @@
 
 The real crontab is the only source of truth -- no shadow table in the
 panel DB to drift out of sync with it. Jobs are identified by a marker
-comment line Forgehost writes immediately above each job it manages
-(`# forgehost:id=<uuid> label=<label>`), so add/edit/delete can target one
+comment line Boron writes immediately above each job it manages
+(`# boron:id=<uuid> label=<label>`), so add/edit/delete can target one
 job without disturbing any other line in the account's crontab (including
 lines the account added some other way, though there's no SSH access in
 v1 to actually do that -- still handled correctly rather than assumed
 away).
 
-Runs as root (forgehostd), using `crontab -u <username>` -- this executes
+Runs as root (borond), using `crontab -u <username>` -- this executes
 the job as *that* Linux user, never root (`crontab -u` only changes whose
 table is read/written; the cron daemon itself still runs each user's jobs
 under that user's own uid, same as it always has since before this project
@@ -26,7 +26,7 @@ from shared.validation import validate_cron_mailto
 
 from daemon.procutil import run
 
-MARKER_RE = re.compile(r"^#\s*forgehost:id=([0-9a-f-]{36})(?:\s+label=(.*))?$")
+MARKER_RE = re.compile(r"^#\s*boron:id=([0-9a-f-]{36})(?:\s+label=(.*))?$")
 MAILTO_RE = re.compile(r"^MAILTO\s*=\s*(.*)$")
 MAX_COMMAND_LEN = 1000
 MAX_LABEL_LEN = 200
@@ -140,7 +140,7 @@ def add_job(username: str, schedule: str, command: str, label: str = "") -> dict
 
     job_id = str(uuid.uuid4())
     lines = _read_raw(username)
-    lines.append(f"# forgehost:id={job_id} label={label}")
+    lines.append(f"# boron:id={job_id} label={label}")
     lines.append(f"{schedule} {command}")
     _write_raw(username, lines)
     return {"id": job_id, "label": label, "schedule": schedule, "command": command}
@@ -158,7 +158,7 @@ def update_job(username: str, job_id: str, schedule: str, command: str, label: s
     while i < len(lines):
         m = MARKER_RE.match(lines[i].strip())
         if m and m.group(1) == job_id and i + 1 < len(lines):
-            new_lines.append(f"# forgehost:id={job_id} label={label}")
+            new_lines.append(f"# boron:id={job_id} label={label}")
             new_lines.append(f"{schedule} {command}")
             found = True
             i += 2

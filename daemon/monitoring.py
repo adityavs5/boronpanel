@@ -35,7 +35,7 @@ from shared.validation import ValidationError, validate_email_address
 from daemon import notifications, servicemgr
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.monitoring")
+logger = logging.getLogger("borond.monitoring")
 
 # servicemgr's registry + fail2ban (monitored, not manageable -- see module
 # docstring). Key order is the display order in the admin UI.

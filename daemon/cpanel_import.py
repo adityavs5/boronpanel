@@ -1,5 +1,5 @@
 """Phase 7b feature 1: import a standard cPanel/WHM full-backup tarball into
-a brand-new Forgehost account.
+a brand-new Boron account.
 
 Format note (read before touching this file): this sandbox has no licensed
 cPanel/WHM instance to generate a genuine backup from, so there is no real
@@ -33,7 +33,7 @@ unsupported items, import rest") -- only a handful of genuinely fatal, early
 steps (fetching/extracting the archive, creating the target account) abort
 the job outright, since nothing else is meaningful without them.
 
-This module runs inside forgehostd (root) and therefore calls the same
+This module runs inside borond (root) and therefore calls the same
 handlers_*.py functions directly that backup.py's own full-restore path
 calls (daemon/backup.py's _restore_full is the closest existing precedent
 in this codebase, both in spirit -- "recreate an account from an external
@@ -75,7 +75,7 @@ from daemon.backup import _write_mysql_defaults_file
 from daemon.procutil import run
 from daemon.wordpress import _php_str
 
-logger = logging.getLogger("forgehostd.cpanel_import")
+logger = logging.getLogger("borond.cpanel_import")
 
 _executor = ThreadPoolExecutor(max_workers=settings.cpanel_import_concurrency, thread_name_prefix="cpanel-import")
 
@@ -428,11 +428,11 @@ def _copy_homedir(root: Path, username: str) -> str:
 
 def _relocate_addon_docroot(root: Path, username: str, domain: str, docroot: str) -> str | None:
     """cPanel records each addon/parked domain's own chosen docroot in
-    userdata/<domain>.yaml, which frequently does NOT match Forgehost's own
+    userdata/<domain>.yaml, which frequently does NOT match Boron's own
     <home>/<domain> convention (add_domain() always creates the latter).
     If the cPanel-recorded docroot exists under the copied homedir and is
-    not already the domain's Forgehost docroot, move its contents into
-    place so the imported site's actual files end up where Forgehost's own
+    not already the domain's Boron docroot, move its contents into
+    place so the imported site's actual files end up where Boron's own
     vhost rendering expects them."""
     recorded = _userdata_docroot(root, domain)
     if not recorded:
@@ -484,7 +484,7 @@ def _db_suffix_from_dump(dump_path: Path, old_username: str | None) -> str:
     name = dump_path.stem
     if old_username and name.startswith(f"{old_username}_"):
         name = name[len(old_username) + 1 :]
-    # Forgehost re-derives the full name as <new_username>_<suffix> --
+    # Boron re-derives the full name as <new_username>_<suffix> --
     # validate_db_identifier is applied by handlers_database.create_database
     # itself; a name that doesn't fit is truncated here so an oversized-but-
     # otherwise-fine suffix doesn't fail the whole item on length alone.
@@ -884,7 +884,7 @@ def _wordpress_rewrite_step(username: str, domain: str, db_name_map: dict[str, s
         chosen = next(iter(db_name_map.values()))
     if chosen is None:
         raise _Skip("multiple databases imported and none could be matched to this site's wp-config.php")
-    db_user = chosen  # Forgehost's own 1-DB-1-user convention (handlers_database.create_database)
+    db_user = chosen  # Boron's own 1-DB-1-user convention (handlers_database.create_database)
     new_password = mariadb.generate_password()
     mariadb.set_password(db_user, new_password)
     return _rewrite_wp_config(docroot, chosen, db_user, new_password)
@@ -930,7 +930,7 @@ def _run_import_job(job_id: int, params: dict) -> None:
             return
         finally:
             # The uploaded tarball itself (api/routers/cpanel_import.py spools
-            # it to a plain tmp file forgehost-api can write and forgehostd,
+            # it to a plain tmp file boron-api can write and borond,
             # as root, can read regardless of who wrote it) can hold real
             # customer data -- database dumps, mailbox contents -- and lives
             # outside work_dir (which is cleaned up separately below), so it
@@ -965,7 +965,7 @@ def _run_import_job(job_id: int, params: dict) -> None:
         # leaving it stuck at "running" forever with no explanation.
         try:
             # DNS zones BEFORE domain.add: add_domain() only auto-creates an
-            # A record when a Forgehost-managed zone already exists for the
+            # A record when a Boron-managed zone already exists for the
             # domain (daemon/handlers_domain.py) -- importing the zone first
             # means every migrated domain's A record ends up correctly
             # re-pointed at *this* server the moment its Domain row is

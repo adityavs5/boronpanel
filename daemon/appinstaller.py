@@ -7,7 +7,7 @@ unchanged, and wired into this feature's unified app registry/API/UI as one
 more entry.
 
 Static HTML: no "official source" applies to a generic starter template --
-a small, tasteful starter page bundled with Forgehost itself
+a small, tasteful starter page bundled with Boron itself
 (daemon/app_templates/static/) is copied into place.
 
 Joomla: the one app type this phase's Definition of Done requires live
@@ -65,7 +65,7 @@ from shared.validation import generate_strong_password, validate_domain, validat
 from daemon import handlers_database, wordpress
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.appinstaller")
+logger = logging.getLogger("borond.appinstaller")
 
 _executor = ThreadPoolExecutor(max_workers=settings.app_install_concurrency, thread_name_prefix="app-install")
 

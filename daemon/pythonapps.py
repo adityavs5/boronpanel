@@ -165,7 +165,7 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, app_typ
 
     content = (
         "[Unit]\n"
-        f"Description=Forgehost Python app '{name}' for account '{username}'\n"
+        f"Description=Boron Python app '{name}' for account '{username}'\n"
         "After=network.target\n"
         "\n"
         "[Service]\n"
@@ -175,7 +175,7 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, app_typ
         f"WorkingDirectory={app_dir}\n"
         f"EnvironmentFile={appunits.env_file_path(unit)}\n"
         f"ExecStart={_exec_start(venv_dir, app_type, entry_point, port)}\n"
-        f"Slice=forgehost-{username}.slice\n"
+        f"Slice=boron-{username}.slice\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
         f"StandardOutput=append:{log_path}\n"
@@ -378,7 +378,7 @@ def terminate_account_python_apps(account: Account) -> None:
 
 
 def bootstrap_all_python_apps() -> None:
-    """Run once at forgehostd startup -- see nodeapps.bootstrap_all_node_apps's
+    """Run once at borond startup -- see nodeapps.bootstrap_all_node_apps's
     identical reasoning. Does NOT recreate the venv (assumed to already
     exist on disk from create()/pip_install() -- recreating it on every
     daemon restart would be needlessly slow and would silently blow away
@@ -405,6 +405,6 @@ def bootstrap_all_python_apps() -> None:
         except Exception:
             import logging
 
-            logging.getLogger("forgehostd.pythonapps").exception(
+            logging.getLogger("borond.pythonapps").exception(
                 "failed to bootstrap Python app %d for account '%s'", app_id, username
             )

@@ -24,7 +24,7 @@ from pathlib import Path
 
 from daemon.procutil import run
 
-GEOLITE_DB_PATH = "/var/lib/forgehost/GeoLite2-Country.mmdb"
+GEOLITE_DB_PATH = "/var/lib/boron/GeoLite2-Country.mmdb"
 GEOLITE_DOWNLOAD_URL = "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&suffix=tar.gz&license_key="
 
 

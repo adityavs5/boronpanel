@@ -201,7 +201,7 @@ def test_rejection_logged(caplog):
 
     for _ in range(10):
         evaluate("/login", "POST", "203.0.113.5", None, None)
-    with caplog.at_level(logging.WARNING, logger="forgehost.ratelimit"):
+    with caplog.at_level(logging.WARNING, logger="boron.ratelimit"):
         evaluate("/login", "POST", "203.0.113.5", None, None)
     assert any("rate limit hit" in r.message for r in caplog.records)
 

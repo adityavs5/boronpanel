@@ -1,4 +1,4 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """One-time bootstrap: create the first admin panel user.
 
 Run manually after first install (see README) -- there is no other way to
@@ -20,7 +20,7 @@ from shared.config import settings  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Create the first Forgehost admin user")
+    parser = argparse.ArgumentParser(description="Create the first Boron admin user")
     parser.add_argument("--username", required=True)
     parser.add_argument("--password", help="omit to be prompted (recommended -- avoids shell history)")
     args = parser.parse_args()

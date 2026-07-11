@@ -30,7 +30,7 @@ from shared.models import CloudflareAccount, CloudflareZone
 
 from daemon import appcrypto, cloudflare
 
-logger = logging.getLogger("forgehostd.cloudflare_accounts")
+logger = logging.getLogger("borond.cloudflare_accounts")
 
 MAX_ZONES_DEFAULT = 800
 NAME_MAX_LEN = 64

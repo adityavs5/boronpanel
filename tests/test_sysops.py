@@ -48,7 +48,7 @@ def test_recycle_php_workers_does_not_raise_for_nonexistent_user():
     real assertion is that this never raises (set_php_ini/reset_php_ini
     call it unconditionally after every change, never inside a try/except,
     see daemon/handlers_php_ini.py)."""
-    sysops.recycle_php_workers("no-such-forgehost-test-user")
+    sysops.recycle_php_workers("no-such-boron-test-user")
 
 
 def test_recycle_php_workers_scopes_to_username_and_lsphp(monkeypatch):

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-logger = logging.getLogger("forgehostd.events")
+logger = logging.getLogger("borond.events")
 
 
 def emit(event_type: str, account, **context) -> None:

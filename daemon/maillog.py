@@ -1,6 +1,6 @@
 """Phase 8 feature 5: email delivery log, scoped to an account's domains.
 
-Parses Postfix's mail log (root-only, read here in forgehostd) and returns the
+Parses Postfix's mail log (root-only, read here in borond) and returns the
 last N delivery events (timestamp / from / to / status / reason) that touch one
 of the account's own domains -- either the sender OR the recipient is on a
 domain the account owns. An event between two OTHER accounts' domains is never

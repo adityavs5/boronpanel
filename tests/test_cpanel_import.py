@@ -521,7 +521,7 @@ def test_extract_archive_rejects_path_traversal(tmp_path):
     '../' member for THIS archive's extraction call, not just assumed."""
     archive_path = tmp_path / "evil.tar"
     with tarfile.open(archive_path, "w") as tf:
-        info = tarfile.TarInfo(name="../../../../tmp/forgehost_cpanel_zipslip.txt")
+        info = tarfile.TarInfo(name="../../../../tmp/boron_cpanel_zipslip.txt")
         data = b"pwned"
         info.size = len(data)
         import io
@@ -532,7 +532,7 @@ def test_extract_archive_rejects_path_traversal(tmp_path):
     extract_dir.mkdir()
     with pytest.raises(ci.CpanelImportError):
         ci._extract_archive(archive_path, extract_dir)
-    assert not os.path.exists("/tmp/forgehost_cpanel_zipslip.txt")
+    assert not os.path.exists("/tmp/boron_cpanel_zipslip.txt")
 
 
 def test_extract_archive_rejects_decompression_bomb(tmp_path, monkeypatch):

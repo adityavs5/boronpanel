@@ -161,7 +161,7 @@ def test_deliver_success_on_first_attempt(isolated_db, monkeypatch):
     assert code == 200
     assert error is None
     assert len(calls) == 1
-    signature = calls[0][2]["X-Forgehost-Signature"]
+    signature = calls[0][2]["X-Boron-Signature"]
     expected_body = json.dumps({"event": "account.created", "data": {"username": "demo1"}}).encode()
     assert signature == wh._sign("s3cret", expected_body)
 

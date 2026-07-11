@@ -6,7 +6,7 @@
 # GitHub release and its checksum verified before install, so we never run an
 # unverified download (same posture as the project's other pinned third-party
 # binaries -- wp-cli.phar, composer). After the binary is present,
-# forgehostd's fb.bootstrap op writes the config + systemd unit and starts the
+# borond's fb.bootstrap op writes the config + systemd unit and starts the
 # 127.0.0.1-only service; you do not run the binary directly.
 set -euo pipefail
 
@@ -28,4 +28,4 @@ curl -sSL -o "$TMP" "$URL"
 echo "${SHA256}  ${TMP}" | sha256sum -c -   # aborts on mismatch (set -e)
 install -m 0755 -o root -g root "$TMP" "$DEST"
 echo "Installed $("$DEST" version 2>/dev/null | grep -i version | head -1 || echo "$DEST")"
-echo "Next: forgehostd's fb.bootstrap runs at daemon start (or trigger it) to write config + start the service."
+echo "Next: borond's fb.bootstrap runs at daemon start (or trigger it) to write config + start the service."

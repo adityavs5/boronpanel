@@ -21,7 +21,7 @@ from shared.validation import ValidationError, validate_password_strength, valid
 
 from daemon import cgroups, sysops
 
-logger = logging.getLogger("forgehostd.account")
+logger = logging.getLogger("borond.account")
 
 # Populated by later phases (vhost teardown in Phase b, DB in Phase d, mail in
 # Phase e, DNS in Phase c). Each hook receives the Account row and must be

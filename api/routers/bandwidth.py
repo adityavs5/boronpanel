@@ -7,7 +7,7 @@ same logs an operator would grep by hand.
 Charting note (read before reaching for a JS library here): the project
 goal for this feature names Chart.js as "already available" -- checked
 directly against this repo's `static/` directory before writing any of
-this file, and that's not true: only `static/forgehost.css` exists, no
+this file, and that's not true: only `static/boron.css` exists, no
 vendored JS at all. The health dashboard (Phase 5 feature 1) already
 solved the identical "render a chart" problem under this project's actual
 `script-src 'none'` CSP (Security audit finding F10) with server-rendered

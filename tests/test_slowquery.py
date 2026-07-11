@@ -58,7 +58,7 @@ def test_bootstrap_requires_confirm():
 
 
 def test_bootstrap_writes_config_restarts_and_verifies(monkeypatch, tmp_path):
-    conf_path = tmp_path / "60-forgehost-slowlog.cnf"
+    conf_path = tmp_path / "60-boron-slowlog.cnf"
     monkeypatch.setattr(slowquery, "SLOWLOG_CONF_PATH", str(conf_path))
 
     calls = []
@@ -80,7 +80,7 @@ def test_bootstrap_writes_config_restarts_and_verifies(monkeypatch, tmp_path):
 
 
 def test_bootstrap_rolls_back_on_restart_failure(monkeypatch, tmp_path):
-    conf_path = tmp_path / "60-forgehost-slowlog.cnf"
+    conf_path = tmp_path / "60-boron-slowlog.cnf"
     conf_path.write_text("# original content\n")
     monkeypatch.setattr(slowquery, "SLOWLOG_CONF_PATH", str(conf_path))
     monkeypatch.setattr(slowquery, "run", lambda args, timeout=60: ProcResult(args=args, returncode=1, stdout="", stderr="failed to restart"))
@@ -91,7 +91,7 @@ def test_bootstrap_rolls_back_on_restart_failure(monkeypatch, tmp_path):
 
 
 def test_bootstrap_rolls_back_when_setting_never_takes_effect(monkeypatch, tmp_path):
-    conf_path = tmp_path / "60-forgehost-slowlog.cnf"
+    conf_path = tmp_path / "60-boron-slowlog.cnf"
     monkeypatch.setattr(slowquery, "SLOWLOG_CONF_PATH", str(conf_path))
     monkeypatch.setattr(slowquery, "run", lambda args, timeout=60: ProcResult(args=args, returncode=0, stdout="", stderr=""))
 

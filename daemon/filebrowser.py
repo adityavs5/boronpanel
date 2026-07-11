@@ -4,14 +4,14 @@ one (daemon/filemanager.py is retired once this is verified).
 Design (full reasoning + the empirical verification behind it live in
 docs/CHECKPOINT-filebrowser-quantum.md):
 
-- ONE FileBrowser Quantum process (`forgehost-filebrowser.service`), a single
+- ONE FileBrowser Quantum process (`boron-filebrowser.service`), a single
   Go binary, bound to 127.0.0.1 only and reached exclusively through
-  forgehost-api's authenticated proxy, which injects the trusted `X-Fb-User`
+  boron-api's authenticated proxy, which injects the trusted `X-Fb-User`
   header server-side. Never public.
 
 - It runs as **root** on purpose: like the old manager (ARCHITECTURE.md §10),
   the file manager must read/write files across every account home under
-  Forgehost's 711-home / 750-docroot perms model, which only root can do from a
+  Boron's 711-home / 750-docroot perms model, which only root can do from a
   single long-lived process. FB Quantum can't per-request drop to the account
   uid, so files it creates are root-owned; `add_source` compensates by putting
   a default POSIX ACL on the account home granting the account rwX, so
@@ -44,15 +44,15 @@ from shared.validation import validate_username
 
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.filebrowser")
+logger = logging.getLogger("borond.filebrowser")
 
-SERVICE_NAME = "forgehost-filebrowser.service"
-UNIT_PATH = "/etc/systemd/system/forgehost-filebrowser.service"
+SERVICE_NAME = "boron-filebrowser.service"
+UNIT_PATH = "/etc/systemd/system/boron-filebrowser.service"
 SOURCE_NAME = "home"
 
-# The OS user forgehost-api's service runs as (fixed by scripts/install.sh,
+# The OS user boron-api's service runs as (fixed by scripts/install.sh,
 # not per-install configurable). Used to scope the loopback lockdown below.
-API_SERVICE_USER = "forgehost-api"
+API_SERVICE_USER = "boron-api"
 
 
 class FileBrowserError(Exception):
@@ -104,7 +104,7 @@ def build_config() -> dict:
             # CRITICAL isolation control (found by live testing on a real
             # 711-home box): FileBrowser Quantum runs as root and, by default,
             # explicitly chmods every file it creates to 0644 — world-readable.
-            # Under Forgehost's world-traversable 711 account homes (required so
+            # Under Boron's world-traversable 711 account homes (required so
             # OLS's `nobody` worker can reach public_html), a 0644 file is
             # readable by EVERY other account on the box → a cross-tenant leak
             # the old manager avoided by writing 0640 account-owned files. These
@@ -133,7 +133,7 @@ def build_config() -> dict:
         "auth": {
             "methods": {
                 # password login disabled: identity comes only from the trusted
-                # proxy header, which forgehost-api sets server-side.
+                # proxy header, which boron-api sets server-side.
                 "password": {"enabled": False},
                 "proxy": {
                     "enabled": True,
@@ -165,7 +165,7 @@ def build_config() -> dict:
 
 
 def render_config() -> str:
-    """Write /etc/forgehost/filebrowser.yaml (0640 root). Returns the path."""
+    """Write /etc/boron/filebrowser.yaml (0640 root). Returns the path."""
     path = settings.filebrowser_config
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump(build_config(), sort_keys=False, default_flow_style=False)
@@ -177,7 +177,7 @@ def render_config() -> str:
 def _unit_content() -> str:
     return (
         "[Unit]\n"
-        "Description=Forgehost File Manager (FileBrowser Quantum)\n"
+        "Description=Boron File Manager (FileBrowser Quantum)\n"
         "After=network.target\n"
         "\n"
         "[Service]\n"
@@ -273,7 +273,7 @@ def _ensure_rule_at(position: int, rulespec: list[str]) -> None:
     never reached for loopback packets at all. Inserting at position 1/2
     (ahead of ufw's own chain jumps) is the only placement that actually
     takes effect; confirmed by testing as three different local uids
-    (forgehost-api: allowed; a real hosting account uid; root) after this
+    (boron-api: allowed; a real hosting account uid; root) after this
     fix. -C (existence check, position-independent) first, -I only if not
     already present -- idempotent and safe to call on every daemon start.
     Never fatal -- logged, matching _apply_account_acl's best-effort
@@ -304,14 +304,14 @@ def restrict_backend_access() -> None:
     default rule set unconditionally accepts all loopback traffic (no
     per-uid restriction). Since every hosting account gets real local code
     execution as its own uid (PHP/LSAPI, cron), any customer's own process
-    could otherwise bypass forgehost-api entirely and impersonate any
+    could otherwise bypass boron-api entirely and impersonate any
     account.
 
     Fix: an OUTPUT-chain iptables rule (not `ufw` -- uid-owner matching
     isn't exposed by ufw's simple CLI, see daemon/firewall.py's own
     docstring for why that module deliberately avoids raw iptables for
     *port/CIDR* rules; this is a different, process-identity-based
-    mechanism) that only permits the forgehost-api service user to
+    mechanism) that only permits the boron-api service user to
     originate a connection to the backend port; everything else is
     rejected. **Inserted at the top of OUTPUT (positions 1-2), not
     appended** -- ufw's own baseline `ufw-before-output` chain

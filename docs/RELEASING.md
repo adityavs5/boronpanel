@@ -1,6 +1,6 @@
-# Releasing Forgehost
+# Releasing Boron
 
-Forgehost ships as **versioned release tarballs attached to GitHub
+Boron ships as **versioned release tarballs attached to GitHub
 releases**. Production servers never `git pull` — they consume these
 tarballs through the panel's built-in update system (or an operator
 downloads one manually), and the SHA256 checksum is verified before a
@@ -12,9 +12,9 @@ Every release `vX.Y.Z` carries:
 
 | Asset | What it is |
 |---|---|
-| `forgehost-X.Y.Z.tar.gz` | The deployable tree: `api/`, `daemon/`, `shared/`, `scripts/`, `deploy/`, `templates/`, `static/` (with the **freshly built** SPA bundle in `static/dist`), `tests/` (used by the updater's pre-flight), `docs/`, `version.py`, `requirements.txt`, `pytest.ini`, `README.md` — all under a single `forgehost-X.Y.Z/` top-level directory. |
-| `forgehost-X.Y.Z.sha256` | `sha256sum` output for the tarball. The update daemon aborts on any mismatch. |
-| `forgehost-X.Y.Z.tar.gz.asc` | Detached ASCII-armored GPG signature — present only when the release machine has a GPG secret key. |
+| `boron-X.Y.Z.tar.gz` | The deployable tree: `api/`, `daemon/`, `shared/`, `scripts/`, `deploy/`, `templates/`, `static/` (with the **freshly built** SPA bundle in `static/dist`), `tests/` (used by the updater's pre-flight), `docs/`, `version.py`, `requirements.txt`, `pytest.ini`, `README.md` — all under a single `boron-X.Y.Z/` top-level directory. |
+| `boron-X.Y.Z.sha256` | `sha256sum` output for the tarball. The update daemon aborts on any mismatch. |
+| `boron-X.Y.Z.tar.gz.asc` | Detached ASCII-armored GPG signature — present only when the release machine has a GPG secret key. |
 
 What is **never** in the tarball, by construction: the tarball is built
 from `git archive HEAD` (tracked files only), so `secrets.env`,
@@ -62,7 +62,7 @@ A real run, in order:
    the bundle always matches the source being released (the SPA bakes the
    version in from `version.py` at build time).
 5. **Stage** — `git archive HEAD` into a temp dir under a
-   `forgehost-X.Y.Z/` prefix, overlaying the bumped `version.py` and the
+   `boron-X.Y.Z/` prefix, overlaying the bumped `version.py` and the
    freshly built `static/dist`; drops `frontend/`; refuses to continue if
    anything secret-shaped is present.
 6. **Artifacts** — deterministic-ish tarball (sorted members, root
@@ -87,13 +87,13 @@ A real run, in order:
 
 The daemon's `update.check` op polls
 `https://api.github.com/repos/OWNER/REPO/releases/latest` (the repo comes
-from `update_github_repo` in `/etc/forgehost/forgehost.toml`), compares
+from `update_github_repo` in `/etc/boron/boron.toml`), compares
 `tag_name` against the running `version.py`, and surfaces "update
 available" in the admin UI. The one-click update job downloads the tarball
 **only** from `https://github.com/OWNER/REPO/releases/download/...`,
 verifies the SHA256 against the `.sha256` asset before extraction,
 validates every tarball member against path traversal, stages into
-`/opt/forgehost-X.Y.Z/`, and atomically swaps the `/opt/forgehost`
+`/opt/boron-X.Y.Z/`, and atomically swaps the `/opt/boron`
 symlink. See the update-system checkpoints in `docs/` for the full design.
 
 ## Troubleshooting

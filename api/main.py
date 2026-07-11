@@ -1,7 +1,7 @@
-"""forgehost-api: the unprivileged REST API + admin UI process.
+"""boron-api: the unprivileged REST API + admin UI process.
 
-ARCHITECTURE.md SS2: runs as the `forgehost-api` system user, never root,
-talks to forgehostd only over the Unix socket RPC (api/rpc.py). Every
+ARCHITECTURE.md SS2: runs as the `boron-api` system user, never root,
+talks to borond only over the Unix socket RPC (api/rpc.py). Every
 state-changing endpoint is reached through the same get_identity/
 require_*_access dependencies regardless of HTTP verb (SS9).
 """
@@ -53,7 +53,7 @@ async def lifespan(_app: FastAPI):
 # descriptions; per-endpoint descriptions come from each handler's own
 # docstring/summary (FastAPI reads them automatically).
 _OPENAPI_DESCRIPTION = """
-Forgehost is a single-server Linux hosting control panel. This is the REST
+Boron is a single-server Linux hosting control panel. This is the REST
 API that both the React panel and any external integration (e.g. a billing
 system) drive -- every panel action is one of these calls.
 
@@ -90,11 +90,11 @@ _OPENAPI_TAGS = [
 ]
 
 app = FastAPI(
-    title="Forgehost",
+    title="Boron",
     description=_OPENAPI_DESCRIPTION,
     version="1.0",
     openapi_tags=_OPENAPI_TAGS,
-    contact={"name": "Forgehost operator", "url": "https://github.com/"},
+    contact={"name": "Boron operator", "url": "https://github.com/"},
     license_info={"name": "Proprietary"},
     docs_url=None,
     redoc_url=None,
@@ -404,7 +404,7 @@ def swagger_ui(identity: Identity = Depends(get_identity)):
     # _security_headers.
     return get_swagger_ui_html(
         openapi_url="/api/openapi.json",
-        title="Forgehost API — Swagger UI",
+        title="Boron API — Swagger UI",
         swagger_js_url="/static/apidocs/swagger-ui-bundle.js",
         swagger_css_url="/static/apidocs/swagger-ui.css",
         swagger_favicon_url="/static/apidocs/favicon-32x32.png",
@@ -416,7 +416,7 @@ def redoc_ui(identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return get_redoc_html(
         openapi_url="/api/openapi.json",
-        title="Forgehost API — ReDoc",
+        title="Boron API — ReDoc",
         redoc_js_url="/static/apidocs/redoc.standalone.js",
         redoc_favicon_url="/static/apidocs/favicon-32x32.png",
         # Default True pulls Google Fonts from a CDN -- off for offline.

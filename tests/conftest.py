@@ -6,7 +6,7 @@ from shared.config import settings
 @pytest.fixture(autouse=True)
 def _isolate_request_logs(tmp_path_factory, monkeypatch):
     """Never let a test write the API request logs into the real
-    /var/log/forgehost. Any test that exercises the app through its ASGI
+    /var/log/boron. Any test that exercises the app through its ASGI
     stack (TestClient) runs the Run A f7 access-log middleware, which writes
     to settings.log_dir on first use -- without this, running `pytest` as
     root on a live box pollutes the production access log and, worse, leaves
@@ -28,7 +28,7 @@ def isolated_db(tmp_path, monkeypatch):
     gets a clean schema instead of sharing state across tests."""
     import shared.db as db_module
 
-    db_path = tmp_path / "forgehost-test.db"
+    db_path = tmp_path / "boron-test.db"
     monkeypatch.setattr(settings, "db_path", str(db_path))
     monkeypatch.setattr(db_module, "_write_engine", None)
     monkeypatch.setattr(db_module, "_WriteSession", None)

@@ -12,7 +12,7 @@ whole-account recreation from a single artifact possible.
 
 Jobs run asynchronously in a small bounded thread pool (not the RPC
 request thread) so a multi-minute backup/restore doesn't block
-forgehostd's dispatch loop; BackupJob/RestoreJob rows are the only
+borond's dispatch loop; BackupJob/RestoreJob rows are the only
 progress-reporting channel the UI polls, updated at each stage.
 """
 from __future__ import annotations
@@ -49,7 +49,7 @@ from shared.validation import ValidationError, validate_domain, validate_usernam
 from daemon import cron, dnsprovider, events, mariadb, rclone
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.backup")
+logger = logging.getLogger("borond.backup")
 
 _executor = ThreadPoolExecutor(max_workers=settings.backup_concurrency, thread_name_prefix="backup")
 
@@ -101,7 +101,7 @@ def create_destination(params: dict) -> dict:
     # rclone
     remote_type = params["rclone_remote_type"]
     remote_config = params.get("rclone_config", {})
-    remote_name = f"forgehost_{name}"
+    remote_name = f"boron_{name}"
     rclone.create_remote(remote_name, remote_type, remote_config)
     with write_session() as session:
         dest = BackupDestination(
@@ -840,7 +840,7 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
         # traversal, and device/special files -- the standard-library
         # defense for the same tar-slip class as the zip-slip fix in
         # daemon/appinstaller.py/wordpress.py. This artifact is normally
-        # Forgehost's own backup output, but restore runs as root, so this
+        # Boron's own backup output, but restore runs as root, so this
         # is the same "no unchecked precondition" bar applied to a
         # compromised remote destination or a future format bug.
         tf.extractall(extract_dir, filter="data")

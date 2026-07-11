@@ -13,9 +13,9 @@ from shared.models import Base
 def make_engine(db_path: str | None = None, read_only: bool = False):
     path = db_path or settings.db_path
     if not read_only:
-        # forgehost-api (the read_only=True caller) must never create this
-        # file/directory -- only forgehostd, running as root, owns that.
-        # mkdir here unconditionally would have silently given forgehost-api
+        # boron-api (the read_only=True caller) must never create this
+        # file/directory -- only borond, running as root, owns that.
+        # mkdir here unconditionally would have silently given boron-api
         # write access to the parent dir the first time it ran before the
         # daemon had, which defeats the whole point of the OS-level
         # permission split below.
@@ -23,9 +23,9 @@ def make_engine(db_path: str | None = None, read_only: bool = False):
     # SQLAlchemy's create_engine() takes a SQLAlchemy URL, not a raw sqlite3
     # "file:...?mode=ro" URI passed as connect_args={"uri": True} -- that
     # combination doesn't parse (caught by real testing: the first time
-    # forgehost-api actually exercised this read-only path, not by
+    # boron-api actually exercised this read-only path, not by
     # reasoning about it). Read-only enforcement instead comes from the
-    # actual filesystem permissions (the DB file is 0640 root:forgehost-api
+    # actual filesystem permissions (the DB file is 0640 root:boron-api
     # -- ARCHITECTURE.md SS4), which is simpler and was already the
     # documented design; SQLite raises "attempt to write a readonly
     # database" if this process ever tried to write through a connection
@@ -40,7 +40,7 @@ def make_engine(db_path: str | None = None, read_only: bool = False):
             # whichever connection creates/opens it for writing -- forcing
             # it again on a read-only connection would itself require a
             # write to the DB header, which the read-only OS permissions
-            # correctly refuse. The writer (forgehostd) always connects
+            # correctly refuse. The writer (borond) always connects
             # first in practice, but don't depend on ordering: only the
             # writer ever issues this pragma.
             cursor.execute("PRAGMA journal_mode=WAL")
@@ -98,10 +98,10 @@ def _apply_additive_migrations(engine) -> None:
 
 
 def _grant_api_group_read() -> None:
-    """forgehost-api needs group-read on the DB (+ -wal/-shm, WAL mode
+    """boron-api needs group-read on the DB (+ -wal/-shm, WAL mode
     creates both) to open it via read_session() -- a fresh install's first
     `CREATE TABLE` otherwise leaves these owned root:root from the
-    process's own umask, and forgehost-api gets a bare PermissionError with
+    process's own umask, and boron-api gets a bare PermissionError with
     no obvious cause until someone manually chowns it (found while writing
     the install instructions for this project, not by code review)."""
     import grp
@@ -110,7 +110,7 @@ def _grant_api_group_read() -> None:
     if os.geteuid() != 0:
         return  # tests and other non-root callers leave ownership alone
     try:
-        gid = grp.getgrnam("forgehost-api").gr_gid
+        gid = grp.getgrnam("boron-api").gr_gid
     except KeyError:
         return
     base = Path(settings.db_path)
@@ -146,7 +146,7 @@ _ReadSession: sessionmaker | None = None
 
 @contextmanager
 def read_session():
-    """Read-only session for forgehost-api. Opens the same SQLite file
+    """Read-only session for boron-api. Opens the same SQLite file
     without requiring write permission on it (ARCHITECTURE.md SS4)."""
     global _read_engine, _ReadSession
     if _ReadSession is None:

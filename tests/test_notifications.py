@@ -42,7 +42,7 @@ def test_maybe_send_noop_when_sender_not_configured(isolated_db, sent_emails):
 def test_maybe_send_noop_when_event_disabled_globally(isolated_db, sent_emails):
     account_id = _make_account()
     with write_session() as session:
-        session.add(NotificationSettings(id=1, sender_address="forgehost@example.com", events={"account.created": False}))
+        session.add(NotificationSettings(id=1, sender_address="boron@example.com", events={"account.created": False}))
         session.add(AccountNotificationPrefs(account_id=account_id, customer_email="c@example.com"))
     result = nt.maybe_send("account.created", _account(account_id))
     assert result is False
@@ -52,7 +52,7 @@ def test_maybe_send_noop_when_event_disabled_globally(isolated_db, sent_emails):
 def test_maybe_send_noop_when_no_customer_email(isolated_db, sent_emails):
     account_id = _make_account()
     with write_session() as session:
-        session.add(NotificationSettings(id=1, sender_address="forgehost@example.com"))
+        session.add(NotificationSettings(id=1, sender_address="boron@example.com"))
     result = nt.maybe_send("account.created", _account(account_id))
     assert result is False
     assert sent_emails == []
@@ -61,7 +61,7 @@ def test_maybe_send_noop_when_no_customer_email(isolated_db, sent_emails):
 def test_maybe_send_noop_when_event_disabled_per_account(isolated_db, sent_emails):
     account_id = _make_account()
     with write_session() as session:
-        session.add(NotificationSettings(id=1, sender_address="forgehost@example.com"))
+        session.add(NotificationSettings(id=1, sender_address="boron@example.com"))
         session.add(AccountNotificationPrefs(account_id=account_id, customer_email="c@example.com", events={"account.created": False}))
     result = nt.maybe_send("account.created", _account(account_id))
     assert result is False
@@ -71,13 +71,13 @@ def test_maybe_send_noop_when_event_disabled_per_account(isolated_db, sent_email
 def test_maybe_send_sends_when_fully_enabled(isolated_db, sent_emails):
     account_id = _make_account()
     with write_session() as session:
-        session.add(NotificationSettings(id=1, sender_address="forgehost@example.com"))
+        session.add(NotificationSettings(id=1, sender_address="boron@example.com"))
         session.add(AccountNotificationPrefs(account_id=account_id, customer_email="c@example.com"))
     result = nt.maybe_send("account.created", _account(account_id), initial_password="s3cret!Passw0rd")
     assert result is True
     assert len(sent_emails) == 1
     assert sent_emails[0]["recipient"] == "c@example.com"
-    assert sent_emails[0]["sender"] == "forgehost@example.com"
+    assert sent_emails[0]["sender"] == "boron@example.com"
     assert "s3cret!Passw0rd" in sent_emails[0]["body"]
 
 
@@ -89,7 +89,7 @@ def test_maybe_send_returns_false_none_account(isolated_db, sent_emails):
 def test_maybe_send_handles_smtp_failure_gracefully(isolated_db, monkeypatch):
     account_id = _make_account()
     with write_session() as session:
-        session.add(NotificationSettings(id=1, sender_address="forgehost@example.com"))
+        session.add(NotificationSettings(id=1, sender_address="boron@example.com"))
         session.add(AccountNotificationPrefs(account_id=account_id, customer_email="c@example.com"))
 
     def boom(*a, **k):

@@ -3,7 +3,7 @@ the foundation Phase c's DNS zones build on top of.
 
 Phase 2 feature 4: subdomains get their own real OLS vhost (daemon/ols.py's
 one-vhost-per-domain refactor) and, when their parent domain's zone is
-Forgehost-managed, their own DNS A record -- fixing the Phase 1 gap where
+Boron-managed, their own DNS A record -- fixing the Phase 1 gap where
 every domain under an account silently served identical public_html
 content regardless of which domain/subdomain was actually requested.
 """
@@ -265,7 +265,7 @@ def ensure_docroot(username: str, docroot: str, domain_name: str | None = None) 
     sysops.ensure_tmp_dir(username)
 
     # Missing-features batch, goal feature 4: every domain's vhost
-    # unconditionally declares a context for /.forgehost-error-pages/
+    # unconditionally declares a context for /.boron-error-pages/
     # (daemon/ols.py, daemon/custom_pages.py) -- same "OLS -t rejects a
     # context whose location doesn't exist yet" reasoning as the
     # acme-challenge dir above, so this has to exist at domain-add time too,

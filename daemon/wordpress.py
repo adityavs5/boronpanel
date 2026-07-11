@@ -50,22 +50,22 @@ from shared.validation import generate_strong_password, validate_domain, validat
 from daemon import handlers_database
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.wordpress")
+logger = logging.getLogger("borond.wordpress")
 
 _executor = ThreadPoolExecutor(max_workers=settings.wp_install_concurrency, thread_name_prefix="wp-install")
 
 # Static, checked into git (daemon/php_helpers/wp_install_helper.php),
-# deployed as a plain file under /opt/forgehost -- deliberately NOT
+# deployed as a plain file under /opt/boron -- deliberately NOT
 # written into settings.wp_staging_dir (a subdirectory of
-# /var/lib/forgehost, which shared/db.py locks to root:forgehost-api
+# /var/lib/boron, which shared/db.py locks to root:boron-api
 # 0750 for the control-plane DB's sake). This script runs via
 # `runuser -u <account>`, so it must be readable by an arbitrary hosting
 # account's own uid -- confirmed live: an earlier version of this module
 # wrote the helper under wp_staging_dir and every install failed with
 # "Could not open input file", since no hosting account uid can even
-# traverse into /var/lib/forgehost, let alone read a file under it.
-# /opt/forgehost itself is already world-traversable/readable (that's
-# how the separate, also-unprivileged forgehost-api user reads this same
+# traverse into /var/lib/boron, let alone read a file under it.
+# /opt/boron itself is already world-traversable/readable (that's
+# how the separate, also-unprivileged boron-api user reads this same
 # tree to run the app at all), so a plain deployed file here needs no
 # special permissioning.
 INSTALL_HELPER_PATH = Path(__file__).resolve().parent / "php_helpers" / "wp_install_helper.php"
@@ -145,7 +145,7 @@ def _docroot_is_empty_enough(docroot: str) -> bool:
     clobbering a docroot is exactly the kind of destructive action this
     project's rules say to avoid without explicit confirmation). Hidden
     entries (e.g. `.well-known`, created by `ensure_docroot` for every
-    domain) are Forgehost's own infra, not customer content, and are
+    domain) are Boron's own infra, not customer content, and are
     allowed to remain."""
     if not os.path.isdir(docroot):
         return True

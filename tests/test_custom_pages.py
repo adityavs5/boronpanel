@@ -79,18 +79,18 @@ def test_list_error_pages_reports_custom_vs_default(safe_fs):
 def test_resolve_error_pages_uses_default_for_uncustomized_code(safe_fs):
     cp.set_error_page("demo1", "demo1.example", 404, "<html>custom</html>")
     pages = cp.resolve_error_pages("demo1", "demo1.example")
-    assert pages[404] == "/.forgehost-error-pages/404.html"
-    assert pages[500] == "/.forgehost-default-errors/500.html"
+    assert pages[404] == "/.boron-error-pages/404.html"
+    assert pages[500] == "/.boron-default-errors/500.html"
 
 
 def test_resolve_error_pages_maintenance_overrides_503(safe_fs):
     pages = cp.resolve_error_pages("demo1", "demo1.example", maintenance_active=True)
-    assert pages[503] == f"/.forgehost-error-pages/{cp.MAINTENANCE_PAGE_NAME}"
+    assert pages[503] == f"/.boron-error-pages/{cp.MAINTENANCE_PAGE_NAME}"
 
 
 def test_resolve_error_pages_without_maintenance_uses_default_503(safe_fs):
     pages = cp.resolve_error_pages("demo1", "demo1.example", maintenance_active=False)
-    assert pages[503] == "/.forgehost-default-errors/503.html"
+    assert pages[503] == "/.boron-default-errors/503.html"
 
 
 def test_default_branded_pages_exist_on_disk():

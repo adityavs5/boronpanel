@@ -22,7 +22,7 @@ from shared.db import write_session
 from shared.models import Account, AccountNotificationPrefs, BrandingSettings, NOTIFICATION_EVENT_TYPES, NotificationSettings
 from shared.validation import ValidationError, validate_email_address, validate_username
 
-logger = logging.getLogger("forgehostd.notifications")
+logger = logging.getLogger("borond.notifications")
 
 SMTP_HOST = "localhost"
 SMTP_PORT = 25
@@ -35,7 +35,7 @@ def _panel_name(session) -> str:
     # only reads it (never writes), same read-only cross-feature reuse as
     # e.g. usage_alerts reading Account.quota_hard_mb.
     row = session.get(BrandingSettings, 1)
-    return row.panel_name if row and row.panel_name else "Forgehost"
+    return row.panel_name if row and row.panel_name else "Boron"
 
 
 def _subjects(panel_name: str) -> dict:

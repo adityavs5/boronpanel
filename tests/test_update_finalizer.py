@@ -2,12 +2,12 @@
 
 This is the goal's "rollback verified in test environment" item: the actual
 finalizer script (a tmp COPY -- it deletes itself on success, exactly like
-the production copy under /var/lib/forgehost) performs a real atomic
+the production copy under /var/lib/boron) performs a real atomic
 symlink swap on real directories, calls a fake systemctl whose invocations
 we assert, health-checks against a real local HTTP server and a real Unix
 socket speaking the length-prefixed RPC framing, and writes terminal job
 state that we read back through the daemon's own SQLAlchemy ORM (proving
-the datetime format interoperates). The live /opt/forgehost is never
+the datetime format interoperates). The live /opt/boron is never
 involved.
 """
 from __future__ import annotations
@@ -45,13 +45,13 @@ def sandbox(isolated_db):
     try:
         root = base / "opt"
         root.mkdir()
-        old = root / "forgehost-1.0.0"
+        old = root / "boron-1.0.0"
         old.mkdir()
         (old / "marker").write_text("old-version")
-        new = root / "forgehost-1.0.1"
+        new = root / "boron-1.0.1"
         new.mkdir()
         (new / "marker").write_text("new-version")
-        live = root / "forgehost"
+        live = root / "boron"
         live.symlink_to(old)
 
         # Fake systemctl: append argv to a log, exit 0.
@@ -181,7 +181,7 @@ def test_update_success_swaps_restarts_and_completes(sandbox, health_servers):
 
     # Both panel units (and nothing else) were restarted, daemon first.
     restarts = sandbox["systemctl_log"].read_text().strip().splitlines()
-    assert restarts == ["restart forgehost-provisiond", "restart forgehost-api"]
+    assert restarts == ["restart boron-provisiond", "restart boron-api"]
 
     # Terminal job state, read back through the daemon's own ORM -- this is
     # the datetime-format interop check as much as a status check.
@@ -215,7 +215,7 @@ def test_update_failure_swaps_back_and_marks_rolled_back(sandbox):
 
     # Restarted twice: once into the new version, once back out of it.
     restarts = sandbox["systemctl_log"].read_text().strip().splitlines()
-    assert restarts == ["restart forgehost-provisiond", "restart forgehost-api"] * 2
+    assert restarts == ["restart boron-provisiond", "restart boron-api"] * 2
 
     job = _read_job(job_id)
     assert job.status == "failed"
@@ -233,10 +233,10 @@ def test_first_update_converts_real_dir_to_symlink_layout(sandbox, health_server
     layout); the first update must convert it: mv aside + symlink."""
     live = sandbox["live"]
     live.unlink()  # replace the fixture's symlink with a REAL directory
-    real = sandbox["root"] / "forgehost"
+    real = sandbox["root"] / "boron"
     real.mkdir()
     (real / "marker").write_text("legacy-live")
-    converted_old = sandbox["root"] / "forgehost-1.0.0-legacy"
+    converted_old = sandbox["root"] / "boron-1.0.0-legacy"
 
     job_id = _make_job(old_dir=str(converted_old), new_dir=str(sandbox["new"]))
     proc = _run_finalizer(sandbox, job_id, api_url=health_servers["api_url"],
@@ -272,7 +272,7 @@ def test_rollback_mode_swaps_to_previous_version(sandbox, health_servers):
 def test_swap_is_refused_on_non_symlink_without_convert_flag(sandbox, health_servers):
     live = sandbox["live"]
     live.unlink()
-    real = sandbox["root"] / "forgehost"
+    real = sandbox["root"] / "boron"
     real.mkdir()
     job_id = _make_job(old_dir=str(sandbox["old"]), new_dir=str(sandbox["new"]))
     proc = _run_finalizer(sandbox, job_id, api_url=health_servers["api_url"],

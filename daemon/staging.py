@@ -3,7 +3,7 @@
 Reuses existing provisioning primitives end to end rather than building a
 parallel path: handlers_domain.add_domain (Phase 2 feature 4) provisions
 staging.<domain> exactly like any other subdomain -- docroot creation
-(mode 0750 + the "nobody" ACL grant), the Forgehost-managed-zone DNS A
+(mode 0750 + the "nobody" ACL grant), the Boron-managed-zone DNS A
 record, and the OLS vhost render all come for free. Database dump/restore
 reuses daemon/backup.py's own mysqldump/mysql helpers (the same ones
 daemon/cpanel_import.py already reuses for the identical reason: one
@@ -35,7 +35,7 @@ from daemon import backup, handlers_database, handlers_domain, mariadb, ssl
 from daemon.procutil import run
 from daemon.wordpress import _php_str
 
-logger = logging.getLogger("forgehostd.staging")
+logger = logging.getLogger("borond.staging")
 
 
 class StagingError(Exception):
@@ -193,7 +193,7 @@ def _copy_files(source_docroot: str, staging_docroot: str, username: str) -> Non
     # (found reviewing that module, confirmed with a real copytree call):
     # a recursive copy can reset the target directory's own mode away from
     # the required 0750 -- reassert mode + the "nobody" ACL grant rather
-    # than trust the copy to have preserved Forgehost's permission model.
+    # than trust the copy to have preserved Boron's permission model.
     handlers_domain.ensure_docroot(username, staging_docroot)
 
 
@@ -256,7 +256,7 @@ def create_staging(params: dict) -> dict:
 
     # Provisioned exactly like any other subdomain -- docroot creation
     # (mode 0750 + ACL), DNS A record if the parent zone is
-    # Forgehost-managed, and OLS vhost render all come from add_domain
+    # Boron-managed, and OLS vhost render all come from add_domain
     # itself; a failed step below is compensated by removing this same
     # domain, mirroring add_domain's own compensate-on-failure pattern.
     domain_result = handlers_domain.add_domain({"username": username, "domain": staging_domain, "kind": "subdomain"})

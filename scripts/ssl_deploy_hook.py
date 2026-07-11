@@ -1,10 +1,10 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """certbot --deploy-hook target (Phase f).
 
 Runs as a standalone process invoked BY certbot -- on every successful
 issuance, including the very first one, not just renewals -- so it's the
 single place that flips Domain.ssl_status to "active" and triggers a real
-OLS reload to pick up the new cert. It is not part of forgehostd's running
+OLS reload to pick up the new cert. It is not part of borond's running
 process: certbot's own systemd timer fires this independently of whether
 the daemon happens to be up, so it must be fully self-contained (its own
 DB session, its own import of daemon.ols) rather than calling back into a
@@ -15,7 +15,7 @@ certbot sets RENEWED_DOMAINS (space-separated) and RENEWED_LINEAGE (the
 
 Phase 7a feature 5 (wildcard SSL): a wildcard cert's RENEWED_DOMAINS
 contains BOTH "example.com" and "*.example.com" in the same invocation --
-only the bare name is ever a real Domain row (Forgehost never stores a
+only the bare name is ever a real Domain row (Boron never stores a
 "*."-prefixed domain), so the "*."-prefixed entry is used only to detect
 that this issuance covers a wildcard SAN, not looked up as its own row.
 """
@@ -70,7 +70,7 @@ def _apply_for_domain(domain_name: str, is_wildcard: bool = False) -> None:
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain_name))
         if domain_row is None:
-            logger.warning("domain '%s' not found in Forgehost DB, skipping", domain_name)
+            logger.warning("domain '%s' not found in Boron DB, skipping", domain_name)
             return
         domain_row.ssl_status = "active"
         domain_row.ssl_is_wildcard = is_wildcard

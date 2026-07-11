@@ -133,13 +133,13 @@ def test_extract_zip_rejects_zip_slip(tmp_path):
 
     zip_path = tmp_path / "evil.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr("../../../../tmp/forgehost_zipslip_app.txt", "pwned")
+        zf.writestr("../../../../tmp/boron_zipslip_app.txt", "pwned")
     docroot = tmp_path / "docroot"
     docroot.mkdir()
 
     with pytest.raises(ai.AppInstallError):
         ai._extract_zip(zip_path, str(docroot))
-    assert not os.path.exists("/tmp/forgehost_zipslip_app.txt")
+    assert not os.path.exists("/tmp/boron_zipslip_app.txt")
 
 
 def test_extract_zip_rejects_zip_slip_with_root_prefix(tmp_path):
@@ -149,13 +149,13 @@ def test_extract_zip_rejects_zip_slip_with_root_prefix(tmp_path):
 
     zip_path = tmp_path / "evil.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr("app/../../../../tmp/forgehost_zipslip_app2.txt", "pwned")
+        zf.writestr("app/../../../../tmp/boron_zipslip_app2.txt", "pwned")
     docroot = tmp_path / "docroot"
     docroot.mkdir()
 
     with pytest.raises(ai.AppInstallError):
         ai._extract_zip(zip_path, str(docroot), root_prefix="app/")
-    assert not os.path.exists("/tmp/forgehost_zipslip_app2.txt")
+    assert not os.path.exists("/tmp/boron_zipslip_app2.txt")
 
 
 def test_extract_zip_accepts_normal_members(tmp_path):

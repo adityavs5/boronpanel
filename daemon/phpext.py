@@ -15,7 +15,7 @@ with no PhpExtensionSet row keeps the stock compiled-in behavior entirely.
 Placement and ownership are both load-bearing:
 - The scan dir lives under the account's HOME (~/.php/<ver>/conf.d), not
   /etc or /run -- namespaced accounts (nsisolation, the default) only see
-  their own home tree inside the jail. /etc/forgehost was confirmed
+  their own home tree inside the jail. /etc/boron was confirmed
   invisible from a live jailed lsphp (nsenter) before choosing this; the
   symlink TARGETS under /usr/local/lsws ARE visible in the jail (that's
   where lsphp itself runs from).
@@ -47,7 +47,7 @@ from shared.validation import ValidationError, validate_username
 from daemon import ols, sysops
 from daemon.phpdirectives import php_scan_dir
 
-logger = logging.getLogger("forgehostd.phpext")
+logger = logging.getLogger("borond.phpext")
 
 LSWS_BASE = "/usr/local/lsws"
 
@@ -279,7 +279,7 @@ def terminate_account_php_extensions(account: Account) -> None:
 
 
 def bootstrap_all_php_extensions() -> None:
-    """Run once at forgehostd startup (same category as
+    """Run once at borond startup (same category as
     redisacct.bootstrap_all_redis): re-materialize every overriding
     account's scan dirs, so a home dir restored from backup -- or a fresh
     lsphp version installed since -- can't leave PHP_INI_SCAN_DIR pointing

@@ -1,6 +1,6 @@
 """Mailbox/mail-domain CRUD (Phase e). Webmail itself is explicitly out of
 scope (project goal: "link out to Roundcube, don't build webmail") -- these
-ops only provision mail routing/storage; `webmail_url` in forgehost.toml is
+ops only provision mail routing/storage; `webmail_url` in boron.toml is
 what the admin UI links out to.
 """
 from __future__ import annotations
@@ -65,7 +65,7 @@ def create_mail_domain(params: dict) -> dict:
     except Exception:
         import logging
 
-        logging.getLogger("forgehostd.mail").exception(
+        logging.getLogger("borond.mail").exception(
             "SPF/DKIM/DMARC setup failed for '%s' -- mail domain itself was still created", domain_name
         )
     return result
@@ -101,7 +101,7 @@ def delete_mail_domain(params: dict) -> dict:
     except Exception:
         import logging
 
-        logging.getLogger("forgehostd.mail").exception("DKIM teardown failed for '%s'", domain_name)
+        logging.getLogger("borond.mail").exception("DKIM teardown failed for '%s'", domain_name)
     return {"domain": domain_name, "status": "deleted"}
 
 
@@ -185,7 +185,7 @@ def terminate_account_mail(account: Account) -> None:
         except Exception:
             import logging
 
-            logging.getLogger("forgehostd.mail").exception("DKIM teardown failed for '%s'", domain_name)
+            logging.getLogger("borond.mail").exception("DKIM teardown failed for '%s'", domain_name)
 
 
 # --- Forwarders (Phase 3 feature 4) -----------------------------------
@@ -279,7 +279,7 @@ def delete_autoresponder(params: dict) -> dict:
 # Per mail-domain, not per-mailbox (matches this file's existing catchall/
 # forwarder/autoresponder API shape). enabled/threshold are stored in the
 # SQLite control-plane cache (MailDomain) -- not MariaDB's forgehost_mail
-# schema like catchall/forwarders, since nothing outside Forgehost's own
+# schema like catchall/forwarders, since nothing outside Boron's own
 # code (no Postfix/Dovecot SQL lookup) ever needs to query these values;
 # the actual enforcement is daemon/spamfilter.py's per-domain
 # virtual-config-dir prefs file, kept in sync with this row on every

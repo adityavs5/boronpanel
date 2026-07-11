@@ -1,4 +1,4 @@
-"""Auth/RBAC for forgehost-api.
+"""Auth/RBAC for boron-api.
 
 ARCHITECTURE.md SS9: two roles (admin/customer), the same auth dependency
 applied uniformly across every router regardless of HTTP verb -- a direct,
@@ -26,7 +26,7 @@ from shared.models import Account, ApiToken, Domain, ImpersonationSession, Panel
 COOKIE_NAME = "fh_session"
 COOKIE_MAX_AGE_SECONDS = 7 * 24 * 3600
 
-_serializer = URLSafeTimedSerializer(settings.session_secret, salt="forgehost-session")
+_serializer = URLSafeTimedSerializer(settings.session_secret, salt="boron-session")
 
 # Phase 5 feature 10: TOTP 2FA login's second step. A separate salt from
 # the real session serializer above -- this token only ever proves
@@ -35,7 +35,7 @@ _serializer = URLSafeTimedSerializer(settings.session_secret, salt="forgehost-se
 # deliberately short-lived (5 minutes) and carried as a hidden form
 # field, not a cookie.
 _TWOFACTOR_PENDING_MAX_AGE_SECONDS = 5 * 60
-_twofactor_serializer = URLSafeTimedSerializer(settings.session_secret, salt="forgehost-2fa-pending")
+_twofactor_serializer = URLSafeTimedSerializer(settings.session_secret, salt="boron-2fa-pending")
 
 
 def sign_twofactor_pending(panel_user_id: int) -> str:

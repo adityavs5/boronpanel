@@ -1,12 +1,12 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Daily panel-update check (panel update system, feature 3).
 
-Run via a system cron once a day (deploy/forgehost-update.cron) -- same
+Run via a system cron once a day (deploy/boron-update.cron) -- same
 root-owned infrastructure-cron category as scripts/monitoring_check.py.
 One pass = one forced GitHub releases check (bypasses the 1h cache), an
 admin email if a NEW release appeared (deduped per version via
 UpdateState.last_notified_version -- one email per release, not one per
-day forever), and pruning of /opt/forgehost-X.Y.Z version dirs older than
+day forever), and pruning of /opt/boron-X.Y.Z version dirs older than
 the rollback window (update_keep_old_days, default 3).
 """
 from __future__ import annotations

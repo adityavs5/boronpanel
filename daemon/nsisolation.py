@@ -33,7 +33,7 @@ from shared.validation import validate_username
 from daemon import audit
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.nsisolation")
+logger = logging.getLogger("borond.nsisolation")
 
 LSNSCTL_BIN = "/usr/local/lsws/lsns/bin/lsnsctl"
 

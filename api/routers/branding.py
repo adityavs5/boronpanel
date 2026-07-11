@@ -9,7 +9,7 @@ by the API process reading the file directly (same "unprivileged API
 reads the DB/its own group-readable files directly, only writes go
 through the daemon RPC" convention `api/routers/accounts.py`'s
 `list_accounts` already uses for a direct `read_session` query) --
-`forgehostd` never streams file bytes over the RPC channel."""
+`borond` never streams file bytes over the RPC channel."""
 from __future__ import annotations
 
 import base64
@@ -43,7 +43,7 @@ def get_branding():
         row = _get_row(db)
         if row is None:
             return {
-                "panel_name": "Forgehost", "support_email": None, "support_url": None,
+                "panel_name": "Boron", "support_email": None, "support_url": None,
                 "logo_url": None, "favicon_url": None,
             }
         return {

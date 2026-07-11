@@ -134,7 +134,7 @@ def test_extract_wordpress_rejects_zip_slip(tmp_path):
     so an unchecked escape here would be a root-level arbitrary write."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("wordpress/../../../../tmp/forgehost_zipslip_wp.txt", "pwned")
+        zf.writestr("wordpress/../../../../tmp/boron_zipslip_wp.txt", "pwned")
     zip_path = tmp_path / "evil.zip"
     zip_path.write_bytes(buf.getvalue())
     docroot = tmp_path / "docroot"
@@ -142,7 +142,7 @@ def test_extract_wordpress_rejects_zip_slip(tmp_path):
 
     with pytest.raises(wp.WordPressError):
         wp._extract_wordpress(zip_path, str(docroot))
-    assert not os.path.exists("/tmp/forgehost_zipslip_wp.txt")
+    assert not os.path.exists("/tmp/boron_zipslip_wp.txt")
 
 
 def test_write_wp_config_contains_db_settings(tmp_path, monkeypatch):
@@ -245,13 +245,13 @@ def test_get_job_missing_raises(account_with_domain):
         wp.get_job({"job_id": 999999, "username": "demo1"})
 
 
-def test_install_helper_lives_outside_var_lib_forgehost():
+def test_install_helper_lives_outside_var_lib_boron():
     """Regression test for a real bug found by live testing: the helper
-    script must NOT live anywhere under /var/lib/forgehost, since that
-    tree is locked to root:forgehost-api (shared/db.py) and this script
+    script must NOT live anywhere under /var/lib/boron, since that
+    tree is locked to root:boron-api (shared/db.py) and this script
     runs via `runuser -u <hosting-account>` -- no hosting account uid can
-    even traverse into /var/lib/forgehost, let alone read a file there."""
-    assert "/var/lib/forgehost" not in str(wp.INSTALL_HELPER_PATH)
+    even traverse into /var/lib/boron, let alone read a file there."""
+    assert "/var/lib/boron" not in str(wp.INSTALL_HELPER_PATH)
     assert wp.INSTALL_HELPER_PATH.exists()
     assert wp.INSTALL_HELPER_PATH.read_text().startswith("<?php")
 

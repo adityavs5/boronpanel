@@ -14,10 +14,10 @@ irreversible one-way hash like PanelUser.password_hash, because these values
 must be recovered in full to populate a running process's environment.
 
 The key itself is auto-generated on first use and persisted into
-/etc/forgehost/secrets.env (0600, root-only -- ARCHITECTURE.md SS4's
-existing convention for forgehostd-only secrets) rather than requiring a
+/etc/boron/secrets.env (0600, root-only -- ARCHITECTURE.md SS4's
+existing convention for borond-only secrets) rather than requiring a
 manual operator step; every other secret in that file already follows this
-"forgehostd is the only reader, nothing else needs it" rule.
+"borond is the only reader, nothing else needs it" rule.
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _persist_key(key: str) -> None:
     (0600, root-only) if it doesn't exist yet. Read back into
     settings.secrets immediately so the rest of this process sees it
     without needing a restart."""
-    secrets_path = Path(os.environ.get("FORGEHOST_SECRETS", "/etc/forgehost/secrets.env"))
+    secrets_path = Path(os.environ.get("BORON_SECRETS", "/etc/boron/secrets.env"))
     secrets_path.parent.mkdir(parents=True, exist_ok=True)
     line = f"{_APP_ENV_KEY_NAME}={key}\n"
     with open(secrets_path, "a", encoding="utf-8") as f:

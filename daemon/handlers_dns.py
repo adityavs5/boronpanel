@@ -1,6 +1,6 @@
 """DNS zone + record CRUD (Phase c). RESEARCH.md SS6 / ARCHITECTURE.md SS6:
 PowerDNS is driven exclusively through its REST API; the DnsZone table here
-is a thin existence cache (account ownership + "does Forgehost manage this
+is a thin existence cache (account ownership + "does Boron manage this
 zone") -- PowerDNS itself remains the source of truth for zone/record
 content.
 """
@@ -125,7 +125,7 @@ def create_zone(params: dict) -> dict:
             )
         existing = session.scalar(select(DnsZone).where(DnsZone.zone == domain_name))
         if existing is not None:
-            raise RuntimeError(f"zone '{domain_name}' already managed by Forgehost")
+            raise RuntimeError(f"zone '{domain_name}' already managed by Boron")
 
     if dnsprovider.zone_exists(domain_name):
         raise RuntimeError(f"zone '{domain_name}' already exists in PowerDNS")
@@ -169,7 +169,7 @@ def delete_zone(params: dict) -> dict:
 def list_records(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     if not dnsprovider.zone_exists(domain_name):
-        # This domain name isn't itself a Forgehost-managed DNS zone -- a
+        # This domain name isn't itself a Boron-managed DNS zone -- a
         # zone (local or Cloudflare) only ever exists for the domain
         # dns.create_zone was called on, never for a subdomain/addon that
         # merely lives inside another domain's zone (find_managed_zone).

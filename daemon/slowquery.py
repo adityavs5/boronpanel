@@ -8,7 +8,7 @@ this project's own established precedent (`daemon/mariadb.py`'s
 grants is treated as a real decision, not a rubber stamp. Rather than
 requesting SUPER, this feature applies the setting the same way every
 other server-wide config change in this project does: write a real
-MariaDB config file as root (`forgehostd` already has full OS-level
+MariaDB config file as root (`borond` already has full OS-level
 control of `/etc/mysql/` and of `mariadb.service`) and restart the
 service -- no new SQL privilege needed at all, since the *reading* side
 (querying `mysql.slow_log`) is already covered by `forgehost_daemon`'s
@@ -25,10 +25,10 @@ from shared.validation import ValidationError
 from daemon import mariadb
 from daemon.procutil import run
 
-SLOWLOG_CONF_PATH = "/etc/mysql/mariadb.conf.d/60-forgehost-slowlog.cnf"
+SLOWLOG_CONF_PATH = "/etc/mysql/mariadb.conf.d/60-boron-slowlog.cnf"
 SLOW_QUERY_THRESHOLD_SECONDS = 1
 
-_CONF_CONTENT = f"""# Managed by Forgehost (daemon/slowquery.py). Phase 5 feature 8.
+_CONF_CONTENT = f"""# Managed by Boron (daemon/slowquery.py). Phase 5 feature 8.
 [mysqld]
 slow_query_log = 1
 long_query_time = {SLOW_QUERY_THRESHOLD_SECONDS}

@@ -118,7 +118,7 @@ def test_delete_unknown_job_raises(fake_crontab):
 
 
 def test_unmanaged_lines_are_preserved(fake_crontab):
-    """A line the account might already have (or one Forgehost doesn't
+    """A line the account might already have (or one Boron doesn't
     recognize) must survive add/update/delete of *other* jobs untouched --
     the marker-comment scheme must not accidentally treat arbitrary
     crontab content as its own."""

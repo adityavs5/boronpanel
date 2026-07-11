@@ -54,9 +54,9 @@ from shared.validation import (
 from daemon.configtx import ConfigWriter, StepResult
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.spamfilter")
+logger = logging.getLogger("borond.spamfilter")
 
-VIRTUAL_CONFIG_BASE = "/etc/forgehost/spamassassin"
+VIRTUAL_CONFIG_BASE = "/etc/boron/spamassassin"
 SPAMD_DEFAULTS_PATH = "/etc/default/spamd"
 LOCAL_CF_PATH = "/etc/spamassassin/local.cf"
 MASTER_CF_PATH = "/etc/postfix/master.cf"
@@ -71,7 +71,7 @@ SIEVEC_BIN = "/usr/bin/sievec"
 # see module docstring.
 DISABLED_THRESHOLD = 1000.0
 
-BACKUP_DIR = "/var/lib/forgehost/backups"
+BACKUP_DIR = "/var/lib/boron/backups"
 
 
 class SpamFilterError(Exception):
@@ -143,7 +143,7 @@ def set_global_default_threshold(threshold: float) -> dict:
 
 def _write_local_cf(default_threshold: float) -> None:
     content = (
-        "# Managed by Forgehost (daemon/spamfilter.py) -- do not hand-edit,\n"
+        "# Managed by Boron (daemon/spamfilter.py) -- do not hand-edit,\n"
         "# changes are overwritten the next time the admin default changes.\n"
         f"required_score {default_threshold}\n"
         "rewrite_header Subject [SPAM]\n"
@@ -190,7 +190,7 @@ def _write_spamd_defaults() -> None:
     project's settings are per-domain, so %l (local-part) is deliberately
     not part of the pattern."""
     content = (
-        "# Managed by Forgehost (daemon/spamfilter.py).\n"
+        "# Managed by Boron (daemon/spamfilter.py).\n"
         'OPTIONS="--create-prefs --max-children 5 --helper-home-dir '
         f'--virtual-config-dir={VIRTUAL_CONFIG_BASE}/%d -x -u debian-spamd -H"\n'
     )
@@ -209,7 +209,7 @@ def _restart_spamd() -> None:
 
 # --- Postfix: one new pipe service ("scan") + a content_filter override
 # on the inbound smtp service only (never `submission` -- that's mail
-# customers send *through* Forgehost, not mail arriving *at* it, and
+# customers send *through* Boron, not mail arriving *at* it, and
 # scanning your own customers' outbound mail for spam is a different
 # feature this goal doesn't ask for). Content_filter is deliberately a
 # per-service master.cf override, not a main.cf global -- main.cf's

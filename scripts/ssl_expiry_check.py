@@ -1,8 +1,8 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Periodic SSL-expiry notification check (Phase 7b feature 3).
 
 Run via a system cron (README), same "server infrastructure, not a
-per-account Forgehost-managed crontab" category as scripts/usage_snapshot.py/
+per-account Boron-managed crontab" category as scripts/usage_snapshot.py/
 scripts/backup_scheduler.py. Daily is enough: the notification window is 14
 days, so even a missed day or two of a down cron still leaves ample warning.
 """

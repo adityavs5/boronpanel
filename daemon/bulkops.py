@@ -20,7 +20,7 @@ from shared.validation import ValidationError, validate_username
 
 from daemon import audit, handlers_account, notifications
 
-logger = logging.getLogger("forgehostd.bulkops")
+logger = logging.getLogger("borond.bulkops")
 
 # Single worker: bulk ops must be strictly sequential to honor "stop on first
 # failure" (a parallel run could apply later accounts before an earlier one's

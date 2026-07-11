@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Forgehost release pipeline -- builds a versioned, checksummed release
+# Boron release pipeline -- builds a versioned, checksummed release
 # tarball and publishes it as a GitHub release. See docs/RELEASING.md.
 #
 #   scripts/release.sh --dry-run              # full local rehearsal, publishes nothing
@@ -9,7 +9,7 @@
 #
 # Pipeline: bump version.py -> run test suite -> build React frontend ->
 # stage tracked files only (git archive; secrets/DB/logs are untracked by
-# construction) -> tarball forgehost-{version}.tar.gz + SHA256 checksum ->
+# construction) -> tarball boron-{version}.tar.gz + SHA256 checksum ->
 # GPG-sign if a secret key exists -> git commit + tag + push + gh release.
 #
 # Production servers NEVER git-pull: they consume these tarballs through the
@@ -54,7 +54,7 @@ die()  { printf '%s[FAIL]%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 usage() {
     cat <<EOF
-Forgehost release pipeline
+Boron release pipeline
 
 Usage: scripts/release.sh [OPTIONS] [NEW_VERSION]
 
@@ -72,8 +72,8 @@ Usage: scripts/release.sh [OPTIONS] [NEW_VERSION]
   --skip-build       Reuse the existing static/dist instead of rebuilding.
   -h, --help         Show this help.
 
-Artifacts: forgehost-{version}.tar.gz, forgehost-{version}.sha256, and
-forgehost-{version}.tar.gz.asc when a GPG secret key is available.
+Artifacts: boron-{version}.tar.gz, boron-{version}.sha256, and
+boron-{version}.tar.gz.asc when a GPG secret key is available.
 EOF
 }
 
@@ -104,7 +104,7 @@ parse_args() {
 }
 
 current_version() {
-    sed -n 's/^FORGEHOST_VERSION = "\(.*\)"$/\1/p' "$VERSION_FILE"
+    sed -n 's/^BORON_VERSION = "\(.*\)"$/\1/p' "$VERSION_FILE"
 }
 
 next_version() {
@@ -141,7 +141,7 @@ preflight() {
     info "Pre-flight checks"
     require_tool git; require_tool tar; require_tool sha256sum; require_tool sed
     [[ -f "$VERSION_FILE" ]] || die "version.py not found at ${VERSION_FILE}"
-    [[ -n "$(current_version)" ]] || die "could not parse FORGEHOST_VERSION from version.py"
+    [[ -n "$(current_version)" ]] || die "could not parse BORON_VERSION from version.py"
 
     if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
         PY="${REPO_ROOT}/.venv/bin/python"
@@ -185,7 +185,7 @@ bump_version() {
         return
     fi
     info "Bumping version.py to ${new}"
-    sed -i "s/^FORGEHOST_VERSION = \".*\"$/FORGEHOST_VERSION = \"${new}\"/" "$VERSION_FILE"
+    sed -i "s/^BORON_VERSION = \".*\"$/BORON_VERSION = \"${new}\"/" "$VERSION_FILE"
     # Keep the npm package metadata in sync (not displayed anywhere, but
     # drift is confusing). JSON-rewritten with python, not sed.
     "$PY" - "$new" <<'PYEOF'
@@ -227,14 +227,14 @@ STAGE_DIR=""
 stage_tree() {
     local version="$1"
     info "Staging release tree (tracked files only)"
-    STAGE_DIR="$(mktemp -d /tmp/forgehost-release.XXXXXX)"
+    STAGE_DIR="$(mktemp -d /tmp/boron-release.XXXXXX)"
     # git archive ships ONLY tracked files: secrets.env / *.db / logs /
     # node_modules / .venv are untracked or gitignored, so they cannot leak
     # into the tarball by construction. The two overlays below are the only
     # not-from-HEAD content.
-    git -C "$REPO_ROOT" archive --format=tar --prefix="forgehost-${version}/" HEAD \
+    git -C "$REPO_ROOT" archive --format=tar --prefix="boron-${version}/" HEAD \
         | tar -x -C "$STAGE_DIR"
-    local root="${STAGE_DIR}/forgehost-${version}"
+    local root="${STAGE_DIR}/boron-${version}"
     [[ -d "$root" ]] || die "git archive produced no staging tree"
 
     # Overlay 1: the bumped version.py (the bump commit happens after the
@@ -267,12 +267,12 @@ build_artifacts() {
     local version="$1"
     info "Building tarball + checksum"
     mkdir -p "$OUT_DIR"
-    TARBALL="${OUT_DIR}/forgehost-${version}.tar.gz"
-    CHECKSUM_FILE="${OUT_DIR}/forgehost-${version}.sha256"
+    TARBALL="${OUT_DIR}/boron-${version}.tar.gz"
+    CHECKSUM_FILE="${OUT_DIR}/boron-${version}.sha256"
     # Deterministic-ish tarball: stable member order, root ownership.
     tar -C "$STAGE_DIR" --sort=name --owner=0 --group=0 --numeric-owner \
-        -czf "$TARBALL" "forgehost-${version}"
-    (cd "$OUT_DIR" && sha256sum "forgehost-${version}.tar.gz" > "forgehost-${version}.sha256")
+        -czf "$TARBALL" "boron-${version}"
+    (cd "$OUT_DIR" && sha256sum "boron-${version}.tar.gz" > "boron-${version}.sha256")
     ok "artifacts: ${TARBALL} ($(du -h "$TARBALL" | cut -f1)), $(basename "$CHECKSUM_FILE")"
 }
 
@@ -289,7 +289,7 @@ sign_artifacts() {
     info "GPG-signing tarball"
     rm -f "${TARBALL}.asc"
     if gpg --batch --yes --armor --detach-sign --output "${TARBALL}.asc" "$TARBALL"; then
-        ok "signed: forgehost-${version}.tar.gz.asc"
+        ok "signed: boron-${version}.tar.gz.asc"
     else
         # A signature is an optional extra; a locked key must not block a release.
         warn "GPG signing failed (locked/no-pinentry key?) -- continuing unsigned"
@@ -300,25 +300,25 @@ sign_artifacts() {
 verify_artifacts() {
     local version="$1"
     info "Self-verifying artifacts (the same checks the updater will run)"
-    (cd "$OUT_DIR" && sha256sum -c "forgehost-${version}.sha256" >/dev/null) \
+    (cd "$OUT_DIR" && sha256sum -c "boron-${version}.sha256" >/dev/null) \
         || die "checksum self-verification failed"
     # Every member must live under the version prefix with no traversal --
     # the update daemon rejects violations, so catch them at build time.
     local bad
-    bad="$(tar -tzf "$TARBALL" | grep -Ev "^forgehost-${version}(/|$)" | head -3 || true)"
-    [[ -z "$bad" ]] || die "tarball contains members outside forgehost-${version}/: ${bad}"
+    bad="$(tar -tzf "$TARBALL" | grep -Ev "^boron-${version}(/|$)" | head -3 || true)"
+    [[ -z "$bad" ]] || die "tarball contains members outside boron-${version}/: ${bad}"
     bad="$(tar -tzf "$TARBALL" | grep -E '(^/|(^|/)\.\.(/|$))' | head -3 || true)"
     [[ -z "$bad" ]] || die "tarball contains absolute/traversal paths: ${bad}"
     # The packaged version.py must carry exactly the released version.
     local packaged
-    packaged="$(tar -xzOf "$TARBALL" "forgehost-${version}/version.py" \
-        | sed -n 's/^FORGEHOST_VERSION = "\(.*\)"$/\1/p')"
+    packaged="$(tar -xzOf "$TARBALL" "boron-${version}/version.py" \
+        | sed -n 's/^BORON_VERSION = "\(.*\)"$/\1/p')"
     [[ "$packaged" == "$version" ]] || die "packaged version.py says '${packaged}', expected '${version}'"
     # And the runtime essentials must be present.
     local member
     for member in api/main.py daemon/server.py shared/config.py requirements.txt \
-                  static/dist/index.html tests/conftest.py deploy/forgehost-api.service; do
-        tar -tzf "$TARBALL" "forgehost-${version}/${member}" >/dev/null 2>&1 \
+                  static/dist/index.html tests/conftest.py deploy/boron-api.service; do
+        tar -tzf "$TARBALL" "boron-${version}/${member}" >/dev/null 2>&1 \
             || die "tarball is missing ${member}"
     done
     ok "artifacts verified"
@@ -330,7 +330,7 @@ publish() {
         # NB: in a dry-run nothing was bumped, so the rehearsal artifacts
         # carry the CURRENT version; a real run would produce ${NEW_VERSION}.
         skip "publish (dry-run): a real run would commit the bump, tag v${NEW_VERSION}, push, and run:"
-        printf '       gh release create v%s --repo %s --title "Forgehost v%s" forgehost-%s.tar.gz forgehost-%s.sha256 [.asc]\n' \
+        printf '       gh release create v%s --repo %s --title "Boron v%s" boron-%s.tar.gz boron-%s.sha256 [.asc]\n' \
             "$NEW_VERSION" "${GITHUB_REPO:-<origin>}" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION"
         return
     fi
@@ -338,13 +338,13 @@ publish() {
     git -C "$REPO_ROOT" add version.py frontend/package.json
     git -C "$REPO_ROOT" commit -m "release: v${version}"
     BUMPED=false   # the bump is committed now; the failure trap must not revert it
-    git -C "$REPO_ROOT" tag -a "v${version}" -m "Forgehost v${version}"
+    git -C "$REPO_ROOT" tag -a "v${version}" -m "Boron v${version}"
     git -C "$REPO_ROOT" push origin HEAD "v${version}"
     local assets=("$TARBALL" "$CHECKSUM_FILE")
     [[ -f "${TARBALL}.asc" ]] && assets+=("${TARBALL}.asc")
     gh release create "v${version}" --repo "$GITHUB_REPO" \
-        --title "Forgehost v${version}" \
-        --notes "Forgehost v${version}. Install/update via the panel's update system (verifies the SHA256 checksum before applying) -- see docs/RELEASING.md." \
+        --title "Boron v${version}" \
+        --notes "Boron v${version}. Install/update via the panel's update system (verifies the SHA256 checksum before applying) -- see docs/RELEASING.md." \
         "${assets[@]}"
     ok "release v${version} published to ${GITHUB_REPO}"
 }
@@ -365,7 +365,7 @@ main() {
     NEW_VERSION="$new"
     local dry_marker=""
     $DRY_RUN && dry_marker=" ${C_YELLOW}(dry-run)${C_RESET}"
-    printf '%s\n' "${C_BOLD}Forgehost release: v${cur} -> v${new}${C_RESET}${dry_marker}"
+    printf '%s\n' "${C_BOLD}Boron release: v${cur} -> v${new}${C_RESET}${dry_marker}"
 
     if ! $DRY_RUN && [[ "$new" == "$cur" ]]; then
         die "target version ${new} equals the current version"

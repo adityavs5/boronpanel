@@ -5,7 +5,7 @@ called unconditionally (success or failure) from `daemon/server.py`'s
 "every action logged" true; this feature only adds a searchable/
 filterable view over the table that already exists.
 
-Reads `AuditLog` directly via `read_session()`, the same "forgehost-api
+Reads `AuditLog` directly via `read_session()`, the same "boron-api
 opens the same SQLite file read-only for fast list/get queries"
 data-access pattern ARCHITECTURE.md SS4 already establishes (e.g.
 `tokens.py`) -- there is deliberately no write/delete route anywhere in
@@ -184,7 +184,7 @@ def export_account_events_csv(
     return Response(
         content=buf.getvalue(),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=forgehost-account-events.csv"},
+        headers={"Content-Disposition": "attachment; filename=boron-account-events.csv"},
     )
 
 
@@ -213,7 +213,7 @@ def export_csv(
     return Response(
         content=buf.getvalue(),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=forgehost-audit-log.csv"},
+        headers={"Content-Disposition": "attachment; filename=boron-audit-log.csv"},
     )
 
 

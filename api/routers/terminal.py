@@ -1,12 +1,12 @@
 """Phase 8 feature 7: web terminal — the API (unprivileged) side.
 
 WebSocket `/ws/accounts/{u}/terminal`. On connect it authenticates the panel
-session + ownership, asks forgehostd to open an ephemeral SSH session (which
+session + ownership, asks borond to open an ephemeral SSH session (which
 injects a one-time public key into the account's authorized_keys and returns the
 matching PRIVATE key), then connects to sshd on 127.0.0.1 AS THE ACCOUNT USER
 (never root) with that key -- held in memory only, never written to disk -- and
 pumps bytes between the browser's xterm.js and the SSH pty. On close/disconnect/
-idle-timeout it tells forgehostd to remove the injected key.
+idle-timeout it tells borond to remove the injected key.
 
 Client protocol (JSON text frames):
   {"t":"i","d":"<keystrokes>"}   input
@@ -29,7 +29,7 @@ from fastapi import Depends
 from api.rpc import call_daemon
 from api.security import COOKIE_NAME, Identity, _identity_from_session_cookie, get_identity, require_account_access
 
-logger = logging.getLogger("forgehost-api.terminal")
+logger = logging.getLogger("boron-api.terminal")
 
 router = APIRouter()
 http_router = APIRouter(prefix="/api/v1/accounts/{username}/terminal", tags=["terminal"])

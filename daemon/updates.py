@@ -8,23 +8,23 @@ Design (goal: "release tarballs from GitHub, never git pull on production"):
   running `version.py`.
 - `update.start` runs an async job (CpanelImportJob-style, single worker)
   that does everything SAFE while the current code keeps running:
-  pre-flight (tests + disk), backup (panel DB + /etc/forgehost), download
+  pre-flight (tests + disk), backup (panel DB + /etc/boron), download
   (github.com release URL only, every redirect hop re-validated against a
   GitHub-owned host allowlist), SHA256 verify BEFORE extraction, tarball
   member validation (no absolute/traversal/link members) + staged
-  extraction to /opt/forgehost-{version}/, venv build, and the new
+  extraction to /opt/boron-{version}/, venv build, and the new
   version's DB migrations (create_all + additive -- old code keeps working
   after a rollback because migrations are additive-only by project
   convention).
-- The DANGEROUS window -- atomic symlink swap of /opt/forgehost, service
+- The DANGEROUS window -- atomic symlink swap of /opt/boron, service
   restarts, health check, swap-back on failure -- is delegated to
   scripts/update_finalize.py, a stdlib-only script launched as a detached
   transient systemd unit. Two reasons, both load-bearing:
-    1. `systemctl restart forgehost-provisiond` kills THIS process --
+    1. `systemctl restart boron-provisiond` kills THIS process --
        an in-daemon implementation would die mid-job with the panel in an
        unknown state (servicemgr.py's registry deliberately refuses the
        panel's own units for exactly this class of footgun).
-    2. The finalizer runs from a copy under /var/lib/forgehost using
+    2. The finalizer runs from a copy under /var/lib/boron using
        /usr/bin/python3 and ONLY the standard library, so a broken new
        payload (bad venv, broken imports) can never break the machinery
        that rolls it back.
@@ -32,7 +32,7 @@ Design (goal: "release tarballs from GitHub, never git pull on production"):
   version dir within the retention window (update_keep_old_days).
 
 Every step is appended to the job's `steps` JSON *and* mirrored as a JSON
-line to /var/log/forgehost/updates.log (audit.py's account-events pattern:
+line to /var/log/boron/updates.log (audit.py's account-events pattern:
 best-effort, never fails the operation). Nothing secret is ever logged --
 step details are static messages, paths, versions and sizes.
 
@@ -64,9 +64,9 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import UpdateJob, UpdateState, utcnow
 from shared.validation import ValidationError
-from version import FORGEHOST_VERSION
+from version import BORON_VERSION
 
-logger = logging.getLogger("forgehostd.updates")
+logger = logging.getLogger("borond.updates")
 
 # Test hook, same convention as daemon/cloudflare.py's _transport: tests
 # swap in an httpx.MockTransport so nothing ever hits the real GitHub API.
@@ -93,9 +93,9 @@ _MAX_REDIRECTS = 4
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 # Version dirs we own under /opt. Deliberately anchored and digits-only so
-# neighbours like /opt/forgehost-nodejs or /opt/forgehost.pre-filebrowser
+# neighbours like /opt/boron-nodejs or /opt/boron.pre-filebrowser
 # can NEVER match (cleanup deletes matching dirs).
-_VERSION_DIR_RE = re.compile(r"^forgehost-\d+\.\d+\.\d+$")
+_VERSION_DIR_RE = re.compile(r"^boron-\d+\.\d+\.\d+$")
 
 
 # --- version comparison ------------------------------------------------------
@@ -164,7 +164,7 @@ def _require_repo() -> str:
     if not repo:
         raise ValidationError(
             "update checks are not configured -- set update_github_repo "
-            '(e.g. "forgehost/forgehost") in /etc/forgehost/forgehost.toml'
+            '(e.g. "boronpanel/boronpanel") in /etc/boron/boron.toml'
         )
     if not _REPO_RE.match(repo):
         raise ValidationError(f"invalid update_github_repo: {repo!r}")
@@ -172,7 +172,7 @@ def _require_repo() -> str:
 
 
 def _github_headers() -> dict:
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": f"forgehost/{FORGEHOST_VERSION}"}
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": f"boron/{BORON_VERSION}"}
     token = settings.secrets.get("GITHUB_TOKEN", "")
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -208,13 +208,13 @@ def _fetch_release(tag: str | None = None) -> dict:
     for asset in data.get("assets", []):
         name = asset.get("name", "")
         dl = asset.get("browser_download_url", "")
-        if name == f"forgehost-{version}.tar.gz":
+        if name == f"boron-{version}.tar.gz":
             tarball_url = dl
-        elif name == f"forgehost-{version}.sha256":
+        elif name == f"boron-{version}.sha256":
             checksum_url = dl
     if not tarball_url or not checksum_url:
         raise ValidationError(
-            f"release {tag_name} is missing forgehost-{version}.tar.gz and/or its .sha256 asset"
+            f"release {tag_name} is missing boron-{version}.tar.gz and/or its .sha256 asset"
         )
     for dl in (tarball_url, checksum_url):
         if not dl.startswith(prefix):
@@ -241,7 +241,7 @@ def check(params: dict | None = None) -> dict:
     if not configured:
         return {
             "configured": False,
-            "current_version": FORGEHOST_VERSION,
+            "current_version": BORON_VERSION,
             "latest_version": None,
             "update_available": False,
             "changelog_url": None,
@@ -278,12 +278,12 @@ def check(params: dict | None = None) -> dict:
         update_available = False
         if state.latest_version:
             try:
-                update_available = is_newer(state.latest_version, FORGEHOST_VERSION)
+                update_available = is_newer(state.latest_version, BORON_VERSION)
             except ValidationError:
                 update_available = False
         return {
             "configured": True,
-            "current_version": FORGEHOST_VERSION,
+            "current_version": BORON_VERSION,
             "latest_version": state.latest_version,
             "update_available": update_available,
             "changelog_url": state.changelog_url,
@@ -379,7 +379,7 @@ def _active_job(session) -> UpdateJob | None:
     job.status = "failed"
     job.error = (
         "finalizer never reported back (stale for >30min). The symlink swap may or may "
-        "not have been applied -- check /var/log/forgehost/updates.log, the "
+        "not have been applied -- check /var/log/boron/updates.log, the "
         f"{settings.update_live_dir} symlink target, and both panel services before retrying."
     )
     job.completed_at = utcnow()
@@ -391,7 +391,7 @@ def _active_job(session) -> UpdateJob | None:
 
 
 def _live_target() -> str | None:
-    """Real dir the live symlink points at, or None while /opt/forgehost is
+    """Real dir the live symlink points at, or None while /opt/boron is
     still a plain directory (pre-first-update layout)."""
     live = settings.update_live_dir
     if os.path.islink(live):
@@ -416,9 +416,9 @@ def start_update(params: dict) -> dict:
     if not to_version:
         raise ValidationError(f"no release available to update to (last check error: {info['error']})")
     parse_version(to_version)
-    if not is_newer(to_version, FORGEHOST_VERSION):
+    if not is_newer(to_version, BORON_VERSION):
         raise ValidationError(
-            f"target version {to_version} is not newer than the running {FORGEHOST_VERSION} "
+            f"target version {to_version} is not newer than the running {BORON_VERSION} "
             "(use update.rollback to go back)"
         )
 
@@ -429,7 +429,7 @@ def start_update(params: dict) -> dict:
         job = UpdateJob(
             kind="update",
             status="pending",
-            from_version=FORGEHOST_VERSION,
+            from_version=BORON_VERSION,
             to_version=to_version,
             initiated_by=initiated_by,
             progress_message="queued",
@@ -440,7 +440,7 @@ def start_update(params: dict) -> dict:
         result = _job_to_dict(job)
 
     _log_file_event({"job_id": job_id, "step": "job", "status": "queued",
-                     "detail": f"update {FORGEHOST_VERSION} -> {to_version} by {initiated_by}"})
+                     "detail": f"update {BORON_VERSION} -> {to_version} by {initiated_by}"})
     _executor.submit(_run_update_job, job_id, to_version)
     return result
 
@@ -461,7 +461,7 @@ def _run_update_job(job_id: int, to_version: str) -> None:
         # (e) staged extraction ------------------------------------------------
         new_dir = _extract_staged(job_id, tarball, to_version)
 
-        # venv for the staged tree (units exec /opt/forgehost/.venv/... which
+        # venv for the staged tree (units exec /opt/boron/.venv/... which
         # resolves through the symlink into the new dir after the swap).
         _build_venv(job_id, new_dir)
 
@@ -539,16 +539,16 @@ def _backup(job_id: int, to_version: str) -> str:
         # live writers under WAL, unlike a bare file copy.
         src = sqlite3.connect(settings.db_path)
         try:
-            dst = sqlite3.connect(os.path.join(dest, "forgehost.db"))
+            dst = sqlite3.connect(os.path.join(dest, "boron.db"))
             try:
                 src.backup(dst)
             finally:
                 dst.close()
         finally:
             src.close()
-        # /etc/forgehost including secrets.env -- the backup dir itself is
+        # /etc/boron including secrets.env -- the backup dir itself is
         # 0700 root-only, matching the strictest file it contains.
-        shutil.copytree("/etc/forgehost", os.path.join(dest, "etc-forgehost"), symlinks=True)
+        shutil.copytree("/etc/boron", os.path.join(dest, "etc-boron"), symlinks=True)
     except (OSError, sqlite3.Error) as exc:
         _fail_step(job_id, "backup", f"{exc}")
     _step(job_id, "backup", "ok", dest)
@@ -577,7 +577,7 @@ def _safe_download(url: str, dest: str, max_bytes: int) -> int:
         _validate_download_url(current, repo, first_hop=(hop == 0))
         with httpx.Client(timeout=httpx.Timeout(30.0, read=120.0), transport=_transport,
                           follow_redirects=False) as client:
-            with client.stream("GET", current, headers={"User-Agent": f"forgehost/{FORGEHOST_VERSION}"}) as resp:
+            with client.stream("GET", current, headers={"User-Agent": f"boron/{BORON_VERSION}"}) as resp:
                 if resp.status_code in (301, 302, 303, 307, 308):
                     location = resp.headers.get("location", "")
                     if not location:
@@ -602,7 +602,7 @@ def _download_and_verify(job_id: int, to_version: str) -> str:
         tarball_url, checksum_url = state.tarball_url, state.checksum_url
     # The cached URLs are for the *latest* release; refetch by tag when
     # updating to anything else (or when the cache is empty).
-    if not tarball_url or f"forgehost-{to_version}.tar.gz" not in tarball_url:
+    if not tarball_url or f"boron-{to_version}.tar.gz" not in tarball_url:
         try:
             info = _fetch_release(tag=f"v{to_version}")
         except (httpx.HTTPError, ValidationError) as exc:
@@ -611,8 +611,8 @@ def _download_and_verify(job_id: int, to_version: str) -> str:
 
     download_dir = settings.update_download_dir
     os.makedirs(download_dir, mode=0o700, exist_ok=True)
-    tarball = os.path.join(download_dir, f"forgehost-{to_version}.tar.gz")
-    checksum_file = os.path.join(download_dir, f"forgehost-{to_version}.sha256")
+    tarball = os.path.join(download_dir, f"boron-{to_version}.tar.gz")
+    checksum_file = os.path.join(download_dir, f"boron-{to_version}.sha256")
     try:
         size = _safe_download(tarball_url, tarball, settings.update_max_download_bytes)
         _safe_download(checksum_url, checksum_file, 64 * 1024)
@@ -652,7 +652,7 @@ def validate_tarball_members(tf: tarfile.TarFile, expected_prefix: str, max_tota
     """Reject anything path-traversal- or link-shaped BEFORE extraction.
 
     Release tarballs contain only regular files and directories under one
-    forgehost-X.Y.Z/ prefix (release.sh builds and self-verifies exactly
+    boron-X.Y.Z/ prefix (release.sh builds and self-verifies exactly
     that), so anything else -- absolute paths, `..` components, symlinks,
     hardlinks, devices, fifos, members outside the prefix -- is hostile or
     corrupt and aborts the update. Python 3.12's extraction filter is
@@ -676,7 +676,7 @@ def validate_tarball_members(tf: tarfile.TarFile, expected_prefix: str, max_tota
 
 
 def _extract_staged(job_id: int, tarball: str, to_version: str) -> str:
-    prefix = f"forgehost-{to_version}"
+    prefix = f"boron-{to_version}"
     target = os.path.join(settings.update_versions_root, prefix)
     live_target = _live_target()
     if live_target and os.path.realpath(target) == live_target:
@@ -686,7 +686,7 @@ def _extract_staged(job_id: int, tarball: str, to_version: str) -> str:
         with tarfile.open(tarball, "r:gz") as tf:
             validate_tarball_members(tf, prefix, settings.update_max_download_bytes * 4)
             # Same filesystem as the target so the final rename is atomic.
-            tmp_root = tempfile.mkdtemp(prefix=".forgehost-extract-", dir=settings.update_versions_root)
+            tmp_root = tempfile.mkdtemp(prefix=".boron-extract-", dir=settings.update_versions_root)
             tf.extractall(tmp_root, filter="data")
         extracted = os.path.join(tmp_root, prefix)
         if not os.path.isdir(extracted):
@@ -753,18 +753,18 @@ def _handoff_to_finalizer(job_id: int, new_dir: str, kind: str = "update") -> No
     if os.path.islink(live):
         old_dir = os.path.realpath(live)
     else:
-        # First-ever update: /opt/forgehost is still a real directory. The
+        # First-ever update: /opt/boron is still a real directory. The
         # finalizer moves it aside to a versioned dir, then symlinks.
         with write_session() as session:
             job = session.get(UpdateJob, job_id)
-            old_dir = os.path.join(settings.update_versions_root, f"forgehost-{job.from_version}")
+            old_dir = os.path.join(settings.update_versions_root, f"boron-{job.from_version}")
         if os.path.exists(old_dir):
             _fail_step(job_id, "finalize",
                        f"cannot convert {live} to a symlink: {old_dir} already exists")
         convert_from_dir = live
 
     finalizer_src = Path(__file__).resolve().parent.parent / "scripts" / "update_finalize.py"
-    # Staged next to the control-plane DB (/var/lib/forgehost in production):
+    # Staged next to the control-plane DB (/var/lib/boron in production):
     # a location that survives the /opt symlink swap and isn't inside either
     # version dir -- the finalizer must not be yanked out from under itself.
     finalizer_copy = Path(settings.db_path).parent / f"update-finalize-{job_id}.py"
@@ -782,7 +782,7 @@ def _handoff_to_finalizer(job_id: int, new_dir: str, kind: str = "update") -> No
 
     argv = [
         *_SYSTEMD_RUN,
-        f"--unit=forgehost-update-finalize-{job_id}",
+        f"--unit=boron-update-finalize-{job_id}",
         "/usr/bin/python3", str(finalizer_copy),
         "--job-id", str(job_id),
         "--db", settings.db_path,
@@ -961,8 +961,8 @@ def notify_if_update_available() -> dict:
     try:  # noqa: SIM105
         notifications._send_email(
             sender, recipient,
-            f"[Forgehost] Update available: v{latest}",
-            f"A new Forgehost release is available.\n\n"
+            f"[Boron] Update available: v{latest}",
+            f"A new Boron release is available.\n\n"
             f"  Current version: {info['current_version']}\n"
             f"  Latest version:  {latest}\n"
             f"  Changelog:       {info['changelog_url']}\n\n"
@@ -978,15 +978,15 @@ def notify_if_update_available() -> dict:
 
 
 def cleanup_old_versions(params: dict | None = None) -> dict:
-    """Prune stale /opt/forgehost-X.Y.Z dirs after the rollback window
+    """Prune stale /opt/boron-X.Y.Z dirs after the rollback window
     (goal 4k). Hard guards, in order: basename must match the strict
-    version-dir regex (so /opt/forgehost-nodejs etc. can never match), must
+    version-dir regex (so /opt/boron-nodejs etc. can never match), must
     be a real non-symlink directory, must not be the live symlink's target,
     must not be referenced by any update/rollback job completed within the
     window, and must be older than update_keep_old_days.
 
     The job-reference guard is load-bearing, not redundant with mtime: the
-    first-ever update CONVERTS the months-old /opt/forgehost directory into
+    first-ever update CONVERTS the months-old /opt/boron directory into
     the versioned rollback target -- its mtime long predates the update, so
     an mtime-only rule would prune the rollback target the very same night
     and silently void the 3-day rollback promise (the finalizer also bumps

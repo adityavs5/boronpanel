@@ -300,7 +300,7 @@ def test_render_httpd_config_empty_vhosts_has_no_virtualhost_block(monkeypatch):
     # Explicit, not incidental: this test's whole point is "no vhosts in ->
     # no virtualHost block out", so it must not depend on whatever
     # webmail_hostname/pma_hostname happen to be set to in this
-    # environment's real /etc/forgehost/forgehost.toml
+    # environment's real /etc/boron/boron.toml
     # (shared.config.settings is a module-level singleton loaded from the
     # live system config, not reset between tests) -- caught when Phase 2
     # feature 3 configured a real webmail_hostname on this deployment and
@@ -431,7 +431,7 @@ def test_render_httpd_config_omits_webmail_block_when_not_configured(monkeypatch
 
 def test_render_webmail_vhost_conf_uses_configured_docroot(monkeypatch):
     monkeypatch.setattr(ols.settings, "webmail_docroot", "/var/lib/roundcube/public_html")
-    content = ols.render_webmail_vhost_conf("/etc/forgehost/ssl/default.key", "/etc/forgehost/ssl/default.crt")
+    content = ols.render_webmail_vhost_conf("/etc/boron/ssl/default.key", "/etc/boron/ssl/default.crt")
     assert "docRoot                   /var/lib/roundcube/public_html" in content
     assert "lsapi:roundcube_php php" in content
 
@@ -459,7 +459,7 @@ def test_render_httpd_config_omits_pma_block_when_not_configured(monkeypatch):
 
 def test_render_pma_vhost_conf_uses_configured_docroot(monkeypatch):
     monkeypatch.setattr(ols.settings, "pma_docroot", "/usr/share/phpmyadmin")
-    content = ols.render_pma_vhost_conf("/etc/forgehost/ssl/default.key", "/etc/forgehost/ssl/default.crt")
+    content = ols.render_pma_vhost_conf("/etc/boron/ssl/default.key", "/etc/boron/ssl/default.crt")
     assert "docRoot                   /usr/share/phpmyadmin" in content
     assert "lsapi:pma_php php" in content
     assert "include_path" in content
@@ -482,7 +482,7 @@ def test_render_httpd_config_omits_modsecurity_module_when_waf_disabled():
 def test_render_httpd_config_includes_modsecurity_module_when_waf_enabled():
     waf = {
         "waf_enabled": True,
-        "waf_audit_log": "/var/log/forgehost/modsecurity-audit.log",
+        "waf_audit_log": "/var/log/boron/modsecurity-audit.log",
         "waf_rules_file": "/etc/modsecurity/modsec_includes.conf",
         "waf_domain_overrides": [],
         "waf_custom_rules": [],
@@ -491,13 +491,13 @@ def test_render_httpd_config_includes_modsecurity_module_when_waf_enabled():
     assert "module mod_security {" in content
     assert "modsecurity         on" in content
     assert "modsecurity_rules_file   /etc/modsecurity/modsec_includes.conf" in content
-    assert "SecAuditLog /var/log/forgehost/modsecurity-audit.log" in content
+    assert "SecAuditLog /var/log/boron/modsecurity-audit.log" in content
 
 
 def test_render_httpd_config_waf_domain_override_generates_rule_engine_off():
     waf = {
         "waf_enabled": True,
-        "waf_audit_log": "/var/log/forgehost/modsecurity-audit.log",
+        "waf_audit_log": "/var/log/boron/modsecurity-audit.log",
         "waf_rules_file": "/etc/modsecurity/modsec_includes.conf",
         "waf_domain_overrides": [{"domain": "example.com"}],
         "waf_custom_rules": [],
@@ -510,7 +510,7 @@ def test_render_httpd_config_waf_domain_override_generates_rule_engine_off():
 def test_render_httpd_config_waf_custom_rule_generates_scoped_chain():
     waf = {
         "waf_enabled": True,
-        "waf_audit_log": "/var/log/forgehost/modsecurity-audit.log",
+        "waf_audit_log": "/var/log/boron/modsecurity-audit.log",
         "waf_rules_file": "/etc/modsecurity/modsec_includes.conf",
         "waf_domain_overrides": [],
         "waf_custom_rules": [{"id": 7, "domain": "shop.example.com", "target": "ARGS", "pattern": "badbot"}],
@@ -518,7 +518,7 @@ def test_render_httpd_config_waf_custom_rule_generates_scoped_chain():
     content = ols.render_httpd_config([], [], waf=waf)
     assert '@streq shop.example.com' in content
     assert 'SecRule ARGS "@rx badbot"' in content
-    assert "forgehost-custom-rule-7" in content
+    assert "boron-custom-rule-7" in content
 
 
 def test_waf_template_context_reflects_db_state(isolated_db):
@@ -544,7 +544,7 @@ def test_render_vhost_conf_disables_symlink_following():
     `allowSymbolLink 1` (follow unconditionally) -- confirmed via this
     box's own installed OLS docs (VirtualHosts_Help.html) that this is a
     whole-vhost, not per-context, setting, and that 0 is the documented
-    security-hardened choice. No Forgehost automation creates or relies on
+    security-hardened choice. No Boron automation creates or relies on
     a symlink under an account's docroot (confirmed by grep across every
     daemon/*.py), so disabling it has no legitimate functionality to
     break."""

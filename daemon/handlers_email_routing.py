@@ -28,7 +28,7 @@ from shared.validation import ValidationError, validate_domain, validate_usernam
 from daemon import mail
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.email_routing")
+logger = logging.getLogger("borond.email_routing")
 
 MODES = ("local", "remote", "backup")
 # local accepts as a local mailbox domain; remote/backup do not (backup

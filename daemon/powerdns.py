@@ -4,7 +4,7 @@ ARCHITECTURE.md SS6/SS7 + RESEARCH.md SS6: PowerDNS's own docs say not to
 write its SQL schema directly -- use the REST API or pdnsutil. We use the
 REST API exclusively. PowerDNS validates and atomically applies or rejects
 each zone/rrset mutation server-side, which is the validate-before-apply
-property the rest of Forgehost gets from daemon/configtx.py -- there's
+property the rest of Boron gets from daemon/configtx.py -- there's
 nothing for configtx to wrap here, PowerDNS already does it.
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ def zone_exists(zone: str) -> bool:
 def create_zone(zone: str, ns_records: list[str]) -> dict:
     """Create a new authoritative zone with the given NS records. PowerDNS
     auto-generates the SOA from default-soa-content (configured in
-    /etc/powerdns/pdns.d/forgehost.conf) unless we override it."""
+    /etc/powerdns/pdns.d/boron.conf) unless we override it."""
     fqdn = _zone_id(zone)
     payload = {
         "name": fqdn,
@@ -85,7 +85,7 @@ def _record_name(zone: str, subdomain: str) -> str:
 
 def upsert_record(zone: str, subdomain: str, rtype: str, values: list[str], ttl: int = DEFAULT_TTL) -> None:
     """REPLACE semantics: this becomes the complete rrset for (name, type) --
-    matches how Forgehost's UI/API models "edit this A record", not an
+    matches how Boron's UI/API models "edit this A record", not an
     append. Trailing dots required by PowerDNS for CNAME/MX/NS-type
     targets are added by the caller (shared.validation / handlers_dns)."""
     name = _record_name(zone, subdomain)
@@ -120,7 +120,7 @@ def list_records(zone: str) -> list[dict]:
     records = []
     for rrset in zone_data.get("rrsets", []):
         if rrset["type"] in ("SOA",):
-            continue  # auto-managed, not part of Forgehost's editable A/AAAA/CNAME/MX/TXT surface
+            continue  # auto-managed, not part of Boron's editable A/AAAA/CNAME/MX/TXT surface
         records.append(
             {
                 "name": rrset["name"].rstrip("."),

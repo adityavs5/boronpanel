@@ -3,7 +3,7 @@ found while building Phase 4 feature 1 (docs/CHECKPOINT-phase4-0b-cross-account-
 40 route handlers across 8 routers took a `domain` (or bare `job_id`) path/
 body parameter and checked only `require_account_access(identity, username)`
 -- that the caller owns the account named in the URL -- never that the
-`domain`/`job_id` itself actually belongs to that account. Since forgehostd
+`domain`/`job_id` itself actually belongs to that account. Since borond
 does not re-derive authorization by design (ARCHITECTURE.md SS2: "the daemon
 does not re-derive authorization, that already happened in the API layer"),
 several of the underlying daemon handlers had *no* ownership check at any

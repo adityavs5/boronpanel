@@ -1,5 +1,5 @@
 #
-# Forgehost-managed file. Regenerated in full from the control-plane DB on
+# Boron-managed file. Regenerated in full from the control-plane DB on
 # every account/domain change (ARCHITECTURE.md SS6 - declarative
 # regeneration, not incremental text patching of a shared file).
 # Manual edits here will be overwritten on the next change.
@@ -433,7 +433,7 @@ SecRule REQUEST_HEADERS:Host "@streq {{ override.domain }}" "id:{{ 9000000 + loo
 {% endfor %}
 {% for rule in waf_custom_rules %}
 SecRule REQUEST_HEADERS:Host "@streq {{ rule.domain }}" "id:{{ 9100000 + loop.index }},phase:2,chain"
-SecRule {{ rule.target }} "@rx {{ rule.pattern }}" "t:none,deny,status:403,msg:'forgehost-custom-rule-{{ rule.id }}'"
+SecRule {{ rule.target }} "@rx {{ rule.pattern }}" "t:none,deny,status:403,msg:'boron-custom-rule-{{ rule.id }}'"
 {% endfor %}`
     modsecurity_rules_file   {{ waf_rules_file }}
 }

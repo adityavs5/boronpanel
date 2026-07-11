@@ -60,7 +60,7 @@ def test_wildcard_renewal_sets_active_and_wildcard_flag(hook, account_with_domai
 
 def test_wildcard_prefixed_name_is_never_looked_up_as_its_own_row(hook, account_with_domain, monkeypatch, caplog):
     """The '*.<domain>' entry in RENEWED_DOMAINS must never itself be
-    treated as a Domain row lookup key (Forgehost never stores a
+    treated as a Domain row lookup key (Boron never stores a
     wildcard-prefixed domain name) -- only used to derive is_wildcard for
     the real, bare-name row."""
     monkeypatch.setenv("RENEWED_DOMAINS", "demo1.example *.demo1.example")

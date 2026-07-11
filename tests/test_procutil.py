@@ -4,7 +4,7 @@ from daemon.procutil import run
 
 
 def test_run_logs_full_argv_by_default(caplog):
-    with caplog.at_level(logging.INFO, logger="forgehostd.proc"):
+    with caplog.at_level(logging.INFO, logger="borond.proc"):
         run(["echo", "hello-world-marker"], timeout=5)
     assert any("hello-world-marker" in r.message for r in caplog.records)
 
@@ -17,7 +17,7 @@ def test_run_redacts_listed_secret_from_log_line(caplog):
     Fixed there by switching to stdin; this redact param exists for the
     one remaining case (PrestaShop's install/index_cli.php) that has no
     stdin alternative at all."""
-    with caplog.at_level(logging.INFO, logger="forgehostd.proc"):
+    with caplog.at_level(logging.INFO, logger="borond.proc"):
         result = run(["echo", "--password=TopSecret123!"], timeout=5, redact=["TopSecret123!"])
     assert not any("TopSecret123!" in r.message for r in caplog.records)
     assert any("REDACTED" in r.message for r in caplog.records)
@@ -32,6 +32,6 @@ def test_run_redact_does_not_affect_actual_subprocess_args():
 
 
 def test_run_redact_none_is_a_no_op(caplog):
-    with caplog.at_level(logging.INFO, logger="forgehostd.proc"):
+    with caplog.at_level(logging.INFO, logger="borond.proc"):
         run(["echo", "plain"], timeout=5, redact=None)
     assert any("exec: echo plain" in r.message for r in caplog.records)

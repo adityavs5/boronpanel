@@ -1,4 +1,4 @@
-"""Length-prefixed JSON RPC framing over the forgehostd Unix socket.
+"""Length-prefixed JSON RPC framing over the borond Unix socket.
 
 See ARCHITECTURE.md SS2 for why this is a tiny custom protocol rather than
 gRPC/HTTP: it's a closed, same-host link between two processes we control on
@@ -87,7 +87,7 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
 
 
 class RpcClient:
-    """Synchronous client used by forgehost-api to call forgehostd."""
+    """Synchronous client used by boron-api to call borond."""
 
     def __init__(self, socket_path: str, timeout: float = 30.0):
         self.socket_path = socket_path

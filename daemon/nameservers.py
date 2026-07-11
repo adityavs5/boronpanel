@@ -121,7 +121,7 @@ def set_nameservers(params: dict) -> dict:
             resolved_glue[ns] = _validate_glue_ip(ip)
 
     if not dnsprovider.zone_exists(domain):
-        raise NameserverError(f"no Forgehost-managed DNS zone for '{domain}' -- create one first")
+        raise NameserverError(f"no Boron-managed DNS zone for '{domain}' -- create one first")
 
     for ns, ip in resolved_glue.items():
         sub = _relative_subdomain(domain, ns)
@@ -142,7 +142,7 @@ def reset_nameservers(params: dict) -> dict:
     domain = validate_domain(params["domain"])
     _require_local_zone(domain, "reset nameservers")
     if not dnsprovider.zone_exists(domain):
-        raise NameserverError(f"no Forgehost-managed DNS zone for '{domain}'")
+        raise NameserverError(f"no Boron-managed DNS zone for '{domain}'")
 
     ip = settings.server_public_ip
     default_nameservers = [f"ns1.{domain}", f"ns2.{domain}"]

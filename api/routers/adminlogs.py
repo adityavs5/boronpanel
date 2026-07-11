@@ -1,6 +1,6 @@
 """Run A feature 7: admin view of the API's own recent 5xx errors.
 
-Reads `api-error.log` (written by this same forgehost-api process, so no
+Reads `api-error.log` (written by this same boron-api process, so no
 daemon RPC is needed -- the file is ours) and returns the last N records,
 newest first. Admin-only: it exposes internal paths/timings/usernames of
 failed requests, which is operator information, not customer information.

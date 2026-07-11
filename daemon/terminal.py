@@ -2,8 +2,8 @@
 
 Opening a terminal session generates an EPHEMERAL Ed25519 keypair in memory,
 injects the PUBLIC key into the account's own `~/.ssh/authorized_keys` (with a
-`forgehost-terminal-<sid>-<epoch>` marker comment), and returns the PRIVATE key
-to forgehost-api over the RPC socket. The private key is NEVER written to disk
+`boron-terminal-<sid>-<epoch>` marker comment), and returns the PRIVATE key
+to boron-api over the RPC socket. The private key is NEVER written to disk
 here (or anywhere) -- the API holds it in memory for the life of the WebSocket,
 connects to sshd on 127.0.0.1 as the account user with it, and discards it.
 Closing the session removes the marker line. sshd auth as the account's own uid
@@ -38,14 +38,14 @@ from shared.validation import validate_username
 
 from daemon import sysops
 
-logger = logging.getLogger("forgehostd.terminal")
+logger = logging.getLogger("borond.terminal")
 
 MAX_CONCURRENT_SESSIONS = 3
 # A session whose close never ran leaves its key behind; reap it after this.
 TERMINAL_KEY_MAX_AGE_SECONDS = 12 * 3600
 SSH_HOST = "127.0.0.1"
 SSH_PORT = 22
-_MARKER_PREFIX = "forgehost-terminal-"
+_MARKER_PREFIX = "boron-terminal-"
 # No forwarding of any kind; a pty is still allowed (we need it) -- deliberately
 # NOT `restrict`, which would also disable the pty.
 _KEY_OPTIONS = "no-agent-forwarding,no-port-forwarding,no-X11-forwarding"
@@ -147,10 +147,10 @@ def _write_lines(path: str, lines: list[str], uid: int, gid: int) -> None:
 
 
 def _locked(ssh_dir: str):
-    """A lock on <ssh_dir>/.forgehost-terminal.lock serializing authorized_keys
+    """A lock on <ssh_dir>/.boron-terminal.lock serializing authorized_keys
     read-modify-write across concurrent open/close (this module and, harmlessly,
     only this module -- the SSH-keys feature edits distinct lines)."""
-    lock_path = os.path.join(ssh_dir, ".forgehost-terminal.lock")
+    lock_path = os.path.join(ssh_dir, ".boron-terminal.lock")
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
     return fd

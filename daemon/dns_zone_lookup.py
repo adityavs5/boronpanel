@@ -1,4 +1,4 @@
-"""Shared "which Forgehost-managed zone (if any) covers this domain name"
+"""Shared "which Boron-managed zone (if any) covers this domain name"
 lookup -- used by handlers_domain.py (subdomain auto-A-record, Phase 2
 feature 4) and handlers_mail.py (SPF/DKIM/DMARC auto-publish, Phase 3
 feature 1). A domain doesn't get its own zone just for being a subdomain

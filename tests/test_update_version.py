@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import api.main as main  # noqa: E402
 from api.security import Identity, get_identity  # noqa: E402
-from version import FORGEHOST_VERSION  # noqa: E402
+from version import BORON_VERSION  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -39,7 +39,7 @@ def _cleanup_overrides():
 
 
 def test_version_constant_is_semver():
-    assert re.fullmatch(r"\d+\.\d+\.\d+", FORGEHOST_VERSION)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", BORON_VERSION)
 
 
 def test_version_endpoint_returns_single_source_of_truth():
@@ -49,7 +49,7 @@ def test_version_endpoint_returns_single_source_of_truth():
         client = _client_as(admin)
         r = client.get("/api/v1/version")
         assert r.status_code == 200
-        assert r.json() == {"version": FORGEHOST_VERSION}
+        assert r.json() == {"version": BORON_VERSION}
     finally:
         _cleanup_overrides()
 
@@ -61,7 +61,7 @@ def test_version_endpoint_visible_to_customers_too():
         client = _client_as(customer)
         r = client.get("/api/v1/version")
         assert r.status_code == 200
-        assert r.json()["version"] == FORGEHOST_VERSION
+        assert r.json()["version"] == BORON_VERSION
     finally:
         _cleanup_overrides()
 
@@ -80,10 +80,10 @@ def test_installer_sed_extracts_the_version():
     expression so a reformat of version.py that would silently break the
     installer's output fails here instead."""
     out = subprocess.run(
-        ["sed", "-n", r's/^FORGEHOST_VERSION = "\(.*\)"$/\1/p', str(REPO_ROOT / "version.py")],
+        ["sed", "-n", r's/^BORON_VERSION = "\(.*\)"$/\1/p', str(REPO_ROOT / "version.py")],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
-    assert out == FORGEHOST_VERSION
+    assert out == BORON_VERSION
 
 
 def test_vite_config_reads_version_py():
@@ -91,9 +91,9 @@ def test_vite_config_reads_version_py():
     vite config uses against the actual file format."""
     vite = (REPO_ROOT / "frontend" / "vite.config.js").read_text()
     assert "version.py" in vite
-    # The JS regex literal /FORGEHOST_VERSION\s*=\s*"([^"]+)"/ must match
+    # The JS regex literal /BORON_VERSION\s*=\s*"([^"]+)"/ must match
     # version.py's actual assignment line.
-    js_regex = re.compile(r'FORGEHOST_VERSION\s*=\s*"([^"]+)"')
+    js_regex = re.compile(r'BORON_VERSION\s*=\s*"([^"]+)"')
     version_text = (REPO_ROOT / "version.py").read_text()
     found = js_regex.search(version_text)
-    assert found and found.group(1) == FORGEHOST_VERSION
+    assert found and found.group(1) == BORON_VERSION

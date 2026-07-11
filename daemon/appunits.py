@@ -1,7 +1,7 @@
 """Shared systemd-unit plumbing for NodeApp/PythonApp (Phase 7a features
 1/2) and RedisInstance (feature 3) -- the parts that are identical
 regardless of what's actually being supervised: unit file naming
-(`forgehost-{kind}-{username}-{id}.service`, the goal's own explicit
+(`boron-{kind}-{username}-{id}.service`, the goal's own explicit
 convention), writing/starting/stopping/removing a unit, and tailing an
 app's own log file instead of the system journal (goal: "logs under
 ~/logs/{type}/, not system journal" -- achieved by each unit's own
@@ -9,7 +9,7 @@ StandardOutput/StandardError pointing directly at that file, so "read the
 log" is just reading a file, never `journalctl`).
 
 Each app is assigned directly to its account's existing cgroup slice via
-`Slice=forgehost-<username>.slice` in the unit itself -- daemon/cgroups.py
+`Slice=boron-<username>.slice` in the unit itself -- daemon/cgroups.py
 already creates that slice at account-creation time (CREATE_HOOKS), so it
 always exists before any app unit references it. This is simpler than
 cgroups.py's own LSAPI-worker reconciler: a systemd-spawned unit can be
@@ -30,7 +30,7 @@ UNITS_DIR = Path("/etc/systemd/system")
 
 
 def unit_name(kind: str, username: str, app_id: int) -> str:
-    return f"forgehost-{kind}-{username}-{app_id}.service"
+    return f"boron-{kind}-{username}-{app_id}.service"
 
 
 def unit_path(name: str) -> Path:

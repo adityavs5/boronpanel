@@ -1,7 +1,7 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Periodic service health check (Run A feature 5).
 
-Run via a system cron every 5 minutes (deploy/forgehost-monitoring.cron)
+Run via a system cron every 5 minutes (deploy/boron-monitoring.cron)
 -- same root-owned infrastructure-cron category as
 scripts/health_snapshot.py. One pass = one `systemctl is-active` per
 monitored service, one ServiceCheck history row each, and up<->down

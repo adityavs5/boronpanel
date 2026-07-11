@@ -1,8 +1,8 @@
-"""SQLAlchemy ORM models for Forgehost's control-plane SQLite database.
+"""SQLAlchemy ORM models for Boron's control-plane SQLite database.
 
-forgehostd is the only writer (see ARCHITECTURE.md SS4); forgehost-api opens
+borond is the only writer (see ARCHITECTURE.md SS4); boron-api opens
 the same file read-only for fast list/get queries and forwards every mutation
-to forgehostd over the RPC socket.
+to borond over the RPC socket.
 """
 from __future__ import annotations
 
@@ -156,7 +156,7 @@ class CloudflareAccount(Base):
     same mechanism as NodeApp/PythonApp env vars) -- never in plaintext in
     the DB, never returned to the UI. `account_id` is Cloudflare's own
     account identifier (the value that used to live in
-    forgehost.toml:cloudflare_account_id), needed on the POST /zones payload.
+    boron.toml:cloudflare_account_id), needed on the POST /zones payload.
     `zone_count` is a denormalized cache of active+pending zones assigned to
     this account, kept in step by daemon/cloudflare_accounts.py on every
     enable/disable and recomputable from the CloudflareZone rows."""
@@ -177,7 +177,7 @@ class CloudflareAccount(Base):
 class CloudflareSettings(Base):
     """Single-row (id=1) table for the runtime-toggleable Cloudflare admin
     settings (goal features 6 + 9), following the SpamGlobalSettings
-    single-row convention. These are distinct from forgehost.toml knobs
+    single-row convention. These are distinct from boron.toml knobs
     (operator-edited, static): they flip from the admin UI at runtime.
 
     `auto_enable`: when true, dns.create_zone auto-triggers cf.zone_enable
@@ -200,10 +200,10 @@ class DkimKey(Base):
     """Phase 3 feature 1: one DKIM signing keypair per mail domain,
     generated automatically the first time a mail domain is created
     (daemon/dkim.py). The private key itself lives on disk
-    (/etc/forgehost/dkim/<domain>/<selector>.private, root-only) -- this
+    (/etc/boron/dkim/<domain>/<selector>.private, root-only) -- this
     row is bookkeeping only (which selector is active, so repeat calls
     reuse rather than silently rotate the key) plus whether the public key
-    was actually published to a Forgehost-managed DNS zone or just
+    was actually published to a Boron-managed DNS zone or just
     generated for the operator to publish elsewhere."""
 
     __tablename__ = "dkim_keys"
@@ -472,7 +472,7 @@ class PhpExtensionSet(Base):
     via a PHP_INI_SCAN_DIR env line (daemon/phpext.py). Under the HOME, not
     /etc or /run, because namespaced accounts (nsisolation, the default)
     only see their own home tree inside the jail -- same lesson
-    daemon/redisacct.py's socket path learned, and /etc/forgehost was
+    daemon/redisacct.py's socket path learned, and /etc/boron was
     confirmed invisible from a live jailed lsphp before choosing this. No
     row at all means stock behavior (the compiled-in scan dir), the
     project-wide "absence means default" convention."""
@@ -510,8 +510,8 @@ class PmaToken(Base):
     token. The token itself is never stored (only its SHA-256 hash, same
     pattern as ApiToken) -- the ephemeral MariaDB credentials it grants
     access to live in a small per-token JSON file under
-    settings.pma_token_dir (NOT under /var/lib/forgehost, which is
-    locked to root:forgehost-api -- the phpMyAdmin signon script runs as
+    settings.pma_token_dir (NOT under /var/lib/boron, which is
+    locked to root:boron-api -- the phpMyAdmin signon script runs as
     www-data and needs to read+delete that file itself; see
     CHECKPOINT-phase3-3.md). This row exists so a periodic cleanup script
     can drop the ephemeral MariaDB user + stale file even if a token is
@@ -795,10 +795,10 @@ class TotpCredential(Base):
     application-level encryption-at-rest layer for DB row secrets (the
     few genuinely irreversible secrets it holds -- MariaDB admin creds,
     the PowerDNS API key, the session-signing key -- all live in
-    root-only files under /etc/forgehost/, never in this SQLite DB); a
+    root-only files under /etc/boron/, never in this SQLite DB); a
     dedicated KMS/envelope-encryption layer for this one field was
     judged out of scope for this feature, so the DB file's own existing
-    permission boundary (0640 root:forgehost-api, ARCHITECTURE.md SS4)
+    permission boundary (0640 root:boron-api, ARCHITECTURE.md SS4)
     is the actual protection here -- the same real, documented tradeoff
     this project already accepts for the PanelUser table it sits
     alongside. `enabled=False` until a submitted code proves the admin
@@ -938,7 +938,7 @@ class NodeApp(Base):
     the app installer can never both serve the same domain at once (the
     same "one thing owns this vhost's context /" invariant the suspended-
     page swap already relies on). Supervised by a real systemd unit
-    (forgehost-node-{username}-{id}.service, daemon/nodeapps.py) assigned
+    (boron-node-{username}-{id}.service, daemon/nodeapps.py) assigned
     directly to the account's own cgroup slice via `Slice=` at spawn time
     -- unlike LSAPI PHP workers (daemon/cgroups.py's periodic reconciler),
     a systemd-spawned unit can be told its target slice directly, no
@@ -1013,7 +1013,7 @@ class RedisInstance(Base):
     rendered redis.conf, goal's explicit v1 default) -- data_dir
     (~/.redis/) is still created for an admin who deliberately enables
     persistence later via a config override, just never written to by
-    Forgehost itself otherwise."""
+    Boron itself otherwise."""
 
     __tablename__ = "redis_instances"
 
@@ -1118,7 +1118,7 @@ class Webhook(Base):
     has to be used to *compute* an HMAC on every delivery, not just
     compared, so it can't be one-way-hashed; same documented tradeoff
     TotpCredential.secret already accepts in this same file, protected by
-    the DB file's own root:forgehost-api permission boundary."""
+    the DB file's own root:boron-api permission boundary."""
 
     __tablename__ = "webhooks"
 
@@ -1554,8 +1554,8 @@ class BrandingSettings(Base):
     only one server-wide branding configuration. `logo_filename`/
     `favicon_filename` name the actual file under
     `settings.branding_dir` (daemon-written, group-readable by
-    forgehost-api so the unprivileged API process can stream it back out
-    over HTTP to anonymous visitors -- same 0640 root:forgehost-api
+    boron-api so the unprivileged API process can stream it back out
+    over HTTP to anonymous visitors -- same 0640 root:boron-api
     pattern as the control-plane DB file itself, shared/db.py's
     `_grant_api_group_read`); NULL means "no custom asset, use the
     built-in default" for that asset specifically."""
@@ -1563,7 +1563,7 @@ class BrandingSettings(Base):
     __tablename__ = "branding_settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    panel_name: Mapped[str] = mapped_column(String(64), default="Forgehost")
+    panel_name: Mapped[str] = mapped_column(String(64), default="Boron")
     logo_filename: Mapped[str | None] = mapped_column(String(64), nullable=True)
     favicon_filename: Mapped[str | None] = mapped_column(String(64), nullable=True)
     support_email: Mapped[str | None] = mapped_column(String(253), nullable=True)
@@ -1632,7 +1632,7 @@ class WildcardDomain(Base):
     match all subdomains of mydomain.com"), daemon/ols.py. A NEW table
     keyed by the base domain name (unique) -- same reasoning as
     MaintenanceMode above. Enabling requires the domain's own zone to be
-    Forgehost-managed (the same precondition ssl.issue_wildcard already
+    Boron-managed (the same precondition ssl.issue_wildcard already
     enforces, daemon/ssl.py _dns01_plan) since a wildcard A record has to
     be written somewhere; `dns_record_created` tracks whether this
     feature's own upsert_record(zone, "*", "A", ...) call has run, so
@@ -1710,7 +1710,7 @@ class ImapMigrationJob(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
-    mailbox: Mapped[str] = mapped_column(String(253), index=True)  # local@domain, the FORGEHOST destination mailbox
+    mailbox: Mapped[str] = mapped_column(String(253), index=True)  # local@domain, the BORON destination mailbox
     source_host: Mapped[str] = mapped_column(String(253))
     source_port: Mapped[int] = mapped_column(Integer, default=993)
     source_email: Mapped[str] = mapped_column(String(253))  # source address only -- never the password
@@ -1764,7 +1764,7 @@ class UpdateJob(Base):
     live job the admin UI polls AND the permanent update-history record
     (goal 6: from/to version, timestamp, success/fail, duration, who).
     Same async-job shape as CpanelImportJob; `steps` is the incremental
-    per-step log mirrored to /var/log/forgehost/updates.log.
+    per-step log mirrored to /var/log/boron/updates.log.
 
     status: pending -> running -> finalizing -> completed | failed.
     `finalizing` is update-specific: the daemon has staged everything and

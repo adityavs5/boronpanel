@@ -29,7 +29,7 @@ DOMAIN_RE = re.compile(
     r"(\.(?!-)[a-z0-9-]{1,63}(?<!-))+\Z"
 )
 
-# Reserved usernames: real system accounts, service accounts forgehost itself
+# Reserved usernames: real system accounts, service accounts boron itself
 # uses, and names that would collide with a path or convention elsewhere in
 # the design (e.g. "vmail" owns mail storage; "_suspended" is a literal path
 # segment under /var/www).
@@ -37,7 +37,7 @@ RESERVED_USERNAMES = {
     "root", "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail",
     "news", "uucp", "proxy", "www-data", "backup", "list", "irc", "gnats",
     "nobody", "systemd-network", "systemd-resolve", "messagebus", "sshd",
-    "forgehost", "forgehost-api", "forgehostd", "vmail", "mysql", "mariadb",
+    "boron", "boron-api", "borond", "vmail", "mysql", "mariadb",
     "postfix", "dovecot", "pdns", "powerdns", "pure-ftpd", "ftp", "admin",
     "administrator", "_suspended", "lsadm", "nginx", "apache", "litespeed",
 }
@@ -113,7 +113,7 @@ def validate_email_address(address: str) -> str:
     deliberately allowed to be ANY external address (that's the whole
     point of a forwarder), so this only checks syntactic shape -- not
     domain ownership -- unlike validate_mailbox_local_part, which is
-    scoped to Forgehost-managed mailboxes."""
+    scoped to Boron-managed mailboxes."""
     if not isinstance(address, str) or not EMAIL_RE.match(address):
         raise ValidationError(f"'{address}' is not a syntactically valid email address")
     return address
@@ -584,14 +584,14 @@ def validate_python_entry_point(value: str) -> str:
 
 ENV_VAR_KEY_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 MAX_ENV_VARS = 50
-# Reserved: Forgehost's own app-hosting machinery sets PORT itself (from
+# Reserved: Boron's own app-hosting machinery sets PORT itself (from
 # the allocated port, not a customer-supplied value) -- letting a customer
 # override it would silently break the very reverse-proxy binding OLS was
 # configured to expect.
 RESERVED_ENV_KEYS = {"PORT"}
 
 
-# Phase 7b feature 4: webhooks. The URL is dereferenced by forgehostd itself
+# Phase 7b feature 4: webhooks. The URL is dereferenced by borond itself
 # (an outbound HTTP POST, daemon/webhooks.py) -- restricted to http/https
 # with a real netloc, same shape as validate_redirect_target, so a crafted
 # value can't smuggle a newline/control character into the request line a
@@ -796,7 +796,7 @@ def validate_env_vars(value) -> dict[str, str]:
         if not isinstance(key, str) or not ENV_VAR_KEY_RE.match(key):
             raise ValidationError(f"env var name '{key}' is invalid (letters, digits, underscore, must not start with a digit)")
         if key in RESERVED_ENV_KEYS:
-            raise ValidationError(f"env var name '{key}' is reserved by Forgehost")
+            raise ValidationError(f"env var name '{key}' is reserved by Boron")
         if not isinstance(val, str):
             raise ValidationError(f"env var '{key}' value must be a string")
         if "\x00" in val or "\n" in val:

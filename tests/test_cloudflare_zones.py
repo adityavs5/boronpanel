@@ -148,7 +148,7 @@ def test_zone_enable_seeds_records_but_not_apex_ns(managed_zone, fake_cf):
 
 
 def test_zone_enable_requires_managed_zone(isolated_db, fake_pdns, fake_cf):
-    with pytest.raises(RuntimeError, match="no Forgehost-managed DNS zone"):
+    with pytest.raises(RuntimeError, match="no Boron-managed DNS zone"):
         _enable()
 
 

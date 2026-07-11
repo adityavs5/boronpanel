@@ -23,7 +23,7 @@ from daemon import dnsprovider, ols
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from daemon.handlers_domain import ensure_docroot
 
-logger = logging.getLogger("forgehostd.parked")
+logger = logging.getLogger("borond.parked")
 
 
 def _row_to_dict(parked: ParkedDomain, domain: Domain | None) -> dict:

@@ -25,12 +25,12 @@ from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
 from daemon import phpdirectives, sysops
 
-logger = logging.getLogger("forgehostd.ols")
+logger = logging.getLogger("borond.ols")
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)
 
-# Missing-features batch, goal feature 4: shared, server-wide Forgehost-branded
+# Missing-features batch, goal feature 4: shared, server-wide Boron-branded
 # default error pages, shipped with the app -- see daemon/custom_pages.py's
 # module docstring for the full context/resolution story.
 DEFAULT_ERROR_PAGES_DIR = TEMPLATES_DIR / "error_pages"
@@ -67,8 +67,8 @@ def _vhost_conf_path(vhost_name: str) -> str:
     return VHOST_CONF_TEMPLATE.format(base=OLS_SERVER_BASE, name=vhost_name)
 
 
-DEFAULT_SSL_KEY = "/etc/forgehost/ssl/default.key"
-DEFAULT_SSL_CERT = "/etc/forgehost/ssl/default.crt"
+DEFAULT_SSL_KEY = "/etc/boron/ssl/default.key"
+DEFAULT_SSL_CERT = "/etc/boron/ssl/default.crt"
 
 
 def letsencrypt_cert_paths(cert_name: str) -> tuple[str, str]:
@@ -154,7 +154,7 @@ def _lscache_for_domain(session, domain_name: str) -> dict | None:
         # which doesn't depend on this URI's exact live HTTP semantics) --
         # rendered anyway since it's a real, documented OLS cache-module
         # parameter and costs nothing to also expose.
-        "purge_uri": f"/.forgehost-lscache-purge-{vhost_name}",
+        "purge_uri": f"/.boron-lscache-purge-{vhost_name}",
     }
 
 
@@ -222,7 +222,7 @@ def _error_pages_for_domain(username: str, domain_name: str, maintenance_active:
 
     ensure_pages_dir is called here (not only at domain-add time) so a
     domain created before this feature existed still gets a real, existing
-    directory backing the vhost's unconditional /.forgehost-error-pages/
+    directory backing the vhost's unconditional /.boron-error-pages/
     context the next time its vhost is regenerated for any reason --
     self-healing, rather than requiring a one-off migration script the way
     an earlier feature's tmp-dir backfill needed (refresh_all_vhosts)."""
@@ -449,7 +449,7 @@ def _webmail_ssl_paths(session) -> tuple[str, str]:
 # this function's context -- daemon/waf.py imports these path constants
 # rather than duplicating them.
 WAF_RULES_FILE = "/etc/modsecurity/modsec_includes.conf"
-WAF_AUDIT_LOG = "/var/log/forgehost/modsecurity-audit.log"
+WAF_AUDIT_LOG = "/var/log/boron/modsecurity-audit.log"
 
 
 def waf_template_context(session) -> dict:
@@ -505,14 +505,14 @@ def render_httpd_config(
 ) -> str:
     template = _env.get_template("httpd_config.conf.j2")
     return template.render(
-        server_name="forgehost",
+        server_name="boron",
         cloudflare_trusted_ips=cloudflare_trusted_ips() if cloudflare_ranges is None else cloudflare_ranges,
         admin_email="root@localhost",
         min_uid=11,
         min_gid=10,
         default_php_version_nodot=settings.default_php_version.replace(".", ""),
-        default_ssl_key="/etc/forgehost/ssl/default.key",
-        default_ssl_cert="/etc/forgehost/ssl/default.crt",
+        default_ssl_key="/etc/boron/ssl/default.key",
+        default_ssl_cert="/etc/boron/ssl/default.crt",
         domain_vhosts=domain_vhosts,
         account_procs=account_procs,
         webmail_hostname=settings.webmail_hostname,
@@ -547,7 +547,7 @@ def bootstrap_webmail() -> None:
     this. Run explicitly after Roundcube itself is installed and
     configured (README/CHECKPOINT-phase2-3.md)."""
     if not settings.webmail_hostname:
-        raise RuntimeError("webmail_hostname is not set in forgehost.toml")
+        raise RuntimeError("webmail_hostname is not set in boron.toml")
 
     with write_session() as session:
         domain_vhosts, account_procs = _all_active_vhosts(session)
@@ -610,7 +610,7 @@ def bootstrap_pma() -> None:
     daemon/pma.py has written config.inc.php + the signon script into its
     docroot (README/CHECKPOINT-phase3-3.md)."""
     if not settings.pma_hostname:
-        raise RuntimeError("pma_hostname is not set in forgehost.toml")
+        raise RuntimeError("pma_hostname is not set in boron.toml")
 
     with write_session() as session:
         domain_vhosts, account_procs = _all_active_vhosts(session)
@@ -879,7 +879,7 @@ def refresh_all_vhosts() -> None:
 
 def bootstrap_baseline() -> None:
     """Replace the stock OLS install's bundled 'Example' vhost with a clean,
-    Forgehost-managed httpd_config.conf containing whatever vhosts already
+    Boron-managed httpd_config.conf containing whatever vhosts already
     exist in the DB (none, on a fresh install).
 
     Run once, deliberately, rather than automatically on every daemon start

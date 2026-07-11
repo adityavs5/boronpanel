@@ -1,4 +1,4 @@
-"""Logging setup for forgehostd, split out from daemon/server.py so it can be
+"""Logging setup for borond, split out from daemon/server.py so it can be
 imported and tested (tests/test_daemon_logging.py) without pulling in
 daemon.server's business-logic imports -- those register real handlers onto
 shared global state at import time (handlers_account.TERMINATE_HOOKS), which
@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def configure_logging(log_dir: str) -> None:
-    """Split forgehostd.proc (daemon/procutil.py's run()) away from the
+    """Split borond.proc (daemon/procutil.py's run()) away from the
     journal/stdout sink.
 
     That logger writes every subprocess's full argument list, for ops
@@ -34,7 +34,7 @@ def configure_logging(log_dir: str) -> None:
             logging.StreamHandler(),
         ],
     )
-    proc_logger = logging.getLogger("forgehostd.proc")
+    proc_logger = logging.getLogger("borond.proc")
     proc_logger.propagate = False
     proc_logger.handlers = [logging.FileHandler(Path(log_dir) / "daemon.log")]
     proc_logger.setLevel(logging.INFO)

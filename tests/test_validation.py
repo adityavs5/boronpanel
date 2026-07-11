@@ -62,7 +62,7 @@ def test_invalid_usernames(bad):
         validate_username(bad)
 
 
-@pytest.mark.parametrize("reserved", ["root", "vmail", "mysql", "forgehost", "admin"])
+@pytest.mark.parametrize("reserved", ["root", "vmail", "mysql", "boron", "admin"])
 def test_reserved_usernames_rejected(reserved):
     with pytest.raises(ValidationError):
         validate_username(reserved)

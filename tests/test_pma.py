@@ -79,7 +79,7 @@ def test_create_token_happy_path(account_with_db, stub_mariadb, stub_group, tmp_
 
     result = pma.create_token({"username": "demo1", "name": "shop"})
     assert result["db_name"] == "demo1_shop"
-    assert result["pma_url"].startswith("https://pma.example/forgehost_signon.php?token=")
+    assert result["pma_url"].startswith("https://pma.example/boron_signon.php?token=")
     assert result["expires_in_seconds"] == settings.pma_token_ttl_seconds
 
     token_files = list((tmp_path / "pma-tokens").glob("*.json"))
@@ -152,23 +152,23 @@ def test_cleanup_leaves_unexpired_tokens_alone(account_with_db, stub_mariadb, st
 
 def test_bootstrap_pma_files_generates_config_and_signon_script(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "pma_docroot", str(tmp_path / "pma-docroot"))
-    monkeypatch.setattr(settings, "pma_token_dir", "/var/lib/forgehost-pma-tokens")
+    monkeypatch.setattr(settings, "pma_token_dir", "/var/lib/boron-pma-tokens")
     (tmp_path / "pma-docroot").mkdir()
 
     secret = pma.bootstrap_pma_files()
     config_content = (tmp_path / "pma-docroot" / "config.inc.php").read_text()
     assert secret in config_content
     assert "auth_type'] = 'signon'" in config_content
-    assert "/var/lib/forgehost-pma-tokens" not in config_content  # not templated into config.inc.php itself
+    assert "/var/lib/boron-pma-tokens" not in config_content  # not templated into config.inc.php itself
 
-    signon_content = (tmp_path / "pma-docroot" / "forgehost_signon.php").read_text()
-    assert "/var/lib/forgehost-pma-tokens" in signon_content
+    signon_content = (tmp_path / "pma-docroot" / "boron_signon.php").read_text()
+    assert "/var/lib/boron-pma-tokens" in signon_content
     assert "PMASignon" in signon_content
 
 
 def test_bootstrap_pma_files_reuses_existing_blowfish_secret(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "pma_docroot", str(tmp_path / "pma-docroot"))
-    monkeypatch.setattr(settings, "pma_token_dir", "/var/lib/forgehost-pma-tokens")
+    monkeypatch.setattr(settings, "pma_token_dir", "/var/lib/boron-pma-tokens")
     (tmp_path / "pma-docroot").mkdir()
 
     first = pma.bootstrap_pma_files()

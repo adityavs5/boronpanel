@@ -1,6 +1,6 @@
 """Symlink-safe filesystem primitives for the root daemon.
 
-forgehostd runs as ROOT and routinely creates, chowns, and writes files
+borond runs as ROOT and routinely creates, chowns, and writes files
 *inside an account's own home directory* -- a location the account itself can
 write to (via the web terminal, Phase 8 f7, or an added SSH key, Phase 4 f6).
 

@@ -23,7 +23,7 @@ from daemon.logsetup import configure_logging
 
 @pytest.fixture(autouse=True)
 def _reset_proc_logger():
-    proc_logger = logging.getLogger("forgehostd.proc")
+    proc_logger = logging.getLogger("borond.proc")
     original_handlers = list(proc_logger.handlers)
     original_propagate = proc_logger.propagate
     yield
@@ -33,13 +33,13 @@ def _reset_proc_logger():
 
 def test_proc_logger_does_not_propagate_to_root(tmp_path):
     configure_logging(str(tmp_path))
-    proc_logger = logging.getLogger("forgehostd.proc")
+    proc_logger = logging.getLogger("borond.proc")
     assert proc_logger.propagate is False
 
 
 def test_proc_logger_has_only_a_file_handler_no_stream_handler(tmp_path):
     configure_logging(str(tmp_path))
-    proc_logger = logging.getLogger("forgehostd.proc")
+    proc_logger = logging.getLogger("borond.proc")
     assert len(proc_logger.handlers) == 1
     assert isinstance(proc_logger.handlers[0], logging.FileHandler)
     assert not any(
@@ -49,7 +49,7 @@ def test_proc_logger_has_only_a_file_handler_no_stream_handler(tmp_path):
 
 def test_proc_logger_message_reaches_file_not_root_handlers(tmp_path):
     configure_logging(str(tmp_path))
-    proc_logger = logging.getLogger("forgehostd.proc")
+    proc_logger = logging.getLogger("borond.proc")
     proc_logger.info("exec: doveadm pw -s ARGON2ID")
 
     log_file = tmp_path / "daemon.log"
@@ -60,5 +60,5 @@ def test_proc_logger_message_reaches_file_not_root_handlers(tmp_path):
 def test_configure_logging_is_idempotent_no_duplicate_handlers(tmp_path):
     configure_logging(str(tmp_path))
     configure_logging(str(tmp_path))
-    proc_logger = logging.getLogger("forgehostd.proc")
+    proc_logger = logging.getLogger("borond.proc")
     assert len(proc_logger.handlers) == 1

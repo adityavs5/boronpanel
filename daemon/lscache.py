@@ -137,7 +137,7 @@ def purge(params: dict) -> dict:
     # to keep writing new entries later (confirmed live: `drwxrws---
     # nobody nogroup`). An earlier version of this function did
     # `shutil.rmtree(storage_dir)` followed by `storage_dir.mkdir(...)`,
-    # which recreates it as `root:root 0755` (forgehostd's own identity) --
+    # which recreates it as `root:root 0755` (borond's own identity) --
     # "nobody" can then never write a new cache entry into it again, so
     # every purge silently broke caching for that vhost's remaining
     # lifetime, only fixable by deleting the directory outright and

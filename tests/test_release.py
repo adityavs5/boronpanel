@@ -63,15 +63,15 @@ def test_release_rejects_malformed_version():
 
 
 def test_release_dry_run_builds_verified_artifacts(tmp_path):
-    from version import FORGEHOST_VERSION
+    from version import BORON_VERSION
 
     out = tmp_path / "artifacts"
     r = _run("--dry-run", "--skip-tests", "--skip-build", "--output-dir", str(out))
     assert r.returncode == 0, r.stdout + r.stderr
     assert "artifacts verified" in r.stdout
 
-    tarball = out / f"forgehost-{FORGEHOST_VERSION}.tar.gz"
-    checksum = out / f"forgehost-{FORGEHOST_VERSION}.sha256"
+    tarball = out / f"boron-{BORON_VERSION}.tar.gz"
+    checksum = out / f"boron-{BORON_VERSION}.sha256"
     assert tarball.exists() and checksum.exists()
 
     # The checksum file must verify against the tarball (the update daemon
@@ -80,7 +80,7 @@ def test_release_dry_run_builds_verified_artifacts(tmp_path):
                        capture_output=True, text=True, env=ENV)
     assert v.returncode == 0, v.stdout + v.stderr
 
-    prefix = f"forgehost-{FORGEHOST_VERSION}"
+    prefix = f"boron-{BORON_VERSION}"
     with tarfile.open(tarball) as tf:
         names = tf.getnames()
         # Everything under the version prefix, no traversal.
@@ -93,7 +93,7 @@ def test_release_dry_run_builds_verified_artifacts(tmp_path):
             assert f"{prefix}/{member}" in names, f"missing {member}"
         # Never packaged: secrets, databases, logs, dev trees. Suffix match
         # for file kinds (".log" as a substring would false-positive on the
-        # tracked deploy/forgehost-api.logrotate), component match for dirs.
+        # tracked deploy/boron-api.logrotate), component match for dirs.
         for suffix in ("secrets.env", ".env", ".db", ".db-wal", ".db-shm", ".log"):
             assert not any(n.endswith(suffix) for n in names), f"tarball leaked *{suffix}"
         for component in (".git", "node_modules", ".venv"):

@@ -246,7 +246,7 @@ def test_restrict_backend_access_installs_accept_then_reject(fb_env, monkeypatch
     # unconditionally accepts all loopback traffic near the top of OUTPUT,
     # so anything appended to the end is never reached (confirmed live).
     # Position 1 must be ACCEPT, position 2 REJECT, or legitimate
-    # forgehost-api traffic gets silently rejected too.
+    # boron-api traffic gets silently rejected too.
     assert accept[3] == "1" and accept[2] == "OUTPUT"
     assert reject[3] == "2" and reject[2] == "OUTPUT"
     assert calls.index(accept) < calls.index(reject)

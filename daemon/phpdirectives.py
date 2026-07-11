@@ -38,7 +38,7 @@ def php_scan_dir(username: str, php_version: str) -> str:
     materializes it; ols.py renders it into the account's extProcessor).
     Defined here because both need it and phpext imports ols -- same
     circularity reason this whole module exists. Under the account HOME
-    (not /etc/forgehost, confirmed invisible inside a live nsisolation
+    (not /etc/boron, confirmed invisible inside a live nsisolation
     jail) but root-owned, so the account can read it and cannot write it."""
     return f"{settings.home_base}/{username}/.php/{php_version.replace('.', '')}/conf.d"
 

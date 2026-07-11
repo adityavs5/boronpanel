@@ -1,8 +1,8 @@
 <?php
-// Forgehost: silent WordPress install helper (Phase 3 feature 2).
-// Static, checked into git, deployed as a plain file under /opt/forgehost
-// (world-readable/traversable, unlike /var/lib/forgehost which is
-// deliberately locked to root:forgehost-api for the control-plane DB's
+// Boron: silent WordPress install helper (Phase 3 feature 2).
+// Static, checked into git, deployed as a plain file under /opt/boron
+// (world-readable/traversable, unlike /var/lib/boron which is
+// deliberately locked to root:boron-api for the control-plane DB's
 // sake -- this file must be readable by the *hosting account's own uid*,
 // since it's executed via `runuser -u <account>`, so it cannot live
 // under that tree). Invoked as:

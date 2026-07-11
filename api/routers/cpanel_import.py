@@ -1,13 +1,13 @@
 """Phase 7b feature 1: cPanel/WHM full-backup-tarball import -- admin-only
-(it always creates a brand-new Forgehost account, never touches an existing
+(it always creates a brand-new Boron account, never touches an existing
 customer's own account, so there is no customer-self-service angle at all).
 
-An uploaded file is spooled to a plain temp file this process (forgehost-api,
-unprivileged) can write -- forgehostd (root) can read it regardless of which
+An uploaded file is spooled to a plain temp file this process (boron-api,
+unprivileged) can write -- borond (root) can read it regardless of which
 uid wrote it, so no new shared-directory permission scheme is needed
-(ARCHITECTURE.md SS2's privilege split is unaffected: forgehost-api still
+(ARCHITECTURE.md SS2's privilege split is unaffected: boron-api still
 never touches account-owned files or privileged state itself, it only hands
-forgehostd a path to a file it just wrote in the OS's own shared temp area).
+borond a path to a file it just wrote in the OS's own shared temp area).
 """
 from __future__ import annotations
 
@@ -29,9 +29,9 @@ ui_router = APIRouter(prefix="/ui/admin/import/cpanel", tags=["ui:cpanel-import"
 
 def _spool_upload(file: UploadFile) -> str:
     """Streams the upload to disk in chunks (never reads the whole file into
-    memory) and enforces the same size ceiling forgehostd's own URL-download
+    memory) and enforces the same size ceiling borond's own URL-download
     path uses, so an oversized upload is rejected here instead of only after
-    forgehost-api has already buffered gigabytes of it."""
+    boron-api has already buffered gigabytes of it."""
     max_bytes = settings.cpanel_import_max_upload_bytes
     fd, tmp_path = tempfile.mkstemp(suffix=".tar.gz", prefix="cpanel-import-")
     written = 0
@@ -61,7 +61,7 @@ def _trigger(identity: Identity, username: str, url: str | None, file: UploadFil
             # job -- a rejected request here (bad username, account already
             # exists, another import already running) means the daemon will
             # never read this file, so it must be cleaned up here instead of
-            # leaking until forgehostd's own post-extraction unlink (which
+            # leaking until borond's own post-extraction unlink (which
             # only runs for a job that actually started).
             Path(tmp_path).unlink(missing_ok=True)
             raise

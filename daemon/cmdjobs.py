@@ -21,7 +21,7 @@ from shared.models import Account, CommandRun, utcnow
 
 from daemon.procutil import run
 
-logger = logging.getLogger("forgehostd.cmdjobs")
+logger = logging.getLogger("borond.cmdjobs")
 
 _executor = ThreadPoolExecutor(max_workers=settings.command_run_concurrency, thread_name_prefix="cmdrun")
 MAX_CAPTURE = 190_000  # keep well under the column ceiling

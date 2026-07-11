@@ -1,7 +1,7 @@
 """Run A feature 6: in-memory sliding-window rate limiting.
 
-Pure-Python, no Redis (goal's explicit constraint): forgehost-api is a
-single uvicorn process (deploy/forgehost-api.service runs no --workers
+Pure-Python, no Redis (goal's explicit constraint): boron-api is a
+single uvicorn process (deploy/boron-api.service runs no --workers
 fan-out), so one in-process store IS the global view. Exact sliding
 window -- a per-key deque of request timestamps, pruned on every check --
 not a fixed-window approximation: the goal names specific windows
@@ -50,7 +50,7 @@ from dataclasses import dataclass
 
 from api.security import COOKIE_NAME
 
-logger = logging.getLogger("forgehost.ratelimit")
+logger = logging.getLogger("boron.ratelimit")
 
 # (limit, window_seconds) per tier.
 LOGIN_LIMIT = (10, 5 * 60)

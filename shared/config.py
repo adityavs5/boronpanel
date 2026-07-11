@@ -1,14 +1,14 @@
-"""Forgehost configuration loading.
+"""Boron configuration loading.
 
-Non-secret config lives in /etc/forgehost/forgehost.toml. Secrets are split
+Non-secret config lives in /etc/boron/boron.toml. Secrets are split
 across two files by who needs them (privilege separation applies to secrets
 storage too, not just to runtime process boundaries):
 
-  - /etc/forgehost/secrets.env (0600, root-only) -- MariaDB admin
-    credentials, PowerDNS API key. Only forgehostd (root) ever reads this.
-  - /etc/forgehost/api-secrets.env (0640, root:forgehost-api) --
-    SESSION_SECRET only, the one secret forgehost-api genuinely needs (to
-    verify signed session cookies). Phase h originally had forgehost-api
+  - /etc/boron/secrets.env (0600, root-only) -- MariaDB admin
+    credentials, PowerDNS API key. Only borond (root) ever reads this.
+  - /etc/boron/api-secrets.env (0640, root:boron-api) --
+    SESSION_SECRET only, the one secret boron-api genuinely needs (to
+    verify signed session cookies). Phase h originally had boron-api
     try to read the root-only secrets.env directly for this and would have
     hit a PermissionError at startup; split into its own file instead of
     loosening secrets.env's permissions.
@@ -25,9 +25,9 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_PATH = Path(os.environ.get("FORGEHOST_CONFIG", "/etc/forgehost/forgehost.toml"))
-SECRETS_PATH = Path(os.environ.get("FORGEHOST_SECRETS", "/etc/forgehost/secrets.env"))
-API_SECRETS_PATH = Path(os.environ.get("FORGEHOST_API_SECRETS", "/etc/forgehost/api-secrets.env"))
+CONFIG_PATH = Path(os.environ.get("BORON_CONFIG", "/etc/boron/boron.toml"))
+SECRETS_PATH = Path(os.environ.get("BORON_SECRETS", "/etc/boron/secrets.env"))
+API_SECRETS_PATH = Path(os.environ.get("BORON_API_SECRETS", "/etc/boron/api-secrets.env"))
 
 
 def _load_secrets(path: Path) -> dict[str, str]:
@@ -56,10 +56,10 @@ class Settings:
     ols_admin_bin: str = "/usr/local/lsws/bin/lswsctrl"
     lsphp_base: str = "/usr/local/lsws"
     suspended_page_root: str = "/var/www/_suspended"
-    db_path: str = "/var/lib/forgehost/forgehost.db"
-    backup_dir: str = "/var/lib/forgehost/backups"
-    log_dir: str = "/var/log/forgehost"
-    rpc_socket: str = "/run/forgehost/provisiond.sock"
+    db_path: str = "/var/lib/boron/boron.db"
+    backup_dir: str = "/var/lib/boron/backups"
+    log_dir: str = "/var/log/boron"
+    rpc_socket: str = "/run/boron/provisiond.sock"
     mail_base: str = "/var/vmail"
 
     # network
@@ -100,14 +100,14 @@ class Settings:
     powerdns_api_url: str = "http://127.0.0.1:8081/api/v1"
     powerdns_server_id: str = "localhost"
     # This server's own public IP, used as the default A/NS-glue target when
-    # Forgehost creates a new zone. Set explicitly in forgehost.toml --
+    # Boron creates a new zone. Set explicitly in boron.toml --
     # deliberately not auto-detected at import time (a network call as a
     # config-loading side effect is surprising and fragile).
     server_public_ip: str = ""
 
     # mail (Phase e) -- Phase e v1 explicitly did not build webmail, this
     # was a link-out placeholder. Phase 2 feature 3 now deploys Roundcube
-    # server-wide, so this is set to that real URL (forgehost.toml);
+    # server-wide, so this is set to that real URL (boron.toml);
     # left blank it still degrades gracefully to "no webmail configured".
     webmail_url: str = ""
 
@@ -116,7 +116,7 @@ class Settings:
     # domain, not one per account (RESEARCH.md/goal: "deploy once
     # server-wide"). Login itself needs no per-account wiring at all: it's
     # plain IMAP/SMTP auth against Dovecot/Postfix, so any existing
-    # Forgehost mailbox's address+password already works.
+    # Boron mailbox's address+password already works.
     webmail_hostname: str = ""
     webmail_docroot: str = "/var/lib/roundcube/public_html"
 
@@ -132,26 +132,26 @@ class Settings:
 
     # Phase 2 feature 7: backup system
     rclone_bin: str = "/usr/bin/rclone"
-    backup_staging_dir: str = "/var/lib/forgehost/backup-staging"
+    backup_staging_dir: str = "/var/lib/boron/backup-staging"
     backup_concurrency: int = 2
 
     # ssl (Phase f)
-    certbot_bin: str = "/opt/forgehost/.venv/bin/certbot"
+    certbot_bin: str = "/opt/boron/.venv/bin/certbot"
     letsencrypt_email: str = ""
-    powerdns_credentials_file: str = "/etc/forgehost/ssl/powerdns-credentials.ini"
+    powerdns_credentials_file: str = "/etc/boron/ssl/powerdns-credentials.ini"
 
     # Phase 3 feature 1: DKIM keypair storage
-    dkim_base_dir: str = "/etc/forgehost/dkim"
+    dkim_base_dir: str = "/etc/boron/dkim"
 
     # Run A feature 3: white-label branding assets (logo/favicon)
-    branding_dir: str = "/etc/forgehost/branding"
+    branding_dir: str = "/etc/boron/branding"
     branding_max_upload_bytes: int = 2 * 1024 * 1024  # 2MB
 
     # Phase 3 feature 2: one-click WordPress installer
     php_cli_bin: str = "/usr/bin/php"
     wp_version_check_url: str = "https://api.wordpress.org/core/version-check/1.7/"
     wp_salt_api_url: str = "https://api.wordpress.org/secret-key/1.1/salt/"
-    wp_staging_dir: str = "/var/lib/forgehost/wp-staging"
+    wp_staging_dir: str = "/var/lib/boron/wp-staging"
     wp_install_concurrency: int = 2
 
     # Phase 4 feature 8: Softaculous-equivalent app installer (Joomla/
@@ -161,18 +161,18 @@ class Settings:
     # uid can read), kept separate from wp_staging_dir since it's a
     # different, newer feature's own scratch space, not because the two
     # locations need different permissions.
-    app_staging_dir: str = "/var/lib/forgehost/app-staging"
+    app_staging_dir: str = "/var/lib/boron/app-staging"
     app_install_concurrency: int = 2
 
     # Phase 3 feature 3: phpMyAdmin auto-login. pma_token_dir is
-    # deliberately NOT under /var/lib/forgehost (locked to
-    # root:forgehost-api) -- see wp_staging_dir's install-helper lesson
+    # deliberately NOT under /var/lib/boron (locked to
+    # root:boron-api) -- see wp_staging_dir's install-helper lesson
     # in CHECKPOINT-phase3-2.md, which applies identically here: the
     # phpMyAdmin signon script runs as www-data and must be able to
     # read+delete files in this directory itself.
     pma_hostname: str = ""
     pma_docroot: str = "/usr/share/phpmyadmin"
-    pma_token_dir: str = "/var/lib/forgehost-pma-tokens"
+    pma_token_dir: str = "/var/lib/boron-pma-tokens"
     pma_token_ttl_seconds: int = 900
 
     # Phase 7a feature 1/2: NodeJS/Python app hosting. Node versions are
@@ -181,14 +181,14 @@ class Settings:
     # account/app at render time" pattern lsphp already uses for PHP
     # (ARCHITECTURE.md SS6) -- not a single system-wide `node` via apt,
     # which would give only one version and no per-app choice.
-    # Deliberately OUTSIDE /opt/forgehost (the deployed-application-code
+    # Deliberately OUTSIDE /opt/boron (the deployed-application-code
     # tree scripts/deploy.sh rsync's with --delete from the git checkout,
     # ARCHITECTURE.md SS3): a first attempt put this at
-    # /opt/forgehost/nodejs and the very next deploy would have silently
+    # /opt/boron/nodejs and the very next deploy would have silently
     # deleted every installed Node runtime, since it isn't part of the
     # source repo -- caught before it happened, moved to its own sibling
     # directory instead.
-    node_base_dir: str = "/opt/forgehost-nodejs"
+    node_base_dir: str = "/opt/boron-nodejs"
     node_versions: tuple[str, ...] = ("18", "20", "22")
     default_node_version: str = "20"
     # Python has no per-app version selector in this goal (only Node does) --
@@ -205,7 +205,7 @@ class Settings:
     # env vars are never written anywhere the hosting account's own uid can
     # read -- the DB row keeps only the Fernet-encrypted form (goal: "env
     # vars stored encrypted").
-    app_env_dir: str = "/etc/forgehost/app-env"
+    app_env_dir: str = "/etc/boron/app-env"
     # Phase 7a feature 3: per-account Redis. Unix-socket only (no TCP port
     # at all, so there is no port to firewall/misconfigure) -- goal's own
     # explicit path convention.
@@ -219,7 +219,7 @@ class Settings:
     # space per feature" convention those establish) -- holds the uploaded/
     # downloaded tarball and its extracted contents for the lifetime of one
     # import job only, cleaned up (success or failure) when the job ends.
-    cpanel_import_staging_dir: str = "/var/lib/forgehost/cpanel-import-staging"
+    cpanel_import_staging_dir: str = "/var/lib/boron/cpanel-import-staging"
     cpanel_import_concurrency: int = 1
     cpanel_import_max_upload_bytes: int = 10 * 1024 * 1024 * 1024  # 10GB
     # Security-audit-2 (Medium): the compressed-upload/download cap above does
@@ -239,7 +239,7 @@ class Settings:
     # also uses for its own transactional mail.
     smtp_relay_host: str = "127.0.0.1"
     smtp_relay_port: int = 25
-    notifications_default_sender: str = "forgehost@localhost"
+    notifications_default_sender: str = "boron@localhost"
 
     # Phase 7b feature 4: webhooks. Bounded so a slow/hanging external
     # endpoint can never stall the shared delivery worker pool indefinitely.
@@ -251,8 +251,8 @@ class Settings:
     staging_db_prefix: str = "stg_"
 
     # Phase 8 feature 5: email delivery log. Postfix's mail log on Ubuntu.
-    # Read by forgehostd (root) only -- it's mode 0640 syslog:adm, so the
-    # unprivileged forgehost-api can't read it, matching the "only the daemon
+    # Read by borond (root) only -- it's mode 0640 syslog:adm, so the
+    # unprivileged boron-api can't read it, matching the "only the daemon
     # touches privileged files, every access is an audited RPC" invariant.
     mail_log_path: str = "/var/log/mail.log"
     mail_delivery_log_max_entries: int = 500
@@ -262,7 +262,7 @@ class Settings:
 
     # Phase 8 feature 6: email routing. 'backup' MX mode writes accepted
     # domains into this Postfix relay-domains map (postmap'd + reload).
-    postfix_relay_domains_map: str = "/etc/postfix/forgehost_relay_domains"
+    postfix_relay_domains_map: str = "/etc/postfix/boron_relay_domains"
 
     # Cloudflare DNS/CDN provider (docs/PLAN-cloudflare.md). The token itself
     # is a secret (secrets.env CLOUDFLARE_API_TOKEN -> cloudflare_api_token
@@ -274,11 +274,11 @@ class Settings:
     default_dns_provider: str = "local"  # local | cloudflare
     # Written by us (0600) from the same API token for certbot-dns-cloudflare
     # DNS-01 challenges -- sibling of powerdns_credentials_file above.
-    cloudflare_credentials_file: str = "/etc/forgehost/ssl/cloudflare-credentials.ini"
+    cloudflare_credentials_file: str = "/etc/boron/ssl/cloudflare-credentials.ini"
     # Materialized Cloudflare edge IP ranges (GET /ips), refreshed by cron
     # (plan SS1.7); consumed by the OLS real-IP trust list, fail2ban ignoreip,
     # and (lockdown mode) UFW. Staleness is surfaced in cf.health.
-    cloudflare_ranges_file: str = "/etc/forgehost/cloudflare-ranges.json"
+    cloudflare_ranges_file: str = "/etc/boron/cloudflare-ranges.json"
 
     # Phase 8 features 8/9: WP-CLI + Composer, run async as the account user.
     # composer is already installed on this box (2.7.x); wp-cli.phar is fetched
@@ -295,7 +295,7 @@ class Settings:
     # replaces the custom file manager. A single Go binary run as root (it must
     # read/write across account homes under the 711/750 perms model, exactly as
     # ARCHITECTURE.md §10 decided for the old manager), bound to loopback only —
-    # never public — and reached exclusively through forgehost-api's
+    # never public — and reached exclusively through boron-api's
     # authenticated proxy, which injects the trusted X-Fb-User header
     # server-side. One shared source at /home + createUserDir gives each
     # proxy-authenticated account its own /home/<user> scope (see
@@ -303,15 +303,15 @@ class Settings:
     # wrong primitive here). Config is static (FB Quantum does not hot-reload),
     # so account create/terminate never rewrites it.
     filebrowser_bin: str = "/usr/local/bin/filebrowser-quantum"
-    filebrowser_config: str = "/etc/forgehost/filebrowser.yaml"
-    filebrowser_data_dir: str = "/var/lib/forgehost/filebrowser"
+    filebrowser_config: str = "/etc/boron/filebrowser.yaml"
+    filebrowser_data_dir: str = "/var/lib/boron/filebrowser"
     filebrowser_bind_host: str = "127.0.0.1"
     filebrowser_bind_port: int = 8088
     filebrowser_base_url: str = "/files"
-    # The one header FB Quantum trusts for identity. forgehost-api strips any
+    # The one header FB Quantum trusts for identity. boron-api strips any
     # client-supplied copy and sets it from the authenticated session.
     filebrowser_header: str = "X-Fb-User"
-    filebrowser_brand: str = "Forgehost Files"
+    filebrowser_brand: str = "Boron Files"
 
     # Panel update system. update_github_repo ("owner/repo") is the ONLY
     # place release downloads can come from -- empty means update checks are
@@ -321,17 +321,17 @@ class Settings:
     # https://github.com/{update_github_repo}/releases/download/... .
     update_github_repo: str = ""
     update_check_cache_seconds: int = 3600  # goal: cache update.check 1hr
-    update_download_dir: str = "/var/lib/forgehost/update-staging"
+    update_download_dir: str = "/var/lib/boron/update-staging"
     update_max_download_bytes: int = 500 * 1024 * 1024  # 500MB (releases are ~4MB)
-    update_backup_dir: str = "/var/backups/forgehost"
-    # Versioned install dirs live at {update_versions_root}/forgehost-X.Y.Z
+    update_backup_dir: str = "/var/backups/boron"
+    # Versioned install dirs live at {update_versions_root}/boron-X.Y.Z
     # with {update_live_dir} an atomically-swapped symlink to the active one.
     update_versions_root: str = "/opt"
-    update_live_dir: str = "/opt/forgehost"
+    update_live_dir: str = "/opt/boron"
     update_keep_old_days: int = 3  # rollback window; older version dirs pruned
     # Pre-flight "abort if test suite failing" (goal 4a). Runs the LIVE
     # install's own pytest suite before touching anything -- slow (~13min)
-    # but explicitly required; disable only via forgehost.toml.
+    # but explicitly required; disable only via boron.toml.
     update_preflight_tests: bool = True
     update_preflight_min_free_mb: int = 2048
 
@@ -339,7 +339,7 @@ class Settings:
 
     @property
     def filebrowser_internal_url(self) -> str:
-        """Base URL forgehost-api's proxy forwards to (loopback only)."""
+        """Base URL boron-api's proxy forwards to (loopback only)."""
         return f"http://{self.filebrowser_bind_host}:{self.filebrowser_bind_port}"
 
     @property
@@ -382,7 +382,7 @@ MIN_SESSION_SECRET_LENGTH = 32
 def require_secure_session_secret() -> None:
     """Fail loudly at process startup if SESSION_SECRET is missing, still the
     built-in dev default, or too short to be a real key. Called by BOTH
-    forgehost-api (ASGI startup) and forgehostd (main) so a misconfigured or
+    boron-api (ASGI startup) and borond (main) so a misconfigured or
     empty secrets file is a hard boot failure, never a silent, forgeable
     session-signing default."""
     secret = settings.secrets.get("SESSION_SECRET", "")

@@ -1,7 +1,7 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Daily site-statistics refresh (missing-features batch, goal feature 6).
 
-Run via a system cron (deploy/forgehost-sitestats.cron), same "server
+Run via a system cron (deploy/boron-sitestats.cron), same "server
 infrastructure, not a per-account crontab" category as
 scripts/usage_snapshot.py -- keeps SiteStatsDaily accumulating on a real
 daily cadence even if nobody opens the stats tab in the panel.

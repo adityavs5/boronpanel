@@ -21,7 +21,7 @@ from shared.validation import ValidationError
 from shared.models import PanelUser, TotpCredential, TotpRecoveryCode
 
 RECOVERY_CODE_COUNT = 8
-ISSUER_NAME = "Forgehost"
+ISSUER_NAME = "Boron"
 
 
 def _generate_recovery_code() -> str:

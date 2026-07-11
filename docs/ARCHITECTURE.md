@@ -1,4 +1,4 @@
-# Forgehost — Architecture
+# Boron — Architecture
 
 Status: locked for v1. Decisions here are binding for all build phases; deviations
 must be documented in CHECKPOINT.md with reasoning, not made silently.
@@ -20,7 +20,7 @@ tradeoffs specific to *this* implementation.
 | Panel's own data | **SQLite** (control plane) + a dedicated MariaDB schema (mail only) | See §4 |
 | FTP | Pure-FTPd, `-l unix`, chroot to home | RESEARCH.md §4 |
 | SSL | certbot, webroot + DNS-01 (PowerDNS API) challenge plugin, OLS reload deploy-hook | §8 |
-| Backend | Python 3.12, FastAPI (API) + a separate root daemon (`forgehostd`) | §2 |
+| Backend | Python 3.12, FastAPI (API) + a separate root daemon (`borond`) | §2 |
 | Panel DB layer | SQLAlchemy 2.0 + Alembic migrations | Mature, typed, works identically against SQLite and MySQL |
 | Templating (configs + UI) | Jinja2 | One templating engine for vhost/postfix/dovecot config text *and* the server-rendered admin UI |
 | Frontend | Server-rendered Jinja2 + htmx + vanilla CSS (vendored, no CDN) | "Basic admin UI" per scope; no SPA build pipeline to maintain for a single overnight build |
@@ -30,23 +30,23 @@ tradeoffs specific to *this* implementation.
 
 Two long-running processes, enforced at the OS level (not just convention):
 
-- **`forgehostd`** (provisioning daemon) — runs as **root**, systemd service
-  `forgehost-provisiond.service`. The *only* process allowed to: create/modify/
+- **`borond`** (provisioning daemon) — runs as **root**, systemd service
+  `boron-provisiond.service`. The *only* process allowed to: create/modify/
   delete Linux users, write OLS/Postfix/Dovecot/Pure-FTPd config, run
   `useradd`/`usermod`/`userdel`/`setquota`/`certbot`/`systemctl reload …`,
   open privileged ports, or hold MariaDB admin credentials. Listens **only**
-  on a Unix domain socket at `/run/forgehost/provisiond.sock`, mode `0600`,
-  owned by `root:forgehost-api` — actually mode `0660` group-readable by the
-  `forgehost-api` group so the unprivileged API process can connect, but no
+  on a Unix domain socket at `/run/boron/provisiond.sock`, mode `0600`,
+  owned by `root:boron-api` — actually mode `0660` group-readable by the
+  `boron-api` group so the unprivileged API process can connect, but no
   other local user can. No TCP listener, ever.
-- **`forgehost-api`** (REST API + admin/customer UI) — runs as unprivileged
-  system user `forgehost`, systemd service `forgehost-api.service`. Owns all
+- **`boron-api`** (REST API + admin/customer UI) — runs as unprivileged
+  system user `boron`, systemd service `boron-api.service`. Owns all
   HTTP-facing concerns: TLS termination, auth/sessions, request validation,
   RBAC, request logging, and the Jinja2 UI. Holds **no** root capability and
   **no** direct MariaDB admin grant — for any privileged action (including
   `CREATE DATABASE`/`CREATE USER` for hosted accounts, which needs MariaDB
-  admin rights) it sends an RPC request to `forgehostd` over the Unix socket;
-  `forgehostd` is the only process holding the MariaDB admin credential.
+  admin rights) it sends an RPC request to `borond` over the Unix socket;
+  `borond` is the only process holding the MariaDB admin credential.
   Listens on `0.0.0.0:9443` (TLS, own cert — see §8.4) — **corrected during
   Phase h**: this doc originally said `127.0.0.1:9443` "reachable
   externally", which is self-contradictory (a loopback-only bind is, by
@@ -56,7 +56,7 @@ Two long-running processes, enforced at the OS level (not just convention):
   same way); not proxied through OLS (avoids the circular dependency of the
   panel managing the OLS vhost that serves itself).
 
-**RPC protocol** (`forgehost-api` → `forgehostd`): length-prefixed JSON over
+**RPC protocol** (`boron-api` → `borond`): length-prefixed JSON over
 the Unix socket — 4-byte big-endian length, then a UTF-8 JSON object
 `{"op": "...", "params": {...}, "request_id": "..."}`; daemon replies the same
 framing with `{"ok": true, "result": {...}}` or `{"ok": false, "error":
@@ -66,12 +66,12 @@ control on both ends; a custom minimal framing avoids pulling in a second RPC
 stack for a problem this small, and is trivial to unit-test (it's just
 `struct.pack`/`json.dumps`). Every RPC call is logged by the daemon to the
 audit log (§9) with the caller's authenticated panel-user id (passed in
-`params`, **not** trusted blindly — `forgehost-api` is unprivileged but the
+`params`, **not** trusted blindly — `boron-api` is unprivileged but the
 daemon still treats it as the trust boundary for *system* actions; it does
 not re-derive authorization, that already happened in the API layer before
 the RPC was made. The Unix socket's filesystem permission is the actual
-trust boundary between "can call forgehostd at all" and "cannot"; per-user
-RBAC happens one layer up, in `forgehost-api`, before an RPC is ever sent).
+trust boundary between "can call borond at all" and "cannot"; per-user
+RBAC happens one layer up, in `boron-api`, before an RPC is ever sent).
 
 This satisfies the project requirement verbatim: *web UI not root; only
 provisioning daemon needs root.*
@@ -79,29 +79,29 @@ provisioning daemon needs root.*
 ## 3. Directory layout
 
 ```
-/opt/forgehost/                     # application code (deployed, not user data)
+/opt/boron/                     # application code (deployed, not user data)
   api/                               # FastAPI app
-  daemon/                            # forgehostd
+  daemon/                            # borond
   shared/                            # models, schemas, RPC protocol, used by both
   templates/                         # Jinja2: vhost.conf.j2, postfix maps, dovecot conf, UI pages
   static/                            # vendored CSS/JS (htmx, no CDN)
   alembic/                           # DB migrations (control-plane SQLite schema)
   scripts/                           # install.sh, e2e test scripts
 
-/etc/forgehost/
-  forgehost.toml                     # non-secret config (ports, paths, PHP versions enabled)
+/etc/boron/
+  boron.toml                     # non-secret config (ports, paths, PHP versions enabled)
   secrets.env                        # 0600 root-only: MariaDB admin creds, PowerDNS API key, session secret key
   vhost-templates/                   # operator-overridable copies of the Jinja2 vhost templates
 
-/var/lib/forgehost/
-  forgehost.db                       # SQLite, control-plane (accounts, domains, users, sessions, api tokens, audit log)
+/var/lib/boron/
+  boron.db                       # SQLite, control-plane (accounts, domains, users, sessions, api tokens, audit log)
   backups/<subsystem>/<timestamp>/   # pre-reload config backups (rollback source, §7)
 
-/var/log/forgehost/
+/var/log/boron/
   api.log
   daemon.log                         # every privileged op, structured JSON lines
 
-/run/forgehost/
+/run/boron/
   provisiond.sock                    # RPC socket (tmpfs, recreated by systemd on boot)
 
 /home/<account>/                     # one Linux user per hosting account (useradd default base /home)
@@ -135,20 +135,20 @@ However, RESEARCH.md §6 found that Postfix's `proxy:mysql:` virtual-mailbox
 map and Dovecot's SQL passdb/userdb are the proven, low-maintenance pattern —
 and both need to speak **MySQL wire protocol** to a live database at mail
 delivery/login time (this is a hard runtime dependency of Postfix/Dovecot
-themselves, not a Forgehost design choice). Since MariaDB is *already* a
+themselves, not a Boron design choice). Since MariaDB is *already* a
 hard dependency for hosted-account databases, standing up a second database
 engine (or Postfix/Dovecot's separately-packaged sqlite driver subpackages,
 which we did not install) just for mail would add an extra moving part for
 no benefit. **Decision: a dedicated `forgehost_mail` schema inside the same
 MariaDB instance**, separate from both the panel's SQLite control plane and
 from any hosted account's own databases. Two MariaDB users exist against it:
-`forgehost_daemon` (full DML/DDL, credential held only by `forgehostd`) and
+`forgehost_daemon` (full DML/DDL, credential held only by `borond`) and
 `forgehost_mailro` (SELECT-only, credential embedded in Postfix's/Dovecot's
 own config files, which already run as root/dovecot respectively — this is
 the same exposure every SQL-backed mail setup in RESEARCH.md §6 accepts).
-The `mail_domain`/`mail_user` rows are *also* mirrored into Forgehost's
+The `mail_domain`/`mail_user` rows are *also* mirrored into Boron's
 SQLite control plane as read-mostly cache for the UI/API to query without a
-MariaDB round trip — `forgehostd` is the only writer to either side, in the
+MariaDB round trip — `borond` is the only writer to either side, in the
 same transaction-ish sequence (write MariaDB row, then write SQLite row;
 mail delivery only ever depends on the MariaDB side being correct, so a
 crash between the two steps degrades the UI's cached view, never mail
@@ -165,10 +165,10 @@ transaction).
   64-char identifier cap for the `<user>_<suffix>` database/DB-user naming
   convention adopted from CyberPanel/ISPConfig, RESEARCH.md §5).
   Reject reserved/system names (allowlist check against `/etc/passwd`
-  collisions and a static reserved-words list: `root`, `forgehost`, `vmail`,
+  collisions and a static reserved-words list: `root`, `boron`, `vmail`,
   `mysql`, etc.) before ever shelling out to `useradd`.
 - **Linux user creation**: `useradd --create-home --home-dir /home/<user>
-  --shell /usr/sbin/nologin --comment "Forgehost account" <user>`, then a
+  --shell /usr/sbin/nologin --comment "Boron account" <user>`, then a
   dedicated primary group of the same name (default `useradd` behavior on
   Ubuntu with `USERGROUPS_ENAB yes`). No interactive shell in v1 (SSH access
   is not in scope) — FTP/web/mail access only. Password set via `chpasswd`
@@ -220,7 +220,7 @@ account):
 docRoot                 /home/<user>/public_html
 extprocessor <user>_php83 {
   type                  lsapi
-  address               UDS:///run/forgehost/lsphp/<user>.sock
+  address               UDS:///run/boron/lsphp/<user>.sock
   maxConns              10
   env                   PHP_LSAPI_CHILDREN=10
   path                  /usr/local/lsws/lsphp83/bin/lsphp
@@ -307,7 +307,7 @@ since there's no local file to validate):
      attempted change is logged as failed, the account/domain is left in its
      previous state (not a partial one).
 3. **Backup**: copy the *current* live file to
-   `/var/lib/forgehost/backups/<subsystem>/<timestamp>/<original-name>`
+   `/var/lib/boron/backups/<subsystem>/<timestamp>/<original-name>`
    before overwriting it.
 4. **Apply**: `os.rename()` the validated temp file onto the live path
    (atomic on the same filesystem — no reader ever sees a half-written file).
@@ -334,7 +334,7 @@ local file, only REST calls (RESEARCH.md §6 decision). Its equivalent: zone/
 rrset mutations are sent via `PATCH` with `changetype: REPLACE`; PowerDNS
 itself validates and atomically applies or rejects the rrset (4xx response =
 untouched zone, exactly the validate-before-apply property we want, just
-provided by PowerDNS rather than by us). Forgehost's PowerDNS client checks
+provided by PowerDNS rather than by us). Boron's PowerDNS client checks
 the response status and only writes the corresponding SQLite cache row after
 a 2xx — so the "rollback" here is simply "never commit the local cache row
 on a non-2xx," with no compensating action needed since PowerDNS's own write
@@ -359,7 +359,7 @@ One consequence worth flagging explicitly: this server's stock OpenLiteSpeed
 install bundles an "Example" vhost whose docroot is owned by root with a
 uid/gid below OLS's own configured minimum (`CGIRLimit.minUID`/`minGID`),
 which makes `openlitespeed -t` exit non-zero *even on an untouched, valid
-install* — confirmed by testing the exact stock config. Forgehost's
+install* — confirmed by testing the exact stock config. Boron's
 regenerated `httpd_config.conf` never includes that vhost (it's rendered
 from the DB's accounts/domains only), and a one-time `system.bootstrap_ols`
 RPC op replaces the stock config with a clean, Example-free baseline before
@@ -369,27 +369,27 @@ whatever config was live before the failed change.
 
 ## 8. SSL automation
 
-- **certbot**, invoked by `forgehostd` (root) via subprocess (RESEARCH.md
+- **certbot**, invoked by `borond` (root) via subprocess (RESEARCH.md
   confirms there's no mature library wrapping certbot well enough to prefer
   over the actual binary — every reference panel shells out to it too).
 - **Challenge type, decided per-domain at issuance time**: if the domain's
-  DNS zone is hosted in Forgehost's own PowerDNS, use the **DNS-01** challenge
+  DNS zone is hosted in Boron's own PowerDNS, use the **DNS-01** challenge
   via certbot's `certbot-dns-...` PowerDNS-API plugin path (works even before
   the domain's A record points at this server, and avoids any port-80
-  exposure requirement). If the zone is *not* Forgehost-managed (the operator
+  exposure requirement). If the zone is *not* Boron-managed (the operator
   pointed an externally-DNS-managed domain's A record at this server), fall
   back to **HTTP-01** via `--webroot` pointed at the account's
   `public_html/.well-known/acme-challenge/` — OLS already serves that path
   with zero extra vhost config since it's just a static file under the
   existing docroot.
-- **Deploy hook**: `--deploy-hook` runs Forgehost's own small script that
+- **Deploy hook**: `--deploy-hook` runs Boron's own small script that
   writes the new cert/key paths into the account's vhost config (TLS block)
   through the same §7 validate→reload→verify→rollback path, rather than
   trusting certbot's generic reload hooks — keeps the single shared
   reload-safety code path authoritative everywhere, including renewals
-  triggered by certbot's own systemd timer outside of a Forgehost API call.
+  triggered by certbot's own systemd timer outside of a Boron API call.
 - **Renewal**: certbot's stock `certbot.timer` (installed with the package)
-  handles renewal checks; Forgehost does not reimplement a renewal scheduler.
+  handles renewal checks; Boron does not reimplement a renewal scheduler.
 - **No real domain available for testing in this sandboxed build
   environment** (this VM has a public IP, 104.234.179.64, but no owned
   domain). **`sslip.io`** (`104-234-179-64.sslip.io` and subdomains
@@ -412,7 +412,7 @@ whatever config was live before the failed change.
   mechanism; role + account-scope resolved server-side from the
   authenticated identity, never trusted from client input.
 - **Browser sessions**: signed, `httpOnly`, `Secure` cookies (Starlette
-  `SessionMiddleware` with a server-held secret from `/etc/forgehost/secrets.env`),
+  `SessionMiddleware` with a server-held secret from `/etc/boron/secrets.env`),
   backed by a `sessions` table so sessions can be revoked server-side
   (logout-everywhere, admin-forced revocation) — a bare signed-cookie-only
   approach can't do that.
@@ -427,11 +427,11 @@ whatever config was live before the failed change.
   HTTP verbs** — a direct, deliberate countermeasure to CyberPanel's
   CVE-2024-51567 root cause (RESEARCH.md §5: their input-sanitizing
   middleware only checked POST, so the identical payload via PUT bypassed
-  it). Forgehost's auth/RBAC dependency is a FastAPI dependency injected on
+  it). Boron's auth/RBAC dependency is a FastAPI dependency injected on
   the router level, not per-handler, and applies identically regardless of
   verb.
 - **No shell command is ever built by string-concatenating request input.**
-  All `forgehostd` subprocess calls use argument-list `subprocess.run([...],
+  All `borond` subprocess calls use argument-list `subprocess.run([...],
   shell=False)`, never `shell=True`, never an f-string building a command
   line. Any value that must appear in a shell-adjacent context the daemon
   itself controls (e.g. a generated config file) goes through Jinja2
@@ -439,8 +439,8 @@ whatever config was live before the failed change.
   domain-name validation via Python's own `idna`/`encode` round-trip) before
   it's ever interpolated anywhere — also a direct response to
   CVE-2024-51567/51568.
-- **Audit log**: every privileged RPC (`forgehostd` side) and every
-  state-changing API call (`forgehost-api` side) writes one row — actor,
+- **Audit log**: every privileged RPC (`borond` side) and every
+  state-changing API call (`boron-api` side) writes one row — actor,
   role, target account/domain, operation, params (secrets redacted),
   result, timestamp — to SQLite. This is the operator-facing trail a
   professional hosting admin expects (matches cPanel/WHM's own audit log
@@ -455,12 +455,12 @@ whatever config was live before the failed change.
   `/var/www/_suspended/index.html` for every request, instead of removing or
   disabling the vhost outright — this is what keeps the *unsuspend* path a
   pure metadata flip rather than a config regeneration from scratch.
-- The **file manager** (Phase g) is a `forgehost-api` feature, not a
-  `forgehostd` one — it operates as the unprivileged `forgehost` user but
+- The **file manager** (Phase g) is a `boron-api` feature, not a
+  `borond` one — it operates as the unprivileged `boron` user but
   must still read/write files owned by arbitrary account uids. Two options
-  considered: (a) run file-manager file I/O through `forgehostd` (root) via
-  RPC, or (b) grant `forgehost-api`'s OS user supplementary ACL access.
-  **Decision: (a), through `forgehostd`** — keeps the "only the daemon
+  considered: (a) run file-manager file I/O through `borond` (root) via
+  RPC, or (b) grant `boron-api`'s OS user supplementary ACL access.
+  **Decision: (a), through `borond`** — keeps the "only the daemon
   touches account-owned files" invariant absolute (no POSIX ACL surface to
   audit separately), and every file-manager action becomes an audited RPC
   call for free. All paths are resolved with `os.path.realpath` and checked
@@ -505,10 +505,10 @@ off the `Host` request header (`SecRule REQUEST_HEADERS:Host "@streq
 match rule for a custom block) rather than as genuinely separate
 per-vhost engine instances — the engine itself remains one global
 on/off switch (`daemon/waf.py`, `WafSettings`); only individual *rules*
-can be scoped to a single domain. Any future Forgehost feature that
+can be scoped to a single domain. Any future Boron feature that
 assumes per-vhost module-level control over ModSecurity on OpenLiteSpeed
 specifically should re-read this section first — it's a real constraint
-of the web server, not a Forgehost design choice.
+of the web server, not a Boron design choice.
 
 ## 11. What's explicitly NOT built (confirming OUT OF SCOPE adherence)
 

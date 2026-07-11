@@ -63,7 +63,7 @@ def hash_password(password: str) -> str:
     full argument list (`logger.info("exec: %s", " ".join(args))`) for
     ops visibility, which is exactly right for ordinary commands but
     would have written every mailbox password in plaintext to
-    /var/log/forgehost/daemon.log if it had stayed a `-p` argument here
+    /var/log/boron/daemon.log if it had stayed a `-p` argument here
     -- a real, pre-existing (Phase e) violation of "passwords never
     logged anywhere," found and fixed as part of this feature's own
     explicit scope. `chpasswd`/`pure-pw` already used the safer stdin

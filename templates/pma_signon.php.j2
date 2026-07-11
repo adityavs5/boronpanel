@@ -1,15 +1,15 @@
 <?php
-// Forgehost: phpMyAdmin single-signon redemption (Phase 3 feature 3).
+// Boron: phpMyAdmin single-signon redemption (Phase 3 feature 3).
 // Rendered once by daemon/pma.py's bootstrap_pma() and deployed into
 // phpMyAdmin's own docroot -- never hand-edited in place. Reads a
 // one-time token, resolves it to ephemeral MariaDB credentials scoped to
 // exactly one database, and hands phpMyAdmin's own "signon" auth_type a
 // session it recognizes (see config.inc.php's SignonSession/SignonURL).
-// This script never touches Forgehost's own control-plane DB or RPC
+// This script never touches Boron's own control-plane DB or RPC
 // socket (this PHP process, running as www-data, has access to neither)
-// -- all state lives in the small per-token JSON file forgehostd wrote
-// to {{ pma_token_dir }} (deliberately NOT under /var/lib/forgehost,
-// which is locked to root:forgehost-api -- this script needs to read AND
+// -- all state lives in the small per-token JSON file borond wrote
+// to {{ pma_token_dir }} (deliberately NOT under /var/lib/boron,
+// which is locked to root:boron-api -- this script needs to read AND
 // delete files here itself).
 
 $token = isset($_GET['token']) ? $_GET['token'] : '';

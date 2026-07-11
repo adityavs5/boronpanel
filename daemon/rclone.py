@@ -4,7 +4,7 @@ Credentials for remote backup destinations (S3-compatible, SFTP, Google
 Drive service-account, or anything else rclone supports) live entirely in
 rclone's own config file, managed exclusively through `rclone config
 create/delete` -- never hand-written here, and never duplicated into
-Forgehost's own DB (shared/models.py's BackupDestination only stores the
+Boron's own DB (shared/models.py's BackupDestination only stores the
 remote *name* + a path prefix, the same "secrets live in one restricted
 file, not the app DB" pattern already used for MariaDB/mail/SSL
 credentials elsewhere in this project).

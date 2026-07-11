@@ -6,7 +6,7 @@ docRoot                   {{ docroot }}
    serve the target. 0 (never follow) is the correct default for shared
    hosting per this box's own installed OLS docs ("For better security,
    disable this feature" -- VirtualHosts_Help.html); no legitimate
-   Forgehost automation (app installer, git deploy) creates or relies on a
+   Boron automation (app installer, git deploy) creates or relies on a
    symlink under an account's docroot -- confirmed by grepping every
    daemon/*.py for symlink creation before making this change. #}
 allowSymbolLink           0
@@ -33,8 +33,8 @@ scripthandler {
    `errorpage <code>` block per known HTTP error code, always fully
    populated by daemon/ols.py's _error_pages_for_domain: a customer's own
    custom page if one exists (served from the per-domain
-   /.forgehost-error-pages/ context below), else the shared Forgehost-branded
-   default (/.forgehost-default-errors/, same URL for every vhost). #}
+   /.boron-error-pages/ context below), else the shared Boron-branded
+   default (/.boron-default-errors/, same URL for every vhost). #}
 {% for code, url in error_pages.items() %}
 errorpage {{ code }} {
   url                     {{ url }}
@@ -81,7 +81,7 @@ realm {{ pd.realm_name }} {
 {% if error_pages %}
 {# Missing-features batch, goal feature 4: per-domain custom error pages
    (customer-uploaded, under the account's own home) and the shared
-   Forgehost-branded defaults (bundled with the app, identical URL for
+   Boron-branded defaults (bundled with the app, identical URL for
    every vhost) -- exposed as two small static contexts so the `errorpage`
    directives above have somewhere real to fetch content from, the same
    sibling-context pattern the acme-challenge path already uses. Always
@@ -90,11 +90,11 @@ realm {{ pd.realm_name }} {
    (daemon/ols.py's ensure_pages_dir self-heals this for pre-existing
    domains) and OLS's own `-t` validates the live tree, not a
    best-effort/lazy one. #}
-context /.forgehost-error-pages/ {
+context /.boron-error-pages/ {
   location                {{ home_dir }}/{{ domain_name }}/error_pages/
   allowBrowse              1
 }
-context /.forgehost-default-errors/ {
+context /.boron-default-errors/ {
   location                {{ default_error_pages_dir }}/
   allowBrowse              1
 }
@@ -106,9 +106,9 @@ context / {
      in this context while maintenance is enabled -- applies to the forced
      503 below (extraHeaders is Apache mod_headers-compatible per this
      server's own installed OLS docs, Static_Context.html). #}
-  extraHeaders            <<<END_forgehost_maint_headers
+  extraHeaders            <<<END_boron_maint_headers
 set Retry-After "{{ maintenance.retry_after_seconds }}"
-END_forgehost_maint_headers
+END_boron_maint_headers
 {% endif %}
 {% if ip_block_list %}
   {# Phase 4 feature 3: IP/CIDR deny list, OLS's own native per-vhost
@@ -216,10 +216,10 @@ rewrite {
   enable                  1
   autoLoadHtaccess        {{ 0 if (suspended or maintenance or forwarding) else 1 }}
 {% if suspended %}
-  rules                   <<<END_forgehost_rules
+  rules                   <<<END_boron_rules
 RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
 RewriteRule ^(.*)$ /index.html [L]
-END_forgehost_rules
+END_boron_rules
 {% elif maintenance %}
 {# Missing-features batch, goal feature 2: force every response in this
    vhost to HTTP 503. **Empirically corrected during this feature's live
@@ -246,12 +246,12 @@ END_forgehost_rules
    certbot renewal is never blocked during maintenance -- the goal's
    explicit requirement) and by a matching ?fh_bypass=<token> in the
    query string. #}
-  rules                   <<<END_forgehost_rules
+  rules                   <<<END_boron_rules
 RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
-RewriteCond %{REQUEST_URI} !^/\.forgehost-error-pages/
+RewriteCond %{REQUEST_URI} !^/\.boron-error-pages/
 RewriteCond %{QUERY_STRING} !(^|&){{ maintenance.bypass_query_param }}={{ maintenance.bypass_token }}(&|$)
-RewriteRule ^ /.forgehost-error-pages/{{ maintenance.page_name }} [R=503,L]
-END_forgehost_rules
+RewriteRule ^ /.boron-error-pages/{{ maintenance.page_name }} [R=503,L]
+END_boron_rules
 {% elif forwarding %}
 {# Phase 8 feature 4: whole-domain 301/302 forwarding. Everything except the
    ACME HTTP-01 challenge path (so SSL stays issuable/renewable for a forwarded
@@ -259,21 +259,21 @@ END_forgehost_rules
    request URI; otherwise every path collapses to the bare target. The target
    is validated http(s) with no regex metacharacters (validate_redirect_target),
    so it's a safe rewrite replacement string. #}
-  rules                   <<<END_forgehost_rules
+  rules                   <<<END_boron_rules
 RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
 {% if forwarding.keep_path %}
 RewriteRule ^/?(.*)$ {{ forwarding.target_url }}/$1 [R={{ forwarding.status_code }},L]
 {% else %}
 RewriteRule ^/?(.*)$ {{ forwarding.target_url }} [R={{ forwarding.status_code }},L]
 {% endif %}
-END_forgehost_rules
+END_boron_rules
 {% elif hotlink or redirects %}
   {# Phase 4 feature 2 (hotlink) and Phase 3 feature 7 (redirects) are
      independent, both may be active at once -- unlike "suspended",
      which wins exclusively over everything else. Hotlink rules run
      first (a blocked hotlinked image should never fall through to a
      redirect rule). #}
-  rules                   <<<END_forgehost_rules
+  rules                   <<<END_boron_rules
 {% if hotlink %}
   {# Standard mod_rewrite hotlink-protection recipe: block only when
      Referer is present (empty Referer always allowed -- direct nav,
@@ -291,7 +291,7 @@ RewriteRule \.({{ hotlink.extensions }})$ - [F,L]
 {% for r in redirects or [] %}
 RewriteRule ^{{ r.regex_path }}$ {{ r.target_url }} [R={{ r.status_code }},L]
 {% endfor %}
-END_forgehost_rules
+END_boron_rules
 {% endif %}
 }
 

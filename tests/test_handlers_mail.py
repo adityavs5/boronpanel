@@ -298,7 +298,7 @@ def mail_domain_row(isolated_db, tmp_path, monkeypatch):
     """get_spam_filter/set_spam_filter read/write shared.models.MailDomain
     directly (the SQLite control-plane cache), not the MariaDB-backed
     daemon/mail.py helpers stub_mail mocks -- these settings are consumed
-    only by Forgehost's own code (daemon/spamfilter.py), never queried by
+    only by Boron's own code (daemon/spamfilter.py), never queried by
     Postfix/Dovecot at delivery time, so there's no reason to duplicate
     them into forgehost_mail (see daemon/spamfilter.py's module
     docstring)."""

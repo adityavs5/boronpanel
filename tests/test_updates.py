@@ -28,7 +28,7 @@ import daemon.updates as updates
 # --- helpers ---------------------------------------------------------------------
 
 
-def _release_json(version="1.0.1", repo="acme/forgehost", assets=True, tag=None):
+def _release_json(version="1.0.1", repo="acme/boron", assets=True, tag=None):
     tag = tag or f"v{version}"
     prefix = f"https://github.com/{repo}/releases/download/{tag}"
     data = {
@@ -38,21 +38,21 @@ def _release_json(version="1.0.1", repo="acme/forgehost", assets=True, tag=None)
     }
     if assets:
         data["assets"] = [
-            {"name": f"forgehost-{version}.tar.gz",
-             "browser_download_url": f"{prefix}/forgehost-{version}.tar.gz"},
-            {"name": f"forgehost-{version}.sha256",
-             "browser_download_url": f"{prefix}/forgehost-{version}.sha256"},
+            {"name": f"boron-{version}.tar.gz",
+             "browser_download_url": f"{prefix}/boron-{version}.tar.gz"},
+            {"name": f"boron-{version}.sha256",
+             "browser_download_url": f"{prefix}/boron-{version}.sha256"},
         ]
     return data
 
 
 def _make_tarball_bytes(version="1.0.1", members_extra=None) -> bytes:
-    """A minimal well-formed release tarball: forgehost-{v}/ prefix, regular
+    """A minimal well-formed release tarball: boron-{v}/ prefix, regular
     files only."""
     buf = io.BytesIO()
-    prefix = f"forgehost-{version}"
+    prefix = f"boron-{version}"
     files = {
-        f"{prefix}/version.py": f'FORGEHOST_VERSION = "{version}"\n',
+        f"{prefix}/version.py": f'BORON_VERSION = "{version}"\n',
         f"{prefix}/requirements.txt": "httpx\n",
         f"{prefix}/daemon/server.py": "# stub\n",
         f"{prefix}/api/main.py": "# stub\n",
@@ -68,14 +68,14 @@ def _make_tarball_bytes(version="1.0.1", members_extra=None) -> bytes:
     return buf.getvalue()
 
 
-def _mock_github(monkeypatch, version="1.0.1", repo="acme/forgehost",
+def _mock_github(monkeypatch, version="1.0.1", repo="acme/boron",
                  tarball: bytes | None = None, sha256_text: str | None = None,
                  counter: dict | None = None, redirect_host="objects.githubusercontent.com"):
     """MockTransport speaking the whole flow: releases API -> 302 from
     github.com -> content from the CDN host."""
     tarball = tarball if tarball is not None else _make_tarball_bytes(version)
     sha = sha256_text if sha256_text is not None else (
-        hashlib.sha256(tarball).hexdigest() + f"  forgehost-{version}.tar.gz\n")
+        hashlib.sha256(tarball).hexdigest() + f"  boron-{version}.tar.gz\n")
 
     def handler(request: httpx.Request) -> httpx.Response:
         if counter is not None:
@@ -105,9 +105,9 @@ def update_env(isolated_db, tmp_path, monkeypatch):
     backup dirs, log dir all under tmp_path."""
     root = tmp_path / "opt"
     root.mkdir()
-    live_target = root / "forgehost-1.0.0"
+    live_target = root / "boron-1.0.0"
     live_target.mkdir()
-    live = root / "forgehost"
+    live = root / "boron"
     live.symlink_to(live_target)
     monkeypatch.setattr(settings, "update_versions_root", str(root))
     monkeypatch.setattr(settings, "update_live_dir", str(live))
@@ -166,7 +166,7 @@ def test_check_unconfigured_reports_not_configured(isolated_db, monkeypatch):
     out = updates.check({})
     assert out["configured"] is False
     assert out["update_available"] is False
-    assert out["current_version"] == updates.FORGEHOST_VERSION
+    assert out["current_version"] == updates.BORON_VERSION
 
 
 def test_check_fetches_compares_and_caches(isolated_db, monkeypatch):
@@ -189,7 +189,7 @@ def test_check_fetches_compares_and_caches(isolated_db, monkeypatch):
 
 
 def test_check_not_available_when_older_or_equal(isolated_db, monkeypatch):
-    _mock_github(monkeypatch, version=updates.FORGEHOST_VERSION)
+    _mock_github(monkeypatch, version=updates.BORON_VERSION)
     out = updates.check({"force": True})
     assert out["update_available"] is False
 
@@ -200,7 +200,7 @@ def test_check_error_is_cached_and_surfaced(isolated_db, monkeypatch):
         return httpx.Response(404)
 
     monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "update_github_repo", "acme/forgehost")
+    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
     out = updates.check({})
     assert out["error"] and "no release found" in out["error"]
     assert out["update_available"] is False
@@ -212,11 +212,11 @@ def test_check_error_is_cached_and_surfaced(isolated_db, monkeypatch):
 def test_check_refuses_assets_outside_github_releases(isolated_db, monkeypatch):
     def handler(request):
         data = _release_json("1.0.1")
-        data["assets"][0]["browser_download_url"] = "https://evil.example.com/forgehost-1.0.1.tar.gz"
+        data["assets"][0]["browser_download_url"] = "https://evil.example.com/boron-1.0.1.tar.gz"
         return httpx.Response(200, json=data)
 
     monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "update_github_repo", "acme/forgehost")
+    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
     out = updates.check({"force": True})
     assert "refusing release asset URL" in (out["error"] or "")
     assert out["latest_version"] is None
@@ -229,7 +229,7 @@ def test_safe_download_follows_github_redirect_only(update_env, monkeypatch, tmp
     tarball = _mock_github(monkeypatch)
     dest = tmp_path / "out.tar.gz"
     n = updates._safe_download(
-        "https://github.com/acme/forgehost/releases/download/v1.0.1/forgehost-1.0.1.tar.gz",
+        "https://github.com/acme/boron/releases/download/v1.0.1/boron-1.0.1.tar.gz",
         str(dest), max_bytes=10_000_000)
     assert n == len(tarball) and dest.read_bytes() == tarball
 
@@ -237,10 +237,10 @@ def test_safe_download_follows_github_redirect_only(update_env, monkeypatch, tmp
 def test_safe_download_refuses_first_hop_outside_release_prefix(update_env, monkeypatch):
     _mock_github(monkeypatch)
     with pytest.raises(ValidationError, match="refusing download outside"):
-        updates._safe_download("https://github.com/acme/forgehost/archive/main.tar.gz",
+        updates._safe_download("https://github.com/acme/boron/archive/main.tar.gz",
                                "/dev/null", max_bytes=1000)
     with pytest.raises(ValidationError, match="refusing"):
-        updates._safe_download("https://evil.example.com/acme/forgehost/releases/download/x.tar.gz",
+        updates._safe_download("https://evil.example.com/acme/boron/releases/download/x.tar.gz",
                                "/dev/null", max_bytes=1000)
 
 
@@ -248,7 +248,7 @@ def test_safe_download_refuses_redirect_to_non_github_host(update_env, monkeypat
     _mock_github(monkeypatch, redirect_host="evil.example.com")
     with pytest.raises(ValidationError, match="non-GitHub host"):
         updates._safe_download(
-            "https://github.com/acme/forgehost/releases/download/v1.0.1/forgehost-1.0.1.tar.gz",
+            "https://github.com/acme/boron/releases/download/v1.0.1/boron-1.0.1.tar.gz",
             str(tmp_path / "x"), max_bytes=10_000_000)
 
 
@@ -259,10 +259,10 @@ def test_safe_download_refuses_http_redirect(update_env, monkeypatch, tmp_path):
         return httpx.Response(200, content=b"x")
 
     monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "update_github_repo", "acme/forgehost")
+    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
     with pytest.raises(ValidationError, match="non-https"):
         updates._safe_download(
-            "https://github.com/acme/forgehost/releases/download/v1.0.1/forgehost-1.0.1.tar.gz",
+            "https://github.com/acme/boron/releases/download/v1.0.1/boron-1.0.1.tar.gz",
             str(tmp_path / "x"), max_bytes=1000)
 
 
@@ -270,20 +270,20 @@ def test_safe_download_enforces_size_cap(update_env, monkeypatch, tmp_path):
     _mock_github(monkeypatch, tarball=b"A" * 5000)
     with pytest.raises(ValidationError, match="exceeds"):
         updates._safe_download(
-            "https://github.com/acme/forgehost/releases/download/v1.0.1/forgehost-1.0.1.tar.gz",
+            "https://github.com/acme/boron/releases/download/v1.0.1/boron-1.0.1.tar.gz",
             str(tmp_path / "x"), max_bytes=1024)
 
 
 def test_safe_download_redirect_loop_capped(update_env, monkeypatch, tmp_path):
     def handler(request):
         return httpx.Response(302, headers={
-            "location": "https://github.com/acme/forgehost/releases/download/v1/loop.tar.gz"})
+            "location": "https://github.com/acme/boron/releases/download/v1/loop.tar.gz"})
 
     monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "update_github_repo", "acme/forgehost")
+    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
     with pytest.raises(ValidationError, match="too many redirects"):
         updates._safe_download(
-            "https://github.com/acme/forgehost/releases/download/v1/loop.tar.gz",
+            "https://github.com/acme/boron/releases/download/v1/loop.tar.gz",
             str(tmp_path / "x"), max_bytes=1000)
 
 
@@ -291,7 +291,7 @@ def test_safe_download_redirect_loop_capped(update_env, monkeypatch, tmp_path):
 
 
 def test_checksum_mismatch_aborts_update(update_env, monkeypatch):
-    _mock_github(monkeypatch, sha256_text="0" * 64 + "  forgehost-1.0.1.tar.gz\n")
+    _mock_github(monkeypatch, sha256_text="0" * 64 + "  boron-1.0.1.tar.gz\n")
     updates.check({"force": True})  # populate cached asset URLs
     job_id = _make_job()
     with pytest.raises(updates._StepFailed):
@@ -331,7 +331,7 @@ def _open_tar(data: bytes) -> tarfile.TarFile:
 def _tar_with_member(info: tarfile.TarInfo, content: bytes = b"") -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        base = tarfile.TarInfo("forgehost-1.0.1/ok.txt")
+        base = tarfile.TarInfo("boron-1.0.1/ok.txt")
         base.size = 2
         tf.addfile(base, io.BytesIO(b"ok"))
         if info.isreg():
@@ -343,66 +343,66 @@ def _tar_with_member(info: tarfile.TarInfo, content: bytes = b"") -> bytes:
 
 
 def test_tarball_traversal_dotdot_rejected():
-    evil = tarfile.TarInfo("forgehost-1.0.1/../../etc/cron.d/pwned")
+    evil = tarfile.TarInfo("boron-1.0.1/../../etc/cron.d/pwned")
     with _open_tar(_tar_with_member(evil, b"boom")) as tf:
         with pytest.raises(ValidationError, match="escapes extraction dir"):
-            updates.validate_tarball_members(tf, "forgehost-1.0.1", 10_000_000)
+            updates.validate_tarball_members(tf, "boron-1.0.1", 10_000_000)
 
 
 def test_tarball_absolute_path_rejected():
     evil = tarfile.TarInfo("/etc/shadow")
     with _open_tar(_tar_with_member(evil, b"boom")) as tf:
         with pytest.raises(ValidationError, match="escapes extraction dir"):
-            updates.validate_tarball_members(tf, "forgehost-1.0.1", 10_000_000)
+            updates.validate_tarball_members(tf, "boron-1.0.1", 10_000_000)
 
 
 def test_tarball_member_outside_prefix_rejected():
-    evil = tarfile.TarInfo("forgehost-9.9.9/sneaky.py")
+    evil = tarfile.TarInfo("boron-9.9.9/sneaky.py")
     with _open_tar(_tar_with_member(evil, b"boom")) as tf:
-        with pytest.raises(ValidationError, match="outside forgehost-1.0.1"):
-            updates.validate_tarball_members(tf, "forgehost-1.0.1", 10_000_000)
+        with pytest.raises(ValidationError, match="outside boron-1.0.1"):
+            updates.validate_tarball_members(tf, "boron-1.0.1", 10_000_000)
 
 
 def test_tarball_symlink_member_rejected():
-    evil = tarfile.TarInfo("forgehost-1.0.1/link")
+    evil = tarfile.TarInfo("boron-1.0.1/link")
     evil.type = tarfile.SYMTYPE
-    evil.linkname = "/etc/forgehost/secrets.env"
+    evil.linkname = "/etc/boron/secrets.env"
     with _open_tar(_tar_with_member(evil)) as tf:
         with pytest.raises(ValidationError, match="link member"):
-            updates.validate_tarball_members(tf, "forgehost-1.0.1", 10_000_000)
+            updates.validate_tarball_members(tf, "boron-1.0.1", 10_000_000)
 
 
 def test_tarball_hardlink_member_rejected():
-    evil = tarfile.TarInfo("forgehost-1.0.1/hard")
+    evil = tarfile.TarInfo("boron-1.0.1/hard")
     evil.type = tarfile.LNKTYPE
     evil.linkname = "../../../etc/passwd"
     with _open_tar(_tar_with_member(evil)) as tf:
         with pytest.raises(ValidationError, match="link member"):
-            updates.validate_tarball_members(tf, "forgehost-1.0.1", 10_000_000)
+            updates.validate_tarball_members(tf, "boron-1.0.1", 10_000_000)
 
 
 def test_tarball_device_member_rejected():
-    evil = tarfile.TarInfo("forgehost-1.0.1/dev")
+    evil = tarfile.TarInfo("boron-1.0.1/dev")
     evil.type = tarfile.CHRTYPE
     with _open_tar(_tar_with_member(evil)) as tf:
         with pytest.raises(ValidationError, match="special member"):
-            updates.validate_tarball_members(tf, "forgehost-1.0.1", 10_000_000)
+            updates.validate_tarball_members(tf, "boron-1.0.1", 10_000_000)
 
 
 def test_tarball_size_bomb_rejected():
     with _open_tar(_make_tarball_bytes("1.0.1")) as tf:
         with pytest.raises(ValidationError, match="size cap"):
-            updates.validate_tarball_members(tf, "forgehost-1.0.1", max_total_bytes=1)
+            updates.validate_tarball_members(tf, "boron-1.0.1", max_total_bytes=1)
 
 
 def test_tarball_wellformed_passes():
     with _open_tar(_make_tarball_bytes("1.0.1")) as tf:
-        updates.validate_tarball_members(tf, "forgehost-1.0.1", 10_000_000)  # no raise
+        updates.validate_tarball_members(tf, "boron-1.0.1", 10_000_000)  # no raise
 
 
 def test_extract_staged_rejects_traversal_and_stages_good(update_env, monkeypatch, tmp_path):
     # Hostile archive at the extraction step (not just the pre-validator).
-    evil = tarfile.TarInfo("forgehost-1.0.1/../pwn")
+    evil = tarfile.TarInfo("boron-1.0.1/../pwn")
     bad = tmp_path / "bad.tar.gz"
     bad.write_bytes(_tar_with_member(evil, b"boom"))
     job_id = _make_job()
@@ -416,16 +416,16 @@ def test_extract_staged_rejects_traversal_and_stages_good(update_env, monkeypatc
     good.write_bytes(_make_tarball_bytes("1.0.1"))
     job2 = _make_job()
     target = updates._extract_staged(job2, str(good), "1.0.1")
-    assert target == str(update_env["root"] / "forgehost-1.0.1")
-    assert (update_env["root"] / "forgehost-1.0.1" / "version.py").exists()
+    assert target == str(update_env["root"] / "boron-1.0.1")
+    assert (update_env["root"] / "boron-1.0.1" / "version.py").exists()
     # Staging never touches the live tree.
     assert os.path.realpath(update_env["live"]) == str(update_env["live_target"])
 
 
 def test_extract_refuses_to_overwrite_live_target(update_env, tmp_path):
-    # Point the live symlink at forgehost-1.0.1, then try updating "to" it.
+    # Point the live symlink at boron-1.0.1, then try updating "to" it.
     live = update_env["live"]
-    target = update_env["root"] / "forgehost-1.0.1"
+    target = update_env["root"] / "boron-1.0.1"
     target.mkdir()
     live.unlink()
     live.symlink_to(target)
@@ -447,7 +447,7 @@ def test_start_update_requires_configured_repo(isolated_db, monkeypatch):
 
 
 def test_start_update_refuses_non_newer_target(isolated_db, monkeypatch):
-    _mock_github(monkeypatch, version=updates.FORGEHOST_VERSION)
+    _mock_github(monkeypatch, version=updates.BORON_VERSION)
     with pytest.raises(ValidationError, match="not newer"):
         updates.start_update({"initiated_by": "admin"})
 
@@ -465,7 +465,7 @@ def test_start_update_queues_job(isolated_db, monkeypatch):
     monkeypatch.setattr(updates._executor, "submit", lambda *a, **k: None)
     out = updates.start_update({"initiated_by": "admin"})
     assert out["kind"] == "update" and out["status"] == "pending"
-    assert out["from_version"] == updates.FORGEHOST_VERSION
+    assert out["from_version"] == updates.BORON_VERSION
     assert out["to_version"] == "99.0.0"
     assert out["initiated_by"] == "admin"
 
@@ -481,7 +481,7 @@ def test_rollback_candidate_none_without_history(update_env):
 
 def test_rollback_candidate_found_and_job_queued(update_env, monkeypatch):
     root, live = update_env["root"], update_env["live"]
-    new_dir = root / "forgehost-1.0.1"
+    new_dir = root / "boron-1.0.1"
     new_dir.mkdir()
     live.unlink()
     live.symlink_to(new_dir)
@@ -500,12 +500,12 @@ def test_rollback_candidate_found_and_job_queued(update_env, monkeypatch):
 
 def test_rollback_candidate_gone_when_old_dir_pruned(update_env):
     root, live = update_env["root"], update_env["live"]
-    new_dir = root / "forgehost-1.0.1"
+    new_dir = root / "boron-1.0.1"
     new_dir.mkdir()
     live.unlink()
     live.symlink_to(new_dir)
     _make_job(status="completed", to_version="1.0.1",
-              old_dir=str(root / "forgehost-0.9.0"),  # doesn't exist
+              old_dir=str(root / "boron-0.9.0"),  # doesn't exist
               new_dir=str(new_dir))
     assert updates.rollback_candidate() is None
 
@@ -584,28 +584,28 @@ def test_cleanup_never_touches_neighbours_or_live(update_env, monkeypatch):
     root = update_env["root"]
     old_time = time.time() - 10 * 86400
 
-    prunable = root / "forgehost-0.9.0"
+    prunable = root / "boron-0.9.0"
     prunable.mkdir()
     os.utime(prunable, (old_time, old_time))
 
-    nodejs = root / "forgehost-nodejs"   # the real /opt neighbour -- NEVER touched
+    nodejs = root / "boron-nodejs"   # the real /opt neighbour -- NEVER touched
     nodejs.mkdir()
     os.utime(nodejs, (old_time, old_time))
-    snapshot = root / "forgehost.pre-filebrowser"
+    snapshot = root / "boron.pre-filebrowser"
     snapshot.mkdir()
     os.utime(snapshot, (old_time, old_time))
 
-    recent = root / "forgehost-1.0.2"
+    recent = root / "boron-1.0.2"
     recent.mkdir()  # fresh mtime -- inside the rollback window
 
-    live_target = update_env["live_target"]  # forgehost-1.0.0, old but live
+    live_target = update_env["live_target"]  # boron-1.0.0, old but live
     os.utime(live_target, (old_time, old_time))
 
     out = updates.cleanup_old_versions()
-    assert out["removed"] == ["forgehost-0.9.0"]
+    assert out["removed"] == ["boron-0.9.0"]
     assert not prunable.exists()
     assert nodejs.exists() and snapshot.exists() and recent.exists() and live_target.exists()
-    assert sorted(out["kept"]) == ["forgehost-1.0.0", "forgehost-1.0.2"]
+    assert sorted(out["kept"]) == ["boron-1.0.0", "boron-1.0.2"]
 
 
 # --- full pipeline stitch (download -> checksum -> extract -> handoff) ---------------
@@ -649,21 +649,21 @@ def test_full_update_job_pipeline(update_env, monkeypatch):
     assert steps["venv"] == "ok"
     assert steps["migrate"] == "ok"
     assert job["old_dir"] == str(update_env["live_target"])
-    assert job["new_dir"] == str(update_env["root"] / "forgehost-1.0.1")
+    assert job["new_dir"] == str(update_env["root"] / "boron-1.0.1")
 
     # The staged tree really exists and carries the new version.
-    assert (update_env["root"] / "forgehost-1.0.1" / "version.py").read_text() \
-        == 'FORGEHOST_VERSION = "1.0.1"\n'
+    assert (update_env["root"] / "boron-1.0.1" / "version.py").read_text() \
+        == 'BORON_VERSION = "1.0.1"\n'
     # Backup ran before anything else touched disk.
     backups = list((update_env["tmp"] / "backups").glob("pre-update-1.0.1-*"))
     assert len(backups) == 1
-    assert (backups[0] / "forgehost.db").exists()
+    assert (backups[0] / "boron.db").exists()
 
     # The handoff argv: systemd-run + the finalizer with matching dirs.
     handoff = ran[-1]
     assert handoff[0] == "systemd-run"
     assert "--mode" in handoff and handoff[handoff.index("--mode") + 1] == "update"
-    assert handoff[handoff.index("--new-dir") + 1] == str(update_env["root"] / "forgehost-1.0.1")
+    assert handoff[handoff.index("--new-dir") + 1] == str(update_env["root"] / "boron-1.0.1")
     assert handoff[handoff.index("--old-dir") + 1] == str(update_env["live_target"])
     # The finalizer copy was staged.
     assert (staged_copies / f"update-finalize-{job_id}.py").exists()
@@ -671,7 +671,7 @@ def test_full_update_job_pipeline(update_env, monkeypatch):
 
 def test_cleanup_protects_recent_rollback_target_despite_old_mtime(update_env):
     """Regression: the first-ever update CONVERTS the months-old
-    /opt/forgehost dir into the rollback target -- its mtime predates the
+    /opt/boron dir into the rollback target -- its mtime predates the
     update, so an mtime-only cleanup would prune it the same night and void
     the 3-day rollback window. Dirs referenced by a recently-completed job
     must survive regardless of mtime; once the job ages out of the window,
@@ -681,7 +681,7 @@ def test_cleanup_protects_recent_rollback_target_despite_old_mtime(update_env):
     root = update_env["root"]
     old_time = time.time() - 300 * 86400  # "converted from a months-old live dir"
 
-    rollback_target = root / "forgehost-0.9.9"
+    rollback_target = root / "boron-0.9.9"
     rollback_target.mkdir()
     os.utime(rollback_target, (old_time, old_time))
 
@@ -693,7 +693,7 @@ def test_cleanup_protects_recent_rollback_target_despite_old_mtime(update_env):
 
     out = updates.cleanup_old_versions()
     assert rollback_target.exists()
-    assert "forgehost-0.9.9" in out["kept"]
+    assert "boron-0.9.9" in out["kept"]
 
     # Age the job past the retention window -> the dir becomes prunable.
     import datetime as dtm
@@ -702,7 +702,7 @@ def test_cleanup_protects_recent_rollback_target_despite_old_mtime(update_env):
         job.completed_at = job.started_at - dtm.timedelta(days=10)
     out2 = updates.cleanup_old_versions()
     assert not rollback_target.exists()
-    assert "forgehost-0.9.9" in out2["removed"]
+    assert "boron-0.9.9" in out2["removed"]
 
 
 def test_stale_finalizing_job_expires_and_unblocks(update_env, monkeypatch):

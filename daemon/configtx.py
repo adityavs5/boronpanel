@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-logger = logging.getLogger("forgehostd.configtx")
+logger = logging.getLogger("borond.configtx")
 
 
 @dataclass

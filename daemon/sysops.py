@@ -60,7 +60,7 @@ def create_linux_user(username: str) -> tuple[int, int]:
             "--create-home",
             "--home-dir", home_dir,
             "--shell", NOLOGIN_SHELL,
-            "--comment", "Forgehost hosting account",
+            "--comment", "Boron hosting account",
             "--user-group",
             username,
         ],

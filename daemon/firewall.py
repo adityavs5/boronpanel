@@ -210,7 +210,7 @@ def get_status(params: dict) -> dict:
 # mode allowed to touch the otherwise hard-protected web ports -- and ONLY
 # 80/443: SSH and the panel port are never involved here, so a bug in this
 # path can't lock the operator out of the box.
-CF_LOCKDOWN_COMMENT = "forgehost-cf-lockdown"
+CF_LOCKDOWN_COMMENT = "boron-cf-lockdown"
 CF_LOCKDOWN_PORTS = (80, 443)
 
 
@@ -294,7 +294,7 @@ def _ensure_baseline_allow_rules() -> None:
     covered = {r["port"] for r in current if r["action"] == "allow"}
     for port in sorted(protected_ports()):
         if port not in covered:
-            run(["ufw", "allow", str(port), "comment", "forgehost-baseline-protected-port"], timeout=20)
+            run(["ufw", "allow", str(port), "comment", "boron-baseline-protected-port"], timeout=20)
 
 
 def enable_firewall(params: dict) -> dict:

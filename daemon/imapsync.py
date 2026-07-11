@@ -1,6 +1,6 @@
 """IMAPSync migrations (missing-features batch, goal feature 1):
 customer self-service email migration from an external IMAP server into an
-existing Forgehost mailbox.
+existing Boron mailbox.
 
 **Credential handling (the goal's explicit, non-negotiable requirement --
 "credentials never stored after job completes or logged anywhere")**: this
@@ -10,21 +10,21 @@ own docstring for why that's structural, not just discipline). Both
 passwords exist only as Python local variables for the lifetime of
 `_run_job` (a background thread), passed to `imapsync` via `--passfile1`/
 `--passfile2` pointing at 0600 root-only files under a private
-per-job tmpfs directory (`/run/forgehost/imapsync/<job_id>/`) that is
+per-job tmpfs directory (`/run/boron/imapsync/<job_id>/`) that is
 removed in a `finally` block regardless of outcome -- never via argv (which
 `ps aux` on this same box could read) and never logged (`daemon/procutil.run`'s
 own `redact` list additionally scrubs both values from the one INFO-level
 "exec: ..." log line it always writes).
 
-**Destination credentials**: Forgehost never stores a mailbox's own IMAP/
+**Destination credentials**: Boron never stores a mailbox's own IMAP/
 Dovecot password in recoverable form (SQL-backed virtual mailboxes,
 ARCHITECTURE.md SS4, hashed at rest -- `shared/passwords.py`) -- so imapsync,
 which needs a real destination IMAP login the same as the source, cannot be
-handed a password Forgehost doesn't have. Rather than silently rotating the
+handed a password Boron doesn't have. Rather than silently rotating the
 mailbox's password (which would break the customer's own already-configured
 mail clients) or storing it, the customer supplies BOTH credentials up
 front, exactly like every other IMAP-to-IMAP migration tool (including
-imapsync's own typical CLI usage): their existing Forgehost mailbox
+imapsync's own typical CLI usage): their existing Boron mailbox
 password (which they already know, having set it) alongside the source
 server's credentials. Both are handled with the identical
 never-stored/never-logged discipline above.
@@ -100,7 +100,7 @@ IMAPSYNC_APT_PACKAGES = (
     "liblist-moreutils-perl", "libwww-perl", "libcgi-pm-perl",
 )
 
-IMAPSYNC_RUN_DIR = "/run/forgehost/imapsync"
+IMAPSYNC_RUN_DIR = "/run/boron/imapsync"
 DEST_HOST = "127.0.0.1"
 DEST_PORT = 993
 FOLDER_TIMEOUT_SECONDS = 600
@@ -438,7 +438,7 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
                 # Audit 3 finding A3-5: without --nolog, imapsync writes its
                 # own transcript (source/dest email addresses, host, login
                 # success) to LOG_imapsync/ relative to the daemon's cwd --
-                # confirmed live world-readable (0644) in /opt/forgehost,
+                # confirmed live world-readable (0644) in /opt/boron,
                 # a cross-tenant PII leak this feature's own docstring says
                 # should never happen.
                 "--nolog",

@@ -18,15 +18,15 @@ def _fake_run_factory(responses):
 
 
 def test_service_registry_never_includes_panel_processes():
-    assert "forgehost-api" not in servicemgr.SERVICE_REGISTRY
-    assert "forgehost-provisiond" not in servicemgr.SERVICE_REGISTRY
+    assert "boron-api" not in servicemgr.SERVICE_REGISTRY
+    assert "boron-provisiond" not in servicemgr.SERVICE_REGISTRY
     for unit in servicemgr.SERVICE_REGISTRY.values():
-        assert "forgehost" not in unit
+        assert "boron" not in unit
 
 
 def test_resolve_unit_rejects_unknown_service():
     with pytest.raises(ValidationError):
-        servicemgr._resolve_unit("forgehost-api")
+        servicemgr._resolve_unit("boron-api")
     with pytest.raises(ValidationError):
         servicemgr._resolve_unit("nonexistent")
 

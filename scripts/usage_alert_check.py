@@ -1,4 +1,4 @@
-#!/opt/forgehost/.venv/bin/python
+#!/opt/boron/.venv/bin/python
 """Periodic account usage-alert check (Phase 7b feature 5).
 
 Run via a system cron (README), same "server infrastructure" category as

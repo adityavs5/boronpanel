@@ -1,4 +1,4 @@
-"""Forgehost version — the single source of truth.
+"""Boron version — the single source of truth.
 
 Everything that displays or compares a panel version imports this constant:
 the API (`GET /api/v1/version`, sidebar footer, admin dashboard), the daemon
@@ -13,4 +13,4 @@ the line below with a plain regex — keep it a simple single-line string
 assignment.
 """
 
-FORGEHOST_VERSION = "1.0.0"
+BORON_VERSION = "1.0.0"

@@ -1,7 +1,7 @@
 """Missing-features batch, goal feature 4: custom error pages.
 CRUD /accounts/{u}/domains/{d}/error-pages (the goal's own literal shape) --
 GET lists all 4 codes + which have a custom page, GET /{code} previews one
-(customer's own or the Forgehost-branded default), PUT /{code} sets the
+(customer's own or the Boron-branded default), PUT /{code} sets the
 customer's own HTML, DELETE /{code} reverts to the default."""
 from __future__ import annotations
 

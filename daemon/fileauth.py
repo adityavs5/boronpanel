@@ -19,7 +19,7 @@ bcrypt (`-B`), apr1-MD5 (`-m`), and classic DES crypt (`-d`) verify
 correctly through OLS's own auth check -- bcrypt is used here since there
 is no compatibility reason left to prefer a weaker format.
 
-Users/passwords are NEVER recorded in Forgehost's own database (the goal's
+Users/passwords are NEVER recorded in Boron's own database (the goal's
 explicit requirement) -- they live only in the protected directory's own
 `.htpasswd` file, managed entirely through the real `htpasswd` CLI, with
 every password passed via stdin (`-i`), never a command-line argument (this

@@ -37,7 +37,7 @@ from shared.validation import (
 
 from daemon import cgroups, ols, sysops
 
-logger = logging.getLogger("forgehostd.identity_admin")
+logger = logging.getLogger("borond.identity_admin")
 
 
 def _account_or_raise(session, username: str) -> Account:

@@ -101,7 +101,7 @@ def ui_zone_records(request: Request, username: str, domain: str, identity: Iden
     try:
         records = call_daemon("dns.list_records", identity, domain=domain)["records"]
     except HTTPException:
-        # No Forgehost-managed zone for this domain yet -- offer to create
+        # No Boron-managed zone for this domain yet -- offer to create
         # one instead of surfacing a raw PowerDNS 404 to the customer/admin.
         return templates.TemplateResponse(
             request, "dns_zone.html", {"identity": identity, "username": username, "domain": domain, "records": None, "record_types": RECORD_TYPES}

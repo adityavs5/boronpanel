@@ -1,6 +1,6 @@
 """Shared per-account path-jail helpers.
 
-Originally this module was Forgehost's custom file manager (Phase g, and the
+Originally this module was Boron's custom file manager (Phase g, and the
 Phase 8 f13 bulk/zip/search additions). That file manager was **retired
 2026-07-09** and replaced by FileBrowser Quantum (daemon/filebrowser.py +
 api/routers/filebrowser.py) after it was verified live end-to-end. What remains

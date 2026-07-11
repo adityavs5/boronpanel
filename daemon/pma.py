@@ -7,20 +7,20 @@ use case) rather than a fragile scrape of its login form. A short-lived
 (15 min default), single-use, server-generated token maps to a freshly
 created MariaDB user, scoped to exactly one database via the same
 `HOSTED_DB_PRIVILEGES` grant every hosted database already uses (never
-the real db_user's own password, which Forgehost never stores -- see
+the real db_user's own password, which Boron never stores -- see
 daemon/mariadb.py) -- redeeming the token logs into phpMyAdmin as that
 throwaway user, which physically cannot touch any other database.
 
 The signon redemption itself (`templates/pma_signon.php.j2`, deployed by
 bootstrap_pma()) runs as an ordinary PHP script under phpMyAdmin's own
-docroot/extProcessor (www-data), with no access to Forgehost's control-
+docroot/extProcessor (www-data), with no access to Boron's control-
 plane DB or RPC socket. State is handed to it via a small per-token JSON
 file under settings.pma_token_dir -- a directory deliberately created
-OUTSIDE /var/lib/forgehost (which shared/db.py locks to
-root:forgehost-api), a lesson learned the hard way while building Phase 3
+OUTSIDE /var/lib/boron (which shared/db.py locks to
+root:boron-api), a lesson learned the hard way while building Phase 3
 feature 2's WordPress installer (see CHECKPOINT-phase3-2.md): a file
 under a hosting-account-or-www-data-inaccessible tree is simply unusable
-by anything that isn't forgehostd/forgehost-api itself.
+by anything that isn't borond/boron-api itself.
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ from shared.validation import validate_db_identifier, validate_username
 
 from daemon import mariadb
 
-logger = logging.getLogger("forgehostd.pma")
+logger = logging.getLogger("borond.pma")
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)
@@ -57,13 +57,13 @@ class PmaError(Exception):
 
 def _token_dir() -> Path:
     """mkdir(mode=0o770) alone sets permission *bits*, not group
-    *ownership* -- a directory forgehostd (root) creates defaults to
+    *ownership* -- a directory borond (root) creates defaults to
     group "root", which www-data isn't a member of, making the mode bits
     irrelevant. Confirmed live: token files were written correctly but
     every signon attempt still 403'd with "token not found", because
     www-data could not even traverse into the directory to read them.
     Explicit chown here, every call (idempotent, cheap), same pattern
-    server.py's amain() already uses for /run/forgehost's socket dir."""
+    server.py's amain() already uses for /run/boron's socket dir."""
     path = Path(settings.pma_token_dir)
     path.mkdir(parents=True, exist_ok=True, mode=0o770)
     try:
@@ -137,7 +137,7 @@ def create_token(params: dict) -> dict:
     if not settings.pma_hostname:
         pma_url = None
     else:
-        pma_url = f"https://{settings.pma_hostname}/forgehost_signon.php?token={token}"
+        pma_url = f"https://{settings.pma_hostname}/boron_signon.php?token={token}"
 
     return {
         "token": token,
@@ -208,7 +208,7 @@ def bootstrap_pma_files(blowfish_secret: str | None = None) -> str:
 
     signon_template = _env.get_template("pma_signon.php.j2")
     signon_content = signon_template.render(pma_token_dir=settings.pma_token_dir)
-    signon_path = docroot / "forgehost_signon.php"
+    signon_path = docroot / "boron_signon.php"
     signon_path.write_text(signon_content)
     signon_path.chmod(0o644)
 

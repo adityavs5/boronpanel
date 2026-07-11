@@ -1,4 +1,4 @@
-"""Tests for api/security.py -- the auth/RBAC layer forgehost-api enforces
+"""Tests for api/security.py -- the auth/RBAC layer boron-api enforces
 on every request. Run against the same isolated SQLite fixture the daemon
 tests use; api.security's read_session() points at shared.config.settings
 the same way shared.db.write_session() does, so isolated_db covers both.

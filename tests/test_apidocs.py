@@ -50,7 +50,7 @@ def test_openapi_schema_served_to_admin(isolated_db):
         r = client.get("/api/openapi.json")
         assert r.status_code == 200
         schema = r.json()
-        assert schema["info"]["title"] == "Forgehost"
+        assert schema["info"]["title"] == "Boron"
         # A representative spread of endpoints is present ("all endpoints
         # visible").
         paths = schema["paths"]

@@ -17,7 +17,7 @@ redesigned around that rather than worked around). The post-receive hook
 therefore only ever calls `wp cache flush` best-effort, gated on `wp`
 actually being on PATH (`command -v wp`) -- if an operator installs WP-CLI
 manually later (documented as possible in earlier phases), deploys pick it
-up automatically with no Forgehost-side change needed; if not, the hook
+up automatically with no Boron-side change needed; if not, the hook
 silently skips that one step rather than failing the whole deploy.
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ PUSH_LOG_FILENAME = "push-log.txt"
 MAX_PUSH_LOG_LINES = 200
 
 POST_RECEIVE_TEMPLATE = """#!/bin/bash
-# Managed by Forgehost (daemon/gitrepo.py) -- do not hand-edit, this file is
+# Managed by Boron (daemon/gitrepo.py) -- do not hand-edit, this file is
 # regenerated whenever the deploy target changes.
 set -e
 DEPLOY_TARGET="{deploy_target}"
