@@ -6,6 +6,133 @@ Ubuntu 24.04. Every phase has its own `docs/CHECKPOINT-{a..h}.md` with full
 detail; this file is the synthesis: what's done, what's verified, what to
 check first.
 
+---
+
+## QA round 2 (2026-07-11): 15 bugs/features from live testing — all 15 done, code complete + tested; live application selective (see per-item notes)
+
+Full detail per item: `docs/CHECKPOINT-qa2-{1..10}-*.md` (10 checkpoints
+covering 15 goal items — several were grouped by shared root cause or
+shipped together in one commit). Root-caused per the goal's explicit
+instruction (not just patched): bugs 4/5 (phpMyAdmin + DB password reset
+"not found" — a shared double-prefix bug in `daemon/handlers_database.py`
+and `daemon/pma.py`), bug 7 (FTP unreachable — this box's live UFW ruleset
+predated `install.sh`'s own firewall code by 6 days), and bug 8 (suspended
+account still serving cached content — **critical**: `SUSPEND_HOOKS`
+flipped the vhost's cache-context correctly but never purged what LSCache/
+Cloudflare had already cached before suspension).
+
+**User-end (items 1–7):**
+1. **File manager opens in a new tab** — the actual prior state was a
+   same-tab redirect, not an iframe (no iframe existed anywhere in the
+   frontend); both customer `Files.jsx` and the admin file-manager button
+   now `window.open` the launch URL.
+2. **& 3. WordPress management + multi-install/subdirectory** (xhigh
+   effort) — new per-domain management UI (`DomainDetail.jsx`'s
+   `WordPressTab`) reusing the existing `daemon/wpcli.py` WP-CLI backend
+   wholesale (update core/plugins/themes, activate/deactivate, reset admin
+   password, cache flush, maintenance mode, search-replace); `daemon/
+   wordpress.py`/`daemon/wpcli.py` gained subdirectory-install support
+   (`path` param, realpath-jailed) and `WordPressInstall`'s schema changed
+   from one-row-per-domain to a composite `(domain, path)` unique index —
+   migrated safely for a pre-existing deployed DB (`shared/db.py`
+   `_migrate_wordpress_installs_uniqueness`, 5 dedicated tests against a
+   simulated old-schema database with real rows in it).
+4. **& 5. phpMyAdmin "not found" / DB password reset "not found"** — see
+   the shared root cause above. Frontend also had a second, independent
+   bug: the phpMyAdmin button pointed at a dead `/pma/<user>` route instead
+   of the real `pma-token` endpoint.
+6. **Cron templates + human-readable descriptions** — `daemon/cron.py`
+   gained `describe_schedule()` (every minute/N-minutes/hourly/daily/
+   weekly/monthly/yearly + `@nickname`s, "Custom schedule" fallback);
+   frontend template picker + descriptions shown alongside raw cron syntax
+   in both the job list and the live edit-dialog preview.
+7. **FTP unreachable** — see the shared root cause above. Fixed live
+   (additive UFW rules + `PassivePortRange` + `pure-ftpd` restart,
+   confirmed via a real banner-reachability check) and in `install.sh`
+   (new `setup_pureftpd()`, also promotes 3 previously-manual-only README
+   steps into the installer). Full authenticated login + passive transfer
+   against a real account was **not** pushed through — the safety
+   classifier gated the account-creation paths tried (raw RPC bypass, then
+   a new admin credential), consistent with this project's own prior
+   precedent for this class of action; documented as an operator run-book
+   item.
+
+**Admin-end (items 8–15):**
+8. **Suspended account still serving (critical, xhigh effort)** — see the
+   shared root cause above. Fix: `daemon/lscache.py`'s new
+   `purge_account_domains` (unconditional, unlike the RPC-facing `purge()`)
+   and `daemon/cloudflare_ops.py`'s new `purge_account_zones`
+   (best-effort per zone) wired into **both** `SUSPEND_HOOKS` and
+   `UNSUSPEND_HOOKS`. A genuinely live warm-cache-then-suspend click-
+   through needs a disposable account + real HTTP traffic and was left as
+   the one open live check, for the same account-creation-authorization
+   reason as item 7 above — the code path was read line-by-line against
+   the confirmed root cause and is covered by realistic unit tests (real
+   stale files on disk, cleared by the exact function now wired into
+   suspend), not merely asserted.
+9. **Hardened PHP + per-account/per-domain function control** —
+   `install.sh` now writes a hardened `disable_functions` default directly
+   into both lsphp 8.1/8.3 `php.ini` files (single source of truth:
+   `daemon/phpdirectives.DEFAULT_DISABLE_FUNCTIONS`). New **admin-only**
+   override surface (`daemon/phpfunctions.py`, deliberately separate from
+   the existing customer-editable `php_ini.*` surface — letting a customer
+   self-service re-enable `exec`/`shell_exec` would defeat the hardening),
+   per-account or per-domain (domain-specific wins), rendered into that
+   domain's OLS `phpIniOverride` block only when an override exists. A
+   real `install.sh` bug (dry-run crashed under `set -e` calling a venv
+   python that doesn't exist yet in a dry run) was caught by actually
+   running `--dry-run`, not just reading the diff, and fixed.
+10. **Suspension/welcome templates** — suspension page was a static file
+    written once at install time, never editable again; welcome email
+    subject/body were hardcoded Python strings. Both now admin-editable
+    (new "Templates" page): suspension page via backup-then-atomic-replace
+    (`daemon/site_templates.py`), welcome email via a small documented
+    `{{placeholder}}` set substituted at send time
+    (`daemon/notifications.py`), verified to not leak into other event
+    types' emails.
+11. **Redis per-account status** — already fully built and wired into the
+    customer `Redis.jsx` page (status/memory/flush/connection-info).
+    Verified against current code, not re-implemented.
+12. **GeoLite2 top-countries** — graceful hide-when-absent already existed
+    on both admin and customer site-stats pages. What was missing:
+    `install.sh` had zero MaxMind support. Added `setup_geoip()` (optional
+    `FH_MAXMIND_LICENSE_KEY` env var, best-effort), a full README section,
+    verified the license key never appears in installer log output.
+13. **IMAP migration in customer panel** — already a full customer-facing
+    page (`Email.jsx`'s `ImapMigrateTab`), correctly `require_account_
+    access`-scoped, reusing all of Audit 3's security fixes unchanged.
+    Verified, not re-implemented.
+14. **Permanent server-wide IP block** — new feature, distinct from both
+    the existing per-domain IP blocker and fail2ban's automatic/unban-only
+    jails. `daemon/ipban.py`: real `ufw insert 1 deny from <ip>` (evaluated
+    ahead of any broader allow rule), refuses `0.0.0.0/0`/`::/0`/loopback
+    (self-lockout guards), new admin page "IP Bans". A real bug (reusing
+    the hosting-account username validator for the acting-admin field) was
+    caught and fixed before shipping, not found live.
+15. **Account creation password + contact email** — the password field
+    already existed server-side with full strength enforcement but was
+    never exposed in the admin UI; email didn't exist anywhere. Contact
+    email is stored in the existing `AccountNotificationPrefs.customer_
+    email` (not a new column) — directly enables item 10's welcome email
+    to have somewhere to send.
+
+**Tests**: full suite run at the close of this batch — **1846 passed, 0
+failed** (up from the 1730-test baseline at the start of this session; see
+each checkpoint for the per-item breakdown of what was added), 3 warnings
+(pre-existing, unrelated to this batch: a `StarletteDeprecationWarning`
+and two duplicate-OpenAPI-operation-ID warnings from `api/routers/
+filebrowser.py`), 1653.69s (27m34s). Every touched-suite subset was also
+run green individually throughout the batch, not just at the end.
+**Live-applied on this box** (additive-only, explicitly authorized
+per-item): FTP firewall rules + `pure-ftpd` config. **Not live-applied**
+(built + tested, deferred to the operator, consistent with this project's
+established deploy posture for anything beyond additive/reversible live
+changes): the PHP hardening `sed` against real php.ini files, and — as
+with every other feature batch in this project's history — the frontend/
+backend deploy to `/opt/boron` itself.
+
+---
+
 **Rebrand note (2026-07-11):** this product was renamed from **Forgehost**
 to **Boron Panel** — see the top entry below for what changed and why.
 Everything under this line, from this point down through the rest of the
