@@ -1,18 +1,18 @@
 [Unit]
-Description=Forgehost provisioning daemon (root, Unix-socket RPC only)
+Description=Boron provisioning daemon (root, Unix-socket RPC only)
 After=network.target mariadb.service
 Wants=mariadb.service
 
 [Service]
 Type=simple
-ExecStart=/opt/forgehost/.venv/bin/python -m daemon.server
-WorkingDirectory=/opt/forgehost
-Environment=PYTHONPATH=/opt/forgehost
-Environment=FORGEHOST_CONFIG=/etc/forgehost/forgehost.toml
-Environment=FORGEHOST_SECRETS=/etc/forgehost/secrets.env
+ExecStart=/opt/boron/.venv/bin/python -m daemon.server
+WorkingDirectory=/opt/boron
+Environment=PYTHONPATH=/opt/boron
+Environment=BORON_CONFIG=/etc/boron/boron.toml
+Environment=BORON_SECRETS=/etc/boron/secrets.env
 Restart=on-failure
 RestartSec=3
-RuntimeDirectory=forgehost
+RuntimeDirectory=boron
 RuntimeDirectoryMode=0750
 
 [Install]

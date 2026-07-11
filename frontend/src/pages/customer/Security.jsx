@@ -94,11 +94,11 @@ export default function Security() {
   }
 
   const downloadRecoveryCodes = () => {
-    const body = `Forgehost two-factor recovery codes${username ? ` for ${username}` : ''}\nEach code works once. Keep them somewhere safe.\n\n${(recoveryCodes || []).join('\n')}\n`
+    const body = `Boron two-factor recovery codes${username ? ` for ${username}` : ''}\nEach code works once. Keep them somewhere safe.\n\n${(recoveryCodes || []).join('\n')}\n`
     const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }))
     const a = document.createElement('a')
     a.href = url
-    a.download = 'forgehost-recovery-codes.txt'
+    a.download = 'boron-recovery-codes.txt'
     document.body.appendChild(a)
     a.click()
     a.remove()
@@ -192,7 +192,7 @@ export default function Security() {
               <Smartphone className="h-5 w-5 text-accent-600 dark:text-accent-300" /> Scan the QR code
             </CardTitle>
             <CardDescription>
-              Add Forgehost to an authenticator app (Google Authenticator, 1Password, Authy…), then enter the 6-digit code
+              Add Boron to an authenticator app (Google Authenticator, 1Password, Authy…), then enter the 6-digit code
               it shows to finish enabling 2FA.
             </CardDescription>
           </CardHeader>

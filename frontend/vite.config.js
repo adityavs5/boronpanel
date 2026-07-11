@@ -8,10 +8,10 @@ import fs from 'fs'
 // from the same tree scripts/release.sh tarballs -- always carries the
 // matching version for pre-auth display (the login page can't call the
 // authenticated /api/v1/version).
-function readForgehostVersion() {
+function readBoronVersion() {
   try {
     const text = fs.readFileSync(path.resolve(__dirname, '../version.py'), 'utf8')
-    const m = text.match(/FORGEHOST_VERSION\s*=\s*"([^"]+)"/)
+    const m = text.match(/BORON_VERSION\s*=\s*"([^"]+)"/)
     if (m) return m[1]
   } catch {
     /* fall through */
@@ -27,7 +27,7 @@ export default defineConfig({
   plugins: [react()],
   base: '/static/dist/',
   define: {
-    __FORGEHOST_VERSION__: JSON.stringify(readForgehostVersion()),
+    __BORON_VERSION__: JSON.stringify(readBoronVersion()),
   },
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },

@@ -164,7 +164,7 @@ export default function Ssl() {
 
       <p className="mt-4 flex items-start gap-2 text-sm text-muted-foreground">
         <Clock className="mt-0.5 h-4 w-4 shrink-0" />
-        Wildcard SSL requires this domain's DNS zone to be managed by Forgehost (DNS-01 challenge);
+        Wildcard SSL requires this domain's DNS zone to be managed by Boron (DNS-01 challenge);
         issuance is rejected with a clear reason otherwise.
       </p>
 

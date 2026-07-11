@@ -3,7 +3,7 @@ import { useAccountUsername } from '@/hooks/useAccount'
 import { CenteredSpinner } from '@/components/ui/Spinner'
 
 // File manager v2: the custom in-SPA file manager is replaced by FileBrowser
-// Quantum, served at /files behind forgehost-api's authenticated proxy (see
+// Quantum, served at /files behind boron-api's authenticated proxy (see
 // api/routers/filebrowser.py). This page just hands off — it navigates to the
 // launch endpoint, which authorizes the account, records the audited access,
 // sets the signed target cookie, and lands the browser in FileBrowser Quantum

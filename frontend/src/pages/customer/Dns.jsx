@@ -157,8 +157,8 @@ export default function Dns() {
               </>
             ) : (
               <>
-                <span className="font-mono">{domain}</span> isn't a Forgehost-managed DNS zone, and no managed zone
-                covers it as a subdomain either. DNS (and Cloudflare) is only available for a domain Forgehost
+                <span className="font-mono">{domain}</span> isn't a Boron-managed DNS zone, and no managed zone
+                covers it as a subdomain either. DNS (and Cloudflare) is only available for a domain Boron
                 manages as its own zone.
               </>
             )

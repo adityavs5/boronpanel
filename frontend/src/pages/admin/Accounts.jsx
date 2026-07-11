@@ -241,7 +241,7 @@ export default function Accounts() {
     <div>
       <PageHeader
         title="Accounts"
-        description={`Manage all hosting accounts on this server. Forgehost ${version}.`}
+        description={`Manage all hosting accounts on this server. Boron ${version}.`}
         icon={Users}
       >
         <Button variant="secondary" onClick={() => setNsOpen(true)}>
@@ -259,7 +259,7 @@ export default function Accounts() {
           <div className="flex items-center gap-2.5 text-accent-700 dark:text-accent-300">
             <ArrowUpCircle className="h-5 w-5 shrink-0" />
             <span>
-              <span className="font-semibold">Forgehost v{updateStatus.latest_version} is available</span>
+              <span className="font-semibold">Boron v{updateStatus.latest_version} is available</span>
               {' '}(you are on v{updateStatus.current_version}).
             </span>
           </div>

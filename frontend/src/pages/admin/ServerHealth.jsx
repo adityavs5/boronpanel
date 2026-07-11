@@ -237,7 +237,7 @@ function MonitoringCard() {
             ))}
             {!services.length && !history.isLoading && (
               <p className="text-sm text-muted-foreground">
-                No checks recorded yet — the */5 cron (deploy/forgehost-monitoring.cron) hasn't run.
+                No checks recorded yet — the */5 cron (deploy/boron-monitoring.cron) hasn't run.
               </p>
             )}
           </div>

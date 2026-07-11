@@ -9,7 +9,7 @@ import { TableSkeleton } from '@/components/ui/Skeleton'
 import { EmptyState, ErrorState } from '@/components/ui/States'
 
 // Run A feature 7: the last 100 5xx responses from the panel's own API,
-// read from /var/log/forgehost/api-error.log via GET /admin/logs/errors.
+// read from /var/log/boron/api-error.log via GET /admin/logs/errors.
 export default function ErrorLog() {
   const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: ['admin-error-log'],

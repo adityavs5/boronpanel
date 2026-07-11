@@ -106,7 +106,7 @@ export default function CpanelImport() {
     <div>
       <PageHeader
         title="cPanel import"
-        description="Import a standard cPanel/WHM full-account backup tarball into a brand-new Forgehost account. Unsupported items are skipped and reported individually rather than aborting the whole import."
+        description="Import a standard cPanel/WHM full-account backup tarball into a brand-new Boron account. Unsupported items are skipped and reported individually rather than aborting the whole import."
         icon={DownloadCloud}
       >
         <Button onClick={() => setCreateOpen(true)}>
@@ -144,7 +144,7 @@ export default function CpanelImport() {
           <form onSubmit={submit}>
             <DialogBody className="space-y-4">
               <FormField
-                label="New Forgehost username"
+                label="New Boron username"
                 required
                 hint="Lowercase letters and digits, starts with a letter (max 16 chars)."
                 error={createMut.error?.fields?.username}

@@ -1,4 +1,4 @@
-# Forgehost JSON API Contract (reference for SPA wiring)
+# Boron JSON API Contract (reference for SPA wiring)
 
 Access legend: **[ADMIN]** admin only · **[ACCT]** owner or admin · **[DOM]** domain owner · **[SELF]** owner only (admin rejected).
 All auth via signed `fh_session` cookie (send `withCredentials`). Datetimes are ISO-8601 or null.

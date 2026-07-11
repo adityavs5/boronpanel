@@ -27,7 +27,7 @@ import { isUpdateJobActive, useUpdateStatus } from '@/hooks/useUpdateStatus'
 const UPDATE_STEPS = ['preflight', 'backup', 'download', 'checksum', 'extract', 'venv', 'migrate', 'finalize']
 const STEP_LABELS = {
   preflight: 'Pre-flight checks (test suite, disk space)',
-  backup: 'Backup panel DB + /etc/forgehost',
+  backup: 'Backup panel DB + /etc/boron',
   download: 'Download release from GitHub',
   checksum: 'Verify SHA256 checksum',
   extract: 'Validate + stage new version',
@@ -251,7 +251,7 @@ export default function Updates() {
             <div className="text-sm text-muted-foreground">
               <div className="mb-1 font-medium text-foreground">Update checks are not configured.</div>
               Set <code className="font-mono text-xs">update_github_repo = "owner/repo"</code> in{' '}
-              <code className="font-mono text-xs">/etc/forgehost/forgehost.toml</code> and restart the
+              <code className="font-mono text-xs">/etc/boron/boron.toml</code> and restart the
               daemon to enable release checks against GitHub.
             </div>
           ) : (
@@ -339,7 +339,7 @@ export default function Updates() {
                 </div>
                 <div className="mt-1 break-words text-muted-foreground">{last.error}</div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  Full step log: <code className="font-mono">/var/log/forgehost/updates.log</code>
+                  Full step log: <code className="font-mono">/var/log/boron/updates.log</code>
                 </div>
               </div>
             </div>

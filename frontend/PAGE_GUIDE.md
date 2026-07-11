@@ -1,6 +1,6 @@
-# Forgehost SPA — Page Authoring Guide (READ BEFORE WRITING A PAGE)
+# Boron SPA — Page Authoring Guide (READ BEFORE WRITING A PAGE)
 
-You are writing ONE React page component (plain JSX, React 18) for the Forgehost
+You are writing ONE React page component (plain JSX, React 18) for the Boron
 control panel. Match the existing design system EXACTLY. Tailwind only, no inline
 styles (except tiny dynamic width % on bars). Default export a component.
 

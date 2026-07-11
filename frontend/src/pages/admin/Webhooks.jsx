@@ -217,7 +217,7 @@ export default function Webhooks() {
           <DialogHeader>
             <DialogTitle>Add a webhook</DialogTitle>
             <DialogDescription>
-              Payloads are signed with HMAC-SHA256 over the raw request body (header X-Forgehost-Signature).
+              Payloads are signed with HMAC-SHA256 over the raw request body (header X-Boron-Signature).
             </DialogDescription>
           </DialogHeader>
           <form

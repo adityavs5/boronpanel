@@ -124,7 +124,7 @@ export default function Branding() {
                 value={active.panel_name}
                 onChange={(e) => setForm({ ...active, panel_name: e.target.value })}
                 maxLength={64}
-                placeholder="Forgehost"
+                placeholder="Boron"
               />
             </FormField>
             <FormField label="Support email" hint="Optional -- shown to customers who need help.">

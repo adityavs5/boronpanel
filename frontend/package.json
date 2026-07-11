@@ -1,9 +1,9 @@
 {
-  "name": "forgehost-frontend",
+  "name": "boron-frontend",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Forgehost control panel — React SPA (replaces the legacy Jinja2 UI)",
+  "description": "Boron control panel — React SPA (replaces the legacy Jinja2 UI)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

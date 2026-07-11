@@ -8,7 +8,7 @@
 @tailwind utilities;
 
 /*
- * Forgehost design tokens. Surfaces are CSS variables (RGB triplets so Tailwind
+ * Boron design tokens. Surfaces are CSS variables (RGB triplets so Tailwind
  * `/<alpha-value>` works) and flip between light/dark; the sidebar stays dark
  * in both. Brand accent + semantic colors live in tailwind.config.js.
  */

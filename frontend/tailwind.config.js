@@ -1,5 +1,5 @@
 /** @type {import('tailwindcss').Config} */
-// Forgehost design tokens (Cloudways-inspired). Surfaces use CSS variables
+// Boron design tokens (Cloudways-inspired). Surfaces use CSS variables
 // (see src/index.css) so the same class set renders in both light and dark
 // mode; brand + semantic colors are fixed hex per the goal's token spec.
 export default {

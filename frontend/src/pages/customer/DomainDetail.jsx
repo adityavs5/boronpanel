@@ -233,8 +233,8 @@ function DnsTab({ domain }) {
                 </>
               ) : (
                 <>
-                  <span className="font-mono">{domain}</span> isn't a Forgehost-managed DNS zone, and no managed zone
-                  covers it as a subdomain either. DNS (and Cloudflare) is only available for a domain Forgehost
+                  <span className="font-mono">{domain}</span> isn't a Boron-managed DNS zone, and no managed zone
+                  covers it as a subdomain either. DNS (and Cloudflare) is only available for a domain Boron
                   manages as its own zone — if this domain's DNS is hosted elsewhere, add a record there pointing at
                   this server instead.
                 </>
@@ -509,7 +509,7 @@ function NameserversForm({ username, domain, nameservers, glue }) {
         open={resetOpen}
         onOpenChange={setResetOpen}
         title="Reset to default nameservers?"
-        description={`This restores Forgehost-managed defaults (ns1.${domain} / ns2.${domain}) pointing at this server.`}
+        description={`This restores Boron-managed defaults (ns1.${domain} / ns2.${domain}) pointing at this server.`}
         confirmLabel="Reset to defaults"
         variant="danger"
         loading={resetMut.isPending}
@@ -1598,7 +1598,7 @@ function WildcardTab({ username, domain }) {
         <CardContent className="space-y-4">
           {!data?.zone_managed && (
             <p className="rounded-btn border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground">
-              This domain's DNS zone isn't managed by Forgehost yet, so a wildcard A record can't be created here.
+              This domain's DNS zone isn't managed by Boron yet, so a wildcard A record can't be created here.
               Manage this domain's DNS first (DNS tab), or create <span className="font-mono">*.{domain}</span>{' '}
               manually with your DNS provider.
             </p>
@@ -1690,7 +1690,7 @@ function ErrorPagesTab({ username, domain }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2"><FileWarning className="h-4 w-4" /> Custom error pages</CardTitle>
           <CardDescription>
-            Replace the default Forgehost-branded 403/404/500/503 pages with your own HTML, stored under this domain's
+            Replace the default Boron-branded 403/404/500/503 pages with your own HTML, stored under this domain's
             own error_pages/ directory.
           </CardDescription>
         </CardHeader>
@@ -1706,7 +1706,7 @@ function ErrorPagesTab({ username, domain }) {
               </button>
             ))}
           </div>
-          <FormField label={`${activeCode} page HTML`} hint={activeInfo?.has_custom ? 'Custom page in use.' : 'Using the default Forgehost-branded page — save to customize.'}>
+          <FormField label={`${activeCode} page HTML`} hint={activeInfo?.has_custom ? 'Custom page in use.' : 'Using the default Boron-branded page — save to customize.'}>
             <Textarea rows={12} className="font-mono text-xs" value={content ?? ''}
               onChange={(e) => setContent(e.target.value)} placeholder="<html>...</html>" />
           </FormField>

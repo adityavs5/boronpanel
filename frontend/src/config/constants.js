@@ -2,7 +2,7 @@
 // truth) at build time; the fallback only exists for tooling that evaluates
 // this module outside a Vite build.
 export const APP_VERSION =
-  typeof __FORGEHOST_VERSION__ !== 'undefined' ? `v${__FORGEHOST_VERSION__}` : 'v0.0.0-dev'
+  typeof __BORON_VERSION__ !== 'undefined' ? `v${__BORON_VERSION__}` : 'v0.0.0-dev'
 
 // PHP versions offered in switchers. Must match shared/config.py's
 // php_versions (the backend rejects anything else) -- this list previously

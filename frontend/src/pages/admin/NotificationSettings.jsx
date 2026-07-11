@@ -144,7 +144,7 @@ export default function NotificationSettings() {
                 <FormField
                   label="From address"
                   htmlFor="sender_address"
-                  hint="e.g. forgehost@example.com"
+                  hint="e.g. boron@example.com"
                 >
                   <div className="relative">
                     <AtSign className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -154,7 +154,7 @@ export default function NotificationSettings() {
                       className="pl-8"
                       value={senderAddress}
                       onChange={(e) => setSenderAddress(e.target.value)}
-                      placeholder="forgehost@example.com"
+                      placeholder="boron@example.com"
                     />
                   </div>
                 </FormField>

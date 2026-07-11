@@ -30,7 +30,7 @@ export const useUI = create(
       setAccountSwitcher: (u) => set({ accountSwitcher: u }),
     }),
     {
-      name: 'forgehost.ui',
+      name: 'boron.ui',
       partialize: (s) => ({ sidebarCollapsed: s.sidebarCollapsed, theme: s.theme }),
     },
   ),

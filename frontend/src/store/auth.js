@@ -74,7 +74,7 @@ export const useAuth = create(
       },
     }),
     {
-      name: 'forgehost.auth',
+      name: 'boron.auth',
       partialize: (s) => ({ role: s.role, username: s.username }),
     },
   ),

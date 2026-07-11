@@ -837,7 +837,7 @@ function ImapMigrateTab({ username, domain }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2"><ArrowRightLeft className="h-4 w-4" /> Migrate mail from another server</CardTitle>
           <CardDescription>
-            Copy mail from an external IMAP account into one of your Forgehost mailboxes. Credentials are used only
+            Copy mail from an external IMAP account into one of your Boron mailboxes. Credentials are used only
             for this migration and are never stored or logged.
           </CardDescription>
         </CardHeader>
@@ -851,7 +851,7 @@ function ImapMigrateTab({ username, domain }) {
                   {mailboxes.map((m) => <option key={m.local_part} value={m.local_part}>{m.local_part}@{domain}</option>)}
                 </Select>
               </FormField>
-              <FormField label="This mailbox's own (Forgehost) password" hint="Needed so the migration can log in and deliver mail here.">
+              <FormField label="This mailbox's own (Boron) password" hint="Needed so the migration can log in and deliver mail here.">
                 <Input type="password" value={form.dest_password} onChange={(e) => setForm((f) => ({ ...f, dest_password: e.target.value }))} />
               </FormField>
               <div className="border-t border-border pt-4">

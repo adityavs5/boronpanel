@@ -75,24 +75,6 @@
         "title": "AddDomainBody",
         "type": "object"
       },
-      "AddEntryBody": {
-        "properties": {
-          "note": {
-            "default": "",
-            "title": "Note",
-            "type": "string"
-          },
-          "value": {
-            "title": "Value",
-            "type": "string"
-          }
-        },
-        "required": [
-          "value"
-        ],
-        "title": "AddEntryBody",
-        "type": "object"
-      },
       "AddKeyBody": {
         "properties": {
           "key": {
@@ -365,6 +347,17 @@
         "title": "BootstrapBody",
         "type": "object"
       },
+      "BootstrapKillPrivilegeBody": {
+        "properties": {
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          }
+        },
+        "title": "BootstrapKillPrivilegeBody",
+        "type": "object"
+      },
       "BrandingBody": {
         "properties": {
           "panel_name": {
@@ -570,6 +563,19 @@
           "command"
         ],
         "title": "ComposerBody",
+        "type": "object"
+      },
+      "ConfigureGeoipBody": {
+        "properties": {
+          "license_key": {
+            "title": "License Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "license_key"
+        ],
+        "title": "ConfigureGeoipBody",
         "type": "object"
       },
       "ConfirmBody": {
@@ -1039,6 +1045,24 @@
         "title": "CustomRuleBody",
         "type": "object"
       },
+      "DeleteEntryBody": {
+        "properties": {
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "domain"
+        ],
+        "title": "DeleteEntryBody",
+        "type": "object"
+      },
       "DomainIssueCertBody": {
         "properties": {
           "force": {
@@ -1096,6 +1120,19 @@
           }
         },
         "title": "EnableRedisBody",
+        "type": "object"
+      },
+      "ErrorPageBody": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "ErrorPageBody",
         "type": "object"
       },
       "ForwarderBody": {
@@ -1221,6 +1258,29 @@
           }
         },
         "title": "IdentityBody",
+        "type": "object"
+      },
+      "ImportEntriesBody": {
+        "properties": {
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain",
+          "kind",
+          "text"
+        ],
+        "title": "ImportEntriesBody",
         "type": "object"
       },
       "InstallAppBody": {
@@ -1349,6 +1409,39 @@
         "title": "IssueCertBody",
         "type": "object"
       },
+      "ListFoldersBody": {
+        "properties": {
+          "source_email": {
+            "title": "Source Email",
+            "type": "string"
+          },
+          "source_host": {
+            "title": "Source Host",
+            "type": "string"
+          },
+          "source_password": {
+            "title": "Source Password",
+            "type": "string"
+          },
+          "source_port": {
+            "default": 993,
+            "title": "Source Port",
+            "type": "integer"
+          },
+          "source_ssl": {
+            "default": true,
+            "title": "Source Ssl",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source_host",
+          "source_email",
+          "source_password"
+        ],
+        "title": "ListFoldersBody",
+        "type": "object"
+      },
       "LockdownBody": {
         "properties": {
           "confirm": {
@@ -1370,6 +1463,48 @@
           "enabled"
         ],
         "title": "LockdownBody",
+        "type": "object"
+      },
+      "MaintenanceBody": {
+        "properties": {
+          "auto_disable_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Disable Minutes"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "estimated_time": {
+            "default": "",
+            "title": "Estimated Time",
+            "type": "string"
+          },
+          "message": {
+            "default": "This site is currently undergoing scheduled maintenance. Please check back soon.",
+            "title": "Message",
+            "type": "string"
+          },
+          "regenerate_token": {
+            "default": false,
+            "title": "Regenerate Token",
+            "type": "boolean"
+          },
+          "title": {
+            "default": "We'll be right back",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "title": "MaintenanceBody",
         "type": "object"
       },
       "MonitoringSettingsBody": {
@@ -2253,6 +2388,62 @@
         "title": "SpamFilterBody",
         "type": "object"
       },
+      "StartMigrationBody": {
+        "properties": {
+          "dest_password": {
+            "title": "Dest Password",
+            "type": "string"
+          },
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "folders": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Folders",
+            "type": "array"
+          },
+          "local_part": {
+            "title": "Local Part",
+            "type": "string"
+          },
+          "source_email": {
+            "title": "Source Email",
+            "type": "string"
+          },
+          "source_host": {
+            "title": "Source Host",
+            "type": "string"
+          },
+          "source_password": {
+            "title": "Source Password",
+            "type": "string"
+          },
+          "source_port": {
+            "default": 993,
+            "title": "Source Port",
+            "type": "integer"
+          },
+          "source_ssl": {
+            "default": true,
+            "title": "Source Ssl",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "domain",
+          "local_part",
+          "source_host",
+          "source_email",
+          "source_password",
+          "dest_password"
+        ],
+        "title": "StartMigrationBody",
+        "type": "object"
+      },
       "StartUpdateBody": {
         "properties": {
           "confirm": {
@@ -2539,6 +2730,17 @@
         "title": "VerifyBody",
         "type": "object"
       },
+      "WildcardBody": {
+        "properties": {
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "title": "WildcardBody",
+        "type": "object"
+      },
       "WpcliBody": {
         "properties": {
           "action": {
@@ -2662,6 +2864,24 @@
         "title": "SettingsBody",
         "type": "object"
       },
+      "api__routers__ipwhitelist__AddEntryBody": {
+        "properties": {
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "AddEntryBody",
+        "type": "object"
+      },
       "api__routers__notifications__SettingsBody": {
         "properties": {
           "events": {
@@ -2685,6 +2905,29 @@
           }
         },
         "title": "SettingsBody",
+        "type": "object"
+      },
+      "api__routers__spamfilter__AddEntryBody": {
+        "properties": {
+          "domain": {
+            "title": "Domain",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "pattern": {
+            "title": "Pattern",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain",
+          "kind",
+          "pattern"
+        ],
+        "title": "AddEntryBody",
         "type": "object"
       },
       "api__routers__twofactor__DisableBody": {
@@ -2765,14 +3008,14 @@
   },
   "info": {
     "contact": {
-      "name": "Forgehost operator",
+      "name": "Boron operator",
       "url": "https://github.com/"
     },
-    "description": "\nForgehost is a single-server Linux hosting control panel. This is the REST\nAPI that both the React panel and any external integration (e.g. a billing\nsystem) drive -- every panel action is one of these calls.\n\n**Authentication.** Two mechanisms, same role model (`admin` /\n`customer`):\n* **Session cookie** (`fh_session`) -- how the browser panel authenticates,\n  issued by `POST /login`.\n* **Bearer token** (`Authorization: Bearer fh_<role>_<...>`) -- for\n  machine-to-machine use; issue/revoke under **API Tokens**. A token can be\n  scoped to a single account.\n\nAdmins reach every account; a customer identity is scoped to exactly one\naccount, enforced server-side by username (never a client-supplied id).\n\n**These docs require an admin session** -- open them while signed in to the\npanel as an admin in the same browser.\n",
+    "description": "\nBoron is a single-server Linux hosting control panel. This is the REST\nAPI that both the React panel and any external integration (e.g. a billing\nsystem) drive -- every panel action is one of these calls.\n\n**Authentication.** Two mechanisms, same role model (`admin` /\n`customer`):\n* **Session cookie** (`fh_session`) -- how the browser panel authenticates,\n  issued by `POST /login`.\n* **Bearer token** (`Authorization: Bearer fh_<role>_<...>`) -- for\n  machine-to-machine use; issue/revoke under **API Tokens**. A token can be\n  scoped to a single account.\n\nAdmins reach every account; a customer identity is scoped to exactly one\naccount, enforced server-side by username (never a client-supplied id).\n\n**These docs require an admin session** -- open them while signed in to the\npanel as an admin in the same browser.\n",
     "license": {
       "name": "Proprietary"
     },
-    "title": "Forgehost",
+    "title": "Boron",
     "version": "1.0"
   },
   "openapi": "3.1.0",
@@ -8627,6 +8870,363 @@
         ]
       }
     },
+    "/api/v1/accounts/{username}/domains/{domain}/error-pages": {
+      "get": {
+        "operationId": "list_error_pages_api_v1_accounts__username__domains__domain__error_pages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Error Pages",
+        "tags": [
+          "error-pages"
+        ]
+      }
+    },
+    "/api/v1/accounts/{username}/domains/{domain}/error-pages/{code}": {
+      "delete": {
+        "operationId": "delete_error_page_api_v1_accounts__username__domains__domain__error_pages__code__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Error Page",
+        "tags": [
+          "error-pages"
+        ]
+      },
+      "get": {
+        "operationId": "get_error_page_api_v1_accounts__username__domains__domain__error_pages__code__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Error Page",
+        "tags": [
+          "error-pages"
+        ]
+      },
+      "put": {
+        "operationId": "set_error_page_api_v1_accounts__username__domains__domain__error_pages__code__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ErrorPageBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Error Page",
+        "tags": [
+          "error-pages"
+        ]
+      }
+    },
     "/api/v1/accounts/{username}/domains/{domain}/forwarding": {
       "delete": {
         "operationId": "delete_forwarding_api_v1_accounts__username__domains__domain__forwarding_delete",
@@ -9633,6 +10233,176 @@
         "summary": "Get Lscache Stats",
         "tags": [
           "lscache"
+        ]
+      }
+    },
+    "/api/v1/accounts/{username}/domains/{domain}/maintenance": {
+      "get": {
+        "operationId": "get_maintenance_api_v1_accounts__username__domains__domain__maintenance_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Maintenance",
+        "tags": [
+          "maintenance"
+        ]
+      },
+      "patch": {
+        "operationId": "set_maintenance_api_v1_accounts__username__domains__domain__maintenance_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaintenanceBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Maintenance",
+        "tags": [
+          "maintenance"
         ]
       }
     },
@@ -10825,6 +11595,267 @@
         ]
       }
     },
+    "/api/v1/accounts/{username}/domains/{domain}/stats": {
+      "get": {
+        "operationId": "get_stats_api_v1_accounts__username__domains__domain__stats_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "daily",
+              "title": "Period",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Stats",
+        "tags": [
+          "sitestats"
+        ]
+      }
+    },
+    "/api/v1/accounts/{username}/domains/{domain}/wildcard": {
+      "get": {
+        "operationId": "get_wildcard_api_v1_accounts__username__domains__domain__wildcard_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Wildcard",
+        "tags": [
+          "wildcard"
+        ]
+      },
+      "patch": {
+        "operationId": "set_wildcard_api_v1_accounts__username__domains__domain__wildcard_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WildcardBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Wildcard",
+        "tags": [
+          "wildcard"
+        ]
+      }
+    },
     "/api/v1/accounts/{username}/domains/{domain}/wordpress": {
       "post": {
         "operationId": "trigger_install_api_v1_accounts__username__domains__domain__wordpress_post",
@@ -11098,6 +12129,402 @@
         ]
       }
     },
+    "/api/v1/accounts/{username}/email/imap-migrate": {
+      "get": {
+        "operationId": "list_migrations_api_v1_accounts__username__email_imap_migrate_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Migrations",
+        "tags": [
+          "imapsync"
+        ]
+      },
+      "post": {
+        "operationId": "start_migration_api_v1_accounts__username__email_imap_migrate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartMigrationBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Migration",
+        "tags": [
+          "imapsync"
+        ]
+      }
+    },
+    "/api/v1/accounts/{username}/email/imap-migrate/list-folders": {
+      "post": {
+        "operationId": "list_source_folders_api_v1_accounts__username__email_imap_migrate_list_folders_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListFoldersBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Source Folders",
+        "tags": [
+          "imapsync"
+        ]
+      }
+    },
+    "/api/v1/accounts/{username}/email/imap-migrate/{job_id}": {
+      "get": {
+        "operationId": "get_migration_status_api_v1_accounts__username__email_imap_migrate__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Migration Status",
+        "tags": [
+          "imapsync"
+        ]
+      }
+    },
+    "/api/v1/accounts/{username}/email/imap-migrate/{job_id}/cancel": {
+      "post": {
+        "operationId": "cancel_migration_api_v1_accounts__username__email_imap_migrate__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Migration",
+        "tags": [
+          "imapsync"
+        ]
+      }
+    },
     "/api/v1/accounts/{username}/email/{local_part}/password": {
       "patch": {
         "operationId": "change_mailbox_password_api_v1_accounts__username__email__local_part__password_patch",
@@ -11186,6 +12613,365 @@
         "summary": "Change Mailbox Password",
         "tags": [
           "mail"
+        ]
+      }
+    },
+    "/api/v1/accounts/{username}/email/{mailbox}/spam-filters": {
+      "delete": {
+        "operationId": "delete_entry_api_v1_accounts__username__email__mailbox__spam_filters_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "mailbox",
+            "required": true,
+            "schema": {
+              "title": "Mailbox",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteEntryBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Entry",
+        "tags": [
+          "spam-filters"
+        ]
+      },
+      "get": {
+        "operationId": "list_entries_api_v1_accounts__username__email__mailbox__spam_filters_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "mailbox",
+            "required": true,
+            "schema": {
+              "title": "Mailbox",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "domain",
+            "required": true,
+            "schema": {
+              "title": "Domain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Entries",
+        "tags": [
+          "spam-filters"
+        ]
+      },
+      "post": {
+        "operationId": "add_entry_api_v1_accounts__username__email__mailbox__spam_filters_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "mailbox",
+            "required": true,
+            "schema": {
+              "title": "Mailbox",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api__routers__spamfilter__AddEntryBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Entry",
+        "tags": [
+          "spam-filters"
+        ]
+      }
+    },
+    "/api/v1/accounts/{username}/email/{mailbox}/spam-filters/import": {
+      "post": {
+        "operationId": "import_entries_api_v1_accounts__username__email__mailbox__spam_filters_import_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "mailbox",
+            "required": true,
+            "schema": {
+              "title": "Mailbox",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportEntriesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Entries",
+        "tags": [
+          "spam-filters"
         ]
       }
     },
@@ -16740,6 +18526,277 @@
         ]
       }
     },
+    "/api/v1/admin/db/kill-privilege/bootstrap": {
+      "post": {
+        "operationId": "bootstrap_kill_privilege_api_v1_admin_db_kill_privilege_bootstrap_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapKillPrivilegeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bootstrap Kill Privilege",
+        "tags": [
+          "dbmonitor"
+        ]
+      }
+    },
+    "/api/v1/admin/db/monitor": {
+      "get": {
+        "operationId": "get_monitor_api_v1_admin_db_monitor_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Monitor",
+        "tags": [
+          "dbmonitor"
+        ]
+      }
+    },
+    "/api/v1/admin/db/queries/{thread_id}": {
+      "delete": {
+        "operationId": "kill_query_api_v1_admin_db_queries__thread_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Kill Query",
+        "tags": [
+          "dbmonitor"
+        ]
+      }
+    },
+    "/api/v1/admin/imap-migrations": {
+      "get": {
+        "operationId": "list_active_migrations_api_v1_admin_imap_migrations_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Active Migrations",
+        "tags": [
+          "imapsync"
+        ]
+      }
+    },
     "/api/v1/admin/import/cpanel": {
       "get": {
         "operationId": "list_import_jobs_api_v1_admin_import_cpanel_get",
@@ -17041,6 +19098,69 @@
         "summary": "Get Error Log",
         "tags": [
           "admin-logs"
+        ]
+      }
+    },
+    "/api/v1/admin/maintenance": {
+      "get": {
+        "operationId": "list_active_maintenance_api_v1_admin_maintenance_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Active Maintenance",
+        "tags": [
+          "maintenance"
         ]
       }
     },
@@ -17738,6 +19858,152 @@
         "summary": "Update Plan",
         "tags": [
           "plans"
+        ]
+      }
+    },
+    "/api/v1/admin/sitestats/geoip": {
+      "post": {
+        "operationId": "configure_geoip_api_v1_admin_sitestats_geoip_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigureGeoipBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Configure Geoip",
+        "tags": [
+          "sitestats"
+        ]
+      }
+    },
+    "/api/v1/admin/sitestats/summary": {
+      "get": {
+        "operationId": "get_admin_summary_api_v1_admin_sitestats_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "default": "daily",
+              "title": "Period",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "fh_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Fh Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Admin Summary",
+        "tags": [
+          "sitestats"
         ]
       }
     },
@@ -23441,7 +25707,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AddEntryBody"
+                "$ref": "#/components/schemas/api__routers__ipwhitelist__AddEntryBody"
               }
             }
           },
@@ -24976,7 +27242,7 @@
     },
     "/files": {
       "delete": {
-        "operationId": "proxy_files_post",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -25015,7 +27281,7 @@
         ]
       },
       "get": {
-        "operationId": "proxy_files_post",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -25054,7 +27320,7 @@
         ]
       },
       "head": {
-        "operationId": "proxy_files_post",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -25093,7 +27359,7 @@
         ]
       },
       "options": {
-        "operationId": "proxy_files_post",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -25132,7 +27398,7 @@
         ]
       },
       "patch": {
-        "operationId": "proxy_files_post",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -25171,7 +27437,7 @@
         ]
       },
       "post": {
-        "operationId": "proxy_files_post",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -25210,7 +27476,7 @@
         ]
       },
       "put": {
-        "operationId": "proxy_files_post",
+        "operationId": "proxy_files_options",
         "parameters": [
           {
             "in": "query",
@@ -25251,7 +27517,7 @@
     },
     "/files/{path}": {
       "delete": {
-        "operationId": "proxy_files__path__post",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -25289,7 +27555,7 @@
         ]
       },
       "get": {
-        "operationId": "proxy_files__path__post",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -25327,7 +27593,7 @@
         ]
       },
       "head": {
-        "operationId": "proxy_files__path__post",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -25365,7 +27631,7 @@
         ]
       },
       "options": {
-        "operationId": "proxy_files__path__post",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -25403,7 +27669,7 @@
         ]
       },
       "patch": {
-        "operationId": "proxy_files__path__post",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -25441,7 +27707,7 @@
         ]
       },
       "post": {
-        "operationId": "proxy_files__path__post",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",
@@ -25479,7 +27745,7 @@
         ]
       },
       "put": {
-        "operationId": "proxy_files__path__post",
+        "operationId": "proxy_files__path__options",
         "parameters": [
           {
             "in": "path",

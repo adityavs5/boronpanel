@@ -30,7 +30,7 @@ export function Maintenance() {
       <ServerCrash className="h-14 w-14 text-warning" />
       <h1 className="text-2xl font-semibold text-foreground">Under maintenance</h1>
       <p className="max-w-md text-sm text-muted-foreground">
-        The Forgehost control plane is temporarily unavailable. This page refreshes automatically — please try again in a moment.
+        The Boron control plane is temporarily unavailable. This page refreshes automatically — please try again in a moment.
       </p>
       <Button onClick={() => window.location.reload()}>Retry now</Button>
     </div>

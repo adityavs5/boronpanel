@@ -14,7 +14,7 @@ export function useBranding() {
     retry: false,
   })
   return {
-    panelName: data?.panel_name || 'Forgehost',
+    panelName: data?.panel_name || 'Boron',
     logoUrl: data?.logo_url || null,
     faviconUrl: data?.favicon_url || null,
     supportEmail: data?.support_email || null,

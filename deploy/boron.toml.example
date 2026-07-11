@@ -1,0 +1,35 @@
+# Reference copy of Boron Panel's non-secret config file. Real deployments
+# install this at /etc/boron/boron.toml (0640, root:boron-api) — see
+# README.md "Configuration files" for the full setup runbook. Secrets
+# (passwords, API tokens, session signing key) never go in this file — see
+# deploy/secrets.env.example and deploy/api-secrets.env.example instead.
+#
+# Every key below is optional; shared/config.py's Settings dataclass has a
+# sensible default for anything you omit. Uncomment and edit only what your
+# install actually needs.
+
+# The server's public IP, used for default DNS/nameserver records and
+# SSL/ACME validation hints shown in the UI.
+server_public_ip = "203.0.113.10"
+
+# Email address certbot uses for Let's Encrypt registration/expiry notices.
+letsencrypt_email = "admin@example.com"
+
+# GitHub "owner/repo" the panel update system checks for new releases.
+# Leave unset (the default) to disable update checks entirely.
+# update_github_repo = "boronpanel/boronpanel"
+
+# DNS provider used for new zones/domains when the operator doesn't pick one
+# explicitly. "powerdns" (self-hosted, the default) or "cloudflare" (requires
+# CLOUDFLARE_API_TOKEN in secrets.env and cloudflare_account_id below).
+# default_dns_provider = "powerdns"
+# cloudflare_account_id = ""
+
+# Hostnames for the optional webmail (Roundcube, link-out only) and
+# phpMyAdmin single-sign-on pages, if you're running either.
+# webmail_hostname = "webmail.example.com"
+# pma_hostname = "pma.example.com"
+
+# Block device cgroups v2 io-weight limits are applied against. Only change
+# this if your root filesystem isn't /dev/vda (check `findmnt -no SOURCE /`).
+# cgroup_io_device = "/dev/vda"
