@@ -592,20 +592,28 @@ class BackupJob(Base):
 
 class WordPressInstall(Base):
     """Phase 3 feature 2: bookkeeping for a completed one-click WordPress
-    install -- one row per domain (a domain can only ever host one WP
-    install through this feature; reinstalling requires removing the
-    row/files first, same "don't silently clobber" posture as the install
-    step itself refusing a non-empty docroot). No password field here --
-    the admin password is returned once, at install-completion time
-    (WordPressJob.admin_password, cleared after first read), never
-    persisted long-term, matching this project's "passwords never stored"
-    rule applied everywhere else (DB/mail/FTP credentials)."""
+    install. QA round 2, item 3: originally one row per domain (a UNIQUE
+    index on `domain` alone), which only ever allowed a single WP install
+    at a domain's docroot. Now scoped by (domain, path) -- `path` is the
+    install's location relative to the domain's docroot ("" for the
+    docroot itself, "blog" for domain.com/blog/) -- so multiple WordPress
+    installs can coexist under one domain (root + subdirectories) and are
+    each tracked/managed independently. See shared/db.py's
+    `_migrate_wordpress_installs_uniqueness` for how a pre-existing
+    deployed DB's old single-column unique index is safely replaced.
+    No password field here -- the admin password is returned once, at
+    install-completion time (WordPressJob.admin_password, cleared after
+    first read), never persisted long-term, matching this project's
+    "passwords never stored" rule applied everywhere else (DB/mail/FTP
+    credentials)."""
 
     __tablename__ = "wordpress_installs"
+    __table_args__ = (UniqueConstraint("domain", "path", name="uq_wordpress_installs_domain_path"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
-    domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    path: Mapped[str] = mapped_column(String(255), default="")
     db_name: Mapped[str] = mapped_column(String(64))
     db_user: Mapped[str] = mapped_column(String(64))
     wp_version: Mapped[str] = mapped_column(String(32))

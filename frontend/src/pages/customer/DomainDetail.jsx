@@ -8,7 +8,7 @@ import {
   ArrowLeft, Globe, Plus, Pencil, Trash2, Save, RefreshCw,
   ShieldOff, Ban, Lock, Users, Network, ShieldCheck,
   Server, Copy, ExternalLink, CheckCircle2, AlertCircle, Download, RotateCcw, Cloud,
-  Construction, Asterisk, FileWarning, Eye, KeyRound, BarChart3,
+  Construction, Asterisk, FileWarning, Eye, KeyRound, BarChart3, Play, Wrench,
 } from 'lucide-react'
 import { get, post, put, patch, del } from '@/lib/api'
 import { relativeTime, copyToClipboard, formatBytes } from '@/lib/utils'
@@ -1288,15 +1288,156 @@ function CopyRow({ label, value, mono = true, href }) {
   )
 }
 
-function WordPressTab({ username, domain }) {
+// QA round 2, item 2: WordPress management actions, reusing the exact same
+// allowlisted WP-CLI backend (daemon/wpcli.py) DevTools.jsx's account-level
+// WP-CLI tab already calls -- kept as a separate constant here (not
+// imported from DevTools.jsx, a page module) rather than shared, matching
+// this codebase's existing per-page-module convention for such lists.
+const WP_ACTIONS = [
+  { value: 'core_update', label: 'Update WordPress core' },
+  { value: 'core_check_update', label: 'Check for core updates' },
+  { value: 'plugin_list', label: 'List plugins' },
+  { value: 'plugin_update', label: 'Update plugin', fields: ['name_or_all'] },
+  { value: 'plugin_activate', label: 'Activate plugin', fields: ['name'] },
+  { value: 'plugin_deactivate', label: 'Deactivate plugin', fields: ['name'] },
+  { value: 'theme_list', label: 'List themes' },
+  { value: 'theme_update', label: 'Update theme', fields: ['name_or_all'] },
+  { value: 'theme_activate', label: 'Activate theme', fields: ['name'] },
+  { value: 'theme_deactivate', label: 'Deactivate theme', fields: ['name'] },
+  { value: 'user_reset_password', label: 'Reset admin password', fields: ['user'] },
+  { value: 'cache_flush', label: 'Flush cache' },
+  { value: 'search_replace', label: 'Search-replace (preview first)', fields: ['search', 'replace'] },
+  { value: 'maintenance_on', label: 'Enable maintenance mode' },
+  { value: 'maintenance_off', label: 'Disable maintenance mode' },
+]
+
+// A live-updating panel for a WP-CLI CommandRun job, scoped to this domain.
+function WpCliRunOutput({ username, domain, jobId }) {
+  const { data: job } = useQuery({
+    queryKey: ['wp-action-run', username, domain, jobId],
+    queryFn: () => get(`/api/v1/accounts/${username}/domains/${domain}/wordpress/actions/runs/${jobId}`),
+    enabled: jobId != null,
+    refetchInterval: (q) => {
+      const s = q.state.data?.status
+      return s === 'pending' || s === 'running' ? 1500 : false
+    },
+  })
+  if (jobId == null) return null
+  const output = [(job?.stdout || ''), (job?.stderr || '')].filter(Boolean).join('\n')
+  return (
+    <div className="mt-3 space-y-2">
+      <div className="flex items-center gap-2 text-sm">
+        <span className="font-mono text-xs text-muted-foreground">{job?.command}</span>
+        {job && <StatusBadge status={job.status} />}
+        {job?.exit_code != null && <span className="text-xs text-muted-foreground">exit {job.exit_code}</span>}
+      </div>
+      {job?.revealed_secret && (
+        <p className="rounded-btn border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+          New password (shown once): <span className="font-mono font-semibold">{job.revealed_secret}</span>
+        </p>
+      )}
+      <pre className="max-h-64 overflow-auto rounded-card border border-border bg-[#0b1120] p-3 font-mono text-xs text-slate-200">
+        {output || (job?.status === 'running' || job?.status === 'pending' ? 'Running…' : job?.error || '(no output)')}
+      </pre>
+    </div>
+  )
+}
+
+// Management card for one detected WordPress install at this domain (root
+// or a subdirectory, item 3) -- admin URL/version up front, WP-CLI actions
+// (update core/plugins/themes, reset admin password, cache flush,
+// maintenance, search-replace) tucked behind "Manage" so a domain with
+// several installs doesn't show a wall of forms at once.
+function WordPressInstallCard({ username, domain, install }) {
   const base = `/api/v1/accounts/${username}/domains/${domain}/wordpress`
-  const [form, setForm] = useState({ title: '', admin_user: 'admin', admin_email: '', admin_password: '' })
+  const [action, setAction] = useState('plugin_list')
+  const [fields, setFields] = useState({ name: '', all: false, user: 'admin', search: '', replace: '', preview: true })
+  const [jobId, setJobId] = useState(null)
+  const [open, setOpen] = useState(false)
+  const spec = WP_ACTIONS.find((a) => a.value === action)
+  const adminUrl = `https://${domain}${install.path ? `/${install.path}` : ''}/wp-admin/`
+
+  const runMut = useMutation({
+    mutationFn: () => {
+      const body = { action, path: install.path || '' }
+      if (spec.fields?.includes('name_or_all')) { if (fields.all) body.all = true; else body.name = fields.name }
+      if (spec.fields?.includes('name')) body.name = fields.name
+      if (spec.fields?.includes('user')) body.user = fields.user
+      if (spec.fields?.includes('search')) { body.search = fields.search; body.replace = fields.replace; body.preview = fields.preview }
+      return post(`${base}/actions`, body)
+    },
+    onSuccess: (job) => { setJobId(job.id); toast.success('WP-CLI command started') },
+    onError: (e) => toast.error('Could not run WP-CLI', e.message),
+  })
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-success" />
+            {install.path ? `${domain}/${install.path}` : domain}
+          </CardTitle>
+          {install.wp_version && <Badge variant="accent">WP {install.wp_version}</Badge>}
+        </div>
+        <CardDescription>{install.path ? `Installed in the "${install.path}" subdirectory` : 'Installed at the domain root'}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <CopyRow label="Admin URL" value={adminUrl} href={adminUrl} />
+        <Button variant="outline" size="sm" onClick={() => setOpen((v) => !v)}>
+          <Wrench className="h-4 w-4" /> {open ? 'Hide WP-CLI actions' : 'Manage (WP-CLI actions)'}
+        </Button>
+        {open && (
+          <div className="space-y-4 rounded-card border border-border p-4">
+            <FormField label="Command">
+              <Select value={action} onChange={(e) => setAction(e.target.value)}>
+                {WP_ACTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+              </Select>
+            </FormField>
+            {spec.fields?.includes('name_or_all') && (
+              <div className="flex items-end gap-3">
+                <FormField label="Plugin/theme slug" className="flex-1">
+                  <Input value={fields.name} disabled={fields.all} onChange={(e) => setFields((f) => ({ ...f, name: e.target.value }))} placeholder="akismet" />
+                </FormField>
+                <FormField label="All"><div className="flex h-10 items-center"><Switch checked={fields.all} onCheckedChange={(v) => setFields((f) => ({ ...f, all: v }))} /></div></FormField>
+              </div>
+            )}
+            {spec.fields?.includes('name') && (
+              <FormField label="Plugin/theme slug"><Input value={fields.name} onChange={(e) => setFields((f) => ({ ...f, name: e.target.value }))} placeholder="akismet" /></FormField>
+            )}
+            {spec.fields?.includes('user') && (
+              <FormField label="User login"><Input value={fields.user} onChange={(e) => setFields((f) => ({ ...f, user: e.target.value }))} placeholder="admin" /></FormField>
+            )}
+            {spec.fields?.includes('search') && (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <FormField label="Search for"><Input value={fields.search} onChange={(e) => setFields((f) => ({ ...f, search: e.target.value }))} placeholder="http://old.com" /></FormField>
+                <FormField label="Replace with"><Input value={fields.replace} onChange={(e) => setFields((f) => ({ ...f, replace: e.target.value }))} placeholder="https://new.com" /></FormField>
+                <FormField label="Preview only (dry-run)"><div className="flex h-10 items-center"><Switch checked={fields.preview} onCheckedChange={(v) => setFields((f) => ({ ...f, preview: v }))} /></div></FormField>
+              </div>
+            )}
+            <Button loading={runMut.isPending} onClick={() => runMut.mutate()}><Play className="h-4 w-4" /> Run command</Button>
+            <WpCliRunOutput username={username} domain={domain} jobId={jobId} />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// The install form + async job status (unchanged behavior from before this
+// item, apart from the new "Subdirectory" field) -- used both for the very
+// first install at a domain and for adding another one alongside existing
+// installs (item 3).
+function WordPressInstallForm({ username, domain, suggestSubdirectory, onDone }) {
+  const base = `/api/v1/accounts/${username}/domains/${domain}/wordpress`
+  const [form, setForm] = useState({ path: '', title: '', admin_user: 'admin', admin_email: '', admin_password: '' })
   const [jobId, setJobId] = useState(null)
   const [revealed, setRevealed] = useState(null) // captured one-time admin_password
 
   const installMut = useMutation({
     mutationFn: () => {
       const body = {}
+      if (form.path.trim()) body.path = form.path.trim()
       if (form.title.trim()) body.title = form.title.trim()
       if (form.admin_user.trim()) body.admin_user = form.admin_user.trim()
       if (form.admin_email.trim()) body.admin_email = form.admin_email.trim()
@@ -1322,123 +1463,170 @@ function WordPressTab({ username, domain }) {
   // clears it after the first successful read, so re-fetches return null.
   if (job?.admin_password && revealed == null) setRevealed(job.admin_password)
 
-  const startOver = () => { setJobId(null); setRevealed(null) }
+  const finish = () => { setJobId(null); setRevealed(null); onDone?.() }
 
   // ---- Install form (no job yet) ------------------------------------------
   if (jobId == null) {
     return (
-      <div className="max-w-2xl">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Download className="h-4 w-4" /> Install WordPress</CardTitle>
-            <CardDescription>
-              The domain's docroot must be empty. Creates a scoped database automatically, downloads the latest
-              WordPress release from wordpress.org, and installs it — the site serves immediately once complete.
-            </CardDescription>
-          </CardHeader>
-          <form onSubmit={(e) => { e.preventDefault(); installMut.mutate() }}>
-            <CardContent className="space-y-4">
-              <FormField label="Site title" hint={`Defaults to ${domain}`}>
-                <Input value={form.title} placeholder={domain}
-                  onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
-              </FormField>
-              <FormField label="Admin username" required>
-                <Input required value={form.admin_user} placeholder="admin"
-                  onChange={(e) => setForm((f) => ({ ...f, admin_user: e.target.value }))} />
-              </FormField>
-              <FormField label="Admin email" hint={`Defaults to webmaster@${domain}`}>
-                <Input type="email" value={form.admin_email} placeholder={`webmaster@${domain}`}
-                  onChange={(e) => setForm((f) => ({ ...f, admin_email: e.target.value }))} />
-              </FormField>
-              <FormField label="Admin password" hint="Leave blank to auto-generate a strong password (shown once when done).">
-                <Input type="password" value={form.admin_password} placeholder="Auto-generated if blank"
-                  onChange={(e) => setForm((f) => ({ ...f, admin_password: e.target.value }))} />
-              </FormField>
-            </CardContent>
-            <CardFooter>
-              <Button type="submit" loading={installMut.isPending} disabled={!form.admin_user.trim()}>
-                <Download className="h-4 w-4" /> Install WordPress
-              </Button>
-            </CardFooter>
-          </form>
-        </Card>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Download className="h-4 w-4" /> Install WordPress</CardTitle>
+          <CardDescription>
+            {suggestSubdirectory
+              ? 'Install another copy of WordPress in a subdirectory of this domain — the target directory must be empty and gets its own database, tracked separately from your other installs.'
+              : "The domain's docroot must be empty. Creates a scoped database automatically, downloads the latest WordPress release from wordpress.org, and installs it — the site serves immediately once complete."}
+          </CardDescription>
+        </CardHeader>
+        <form onSubmit={(e) => { e.preventDefault(); installMut.mutate() }}>
+          <CardContent className="space-y-4">
+            <FormField label="Subdirectory" hint={`Leave blank to install at the domain root (${domain}). Enter e.g. "blog" for ${domain}/blog.`}>
+              <Input value={form.path} placeholder="blog"
+                onChange={(e) => setForm((f) => ({ ...f, path: e.target.value }))} />
+            </FormField>
+            <FormField label="Site title" hint={`Defaults to ${domain}`}>
+              <Input value={form.title} placeholder={domain}
+                onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
+            </FormField>
+            <FormField label="Admin username" required>
+              <Input required value={form.admin_user} placeholder="admin"
+                onChange={(e) => setForm((f) => ({ ...f, admin_user: e.target.value }))} />
+            </FormField>
+            <FormField label="Admin email" hint={`Defaults to webmaster@${domain}`}>
+              <Input type="email" value={form.admin_email} placeholder={`webmaster@${domain}`}
+                onChange={(e) => setForm((f) => ({ ...f, admin_email: e.target.value }))} />
+            </FormField>
+            <FormField label="Admin password" hint="Leave blank to auto-generate a strong password (shown once when done).">
+              <Input type="password" value={form.admin_password} placeholder="Auto-generated if blank"
+                onChange={(e) => setForm((f) => ({ ...f, admin_password: e.target.value }))} />
+            </FormField>
+          </CardContent>
+          <CardFooter>
+            <Button type="submit" loading={installMut.isPending} disabled={!form.admin_user.trim()}>
+              <Download className="h-4 w-4" /> Install WordPress
+            </Button>
+          </CardFooter>
+        </form>
+      </Card>
     )
   }
 
   // ---- Job status ---------------------------------------------------------
   const pct = wpPercent(job)
-  // Treat the first-poll gap (job still undefined) as active so the "Start
-  // over" footer doesn't flash before the initial status arrives.
+  // Treat the first-poll gap (job still undefined) as active so the "Done"
+  // footer doesn't flash before the initial status arrives.
   const active = !job || job.status === 'pending' || job.status === 'running'
   const displayPassword = revealed ?? job?.admin_password ?? null
 
   return (
-    <div className="max-w-2xl">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle className="flex items-center gap-2">
-              {job?.status === 'completed' ? <CheckCircle2 className="h-4 w-4 text-success" />
-                : job?.status === 'failed' ? <AlertCircle className="h-4 w-4 text-danger" />
-                : <Download className="h-4 w-4" />}
-              WordPress install
-            </CardTitle>
-            {job && <StatusBadge status={job.status} />}
-          </div>
-          <CardDescription>{job?.progress_message || 'Starting…'}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {error ? (
-            <ErrorState error={error} onRetry={refetch} />
-          ) : (
-            <>
-              <ProgressBar value={pct} color={job?.status === 'failed' ? 'bg-danger' : undefined} size="lg" />
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="flex items-center gap-2">
+            {job?.status === 'completed' ? <CheckCircle2 className="h-4 w-4 text-success" />
+              : job?.status === 'failed' ? <AlertCircle className="h-4 w-4 text-danger" />
+              : <Download className="h-4 w-4" />}
+            WordPress install
+          </CardTitle>
+          {job && <StatusBadge status={job.status} />}
+        </div>
+        <CardDescription>{job?.progress_message || 'Starting…'}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error ? (
+          <ErrorState error={error} onRetry={refetch} />
+        ) : (
+          <>
+            <ProgressBar value={pct} color={job?.status === 'failed' ? 'bg-danger' : undefined} size="lg" />
 
-              {active && (
-                <p className="text-sm text-muted-foreground">
-                  Installing… this page updates automatically every few seconds.
-                </p>
-              )}
+            {active && (
+              <p className="text-sm text-muted-foreground">
+                Installing… this page updates automatically every few seconds.
+              </p>
+            )}
 
-              {job?.status === 'failed' && (
-                <p className="rounded-btn border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-                  {job.error || 'The install failed.'}
-                </p>
-              )}
+            {job?.status === 'failed' && (
+              <p className="rounded-btn border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+                {job.error || 'The install failed.'}
+              </p>
+            )}
 
-              {job?.status === 'completed' && (
-                <div className="space-y-3">
-                  <CopyRow label="Admin URL" value={job.admin_url} href={job.admin_url} />
-                  <CopyRow label="Admin username" value={job.admin_user} />
-                  {displayPassword ? (
-                    <>
-                      <CopyRow label="Admin password" value={displayPassword} />
-                      <p className="text-xs text-warning">
-                        This password is shown once — copy it now. It won't be displayed again.
-                      </p>
-                    </>
-                  ) : (
-                    <div className="rounded-btn border border-border px-3 py-2">
-                      <p className="text-xs text-muted-foreground">Admin password</p>
-                      <p className="text-sm text-muted-foreground">
-                        Already shown once and not stored — use "Lost password" in wp-admin if you didn't save it.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-        </CardContent>
-        {!active && (
-          <CardFooter>
-            <Button variant="outline" onClick={startOver}>
-              <RotateCcw className="h-4 w-4" /> Start over
-            </Button>
-          </CardFooter>
+            {job?.status === 'completed' && (
+              <div className="space-y-3">
+                <CopyRow label="Admin URL" value={job.admin_url} href={job.admin_url} />
+                <CopyRow label="Admin username" value={job.admin_user} />
+                {displayPassword ? (
+                  <>
+                    <CopyRow label="Admin password" value={displayPassword} />
+                    <p className="text-xs text-warning">
+                      This password is shown once — copy it now. It won't be displayed again.
+                    </p>
+                  </>
+                ) : (
+                  <div className="rounded-btn border border-border px-3 py-2">
+                    <p className="text-xs text-muted-foreground">Admin password</p>
+                    <p className="text-sm text-muted-foreground">
+                      Already shown once and not stored — use "Lost password" in wp-admin if you didn't save it.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
-      </Card>
+      </CardContent>
+      {!active && (
+        <CardFooter>
+          <Button variant="outline" onClick={finish}>
+            <RotateCcw className="h-4 w-4" /> Done
+          </Button>
+        </CardFooter>
+      )}
+    </Card>
+  )
+}
+
+// QA round 2, items 2+3: shows the management section (admin URL/version +
+// WP-CLI actions) once WordPress is detected at this domain, for every
+// install found (root and/or any subdirectories) -- reusing the existing
+// WP-CLI backend wholesale. Falls back to the install form when nothing is
+// detected yet, same as before this item.
+function WordPressTab({ username, domain }) {
+  const base = `/api/v1/accounts/${username}/domains/${domain}/wordpress`
+  const qc = useQueryClient()
+  const [showInstallForm, setShowInstallForm] = useState(false)
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['wp-installs', username, domain],
+    queryFn: () => get(`${base}/installs`),
+    enabled: !!username && !!domain,
+  })
+  const installs = data?.installs || []
+
+  const refreshInstalls = () => { setShowInstallForm(false); qc.invalidateQueries({ queryKey: ['wp-installs', username, domain] }) }
+
+  if (isLoading) return <div className="max-w-2xl"><CardSkeleton /></div>
+  if (error) return <div className="max-w-2xl"><ErrorState error={error} onRetry={refetch} /></div>
+
+  return (
+    <div className="max-w-2xl space-y-4">
+      {installs.map((install) => (
+        <WordPressInstallCard key={install.id} username={username} domain={domain} install={install} />
+      ))}
+
+      {(installs.length === 0 || showInstallForm) && (
+        <WordPressInstallForm
+          username={username}
+          domain={domain}
+          suggestSubdirectory={installs.length > 0}
+          onDone={refreshInstalls}
+        />
+      )}
+
+      {installs.length > 0 && !showInstallForm && (
+        <Button variant="outline" onClick={() => setShowInstallForm(true)}>
+          <Plus className="h-4 w-4" /> Install another WordPress
+        </Button>
+      )}
     </div>
   )
 }

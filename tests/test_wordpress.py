@@ -259,3 +259,95 @@ def test_install_helper_lives_outside_var_lib_boron():
 def test_install_helper_world_readable_on_disk():
     mode = wp.INSTALL_HELPER_PATH.stat().st_mode & 0o777
     assert mode & 0o004, "install helper must be world-readable (runs as an arbitrary hosting account uid)"
+
+
+# --- subdirectory installs + multi-install per domain (item 3) -------------
+
+
+def test_install_target_root_is_docroot_itself(tmp_path):
+    assert wp._install_target(str(tmp_path), "") == str(tmp_path)
+
+
+def test_install_target_subdirectory(tmp_path):
+    assert wp._install_target(str(tmp_path), "blog") == str(tmp_path / "blog")
+
+
+def test_install_target_strips_slashes(tmp_path):
+    assert wp._install_target(str(tmp_path), "/blog/") == str(tmp_path / "blog")
+
+
+def test_install_target_rejects_traversal_outside_docroot(tmp_path):
+    with pytest.raises(wp.WordPressError, match="outside"):
+        wp._install_target(str(tmp_path), "../../etc")
+
+
+def test_suffix_hint_derives_from_path():
+    assert wp._suffix_hint("blog") == "wp_blog"
+    assert wp._suffix_hint("My Blog!!") == "wp_my_blog"
+    assert wp._suffix_hint("") == "wp"
+
+
+def test_install_into_subdirectory(account_with_domain, stub_network, stub_system, stub_install_script, stub_database):
+    result = wp.install({"username": "demo1", "domain": "demo1.example", "path": "blog"})
+    assert result["status"] == "installed"
+    assert result["path"] == "blog"
+    assert result["admin_url"] == "https://demo1.example/blog/wp-admin/"
+
+    docroot = account_with_domain["docroot"]
+    assert (docroot / "blog" / "wp-config.php").exists()
+    assert (docroot / "blog" / "wp-load.php").exists()
+    assert not (docroot / "wp-config.php").exists()  # root itself untouched
+
+    with write_session() as session:
+        row = session.scalar(
+            select(WordPressInstall).where(WordPressInstall.domain == "demo1.example", WordPressInstall.path == "blog")
+        )
+        assert row is not None
+        assert row.db_name == "demo1_wp_blog"
+
+
+def test_install_root_and_subdirectory_coexist(account_with_domain, stub_network, stub_system, stub_install_script, stub_database):
+    """Item 3: multiple WordPress installs per account, tracked
+    separately -- a root install and a subdirectory install under the
+    SAME domain must not collide with each other."""
+    root_result = wp.install({"username": "demo1", "domain": "demo1.example"})
+    blog_result = wp.install({"username": "demo1", "domain": "demo1.example", "path": "blog"})
+
+    assert root_result["path"] == ""
+    assert blog_result["path"] == "blog"
+    assert root_result["db_name"] != blog_result["db_name"]
+
+    with write_session() as session:
+        rows = session.scalars(
+            select(WordPressInstall).where(WordPressInstall.domain == "demo1.example")
+        ).all()
+        assert {r.path for r in rows} == {"", "blog"}
+
+
+def test_install_refuses_duplicate_at_the_same_path_but_allows_a_different_one(
+    account_with_domain, stub_network, stub_system, stub_install_script, stub_database
+):
+    wp.install({"username": "demo1", "domain": "demo1.example", "path": "blog"})
+    with pytest.raises(wp.WordPressError, match="already installed"):
+        wp.install({"username": "demo1", "domain": "demo1.example", "path": "blog"})
+    # A second, different subdirectory is unaffected.
+    result = wp.install({"username": "demo1", "domain": "demo1.example", "path": "shop"})
+    assert result["status"] == "installed"
+
+
+def test_install_subdirectory_refuses_non_empty_target(
+    account_with_domain, stub_network, stub_system, stub_install_script, stub_database
+):
+    (account_with_domain["docroot"] / "blog").mkdir()
+    (account_with_domain["docroot"] / "blog" / "existing.html").write_text("already something here")
+    with pytest.raises(wp.WordPressError):
+        wp.install({"username": "demo1", "domain": "demo1.example", "path": "blog"})
+    assert not stub_database["created"]
+
+
+def test_install_subdirectory_rejects_path_traversal(
+    account_with_domain, stub_network, stub_system, stub_install_script, stub_database
+):
+    with pytest.raises(wp.WordPressError, match="outside"):
+        wp.install({"username": "demo1", "domain": "demo1.example", "path": "../../etc"})
+    assert not stub_database["created"]

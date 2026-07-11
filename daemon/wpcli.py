@@ -54,34 +54,99 @@ def _wp_version_at(docroot: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _scan_wp_installs_under(docroot: str) -> list[str]:
+    """QA round 2, item 3 (subdirectory installs): every location (relative
+    to docroot; "" = the docroot itself) that has its own wp-config.php --
+    the docroot itself, plus one level of subdirectories (e.g.
+    domain.com/blog). Deliberately not recursive beyond one level --
+    unbounded filesystem recursion over an arbitrary customer-owned tree is
+    both a real performance risk (docroots can be huge) and unnecessary
+    for the real-world case this feature targets."""
+    found = []
+    if os.path.isfile(os.path.join(docroot, "wp-config.php")):
+        found.append("")
+    try:
+        entries = os.scandir(docroot)
+    except OSError:
+        return found
+    with entries:
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            if os.path.isfile(os.path.join(entry.path, "wp-config.php")):
+                found.append(entry.name)
+    return found
+
+
 def detect_installs(params: dict) -> dict:
-    """Scan the account's own domain docroots for a wp-config.php. Reads the WP
-    version straight from wp-includes/version.php (no wp-cli run needed)."""
+    """Scan the account's own domain docroots (root + one level of
+    subdirectories) for a wp-config.php. Reads the WP version straight from
+    wp-includes/version.php (no wp-cli run needed). `id` stays exactly the
+    bare domain for a root install (unchanged contract, existing callers
+    keep working) and becomes "<domain>::<path>" for a subdirectory one.
+    An optional `domain` param scopes the scan to just that one domain
+    (item 2's per-domain WordPress section) instead of every domain the
+    account owns -- omitting it keeps the original account-wide behavior."""
     username = validate_username(params["username"])
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise RuntimeError(f"account '{username}' not found")
-        domains = session.scalars(select(Domain).where(Domain.account_id == account.id)).all()
+        query = select(Domain).where(Domain.account_id == account.id)
+        if params.get("domain"):
+            query = query.where(Domain.domain == validate_domain(params["domain"]))
+        domains = session.scalars(query).all()
         docroots = [(d.domain, d.docroot, d.kind) for d in domains]
 
     installs = []
     seen_docroots = set()
     for domain, docroot, kind in docroots:
         if docroot in seen_docroots:
-            continue  # parked/alias domains share a docroot -- list the install once
+            continue  # parked/alias domains share a docroot -- list the install(s) once
         seen_docroots.add(docroot)
-        if os.path.isfile(os.path.join(docroot, "wp-config.php")):
+        for path in _scan_wp_installs_under(docroot):
+            install_dir = docroot if not path else os.path.join(docroot, path)
             installs.append({
-                "id": domain,
+                "id": domain if not path else f"{domain}::{path}",
                 "domain": domain,
-                "docroot": docroot,
-                "wp_version": _wp_version_at(docroot),
+                "path": path,
+                "docroot": install_dir,
+                "wp_version": _wp_version_at(install_dir),
             })
     return {"installs": installs}
 
 
+def _install_dir(docroot: str, path: str) -> str:
+    """Resolve an install's real directory -- the docroot itself if `path`
+    is empty, else that subdirectory of it, re-validated to stay inside the
+    docroot (rejects a crafted `path` like "../../etc" from ever escaping
+    it, the same realpath-containment pattern this project uses everywhere
+    else account-owned paths are involved, e.g. daemon/filemanager.py)."""
+    path = (path or "").strip().strip("/")
+    if not path:
+        return docroot
+    docroot_real = os.path.realpath(docroot)
+    candidate = os.path.realpath(os.path.join(docroot, path))
+    if candidate != docroot_real and not candidate.startswith(docroot_real + os.sep):
+        raise ValidationError(f"path '{path}' escapes the domain's docroot")
+    return candidate
+
+
 def _resolve_docroot(username: str, domain: str) -> str:
+    """Root-install resolver, unchanged -- kept for the existing
+    account-level DevTools WP-CLI tab (api/routers/devtools.py), which has
+    no notion of a subdirectory path and must keep working exactly as
+    before. New, domain-scoped call sites (item 2's per-domain WordPress
+    section) use _resolve_install_dir below instead."""
+    return _resolve_install_dir(username, domain, "")
+
+
+def _resolve_install_dir(username: str, domain: str, path: str = "") -> str:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
@@ -90,9 +155,10 @@ def _resolve_docroot(username: str, domain: str) -> str:
         if row is None:
             raise RuntimeError(f"domain '{domain}' not found for account '{username}'")
         docroot = row.docroot
-    if not os.path.isfile(os.path.join(docroot, "wp-config.php")):
-        raise RuntimeError(f"no WordPress install (wp-config.php) found at {docroot}")
-    return docroot
+    install_dir = _install_dir(docroot, path)
+    if not os.path.isfile(os.path.join(install_dir, "wp-config.php")):
+        raise RuntimeError(f"no WordPress install (wp-config.php) found at {install_dir}")
+    return install_dir
 
 
 def _slug(value, field: str) -> str:
@@ -157,8 +223,9 @@ def _build(action: str, p: dict):
 def run_wpcli(params: dict) -> dict:
     username = validate_username(params["username"])
     domain = validate_domain(params["domain"])
+    path = (params.get("path") or "").strip().strip("/")
     action = params["action"]
-    docroot = _resolve_docroot(username, domain)
+    docroot = _resolve_install_dir(username, domain, path)
 
     wp_args, display, secret, redact = _build(action, params)
     phar = ensure_wpcli()

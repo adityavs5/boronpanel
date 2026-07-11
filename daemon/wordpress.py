@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import pwd
+import re
 import secrets
 import shutil
 import zipfile
@@ -228,13 +229,45 @@ def _account_and_domain(username: str, domain_name: str) -> tuple[int, str]:
         return account.id, domain_row.docroot
 
 
-def _allocate_database(username: str) -> tuple[dict, str]:
-    """Tries `wp` first (the common case: one WP install per account), and
-    a random suffix on collision (an account installing WordPress on a
-    second domain) -- returns (grant_dict, suffix_used)."""
+def _install_target(docroot: str, path: str) -> str:
+    """QA round 2, item 3 (subdirectory installs): resolve the real
+    install directory -- the domain's docroot itself if `path` is empty,
+    else that subdirectory of it. Same realpath-containment jail as
+    `_safe_extract_target` above (a crafted `path` like "../../etc" must
+    never escape the docroot); the target directory need not exist yet --
+    `_extract_wordpress`'s own per-member `os.makedirs(exist_ok=True)`
+    creates it as a side effect of writing the first file into it, same
+    as it already does for nested directories within a normal install."""
+    path = (path or "").strip().strip("/")
+    if not path:
+        return docroot
+    docroot_real = os.path.realpath(docroot)
+    target = os.path.realpath(os.path.join(docroot_real, path))
+    if target != docroot_real and not target.startswith(docroot_real + os.sep):
+        raise WordPressError(f"path '{path}' would install outside the domain's docroot -- refusing")
+    return target
+
+
+def _suffix_hint(path: str) -> str:
+    """Best-effort short DB-name hint from a subdirectory path (e.g.
+    "blog" -> "wp_blog") -- purely cosmetic (helps an admin browsing the
+    database list tell which DB belongs to which install at a glance);
+    falls back to a random suffix on any collision or unsafe/empty path,
+    exactly like the existing root-install retry logic already does, so
+    an unusual subdirectory name can never block an install."""
+    cleaned = re.sub(r"[^a-z0-9]+", "_", path.lower()).strip("_")[:20]
+    return f"wp_{cleaned}" if cleaned else "wp"
+
+
+def _allocate_database(username: str, path: str = "") -> tuple[dict, str]:
+    """Tries a preferred suffix first (`wp` for a root install, a
+    path-derived hint for a subdirectory one), and a random suffix on
+    collision (an account installing WordPress a second time, at another
+    domain or subdirectory) -- returns (grant_dict, suffix_used)."""
+    preferred = _suffix_hint(path) if path else "wp"
     last_error: Exception | None = None
     for attempt in range(5):
-        suffix = "wp" if attempt == 0 else f"wp{secrets.token_hex(2)}"
+        suffix = preferred if attempt == 0 else f"wp{secrets.token_hex(2)}"
         try:
             return handlers_database.create_database({"username": username, "name": suffix}), suffix
         except RuntimeError as exc:
@@ -245,26 +278,35 @@ def _allocate_database(username: str) -> tuple[dict, str]:
 
 def install(params: dict) -> dict:
     """Synchronous core install -- see trigger_install for the async job
-    wrapper the API/UI actually calls."""
+    wrapper the API/UI actually calls. QA round 2, item 3: an optional
+    `path` (relative to the domain's docroot, e.g. "blog") installs into a
+    subdirectory instead of the docroot itself, so a domain can host
+    multiple independently-tracked WordPress installs (root + any number
+    of subdirectories)."""
     username = validate_username(params["username"])
     domain_name = validate_domain(params["domain"])
+    path = (params.get("path") or "").strip().strip("/")
     title = (params.get("title") or domain_name).strip()
     admin_user = (params.get("admin_user") or "admin").strip()
     admin_email = (params.get("admin_email") or f"webmaster@{domain_name}").strip()
     admin_password = validate_password_strength(params["admin_password"]) if params.get("admin_password") else _generate_password()
 
     account_id, docroot = _account_and_domain(username, domain_name)
+    target_dir = _install_target(docroot, path)
 
     with write_session() as session:
-        existing = session.scalar(select(WordPressInstall).where(WordPressInstall.domain == domain_name))
+        existing = session.scalar(
+            select(WordPressInstall).where(WordPressInstall.domain == domain_name, WordPressInstall.path == path)
+        )
         if existing is not None:
-            raise WordPressError(f"WordPress is already installed for '{domain_name}' -- remove it first to reinstall")
+            where = f"'{domain_name}'" if not path else f"'{domain_name}/{path}'"
+            raise WordPressError(f"WordPress is already installed at {where} -- remove it first to reinstall")
 
-    if os.path.exists(os.path.join(docroot, "wp-config.php")):
-        raise WordPressError(f"'{docroot}' already has a wp-config.php -- refusing to overwrite an existing install")
-    if not _docroot_is_empty_enough(docroot):
+    if os.path.exists(os.path.join(target_dir, "wp-config.php")):
+        raise WordPressError(f"'{target_dir}' already has a wp-config.php -- refusing to overwrite an existing install")
+    if not _docroot_is_empty_enough(target_dir):
         raise WordPressError(
-            f"'{docroot}' is not empty -- a WordPress install requires an empty docroot "
+            f"'{target_dir}' is not empty -- a WordPress install requires an empty directory "
             "(move or back up existing content first)"
         )
 
@@ -272,21 +314,21 @@ def install(params: dict) -> dict:
     home_dir = f"{settings.home_base}/{username}"
 
     version, download_url = fetch_latest_version_and_url()
-    db_grant, suffix = _allocate_database(username)
+    db_grant, suffix = _allocate_database(username, path)
 
     try:
         staging_zip = Path(settings.wp_staging_dir) / f"wordpress-{version}-{secrets.token_hex(4)}.zip"
         try:
             _download_zip(download_url, staging_zip)
-            _extract_wordpress(staging_zip, docroot)
+            _extract_wordpress(staging_zip, target_dir)
         finally:
             staging_zip.unlink(missing_ok=True)
 
-        _write_wp_config(docroot, db_grant["db_name"], db_grant["db_user"], db_grant["password"])
-        run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", docroot], check=True)
+        _write_wp_config(target_dir, db_grant["db_name"], db_grant["db_user"], db_grant["password"])
+        run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", target_dir], check=True)
 
-        site_url = f"https://{domain_name}"
-        _run_silent_install(docroot, username, home_dir, site_url, title, admin_user, admin_email, admin_password)
+        site_url = f"https://{domain_name}" if not path else f"https://{domain_name}/{path}"
+        _run_silent_install(target_dir, username, home_dir, site_url, title, admin_user, admin_email, admin_password)
     except Exception:
         try:
             handlers_database.drop_database({"username": username, "name": suffix})
@@ -294,13 +336,14 @@ def install(params: dict) -> dict:
             logger.exception("failed to clean up database after a failed WordPress install for '%s'", domain_name)
         raise
 
-    run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", docroot], check=True)
+    run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", target_dir], check=True)
 
     with write_session() as session:
         session.add(
             WordPressInstall(
                 account_id=account_id,
                 domain=domain_name,
+                path=path,
                 db_name=db_grant["db_name"],
                 db_user=db_grant["db_user"],
                 wp_version=version,
@@ -310,6 +353,7 @@ def install(params: dict) -> dict:
 
     return {
         "domain": domain_name,
+        "path": path,
         "admin_url": f"{site_url}/wp-admin/",
         "admin_user": admin_user,
         "admin_password": admin_password,
@@ -434,6 +478,7 @@ def list_installs(params: dict) -> dict:
                 {
                     "id": r.id,
                     "domain": r.domain,
+                    "path": r.path,
                     "db_name": r.db_name,
                     "db_user": r.db_user,
                     "wp_version": r.wp_version,

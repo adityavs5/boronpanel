@@ -104,3 +104,119 @@ def test_run_wpcli_rejects_domain_without_wordpress(isolated_db, tmp_path, monke
     monkeypatch.setattr(wpcli, "ensure_wpcli", lambda: "/phar")
     with pytest.raises(RuntimeError, match="wp-config.php"):
         wpcli.run_wpcli({"username": "demo1", "domain": "site.com", "action": "plugin_list"})
+
+
+# --- subdirectory installs (item 3) ----------------------------------------
+
+
+def test_detect_finds_subdirectory_install(isolated_db, tmp_path):
+    docroot = tmp_path / "public_html"
+    docroot.mkdir()
+    (docroot / "index.html").write_text("marketing site")  # root is NOT WordPress
+    blog = docroot / "blog"
+    blog.mkdir()
+    (blog / "wp-config.php").write_text("<?php // wp")
+    (blog / "wp-includes").mkdir()
+    (blog / "wp-includes" / "version.php").write_text("<?php\n$wp_version = '6.5.2';\n")
+    _account_with_docroot(docroot)
+
+    result = wpcli.detect_installs({"username": "demo1"})
+    assert len(result["installs"]) == 1
+    install = result["installs"][0]
+    assert install["id"] == "site.com::blog"
+    assert install["path"] == "blog"
+    assert install["wp_version"] == "6.5.2"
+    assert install["docroot"] == str(blog)
+
+
+def test_detect_finds_root_and_subdirectory_installs_together(isolated_db, tmp_path):
+    """Item 3: multiple WordPress installs per account/domain, tracked
+    separately."""
+    docroot = tmp_path / "public_html"
+    docroot.mkdir()
+    (docroot / "wp-config.php").write_text("<?php // root wp")
+    blog = docroot / "blog"
+    blog.mkdir()
+    (blog / "wp-config.php").write_text("<?php // subdir wp")
+    _account_with_docroot(docroot)
+
+    result = wpcli.detect_installs({"username": "demo1"})
+    ids = {i["id"] for i in result["installs"]}
+    assert ids == {"site.com", "site.com::blog"}
+    paths = {i["id"]: i["path"] for i in result["installs"]}
+    assert paths == {"site.com": "", "site.com::blog": "blog"}
+
+
+def test_detect_can_be_scoped_to_a_single_domain(isolated_db, tmp_path):
+    docroot_a = tmp_path / "a"
+    docroot_a.mkdir()
+    (docroot_a / "wp-config.php").write_text("<?php")
+    docroot_b = tmp_path / "b"
+    docroot_b.mkdir()
+    (docroot_b / "wp-config.php").write_text("<?php")
+    with write_session() as db:
+        account = Account(username="demo1", status="active", uid=5001, gid=5001)
+        db.add(account)
+        db.flush()
+        db.add(Domain(account_id=account.id, domain="a.example", kind="primary", docroot=str(docroot_a)))
+        db.add(Domain(account_id=account.id, domain="b.example", kind="addon", docroot=str(docroot_b)))
+
+    result = wpcli.detect_installs({"username": "demo1", "domain": "a.example"})
+    assert [i["domain"] for i in result["installs"]] == ["a.example"]
+
+
+def test_detect_ignores_hidden_directories(isolated_db, tmp_path):
+    docroot = tmp_path / "public_html"
+    docroot.mkdir()
+    hidden = docroot / ".git-wp-backup"
+    hidden.mkdir()
+    (hidden / "wp-config.php").write_text("<?php")
+    _account_with_docroot(docroot)
+    assert wpcli.detect_installs({"username": "demo1"})["installs"] == []
+
+
+def test_run_wpcli_targets_subdirectory_install(isolated_db, tmp_path, monkeypatch):
+    docroot = tmp_path / "public_html"
+    docroot.mkdir()
+    blog = docroot / "blog"
+    blog.mkdir()
+    (blog / "wp-config.php").write_text("<?php")
+    _account_with_docroot(docroot)
+
+    monkeypatch.setattr(wpcli, "ensure_wpcli", lambda: "/usr/local/bin/wp-cli.phar")
+    captured = {}
+    monkeypatch.setattr(wpcli.cmdjobs, "submit", lambda *a, **k: captured.update(args=a, kwargs=k) or {"id": 1})
+
+    wpcli.run_wpcli({"username": "demo1", "domain": "site.com", "path": "blog", "action": "plugin_list"})
+    _username, _kind, target, argv, _display = captured["args"]
+    assert target == str(blog)
+    assert f"--path={blog}" in argv
+
+
+def test_run_wpcli_path_cannot_escape_docroot(isolated_db, tmp_path, monkeypatch):
+    docroot = tmp_path / "public_html"
+    docroot.mkdir()
+    (docroot / "wp-config.php").write_text("<?php")
+    _account_with_docroot(docroot)
+    monkeypatch.setattr(wpcli, "ensure_wpcli", lambda: "/phar")
+
+    with pytest.raises(ValidationError, match="escapes"):
+        wpcli.run_wpcli({"username": "demo1", "domain": "site.com", "path": "../../etc", "action": "plugin_list"})
+
+
+def test_run_wpcli_default_path_still_targets_root(isolated_db, tmp_path, monkeypatch):
+    """Backward-compat: omitting `path` entirely (every pre-existing
+    caller, e.g. the account-level DevTools tab) must keep resolving to
+    the docroot itself, exactly as before this feature."""
+    docroot = tmp_path / "public_html"
+    docroot.mkdir()
+    (docroot / "wp-config.php").write_text("<?php")
+    _account_with_docroot(docroot)
+
+    monkeypatch.setattr(wpcli, "ensure_wpcli", lambda: "/phar")
+    captured = {}
+    monkeypatch.setattr(wpcli.cmdjobs, "submit", lambda *a, **k: captured.update(args=a, kwargs=k) or {"id": 1})
+
+    wpcli.run_wpcli({"username": "demo1", "domain": "site.com", "action": "cache_flush"})
+    _username, _kind, target, _argv, _display = captured["args"]
+    assert target == str(docroot)

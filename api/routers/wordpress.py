@@ -14,6 +14,7 @@ ui_router = APIRouter(prefix="/ui/accounts/{username}/domains/{domain}/wordpress
 
 
 class InstallWordPressBody(BaseModel):
+    path: str = ""  # QA round 2, item 3: install into a subdirectory (e.g. "blog") instead of the docroot itself
     title: str | None = None
     admin_user: str | None = None
     admin_email: str | None = None
@@ -32,6 +33,57 @@ def get_job(username: str, domain: str, job_id: int, identity: Identity = Depend
     require_account_access(identity, username)
     require_domain_access(identity, domain)
     return call_daemon("wordpress.install.get", identity, username=username, job_id=job_id)
+
+
+# --- QA round 2, item 2: per-domain WordPress management (WP-CLI actions,
+# reusing the existing daemon/wpcli.py backend built for the account-level
+# DevTools tab -- api/routers/devtools.py, unchanged). item 3: every
+# endpoint below is (domain, path)-scoped, so a domain with multiple
+# installs (root + subdirectories) manages each independently. ---------
+
+
+@api_router.get("/installs")
+def list_domain_installs(username: str, domain: str, identity: Identity = Depends(get_identity)):
+    """Live-detected WordPress installs at this domain (root + one level
+    of subdirectories) -- this is what makes the management section
+    "show once WP detected," independent of whether the install was made
+    via Boron's own one-click installer or uploaded/imported another way."""
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("wpcli.detect", identity, username=username, domain=domain)
+
+
+class WpcliActionBody(BaseModel):
+    path: str = ""  # which install at this domain -- "" for the docroot itself, else a subdirectory
+    action: str
+    # optional per-action fields, mirroring api/routers/devtools.py's WpcliBody
+    name: str | None = None
+    all: bool = False
+    user: str | None = None
+    search: str | None = None
+    replace: str | None = None
+    preview: bool = True
+
+
+@api_router.post("/actions")
+def run_wpcli_action(username: str, domain: str, body: WpcliActionBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("wpcli.run", identity, username=username, domain=domain, **body.model_dump(exclude_none=True))
+
+
+@api_router.get("/actions/runs")
+def list_wpcli_action_runs(username: str, domain: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("wpcli.list", identity, username=username)
+
+
+@api_router.get("/actions/runs/{job_id}")
+def get_wpcli_action_run(username: str, domain: str, job_id: int, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("wpcli.get", identity, username=username, job_id=job_id)
 
 
 @ui_router.get("")

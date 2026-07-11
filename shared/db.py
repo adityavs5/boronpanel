@@ -79,6 +79,10 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     # Run A feature 1 (plan templates): both tables predate the Plan model.
     "accounts": {"plan_id": "INTEGER"},
     "account_resource_limits": {"ftp_account_limit": "INTEGER", "app_limit": "INTEGER"},
+    # QA round 2, item 3: WordPress multi-install + subdirectory support --
+    # see _migrate_wordpress_installs_uniqueness below for the accompanying
+    # index change this column enables.
+    "wordpress_installs": {"path": "VARCHAR(255) NOT NULL DEFAULT ''"},
 }
 
 
@@ -95,6 +99,44 @@ def _apply_additive_migrations(engine) -> None:
             for name, coltype in columns.items():
                 if name not in present:
                     conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {coltype}'))
+    _migrate_wordpress_installs_uniqueness(engine)
+
+
+def _migrate_wordpress_installs_uniqueness(engine) -> None:
+    """QA round 2, item 3: WordPressInstall used to allow exactly one row
+    per domain, enforced by a UNIQUE INDEX on `domain` alone
+    (`ix_wordpress_installs_domain`). Multi-install + subdirectory support
+    needs uniqueness on (domain, path) instead. SQLite can't ALTER a
+    constraint in place, but this project's schema convention (§ above)
+    already established that this particular uniqueness was created as a
+    separate INDEX, not baked into the table's own DDL -- confirmed by
+    inspecting the actual generated schema -- so it's droppable and
+    replaceable without a full table rebuild, unlike a genuine inline
+    UNIQUE column constraint would be.
+
+    A brand-new install never touches this function's DROP/CREATE branch:
+    create_all() already emits the current model's schema (plain index on
+    domain, composite unique on (domain, path)) directly for a table that
+    doesn't exist yet. Idempotent and safe to call every startup."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "wordpress_installs" not in inspector.get_table_names():
+        return  # create_all() will make (or already made) the current schema
+
+    existing = {ix["name"]: ix for ix in inspector.get_indexes("wordpress_installs")}
+    old_unique = existing.get("ix_wordpress_installs_domain")
+    with engine.begin() as conn:
+        if old_unique is not None and old_unique.get("unique"):
+            conn.execute(text("DROP INDEX ix_wordpress_installs_domain"))
+            conn.execute(text("CREATE INDEX ix_wordpress_installs_domain ON wordpress_installs (domain)"))
+        if "uq_wordpress_installs_domain_path" not in existing:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX uq_wordpress_installs_domain_path "
+                    "ON wordpress_installs (domain, path)"
+                )
+            )
 
 
 def _grant_api_group_read() -> None:
