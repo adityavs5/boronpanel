@@ -794,6 +794,25 @@ class IpWhitelistEntry(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PermanentIpBan(Base):
+    """QA round 2, item 14: admin-initiated, server-wide, permanent IP/CIDR
+    ban -- distinct from both the per-account/per-domain IP blocker
+    (IpBlockEntry, scoped into that one domain's own OLS vhost
+    accessControl block) and fail2ban's own automatic, time-bounded jails
+    (which only ever expose *unban*, no manual/permanent ban action). The
+    actual enforcement is a UFW `deny from <ip>` rule (daemon/ipban.py) --
+    this row is metadata (reason, who, when) UFW itself has no field for,
+    plus the panel's own list/add/remove surface over it."""
+
+    __tablename__ = "permanent_ip_bans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    banned_by: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class TotpCredential(Base):
     """Phase 5 feature 10: TOTP 2FA. `secret` is stored in plain base32,
     not hashed -- unlike a password, a TOTP secret must be *used*

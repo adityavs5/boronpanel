@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("borond")
@@ -246,6 +246,12 @@ OP_TABLE = {
     "firewall.status": firewall.get_status,
     "firewall.enable": firewall.enable_firewall,
     "firewall.disable": firewall.disable_firewall,
+    # QA round 2, item 14: permanent server-wide IP/CIDR bans (daemon/ipban.py) --
+    # distinct from firewall.* above (port-scoped rules) and from
+    # ipwhitelist.* below (panel-login allowlist).
+    "ipban.list": ipban.list_bans,
+    "ipban.add": ipban.ban_ip,
+    "ipban.delete": ipban.unban_ip,
     # Phase 5 feature 5: fail2ban
     "fail2ban.bootstrap": fail2ban.bootstrap_jails,
     "fail2ban.list_jails": fail2ban.list_jails,

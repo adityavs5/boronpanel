@@ -4,7 +4,7 @@ import {
   Cog, Inbox, Flame, ShieldAlert, ScrollText, ShieldHalf, Gauge, ListChecks,
   Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
   History, FileCode2, Cloud, Layers, Palette, AlertOctagon, BookOpen, ArrowUpCircle,
-  DatabaseZap, Construction, BarChart3, ArrowRightLeft,
+  DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban,
 } from 'lucide-react'
 
 // Customer nav — resource pages scoped to the signed-in account. Paths are
@@ -54,6 +54,7 @@ export const adminNav = [
   { label: 'Mail Queue', to: '/mail-queue', icon: Inbox },
   { label: 'IMAP Migrations', to: '/imap-migrations', icon: ArrowRightLeft },
   { label: 'Firewall', to: '/firewall', icon: Flame },
+  { label: 'IP Bans', to: '/ip-bans', icon: Ban },
   { label: 'Fail2ban', to: '/fail2ban', icon: ShieldAlert },
   { label: 'IP Whitelist', to: '/ip-whitelist', icon: LockKeyhole },
   { label: 'Cloudflare', to: '/cloudflare', icon: Cloud },
