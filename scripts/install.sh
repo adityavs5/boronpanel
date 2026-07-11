@@ -659,6 +659,58 @@ EOF
     ok "fail2ban jails enabled (ssh/postfix/dovecot/ftp)"
 }
 
+# --- 8.5 Pure-FTPd (chroot + PureDB auth + passive port range) --------------
+#
+# Promoted from a manual README runbook step ("20. FTP account management")
+# into the installer itself -- these three fixes were previously something
+# an operator had to remember to apply by hand after `apt install pure-ftpd`,
+# which is exactly how a live box ended up running with FTP either broken
+# (unchrooted logins) or entirely unreachable (see docs/CHECKPOINT-
+# phase3-5.md for the live testing that found #1/#2, and the FTP root-cause
+# investigation that found #3/#4 missing on an already-provisioned server).
+
+setup_pureftpd() {
+    info "Configuring Pure-FTPd (chroot, PureDB auth, passive port range)"
+
+    # 1. pure-ftpd's PAM config rejects any login shell not listed in
+    # /etc/shells, and every hosting account uses /usr/sbin/nologin (no
+    # interactive SSH, by design) -- without this line a hosting account's
+    # own FTP login never authenticates at all. Idempotent: only appended
+    # if not already present.
+    run_sh "grep -qxF '/usr/sbin/nologin' /etc/shells || echo '/usr/sbin/nologin' >> /etc/shells"
+
+    # 2. Chroot every FTP login to its own home directory. Without this,
+    # confirmed live, a real hosting account could `CWD ..` all the way to
+    # the server's real filesystem root and browse every other account's
+    # home directory -- ARCHITECTURE.md's locked decision, never actually
+    # applied by the installer until now.
+    write_file /etc/pure-ftpd/conf/ChrootEveryone 644 <<'EOF'
+yes
+EOF
+
+    # 3. Enable the PureDB backend (for FTP sub-accounts, daemon/ftp.py) as
+    # an additional, higher-priority auth source -- existing system-account
+    # logins keep working via the existing 65unix/70pam chain. The target,
+    # /etc/pure-ftpd/conf/PureDB, ships with the pure-ftpd package itself
+    # (an empty placeholder `pure-pw` rebuilds via its own `-m` flag on
+    # every mutation), so only the auth-chain symlink needs creating here.
+    run mkdir -p /etc/pure-ftpd/auth
+    run ln -sf ../conf/PureDB /etc/pure-ftpd/auth/30pdb
+
+    # 4. Pin the passive-mode data-port range to exactly what
+    # setup_firewall() opens in UFW (30000:50000/tcp). Without this,
+    # Pure-FTPd picks its own compiled-in/OS-assigned passive range, which
+    # can fall outside the firewall hole -- passive-mode transfers (the
+    # common case behind NAT/most FTP clients) would stall even once the
+    # control connection on port 21 itself succeeds.
+    write_file /etc/pure-ftpd/conf/PassivePortRange 644 <<'EOF'
+30000 50000
+EOF
+
+    run systemctl restart pure-ftpd
+    ok "Pure-FTPd chroot/PureDB/passive-range configured"
+}
+
 # --- prompts -----------------------------------------------------------------
 
 prompt_inputs() {
@@ -773,6 +825,7 @@ main() {
     start_services
     create_admin
     setup_firewall
+    setup_pureftpd
 
     summary
     if [[ "$STEP_FAIL" -eq 0 ]]; then

@@ -71,6 +71,18 @@ export default function Databases() {
     onError: (e) => toast.error('Could not drop database', e.message),
   })
 
+  const pmaMut = useMutation({
+    mutationFn: (r) => post(`/api/v1/accounts/${username}/databases/${r.db_name}/pma-token`, {}),
+    onSuccess: (res) => {
+      if (!res?.pma_url) {
+        toast.error('phpMyAdmin is not set up', 'Ask your administrator to configure phpMyAdmin access.')
+        return
+      }
+      window.open(res.pma_url, '_blank', 'noopener')
+    },
+    onError: (e) => toast.error('Could not open phpMyAdmin', e.message),
+  })
+
   async function copyValue(text, label) {
     const ok = await copyToClipboard(text)
     if (ok) toast.success(`${label} copied to clipboard`)
@@ -115,7 +127,7 @@ export default function Databases() {
               <DropdownMenuItem onSelect={() => resetMut.mutate(r)}>
                 <KeyRound className="h-4 w-4" /> Reset password
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => window.open(`/pma/${username}`, '_blank')}>
+              <DropdownMenuItem onSelect={() => pmaMut.mutate(r)}>
                 <ExternalLink className="h-4 w-4" /> phpMyAdmin
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -133,14 +145,17 @@ export default function Databases() {
     <div>
       <PageHeader title="Databases" description="MySQL databases and their users on your account." icon={Database}>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => window.open(`/pma/${username}`, '_blank')}>
-            <ExternalLink className="h-4 w-4" /> phpMyAdmin
-          </Button>
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4" /> Create database
           </Button>
         </div>
       </PageHeader>
+      {(data?.databases?.length ?? 0) > 0 && (
+        <p className="mb-4 -mt-2 text-sm text-muted-foreground">
+          Open phpMyAdmin for a specific database from its <MoreHorizontal className="inline h-3.5 w-3.5 align-text-bottom" />{' '}
+          menu below — each session is scoped to that one database.
+        </p>
+      )}
 
       <DataTable
         columns={columns}

@@ -26,6 +26,27 @@ def _scoped_name(username: str, suffix: str) -> str:
     return validate_db_identifier(name)
 
 
+def _resolve_existing_db_name(username: str, name: str) -> str:
+    """Look up an *existing* database's canonical db_name from a caller-
+    supplied identifier that may be either the bare suffix (legacy UI
+    forms, ``db.create``'s own contract, existing tests) or the
+    already-fully-qualified db_name (the React dashboard, which only ever
+    has the full name -- it comes straight back from ``db.list``, never a
+    bare suffix). Root cause of a real "database not found" bug: passing
+    an already-scoped name through ``_scoped_name`` double-prefixed it
+    (``demo1_shop`` -> ``demo1_demo1_shop``), and phpMyAdmin's token
+    endpoint independently reimplemented the same scoping with the same
+    flaw. Tolerant only for *lookups* of something that must already
+    exist -- ``db.create`` keeps calling ``_scoped_name`` directly and
+    unconditionally prefixes, so a legitimately suffix-starting-with-
+    username create request is never reinterpreted."""
+    candidate = validate_db_identifier(name, max_len=64)
+    prefix = f"{username}_"
+    if candidate.startswith(prefix):
+        return candidate
+    return _scoped_name(username, candidate)
+
+
 def create_database(params: dict) -> dict:
     username = validate_username(params["username"])
     suffix = params["name"]
@@ -78,8 +99,7 @@ def list_databases(params: dict) -> dict:
 
 def drop_database(params: dict) -> dict:
     username = validate_username(params["username"])
-    suffix = params["name"]
-    db_name = _scoped_name(username, suffix)
+    db_name = _resolve_existing_db_name(username, params["name"])
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
@@ -100,8 +120,7 @@ def drop_database(params: dict) -> dict:
 
 def change_password(params: dict) -> dict:
     username = validate_username(params["username"])
-    suffix = params["name"]
-    db_name = _scoped_name(username, suffix)
+    db_name = _resolve_existing_db_name(username, params["name"])
     new_password = validate_password_strength(params["password"]) if params.get("password") else mariadb.generate_password()
 
     with write_session() as session:

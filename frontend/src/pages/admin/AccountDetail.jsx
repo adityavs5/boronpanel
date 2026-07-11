@@ -65,14 +65,15 @@ function AdminActions({ username, account }) {
           <UserCog className="h-4 w-4" /> Login as user
         </Button>
       )}
-      {/* File manager v2: full-page nav to the launch endpoint, which authorizes
-          this admin for the account, audits the access, and opens FileBrowser
-          Quantum scoped to the account's home. */}
+      {/* File manager v2: opens the launch endpoint in a new tab, which
+          authorizes this admin for the account, audits the access, and opens
+          FileBrowser Quantum scoped to the account's home — in its own tab
+          so the admin panel stays open. */}
       {['active', 'suspended'].includes(account.status) && (
         <Button
           variant="secondary"
           size="sm"
-          onClick={() => window.location.assign(`/api/v1/accounts/${username}/files/launch`)}
+          onClick={() => window.open(`/api/v1/accounts/${username}/files/launch`, '_blank', 'noopener')}
         >
           <FolderOpen className="h-4 w-4" /> File Manager
         </Button>

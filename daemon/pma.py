@@ -41,9 +41,10 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, DatabaseGrant, PmaToken, utcnow
-from shared.validation import validate_db_identifier, validate_username
+from shared.validation import validate_username
 
 from daemon import mariadb
+from daemon.handlers_database import _resolve_existing_db_name
 
 logger = logging.getLogger("borond.pma")
 
@@ -77,9 +78,7 @@ def _token_dir() -> Path:
 
 def create_token(params: dict) -> dict:
     username = validate_username(params["username"])
-    suffix = params["name"]
-    validate_db_identifier(suffix, max_len=40)
-    db_name = f"{username}_{suffix}"
+    db_name = _resolve_existing_db_name(username, params["name"])
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))

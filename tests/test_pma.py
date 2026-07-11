@@ -95,6 +95,19 @@ def test_create_token_happy_path(account_with_db, stub_mariadb, stub_group, tmp_
         assert row.ephemeral_db_user == data["db_user"]
 
 
+def test_create_token_accepts_already_scoped_full_db_name(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
+    """Regression: the Databases page only ever has the full db_name back
+    from db.list (e.g. "demo1_shop"); passing that through must not
+    double-prefix into "demo1_demo1_shop" and 404 as "not found"."""
+    monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
+    monkeypatch.setattr(settings, "pma_hostname", "pma.example")
+    hdb.create_database({"username": "demo1", "name": "shop"})
+
+    result = pma.create_token({"username": "demo1", "name": "demo1_shop"})
+    assert result["db_name"] == "demo1_shop"
+    assert result["pma_url"] is not None
+
+
 def test_create_token_without_pma_hostname_returns_no_url(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
     monkeypatch.setattr(settings, "pma_hostname", "")

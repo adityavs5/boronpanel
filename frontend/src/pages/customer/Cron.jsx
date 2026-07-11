@@ -28,6 +28,86 @@ const SCHEDULE_FIELDS = [
 
 const EMPTY_FORM = { minute: '*', hour: '*', dom: '*', month: '*', dow: '*', raw: '', command: '', label: '' }
 
+// Item 6: quick presets for the schedule builder. Fields mirror
+// daemon/cron.py's describe_schedule() so the "Runs at" preview below the
+// builder reads the same way the saved job's description will once it
+// comes back from the API. "Custom" just clears the raw override and lets
+// the five fields underneath speak for themselves.
+const SCHEDULE_TEMPLATES = [
+  { label: 'Every minute', fields: { minute: '*', hour: '*', dom: '*', month: '*', dow: '*' } },
+  { label: 'Every 5 minutes', fields: { minute: '*/5', hour: '*', dom: '*', month: '*', dow: '*' } },
+  { label: 'Every 15 minutes', fields: { minute: '*/15', hour: '*', dom: '*', month: '*', dow: '*' } },
+  { label: 'Every 30 minutes', fields: { minute: '*/30', hour: '*', dom: '*', month: '*', dow: '*' } },
+  { label: 'Hourly', fields: { minute: '0', hour: '*', dom: '*', month: '*', dow: '*' } },
+  { label: 'Daily', fields: { minute: '0', hour: '0', dom: '*', month: '*', dow: '*' } },
+  { label: 'Weekly', fields: { minute: '0', hour: '0', dom: '*', month: '*', dow: '0' } },
+  { label: 'Monthly', fields: { minute: '0', hour: '0', dom: '1', month: '*', dow: '*' } },
+  { label: 'Custom', fields: null },
+]
+
+// Mirrors daemon/cron.py's describe_schedule() for an instant preview while
+// editing, before the job is saved and the authoritative server-computed
+// description comes back from the API. Kept intentionally small — only the
+// same fixed set of shapes the backend recognizes; anything else falls back
+// to "Custom schedule" on both sides.
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+const MONTH_NAMES = [
+  null, 'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+]
+
+function describeScheduleLocally(schedule) {
+  const nicknames = {
+    '@yearly': 'Once a year, at midnight on January 1st',
+    '@annually': 'Once a year, at midnight on January 1st',
+    '@monthly': 'Once a month, at midnight on the 1st',
+    '@weekly': 'Once a week, at midnight on Sunday',
+    '@daily': 'Every day at midnight',
+    '@midnight': 'Every day at midnight',
+    '@hourly': 'Every hour, on the hour',
+  }
+  const trimmed = (schedule || '').trim()
+  if (nicknames[trimmed]) return nicknames[trimmed]
+
+  const parts = trimmed.split(/\s+/)
+  if (parts.length !== 5) return 'Custom schedule'
+  const [minute, hour, dom, month, dow] = parts
+  const isDigits = (s) => /^\d+$/.test(s)
+  const fmtTime = (h, m) => `${String(parseInt(h, 10)).padStart(2, '0')}:${String(parseInt(m, 10)).padStart(2, '0')}`
+
+  if (minute === '*' && hour === '*' && dom === '*' && month === '*' && dow === '*') return 'Every minute'
+
+  const step = /^\*\/(\d+)$/.exec(minute)
+  if (step && hour === '*' && dom === '*' && month === '*' && dow === '*') {
+    const n = parseInt(step[1], 10)
+    return n <= 1 ? 'Every minute' : `Every ${n} minutes`
+  }
+
+  if (isDigits(minute) && hour === '*' && dom === '*' && month === '*' && dow === '*') {
+    return minute === '0' ? 'Every hour, on the hour' : `Every hour, at minute ${parseInt(minute, 10)}`
+  }
+
+  if (isDigits(minute) && isDigits(hour) && dom === '*' && month === '*' && dow === '*') {
+    return `Every day at ${fmtTime(hour, minute)}`
+  }
+
+  if (isDigits(minute) && isDigits(hour) && isDigits(dow) && dom === '*' && month === '*') {
+    return `Every ${WEEKDAY_NAMES[parseInt(dow, 10) % 7]} at ${fmtTime(hour, minute)}`
+  }
+
+  if (isDigits(minute) && isDigits(hour) && isDigits(dom) && month === '*' && dow === '*') {
+    return `On day ${parseInt(dom, 10)} of every month at ${fmtTime(hour, minute)}`
+  }
+
+  if (isDigits(minute) && isDigits(hour) && isDigits(dom) && isDigits(month) && dow === '*') {
+    const mi = parseInt(month, 10)
+    const name = mi >= 1 && mi <= 12 ? MONTH_NAMES[mi] : month
+    return `Once a year on ${name} ${parseInt(dom, 10)} at ${fmtTime(hour, minute)}`
+  }
+
+  return 'Custom schedule'
+}
+
 export default function Cron() {
   const username = useAccountUsername()
   const qc = useQueryClient()
@@ -139,7 +219,12 @@ export default function Cron() {
       header: 'Schedule',
       sortable: true,
       searchable: true,
-      render: (r) => <span className="font-mono text-xs text-foreground">{r.schedule}</span>,
+      render: (r) => (
+        <div>
+          <div className="text-foreground">{r.description || describeScheduleLocally(r.schedule)}</div>
+          <div className="font-mono text-xs text-muted-foreground">{r.schedule}</div>
+        </div>
+      ),
     },
     {
       key: 'command',
@@ -257,6 +342,32 @@ export default function Cron() {
           <form onSubmit={submit}>
             <DialogBody className="space-y-4">
               <div>
+                <Label>Template</Label>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {SCHEDULE_TEMPLATES.map((t) => {
+                    const active = t.fields
+                      ? !usingRaw && SCHEDULE_FIELDS.every(([key]) => form[key] === t.fields[key])
+                      : usingRaw
+                    return (
+                      <Button
+                        key={t.label}
+                        type="button"
+                        size="sm"
+                        variant={active ? 'primary' : 'outline'}
+                        onClick={() => {
+                          if (t.fields) setForm((f) => ({ ...f, ...t.fields, raw: '' }))
+                          // "Custom" leaves the current field values as-is and just
+                          // focuses attention on the raw override below.
+                        }}
+                      >
+                        {t.label}
+                      </Button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div>
                 <Label>Schedule</Label>
                 <div className="mt-1.5 grid grid-cols-5 gap-2">
                   {SCHEDULE_FIELDS.map(([key, label]) => (
@@ -286,8 +397,13 @@ export default function Cron() {
               </FormField>
 
               <div className="rounded-btn border border-border bg-muted px-3 py-2 text-xs">
-                <span className="text-muted-foreground">Runs at: </span>
-                <code className="font-mono text-foreground">{composedSchedule || '—'}</code>
+                <div className="text-foreground">
+                  {composedSchedule ? describeScheduleLocally(composedSchedule) : '—'}
+                </div>
+                <div className="mt-0.5">
+                  <span className="text-muted-foreground">Raw: </span>
+                  <code className="font-mono text-foreground">{composedSchedule || '—'}</code>
+                </div>
               </div>
 
               <FormField label="Command" required hint="The full command to run.">

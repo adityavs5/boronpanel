@@ -224,3 +224,63 @@ def test_mailto_is_per_user_independent(fake_crontab):
     cron.set_mailto("demo2", "two@example.com")
     assert cron.get_mailto("demo1") == "one@example.com"
     assert cron.get_mailto("demo2") == "two@example.com"
+
+
+def test_add_job_includes_human_readable_description(fake_crontab):
+    job = cron.add_job("demo1", "0 3 * * *", "/bin/nightly")
+    assert job["description"] == "Every day at 03:00"
+    assert cron.list_jobs("demo1")[0]["description"] == "Every day at 03:00"
+
+
+class TestDescribeSchedule:
+    """Item 6: templates + human-readable description alongside raw cron
+    syntax -- every minute, every 5/15/30min, hourly, daily, weekly,
+    monthly, custom."""
+
+    def test_every_minute(self):
+        assert cron.describe_schedule("* * * * *") == "Every minute"
+
+    @pytest.mark.parametrize("n", [5, 15, 30])
+    def test_every_n_minutes(self, n):
+        assert cron.describe_schedule(f"*/{n} * * * *") == f"Every {n} minutes"
+
+    def test_step_of_one_reads_as_every_minute(self):
+        assert cron.describe_schedule("*/1 * * * *") == "Every minute"
+
+    def test_hourly_on_the_hour(self):
+        assert cron.describe_schedule("0 * * * *") == "Every hour, on the hour"
+
+    def test_hourly_at_specific_minute(self):
+        assert cron.describe_schedule("30 * * * *") == "Every hour, at minute 30"
+
+    def test_daily(self):
+        assert cron.describe_schedule("15 4 * * *") == "Every day at 04:15"
+
+    def test_weekly(self):
+        assert cron.describe_schedule("0 9 * * 1") == "Every Monday at 09:00"
+
+    def test_weekly_sunday_zero_and_seven_are_equivalent(self):
+        assert cron.describe_schedule("0 9 * * 0") == "Every Sunday at 09:00"
+        assert cron.describe_schedule("0 9 * * 7") == "Every Sunday at 09:00"
+
+    def test_monthly(self):
+        assert cron.describe_schedule("0 0 1 * *") == "On day 1 of every month at 00:00"
+
+    def test_yearly(self):
+        assert cron.describe_schedule("0 0 25 12 *") == "Once a year on December 25 at 00:00"
+
+    def test_custom_fallback_for_list_syntax(self):
+        assert cron.describe_schedule("0 9 * * 1,3,5") == "Custom schedule"
+
+    def test_custom_fallback_for_range_syntax(self):
+        assert cron.describe_schedule("0 9-17 * * *") == "Custom schedule"
+
+    def test_custom_fallback_for_malformed_input(self):
+        assert cron.describe_schedule("not a schedule") == "Custom schedule"
+
+    def test_nicknames(self):
+        assert cron.describe_schedule("@daily") == "Every day at midnight"
+        assert cron.describe_schedule("@hourly") == "Every hour, on the hour"
+        assert cron.describe_schedule("@weekly") == "Once a week, at midnight on Sunday"
+        assert cron.describe_schedule("@monthly") == "Once a month, at midnight on the 1st"
+        assert cron.describe_schedule("@yearly") == "Once a year, at midnight on January 1st"

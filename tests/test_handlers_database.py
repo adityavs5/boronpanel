@@ -118,6 +118,39 @@ def test_change_password(isolated_db, stub_sysops, stub_mariadb):
     assert ("set_password", "demo1_shop") in stub_mariadb
 
 
+def test_drop_database_accepts_already_scoped_full_name(isolated_db, stub_sysops, stub_mariadb):
+    """Regression: the React dashboard only ever has the full db_name back
+    from db.list (e.g. "demo1_shop"), not the bare suffix -- passing that
+    through must not double-prefix into "demo1_demo1_shop" and 404."""
+    ha.create_account({"username": "demo1"})
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    result = hdb.drop_database({"username": "demo1", "name": "demo1_shop"})
+    assert result["status"] == "dropped"
+    assert hdb.list_databases({"username": "demo1"})["databases"] == []
+
+
+def test_change_password_accepts_already_scoped_full_name(isolated_db, stub_sysops, stub_mariadb):
+    ha.create_account({"username": "demo1"})
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    result = hdb.change_password(
+        {"username": "demo1", "name": "demo1_shop", "password": "NewPassword123!"}
+    )
+    assert result["password"] == "NewPassword123!"
+    assert result["db_name"] == "demo1_shop"
+    assert ("set_password", "demo1_shop") in stub_mariadb
+
+
+def test_drop_database_full_name_does_not_cross_account(isolated_db, stub_sysops, stub_mariadb):
+    """A full db_name belonging to another account must still 404, not be
+    silently accepted -- the account_id filter in the lookup is the real
+    ownership check; the tolerant name resolution must not bypass it."""
+    ha.create_account({"username": "alice"})
+    ha.create_account({"username": "bob"})
+    hdb.create_database({"username": "alice", "name": "shop"})
+    with pytest.raises(RuntimeError):
+        hdb.drop_database({"username": "bob", "name": "alice_shop"})
+
+
 def test_terminate_account_drops_all_databases(isolated_db, stub_sysops, stub_mariadb):
     ha.create_account({"username": "demo1"})
     hdb.create_database({"username": "demo1", "name": "shop"})

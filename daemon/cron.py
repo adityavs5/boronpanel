@@ -31,9 +31,74 @@ MAILTO_RE = re.compile(r"^MAILTO\s*=\s*(.*)$")
 MAX_COMMAND_LEN = 1000
 MAX_LABEL_LEN = 200
 
+_WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+_MONTH_NAMES = [
+    None, "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+_NICKNAME_DESCRIPTIONS = {
+    "@yearly": "Once a year, at midnight on January 1st",
+    "@annually": "Once a year, at midnight on January 1st",
+    "@monthly": "Once a month, at midnight on the 1st",
+    "@weekly": "Once a week, at midnight on Sunday",
+    "@daily": "Every day at midnight",
+    "@midnight": "Every day at midnight",
+    "@hourly": "Every hour, on the hour",
+}
+_STEP_RE = re.compile(r"\*/(\d+)")
+
 
 class CronError(Exception):
     pass
+
+
+def describe_schedule(schedule: str) -> str:
+    """Best-effort English description of a 5-field cron expression (or a
+    croniter-recognized ``@nickname``), for display alongside the raw
+    syntax -- a fixed set of common shapes (every-N-minutes, hourly,
+    daily/weekly/monthly/yearly at a fixed time) get a precise sentence;
+    anything else (lists, ranges, multi-value fields) falls back to
+    "Custom schedule" rather than guessing wrong. Assumes the schedule was
+    already validated (by ``_validate_schedule``/croniter) -- never called
+    on unvalidated input, so it doesn't re-validate here."""
+    schedule = (schedule or "").strip()
+    if schedule in _NICKNAME_DESCRIPTIONS:
+        return _NICKNAME_DESCRIPTIONS[schedule]
+
+    parts = schedule.split()
+    if len(parts) != 5:
+        return "Custom schedule"
+    minute, hour, dom, month, dow = parts
+
+    def fmt_time(h: str, m: str) -> str:
+        return f"{int(h):02d}:{int(m):02d}"
+
+    if (minute, hour, dom, month, dow) == ("*", "*", "*", "*", "*"):
+        return "Every minute"
+
+    step = _STEP_RE.fullmatch(minute)
+    if step and (hour, dom, month, dow) == ("*", "*", "*", "*"):
+        n = int(step.group(1))
+        return "Every minute" if n <= 1 else f"Every {n} minutes"
+
+    if minute.isdigit() and (hour, dom, month, dow) == ("*", "*", "*", "*"):
+        return "Every hour, on the hour" if minute == "0" else f"Every hour, at minute {int(minute)}"
+
+    if minute.isdigit() and hour.isdigit() and (dom, month, dow) == ("*", "*", "*"):
+        return f"Every day at {fmt_time(hour, minute)}"
+
+    if minute.isdigit() and hour.isdigit() and dow.isdigit() and (dom, month) == ("*", "*"):
+        return f"Every {_WEEKDAY_NAMES[int(dow) % 7]} at {fmt_time(hour, minute)}"
+
+    if minute.isdigit() and hour.isdigit() and dom.isdigit() and (month, dow) == ("*", "*"):
+        return f"On day {int(dom)} of every month at {fmt_time(hour, minute)}"
+
+    if minute.isdigit() and hour.isdigit() and dom.isdigit() and month.isdigit() and dow == "*":
+        month_idx = int(month)
+        month_name = _MONTH_NAMES[month_idx] if 1 <= month_idx <= 12 else month
+        return f"Once a year on {month_name} {int(dom)} at {fmt_time(hour, minute)}"
+
+    return "Custom schedule"
 
 
 def _validate_schedule(schedule: str) -> str:
@@ -126,7 +191,7 @@ def list_jobs(username: str) -> list[dict]:
             if len(parts) == 6:
                 schedule = " ".join(parts[:5])
                 command = parts[5]
-                jobs.append({"id": job_id, "label": label, "schedule": schedule, "command": command})
+                jobs.append({"id": job_id, "label": label, "schedule": schedule, "command": command, "description": describe_schedule(schedule)})
             i += 2
         else:
             i += 1
@@ -143,7 +208,7 @@ def add_job(username: str, schedule: str, command: str, label: str = "") -> dict
     lines.append(f"# boron:id={job_id} label={label}")
     lines.append(f"{schedule} {command}")
     _write_raw(username, lines)
-    return {"id": job_id, "label": label, "schedule": schedule, "command": command}
+    return {"id": job_id, "label": label, "schedule": schedule, "command": command, "description": describe_schedule(schedule)}
 
 
 def update_job(username: str, job_id: str, schedule: str, command: str, label: str = "") -> dict:
@@ -169,7 +234,7 @@ def update_job(username: str, job_id: str, schedule: str, command: str, label: s
     if not found:
         raise CronError(f"cron job '{job_id}' not found for '{username}'")
     _write_raw(username, new_lines)
-    return {"id": job_id, "label": label, "schedule": schedule, "command": command}
+    return {"id": job_id, "label": label, "schedule": schedule, "command": command, "description": describe_schedule(schedule)}
 
 
 def delete_job(username: str, job_id: str) -> None:
