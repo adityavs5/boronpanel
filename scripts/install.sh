@@ -718,7 +718,54 @@ EOF
     ok "Pure-FTPd chroot/PureDB/passive-range configured"
 }
 
-# --- 8.6 GeoLite2 (site statistics' top-countries breakdown, item 12) ------
+# --- 8.6 PHP hardening (disable_functions default, item 9) -----------------
+
+setup_php_hardening() {
+    info "Hardening PHP (disable_functions default)"
+    if $DRY_RUN; then
+        # The real venv this needs doesn't exist yet in a dry-run (deploy_app
+        # never actually ran) -- describe the plan without trying to execute
+        # a python interpreter that isn't there (the exact mistake this
+        # comment now prevents from being reintroduced: an earlier version
+        # of this function computed $funcs via direct command substitution
+        # with no dry-run guard at all, which crashed --dry-run outright
+        # with "no such file or directory" under set -e, caught by actually
+        # running --dry-run rather than just reading the diff).
+        printf '  %s hardened disable_functions default (daemon/phpdirectives.DEFAULT_DISABLE_FUNCTIONS) into lsphp81/83 php.ini\n' "${C_YELLOW}[dry]${C_RESET}"
+        return 0
+    fi
+    # Single source of truth: daemon/phpdirectives.DEFAULT_DISABLE_FUNCTIONS
+    # -- the same list an admin's per-account/per-domain override (item 9's
+    # admin UI, daemon/phpfunctions.py) layers on top of via OLS's
+    # phpIniOverride, so the two can never drift apart. Must run after
+    # deploy_app (needs ${DEST} on disk and the venv built).
+    local funcs
+    funcs="$("${VENV}/bin/python" -c "
+import sys
+sys.path.insert(0, '${DEST}')
+from daemon import phpdirectives
+print(','.join(phpdirectives.DEFAULT_DISABLE_FUNCTIONS))
+" 2>/dev/null)"
+    if [[ -z "$funcs" ]]; then
+        warn "could not determine the hardened disable_functions list -- skipping PHP hardening (this box's lsphp php.ini files are unchanged; admin overrides still work once configured manually)"
+        return 0
+    fi
+    local ini changed=false
+    for ini in /usr/local/lsws/lsphp81/etc/php/8.1/litespeed/php.ini /usr/local/lsws/lsphp83/etc/php/8.3/litespeed/php.ini; do
+        if [[ -f "$ini" ]]; then
+            run sed -i "s/^disable_functions[[:space:]]*=.*/disable_functions = ${funcs}/" "$ini"
+            changed=true
+        fi
+    done
+    if ! $changed; then
+        warn "no lsphp php.ini files found -- skipping PHP hardening"
+        return 0
+    fi
+    run systemctl restart lshttpd
+    ok "PHP hardened (disable_functions: ${funcs})"
+}
+
+# --- 8.7 GeoLite2 (site statistics' top-countries breakdown, item 12) ------
 
 setup_geoip() {
     if [[ -z "$MAXMIND_LICENSE_KEY" ]]; then
@@ -853,6 +900,7 @@ main() {
     create_admin
     setup_firewall
     setup_pureftpd
+    setup_php_hardening
     setup_geoip
 
     summary

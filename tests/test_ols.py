@@ -79,6 +79,46 @@ def test_render_vhost_conf_php_ini_display_errors_off():
     assert 'php_admin_value display_errors "Off"' in content
 
 
+def test_with_disable_functions_returns_php_ini_unchanged_when_none():
+    """No admin override at any scope -- absence means default (the
+    system php.ini's own hardened disable_functions applies, nothing
+    rendered here)."""
+    assert ols._with_disable_functions(None, None) is None
+    php_ini = {"memory_limit": "256M", "extras": []}
+    assert ols._with_disable_functions(php_ini, None) is php_ini
+
+
+def test_with_disable_functions_builds_minimal_php_ini_when_none_existed():
+    """An account/domain with zero other PHP customization can still get
+    a disable_functions override rendered -- must not require some other
+    php_ini row to already exist first."""
+    result = ols._with_disable_functions(None, "exec,system")
+    assert result["memory_limit"] == ols.phpdirectives.DEFAULTS["memory_limit"]
+    assert {"name": "disable_functions", "value": "exec,system"} in result["extras"]
+
+
+def test_with_disable_functions_appends_to_existing_extras():
+    php_ini = {"memory_limit": "256M", "extras": [{"name": "max_input_vars", "value": "2000"}]}
+    result = ols._with_disable_functions(php_ini, "exec")
+    names = {e["name"] for e in result["extras"]}
+    assert names == {"max_input_vars", "disable_functions"}
+
+
+def test_with_disable_functions_replaces_not_duplicates():
+    php_ini = {"extras": [{"name": "disable_functions", "value": "exec"}]}
+    result = ols._with_disable_functions(php_ini, "exec,system")
+    matching = [e for e in result["extras"] if e["name"] == "disable_functions"]
+    assert matching == [{"name": "disable_functions", "value": "exec,system"}]
+
+
+def test_render_vhost_conf_renders_disable_functions_extra():
+    account = make_account()
+    domain = make_domain()
+    php_ini = ols._with_disable_functions(None, "exec,shell_exec")
+    content = ols.render_vhost_conf(account, domain, suspended=False, php_ini=php_ini)
+    assert 'php_admin_value disable_functions "exec,shell_exec"' in content
+
+
 def test_render_vhost_conf_omits_redirect_rules_when_none():
     account = make_account()
     domain = make_domain()

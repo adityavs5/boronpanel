@@ -23,7 +23,7 @@ from shared.models import Account, Domain, DomainForwarding, FileAuthDir, Lscach
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
-from daemon import phpdirectives, sysops
+from daemon import phpdirectives, phpfunctions, sysops
 
 logger = logging.getLogger("borond.ols")
 
@@ -182,6 +182,26 @@ def _php_ini_for_account(session, account_id: int) -> dict | None:
         # interpolating them into php_admin_value lines safe.
         "extras": [{"name": r.name, "value": r.value} for r in extra_rows],
     }
+
+
+def _with_disable_functions(php_ini: dict | None, disable_functions: str | None) -> dict | None:
+    """QA round 2, item 9: layers an admin-set disable_functions override
+    (daemon/phpfunctions.py, per-account or per-domain) onto whatever
+    _php_ini_for_account already computed for this account -- None means
+    no admin override at any scope for this domain, so the account's
+    existing php_ini (possibly also None) is returned completely
+    untouched, preserving the exact "absence means default" behavior
+    every other override in this template already has. Deliberately
+    creates a minimal php_ini dict (DEFAULTS + just this one extra) when
+    php_ini was None but a disable_functions override IS set -- an
+    account with zero other PHP customization can still get a
+    disable_functions override rendered."""
+    if disable_functions is None:
+        return php_ini
+    base = php_ini or {**phpdirectives.DEFAULTS, "extras": []}
+    extras = [e for e in (base.get("extras") or []) if e["name"] != "disable_functions"]
+    extras.append({"name": "disable_functions", "value": disable_functions})
+    return {**base, "extras": extras}
 
 
 def _forwarding_for_domain(session, domain_name: str) -> dict | None:
@@ -699,6 +719,10 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
     with write_session() as session:
         domain_vhosts, account_procs = _all_active_vhosts(session)
         php_ini = _php_ini_for_account(session, account.id)
+        disable_functions_by_domain = {
+            domain["domain"]: phpfunctions.effective_disable_functions(session, account.id, domain["domain"])
+            for domain in domains
+        }
         redirects_by_domain = {domain["domain"]: _redirects_for_domain(session, domain["domain"]) for domain in domains}
         forwarding_by_domain = {domain["domain"]: _forwarding_for_domain(session, domain["domain"]) for domain in domains}
         protected_dirs_by_domain = {
@@ -724,7 +748,8 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
         content[vhost_name] = render_vhost_conf(
             account, domain, suspended,
             ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file,
-            php_ini=php_ini, redirects=redirects_by_domain[domain["domain"]],
+            php_ini=_with_disable_functions(php_ini, disable_functions_by_domain[domain["domain"]]),
+            redirects=redirects_by_domain[domain["domain"]],
             protected_dirs=protected_dirs_by_domain[domain["domain"]],
             forwarding=forwarding_by_domain[domain["domain"]],
             maintenance=maintenance_by_domain[domain["domain"]],

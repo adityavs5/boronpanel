@@ -20,7 +20,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, plans, pma, procmanager, pythonapps, redisacct, servicemgr, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, procmanager, pythonapps, redisacct, servicemgr, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("borond")
@@ -187,6 +187,12 @@ OP_TABLE = {
     "php_ext.list": phpext.list_extensions,
     "php_ext.set": phpext.set_extensions,
     "php_ext.reset": phpext.reset_extensions,
+    # QA round 2, item 9: admin-only disable_functions overrides, per-account
+    # or per-domain, layered on the system-wide hardened default -- a
+    # deliberately separate surface from php_ini.* above (customer-editable).
+    "php_functions.get": phpfunctions.get_overrides,
+    "php_functions.set": phpfunctions.set_override,
+    "php_functions.delete": phpfunctions.delete_override,
     # Phase 3 feature 7: per-domain redirects
     "redirect.create": handlers_redirect.create_redirect,
     "redirect.update": handlers_redirect.update_redirect,

@@ -813,6 +813,30 @@ class PermanentIpBan(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class PhpFunctionOverride(Base):
+    """QA round 2, item 9: admin-only override of PHP's `disable_functions`
+    directive, layered on top of the system-wide hardened default (set
+    directly in the real lsphp php.ini files by scripts/install.sh --
+    see daemon/phpdirectives.py's DEFAULT_DISABLE_FUNCTIONS). `domain`
+    NULL means an account-wide override (applies to every domain under
+    the account); a specific domain row takes precedence over the
+    account-wide one for that one domain -- the "per-account or
+    per-domain, overriding default" the goal asks for. Deliberately NOT
+    reachable through the customer-facing php-ini surface
+    (api/routers/php_ini.py) or its PhpIniOverride/PhpIniDirective
+    tables -- letting a customer re-enable exec/shell_exec/etc. for their
+    own account would defeat the entire point of the hardened default."""
+
+    __tablename__ = "php_function_overrides"
+    __table_args__ = (UniqueConstraint("account_id", "domain", name="uq_php_function_override_scope"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    disable_functions: Mapped[str] = mapped_column(String(2000))
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class TotpCredential(Base):
     """Phase 5 feature 10: TOTP 2FA. `secret` is stored in plain base32,
     not hashed -- unlike a password, a TOTP secret must be *used*

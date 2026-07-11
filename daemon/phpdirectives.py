@@ -25,12 +25,55 @@ is the injection defense for its value.
 """
 from __future__ import annotations
 
+import re
+
 from shared.config import settings
 from shared.validation import (
     ValidationError,
     validate_php_bounded_int,
     validate_php_timezone,
 )
+
+# QA round 2, item 9: hardened php.ini default. This is the SAME set
+# scripts/install.sh's setup_php_hardening() writes verbatim into the real
+# system lsphp php.ini files (both 8.1 and 8.3) -- defined once here and
+# imported by the installer (via a python -c one-liner, matching this
+# script's existing bootstrap-call pattern) so the two can never drift
+# apart. A standard, conservative shell/process-execution hardening set --
+# the same functions every mainstream shared-hosting panel disables by
+# default (cPanel's own stock disable_functions list is the closest public
+# reference point).
+DEFAULT_DISABLE_FUNCTIONS = (
+    "exec", "system", "shell_exec", "passthru", "popen", "proc_open",
+    "proc_get_status", "proc_close", "proc_terminate", "proc_nice",
+    "pcntl_exec",
+)
+
+_FUNCTION_NAME_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
+MAX_DISABLE_FUNCTIONS = 100
+
+
+def validate_disable_functions(value) -> str:
+    """Accepts a list of function names or a single comma-separated string
+    (the admin UI's textarea sends the latter); returns the canonical,
+    deduplicated, sorted, comma-joined string that's actually interpolated
+    into `php_admin_value disable_functions "<value>"`. An empty result
+    (admin explicitly clears every function) is valid -- that's a real,
+    if unusual, "re-enable everything for this scope" request, distinct
+    from "no override at all" (which is a missing row, not an empty one)."""
+    if isinstance(value, str):
+        names = [v.strip() for v in value.split(",")]
+    elif isinstance(value, (list, tuple)):
+        names = [str(v).strip() for v in value]
+    else:
+        raise ValidationError("disable_functions must be a comma-separated string or a list of function names")
+    names = [n for n in names if n]
+    if len(names) > MAX_DISABLE_FUNCTIONS:
+        raise ValidationError(f"disable_functions accepts at most {MAX_DISABLE_FUNCTIONS} function names")
+    for name in names:
+        if not _FUNCTION_NAME_RE.match(name):
+            raise ValidationError(f"'{name}' is not a valid PHP function name")
+    return ",".join(sorted(set(names)))
 
 
 def php_scan_dir(username: str, php_version: str) -> str:

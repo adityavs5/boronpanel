@@ -28,7 +28,7 @@ from shared.models import IpWhitelistEntry
 
 from api import logsetup, ratelimit
 from api.security import Identity, get_identity, require_admin
-from api.routers import account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, monitoring, nameservers, nodeapps, notes, notifications, onboarding, parked, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
+from api.routers import account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, monitoring, nameservers, nodeapps, notes, notifications, onboarding, parked, php_functions, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
 
 
 @asynccontextmanager
@@ -287,7 +287,7 @@ app.include_router(auth.router)
 # `api_router`s (and their extra-router-object siblings) are mounted; the SPA
 # consumes the same /api/v1/... surface. The ui_router objects still exist in
 # each module (harmless dead code) but templates_ui/ has been removed.
-for module in (accounts, domains, dns, databases, mail, ssl_router, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, redirects, logs_router, hotlink, ipblock, ipban, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor, nodeapps, pythonapps, redis_router, lscache_router, cpanel_import, bandwidth, webhooks, usage_alerts, staging, cloudflare):
+for module in (accounts, domains, dns, databases, mail, ssl_router, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, php_functions, redirects, logs_router, hotlink, ipblock, ipban, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor, nodeapps, pythonapps, redis_router, lscache_router, cpanel_import, bandwidth, webhooks, usage_alerts, staging, cloudflare):
     app.include_router(module.api_router)
 # Extra JSON router objects that don't fit the uniform api_router/ui_router
 # pair (see each module): account-scoped alerts, admin bandwidth ranking,

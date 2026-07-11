@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog, FolderOpen, Layers } from 'lucide-react'
-import { get, post, patch, impersonate as apiImpersonate } from '@/lib/api'
+import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog, FolderOpen, Layers, Ban } from 'lucide-react'
+import { get, post, put, patch, del, impersonate as apiImpersonate } from '@/lib/api'
 import { formatMB } from '@/lib/utils'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { PHP_VERSIONS } from '@/config/constants'
@@ -310,6 +310,115 @@ function UsageLimitsCard() {
   )
 }
 
+// QA round 2, item 9: admin-only PHP disable_functions overrides, per-account
+// or per-domain, layered on the hardened system default
+// (daemon/phpdirectives.DEFAULT_DISABLE_FUNCTIONS, applied to the real
+// lsphp php.ini files by scripts/install.sh). Deliberately lives only on
+// this admin-only page -- never on the customer-facing PHP settings tab.
+function FunctionListEditor({ value, onChange, disabled }) {
+  return (
+    <Input
+      value={value.join(', ')}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value.split(',').map((s) => s.trim()).filter(Boolean))}
+      placeholder="exec, system, shell_exec"
+      className="font-mono text-sm"
+    />
+  )
+}
+
+function PhpFunctionsTab({ username }) {
+  const qc = useQueryClient()
+  const [selectedDomain, setSelectedDomain] = useState('') // '' = account-wide
+  const [draft, setDraft] = useState(null) // list of function names being edited, or null = not editing
+
+  const { data: domainsData } = useQuery({
+    queryKey: ['domains', username],
+    queryFn: () => get(`/api/v1/accounts/${username}/domains`),
+    enabled: !!username,
+  })
+  const domains = domainsData?.domains || []
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['php-functions', username],
+    queryFn: () => get(`/api/v1/admin/accounts/${username}/php-functions`),
+    enabled: !!username,
+  })
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['php-functions', username] })
+
+  const saveMut = useMutation({
+    mutationFn: (disable_functions) =>
+      put(`/api/v1/admin/accounts/${username}/php-functions`, { domain: selectedDomain || null, disable_functions }),
+    onSuccess: () => { toast.success('Override saved'); invalidate(); setDraft(null) },
+    onError: (e) => toast.error('Could not save override', e.message),
+  })
+
+  const clearMut = useMutation({
+    mutationFn: () => del(`/api/v1/admin/accounts/${username}/php-functions${selectedDomain ? `?domain=${encodeURIComponent(selectedDomain)}` : ''}`),
+    onSuccess: () => { toast.success('Override cleared — reverted to the scope above'); invalidate(); setDraft(null) },
+    onError: (e) => toast.error('Could not clear override', e.message),
+  })
+
+  if (isLoading) return <CardSkeleton />
+  if (error) return <ErrorState error={error} onRetry={refetch} />
+
+  const scopeOverride = selectedDomain
+    ? (data?.domain_overrides || []).find((o) => o.domain === selectedDomain)
+    : data?.account_override
+  const effective = scopeOverride?.disable_functions ?? (selectedDomain ? null : data?.default_disable_functions) ?? null
+  const editing = draft !== null
+  const shown = editing ? draft : (scopeOverride?.disable_functions || data?.default_disable_functions || [])
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><Ban className="h-4 w-4" /> PHP disabled functions</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Hardened server default: <code className="font-mono text-xs">{(data?.default_disable_functions || []).join(', ') || '(none)'}</code>.
+          Override it below for this account, or for one specific domain.
+        </p>
+        <FormField label="Scope">
+          <Select value={selectedDomain} onChange={(e) => { setSelectedDomain(e.target.value); setDraft(null) }}>
+            <option value="">Account-wide ({username})</option>
+            {domains.map((d) => <option key={d.domain} value={d.domain}>{d.domain}</option>)}
+          </Select>
+        </FormField>
+        <FormField
+          label="Disabled functions"
+          hint={
+            scopeOverride
+              ? 'This scope has its own override, shown below.'
+              : selectedDomain
+                ? 'No override for this domain — falls back to the account-wide override (if any), else the server default, shown below.'
+                : 'No account-wide override — the server default is shown below.'
+          }
+        >
+          <FunctionListEditor value={shown} onChange={setDraft} disabled={saveMut.isPending || clearMut.isPending} />
+        </FormField>
+        <div className="flex gap-2">
+          <Button
+            onClick={() => saveMut.mutate(editing ? draft : shown)}
+            loading={saveMut.isPending}
+          >
+            <Save className="h-4 w-4" /> Save override for this scope
+          </Button>
+          {scopeOverride && (
+            <Button variant="secondary" loading={clearMut.isPending} onClick={() => clearMut.mutate()}>
+              Clear override
+            </Button>
+          )}
+        </div>
+        {effective == null && (
+          <p className="text-xs text-muted-foreground">No functions disabled at this scope (fully re-enabled).</p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function AccountDetail() {
   const { username } = useParams()
   const { data: account, isLoading, error, refetch } = useQuery({
@@ -344,6 +453,7 @@ export default function AccountDetail() {
               <TabsTrigger value="ssl">SSL</TabsTrigger>
               <TabsTrigger value="backups">Backups</TabsTrigger>
               <TabsTrigger value="apps">Apps</TabsTrigger>
+              <TabsTrigger value="php-functions">PHP Functions</TabsTrigger>
               <TabsTrigger value="processes">Processes</TabsTrigger>
               <TabsTrigger value="notes">Notes</TabsTrigger>
             </TabsList>
@@ -366,6 +476,7 @@ export default function AccountDetail() {
             <TabsContent value="ssl"><Ssl /></TabsContent>
             <TabsContent value="backups"><Backups /></TabsContent>
             <TabsContent value="apps"><Apps /></TabsContent>
+            <TabsContent value="php-functions"><PhpFunctionsTab username={username} /></TabsContent>
             <TabsContent value="processes"><Processes embedded /></TabsContent>
             <TabsContent value="notes"><AccountNotes username={username} /></TabsContent>
           </Tabs>
