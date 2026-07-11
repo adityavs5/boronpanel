@@ -206,3 +206,25 @@ mechanism (a real, documented module param this template already renders
 when unsuspended); wiring an HTTP purge request through it on
 suspend/unsuspend is the follow-up, tracked as a residual rather than
 claimed done.
+
+### Deployed to the live panel (user-directed, 2026-07-11)
+
+The template fix is now **live on the main panel**. Because the live
+service still runs the pre-rebrand tree (`/opt/forgehost`, `forgehost-*`
+units — the rebrand migration has not been executed on this box), a
+full-repo deploy was NOT possible: the repo's rebranded template also
+renames the error-page context URIs (`.forgehost-error-pages` →
+`.boron-error-pages`), which would break custom error pages against the
+old deployed daemon's own constants. Instead, exactly the cache-block
+hunk was applied to `/opt/forgehost/templates/vhost.conf.j2` (backed up
+first), leaving every deployed name untouched. Verified by rendering
+through the DEPLOYED daemon's own `ols.render_vhost_conf` (suspended →
+off-block present; active+lscache → unchanged `enableCache 1`; active
+without lscache → no cache block), then `forgehost-provisiond`
+restarted (active, NRestarts=0), panel healthz 200, and
+test.coilchat.com still serving the 247-byte suspension page. The
+earlier hand-edit to that domain's vhconf is now redundant rather than
+load-bearing: any future regeneration of that vhost renders the
+off-block from the deployed template. The rest of the qa2 batch (and
+the repo's daemon-side purge hooks) remains undeployed, pending the
+rebrand live migration + standard full deploy.
