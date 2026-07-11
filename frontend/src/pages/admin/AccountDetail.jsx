@@ -400,7 +400,7 @@ function PhpFunctionsTab({ username }) {
         </FormField>
         <div className="flex gap-2">
           <Button
-            onClick={() => saveMut.mutate(editing ? draft : shown)}
+            onClick={() => saveMut.mutate(shown)}
             loading={saveMut.isPending}
           >
             <Save className="h-4 w-4" /> Save override for this scope

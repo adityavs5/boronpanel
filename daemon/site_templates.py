@@ -22,8 +22,6 @@ import shutil
 import time
 from pathlib import Path
 
-from sqlalchemy import select
-
 from shared.config import settings
 from shared.db import write_session
 from shared.models import WelcomeEmailTemplate
