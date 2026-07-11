@@ -24,9 +24,9 @@ section's own then-uncommitted missing-features batch, so that batch is now
 committed to git for the first time as part of this audit.
 
 **Result: 1 Critical (code fixed; live mitigation blocked, needs operator
-action — see below), 4 High fixed, 1 High deferred with reasoning, 2 Medium
-fixed (1 partially), 2 Medium + 1 Low deferred with reasoning. Full test
-suite: 1729 passing (1715 baseline + 14 new regression tests), zero
+action — see below), 5 High fixed (1 partially, residual gap documented), 2
+Medium fixed (1 partially), 2 Medium + 1 Low deferred with reasoning. Full
+test suite: 1730 passing (1715 baseline + 15 new regression tests), zero
 failures/regressions. A full IDOR re-sweep across all 54 routes in the 14
 routers added since Audit 2 (Area 13) came back clean.**
 
@@ -78,13 +78,17 @@ routers added since Audit 2 (Area 13) came back clean.**
   connection server-wide, not just a hosted account's runaway query as the
   feature describes. Fixed: cross-checks the target thread's `db` against
   `DatabaseGrant` before issuing `KILL`.
-- **A3-4 (High, deferred) — IMAPSync's SSRF guard validates once at job
-  creation; the connection happens later, unpinned, with no re-validation**
-  (a real DNS-rebinding TOCTOU into the internal network from a root
-  process). `daemon/webhooks.py` already has the correct pattern
-  (resolve+validate+pin); porting it to imapsync's separate Perl subprocess
-  is a larger change than this pass's fix-if-quick bar allows to do safely.
-  Documented as a priority follow-up.
+- **A3-4 (High, partially fixed) — IMAPSync's SSRF guard validated once at
+  job creation; the connection happens later, unpinned** (a DNS-rebinding
+  TOCTOU into the internal network from a root process). Full IP-pinning
+  (`daemon/webhooks.py`'s correct pattern) is deferred — porting it to
+  imapsync's separate Perl subprocess (with its own TLS/SNI handling) is a
+  larger change than this pass allows to do safely — but `_run_job` now
+  re-validates `source_host` immediately before the real connection
+  (previously only checked once, at job creation), shrinking the rebinding
+  window from the full attacker-controlled queue-wait time down to
+  milliseconds. The residual gap (no IP pinning) is documented, not
+  claimed as fully closed.
 - **A3-9 (Medium, partially fixed) — Branding SVG filter had 2 confirmed XSS
   bypasses** via entity encoding (a numeric-character-reference-obfuscated
   `javascript:` URI; a `foreignObject`+`iframe[srcdoc]` smuggling an
@@ -141,9 +145,9 @@ TCP peer, correct given no reverse proxy fronts `forgehost-api`) and
 middleware ordering (limiter runs before auth logic, confirmed against
 Starlette's actual wrapping order).
 
-Test suite: full `pytest` run green after fixes — 1729 passing, up from
-1715, zero regressions; new regression tests added for A3-3, A3-5, A3-6,
-A3-7 (network isolation), A3-9, and A3-10.
+Test suite: full `pytest` run green after fixes — 1730 passing, up from
+1715, zero regressions; new regression tests added for A3-3, A3-4, A3-5,
+A3-6, A3-7 (network isolation), A3-9, and A3-10.
 
 ---
 
