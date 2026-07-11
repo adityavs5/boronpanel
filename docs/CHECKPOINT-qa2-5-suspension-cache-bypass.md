@@ -1,5 +1,14 @@
 # QA round 2 — Item 8 (critical, xhigh effort): suspended account still serving cached content
 
+> **CORRECTION (same day, after a live report on test.coilchat.com):** the
+> purge-on-suspend fix below is real but was NOT sufficient on its own —
+> a suspended site kept serving its cached homepage through both this
+> purge and a full `lshttpd` restart. The completed root cause and the
+> actual correctness fix (an explicit cache-lookup-off block in the
+> suspended vhost render) are in the **"Follow-up: the purge was not
+> enough"** section at the bottom of this file. Read that section before
+> trusting anything in the original analysis below.
+
 ## Root cause (confirmed by reading the actual code path, not assumed)
 
 `daemon/handlers_account.py:suspend_account` calls every hook in
@@ -118,3 +127,82 @@ path itself was read line-by-line against the confirmed root cause, not
 guessed at, and is exercised by realistic unit tests (a directory that
 genuinely has stale cached files on disk, cleared by the exact function now
 wired into suspend).
+
+---
+
+## Follow-up: the purge was not enough (found live, 2026-07-11, test.coilchat.com)
+
+The user reported a real suspended domain (`test.coilchat.com`, account
+`adityascn`, suspended 15:05 UTC) still serving its cached WordPress
+homepage. Live investigation, in order:
+
+1. Emptied the domain's per-vhost cache tree
+   (`/usr/local/lsws/cachedata/test_coilchat_com/`) using the exact
+   `_clear_storage_dir` logic — **stale content kept serving**, response
+   still `x-litespeed-cache: hit`.
+2. Fully restarted `lshttpd` (fresh worker processes confirmed via `ps`)
+   — **still serving**, ruling out any in-process/mmap'd state.
+3. Ruled out SysV/POSIX shared memory (`ipcs -m` empty, nothing in
+   `/dev/shm`) and a rogue listener (`ss -tlnp`: only the fresh lshttpd
+   on 80/443).
+4. A cache-busting `?nonce=` URL correctly served the suspension page —
+   so the vhost's rewrite/docroot flip was working; only *already-cached
+   exact keys* were stale.
+5. Found a second cache tree at the **top level** of
+   `/usr/local/lsws/cachedata/priv/` (35 objects, outside every per-vhost
+   `storagepath`). Dumped one: LSCH-format object keyed
+   `test.coilchat.com:443/...` carrying
+   `x-litespeed-cache-control: public,max-age=604800` — the **LiteSpeed
+   Cache WordPress plugin's** own 7-day cache header.
+
+**Completed root cause:** the server-level `module cache` default
+(`httpd_config.conf`) has `ls_enabled 1`, `checkPublicCache 1`,
+`checkPrivateCache 1`, and `ignoreRespCacheCtrl 0`. That last one means
+OLS *honors response cache-control headers* — so a WordPress site running
+the LSCache plugin gets cached **even with `enableCache 0`** and **even
+with no vhost-level cache block at all**, into the module's *default*
+storage path (not the per-vhost `storagepath`). The suspend template's
+`{% if lscache and not suspended %}` omission therefore did nothing
+against this caching path: it was never enabled by the vhost block in the
+first place, and `checkPublicCache 1` kept serving the stale objects.
+The on-suspend purge (this checkpoint's original fix) only clears the
+per-vhost tree, which these objects aren't in — and the shared default
+tree can't be blanket-deleted (it holds every vhost's plugin-cached
+objects).
+
+**The actual correctness fix** (`templates/vhost.conf.j2`): a suspended
+vhost now renders an explicit override —
+`module cache { enableCache 0, enablePrivateCache 0, checkPublicCache 0,
+checkPrivateCache 0, ignoreRespCacheCtrl 1 }` — disabling cache *lookups*
+entirely, which works regardless of where stale objects physically live.
+Rendered for **every** suspended vhost, not just LSCache-enabled ones
+(the plugin path never depended on a `LscacheSettings` row existing).
+`purge_account_domains` stays wired into the suspend/unsuspend hooks as
+per-vhost-tree hygiene, with its docstring corrected to state this scope
+limit honestly.
+
+**Live-verified end to end** (user-directed): the equivalent block was
+hand-applied to the live `test_coilchat_com` vhconf (config backed up,
+`lshttpd -t` validated, graceful reload) — all four previously-cached
+URLs (`/`, the hello-world post, `/wp-admin/`, `/sample-page/`) now serve
+the 247-byte suspension page with zero `x-litespeed-cache: hit` headers;
+panel healthz 200 throughout. **Caveat:** that manual vhconf edit is a
+stopgap — the old deployed daemon will overwrite it the next time it
+regenerates that account's vhosts. The durable fix is this repo's
+template change, pending the standard deploy.
+
+**Tests:** `test_render_vhost_conf_suspended_skips_lscache_block` (which
+asserted the exact insufficient behavior — block absent when suspended)
+was **replaced** by two tests asserting the explicit off-block renders
+when suspended, both with and without any LSCache config
+(`tests/test_ols.py`).
+
+**Known residual (documented, not fixed here):** after *unsuspend*, the
+7-day plugin-cached objects in the shared default tree become servable
+again — mildly stale content until natural expiry, since neither the
+per-vhost purge nor anything else clears the shared tree per-domain. The
+proper per-domain purge for that tree is LSCache's `purgeUri` signal
+mechanism (a real, documented module param this template already renders
+when unsuspended); wiring an HTTP purge request through it on
+suspend/unsuspend is the follow-up, tracked as a residual rather than
+claimed done.

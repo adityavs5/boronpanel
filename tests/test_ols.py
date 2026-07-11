@@ -798,14 +798,41 @@ def test_render_vhost_conf_omits_lscache_block_when_not_set():
     assert "module cache {" not in content
 
 
-def test_render_vhost_conf_suspended_skips_lscache_block():
+def test_render_vhost_conf_suspended_renders_explicit_cache_off_block():
+    """QA round 2, item 8 follow-up (found live): merely OMITTING the cache
+    block while suspended is not enough -- the server-level default has
+    checkPublicCache/checkPrivateCache on and honors response cache-control
+    headers (ignoreRespCacheCtrl 0), so a WordPress site running the
+    LiteSpeed Cache plugin (which stamps public,max-age=604800) kept
+    serving its cached homepage from the module's DEFAULT storage path
+    through both an on-disk purge and a full lshttpd restart. A suspended
+    vhost must render an explicit override that disables cache LOOKUPS."""
     account = make_account()
     domain = make_domain()
     content = ols.render_vhost_conf(
         account, domain, suspended=True,
         lscache={"ttl_seconds": 3600, "exclude_paths": [], "storagepath": "/x", "purge_uri": "/.purge"},
     )
-    assert "module cache {" not in content
+    assert "module cache {" in content
+    assert "enableCache             0" in content
+    assert "checkPublicCache        0" in content
+    assert "checkPrivateCache       0" in content
+    assert "enablePrivateCache      0" in content
+    assert "ignoreRespCacheCtrl     1" in content
+    # And none of the normal LSCache-enabled parameters leak through.
+    assert "enableCache             1" not in content
+    assert "storagepath" not in content
+
+
+def test_render_vhost_conf_suspended_cache_off_block_even_without_lscache_config():
+    """The plugin-driven caching this guards against never depended on a
+    per-domain LscacheSettings row existing at all -- the off-block must
+    render for EVERY suspended vhost, not just LSCache-enabled ones."""
+    account = make_account()
+    domain = make_domain()
+    content = ols.render_vhost_conf(account, domain, suspended=True, lscache=None)
+    assert "module cache {" in content
+    assert "checkPublicCache        0" in content
 
 
 # --- Phase 7a feature 6: per-domain PHP version override -------------------

@@ -42,7 +42,30 @@ errorpage {{ code }} {
 {% endfor %}
 {% endif %}
 
-{% if lscache and not suspended %}
+{% if suspended %}
+{# QA round 2, item 8 follow-up (found LIVE, on a real suspended site that
+   kept serving its cached homepage through BOTH an on-disk cache purge AND
+   a full lshttpd restart): merely OMITTING the vhost-level cache block
+   while suspended is NOT enough to stop cached serving. The server-level
+   `module cache` default has `checkPublicCache 1` + `checkPrivateCache 1`
+   + `ignoreRespCacheCtrl 0` -- so (a) a response that carries its own
+   `x-litespeed-cache-control: public, max-age=...` header (the LiteSpeed
+   Cache WordPress plugin stamps max-age=604800, SEVEN DAYS) gets cached
+   even with the default `enableCache 0`, landing in the module's DEFAULT
+   storage path (top-level cachedata/, NOT this vhost's own storagepath --
+   confirmed by dumping a live cache object keyed `test.coilchat.com:443/...`
+   from that tree), and (b) `checkPublicCache/checkPrivateCache 1` keep
+   SERVING those objects no matter what this vhost omits. The only robust
+   answer is an explicit vhost-level override that turns cache LOOKUPS off,
+   which works regardless of where the stale objects physically live. #}
+module cache {
+  enableCache             0
+  enablePrivateCache      0
+  checkPublicCache        0
+  checkPrivateCache       0
+  ignoreRespCacheCtrl     1
+}
+{% elif lscache %}
 {# Phase 7a feature 4: LSCache, per-vhost override of the server-level
    `module cache {}` default (httpd_config.conf.j2, enableCache 0) --
    confirmed against this server's own installed OLS docs/module

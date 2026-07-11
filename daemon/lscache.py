@@ -174,15 +174,26 @@ def purge_account_domains(account: Account) -> None:
     content for every domain this account owns, unconditionally (unlike
     `purge()`, deliberately does NOT require LscacheSettings.enabled: a
     page can still be sitting in the cache store from before LSCache was
-    disabled, or the vhost's own suspended-context template omission stops
-    *future* caching but never touched what OLS had already written to
-    disk before suspension -- this is the actual root-cause fix for a
-    suspended site continuing to serve stale cached content). Idempotent
-    (safe for accounts with no domains or that never used LSCache at all).
-    Bookkeeping (`last_purged_at`) is intentionally skipped here -- that
-    field means "last operator-initiated purge via the LSCache UI"; an
-    automatic suspend/unsuspend purge is a different kind of event and
-    updating it would be misleading in the UI."""
+    disabled). Idempotent (safe for accounts with no domains or that never
+    used LSCache at all). Bookkeeping (`last_purged_at`) is intentionally
+    skipped here -- that field means "last operator-initiated purge via
+    the LSCache UI"; an automatic suspend/unsuspend purge is a different
+    kind of event and updating it would be misleading in the UI.
+
+    IMPORTANT SCOPE LIMIT (found live, on a real suspended site that kept
+    serving cached content through this purge AND a full lshttpd restart):
+    this only clears the per-vhost `storagepath` tree. Responses that
+    carry their own `x-litespeed-cache-control` header (the LiteSpeed
+    Cache WordPress plugin stamps `public, max-age=604800`) are cached by
+    the server-level module into its DEFAULT storage path (top-level
+    cachedata/), which this function cannot safely touch (it is shared
+    across every vhost on the box). The *correctness* fix for suspension
+    is therefore in templates/vhost.conf.j2: a suspended vhost renders an
+    explicit `module cache` override with checkPublicCache/
+    checkPrivateCache 0, disabling cache LOOKUPS entirely regardless of
+    where stale objects physically live. This purge remains as hygiene
+    for the per-vhost tree (disk reclaim + unsuspend freshness), not as
+    the thing that makes suspension correct."""
     with write_session() as session:
         domains = list(session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all())
     for domain_name in domains:
