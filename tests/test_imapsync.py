@@ -93,6 +93,47 @@ def test_start_migration_creates_pending_job(mailbox, monkeypatch):
     assert "password" not in str(result)  # no password field anywhere in the returned dict
 
 
+def test_start_migration_rejects_second_concurrent_job_for_same_account(mailbox, monkeypatch):
+    # Audit 3 A3-3: IMAPSYNC_EXECUTOR is a small pool shared by every
+    # account; without this guard a single account could queue unlimited
+    # jobs and starve every other tenant's migrations.
+    local_part, domain = mailbox
+    monkeypatch.setattr(im.IMAPSYNC_EXECUTOR, "submit", lambda fn, *a: None)
+    im.start_migration({
+        "domain": domain, "local_part": local_part,
+        "source_host": "imap.example.net", "source_port": 993,
+        "source_email": "old@example.net", "source_password": "s3cret-source-pw", "dest_password": "s3cret-dest-pw",
+    })
+    with pytest.raises(im.ImapSyncError, match="already in progress"):
+        im.start_migration({
+            "domain": domain, "local_part": local_part,
+            "source_host": "imap.example.net", "source_port": 993,
+            "source_email": "old@example.net", "source_password": "s3cret-source-pw", "dest_password": "s3cret-dest-pw",
+        })
+
+
+def test_start_migration_allows_new_job_after_previous_completed(mailbox, monkeypatch):
+    from shared.db import write_session
+    from shared.models import ImapMigrationJob
+
+    local_part, domain = mailbox
+    monkeypatch.setattr(im.IMAPSYNC_EXECUTOR, "submit", lambda fn, *a: None)
+    first = im.start_migration({
+        "domain": domain, "local_part": local_part,
+        "source_host": "imap.example.net", "source_port": 993,
+        "source_email": "old@example.net", "source_password": "s3cret-source-pw", "dest_password": "s3cret-dest-pw",
+    })
+    with write_session() as session:
+        job = session.get(ImapMigrationJob, first["id"])
+        job.status = "completed"
+    result = im.start_migration({
+        "domain": domain, "local_part": local_part,
+        "source_host": "imap.example.net", "source_port": 993,
+        "source_email": "old@example.net", "source_password": "s3cret-source-pw", "dest_password": "s3cret-dest-pw",
+    })
+    assert result["status"] == "pending"
+
+
 def test_start_migration_job_row_never_has_password_column():
     from shared.models import ImapMigrationJob
 
@@ -219,6 +260,10 @@ def test_list_source_folders_parses_output(monkeypatch):
     # imapsync silently no-ops instead of listing folders (the real bug
     # this test's fake_stdout format change fixes coverage for).
     assert "--host2" in captured["args"]
+    # Audit 3 A3-5: --nolog, or imapsync writes a world-readable transcript
+    # (source/dest email, host, login success) to LOG_imapsync/ relative to
+    # the daemon's cwd.
+    assert "--nolog" in captured["args"]
 
 
 def test_list_source_folders_raises_on_failure(monkeypatch):
@@ -267,3 +312,7 @@ def test_run_job_never_logs_or_stores_passwords(mailbox, monkeypatch, tmp_path, 
         assert "s3cret-dest-pw" not in args
     # the per-job passfile directory is cleaned up after the run
     assert not (tmp_path / str(job_id)).exists()
+    # Audit 3 A3-5: every real imapsync invocation (folder-list + per-folder
+    # sync) must suppress imapsync's own transcript logging.
+    for args in captured_args:
+        assert "--nolog" in args

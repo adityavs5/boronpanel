@@ -120,15 +120,67 @@ def test_get_connection_summary(db_grants, monkeypatch):
     assert result["per_account"] == [{"username": "demo1", "connections": 2}]
 
 
-def test_kill_query_executes_kill_with_int_thread_id(monkeypatch):
-    responses = {"KILL": (None, [])}
+def test_kill_query_executes_kill_with_int_thread_id(db_grants, monkeypatch):
+    responses = {
+        "SHOW FULL PROCESSLIST": (
+            [("Id",), ("User",), ("Host",), ("db",), ("Command",), ("Time",), ("State",), ("Info",)],
+            [(42, "demo1_app", "localhost", "demo1_app", "Query", 3, "executing", "SELECT 1")],
+        ),
+        "KILL": (None, []),
+    }
     fake_conn = _FakeConn(responses)
     monkeypatch.setattr(dm.mariadb, "_connect", lambda: fake_conn)
     result = dm.kill_query("42")
-    assert result == {"thread_id": 42, "status": "killed"}
-    assert fake_conn._cursor.executed[0][0] == "KILL 42"
+    assert result == {"thread_id": 42, "status": "killed", "db": "demo1_app"}
+    assert fake_conn._cursor.executed[-1][0] == "KILL 42"
 
 
 def test_kill_query_rejects_non_integer():
     with pytest.raises(ValueError):
         dm.kill_query("42; DROP TABLE users")
+
+
+def test_kill_query_rejects_missing_thread(db_grants, monkeypatch):
+    responses = {
+        "SHOW FULL PROCESSLIST": (
+            [("Id",), ("User",), ("Host",), ("db",), ("Command",), ("Time",), ("State",), ("Info",)],
+            [],
+        ),
+    }
+    fake_conn = _FakeConn(responses)
+    monkeypatch.setattr(dm.mariadb, "_connect", lambda: fake_conn)
+    with pytest.raises(RuntimeError, match="not currently active"):
+        dm.kill_query("123")
+
+
+def test_kill_query_rejects_thread_with_no_database(db_grants, monkeypatch):
+    # Audit 3 A3-6: a thread with no `db` (e.g. the daemon's own connection,
+    # or a system thread) is not a hosted-account query and must be refused.
+    responses = {
+        "SHOW FULL PROCESSLIST": (
+            [("Id",), ("User",), ("Host",), ("db",), ("Command",), ("Time",), ("State",), ("Info",)],
+            [(7, "forgehost_daemon", "localhost", None, "Sleep", 0, "", None)],
+        ),
+    }
+    fake_conn = _FakeConn(responses)
+    monkeypatch.setattr(dm.mariadb, "_connect", lambda: fake_conn)
+    with pytest.raises(RuntimeError, match="no associated database"):
+        dm.kill_query("7")
+    assert not any(sql.startswith("KILL") for sql, _ in fake_conn._cursor.executed)
+
+
+def test_kill_query_rejects_database_not_owned_by_any_account(db_grants, monkeypatch):
+    # Audit 3 A3-6: a thread whose db isn't in DatabaseGrant (e.g. `mysql`,
+    # a replication thread, another admin tool) must be refused even though
+    # it's a syntactically valid integer thread id.
+    responses = {
+        "SHOW FULL PROCESSLIST": (
+            [("Id",), ("User",), ("Host",), ("db",), ("Command",), ("Time",), ("State",), ("Info",)],
+            [(99, "root", "localhost", "mysql", "Query", 1, "", "SELECT 1")],
+        ),
+    }
+    fake_conn = _FakeConn(responses)
+    monkeypatch.setattr(dm.mariadb, "_connect", lambda: fake_conn)
+    with pytest.raises(RuntimeError, match="does not belong to any hosted account"):
+        dm.kill_query("99")
+    assert not any(sql.startswith("KILL") for sql, _ in fake_conn._cursor.executed)

@@ -216,6 +216,8 @@ def list_source_folders(source_host: str, source_port: int, source_email: str, s
             "--host1", source_host, "--port1", str(source_port), "--user1", source_email, "--passfile1", passfile,
             "--host2", source_host, "--port2", str(source_port), "--user2", source_email, "--passfile2", passfile,
             "--justfolders", "--nofoldersizes",
+            # Audit 3 finding A3-5 -- see the matching comment in _run_job.
+            "--nolog",
         ]
         args += ["--ssl1", "--ssl2"] if use_ssl else ["--notls1", "--notls2"]
         result = run(args, timeout=LIST_FOLDERS_TIMEOUT_SECONDS, redact=[source_password])
@@ -275,6 +277,26 @@ def start_migration(params: dict) -> dict:
 
     with write_session() as session:
         _mail_user, account = _domain_account_for_mailbox(session, domain_name, local_part)
+
+        # Audit 3 finding A3-3: IMAPSYNC_EXECUTOR is a small pool shared by
+        # every account on the box, with up to MAX_FOLDERS_PER_JOB
+        # attacker-controlled folders each syncing under its own
+        # per-folder timeout -- with no cap here, one account pointing
+        # source_host at its own slow-drip server could occupy a worker for
+        # hours and starve every other tenant's migrations. Same guard
+        # daemon/backup.py's trigger_backup already applies for the
+        # identical risk class (Audit 1 F9).
+        existing_active = session.scalar(
+            select(ImapMigrationJob).where(
+                ImapMigrationJob.account_id == account.id,
+                ImapMigrationJob.status.in_(("pending", "connecting", "running")),
+            )
+        )
+        if existing_active is not None:
+            raise ImapSyncError(
+                f"a migration is already in progress for this account (job {existing_active.id}, status '{existing_active.status}')"
+            )
+
         job = ImapMigrationJob(
             account_id=account.id,
             mailbox=f"{local_part}@{domain_name}",
@@ -391,6 +413,13 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
                 "--host2", DEST_HOST, "--port2", str(DEST_PORT), "--user2", mailbox, "--passfile2", dest_passfile,
                 "--folder", folder, "--nofoldersizes", "--noexpunge", "--syncinternaldates",
                 "--sslargs2", "SSL_verify_mode=0",
+                # Audit 3 finding A3-5: without --nolog, imapsync writes its
+                # own transcript (source/dest email addresses, host, login
+                # success) to LOG_imapsync/ relative to the daemon's cwd --
+                # confirmed live world-readable (0644) in /opt/forgehost,
+                # a cross-tenant PII leak this feature's own docstring says
+                # should never happen.
+                "--nolog",
             ]
             args += ["--ssl1"] if use_ssl else ["--notls1"]
             args += ["--ssl2"]

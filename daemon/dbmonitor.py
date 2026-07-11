@@ -240,12 +240,42 @@ ER_KILL_DENIED_ERROR = 1095
 
 
 def kill_query(thread_id) -> dict:
+    """Audit 3 finding A3-6: once KILL_QUERY_PRIVILEGE is granted,
+    `KILL <thread_id>` alone can terminate ANY MariaDB connection on the
+    server -- another admin's own session, an in-progress mysqldump/backup
+    connection, a replication thread, or forgehost_daemon's own connections
+    -- not just a hosted account's runaway query, which is the feature's
+    entire stated purpose (see DbMonitor.jsx's own copy). Scope the kill to
+    threads whose `db` is a real hosted-account database (present in
+    DatabaseGrant, the same authoritative ownership table get_processlist
+    already uses to attribute rows) before ever issuing KILL."""
     import pymysql
 
     thread_id = int(thread_id)
     conn = mariadb._connect()
     try:
         cur = conn.cursor()
+        cur.execute("SHOW FULL PROCESSLIST")
+        columns = [d[0].lower() for d in cur.description]
+        target = next(
+            (dict(zip(columns, row)) for row in cur.fetchall() if row[columns.index("id")] == thread_id),
+            None,
+        )
+        if target is None:
+            raise RuntimeError(f"thread {thread_id} is not currently active (already finished or never existed)")
+
+        db_name = target.get("db")
+        if not db_name:
+            raise RuntimeError(
+                f"refusing to kill thread {thread_id}: it has no associated database (not a hosted-account query)"
+            )
+        with write_session() as session:
+            owned = session.scalar(select(DatabaseGrant).where(DatabaseGrant.db_name == db_name)) is not None
+        if not owned:
+            raise RuntimeError(
+                f"refusing to kill thread {thread_id}: database '{db_name}' does not belong to any hosted account"
+            )
+
         try:
             # KILL's target is a numeric thread id, not a value MariaDB
             # accepts a bind placeholder for (it isn't a DML/DQL statement) --
@@ -263,4 +293,4 @@ def kill_query(thread_id) -> dict:
             raise
     finally:
         conn.close()
-    return {"thread_id": thread_id, "status": "killed"}
+    return {"thread_id": thread_id, "status": "killed", "db": db_name}
