@@ -1,14 +1,44 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Panel control-plane database (SQLite) + sidecars
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
+
+# Secrets -- never commit real values. Tracked *.example templates under
+# deploy/ (boron.toml.example, secrets.env.example, api-secrets.env.example)
+# document the required keys with placeholders instead.
+*.env
+!*.env.example
+*secrets*
+!deploy/*secrets*.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Runtime/data paths (only relevant if something is ever run with relative
+# paths from a repo checkout -- the real deployment uses absolute
+# /opt/boron, /etc/boron, /var/lib/boron, /var/log/boron, /run/boron paths
+# entirely outside this repo, so these are defense-in-depth, not load-bearing)
 /var/
+/etc/
+/run/
+/opt/
+
 *.sock
-.env
+
 .claude/
 /dist/
 /LOG_imapsync/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
