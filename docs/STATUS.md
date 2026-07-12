@@ -26,7 +26,11 @@ reproduces the user's exact error page; the fixed bundle renders the
 "Managed under a different zone" empty-state with zero console errors.
 Note for deploys: the live box runs the `ac3dd40` (pre-rebrand,
 pre-Audit-3-fixes) lineage, so the deployable bundle was built from
-`ac3dd40` + this fix in a worktree, not from HEAD.
+`ac3dd40` + this fix in a worktree, not from HEAD. **Deployed to
+`/opt/forgehost/static/dist` 2026-07-12 (user-approved), static files
+only, no service restart; pre-deploy bundle backed up at
+`/tmp/static-dist.pre-300fix.1783838790.tar.gz`. Verified live: `/app`
+serves the new index chunk and the new DomainDetail chunk, healthz 200.**
 
 ## QA round 2 (2026-07-11): 15 bugs/features from live testing — all 15 done, code complete + tested; live application selective (see per-item notes)
 
