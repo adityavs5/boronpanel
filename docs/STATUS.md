@@ -8,6 +8,26 @@ check first.
 
 ---
 
+## Hotfix (2026-07-12): React error #300 on every subdomain/addon Domain Detail page
+
+Live user report: opening Domain Detail for any domain without its own
+DNS zone (e.g. `test.coilchat.com`, whose records live in `coilchat.com`'s
+zone) showed "This page couldn't render — Minified React error #300".
+Root cause: `DnsTab` (`frontend/src/pages/customer/DomainDetail.jsx`,
+introduced in `d8ca799`, Cloudflare Phase 2+3) placed its
+`managed === false` early return ABOVE three `useMutation` hooks — the
+first render (query pending) ran all hooks, the resolved render returned
+early with fewer, which is exactly what invariant 300 guards. DNS is the
+default tab, so the page crashed on open. Fix: the early return moved
+below every hook (pure code motion). A repo-wide heuristic sweep for
+hooks-after-early-return found no other instance. Verified end-to-end
+with a headless-Chrome rig against a mock API: the pre-fix bundle
+reproduces the user's exact error page; the fixed bundle renders the
+"Managed under a different zone" empty-state with zero console errors.
+Note for deploys: the live box runs the `ac3dd40` (pre-rebrand,
+pre-Audit-3-fixes) lineage, so the deployable bundle was built from
+`ac3dd40` + this fix in a worktree, not from HEAD.
+
 ## QA round 2 (2026-07-11): 15 bugs/features from live testing — all 15 done, code complete + tested; live application selective (see per-item notes)
 
 Full detail per item: `docs/CHECKPOINT-qa2-{1..10}-*.md` (10 checkpoints

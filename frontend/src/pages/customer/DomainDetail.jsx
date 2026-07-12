@@ -210,42 +210,6 @@ function DnsTab({ domain }) {
     enabled: !!domain,
   })
 
-  // A DNS zone (local or Cloudflare) only ever exists for the exact domain
-  // dns.create_zone was called on — never for a subdomain/addon that just
-  // lives inside another domain's zone. Cloudflare in particular can only
-  // be enabled per whole zone, so a subdomain never gets its own "Enable
-  // Cloudflare" control; it rides along automatically once its parent
-  // zone is active (docs/PLAN-cloudflare.md).
-  if (data && data.managed === false) {
-    return (
-      <Card>
-        <CardContent>
-          <EmptyState
-            icon={Network}
-            title={data.parent_zone ? 'Managed under a different zone' : 'No DNS zone for this domain'}
-            description={
-              data.parent_zone ? (
-                <>
-                  <span className="font-mono">{domain}</span> doesn't have its own DNS zone — its records (and any
-                  Cloudflare proxying) live inside <span className="font-medium text-foreground">{data.parent_zone}</span>'s
-                  zone. Open that domain's DNS tab to manage records or enable Cloudflare; this subdomain will follow
-                  automatically.
-                </>
-              ) : (
-                <>
-                  <span className="font-mono">{domain}</span> isn't a Boron-managed DNS zone, and no managed zone
-                  covers it as a subdomain either. DNS (and Cloudflare) is only available for a domain Boron
-                  manages as its own zone — if this domain's DNS is hosted elsewhere, add a record there pointing at
-                  this server instead.
-                </>
-              )
-            }
-          />
-        </CardContent>
-      </Card>
-    )
-  }
-
   const zone = (data?.zone || domain || '').replace(/\.$/, '')
   const rows = (data?.records || []).map((r) => {
     const name = (r.name || '').replace(/\.$/, '')
@@ -301,6 +265,46 @@ function DnsTab({ domain }) {
     onSuccess: () => { toast.success('DNS record deleted'); invalidate(); setToDelete(null) },
     onError: (e) => { toast.error('Could not delete record', e.message); setToDelete(null) },
   })
+
+  // A DNS zone (local or Cloudflare) only ever exists for the exact domain
+  // dns.create_zone was called on — never for a subdomain/addon that just
+  // lives inside another domain's zone. Cloudflare in particular can only
+  // be enabled per whole zone, so a subdomain never gets its own "Enable
+  // Cloudflare" control; it rides along automatically once its parent
+  // zone is active (docs/PLAN-cloudflare.md).
+  // This return must stay BELOW every hook above: `managed === false` only
+  // becomes true once the query resolves (second render), so returning above
+  // any hook changes the hook count between renders — React error #300, and
+  // with no error boundary in this app, a blank page.
+  if (data && data.managed === false) {
+    return (
+      <Card>
+        <CardContent>
+          <EmptyState
+            icon={Network}
+            title={data.parent_zone ? 'Managed under a different zone' : 'No DNS zone for this domain'}
+            description={
+              data.parent_zone ? (
+                <>
+                  <span className="font-mono">{domain}</span> doesn't have its own DNS zone — its records (and any
+                  Cloudflare proxying) live inside <span className="font-medium text-foreground">{data.parent_zone}</span>'s
+                  zone. Open that domain's DNS tab to manage records or enable Cloudflare; this subdomain will follow
+                  automatically.
+                </>
+              ) : (
+                <>
+                  <span className="font-mono">{domain}</span> isn't a Boron-managed DNS zone, and no managed zone
+                  covers it as a subdomain either. DNS (and Cloudflare) is only available for a domain Boron
+                  manages as its own zone — if this domain's DNS is hosted elsewhere, add a record there pointing at
+                  this server instead.
+                </>
+              )
+            }
+          />
+        </CardContent>
+      </Card>
+    )
+  }
 
   const columns = [
     { key: 'subdomain', header: 'Name', sortable: true, searchable: true, render: (r) => <span className="font-mono text-xs">{r.subdomain}</span> },
