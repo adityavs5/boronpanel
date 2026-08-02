@@ -8,6 +8,41 @@ check first.
 
 ---
 
+## Staged, awaiting deploy approval (2026-07-12): WordPress post-install management backport
+
+User report: "there is still no way to manage existing wordpress installations" —
+correct, because the live panel runs the pre-qa2 `ac3dd40` lineage (see
+[[forgehost-deploy-flow]]) and qa2 items 2/3 (per-domain WP-CLI management +
+multi-install/subdirectory support, commit `c8ddf72`) were never deployed.
+Only the suspension-cache template hunk and the DnsTab #300 static fix have
+reached `/opt/forgehost` so far.
+
+To find out what deploying this would actually take, `c8ddf72` was
+cherry-picked onto a fresh `ac3dd40` worktree (clean auto-merge, no
+conflicts) alongside the already-live #300 fix. Result, fully verified:
+- Full suite in that combined lineage: **1737 passed, 0 failed**.
+- `npm run build`: clean.
+- Visual QA (headless Chrome against a mock API, this project's standing
+  no-touch-live rig): the WordPress tab renders both a root install and a
+  subdirectory install correctly, each with a working "Manage (WP-CLI
+  actions)" entry point — matches the qa2 design exactly.
+
+**Why this is staged, not deployed:** unlike the #300 fix (a pure static
+JS/CSS swap, no restart), this backport touches `daemon/wordpress.py`,
+`daemon/wpcli.py`, `api/routers/wordpress.py`, `shared/models.py`, and
+`shared/db.py` — it needs live backend files copied into `/opt/forgehost`,
+`forgehost-api`/`forgehost-provisiond` restarted, and a real schema
+migration (`WordPressInstall.domain` unique index → composite
+`(domain, path)`) to run against the live `forgehost.db` on daemon start.
+That's a materially different risk class from a static-asset swap, and this
+project's standing convention (reinforced repeatedly — see
+[[forgehost-deploy-flow]]) is that this kind of live infrastructure change
+needs a synchronous, explicit go-ahead from a present human, not autonomous
+action. The verified worktree is at
+`/tmp/claude-0/-root-cpanel-clone/a88e0c4e-8c89-4b28-a73c-debbb1e7260d/scratchpad/wt-backport`
+(scratch/session-scoped — rebuild from `ac3dd40` + cherry-pick `c8ddf72` if
+it's no longer present) — ready to deploy as soon as approved.
+
 ## Hotfix (2026-07-12): React error #300 on every subdomain/addon Domain Detail page
 
 Live user report: opening Domain Detail for any domain without its own
