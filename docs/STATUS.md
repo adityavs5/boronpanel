@@ -8,40 +8,50 @@ check first.
 
 ---
 
-## Staged, awaiting deploy approval (2026-07-12): WordPress post-install management backport
+## Deployed (2026-07-12, user-directed): WordPress post-install management backport
 
 User report: "there is still no way to manage existing wordpress installations" —
-correct, because the live panel runs the pre-qa2 `ac3dd40` lineage (see
+correct, because the live panel ran the pre-qa2 `ac3dd40` lineage (see
 [[forgehost-deploy-flow]]) and qa2 items 2/3 (per-domain WP-CLI management +
-multi-install/subdirectory support, commit `c8ddf72`) were never deployed.
-Only the suspension-cache template hunk and the DnsTab #300 static fix have
-reached `/opt/forgehost` so far.
+multi-install/subdirectory support, commit `c8ddf72`) had never been
+deployed. Only the suspension-cache template hunk and the DnsTab #300
+static fix had reached `/opt/forgehost` before this.
 
-To find out what deploying this would actually take, `c8ddf72` was
-cherry-picked onto a fresh `ac3dd40` worktree (clean auto-merge, no
-conflicts) alongside the already-live #300 fix. Result, fully verified:
-- Full suite in that combined lineage: **1737 passed, 0 failed**.
-- `npm run build`: clean.
-- Visual QA (headless Chrome against a mock API, this project's standing
-  no-touch-live rig): the WordPress tab renders both a root install and a
-  subdirectory install correctly, each with a working "Manage (WP-CLI
-  actions)" entry point — matches the qa2 design exactly.
+`c8ddf72` was cherry-picked onto a fresh `ac3dd40` worktree (clean
+auto-merge, no conflicts) alongside the already-live #300 fix, verified
+(full suite in that combined lineage: **1737 passed, 0 failed**; `npm run
+build` clean; visual QA via the headless-Chrome rig showed both a root
+and a subdirectory WordPress install rendering correctly with working
+"Manage (WP-CLI actions)" buttons), then deployed live on explicit user
+go-ahead ("Yeah deploy it"):
 
-**Why this is staged, not deployed:** unlike the #300 fix (a pure static
-JS/CSS swap, no restart), this backport touches `daemon/wordpress.py`,
-`daemon/wpcli.py`, `api/routers/wordpress.py`, `shared/models.py`, and
-`shared/db.py` — it needs live backend files copied into `/opt/forgehost`,
-`forgehost-api`/`forgehost-provisiond` restarted, and a real schema
-migration (`WordPressInstall.domain` unique index → composite
-`(domain, path)`) to run against the live `forgehost.db` on daemon start.
-That's a materially different risk class from a static-asset swap, and this
-project's standing convention (reinforced repeatedly — see
-[[forgehost-deploy-flow]]) is that this kind of live infrastructure change
-needs a synchronous, explicit go-ahead from a present human, not autonomous
-action. The verified worktree is at
-`/tmp/claude-0/-root-cpanel-clone/a88e0c4e-8c89-4b28-a73c-debbb1e7260d/scratchpad/wt-backport`
-(scratch/session-scoped — rebuild from `ac3dd40` + cherry-pick `c8ddf72` if
-it's no longer present) — ready to deploy as soon as approved.
+1. Live backend files backed up (`/tmp/opt-forgehost-pre-wpmgmt.<ts>/`),
+   live `forgehost.db` snapshotted (`/tmp/forgehost.db.pre-wpmgmt.<ts>.bak`),
+   live `static/dist` snapshotted (`/tmp/opt-forgehost-static-dist.pre-wpmgmt.<ts>.tar.gz`).
+2. `daemon/wordpress.py`, `daemon/wpcli.py`, `api/routers/wordpress.py`,
+   `shared/models.py`, `shared/db.py` copied into `/opt/forgehost`
+   (byte-verified identical to the tested worktree), plus the built
+   `static/dist`.
+3. `forgehost-provisiond` restarted — clean (`NRestarts=0`), no
+   tracebacks on this restart cycle. The `WordPressInstall` schema
+   migration ran automatically at daemon startup: `wordpress_installs`
+   gained the `path` column, the old single-column unique index on
+   `domain` was replaced with a composite `(domain, path)` unique index,
+   and all 5 pre-existing rows survived intact (verified directly
+   against the live SQLite file).
+4. `forgehost-api` restarted — clean (`NRestarts=0`), healthz 200, both
+   the new `index-*.js` and `DomainDetail-*.js` chunks served with 200.
+5. End-to-end proof against real data: the deployed `list_installs()`
+   was invoked directly (read-only, no session/HTTP layer needed) and
+   correctly returned the real WordPress install row for a real live
+   account/domain, confirming the deployed code path works against the
+   live database, not just the test suite.
+
+Rollback, if ever needed: stop both services, restore the 5 backend
+files + `static/dist` from the `/tmp` backups above, restore
+`forgehost.db` from the `.bak` snapshot (only if new WordPress installs
+were created live after this deploy — the migration itself is additive
+and safe to leave in place otherwise), restart both services.
 
 ## Hotfix (2026-07-12): React error #300 on every subdomain/addon Domain Detail page
 
