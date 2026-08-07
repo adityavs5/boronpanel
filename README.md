@@ -21,6 +21,26 @@ applications, and the server itself from one fast operator and customer UI.
   <a href="docs/CUSTOMER-GUIDE.md">Customer guide</a>
 </p>
 
+## Quick start
+
+Install Boron on a clean Ubuntu 24.04 server with one command:
+
+~~~bash
+sudo apt-get update && sudo apt-get install -y git && \
+  work="$(mktemp -d)" && \
+  git clone --depth 1 https://github.com/adityavs5/boronpanel.git \
+    "$work/boronpanel" && \
+  sudo bash "$work/boronpanel/scripts/install.sh"
+~~~
+
+Minimum: Ubuntu 24.04 LTS, 1 GiB RAM, 10 GiB free disk, a public IP, and
+root or unrestricted <code>sudo</code>. The installer prompts for the panel
+domain, ACME/admin email, administrator credentials, and an optional MaxMind
+GeoLite2 license key. It builds the web UI from source, configures the full
+hosting stack, and prints the panel URL when finished. Use the
+[fresh-install checklist](docs/FRESH-INSTALL-CHECKLIST.md) for the complete
+runbook and acceptance checks.
+
 ## What Boron is
 
 Boron is a single-server Linux hosting panel for operators who want the
@@ -82,12 +102,12 @@ application tree.
 
 ~~~mermaid
 flowchart LR
-    B[Browser] -->|TLS :9443| A[boron-api<br/>(unprivileged)]
-    A <-->|Unix socket<br/>/run/boron/provisiond.sock| D[boron-provisiond<br/>(root only)]
-    D --> O[OpenLiteSpeed]
-    D --> M[MariaDB / mail / DNS / FTP]
-    D --> F[FileBrowser Quantum<br/>loopback + owner firewall]
-    A --> S[(SQLite control plane)]
+    B["Browser"] -->|TLS :9443| A["boron-api (unprivileged)"]
+    A <-->|Unix socket /run/boron/provisiond.sock| D["boron-provisiond (root only)"]
+    D --> O["OpenLiteSpeed"]
+    D --> M["MariaDB / mail / DNS / FTP"]
+    D --> F["FileBrowser Quantum (loopback + owner firewall)"]
+    A --> S["SQLite control plane"]
 ~~~
 
 - <code>boron-api</code> owns HTTP, authentication, RBAC, request validation,
@@ -102,7 +122,7 @@ flowchart LR
   the [security review](docs/AUDIT3-FINDINGS.md) and
   [architecture](docs/ARCHITECTURE.md) for the threat model and boundaries.
 
-## Quick start
+## Installation details
 
 ### Requirements
 
@@ -119,19 +139,6 @@ The installer opens SSH, panel <code>9443</code>, HTTP/HTTPS
 <code>53</code>, FTP <code>21</code>, and FTP passive TCP
 <code>30000–30100</code>. It permits SSH before enabling UFW so a fresh install
 does not lock out the operator.
-
-### One-command fresh install
-
-Run this on a clean Ubuntu 24.04 server. The checkout is temporary, but keep it
-until the installer and post-install checks finish:
-
-~~~bash
-sudo apt-get update && sudo apt-get install -y git && \
-  work="$(mktemp -d)" && \
-  git clone --depth 1 https://github.com/adityavs5/boronpanel.git \
-    "$work/boronpanel" && \
-  sudo bash "$work/boronpanel/scripts/install.sh"
-~~~
 
 The installer is source-aware: it copies the code to <code>/opt/boron</code>,
 installs the Python and system dependencies, runs <code>npm ci</code> +
