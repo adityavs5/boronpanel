@@ -12,6 +12,42 @@ Start with `docs/RESEARCH.md` and `docs/ARCHITECTURE.md` for the design
 reasoning; `docs/CHECKPOINT-*.md` for what was built and verified in each
 phase; `docs/STATUS.md` for the current state and what to check first.
 
+## Fresh install in one command
+
+On a clean, supported server, clone the release source and start the
+interactive installer (run as a user with `sudo` access):
+
+```bash
+sudo apt-get update && sudo apt-get install -y git && \
+  work="$(mktemp -d)" && \
+  git clone --depth 1 https://github.com/adityavs5/boronpanel.git "$work/boronpanel" && \
+  sudo bash "$work/boronpanel/scripts/install.sh"
+```
+
+The installer builds the React UI from source, writes the Boron services and
+firewall rules, and asks for the panel domain, notification/Let's Encrypt
+email, admin password, and optional GeoLite2 key. Cloudflare is optional and is
+configured after installation; it is never required for a local PowerDNS
+install. Keep the checkout directory until the install has completed and the
+post-install checks in [the fresh-install checklist](docs/FRESH-INSTALL-CHECKLIST.md)
+are finished. For environment-preseeded or repeatable installs, see the
+installer's `--help` output and the checklist's non-interactive example.
+
+## Minimum server requirements
+
+| Requirement | Minimum |
+|---|---|
+| Operating system | Ubuntu 24.04 LTS (systemd, amd64/x86_64) |
+| Privilege | Root or an account with unrestricted `sudo` |
+| Memory | 1 GiB RAM (2 GiB+ recommended for mail, databases, and builds) |
+| Disk | 10 GiB free on `/` before installation (more for hosted data/backups) |
+| Network | Internet access for package/repository downloads and a public IP; DNS A/AAAA records should point hosted domains at the server |
+| Firewall access | SSH 22 plus panel 9443, HTTP/HTTPS 80/443, mail 25/110/143/587/993/995, FTP 21 and passive TCP 30000–30100 |
+
+The installer enforces the Ubuntu, RAM, and disk thresholds above. It keeps
+SSH open before enabling UFW, but you should still confirm your provider's
+out-of-band console access before changing firewall policy.
+
 ## Stack
 
 | Layer | Software |
