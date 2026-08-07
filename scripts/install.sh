@@ -250,19 +250,57 @@ readonly OLS_PKGS=(
     lsphp82 lsphp82-common lsphp82-curl lsphp82-mysql lsphp82-opcache lsphp82-intl lsphp82-redis lsphp82-sqlite3 lsphp82-imagick
     lsphp83 lsphp83-common lsphp83-curl lsphp83-mysql lsphp83-opcache lsphp83-intl lsphp83-redis lsphp83-sqlite3 lsphp83-imagick
     lsphp84 lsphp84-common lsphp84-curl lsphp84-mysql lsphp84-opcache lsphp84-intl lsphp84-redis lsphp84-sqlite3 lsphp84-imagick
-    lsphp85 lsphp85-common lsphp85-curl lsphp85-mysql lsphp85-opcache lsphp85-intl lsphp85-redis lsphp85-sqlite3 lsphp85-imagick
+    # LiteSpeed's Noble repository currently publishes no PHP 8.5 OPcache
+    # module (and apt-cache show lsphp85 does not include Zend OPcache in the
+    # core package). PHP 8.5 therefore installs without OPcache until
+    # LiteSpeed publishes a compatible module; 8.1-8.4 keep their modules.
+    lsphp85 lsphp85-common lsphp85-curl lsphp85-mysql lsphp85-intl lsphp85-redis lsphp85-sqlite3 lsphp85-imagick
 )
 readonly NODE_RUNTIME_VERSIONS=(18.20.8 20.19.6 22.16.0)
 
+# apt-get's output is normally redirected to INSTALL_LOG so a failed install
+# cannot flood an operator's terminal. Keep that behavior on success, but
+# replay the complete captured output on failure. This is especially
+# important for the long OLS package list: set -e must never turn a missing
+# package into an apparently silent return to the shell prompt.
+apt_run() {
+    local description="$1"
+    shift
+    if $DRY_RUN; then
+        printf '  %s' "${C_YELLOW}[dry]${C_RESET}"
+        printf ' %q' "$@"
+        printf '\n'
+        return 0
+    fi
+
+    local output rc
+    output="$(mktemp)"
+    _logline "RUN   $*"
+    if "$@" >"$output" 2>&1; then
+        cat "$output" >>"$INSTALL_LOG" 2>/dev/null || true
+        rm -f "$output"
+        return 0
+    fi
+
+    rc=$?
+    cat "$output" >>"$INSTALL_LOG" 2>/dev/null || true
+    fail "${description} failed (exit ${rc})"
+    printf '%s\n' "--- ${description} output ---" >&2
+    cat "$output" >&2
+    printf '%s\n' "--- end ${description} output ---" >&2
+    rm -f "$output"
+    return "$rc"
+}
+
 apt_update() {
     export DEBIAN_FRONTEND=noninteractive
-    run apt-get update -qq
+    apt_run "apt cache update" apt-get update -qq
     ok "apt cache updated"
 }
 
 install_base_packages() {
     info "Installing base packages"
-    run apt-get install -y "${BASE_PKGS[@]}"
+    apt_run "base package installation" apt-get install -y "${BASE_PKGS[@]}"
     ok "base packages installed (python, node, composer, tooling)"
     # wp-cli isn't packaged in apt -- fetch the official phar (curl only).
     if [[ -x /usr/local/bin/wp ]]; then
@@ -285,7 +323,7 @@ install_openlitespeed() {
         run_sh "curl -fsSL https://repo.litespeed.sh | bash"
         ok "LiteSpeed apt repo added"
     fi
-    run apt-get install -y "${OLS_PKGS[@]}"
+    apt_run "OpenLiteSpeed and lsphp package installation" apt-get install -y "${OLS_PKGS[@]}"
     run systemctl enable --now lshttpd
     ok "OpenLiteSpeed + PHP 8.1 through 8.5 installed"
 }
@@ -295,7 +333,7 @@ install_stack_packages() {
     # Postfix must not launch its interactive config screen.
     run_sh "echo 'postfix postfix/main_mailer_type select Internet Site' | debconf-set-selections"
     run_sh "echo \"postfix postfix/mailname string \$(hostname -f)\" | debconf-set-selections"
-    run apt-get install -y "${STACK_PKGS[@]}"
+    apt_run "hosting stack package installation" apt-get install -y "${STACK_PKGS[@]}"
     # The bind backend is pulled in as a pdns dependency but unused here.
     if [[ -f /etc/powerdns/pdns.d/bind.conf ]]; then
         run mv /etc/powerdns/pdns.d/bind.conf /etc/powerdns/pdns.d/bind.conf.disabled
