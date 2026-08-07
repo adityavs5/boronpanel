@@ -16,16 +16,17 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, ApiToken, PanelUser, Session
+from shared.models import Account, ApiToken, Domain, PanelUser, Session
 from shared.validation import (
     ValidationError,
+    validate_domain,
     validate_email_address,
     validate_password_strength,
     validate_php_version,
     validate_username,
 )
 
-from daemon import cgroups, notifications, sysops
+from daemon import cgroups, handlers_domain, notifications, ols, sysops
 
 logger = logging.getLogger("borond.account")
 
@@ -89,7 +90,8 @@ def create_account(params: dict) -> dict:
     quota_hard_mb = int(params.get("quota_hard_mb", settings.default_quota_hard_mb))
     if quota_hard_mb < quota_soft_mb:
         raise ValidationError("quota_hard_mb must be >= quota_soft_mb")
-    primary_domain = params.get("primary_domain")
+    raw_primary_domain = params.get("primary_domain")
+    primary_domain = validate_domain(raw_primary_domain) if raw_primary_domain is not None else None
 
     cpu_pct = int(params.get("cpu_pct", cgroups.DEFAULT_CPU_PCT))
     mem_mb = int(params.get("mem_mb", cgroups.DEFAULT_MEM_MB))
@@ -115,6 +117,10 @@ def create_account(params: dict) -> dict:
         existing = session.scalar(select(Account).where(Account.username == username))
         if existing is not None:
             raise RuntimeError(f"account '{username}' already exists")
+        if primary_domain is not None:
+            existing_domain = session.scalar(select(Domain).where(Domain.domain == primary_domain))
+            if existing_domain is not None:
+                raise RuntimeError(f"domain '{primary_domain}' is already in use")
 
     uid, gid = sysops.create_linux_user(username)
 
@@ -143,6 +149,17 @@ def create_account(params: dict) -> dict:
         )
         session.add(account)
         session.flush()
+        primary_domain_id = None
+        if primary_domain is not None:
+            primary = Domain(
+                account_id=account.id,
+                domain=primary_domain,
+                kind="primary",
+                docroot=f"{settings.home_base}/{username}/public_html",
+            )
+            session.add(primary)
+            session.flush()
+            primary_domain_id = primary.id
         if email:
             # Same table the customer/admin "notification preferences" page
             # edits later (daemon/notifications.py) -- setting it here at
@@ -155,6 +172,29 @@ def create_account(params: dict) -> dict:
         result = _account_to_dict(account)
         result["email"] = email
         account_snapshot = account
+
+    # A primary domain is part of account creation, not a display-only field:
+    # its row is needed by ownership checks and by OLS's full vhost render.
+    # The account/domain rows are committed before provisioning for the same
+    # reason as handlers_domain.add_domain; compensate both values if the
+    # docroot or OLS setup fails.
+    if primary_domain is not None:
+        try:
+            handlers_domain.ensure_docroot(
+                username,
+                f"{settings.home_base}/{username}/public_html",
+                primary_domain,
+            )
+            ols.provision_vhost(account_snapshot)
+        except Exception:
+            with write_session() as session:
+                primary = session.get(Domain, primary_domain_id)
+                if primary is not None:
+                    session.delete(primary)
+                account = session.get(Account, account_snapshot.id)
+                if account is not None:
+                    account.primary_domain = None
+            raise
 
     # Phase 7b feature 3: the "account created" email needs the plaintext
     # initial password, which exists only in this function's own local

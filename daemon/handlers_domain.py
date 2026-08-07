@@ -71,6 +71,7 @@ def add_domain(params: dict) -> dict:
             if is_primary
             else f"{settings.home_base}/{username}/{domain_name}"
         )
+        previous_primary_domain = account.primary_domain
         domain = Domain(account_id=account.id, domain=domain_name, kind=kind, docroot=docroot)
         session.add(domain)
         if is_primary:
@@ -84,10 +85,15 @@ def add_domain(params: dict) -> dict:
     # has to be committed before the OLS apply -- which means a failed OLS
     # apply must be compensated by deleting the row, or it's left orphaned
     # with no corresponding vhost (caught by real end-to-end testing below).
-    parent_zone = _find_parent_zone(domain_name)
-    dns_label = _subdomain_label(domain_name, parent_zone) if parent_zone else None
+    parent_zone = None
+    dns_label = None
     dns_record_created = False
     try:
+        # These lookups can touch the database too; keep them inside the same
+        # compensation boundary as docroot/DNS/OLS so an exception here cannot
+        # leave the already-committed Domain row orphaned.
+        parent_zone = _find_parent_zone(domain_name)
+        dns_label = _subdomain_label(domain_name, parent_zone) if parent_zone else None
         ensure_docroot(username, docroot, domain_name)
         if parent_zone and settings.server_public_ip:
             dnsprovider.upsert_record(parent_zone, dns_label, "A", [settings.server_public_ip])
@@ -105,7 +111,7 @@ def add_domain(params: dict) -> dict:
                 session.delete(orphan)
             if is_primary:
                 account = session.scalar(select(Account).where(Account.username == username))
-                account.primary_domain = None
+                account.primary_domain = previous_primary_domain
         raise
 
     domain_dict["dns_record_created"] = dns_record_created
@@ -138,9 +144,34 @@ def remove_domain(params: dict) -> dict:
             raise RuntimeError("cannot remove an account's primary domain -- terminate or reassign the account instead")
         kind = domain.kind
         account_snapshot = account
+        # Keep every persisted value so an OLS failure can restore the exact
+        # row that ownership checks rely on. The row must be deleted before
+        # rendering the remaining vhosts, so the delete is necessarily
+        # committed in its own session; compensate it below if OLS rejects
+        # the new configuration.
+        domain_snapshot = {
+            column.name: getattr(domain, column.name)
+            for column in Domain.__table__.columns
+        }
         session.delete(domain)
 
-    parent_zone = _find_parent_zone(domain_name)
+    # OLS reads the committed DB state to regenerate the remaining vhosts.
+    # If validation/reload fails, restore the deleted row before propagating
+    # the error. Otherwise a retry would be rejected by require_domain_access
+    # even though OLS still serves the old vhost.
+    try:
+        parent_zone = _find_parent_zone(domain_name)
+        ols.remove_domain_vhost(account_snapshot, domain_name)
+    except Exception:
+        with write_session() as session:
+            restored = session.get(Domain, domain_snapshot["id"])
+            if restored is None:
+                session.add(Domain(**domain_snapshot))
+            else:
+                for name, value in domain_snapshot.items():
+                    setattr(restored, name, value)
+        raise
+
     if parent_zone:
         label = _subdomain_label(domain_name, parent_zone)
         try:
@@ -148,7 +179,6 @@ def remove_domain(params: dict) -> dict:
         except dnsprovider.DnsError:
             pass  # already gone or zone unreachable -- vhost removal below is what actually matters
 
-    ols.remove_domain_vhost(account_snapshot, domain_name)
     handlers_redirect.delete_redirects_for_domain(domain_name)
     lscache.delete_settings_for_domain(domain_name)
     # Phase 8 feature 4: drop any whole-domain forwarding row for this domain.

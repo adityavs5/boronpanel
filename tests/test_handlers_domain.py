@@ -77,6 +77,22 @@ def test_add_domain_compensates_db_row_when_ols_apply_fails(isolated_db, stub_sy
         assert account.primary_domain is None, "primary_domain must be cleared along with the orphaned row"
 
 
+def test_add_domain_compensates_db_row_when_parent_lookup_fails(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    def boom(domain):
+        raise RuntimeError("zone lookup failed")
+
+    monkeypatch.setattr(hd, "_find_parent_zone", boom)
+
+    ha.create_account({"username": "demo1"})
+    with pytest.raises(RuntimeError, match="zone lookup failed"):
+        hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+
+    with write_session() as session:
+        assert session.scalar(select(Domain).where(Domain.domain == "demo1.example")) is None
+        account = session.scalar(select(ha.Account).where(ha.Account.username == "demo1"))
+        assert account.primary_domain is None
+
+
 def test_add_domain_rejects_duplicate_domain(isolated_db, stub_sysops, stub_filesystem, stub_ols):
     ha.create_account({"username": "demo1"})
     ha.create_account({"username": "demo2"})
@@ -165,6 +181,42 @@ def test_remove_domain_deletes_row_and_vhost(isolated_db, stub_sysops, stub_file
         assert gone is None
         still_there = session.scalar(select(Domain).where(Domain.domain == "demo1.example"))
         assert still_there is not None
+
+
+def test_remove_domain_restores_row_when_ols_apply_fails(isolated_db, stub_sysops, stub_filesystem, stub_ols, monkeypatch):
+    """A failed OLS reload must not turn a retry into a false ownership 403."""
+    from api import security
+
+    account = ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "addon.example", "kind": "addon"})
+
+    with write_session() as session:
+        before = session.scalar(select(Domain).where(Domain.domain == "addon.example"))
+        before_values = {
+            column.name: getattr(before, column.name)
+            for column in Domain.__table__.columns
+        }
+
+    def boom(account_snapshot, domain_name):
+        raise RuntimeError("openlitespeed -t failed")
+
+    monkeypatch.setattr(hd.ols, "remove_domain_vhost", boom)
+    with pytest.raises(RuntimeError, match="openlitespeed -t failed"):
+        hd.remove_domain({"username": "demo1", "domain": "addon.example"})
+
+    with write_session() as session:
+        restored = session.scalar(select(Domain).where(Domain.domain == "addon.example"))
+        assert restored is not None
+        assert {
+            column.name: getattr(restored, column.name)
+            for column in Domain.__table__.columns
+        } == before_values
+
+    # The same owner can retry using a DNS-equivalent spelling; this exercises
+    # both the compensation and API ownership normalization fixes.
+    identity = security.Identity(1, "custlogin", "customer", account["id"], "session")
+    security.require_domain_access(identity, "ADDON.EXAMPLE.")
 
 
 def test_remove_domain_refuses_primary(isolated_db, stub_sysops, stub_filesystem, stub_ols):

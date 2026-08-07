@@ -163,6 +163,17 @@ def test_require_domain_access_customer_own_domain(isolated_db, monkeypatch):
     sec.require_domain_access(identity, "cust1.example")  # should not raise
 
 
+def test_require_domain_access_normalizes_case_and_trailing_dot(isolated_db, monkeypatch):
+    account, user = _make_account_and_customer(isolated_db, monkeypatch)
+    from shared.models import Domain
+
+    with write_session() as db:
+        db.add(Domain(account_id=account["id"], domain="cust1.example", kind="primary", docroot="/home/cust1/public_html"))
+
+    identity = sec.Identity(user["id"], "custlogin", "customer", account["id"], "session")
+    sec.require_domain_access(identity, "CUST1.EXAMPLE.")  # should not raise
+
+
 def test_require_domain_access_customer_other_domain_denied(isolated_db, monkeypatch):
     from fastapi import HTTPException
 

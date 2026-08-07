@@ -3,6 +3,7 @@ from sqlalchemy import select
 
 from daemon import handlers_account as ha
 from shared.db import write_session
+from shared.models import Domain
 from shared.validation import ValidationError
 
 
@@ -39,6 +40,8 @@ def stub_sysops(monkeypatch):
     monkeypatch.setattr(ha.sysops, "unlock_user", unlock_user)
     monkeypatch.setattr(ha.sysops, "delete_linux_user", delete_linux_user)
     monkeypatch.setattr(ha.sysops, "remove_quota", remove_quota)
+    monkeypatch.setattr(ha.handlers_domain, "ensure_docroot", lambda username, docroot, domain_name=None: None)
+    monkeypatch.setattr(ha.ols, "provision_vhost", lambda account: None)
     return calls
 
 
@@ -49,6 +52,36 @@ def test_create_account_happy_path(isolated_db, stub_sysops):
     assert result["uid"] == 5001
     assert "initial_password" in result
     assert ("create_linux_user", "demo1") in stub_sysops
+
+    with write_session() as session:
+        domain = session.scalar(select(Domain).where(Domain.domain == "demo1.example"))
+        assert domain is not None
+        assert domain.account_id == result["id"]
+        assert domain.kind == "primary"
+        assert domain.docroot == "/home/demo1/public_html"
+
+
+def test_create_account_compensates_primary_domain_when_ols_fails(isolated_db, stub_sysops, monkeypatch):
+    def boom(account):
+        raise RuntimeError("openlitespeed -t failed")
+
+    monkeypatch.setattr(ha.ols, "provision_vhost", boom)
+
+    with pytest.raises(RuntimeError, match="openlitespeed -t failed"):
+        ha.create_account({"username": "demo1", "primary_domain": "demo1.example"})
+
+    with write_session() as session:
+        account = session.scalar(select(ha.Account).where(ha.Account.username == "demo1"))
+        assert account is not None
+        assert account.primary_domain is None
+        assert session.scalar(select(Domain).where(Domain.domain == "demo1.example")) is None
+
+
+def test_create_account_rejects_duplicate_primary_domain(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1", "primary_domain": "shared.example"})
+
+    with pytest.raises(RuntimeError, match="domain 'shared.example' is already in use"):
+        ha.create_account({"username": "demo2", "primary_domain": "shared.example"})
 
 
 def test_create_account_stores_contact_email_in_notification_prefs(isolated_db, stub_sysops):

@@ -22,6 +22,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import read_session
 from shared.models import Account, ApiToken, Domain, ImpersonationSession, PanelUser, Session
+from shared.validation import ValidationError, validate_domain
 
 COOKIE_NAME = "fh_session"
 COOKIE_MAX_AGE_SECONDS = 7 * 24 * 3600
@@ -197,9 +198,22 @@ def require_domain_access(identity: Identity, domain: str) -> None:
         return
     if identity.account_id is None:
         raise HTTPException(status_code=403, detail="not scoped to any account")
+    try:
+        # Domain rows are stored in the canonical form produced by the daemon
+        # (lowercase, stripped, and without a trailing dot). Normalize the
+        # route value before looking it up so a legitimate owner is not denied
+        # merely because the browser supplied a different DNS spelling.
+        normalized_domain = validate_domain(domain)
+    except ValidationError as exc:
+        raise HTTPException(status_code=403, detail="not authorized for this domain") from exc
     with read_session() as db:
-        domain_row = db.scalar(select(Domain).where(Domain.domain == domain))
-        if domain_row is None or domain_row.account_id != identity.account_id:
+        domain_row = db.scalar(
+            select(Domain).where(
+                Domain.domain == normalized_domain,
+                Domain.account_id == identity.account_id,
+            )
+        )
+        if domain_row is None:
             raise HTTPException(status_code=403, detail="not authorized for this domain")
 
 
