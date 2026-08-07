@@ -101,8 +101,25 @@ run() {
         printf '  %s %s\n' "${C_YELLOW}[dry]${C_RESET}" "$*"
         return 0
     fi
+    local output rc
+    output="$(mktemp)"
     _logline "RUN   $*"
-    "$@" >>"$INSTALL_LOG" 2>&1
+    if "$@" >"$output" 2>&1; then
+        cat "$output" >>"$INSTALL_LOG" 2>/dev/null || true
+        rm -f "$output"
+        return 0
+    else
+        # Capture the command status in the else branch; reading `$?` after
+        # the `if` compound command would mask a failed service command as 0.
+        rc=$?
+    fi
+    cat "$output" >>"$INSTALL_LOG" 2>/dev/null || true
+    fail "command failed (exit ${rc}): $*"
+    printf '%s\n' "--- command output ---" >&2
+    cat "$output" >&2
+    printf '%s\n' '--- end command output ---' >&2
+    rm -f "$output"
+    die "command failed (exit ${rc}); see ${INSTALL_LOG}"
 }
 
 # run_sh: same, for a shell snippet that genuinely needs pipes/redirects.
@@ -958,9 +975,16 @@ EOF
     # an additional, higher-priority auth source -- existing system-account
     # logins keep working via the existing 65unix/70pam chain. The target,
     # /etc/pure-ftpd/conf/PureDB, ships with the pure-ftpd package itself
-    # (an empty placeholder `pure-pw` rebuilds via its own `-m` flag on
-    # every mutation), so only the auth-chain symlink needs creating here.
+    # (an empty placeholder is valid, but the binary database must still be
+    # generated before pure-ftpd-wrapper will start), so create both files
+    # before enabling the auth-chain symlink.
     run mkdir -p /etc/pure-ftpd/auth
+    if [[ ! -e /etc/pure-ftpd/pureftpd.passwd ]]; then
+        run install -m 600 /dev/null /etc/pure-ftpd/pureftpd.passwd
+    fi
+    run pure-pw mkdb /etc/pure-ftpd/pureftpd.pdb \
+        -f /etc/pure-ftpd/pureftpd.passwd
+    run chmod 600 /etc/pure-ftpd/pureftpd.passwd /etc/pure-ftpd/pureftpd.pdb
     run ln -sf ../conf/PureDB /etc/pure-ftpd/auth/30pdb
 
     # 4. Pin the passive-mode data-port range to exactly what
