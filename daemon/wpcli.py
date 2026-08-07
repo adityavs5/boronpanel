@@ -32,11 +32,7 @@ def ensure_wpcli() -> str:
     running `--version` (a bad download fails here, not silently later)."""
     path = settings.wpcli_phar_path
     if not os.path.exists(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        result = run(["curl", "-fsSL", "-o", path, settings.wpcli_download_url], timeout=120)
-        if not result.ok:
-            raise RuntimeError(f"failed to download wp-cli: {result.stderr.strip()}")
-        os.chmod(path, 0o755)
+        raise RuntimeError("wp-cli.phar is not installed; install a pinned, locally verified release before enabling WordPress operations")
     check = run([settings.php_cli_bin, path, "--version", "--allow-root", "--no-color"], timeout=30)
     if not check.ok or "WP-CLI" not in (check.stdout + check.stderr):
         raise RuntimeError("wp-cli.phar is present but not runnable")

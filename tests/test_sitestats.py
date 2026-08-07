@@ -1,6 +1,9 @@
+import datetime as dt
+
 import pytest
 
 from daemon import sitestats as ss
+from shared.models import utcnow
 
 
 def test_parse_log_line_extracts_all_fields():
@@ -99,9 +102,10 @@ def domain_with_logs(isolated_db, tmp_path, monkeypatch):
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
     vhost_name = "demo1_example"
+    recent_timestamp = (utcnow().date() - dt.timedelta(days=1)).strftime("%d/%b/%Y")
     log_line = (
-        '203.0.113.7 - - [01/Jul/2026:06:35:50 +0000] "GET / HTTP/1.1" 200 100 "-" "curl/8.0"\n'
-        '198.51.100.9 - - [01/Jul/2026:06:36:50 +0000] "GET /missing HTTP/1.1" 404 0 "-" "curl/8.0"\n'
+        f'203.0.113.7 - - [{recent_timestamp}:06:35:50 +0000] "GET / HTTP/1.1" 200 100 "-" "curl/8.0"\n'
+        f'198.51.100.9 - - [{recent_timestamp}:06:36:50 +0000] "GET /missing HTTP/1.1" 404 0 "-" "curl/8.0"\n'
     )
     (logs_dir / f"{vhost_name}-access.log").write_text(log_line)
 

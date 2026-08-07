@@ -89,12 +89,12 @@ class Settings:
     default_quota_soft_mb: int = 5120
     default_quota_hard_mb: int = 6144
 
-    # mariadb (control DB for hosted accounts + forgehost_mail schema)
+    # mariadb (control DB for hosted accounts + boron_mail schema)
     mariadb_socket: str = "/run/mysqld/mysqld.sock"
     # Deliberately not the bare MySQL "root" account (ARCHITECTURE.md SS4) --
     # a dedicated admin-equivalent user the daemon authenticates as, so root
     # itself can keep a password nobody but the operator knows.
-    mariadb_admin_user: str = "forgehost_daemon"
+    mariadb_admin_user: str = "boron_daemon"
 
     # powerdns
     powerdns_api_url: str = "http://127.0.0.1:8081/api/v1"
@@ -318,8 +318,10 @@ class Settings:
     # unconfigured and the whole feature reports "not configured" rather
     # than guessing a repo. The tarball URL itself is never operator- or
     # request-supplied: it must be
-    # https://github.com/{update_github_repo}/releases/download/... .
-    update_github_repo: str = ""
+    # https://github.com/{update_github_repo}/releases/download/... . The
+    # official repository is the safe default; operators can explicitly set
+    # this to an empty string to disable update checks.
+    update_github_repo: str = "adityavs5/boronpanel"
     update_check_cache_seconds: int = 3600  # goal: cache update.check 1hr
     update_download_dir: str = "/var/lib/boron/update-staging"
     update_max_download_bytes: int = 500 * 1024 * 1024  # 500MB (releases are ~4MB)

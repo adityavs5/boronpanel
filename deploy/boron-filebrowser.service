@@ -1,8 +1,8 @@
 # Reference copy of the FileBrowser Quantum unit. borond's fb.bootstrap op
 # writes an identical file to /etc/systemd/system/boron-filebrowser.service
-# at daemon startup (daemon/filebrowser.py::_unit_content), so manual install of
-# this file is optional -- it's here for operator visibility alongside the other
-# deploy/*.service units. Runs as root by necessity (cross-account home access
+# at daemon startup (daemon/filebrowser.py::_unit_content); the installer also
+# installs this reference unit before first service startup. Runs as root by
+# necessity (cross-account home access
 # under the 711/750 perms model, per ARCHITECTURE.md §10). The network boundary
 # is the loopback bind in /etc/boron/filebrowser.yaml PLUS an iptables
 # uid-owner OUTPUT rule (daemon/filebrowser.py::restrict_backend_access,
@@ -11,7 +11,9 @@
 # since FileBrowser's own proxy-auth trusts any caller that reaches the port.
 # The hardening directives below (A3-8) narrow everything compatible with
 # needing full-filesystem root (no ProtectHome/ProtectSystem/capability drop
-# of DAC-related caps -- those would break the feature).
+# of DAC-related caps -- those would break the feature). MemoryDenyWriteExecute
+# is intentionally omitted because FileBrowser Quantum's Go runtime crashes
+# under that restriction during startup.
 [Unit]
 Description=Boron File Manager (FileBrowser Quantum)
 After=network.target
@@ -34,7 +36,6 @@ RestrictSUIDSGID=true
 RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
 CapabilityBoundingSet=~CAP_SYS_MODULE CAP_SYS_BOOT CAP_SYS_TIME CAP_SYS_ADMIN CAP_NET_ADMIN CAP_MKNOD CAP_SYS_RAWIO
 StandardOutput=append:/var/log/boron/filebrowser.log
 StandardError=append:/var/log/boron/filebrowser.log

@@ -16,6 +16,7 @@ from shared.models import Account, FtpAccount
 from shared.validation import ValidationError, validate_db_identifier, validate_password_strength, validate_username
 
 from daemon import ftp
+from daemon.safeio import secure_mkdirs
 
 MAX_LOGIN_SUFFIX_LEN = 32
 
@@ -51,9 +52,12 @@ def _resolve_path(username: str, relative_path: str) -> str:
     return resolved
 
 
-def _ensure_path_exists(path: str, uid: int, gid: int) -> None:
-    os.makedirs(path, exist_ok=True)
-    os.chown(path, uid, gid)
+def _ensure_path_exists(username: str, path: str, uid: int, gid: int) -> None:
+    home = os.path.join(settings.home_base, username)
+    relative = os.path.relpath(path, home)
+    if relative == ".":
+        return
+    secure_mkdirs(home, relative, uid, gid, 0o750)
 
 
 def _row_to_dict(row: FtpAccount, username: str) -> dict:
@@ -89,7 +93,7 @@ def create_ftp_account(params: dict) -> dict:
 
     abs_path = _resolve_path(username, relative_path)
     pw = pwd.getpwnam(username)
-    _ensure_path_exists(abs_path, pw.pw_uid, pw.pw_gid)
+    _ensure_path_exists(username, abs_path, pw.pw_uid, pw.pw_gid)
 
     ftp.create_ftp_user(ftp_login, pw.pw_uid, pw.pw_gid, abs_path, password)
 
@@ -132,7 +136,7 @@ def set_ftp_path(params: dict) -> dict:
 
     abs_path = _resolve_path(username, relative_path)
     pw = pwd.getpwnam(username)
-    _ensure_path_exists(abs_path, pw.pw_uid, pw.pw_gid)
+    _ensure_path_exists(username, abs_path, pw.pw_uid, pw.pw_gid)
     ftp.set_path(ftp_login, pw.pw_uid, pw.pw_gid, abs_path)
 
     with write_session() as session:

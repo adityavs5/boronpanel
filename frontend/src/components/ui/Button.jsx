@@ -31,7 +31,7 @@ export const buttonVariants = cva(
 )
 
 export const Button = forwardRef(function Button(
-  { className, variant, size, asChild = false, loading = false, disabled, children, ...props },
+  { className, variant, size, asChild = false, loading = false, disabled, children, title, ...props },
   ref,
 ) {
   const Comp = asChild ? Slot : 'button'
@@ -40,6 +40,9 @@ export const Button = forwardRef(function Button(
       ref={ref}
       className={cn(buttonVariants({ variant, size, className }))}
       disabled={disabled || loading}
+      type={!asChild ? (props.type || 'button') : undefined}
+      title={title}
+      aria-label={props['aria-label'] || ((size === 'icon' || size === 'icon-sm') ? title : undefined)}
       {...props}
     >
       {/* Slot (radix-slot >=1.3) requires exactly ONE child — even a falsy

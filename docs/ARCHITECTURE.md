@@ -139,11 +139,11 @@ themselves, not a Boron design choice). Since MariaDB is *already* a
 hard dependency for hosted-account databases, standing up a second database
 engine (or Postfix/Dovecot's separately-packaged sqlite driver subpackages,
 which we did not install) just for mail would add an extra moving part for
-no benefit. **Decision: a dedicated `forgehost_mail` schema inside the same
+no benefit. **Decision: a dedicated `boron_mail` schema inside the same
 MariaDB instance**, separate from both the panel's SQLite control plane and
 from any hosted account's own databases. Two MariaDB users exist against it:
-`forgehost_daemon` (full DML/DDL, credential held only by `borond`) and
-`forgehost_mailro` (SELECT-only, credential embedded in Postfix's/Dovecot's
+`boron_daemon` (full DML/DDL, credential held only by `borond`) and
+`boron_mailro` (SELECT-only, credential embedded in Postfix's/Dovecot's
 own config files, which already run as root/dovecot respectively — this is
 the same exposure every SQL-backed mail setup in RESEARCH.md §6 accepts).
 The `mail_domain`/`mail_user` rows are *also* mirrored into Boron's

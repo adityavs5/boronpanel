@@ -64,6 +64,7 @@ from shared.validation import generate_strong_password, validate_domain, validat
 
 from daemon import handlers_database, wordpress
 from daemon.procutil import run
+from daemon.safeio import secure_mkdirs, secure_write_file_beneath
 
 logger = logging.getLogger("borond.appinstaller")
 
@@ -174,12 +175,12 @@ def _extract_zip(zip_path: Path, docroot: str, root_prefix: str | None = None) -
             else:
                 relative = name
             target = _safe_extract_target(docroot, relative)
+            root_uid, root_gid = os.stat(docroot, follow_symlinks=False).st_uid, os.stat(docroot, follow_symlinks=False).st_gid
             if info.is_dir() or name.endswith("/"):
-                os.makedirs(target, exist_ok=True)
+                secure_mkdirs(docroot, relative.rstrip("/"), root_uid, root_gid, 0o750)
                 continue
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with zf.open(info) as src, open(target, "wb") as dst:
-                shutil.copyfileobj(src, dst)
+            with zf.open(info) as src:
+                secure_write_file_beneath(docroot, relative, src.read(), root_uid, root_gid, 0o640)
 
 
 def _mysql_import(db_name: str, db_user: str, db_password: str, sql_texts: list[str]) -> None:

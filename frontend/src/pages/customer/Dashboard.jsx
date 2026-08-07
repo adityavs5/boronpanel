@@ -24,6 +24,14 @@ const QUICK_ACTIONS = [
   { label: 'Files', to: '/files', icon: HardDrive },
 ]
 
+const ALERT_DESTINATIONS = {
+  disk: '/disk-usage',
+  disk_space: '/disk-usage',
+  bandwidth: '/dashboard',
+  database: '/databases',
+  email: '/email',
+}
+
 function StatCard({ icon: Icon, label, value, sub }) {
   return (
     <Card>
@@ -76,14 +84,31 @@ export default function Dashboard() {
                 <div className="font-medium text-foreground">Usage alerts</div>
                 <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
                   {activeAlerts.map((a) => (
-                    <li key={a.id} className="flex items-center gap-2">
-                      <Badge variant={a.threshold_pct >= 100 ? 'danger' : 'warning'}>{a.threshold_pct}%</Badge>
-                      <span className="capitalize">{a.resource}</span> reached its limit
+                    <li key={a.id}>
+                      <Link to={ALERT_DESTINATIONS[a.resource] || '/dashboard'} className="group flex items-center gap-2 rounded-btn py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <Badge variant={a.threshold_pct >= 100 ? 'danger' : 'warning'}>{a.threshold_pct}%</Badge>
+                        <span className="capitalize">{a.resource}</span> reached its limit
+                        <ArrowRight className="ml-auto h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+                      </Link>
                     </li>
                   ))}
                 </ul>
               </div>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!domains.isLoading && domainCount === 0 && (
+        <Card className="mb-6 border-accent/40 bg-accent-50/60 dark:bg-accent-950/20">
+          <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
+            <div>
+              <div className="font-medium text-foreground">Finish setting up your hosting</div>
+              <p className="mt-0.5 text-sm text-muted-foreground">Add a domain first, then configure email and SSL.</p>
+            </div>
+            <Link to="/domains" className="inline-flex min-h-9 items-center gap-2 rounded-btn bg-accent px-3 text-sm font-medium text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              Add your first domain <ArrowRight className="h-4 w-4" />
+            </Link>
           </CardContent>
         </Card>
       )}

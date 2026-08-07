@@ -1,0 +1,17 @@
+# Boron core scheduled maintenance and snapshot jobs.
+# Installed as /etc/cron.d/boron-jobs (root:root, 0644).
+
+# Server-health history for the administrator dashboard.
+* * * * * root /opt/boron/.venv/bin/python /opt/boron/scripts/health_snapshot.py >> /var/log/boron/health-snapshot.log 2>&1
+
+# Per-account usage and alert evaluation.
+*/15 * * * * root /opt/boron/scripts/usage_snapshot.py >> /var/log/boron/usage-snapshot.log 2>&1
+*/15 * * * * root /opt/boron/scripts/usage_alert_check.py >> /var/log/boron/usage-alert-check.log 2>&1
+
+# Backup schedules are evaluated hourly; each account's configured cadence
+# determines whether a backup is actually due.
+0 * * * * root /opt/boron/scripts/backup_scheduler.py >> /var/log/boron/backup-scheduler.log 2>&1
+
+# Revoke expired phpMyAdmin sign-on users and check certificate expiry.
+*/5 * * * * root /opt/boron/scripts/pma_token_cleanup.py >> /var/log/boron/pma-token-cleanup.log 2>&1
+0 6 * * * root /opt/boron/scripts/ssl_expiry_check.py >> /var/log/boron/ssl-expiry-check.log 2>&1

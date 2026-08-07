@@ -19,6 +19,10 @@ documented as such rather than silently unsupported.
 """
 from __future__ import annotations
 
+import configparser
+import os
+import tempfile
+
 from shared.config import settings
 
 from daemon.procutil import run
@@ -40,12 +44,40 @@ def create_remote(remote_name: str, remote_type: str, config: dict[str, str]) ->
     prompts. `--non-interactive` makes this fail loudly instead of hanging
     if a required field is missing, rather than silently waiting for input
     that will never come in a daemon context."""
-    args = _rclone_args("config", "create", remote_name, remote_type, "--non-interactive")
-    for key, value in config.items():
-        args.append(f"{key}={value}")
-    result = run(args, timeout=30)
+    result = run(_rclone_args("config", "create", remote_name, remote_type, "--non-interactive"), timeout=30)
     if not result.ok:
-        raise RcloneError(f"rclone config create failed: {result.stderr.strip() or result.stdout.strip()}")
+        # Some rclone versions reject an empty backend config. We still do
+        # not retry with secrets in argv; the validated INI below is the
+        # authoritative configuration.
+        if not config or "required" not in (result.stderr or "").lower():
+            raise RcloneError(f"rclone config create failed: {result.stderr.strip() or result.stdout.strip()}")
+    # Do not pass credentials in argv: even a perfectly redacted application
+    # log cannot protect them from /proc/<pid>/cmdline. rclone's config file is
+    # an INI document and is already root-only; update it atomically instead.
+    parser = configparser.RawConfigParser()
+    if os.path.exists(RCLONE_CONFIG_PATH):
+        parser.read(RCLONE_CONFIG_PATH)
+    section = remote_name
+    if not parser.has_section(section):
+        parser.add_section(section)
+    parser.set(section, "type", remote_type)
+    for key, value in config.items():
+        parser.set(section, key, value)
+    directory = os.path.dirname(RCLONE_CONFIG_PATH) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".rclone.", dir=directory, text=True)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            parser.write(fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, RCLONE_CONFIG_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def delete_remote(remote_name: str) -> None:

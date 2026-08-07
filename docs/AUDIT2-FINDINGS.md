@@ -1,4 +1,4 @@
-# Forgehost — Security Audit 2 Findings
+# Boron — Security Audit 2 Findings
 
 Companion to `docs/AUDIT2-THREATMODEL.md`. Scope: the **new attack surface
 added since Audit 1** (React SPA, Node/Python app hosting, per-account Redis,
@@ -94,7 +94,7 @@ checks both `NodeApp` and `PythonApp` tables so the two kinds never collide.
 Apps bind `127.0.0.1`. **Cannot squat a control-plane port.**
 
 **Runs as account user, no elevated caps** — Units set `User=`/`Group=` to the
-account and `Slice=forgehost-<username>.slice`; no `AmbientCapabilities`/
+account and `Slice=boron-<username>.slice`; no `AmbientCapabilities`/
 `CapabilityBoundingSet` grant. `npm install`/`pip install`/venv creation run
 via `runuser -u <username>`. **Confirmed unprivileged.**
 
@@ -260,11 +260,11 @@ name is read directly from the account's own `wp-config.php`
 (`_source_db_name`), which the account can freely rewrite (file manager, FTP,
 its own PHP running as its uid). That name is passed to
 `backup._dump_database`, which runs `mysqldump` as the MariaDB **admin**
-(`forgehost_daemon`) — a credential with access to *every* database on the
+(`boron_daemon`) — a credential with access to *every* database on the
 instance. There was no check that the named database belongs to the account.
 
 **IMPACT**: An authenticated customer sets `define('DB_NAME', 'victim_wpdb')`
-(or the internal `forgehost_mail` schema) in their own docroot's
+(or the internal `boron_mail` schema) in their own docroot's
 `wp-config.php`, calls staging create/sync for their own domain (which passes
 the correct `require_account_access`/`require_domain_access` gates — the flaw
 is below the ownership boundary), and staging dumps the victim's database and
@@ -300,7 +300,7 @@ the email channel can send it to the account owner). `maybe_trigger` built the
 webhook payload as `dict(context)`, so the password was (a) POSTed to whatever
 external URL an admin configured for that event and (b) persisted in
 `WebhookDelivery.payload` (a JSON column, plaintext in the control-plane DB —
-readable by `forgehost-api`, which otherwise only ever sees hashed
+readable by `boron-api`, which otherwise only ever sees hashed
 credentials).
 
 **IMPACT**: A live account credential crosses the panel's trust boundary to a
@@ -323,7 +323,7 @@ that unrelated fields pass through.
 **LOCATION**: `daemon/webhooks.py:_deliver`; `shared/validation.py:validate_webhook_url`.
 
 **DESCRIPTION**: `validate_webhook_url` checked only scheme/netloc/control
-characters; `_deliver` then made `httpx.post(url, ...)` from **forgehostd
+characters; `_deliver` then made `httpx.post(url, ...)` from **borond
 (root)** with no restriction on the destination address. An admin (or an
 over-scoped admin API token) could point a webhook at an internal-only service
 (`http://127.0.0.1:8081` PowerDNS, other loopback services) or the cloud
@@ -419,7 +419,7 @@ never what data the API returns (every route enforces `get_identity` +
 
 `Webhook.secret` (HMAC signing key — must be *used*, not compared, so cannot be
 one-way-hashed) and `WebhookDelivery.payload` are plaintext in the DB, guarded
-by the DB file's `root:forgehost-api 0640` permission — the same accepted
+by the DB file's `root:boron-api 0640` permission — the same accepted
 tradeoff as `TotpCredential.secret`. The high-value case (a live credential in
 the payload) is closed by A2-2's secret-stripping. Not further changed.
 

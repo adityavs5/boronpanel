@@ -4,6 +4,8 @@ from daemon import imapsync as im
 from daemon.procutil import ProcResult
 from shared.validation import ValidationError
 
+REAL_ENSURE_INSTALLED = im.ensure_installed
+
 
 @pytest.fixture()
 def mailbox(isolated_db):
@@ -58,6 +60,12 @@ def test_start_migration_rejects_internal_ip_source(mailbox):
             "source_email": "old@old-provider.example",
             "source_password": "s3cret-source-pw", "dest_password": "s3cret-dest-pw",
         })
+
+
+def test_ensure_installed_rejects_missing_binary(monkeypatch, tmp_path):
+    monkeypatch.setattr(im, "IMAPSYNC_BIN", str(tmp_path / "missing-imapsync"))
+    with pytest.raises(im.ImapSyncError, match="Boron installer"):
+        REAL_ENSURE_INSTALLED()
 
 
 def test_start_migration_rejects_loopback_source(mailbox):

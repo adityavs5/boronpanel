@@ -24,7 +24,7 @@ export default function Processes({ embedded = false }) {
   const qc = useQueryClient()
   const [toKill, setToKill] = useState(null)
 
-  const { data, isLoading, error, refetch, isFetching } = useQuery({
+  const { data, isLoading, error, refetch, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ['processes', username],
     queryFn: () => get(`/api/v1/accounts/${username}/processes`),
     enabled: !!username,
@@ -86,7 +86,7 @@ export default function Processes({ embedded = false }) {
 
   return (
     <div>
-      <PageHeader title="Processes" description="Live processes running under your account. Auto-refreshes every 10 seconds." icon={Cpu}>
+      <PageHeader title="Processes" description={dataUpdatedAt ? `Live processes. Updated ${new Date(dataUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}; refreshes every 10 seconds.` : 'Live processes running under your account.'} icon={Cpu}>
         <Button variant="secondary" onClick={() => refetch()} loading={isFetching}><RefreshCw className="h-4 w-4" /> Refresh</Button>
       </PageHeader>
       {table}

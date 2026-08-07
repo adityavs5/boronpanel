@@ -6,8 +6,9 @@ real `fail2ban-client`/log output, not assumed from documentation.
 
 Jails managed: `sshd` (Ubuntu's fail2ban package already ships this
 enabled by default via /etc/fail2ban/jail.d/defaults-debian.conf,
-confirmed live -- nothing to add), plus four this feature adds via its
-own `/etc/fail2ban/jail.d/boron.conf` drop-in: `postfix`/`dovecot`
+confirmed live -- nothing to add), plus five this feature adds via its
+own `/etc/fail2ban/jail.d/boron.conf` drop-in: `postfix`/`dovecot`/
+`pure-ftpd`
 (stock fail2ban filters that ship with the package but aren't enabled by
 default), a custom `boron-panel-login` filter for this project's own
 `/login` endpoint, and a custom `ols-scan` filter for OpenLiteSpeed
@@ -35,7 +36,7 @@ FILTER_PANEL_LOGIN_PATH = "/etc/fail2ban/filter.d/boron-panel-login.conf"
 FILTER_OLS_SCAN_PATH = "/etc/fail2ban/filter.d/ols-scan.conf"
 FAIL2BAN_LOG_PATH = "/var/log/fail2ban.log"
 
-MANAGED_JAILS = {"sshd", "postfix", "dovecot", "boron-panel-login", "ols-scan"}
+MANAGED_JAILS = {"sshd", "postfix", "dovecot", "pure-ftpd", "boron-panel-login", "ols-scan"}
 
 
 def _atomic_write(path: str, content: str) -> None:
@@ -90,6 +91,11 @@ journalmatch = _SYSTEMD_UNIT=postfix@-.service
 enabled = true
 backend = systemd
 journalmatch = _SYSTEMD_UNIT=dovecot.service
+
+[pure-ftpd]
+enabled = true
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=pure-ftpd.service
 
 [boron-panel-login]
 enabled = true

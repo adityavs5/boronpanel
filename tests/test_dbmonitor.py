@@ -159,7 +159,7 @@ def test_kill_query_rejects_thread_with_no_database(db_grants, monkeypatch):
     responses = {
         "SHOW FULL PROCESSLIST": (
             [("Id",), ("User",), ("Host",), ("db",), ("Command",), ("Time",), ("State",), ("Info",)],
-            [(7, "forgehost_daemon", "localhost", None, "Sleep", 0, "", None)],
+            [(7, "boron_daemon", "localhost", None, "Sleep", 0, "", None)],
         ),
     }
     fake_conn = _FakeConn(responses)

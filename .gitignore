@@ -37,8 +37,16 @@ __pycache__/
 
 .claude/
 /dist/
+/static/dist/
 /LOG_imapsync/
+*.tar.gz
+*.sha256
+*.asc
 
 # Frontend
 frontend/node_modules/
 frontend/dist/
+
+# Deployment data paths (explicit entries retained for audit tooling).
+/var/lib/
+/var/log/

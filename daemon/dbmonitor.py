@@ -8,14 +8,14 @@ view over the same log table, DB sizes per account, and connection counts,
 with a kill-query action -- a genuinely different admin surface (goal:
 "Auto-refresh 10s"), not a re-skin of the existing one.
 
-Reuses `daemon/mariadb._connect()` (the same `forgehost_daemon` admin
+Reuses `daemon/mariadb._connect()` (the same `boron_daemon` admin
 credential every other MariaDB-touching feature in this project already
 authenticates as -- ARCHITECTURE.md SS4) rather than opening a second
 connection mechanism; `KILL` and `SHOW FULL PROCESSLIST` need no privilege
 beyond what that account already has confirmed live (`daemon/slowquery.py`'s
 own module docstring: SUPER is NOT held, and was deliberately not
 requested -- a plain, non-SUPER account can still `SHOW PROCESSLIST` and
-`KILL` its OWN connections' threads; whether `forgehost_daemon` can see/kill
+`KILL` its OWN connections' threads; whether `boron_daemon` can see/kill
 every OTHER account's threads too depends on whether it holds the PROCESS
 privilege, which its blanket `SELECT ON *.*` grant does not by itself imply
 -- confirmed empirically the first time this feature is exercised live
@@ -38,14 +38,14 @@ SLOW_QUERY_LOOKBACK_HOURS = 1
 MAX_PROCESSLIST_INFO_LEN = 2000
 
 # Confirmed live during this feature's own verification (not assumed, per
-# this module's own docstring above): forgehost_daemon can SHOW FULL
+# this module's own docstring above): boron_daemon can SHOW FULL
 # PROCESSLIST and KILL its OWN threads (any non-SUPER account can), but a
 # real cross-account kill test -- a query held open as a hosted account's
 # own MariaDB user -- got "You are not owner of thread N", confirming
-# forgehost_daemon does NOT hold PROCESS/CONNECTION_ADMIN, so the "Kill
+# boron_daemon does NOT hold PROCESS/CONNECTION_ADMIN, so the "Kill
 # query" button silently could not do its one actual job (killing a
 # CUSTOMER's runaway query, not the daemon's own). Fixed the same way
-# daemon/slowquery.py's bootstrap_slow_query_log widens forgehost_daemon's
+# daemon/slowquery.py's bootstrap_slow_query_log widens boron_daemon's
 # capability for its own feature: an explicit, confirm=true-gated,
 # admin-triggered one-time action, not a silent ambient grant --
 # CONNECTION_ADMIN (MariaDB 10.5+, this box is 10.11) rather than the
@@ -55,7 +55,7 @@ MAX_PROCESSLIST_INFO_LEN = 2000
 # unix socket as the OS root user (borond already runs as root, and
 # MariaDB's root@localhost account uses unix_socket auth on this box,
 # confirmed live via `mysql -e "SELECT CURRENT_USER()"` returning
-# root@localhost with no password) -- forgehost_daemon itself has no
+# root@localhost with no password) -- boron_daemon itself has no
 # GRANT OPTION on CONNECTION_ADMIN and could not grant this to itself.
 KILL_QUERY_PRIVILEGE = "CONNECTION_ADMIN"
 
@@ -73,7 +73,7 @@ def kill_query_privilege_status() -> dict:
 
 
 def bootstrap_kill_query_privilege(params: dict) -> dict:
-    """Admin-triggered, confirm=true-gated: grants forgehost_daemon the
+    """Admin-triggered, confirm=true-gated: grants boron_daemon the
     privilege its own kill-query action actually needs against OTHER
     accounts' connections. No service restart/interruption (unlike
     slowquery's bootstrap) -- GRANT takes effect immediately, so this is
@@ -243,7 +243,7 @@ def kill_query(thread_id) -> dict:
     """Audit 3 finding A3-6: once KILL_QUERY_PRIVILEGE is granted,
     `KILL <thread_id>` alone can terminate ANY MariaDB connection on the
     server -- another admin's own session, an in-progress mysqldump/backup
-    connection, a replication thread, or forgehost_daemon's own connections
+    connection, a replication thread, or boron_daemon's own connections
     -- not just a hosted account's runaway query, which is the feature's
     entire stated purpose (see DbMonitor.jsx's own copy). Scope the kill to
     threads whose `db` is a real hosted-account database (present in
@@ -287,7 +287,7 @@ def kill_query(thread_id) -> dict:
         except pymysql.err.OperationalError as exc:
             if exc.args and exc.args[0] == ER_KILL_DENIED_ERROR:
                 raise RuntimeError(
-                    f"cannot kill thread {thread_id} -- forgehost_daemon does not (yet) hold "
+                    f"cannot kill thread {thread_id} -- boron_daemon does not (yet) hold "
                     f"{KILL_QUERY_PRIVILEGE}; enable it once from the Database Monitor page"
                 ) from exc
             raise

@@ -16,8 +16,8 @@ server_public_ip = "203.0.113.10"
 letsencrypt_email = "admin@example.com"
 
 # GitHub "owner/repo" the panel update system checks for new releases.
-# Leave unset (the default) to disable update checks entirely.
-# update_github_repo = "boronpanel/boronpanel"
+# The official Boron Panel release repository.
+update_github_repo = "adityavs5/boronpanel"
 
 # DNS provider used for new zones/domains when the operator doesn't pick one
 # explicitly. "powerdns" (self-hosted, the default) or "cloudflare" (requires

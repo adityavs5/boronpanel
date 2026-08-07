@@ -77,29 +77,6 @@ from shared.validation import (
 from daemon.procutil import run
 
 IMAPSYNC_BIN = "/usr/local/bin/imapsync"
-# The tool's own official upstream repository (github.com/imapsync/imapsync,
-# mirrored from the canonical gitlab.com/imapsync/imapsync) -- a single,
-# no-compilation Perl script, matching this project's existing "fetch a
-# well-known FOSS tool server-wide on first use if missing" precedent
-# (daemon/wpcli.py's wp-cli.phar, daemon/composerui.py's composer.phar,
-# shared/config.py's own wpcli_download_url/composer_download_url).
-IMAPSYNC_DOWNLOAD_URL = "https://raw.githubusercontent.com/imapsync/imapsync/master/imapsync"
-# imapsync's own documented required/recommended Perl modules for a
-# password-auth IMAP-to-IMAP sync (OAuth-specific modules deliberately
-# excluded -- this feature only supports password auth, matching the goal's
-# own "enter host/port/email/password" scope) -- confirmed present in
-# Ubuntu 24.04's own repos (apt-cache policy) before relying on them, the
-# same "don't assume a package is packaged, check" discipline
-# shared/config.py's php_versions comment documents for lsphp packages.
-IMAPSYNC_APT_PACKAGES = (
-    "libmail-imapclient-perl", "libio-socket-ssl-perl", "libauthen-ntlm-perl",
-    "libunicode-string-perl", "libfile-copy-recursive-perl", "libterm-readkey-perl",
-    "libdata-uniqid-perl", "libregexp-common-perl", "libsys-meminfo-perl",
-    "libio-tee-perl", "libfile-tail-perl", "libtest-pod-perl", "libtest-mockobject-perl",
-    "libjson-webtoken-perl", "libcrypt-openssl-rsa-perl", "libmodule-scandeps-perl",
-    "liblist-moreutils-perl", "libwww-perl", "libcgi-pm-perl",
-)
-
 IMAPSYNC_RUN_DIR = "/run/boron/imapsync"
 DEST_HOST = "127.0.0.1"
 DEST_PORT = 993
@@ -115,22 +92,13 @@ class ImapSyncError(Exception):
 
 
 def ensure_installed() -> None:
-    """Idempotent -- a no-op once /usr/local/bin/imapsync exists. Not run
-    at daemon startup (a network-fetching, package-installing action on
-    every boot would be surprising) -- called lazily, once, the first time
-    a migration actually starts, same "explicit action, not an import-time
-    or startup side effect" posture bootstrap_baseline/bootstrap_pma/
-    bootstrap_spamassassin already establish for their own one-time infra
-    setup."""
-    if Path(IMAPSYNC_BIN).exists():
-        return
-    apt_result = run(["apt-get", "install", "-y", *IMAPSYNC_APT_PACKAGES], timeout=180)
-    if not apt_result.ok:
-        raise ImapSyncError(f"failed to install imapsync's Perl dependencies: {apt_result.stderr.strip() or apt_result.stdout.strip()}")
-    download_result = run(["curl", "-sSL", "-f", "-o", IMAPSYNC_BIN, IMAPSYNC_DOWNLOAD_URL], timeout=60)
-    if not download_result.ok:
-        raise ImapSyncError(f"failed to download imapsync: {download_result.stderr.strip() or download_result.stdout.strip()}")
-    os.chmod(IMAPSYNC_BIN, 0o755)
+    """Validate the installer-provisioned binary before a migration starts.
+
+    Package installation and downloads belong exclusively to the audited
+    installer, never a request-triggered root daemon action.
+    """
+    if not Path(IMAPSYNC_BIN).is_file():
+        raise ImapSyncError("imapsync is not installed; run the Boron installer before enabling mailbox migration")
     check = run([IMAPSYNC_BIN, "--version"], timeout=30)
     if not check.ok:
         raise ImapSyncError(f"imapsync installed but --version failed: {check.stderr.strip() or check.stdout.strip()}")

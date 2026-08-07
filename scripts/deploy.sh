@@ -31,14 +31,20 @@ rsync -a --delete \
 # executables) back to 644, breaking `systemctl start boron-api` with a
 # confusing 203/EXEC -- caught immediately by starting the service right
 # after running this script.
-chown -R root:root $(find "$DST" -maxdepth 1 -mindepth 1 ! -name '.venv')
+mapfile -d '' DEPLOY_ENTRIES < <(find "$DST" -maxdepth 1 -mindepth 1 ! -name '.venv' -print0)
+if ((${#DEPLOY_ENTRIES[@]})); then
+  chown -R root:root "${DEPLOY_ENTRIES[@]}"
+fi
 find "$DST" -path "$DST/.venv" -prune -o -type d -exec chmod 755 {} \;
 find "$DST" -path "$DST/.venv" -prune -o -type f -exec chmod 644 {} \;
 find "$DST/scripts" -name '*.py' -exec chmod 755 {} \;
 find "$DST/scripts" -name '*.sh' -exec chmod 755 {} \;
 
-if [ -x "$DST/.venv/bin/pip" ]; then
-  "$DST/.venv/bin/pip" install -q -r "$DST/requirements.txt"
+if [ -x "$DST/.venv/bin/python" ]; then
+  # Invoke pip as a module so a venv moved during the one-time
+  # Boron deployment does not depend on pip's old absolute
+  # shebang path.
+  "$DST/.venv/bin/python" -m pip install -q -r "$DST/requirements.txt"
 fi
 
 echo "Deployed $SRC -> $DST"

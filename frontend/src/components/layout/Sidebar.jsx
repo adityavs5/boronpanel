@@ -1,6 +1,7 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { PanelLeftClose, PanelLeftOpen, Server, Cpu, MemoryStick, HardDrive } from 'lucide-react'
+import { ChevronDown, PanelLeftClose, PanelLeftOpen, Server, Cpu, MemoryStick, HardDrive } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { get } from '@/lib/api'
 import { useUI } from '@/store/ui'
@@ -114,11 +115,23 @@ export function Sidebar() {
   const toggle = useUI((s) => s.toggleSidebar)
   const isAdmin = useAuth((s) => s.role === 'admin')
   const nav = isAdmin ? adminNav : customerNav
+  const [closedSections, setClosedSections] = useState(() => new Set(isAdmin
+    ? ['Hosting Management', 'Panel Configuration', 'Mail & Network', 'Security & Logs', 'Integrations']
+    : ['Advanced']))
   const { panelName, logoUrl } = useBranding()
   const version = useVersion()
   // Disabled (enabled: isAdmin) inside the hook for customers.
   const { data: updateStatus } = useUpdateStatus()
   const updateAvailable = Boolean(updateStatus?.update_available)
+  let currentSection = ''
+
+  function toggleSection(section) {
+    setClosedSections((previous) => {
+      const next = new Set(previous)
+      next.has(section) ? next.delete(section) : next.add(section)
+      return next
+    })
+  }
 
   return (
     <aside
@@ -147,34 +160,38 @@ export function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 space-y-0.5 overflow-y-auto px-2.5 py-3">
-        {nav.map((item, i) =>
-          item.section ? (
-            !collapsed && (
-              <div key={`s-${i}`} className="px-3 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-gray-500 first:pt-1">
+      <nav className="flex-1 space-y-0.5 overflow-y-auto px-2.5 py-3" aria-label="Primary navigation">
+        {nav.map((item, i) => {
+          if (item.section) {
+            currentSection = item.section
+            if (collapsed) return null
+            const expanded = !closedSections.has(item.section)
+            return (
+              <button key={`s-${i}`} type="button" onClick={() => toggleSection(item.section)} aria-expanded={expanded}
+                className="flex w-full items-center justify-between px-3 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-gray-400 first:pt-1 hover:text-gray-200">
                 {item.section}
-              </div>
+                <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', expanded && 'rotate-180')} />
+              </button>
             )
-          ) : (
-            <NavItem
-              key={item.to}
-              item={item}
-              collapsed={collapsed}
-              showDot={item.to === '/updates' && updateAvailable}
-            />
-          ),
-        )}
+          }
+          if (!collapsed && closedSections.has(currentSection)) return null
+          return (
+            <NavItem key={item.to} item={item} collapsed={collapsed} showDot={item.to === '/updates' && updateAvailable} />
+          )
+        })}
       </nav>
 
       {/* Health widget (admin) + collapse toggle */}
       <div className="space-y-2 border-t border-sidebar-border p-2.5">
         {isAdmin && <HealthMiniWidget collapsed={collapsed} />}
         <button
+          type="button"
           onClick={toggle}
           className={cn(
             'flex w-full items-center gap-3 rounded-btn px-3 py-2 text-sm text-sidebar-muted transition-colors hover:bg-sidebar-hover hover:text-white',
             collapsed && 'justify-center px-0',
           )}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {collapsed ? <PanelLeftOpen className="h-[18px] w-[18px]" /> : <PanelLeftClose className="h-[18px] w-[18px]" />}
           {!collapsed && <span>Collapse</span>}

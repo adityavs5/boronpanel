@@ -72,7 +72,7 @@ def create_mail_domain(params: dict) -> dict:
 
 
 def _delete_mail_domain_cache(domain_name: str) -> None:
-    """forgehost_mail's own schema cascades mail_user on mail_domain delete
+    """boron_mail's own schema cascades mail_user on mail_domain delete
     (ON DELETE CASCADE), but the SQLite cache mirror has no such cascade --
     child MailUser rows must be deleted and flushed before the MailDomain
     delete or the FK constraint (PRAGMA foreign_keys=ON) rejects it. A bare
@@ -172,7 +172,7 @@ def change_mailbox_password(params: dict) -> dict:
 
 def terminate_account_mail(account: Account) -> None:
     """TERMINATE_HOOKS entry: delete every mail domain (and therefore every
-    mailbox in it, via ON DELETE CASCADE in forgehost_mail itself) this
+    mailbox in it, via ON DELETE CASCADE in boron_mail itself) this
     account owns."""
     with write_session() as session:
         domains = session.scalars(select(MailDomain.domain).where(MailDomain.account_id == account.id)).all()
@@ -278,7 +278,7 @@ def delete_autoresponder(params: dict) -> dict:
 #
 # Per mail-domain, not per-mailbox (matches this file's existing catchall/
 # forwarder/autoresponder API shape). enabled/threshold are stored in the
-# SQLite control-plane cache (MailDomain) -- not MariaDB's forgehost_mail
+# SQLite control-plane cache (MailDomain) -- not MariaDB's boron_mail
 # schema like catchall/forwarders, since nothing outside Boron's own
 # code (no Postfix/Dovecot SQL lookup) ever needs to query these values;
 # the actual enforcement is daemon/spamfilter.py's per-domain

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { ScrollText, Download, Search, X, ChevronLeft, ChevronRight } from 'lucide-react'
 import { get } from '@/lib/api'
@@ -30,11 +31,14 @@ function buildParams(filters, page, withPaging) {
 }
 
 export default function AuditLog() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const applied = Object.fromEntries(Object.keys(EMPTY_FILTERS).map((key) => [key, searchParams.get(key) || '']))
+  const page = Math.max(1, Number.parseInt(searchParams.get('page') || '1', 10) || 1)
   // `draft` holds the in-progress form values; `applied` is what drives the
   // query. Filters commit on submit (Search) so we don't refetch per keystroke.
-  const [draft, setDraft] = useState(EMPTY_FILTERS)
-  const [applied, setApplied] = useState(EMPTY_FILTERS)
-  const [page, setPage] = useState(1)
+  const [draft, setDraft] = useState(applied)
+  const appliedKey = searchParams.toString()
+  useEffect(() => setDraft(applied), [appliedKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: ['audit-log', applied, page],
@@ -52,14 +56,25 @@ export default function AuditLog() {
 
   function applyFilters(e) {
     e?.preventDefault()
-    setApplied(draft)
-    setPage(1)
+    setSearchParams(() => {
+      const next = new URLSearchParams()
+      Object.entries(draft).forEach(([key, value]) => { if (value) next.set(key, value) })
+      return next
+    })
   }
 
   function clearFilters() {
     setDraft(EMPTY_FILTERS)
-    setApplied(EMPTY_FILTERS)
-    setPage(1)
+    setSearchParams(new URLSearchParams())
+  }
+
+  function setPage(nextPage) {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      if (nextPage <= 1) next.delete('page')
+      else next.set('page', String(nextPage))
+      return next
+    })
   }
 
   function exportCsv() {
@@ -138,6 +153,29 @@ export default function AuditLog() {
             description="No log entries match your current filters."
           />
         ) : (
+          <>
+          <div className="divide-y divide-border sm:hidden">
+            {entries.map((entry) => (
+              <article key={entry.id} className="space-y-2.5 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate font-mono text-sm font-medium text-foreground">{entry.op}</div>
+                    <div className="text-xs text-muted-foreground">{formatDate(entry.created_at)}</div>
+                  </div>
+                  <StatusBadge status={entry.result} />
+                </div>
+                <dl className="grid grid-cols-[4.5rem_1fr] gap-x-3 gap-y-1 text-sm">
+                  <dt className="text-muted-foreground">Actor</dt>
+                  <dd className="min-w-0 break-words text-foreground">{entry.actor || '—'}{entry.role ? ` (${entry.role})` : ''}</dd>
+                  <dt className="text-muted-foreground">Target</dt>
+                  <dd className="min-w-0 break-words text-foreground">{entry.target || '—'}</dd>
+                  <dt className="text-muted-foreground">Detail</dt>
+                  <dd className="min-w-0 break-words text-foreground">{entry.detail || '—'}</dd>
+                </dl>
+              </article>
+            ))}
+          </div>
+          <div className="hidden sm:block">
           <Table>
             <THead>
               <tr>
@@ -173,18 +211,20 @@ export default function AuditLog() {
               ))}
             </TBody>
           </Table>
+          </div>
+          </>
         )}
 
         {!isLoading && !error && total > 0 && (
-          <div className="flex items-center justify-between border-t border-border px-4 py-3 text-sm text-muted-foreground">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3 text-sm text-muted-foreground">
             <span className="tabular-nums">
               {rangeStart}–{rangeEnd} of {total}
             </span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 sm:gap-2">
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                onClick={() => setPage(Math.max(1, page - 1))}
                 disabled={page <= 1 || isFetching}
               >
                 <ChevronLeft className="h-4 w-4" /> Previous
@@ -195,7 +235,7 @@ export default function AuditLog() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                onClick={() => setPage(Math.min(totalPages, page + 1))}
                 disabled={page >= totalPages || isFetching}
               >
                 Next <ChevronRight className="h-4 w-4" />

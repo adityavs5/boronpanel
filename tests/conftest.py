@@ -34,5 +34,8 @@ def isolated_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db_module, "_WriteSession", None)
     monkeypatch.setattr(db_module, "_read_engine", None)
     monkeypatch.setattr(db_module, "_ReadSession", None)
+    # Unit tests must not depend on (or mutate ownership through) a live
+    # boron-api system group when the suite happens to run as root.
+    monkeypatch.setattr(db_module, "_grant_api_group_read", lambda: None)
     db_module.init_db()
     yield db_path

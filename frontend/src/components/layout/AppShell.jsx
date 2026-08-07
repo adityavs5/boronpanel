@@ -4,6 +4,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { MobileBottomNav } from './MobileBottomNav'
+import { MobileNavDrawer } from './MobileNavDrawer'
 import { ImpersonationBanner } from './ImpersonationBanner'
 import { CommandPalette } from './CommandPalette'
 import { useAuth } from '@/store/auth'
@@ -65,6 +66,7 @@ export function AppShell() {
           </main>
         </div>
         <MobileBottomNav />
+        <MobileNavDrawer />
       </div>
       <CommandPalette />
     </div>

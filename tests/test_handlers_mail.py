@@ -300,7 +300,7 @@ def mail_domain_row(isolated_db, tmp_path, monkeypatch):
     daemon/mail.py helpers stub_mail mocks -- these settings are consumed
     only by Boron's own code (daemon/spamfilter.py), never queried by
     Postfix/Dovecot at delivery time, so there's no reason to duplicate
-    them into forgehost_mail (see daemon/spamfilter.py's module
+    them into boron_mail (see daemon/spamfilter.py's module
     docstring)."""
     from shared.db import write_session
     from shared.models import Account, MailDomain

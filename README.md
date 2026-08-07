@@ -92,21 +92,21 @@ MAILRO_PASS=$(openssl rand -hex 24)
 
 mysql -u root <<SQL
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${ROOT_PASS}';
-CREATE USER IF NOT EXISTS 'forgehost_daemon'@'localhost' IDENTIFIED BY '${DAEMON_PASS}';
+CREATE USER IF NOT EXISTS 'boron_daemon'@'localhost' IDENTIFIED BY '${DAEMON_PASS}';
 -- Explicit privilege list, not ALL PRIVILEGES -- this user's own grant is
 -- exactly what it can later re-grant to hosted-account DB users
 -- (daemon/mariadb.py's HOSTED_DB_PRIVILEGES). Widen both together if you
 -- need view/routine/trigger/event support for hosted databases.
 GRANT CREATE, DROP, ALTER, INDEX, CREATE USER, GRANT OPTION, SELECT,
   INSERT, UPDATE, DELETE, RELOAD, PROCESS, LOCK TABLES, REFERENCES,
-  CREATE TEMPORARY TABLES ON *.* TO 'forgehost_daemon'@'localhost';
-CREATE DATABASE IF NOT EXISTS forgehost_mail CHARACTER SET utf8mb4;
-CREATE USER IF NOT EXISTS 'forgehost_mailro'@'localhost' IDENTIFIED BY '${MAILRO_PASS}';
-GRANT SELECT ON forgehost_mail.* TO 'forgehost_mailro'@'localhost';
+  CREATE TEMPORARY TABLES ON *.* TO 'boron_daemon'@'localhost';
+CREATE DATABASE IF NOT EXISTS boron_mail CHARACTER SET utf8mb4;
+CREATE USER IF NOT EXISTS 'boron_mailro'@'localhost' IDENTIFIED BY '${MAILRO_PASS}';
+GRANT SELECT ON boron_mail.* TO 'boron_mailro'@'localhost';
 FLUSH PRIVILEGES;
 SQL
 
-mysql -u root -p"${ROOT_PASS}" forgehost_mail <<'SQL'
+mysql -u root -p"${ROOT_PASS}" boron_mail <<'SQL'
 CREATE TABLE IF NOT EXISTS mail_domain (
   id INT AUTO_INCREMENT PRIMARY KEY,
   domain VARCHAR(253) NOT NULL UNIQUE,
@@ -260,17 +260,17 @@ systemctl restart pdns
 MAILRO_PASS=$(grep MARIADB_MAILRO_PASSWORD /etc/boron/secrets.env | cut -d= -f2)
 mkdir -p /etc/postfix/boron
 cat > /etc/postfix/boron/mysql-virtual-domains.cf <<EOF
-user = forgehost_mailro
+user = boron_mailro
 password = ${MAILRO_PASS}
 hosts = unix:/run/mysqld/mysqld.sock
-dbname = forgehost_mail
+dbname = boron_mail
 query = SELECT 1 FROM mail_domain WHERE domain='%s' AND active=1
 EOF
 cat > /etc/postfix/boron/mysql-virtual-mailboxes.cf <<EOF
-user = forgehost_mailro
+user = boron_mailro
 password = ${MAILRO_PASS}
 hosts = unix:/run/mysqld/mysqld.sock
-dbname = forgehost_mail
+dbname = boron_mail
 query = SELECT CONCAT(d.domain, '/', m.local_part, '/') FROM mail_user m JOIN mail_domain d ON m.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%s' AND m.active = 1 AND d.active = 1
 EOF
 chown root:postfix /etc/postfix/boron/*.cf && chmod 640 /etc/postfix/boron/*.cf
@@ -288,7 +288,7 @@ postconf -e "smtpd_sasl_auth_enable = yes"
 
 cat > /etc/dovecot/dovecot-sql.conf.ext <<EOF
 driver = mysql
-connect = host=/run/mysqld/mysqld.sock dbname=forgehost_mail user=forgehost_mailro password=${MAILRO_PASS}
+connect = host=/run/mysqld/mysqld.sock dbname=boron_mail user=boron_mailro password=${MAILRO_PASS}
 default_pass_scheme = ARGON2ID
 password_query = SELECT CONCAT(m.local_part, '@', d.domain) AS user, m.password AS password FROM mail_user m JOIN mail_domain d ON m.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%u' AND m.active = 1 AND d.active = 1
 user_query = SELECT '/var/vmail/%d/%n' AS home, 'maildir:/var/vmail/%d/%n' AS mail, 150 AS uid, 150 AS gid, CONCAT('*:bytes=', m.quota_mb, 'M') AS quota_rule FROM mail_user m JOIN mail_domain d ON m.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%u' AND m.active = 1 AND d.active = 1
@@ -412,7 +412,7 @@ no Boron-side account wiring involved.
 echo "roundcube-core roundcube/dbconfig-install boolean false" | debconf-set-selections
 DEBIAN_FRONTEND=noninteractive apt-get install -y roundcube-core roundcube-mysql
 
-# dedicated DB, own credentials -- NOT the forgehost_mail schema Postfix/
+# dedicated DB, own credentials -- NOT the boron_mail schema Postfix/
 # Dovecot use for actual mail routing/auth, this is only Roundcube's own
 # address book/cache/settings store
 RC_DB_PASS=$(openssl rand -hex 24)
@@ -639,13 +639,13 @@ bug) if `system.bootstrap_pma` or a signon attempt misbehaves.
 
 ### 19. Email forwarders, autoresponders, catch-all (Phase 3 feature 4)
 
-New MariaDB tables in the existing `forgehost_mail` schema, plus Postfix
+New MariaDB tables in the existing `boron_mail` schema, plus Postfix
 `virtual_alias_maps` (not previously configured -- Phase e only wired
 `virtual_mailbox_maps`) and Dovecot's Sieve plugin (`dovecot-sieve`, for
 autoresponders):
 
 ```bash
-mysql forgehost_mail <<'SQL'
+mysql boron_mail <<'SQL'
 CREATE TABLE IF NOT EXISTS mail_forward (
   id INT AUTO_INCREMENT PRIMARY KEY,
   domain_id INT NOT NULL,
@@ -676,10 +676,10 @@ SQL
 
 MAILRO_PASS=$(grep MARIADB_MAILRO_PASSWORD /etc/boron/secrets.env | cut -d= -f2)
 cat > /etc/postfix/boron/mysql-virtual-forwards.cf <<EOF
-user = forgehost_mailro
+user = boron_mailro
 password = ${MAILRO_PASS}
 hosts = unix:/run/mysqld/mysqld.sock
-dbname = forgehost_mail
+dbname = boron_mail
 query = SELECT GROUP_CONCAT(destination SEPARATOR ',') FROM ( SELECT f.destination AS destination FROM mail_forward f JOIN mail_domain d ON f.domain_id = d.id WHERE CONCAT(f.source_local_part, '@', d.domain) = '%s' AND f.active = 1 AND d.active = 1 UNION ALL SELECT CONCAT(m.local_part, '@', d.domain) AS destination FROM mail_user m JOIN mail_domain d ON m.domain_id = d.id JOIN mail_catchall c ON c.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%s' AND m.active = 1 AND d.active = 1 AND c.active = 1 UNION ALL SELECT c.destination AS destination FROM mail_catchall c JOIN mail_domain d ON c.domain_id = d.id WHERE CONCAT('@', d.domain) = '%s' AND c.active = 1 AND d.active = 1 ) combined
 EOF
 chown root:postfix /etc/postfix/boron/mysql-virtual-forwards.cf
@@ -817,7 +817,7 @@ with `scripts/release.sh`). Point the panel at the releases repo in
 `/etc/boron/boron.toml`:
 
 ```toml
-update_github_repo = "owner/boron"
+update_github_repo = "adityavs5/boronpanel"
 ```
 
 then install the daily check (release poll + admin email once per new
@@ -861,10 +861,13 @@ Account → License Keys, then run the installer with it set:
 FH_MAXMIND_LICENSE_KEY=your_license_key_here ./scripts/install.sh
 ```
 
-`scripts/install.sh`'s `setup_geoip()` step fetches and installs the
-database (`/var/lib/boron/GeoLite2-Country.mmdb`) automatically when the
-key is present; it's silently skipped (with a one-line note pointing back
-here) when it isn't — a missing key never fails the install.
+The interactive installer asks for the same optional key. Its `setup_geoip()`
+step installs the `geoipupdate` package, fetches and installs the database
+(`/var/lib/boron/GeoLite2-Country.mmdb`) when the key is present, and installs
+a root-only weekly refresh at `/etc/cron.d/boron-geoip`. The key is stored
+`0600` in `/etc/boron/maxmind-license`; it is never placed in the cron file.
+If the prompt is left blank, the installer clearly reports that only the
+top-countries card is unavailable and the rest of Boron continues normally.
 
 **To configure after install** (or to rotate a key), no re-install needed:
 

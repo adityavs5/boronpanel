@@ -13,7 +13,7 @@ function buildEntries(nav) {
   let section = 'Pages'
   for (const item of nav) {
     if (item.section) section = item.section
-    else out.push({ type: 'page', section, label: item.label, to: item.to, icon: item.icon })
+    else out.push({ type: 'page', section, label: item.label, to: item.to, icon: item.icon, external: item.external })
   }
   return out
 }
@@ -65,7 +65,8 @@ export function CommandPalette() {
 
   function run(entry) {
     setOpen(false)
-    if (entry.type === 'page') navigate(entry.to)
+    if (entry.type === 'page' && entry.external) window.open(entry.to, '_blank', 'noopener')
+    else if (entry.type === 'page') navigate(entry.to)
     else entry.run()
   }
 

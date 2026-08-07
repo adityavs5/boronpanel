@@ -44,9 +44,9 @@ revert target).
   deny-protected.
 - Schema: `create_all` creates tables only, never ALTERs → all new state goes
   in NEW tables (established convention).
-- Secrets: root-only `/etc/forgehost/secrets.env` (pattern:
+- Secrets: root-only `/etc/boron/secrets.env` (pattern:
   `POWERDNS_API_KEY` → `settings.powerdns_api_key` property).
-- Periodic jobs: `/etc/cron.d/forgehost-*` + `scripts/*.py` calling daemon
+- Periodic jobs: `/etc/cron.d/boron-*` + `scripts/*.py` calling daemon
   code; daemon startup bootstraps live in `server.py amain()` (slot after
   `phpext`, ~line 591).
 - Events: append names to `NOTIFICATION_EVENT_TYPES` / `WEBHOOK_EVENT_TYPES`
@@ -99,7 +99,7 @@ revert target).
 6. **SSL: extend the existing certbot DNS-01 pattern, not Origin CA.**
    `_challenge_plan` gains one branch: zone on Cloudflare (active) →
    `--authenticator dns-cloudflare` with
-   `/etc/forgehost/ssl/cloudflare-credentials.ini` (0600, written by us from
+   `/etc/boron/ssl/cloudflare-credentials.ini` (0600, written by us from
    the same token). LE certs stay browser-trusted whether or not the proxy is
    on (Origin CA certs are not, which breaks "pause Cloudflare" — rejected).
    Wildcards: lift the "must be in PowerDNS" guard (`ssl.py:136-142`) to
@@ -113,7 +113,7 @@ revert target).
    directive semantics to be verified empirically on this box — 1 vs 2 +
    trusted-IP list; the fallback design is header-trust ON plus UFW pinning
    80/443 to CF ranges so spoofing is impossible). Cloudflare ranges are
-   materialized into `/etc/forgehost/cloudflare-ranges.json` by a daemon op
+   materialized into `/etc/boron/cloudflare-ranges.json` by a daemon op
    (`cf.refresh_ranges`) driven by cron; the same op updates the fail2ban
    `ols-scan` jail `ignoreip` (belt and braces) and, when lockdown mode is on
    (Phase 3), the UFW scoped-allow rules. The proxied-toggle API refuses to
@@ -125,7 +125,7 @@ revert target).
    custom nameservers require reverting to local DNS"). Existing vanity
    NS/glue behavior untouched for local zones.
 9. **New domains keep local DNS until the operator flips the default.**
-   `default_dns_provider = "local"` in forgehost.toml; switch to
+   `default_dns_provider = "local"` in boron.toml; switch to
    `"cloudflare"` only after the Phase 1 gate passes on a real domain.
    Existing zones migrate per-zone via an explicit button — never
    automatically.
@@ -193,7 +193,7 @@ revert target).
   trusted ranges (rendered from the ranges file; exact directive verified
   against this box's OLS docs + empirical header-spoof test before rollout).
 - `cf.refresh_ranges` op + `scripts/cloudflare_ranges.py` +
-  `/etc/cron.d/forgehost-cloudflare` (daily); updates ranges file, OLS
+  `/etc/cron.d/boron-cloudflare` (daily); updates ranges file, OLS
   trusted list (config re-render + reload), fail2ban `ols-scan` ignoreip.
 - `daemon/ssl.py`: `_challenge_plan` CF branch + wildcard guard generalized;
   credentials ini writer; `certbot-dns-cloudflare` added to requirements +
@@ -227,7 +227,7 @@ revert target).
 
 1. A Cloudflare account + **API token** with: Zone:Read+Edit, DNS:Edit, Zone
    Settings:Edit, Cache Purge, Account:Zone:Create (and the account ID). Goes
-   into `/etc/forgehost/secrets.env` as `CLOUDFLARE_API_TOKEN`.
+   into `/etc/boron/secrets.env` as `CLOUDFLARE_API_TOKEN`.
 2. A **sacrificial real domain** whose registrar NS we can flip for the Phase
    1/2 live gates (a cheap new registration is fine; it must be an apex
    domain, not a subdomain).

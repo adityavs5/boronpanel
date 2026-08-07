@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Users, ShieldCheck, Play, ArrowUpCircle } from 'lucide-react'
+import { Copy, Plus, Users, ShieldCheck, Play, ArrowUpCircle } from 'lucide-react'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
 import { useVersion } from '@/hooks/useVersion'
 import { get, post } from '@/lib/api'
@@ -100,9 +100,34 @@ function BulkActionBar({ selected, clearSelection }) {
 export default function Accounts() {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [open, setOpen] = useState(false)
+  const [createStep, setCreateStep] = useState(1)
+  const [createdAccount, setCreatedAccount] = useState(null)
   const [form, setForm] = useState({ username: '', primary_domain: '', plan_id: '', email: '', password: '' })
   const [selected, setSelected] = useState(() => new Set())
+  const listQuery = searchParams.get('q') || ''
+  const listPage = Math.max(1, Number.parseInt(searchParams.get('page') || '1', 10) || 1)
+  const sortKey = searchParams.get('sort')
+  const listSort = sortKey ? { key: sortKey, dir: searchParams.get('dir') === 'desc' ? 'desc' : 'asc' } : null
+  const usernameError = form.username && !/^[a-z][a-z0-9]{0,15}$/.test(form.username)
+    ? 'Use 1–16 lowercase letters or digits, starting with a letter.'
+    : undefined
+  const domainError = form.primary_domain && !/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(form.primary_domain)
+    ? 'Enter a valid domain such as example.com.'
+    : undefined
+  const passwordError = form.password && !/^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}$/.test(form.password)
+    ? 'Use 12+ characters with upper, lower, number, and symbol.'
+    : undefined
+
+  function setListParam(key, value, defaultValue = '') {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      if (value === defaultValue || value == null) next.delete(key)
+      else next.set(key, String(value))
+      return next
+    })
+  }
   // Panel update system: version in the dashboard header + update banner.
   const version = useVersion()
   const { data: updateStatus } = useUpdateStatus()
@@ -135,11 +160,13 @@ export default function Accounts() {
   const createMut = useMutation({
     mutationFn: (body) => post('/api/v1/accounts', body),
     onSuccess: (acc) => {
-      toast.success('Account created', `${acc.username} is being provisioned.`)
+      if (acc.plan_apply_error) toast.warning('Account created, but the plan needs attention', acc.plan_apply_error)
+      else toast.success('Account created', 'Save the one-time credentials before continuing.')
       qc.invalidateQueries({ queryKey: ['accounts'] })
       setOpen(false)
+      setCreateStep(1)
       setForm({ username: '', primary_domain: '', plan_id: '', email: '', password: '' })
-      navigate(`/accounts/${acc.username}`)
+      setCreatedAccount(acc)
     },
     onError: (e) => toast.error('Could not create account', e.message),
   })
@@ -278,6 +305,32 @@ export default function Accounts() {
         error={error}
         onRetry={refetch}
         filterable
+        query={listQuery}
+        onQueryChange={(value) => {
+          setSearchParams((previous) => {
+            const next = new URLSearchParams(previous)
+            value ? next.set('q', value) : next.delete('q')
+            next.delete('page')
+            return next
+          })
+        }}
+        page={listPage}
+        onPageChange={(value) => setListParam('page', value, 1)}
+        sort={listSort}
+        onSortChange={(value) => {
+          setSearchParams((previous) => {
+            const next = new URLSearchParams(previous)
+            if (value) {
+              next.set('sort', value.key)
+              next.set('dir', value.dir)
+            } else {
+              next.delete('sort')
+              next.delete('dir')
+            }
+            next.delete('page')
+            return next
+          })
+        }}
         searchPlaceholder="Search accounts…"
         pageSize={15}
         getRowKey={(r) => r.username}
@@ -288,14 +341,21 @@ export default function Accounts() {
         emptyAction={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Create account</Button>}
       />
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={(value) => {
+        setOpen(value)
+        if (!value && !createMut.isPending) setCreateStep(1)
+      }}>
         <DialogContent size="sm">
           <DialogHeader>
-            <DialogTitle>Create hosting account</DialogTitle>
+            <DialogTitle>Create hosting account · Step {createStep} of 2</DialogTitle>
           </DialogHeader>
           <form
             onSubmit={(e) => {
               e.preventDefault()
+              if (createStep === 1) {
+                setCreateStep(2)
+                return
+              }
               createMut.mutate({
                 username: form.username,
                 primary_domain: form.primary_domain || undefined,
@@ -305,8 +365,9 @@ export default function Accounts() {
               })
             }}
           >
+            {createStep === 1 ? (
             <DialogBody className="space-y-4">
-              <FormField label="Username" required hint="Lowercase letters and digits, starts with a letter (max 16 chars).">
+              <FormField label="Username" required hint="Lowercase letters and digits, starts with a letter (max 16 chars)." error={usernameError}>
                 <Input
                   autoFocus
                   value={form.username}
@@ -316,11 +377,12 @@ export default function Accounts() {
                   required
                 />
               </FormField>
-              <FormField label="Primary domain" hint="Optional — can be added later.">
+              <FormField label="Primary domain" hint="Optional — can be added later." error={domainError}>
                 <Input
                   value={form.primary_domain}
                   onChange={(e) => setForm((f) => ({ ...f, primary_domain: e.target.value }))}
                   placeholder="example.com"
+                  pattern="(?=.{1,253}$)(?!-)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
                 />
               </FormField>
               <FormField label="Contact email" hint="Optional — used for the welcome email and account notifications. Can be added/changed later.">
@@ -334,6 +396,7 @@ export default function Accounts() {
               <FormField
                 label="Password"
                 hint="Optional — leave blank to auto-generate a strong password. If set: 12+ characters with upper, lower, a number, and a symbol."
+                error={passwordError}
               >
                 <Input
                   type="password"
@@ -352,11 +415,92 @@ export default function Accounts() {
                 </Select>
               </FormField>
             </DialogBody>
+            ) : (
+              <DialogBody className="space-y-4">
+                <p className="text-sm text-muted-foreground">Review these settings before provisioning the account. You can return to edit without losing your entries.</p>
+                <dl className="divide-y divide-border rounded-card border border-border text-sm">
+                  {[
+                    ['Username', form.username],
+                    ['Primary domain', form.primary_domain || 'Add later'],
+                    ['Contact email', form.email.trim() || 'Add later'],
+                    ['Password', form.password ? 'Use the password entered' : 'Generate a strong password'],
+                    ['Plan', plans.find((plan) => String(plan.id) === String(form.plan_id))?.name || 'Default limits'],
+                  ].map(([label, value]) => (
+                    <div key={label} className="grid grid-cols-[7rem_1fr] gap-3 px-3 py-2.5">
+                      <dt className="text-muted-foreground">{label}</dt>
+                      <dd className="min-w-0 break-words font-medium text-foreground">{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <div className="rounded-card border border-warning/40 bg-warning/5 p-3 text-sm text-foreground">
+                  Creating the account provisions system resources. If applying a plan fails after account creation, the account remains available so it can be repaired safely.
+                </div>
+              </DialogBody>
+            )}
             <DialogFooter>
-              <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button type="submit" loading={createMut.isPending}>Create account</Button>
+              <Button type="button" variant="secondary" onClick={() => {
+                if (createStep === 1) {
+                  setOpen(false)
+                  setCreateStep(1)
+                } else setCreateStep(1)
+              }} disabled={createMut.isPending}>
+                {createStep === 1 ? 'Cancel' : 'Back'}
+              </Button>
+              <Button type="submit" loading={createMut.isPending}>{createStep === 1 ? 'Review account' : 'Create account'}</Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!createdAccount} onOpenChange={() => {}}>
+        <DialogContent size="sm" showClose={false} onEscapeKeyDown={(event) => event.preventDefault()} onPointerDownOutside={(event) => event.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Save the account credentials</DialogTitle>
+          </DialogHeader>
+          <DialogBody className="space-y-4">
+            <p className="text-sm text-muted-foreground">The initial password is shown only now. Copy it into your password manager before continuing.</p>
+            {createdAccount?.plan_apply_error && (
+              <div className="rounded-card border border-warning/40 bg-warning/10 p-3 text-sm text-foreground" role="alert">
+                <div className="font-medium">The account exists, but its plan was not fully applied.</div>
+                <div className="mt-1 text-muted-foreground">{createdAccount.plan_apply_error} Save the credentials, then review the account plan and limits.</div>
+              </div>
+            )}
+            <div className="space-y-3 rounded-card border border-border p-3">
+              {[
+                ['Username', createdAccount?.username],
+                ['Initial password', createdAccount?.initial_password],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+                  <div className="flex items-center gap-2">
+                    <code className="min-w-0 flex-1 select-all break-all rounded-btn bg-muted px-2.5 py-2 text-sm text-foreground">{value}</code>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      aria-label={`Copy ${label.toLowerCase()}`}
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(value || '')
+                          toast.success(`${label} copied`)
+                        } catch {
+                          toast.error('Copy failed', 'Select the value and copy it manually.')
+                        }
+                      }}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <Button onClick={() => {
+              const username = createdAccount.username
+              setCreatedAccount(null)
+              navigate(`/accounts/${username}`)
+            }}>I saved the credentials</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

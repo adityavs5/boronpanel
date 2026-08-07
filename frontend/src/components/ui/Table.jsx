@@ -18,7 +18,11 @@ export const THead = (p) => (
 )
 export const TBody = (p) => <tbody className={cn('divide-y divide-border', p.className)} {...p} />
 export const TR = ({ className, clickable, ...p }) => (
-  <tr className={cn('transition-colors hover:bg-muted/40', clickable && 'cursor-pointer hover:bg-muted/60', className)} {...p} />
+  <tr
+    className={cn('transition-colors hover:bg-muted/40', clickable && 'cursor-pointer hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring', className)}
+    tabIndex={clickable ? 0 : undefined}
+    {...p}
+  />
 )
 export const TH = ({ className, ...p }) => (
   <th className={cn('px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground', className)} {...p} />
@@ -42,6 +46,12 @@ export function DataTable({
   searchPlaceholder = 'Search…',
   pageSize = 0, // 0 = no pagination
   initialSort = null, // { key, dir }
+  query: controlledQuery,
+  onQueryChange,
+  sort: controlledSort,
+  onSortChange,
+  page: controlledPage,
+  onPageChange,
   emptyTitle = 'Nothing here yet',
   emptyDescription,
   emptyAction,
@@ -49,9 +59,29 @@ export function DataTable({
   className,
   toolbar,
 }) {
-  const [query, setQuery] = useState('')
-  const [sort, setSort] = useState(initialSort)
-  const [page, setPage] = useState(1)
+  const [internalQuery, setInternalQuery] = useState('')
+  const [internalSort, setInternalSort] = useState(initialSort)
+  const [internalPage, setInternalPage] = useState(1)
+  const query = controlledQuery ?? internalQuery
+  const sort = controlledSort ?? internalSort
+  const page = controlledPage ?? internalPage
+
+  function updateQuery(value) {
+    if (controlledQuery === undefined) setInternalQuery(value)
+    onQueryChange?.(value)
+  }
+
+  function updateSort(valueOrUpdater) {
+    const value = typeof valueOrUpdater === 'function' ? valueOrUpdater(sort) : valueOrUpdater
+    if (controlledSort === undefined) setInternalSort(value)
+    onSortChange?.(value)
+  }
+
+  function updatePage(valueOrUpdater) {
+    const value = typeof valueOrUpdater === 'function' ? valueOrUpdater(page) : valueOrUpdater
+    if (controlledPage === undefined) setInternalPage(value)
+    onPageChange?.(value)
+  }
 
   const searchKeys = useMemo(
     () => columns.filter((c) => c.searchable !== false && (c.searchable || c.key)).map((c) => c),
@@ -92,12 +122,22 @@ export function DataTable({
 
   function toggleSort(col) {
     if (!col.sortable) return
-    setSort((prev) => {
+    updateSort((prev) => {
       if (prev?.key !== col.key) return { key: col.key, dir: 'asc' }
       if (prev.dir === 'asc') return { key: col.key, dir: 'desc' }
       return null
     })
+    updatePage(1)
   }
+
+  function activateRow(event, row) {
+    if (!onRowClick) return
+    if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return
+    if (event.type === 'keydown') event.preventDefault()
+    onRowClick(row)
+  }
+
+  const renderCell = (col, row) => col.render ? col.render(row) : row[col.key] ?? '—'
 
   return (
     <div className={cn('rounded-card border border-border bg-card overflow-hidden', className)}>
@@ -109,8 +149,8 @@ export function DataTable({
               <Input
                 value={query}
                 onChange={(e) => {
-                  setQuery(e.target.value)
-                  setPage(1)
+                  updateQuery(e.target.value)
+                  updatePage(1)
                 }}
                 placeholder={searchPlaceholder}
                 className="pl-8"
@@ -130,18 +170,55 @@ export function DataTable({
       ) : filtered.length === 0 ? (
         <EmptyState icon={emptyIcon} title={query ? 'No matches' : emptyTitle} description={query ? 'Try a different search.' : emptyDescription} action={!query && emptyAction} />
       ) : (
-        <Table>
-          <THead>
-            <tr>
+        <>
+          <div className="divide-y divide-border sm:hidden">
+            {pageRows.map((row, i) => {
+              const selectColumn = columns.find((col) => col.key === 'select')
+              return (
+                <div
+                  key={getRowKey(row, i)}
+                  className={cn('space-y-2.5 p-4', onRowClick && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring')}
+                  tabIndex={onRowClick ? 0 : undefined}
+                  role={onRowClick ? 'link' : undefined}
+                  onClick={onRowClick ? (event) => activateRow(event, row) : undefined}
+                  onKeyDown={onRowClick ? (event) => activateRow(event, row) : undefined}
+                >
+                  {selectColumn && (
+                    <div className="flex justify-end" onClick={(event) => event.stopPropagation()}>
+                      {renderCell(selectColumn, row)}
+                    </div>
+                  )}
+                  {columns.filter((col) => col.key !== 'select').map((col) => {
+                  const hasLabel = typeof col.header === 'string' && col.header.trim()
+                  return (
+                    <div key={col.key} className={cn(hasLabel ? 'flex items-start justify-between gap-4' : 'flex justify-end', col.cellClassName)} onClick={!hasLabel ? (e) => e.stopPropagation() : undefined}>
+                      {hasLabel && <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{col.header}</span>}
+                      <div className={cn('min-w-0 text-right text-sm text-foreground', hasLabel ? '' : 'w-full')}>{renderCell(col, row)}</div>
+                    </div>
+                  )
+                  })}
+                </div>
+              )
+            })}
+          </div>
+          <div className="hidden sm:block">
+            <Table>
+              <THead>
+                <tr>
               {columns.map((col) => {
                 const active = sort?.key === col.key
                 const SortIcon = active ? (sort.dir === 'asc' ? ChevronUp : ChevronDown) : ChevronsUpDown
                 return (
-                  <TH key={col.key} className={cn(col.align === 'right' && 'text-right', col.headerClassName)}>
+                  <TH
+                    key={col.key}
+                    className={cn(col.align === 'right' && 'text-right', col.headerClassName)}
+                    aria-sort={col.sortable && active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
+                  >
                     {col.sortable ? (
                       <button
                         type="button"
                         onClick={() => toggleSort(col)}
+                        aria-label={`Sort by ${typeof col.header === 'string' ? col.header : col.key}${active ? `, currently ${sort.dir === 'asc' ? 'ascending' : 'descending'}` : ''}`}
                         className={cn('inline-flex items-center gap-1 hover:text-foreground transition-colors', active && 'text-foreground', col.align === 'right' && 'flex-row-reverse')}
                       >
                         {col.header}
@@ -153,20 +230,22 @@ export function DataTable({
                   </TH>
                 )
               })}
-            </tr>
-          </THead>
-          <TBody>
+                </tr>
+              </THead>
+              <TBody>
             {pageRows.map((row, i) => (
-              <TR key={getRowKey(row, i)} clickable={!!onRowClick} onClick={onRowClick ? () => onRowClick(row) : undefined}>
+              <TR key={getRowKey(row, i)} clickable={!!onRowClick} onClick={onRowClick ? (event) => activateRow(event, row) : undefined} onKeyDown={onRowClick ? (event) => activateRow(event, row) : undefined}>
                 {columns.map((col) => (
                   <TD key={col.key} className={cn(col.align === 'right' && 'text-right', col.cellClassName)}>
-                    {col.render ? col.render(row) : row[col.key] ?? '—'}
+                    {renderCell(col, row)}
                   </TD>
                 ))}
               </TR>
             ))}
-          </TBody>
-        </Table>
+              </TBody>
+            </Table>
+          </div>
+        </>
       )}
 
       {pageSize > 0 && !loading && !error && filtered.length > 0 && (
@@ -176,8 +255,10 @@ export function DataTable({
           </span>
           <div className="flex items-center gap-1">
             <button
+              type="button"
+              aria-label="Previous page"
               className="rounded-btn p-1.5 hover:bg-muted disabled:opacity-40 disabled:hover:bg-transparent"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              onClick={() => updatePage(Math.max(1, clampedPage - 1))}
               disabled={clampedPage <= 1}
             >
               <ChevronLeft className="h-4 w-4" />
@@ -186,8 +267,10 @@ export function DataTable({
               {clampedPage} / {totalPages}
             </span>
             <button
+              type="button"
+              aria-label="Next page"
               className="rounded-btn p-1.5 hover:bg-muted disabled:opacity-40 disabled:hover:bg-transparent"
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              onClick={() => updatePage(Math.min(totalPages, clampedPage + 1))}
               disabled={clampedPage >= totalPages}
             >
               <ChevronRight className="h-4 w-4" />

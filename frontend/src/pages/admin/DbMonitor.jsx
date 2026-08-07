@@ -36,7 +36,7 @@ export default function DbMonitor() {
 
   const grantMut = useMutation({
     mutationFn: () => post('/api/v1/admin/db/kill-privilege/bootstrap', { confirm: true }),
-    onSuccess: () => { toast.success('Privilege granted', 'forgehost_daemon can now kill any account’s query'); setGrantOpen(false); qc.invalidateQueries({ queryKey: ['db-monitor'] }) },
+    onSuccess: () => { toast.success('Privilege granted', 'boron_daemon can now kill any account’s query'); setGrantOpen(false); qc.invalidateQueries({ queryKey: ['db-monitor'] }) },
     onError: (e) => { toast.error('Could not grant privilege', e.message); setGrantOpen(false) },
   })
 
@@ -81,7 +81,7 @@ export default function DbMonitor() {
             <div className="flex items-center gap-3">
               <ShieldAlert className="h-6 w-6 text-warning" />
               <div>
-                <p className="font-medium text-foreground">Kill can only stop forgehost_daemon's own connections right now</p>
+                <p className="font-medium text-foreground">Kill can only stop boron_daemon's own connections right now</p>
                 <p className="text-sm text-muted-foreground">Grant {data.kill_privilege.privilege} once to let the kill button stop any hosted account's query too.</p>
               </div>
             </div>
@@ -172,7 +172,7 @@ export default function DbMonitor() {
       <ConfirmDialog
         open={grantOpen}
         onOpenChange={setGrantOpen}
-        title="Grant CONNECTION_ADMIN to forgehost_daemon?"
+        title="Grant CONNECTION_ADMIN to boron_daemon?"
         description="Lets the panel's daemon kill any hosted account's query, not just its own. Takes effect immediately, no service restart."
         confirmLabel="Grant privilege"
         loading={grantMut.isPending}

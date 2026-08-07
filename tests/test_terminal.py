@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from daemon import terminal
+from daemon.safeio import UnsafePathError
 from shared.db import write_session
 from shared.models import Account
 
@@ -116,6 +117,22 @@ def test_open_rejects_suspended_account(term_env):
         db.scalar(select(Account).where(Account.username == "demo1")).status = "suspended"
     with pytest.raises(RuntimeError, match="status"):
         terminal.open_session({"username": "demo1"})
+
+
+def test_open_refuses_preplanted_ssh_directory_symlink(isolated_db, monkeypatch, tmp_path):
+    """Root terminal provisioning must never chown a symlink target."""
+    target = tmp_path / "target"
+    target.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".ssh").symlink_to(target, target_is_directory=True)
+    uid, gid = os.getuid(), os.getgid()
+    monkeypatch.setattr(terminal, "_ssh_paths", lambda username: (str(home / ".ssh"), str(home / ".ssh" / "authorized_keys"), uid, gid))
+    with write_session() as db:
+        db.add(Account(username="demo1", status="active", uid=5001, gid=5001))
+    with pytest.raises(UnsafePathError):
+        terminal.open_session({"username": "demo1"})
+    assert target.stat().st_uid == os.getuid()
 
 
 # --- WebSocket client protocol ---------------------------------------------

@@ -39,7 +39,7 @@
     --input-surface: 17 24 39; /* gray-900 — recessed relative to cards */
     --fg: 209 213 219;         /* gray-300 — body text (headings forced white below) */
     --muted: 55 65 81;         /* gray-700 */
-    --muted-fg: 107 114 128;   /* gray-500 — secondary text */
+    --muted-fg: 156 163 175;   /* gray-400 — readable secondary text */
     --border: 55 65 81;        /* gray-700 */
     --input: 75 85 99;         /* gray-600 */
     --ring: 31 190 214;

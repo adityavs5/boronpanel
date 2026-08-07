@@ -16,7 +16,7 @@ import string
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, ApiToken, LoginAttempt, PanelUser, Session
+from shared.models import Account, ApiToken, LoginAttempt, PanelUser, Session, utcnow
 from shared.passwords import hash_password
 from shared.validation import ValidationError, validate_password_strength
 
@@ -213,7 +213,14 @@ def create_api_token(params: dict) -> dict:
         db.add(row)
         db.flush()
         token_id = row.id
-    return {"id": token_id, "label": label, "role": role, "account_id": account_id, "token": raw_token}
+    return {
+        "id": token_id,
+        "label": label,
+        "role": role,
+        "account_id": account_id,
+        "token": raw_token,
+        "expires_at": (utcnow() + dt.timedelta(days=90)).isoformat(),
+    }
 
 
 def revoke_api_token(params: dict) -> dict:

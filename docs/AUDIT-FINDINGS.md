@@ -1,4 +1,4 @@
-# Forgehost — Security Audit Findings
+# Boron — Security Audit Findings
 
 Companion to `docs/AUDIT-THREATMODEL.md`. Every route in `api/routers/*.py`
 was re-audited for ownership checks (§2 below); every `daemon/*.py` module
@@ -136,7 +136,7 @@ finding.
 
 **Architectural note (not a new finding, reconfirmed from
 `AUDIT-THREATMODEL.md` §2)**: `daemon/server.py`'s `dispatch()` does not
-re-derive authorization — the daemon fully trusts that `forgehost-api`
+re-derive authorization — the daemon fully trusts that `boron-api`
 already checked ownership before making an RPC call. This was the root
 cause of Phase 4-0b (8 routers missing the check, with the daemon
 providing zero backstop). **This audit did not find a new instance of
@@ -155,11 +155,11 @@ one real gap found in this section — detailed below.
 
 ## Section 3: Provisioning daemon security
 
-- **Unix socket permissions**: confirmed live — `/run/forgehost/provisiond.sock`
-  is mode `0660`, owned `root:forgehost-api`; the containing directory
-  `/run/forgehost` is `0750 root:forgehost-api`. Confirmed live that the
-  `forgehost-api` group's only member is the `forgehost-api` system user
-  itself (the one running `forgehost-api.service`) — no other local
+- **Unix socket permissions**: confirmed live — `/run/boron/provisiond.sock`
+  is mode `0660`, owned `root:boron-api`; the containing directory
+  `/run/boron` is `0750 root:boron-api`. Confirmed live that the
+  `boron-api` group's only member is the `boron-api` system user
+  itself (the one running `boron-api.service`) — no other local
   account can connect. No TCP listener for the RPC socket.
 - **Input validation on RPC params**: every handler that constructs a
   filesystem path from a `username`/`domain` first calls
@@ -230,7 +230,7 @@ one real gap found in this section — detailed below.
   this is intentional and correct: cron commands are written into the
   *account's own* crontab (`crontab -u <username>`), which that Linux
   user could already edit directly themselves if they had shell access;
-  Forgehost is not adding any capability a customer doesn't already
+  Boron is not adding any capability a customer doesn't already
   implicitly have over their own crontab. Confirmed this reasoning is
   documented in the module and still holds.
 - **SSRF**: every outbound fetch (`daemon/appinstaller.py`'s
@@ -241,7 +241,7 @@ one real gap found in this section — detailed below.
   customer-supplied value influences the fetch URL/host. No SSRF vector
   found in the app installer. Let's Encrypt/certbot's DNS-01 callback
   path is entirely certbot's own outbound behavior against Let's
-  Encrypt's servers, not a Forgehost-constructed fetch.
+  Encrypt's servers, not a Boron-constructed fetch.
 - **Template injection**: Jinja2 autoescaping confirmed on (default for
   `.html` templates via `Jinja2Templates`); grepped every template for
   `|safe`/`autoescape false` — none found. No inline `<script>` tags
@@ -316,8 +316,8 @@ party; a 15-minute window was chosen (not longer) specifically to bound
 that annoyance while still being materially disruptive to automated
 guessing.
 
-**Live verification**: deployed and restarted `forgehost-api`/
-`forgehost-provisiond`; 5 real POST `/login` attempts against a
+**Live verification**: deployed and restarted `boron-api`/
+`boron-provisiond`; 5 real POST `/login` attempts against a
 nonexistent username each correctly returned `401`, and the 6th real
 request correctly returned `429` with `"too many failed attempts -- try
 again in 15 minute(s)"` — the exact end-to-end failure path a real
@@ -364,7 +364,7 @@ status transition.
 
 **LOCATION**: `/usr/local/lsws/admin/conf/admin_config.conf` (live server
 config, outside the git repo — this is OS-level OpenLiteSpeed
-configuration Forgehost's own templates never touch).
+configuration Boron's own templates never touch).
 
 **DESCRIPTION**: Confirmed live via `ss -tlnp` and a real `curl`: OLS's
 own administrative web console (separate from the customer-facing
@@ -377,7 +377,7 @@ restarting the service, and other server-wide configuration) is exposed
 to anyone on the internet. Even with a strong password, this
 unnecessarily widens the attack surface (version fingerprinting,
 future WebAdmin CVEs, brute-force target) for zero operational benefit —
-Forgehost's own daemon manages all OLS config via file regeneration +
+Boron's own daemon manages all OLS config via file regeneration +
 `systemctl reload`, never through this console.
 
 **FIX (partially applied -- needs operator follow-through)**: Changed the
@@ -475,13 +475,13 @@ abandoned sessions" scenario the audit goal asks about, and the honest
 answer was "it does not run at all."
 
 **FIX**: This project's own established pattern for this exact class of
-periodic root job is a `/etc/cron.d/forgehost-<name>` drop-in (already
+periodic root job is a `/etc/cron.d/boron-<name>` drop-in (already
 used for `usage_snapshot.py`/`backup_scheduler.py`, and already
 documented in `README.md` with the intended
-`*/5 * * * * root /opt/forgehost/scripts/pma_token_cleanup.py ...` line)
+`*/5 * * * * root /opt/boron/scripts/pma_token_cleanup.py ...` line)
 -- the script and its documentation were both already correct; the
 crontab entry itself had simply never been installed on this deployment.
-Added `/etc/cron.d/forgehost-pma-tokens` (the exact filename README.md
+Added `/etc/cron.d/boron-pma-tokens` (the exact filename README.md
 already documented) with that exact line. Verified
 live: ran the script manually (`cleaned up 0 expired phpMyAdmin
 token(s)`, exit 0) to confirm it executes correctly end to end; cron
@@ -523,14 +523,14 @@ capping the worst case.
 **LOCATION**: `daemon/backup.py:790-791` (`_restore_full`).
 
 **DESCRIPTION**: Extracts a backup tarball with no member-path
-validation — the same vulnerability class as F1, applied to Forgehost's
+validation — the same vulnerability class as F1, applied to Boron's
 own backup artifacts rather than a downloaded app zip. Python 3.12
 introduced `TarFile.extraction_filter`/the `filter=` kwarg specifically
 to close this gap; omitting it triggers a `DeprecationWarning` today and
 will change behavior by default in 3.14.
 
 **IMPACT**: Lower likelihood than F1 (the tarball is created by
-Forgehost's own backup job from the account's already-jailed files, not
+Boron's own backup job from the account's already-jailed files, not
 fetched from a third party), but a compromised remote backup destination
 or a bug in a future backup-format change would have no independent
 safety net. Runs as root (backup restore is a daemon-side operation).

@@ -46,6 +46,7 @@ from shared.validation import (
 
 from daemon import filemanager, ols
 from daemon.procutil import run
+from daemon.safeio import secure_ensure_file_beneath
 
 HTPASSWD_FILENAME = ".htpasswd"
 HTPASSWD_BIN = "/usr/bin/htpasswd"
@@ -135,10 +136,7 @@ def enable_protection(params: dict) -> dict:
     htpasswd_path = os.path.join(resolved, HTPASSWD_FILENAME)
     if not os.path.exists(htpasswd_path):
         pw = pwd.getpwnam(username)
-        with open(htpasswd_path, "w"):
-            pass
-        os.chmod(htpasswd_path, 0o640)
-        os.chown(htpasswd_path, pw.pw_uid, pw.pw_gid)
+        secure_ensure_file_beneath(_home, relative_path, HTPASSWD_FILENAME, pw.pw_uid, pw.pw_gid, 0o640)
         # The docroot's own recursive default ACL (daemon/handlers_domain.py's
         # _grant_webserver_acl, applied at domain-add time) already grants
         # OLS's worker uid read access to anything created later inside the

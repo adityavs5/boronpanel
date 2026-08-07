@@ -25,6 +25,7 @@ import logging
 import os
 import pwd
 import secrets
+import stat
 import time
 
 from cryptography.hazmat.primitives import serialization
@@ -37,6 +38,7 @@ from shared.models import Account
 from shared.validation import validate_username
 
 from daemon import sysops
+from daemon.safeio import UnsafePathError, secure_mkdirs
 
 logger = logging.getLogger("borond.terminal")
 
@@ -125,33 +127,57 @@ def remove_session_line(lines: list[str], session_id: str) -> list[str]:
 
 def _ssh_paths(username: str) -> tuple[str, str, int, int]:
     pw = pwd.getpwnam(username)
-    ssh_dir = os.path.join(os.path.realpath(f"{settings.home_base}/{username}"), ".ssh")
+    # Do not realpath through an attacker-provided component.  The account
+    # home itself is anchored below the root-owned home_base and opened with
+    # O_NOFOLLOW by secure_mkdirs/_open_ssh_dir below.
+    ssh_dir = os.path.join(settings.home_base, username, ".ssh")
     return ssh_dir, os.path.join(ssh_dir, "authorized_keys"), pw.pw_uid, pw.pw_gid
 
 
-def _read_lines(path: str) -> list[str]:
-    if not os.path.isfile(path):
+def _open_ssh_dir(ssh_dir: str) -> int:
+    return os.open(ssh_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+
+
+def _read_lines(dir_fd: int) -> list[str]:
+    try:
+        fd = os.open("authorized_keys", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+    except FileNotFoundError:
         return []
-    with open(path) as f:
-        return [ln.rstrip("\n") for ln in f if ln.strip()]
+    except OSError as exc:
+        raise UnsafePathError("authorized_keys is not a safe regular file") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise UnsafePathError("authorized_keys is not a regular file")
+        with os.fdopen(fd, "r", closefd=False) as f:
+            return [ln.rstrip("\n") for ln in f if ln.strip()]
+    finally:
+        os.close(fd)
 
 
-def _write_lines(path: str, lines: list[str], uid: int, gid: int) -> None:
-    tmp = f"{path}.tmp.{os.getpid()}"
+def _write_lines(dir_fd: int, lines: list[str], uid: int, gid: int) -> None:
+    tmp = f".authorized_keys.tmp.{os.getpid()}.{secrets.token_hex(4)}"
     content = ("\n".join(lines) + "\n") if lines else ""
-    with open(tmp, "w") as f:
-        f.write(content)
-    os.chmod(tmp, 0o600)
-    os.chown(tmp, uid, gid)
-    os.replace(tmp, path)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
+    try:
+        os.write(fd, content.encode())
+        os.fchown(fd, uid, gid)
+        os.fchmod(fd, 0o600)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.rename(tmp, "authorized_keys", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        os.fsync(dir_fd)
+    except OSError:
+        os.unlink(tmp, dir_fd=dir_fd)
+        raise
 
 
-def _locked(ssh_dir: str):
+def _locked(dir_fd: int):
     """A lock on <ssh_dir>/.boron-terminal.lock serializing authorized_keys
     read-modify-write across concurrent open/close (this module and, harmlessly,
     only this module -- the SSH-keys feature edits distinct lines)."""
-    lock_path = os.path.join(ssh_dir, ".boron-terminal.lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    fd = os.open(".boron-terminal.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
     fcntl.flock(fd, fcntl.LOCK_EX)
     return fd
 
@@ -165,26 +191,27 @@ def open_session(params: dict) -> dict:
         if account.status != "active":
             raise RuntimeError(f"cannot open a terminal for an account in status '{account.status}'")
 
-    ssh_dir, path, uid, gid = _ssh_paths(username)
-    os.makedirs(ssh_dir, exist_ok=True)
-    os.chmod(ssh_dir, 0o700)
-    os.chown(ssh_dir, uid, gid)
+    ssh_dir, _path, uid, gid = _ssh_paths(username)
+    home = os.path.dirname(ssh_dir)
+    secure_mkdirs(home, ".ssh", uid, gid, 0o700)
 
     now = int(time.time())
     session_id = secrets.token_hex(16)
     private_pem, public_openssh = generate_keypair()
 
-    fd = _locked(ssh_dir)
+    dir_fd = _open_ssh_dir(ssh_dir)
+    fd = _locked(dir_fd)
     try:
-        lines = _read_lines(path)
+        lines = _read_lines(dir_fd)
         lines, active = prune_and_count(lines, now)
         if active >= MAX_CONCURRENT_SESSIONS:
             raise RuntimeError(f"maximum of {MAX_CONCURRENT_SESSIONS} concurrent terminal sessions reached for this account")
         lines.append(build_authorized_line(public_openssh, session_id, now))
-        _write_lines(path, lines, uid, gid)
+        _write_lines(dir_fd, lines, uid, gid)
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+        os.close(dir_fd)
 
     # A shell is required for sshd to yield a terminal (same grant the SSH-keys
     # feature makes). Idempotent.
@@ -206,21 +233,23 @@ def open_session(params: dict) -> dict:
 def close_session(params: dict) -> dict:
     username = validate_username(params["username"])
     session_id = params["session_id"]
-    ssh_dir, path, uid, gid = _ssh_paths(username)
-    if not os.path.isfile(path):
-        return {"status": "not_found"}
-
-    fd = _locked(ssh_dir)
+    ssh_dir, _path, uid, gid = _ssh_paths(username)
     try:
-        lines = _read_lines(path)
+        dir_fd = _open_ssh_dir(ssh_dir)
+    except OSError:
+        return {"status": "not_found"}
+    fd = _locked(dir_fd)
+    try:
+        lines = _read_lines(dir_fd)
         remaining = remove_session_line(lines, session_id)
         # Also reap any stale terminal markers while we hold the lock.
         remaining, _ = prune_and_count(remaining, int(time.time()))
-        _write_lines(path, remaining, uid, gid)
+        _write_lines(dir_fd, remaining, uid, gid)
         has_any_keys = any(ln.strip() and not ln.strip().startswith("#") for ln in remaining)
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+        os.close(dir_fd)
 
     # Symmetric with sshkeys.delete_key: if the account now has NO authorized
     # keys at all, revert the shell so a keyless account can't SSH in.
@@ -232,7 +261,14 @@ def close_session(params: dict) -> dict:
 
 def list_sessions(params: dict) -> dict:
     username = validate_username(params["username"])
-    _, path, _, _ = _ssh_paths(username)
-    lines = _read_lines(path)
+    ssh_dir, _, _, _ = _ssh_paths(username)
+    try:
+        dir_fd = _open_ssh_dir(ssh_dir)
+    except OSError:
+        return {"active": 0, "max": MAX_CONCURRENT_SESSIONS}
+    try:
+        lines = _read_lines(dir_fd)
+    finally:
+        os.close(dir_fd)
     _, active = prune_and_count(lines, int(time.time()))
     return {"active": active, "max": MAX_CONCURRENT_SESSIONS}

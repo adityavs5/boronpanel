@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from shared.db import write_session
@@ -29,6 +30,10 @@ def _sanitize(key: str, value):
     lowered = key.lower()
     if any(part in lowered for part in _SENSITIVE_KEY_PARTS):
         return "***"
+    if isinstance(value, dict):
+        return {str(k): _sanitize(str(k), v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize(key, item) for item in value]
     if isinstance(value, str) and len(value) > MAX_PARAM_VALUE_LEN:
         # File contents (file.read/file.write) and similarly bulky values
         # don't belong verbatim in the audit log -- truncate rather than
@@ -76,8 +81,12 @@ def record_account_event(
             },
             separators=(",", ":"),
         )
-        with ACCOUNT_EVENTS_LOG.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        fd = os.open(ACCOUNT_EVENTS_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o640)
+        try:
+            os.fchmod(fd, 0o640)
+            os.write(fd, (line + "\n").encode())
+        finally:
+            os.close(fd)
     except OSError as exc:
         logger.warning("could not append to %s: %s", ACCOUNT_EVENTS_LOG, exc)
 

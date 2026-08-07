@@ -196,7 +196,9 @@ def _unit_content() -> str:
         # systemd hardening that is compatible with that requirement -- they
         # narrow everything that ISN'T "access arbitrary files as root", so an
         # RCE/traversal bug in the binary itself doesn't also grant kernel-module
-        # loading, namespace escapes, SUID execution, or W^X memory abuse.
+        # loading, namespace escapes, or SUID execution. MemoryDenyWriteExecute
+        # is intentionally omitted: FileBrowser Quantum's Go runtime crashes
+        # under that restriction during startup.
         "NoNewPrivileges=true\n"
         "ProtectKernelModules=true\n"
         "ProtectKernelLogs=true\n"
@@ -208,7 +210,6 @@ def _unit_content() -> str:
         "RestrictNamespaces=true\n"
         "RestrictRealtime=true\n"
         "LockPersonality=true\n"
-        "MemoryDenyWriteExecute=true\n"
         "CapabilityBoundingSet=~CAP_SYS_MODULE CAP_SYS_BOOT CAP_SYS_TIME "
         "CAP_SYS_ADMIN CAP_NET_ADMIN CAP_MKNOD CAP_SYS_RAWIO\n"
         f"StandardOutput=append:{settings.log_dir}/filebrowser.log\n"

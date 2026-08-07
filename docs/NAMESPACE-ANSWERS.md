@@ -32,7 +32,7 @@ test needed to de-risk this.** OLS's own official docs state plainly that
 specifying a *different* namespace container program per-vhost for the same
 external app "is quite complex because you must remove it from the overall
 configuration, both as an external app and a script handler and define it
-specifically for each vhost." Forgehost's own topology — one shared
+specifically for each vhost." Boron's own topology — one shared
 `extProcessor` per account (`ols.py:213-259`), referenced by every domain's
 `scripthandler` — means we simply never touch **vhost-level** `namespace`/
 `namespaceConfVhAdd` directives at all. Enablement is entirely
@@ -214,7 +214,7 @@ All checklist items re-run against `p6bnstest` (uid 1001) with the corrected
   pre-existing, namespace-*unrelated* bug**, fixed along the way (below).
 - **File manager**: `file.write`/`file.read`/`file.list`/`file.delete`
   RPCs round-tripped correctly. ✅ (this path runs entirely inside
-  `forgehostd`, root, never through the namespaced LSAPI worker at all —
+  `borond`, root, never through the namespaced LSAPI worker at all —
   confirms the daemon-side file jail is unaffected by namespace, not a
   namespace-specific test).
 - **DB**: a real database was provisioned via `db.create`, and a PHP
@@ -260,7 +260,7 @@ connection outside the installer succeeded immediately). Fixed by reusing
 the same single-quoted-PHP-string escaping helper (`_php_str`) already
 used correctly elsewhere in this codebase (`daemon/appinstaller.py`'s
 Joomla config writer) — single-quoted PHP strings never interpolate
-variables. Deployed via `scripts/deploy.sh` + `forgehost-provisiond`
+variables. Deployed via `scripts/deploy.sh` + `boron-provisiond`
 restart; `tests/test_wordpress.py` and `tests/test_appinstaller.py` (29
 tests) still pass.
 
@@ -471,8 +471,8 @@ just a synthetic test: `{"total": 1, "completed_count": 1, "status":
 "completed", "results": [{"username": "adityascn", "ok": true}]}` --
 confirms the actual admin-facing migration tool works correctly against
 real production data, not just contrived test accounts. Full server
-health re-confirmed after every step (`lshttpd`/`forgehost-provisiond`/
-`forgehost-api` all active, Roundcube/phpMyAdmin both `200`).
+health re-confirmed after every step (`lshttpd`/`boron-provisiond`/
+`boron-api` all active, Roundcube/phpMyAdmin both `200`).
 
 **Migration verdict**: the only existing active account is migrated and
 verified. `min_uid` is now `1000` server-wide (no real account exists
@@ -493,14 +493,14 @@ interaction" -- confirmed live, not just by that reasoning.
 auto-enabled by default now that `min_uid` is `1000` -- itself a live
 confirmation of the "new accounts get namespace isolation automatically"
 requirement), tight limits (`mem_mb=64`, `cpu_pct=10`) applied at creation.
-Confirmed via `systemctl show forgehost-p6cgtest.slice` that the live
+Confirmed via `systemctl show boron-p6cgtest.slice` that the live
 cgroup actually got `MemoryMax=67108864` / `CPUQuotaPerSecUSec=100ms`
 before running anything.
 
 **Memory limit, live, definitive**: a PHP script allocating 200×1MB
 strings inside the namespaced `lsphp` worker. Result: `dmesg`/`journalctl
 -k` show the kernel's own OOM-killer firing three times, explicitly
-`oom_memcg=/forgehost.slice/forgehost-p6cgtest.slice`, killing
+`oom_memcg=/boron.slice/boron-p6cgtest.slice`, killing
 `lsphp`/uid 1001 each time; `memory.events` on that exact cgroup path
 shows `oom 3, oom_kill 3`. The request itself returned `503` (backend
 process died mid-request) -- expected, not a bug, given the deliberately
@@ -521,13 +521,13 @@ the kernel's CFS bandwidth throttling mechanism was actively engaging
 an at-spawn attachment -- LSAPI workers initially land in `lshttpd`'s own
 cgroup and get moved into their owning account's slice by uid match a few
 seconds later) correctly found and moved the namespaced `lsphp` worker
-into `forgehost-p6cgtest.slice` with zero special-casing needed -- cgroup
+into `boron-p6cgtest.slice` with zero special-casing needed -- cgroup
 membership is keyed by the process's real host uid (`os.stat("/proc/
 <pid>").st_uid`), which is completely unaffected by which mount namespace
 that same process happens to privately see.
 
-**Other accounts unaffected**: `lshttpd`/`forgehost-provisiond`/
-`forgehost-api` all remained active throughout both stress tests; webmail
+**Other accounts unaffected**: `lshttpd`/`boron-provisiond`/
+`boron-api` all remained active throughout both stress tests; webmail
 and phpMyAdmin both continued returning `200`; system load average stayed
 low (`0.63, 0.46, 0.26`) during and after. The CPU throttling result
 itself is additional proof of non-interference in the other direction --
@@ -582,8 +582,8 @@ dependency (writing an audit row) broke test isolation for several
 before these functions ever touched a database -- they didn't request the
 `isolated_db` fixture because they never needed to. Running the full test
 suite with this change in place caused those tests to write real rows
-into the **live production** `audit_log` table (`/var/lib/forgehost/
-forgehost.db`) instead of an isolated temp one, three times (once per
+into the **live production** `audit_log` table (`/var/lib/boron/
+boron.db`) instead of an isolated temp one, three times (once per
 full-suite run during this step's development) -- confirmed via `sqlite3
 ... WHERE op LIKE 'lsnsctl.%'` showing identical 8-row bursts containing
 literal test fixture values (`uid=2000`, `detail='boom'`) at each run's
@@ -676,7 +676,7 @@ require the `bwrap` fallback path from §3.2, not this mechanism).
 | `1` | Off | Off — always disables namespace support for this vhost, even if server-level is enabled |
 | `2` | Enabled | Enabled — overrides server-level **unless** server-level is `0`/disabled |
 
-Forgehost will set `namespace 2` at the server level only (per Q1) and never
+Boron will set `namespace 2` at the server level only (per Q1) and never
 touch the vhost-level directive.
 
 ## Q7 — `allowSymbolLink` permissiveness
@@ -716,7 +716,7 @@ namespace-private `/etc/passwd`/`/etc/group` containing only the active
 account's own entry by default. To include additional real entries, follow
 with a comma-separated list of existing usernames/groupnames from the *real*
 system file: `$PASSWD,nobody,root` is the docs' own literal example syntax.
-For Forgehost's actual stack: the account's own user is always included
+For Boron's actual stack: the account's own user is always included
 automatically; `nobody` should be added (OLS's shared static-serving worker
 identity — some CMS/PHP code paths do defensive `posix_getpwuid()` checks
 against the worker's own nominal owner) and `mysql` should be added *only if*
@@ -820,10 +820,10 @@ point on this Debian/Ubuntu-family box, not nested under `/var` despite
 within it (`/run/mysqld/mysqld.sock`, `/run/user/$UID`) still get individual
 `bind-try` treatment in the default template, likely for permission/
 visibility guarantees independent of plain inheritance. **Our own template
-must be written with this in mind**: any real path Forgehost's stack needs
+must be written with this in mind**: any real path Boron's stack needs
 that happens to live under `/var` must be explicitly re-punched through,
 mirroring the vendor default's own approach rather than assuming
-inheritance covers it. Confirmed real paths Forgehost specifically needs
+inheritance covers it. Confirmed real paths Boron specifically needs
 punched back through the emptied `/var`: `/run/mysqld/mysqld.sock`
 (MariaDB's real socket, confirmed via `/etc/mysql/mariadb.cnf` and PHP's own
 `mysqli.default_socket` ini default — both point at this exact path) and

@@ -4,7 +4,7 @@ import { useAuth } from '@/store/auth'
 // Gate for authenticated routes. Identity comes from the persisted auth store;
 // if the underlying session cookie has expired, the first API call 401s and the
 // axios interceptor redirects to /login anyway.
-export function ProtectedRoute({ children, adminOnly = false }) {
+export function ProtectedRoute({ children, adminOnly = false, customerOnly = false }) {
   const role = useAuth((s) => s.role)
   const location = useLocation()
 
@@ -13,6 +13,9 @@ export function ProtectedRoute({ children, adminOnly = false }) {
   }
   if (adminOnly && role !== 'admin') {
     return <Navigate to="/dashboard" replace />
+  }
+  if (customerOnly && role !== 'customer') {
+    return <Navigate to="/accounts" replace />
   }
   return children
 }

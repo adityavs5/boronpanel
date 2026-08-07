@@ -50,6 +50,7 @@ from shared.validation import generate_strong_password, validate_domain, validat
 
 from daemon import handlers_database
 from daemon.procutil import run
+from daemon.safeio import secure_mkdirs, secure_write_file_beneath
 
 logger = logging.getLogger("borond.wordpress")
 
@@ -132,12 +133,12 @@ def _extract_wordpress(zip_path: Path, docroot: str) -> None:
             if not relative:
                 continue
             target = _safe_extract_target(docroot, relative)
+            root_stat = os.stat(docroot, follow_symlinks=False)
             if info.is_dir():
-                os.makedirs(target, exist_ok=True)
+                secure_mkdirs(docroot, relative.rstrip("/"), root_stat.st_uid, root_stat.st_gid, 0o750)
                 continue
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with zf.open(info) as src, open(target, "wb") as dst:
-                shutil.copyfileobj(src, dst)
+            with zf.open(info) as src:
+                secure_write_file_beneath(docroot, relative, src.read(), root_stat.st_uid, root_stat.st_gid, 0o640)
 
 
 def _docroot_is_empty_enough(docroot: str) -> bool:
@@ -234,10 +235,8 @@ def _install_target(docroot: str, path: str) -> str:
     install directory -- the domain's docroot itself if `path` is empty,
     else that subdirectory of it. Same realpath-containment jail as
     `_safe_extract_target` above (a crafted `path` like "../../etc" must
-    never escape the docroot); the target directory need not exist yet --
-    `_extract_wordpress`'s own per-member `os.makedirs(exist_ok=True)`
-    creates it as a side effect of writing the first file into it, same
-    as it already does for nested directories within a normal install."""
+    never escape the docroot). The caller creates a missing subdirectory
+    through the symlink-safe directory primitive before extraction."""
     path = (path or "").strip().strip("/")
     if not path:
         return docroot
@@ -312,6 +311,12 @@ def install(params: dict) -> dict:
 
     pw = pwd.getpwnam(username)
     home_dir = f"{settings.home_base}/{username}"
+    if path:
+        # A subdirectory install has no extraction root yet. Create it
+        # beneath the already-provisioned docroot through O_NOFOLLOW fds,
+        # with the account's ownership and the same 0750 directory mode used
+        # for normal account docroots.
+        secure_mkdirs(docroot, path, pw.pw_uid, pw.pw_gid, 0o750)
 
     version, download_url = fetch_latest_version_and_url()
     db_grant, suffix = _allocate_database(username, path)

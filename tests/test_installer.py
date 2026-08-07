@@ -42,6 +42,34 @@ def test_installer_help_exits_zero():
     assert "--uninstall" in r.stdout
 
 
+def test_installer_covers_runtime_dependencies_and_firewall_policy():
+    """Keep the fresh-install inventory aligned with the services in code."""
+    source = INSTALLER.read_text()
+    for required in (
+        "openlitespeed", "lsphp81", "lsphp82", "lsphp83", "lsphp84", "lsphp85",
+        "mariadb-server", "postfix", "dovecot-core", "pdns-server", "pure-ftpd",
+        "certbot", "rclone", "spamassassin", "fail2ban", "ufw", "redis-server",
+        "python3", "python3-pip", "nodejs", "composer", "imapsync", "geoipupdate",
+        "install_filebrowser", "certbot-dns-cloudflare", "boron-filebrowser.service",
+    ):
+        assert required in source
+
+    # SSH must be admitted before UFW is enabled, and FTP's data range must
+    # exactly match Pure-FTPd's configured passive range.
+    assert source.index("ufw allow 22/tcp") < source.index("ufw --force enable")
+    assert "ufw allow 30000:30100/tcp" in source
+    assert "30000 30100" in source
+    assert "for p in 21 25 53 80 110 143 443 587 993 995 9443; do" in source
+    assert 'run ufw allow "${p}/tcp"' in source
+    assert "npm ci --no-audit --no-fund && npm run build" in source
+    assert "web UI built from frontend source" in source
+    filebrowser_source = Path(__file__).resolve().parent.parent.joinpath("daemon/filebrowser.py").read_text()
+    assert '["iptables", "-I", "OUTPUT", str(position)]' in filebrowser_source
+    assert 'positions 1-2' in filebrowser_source
+    assert 'boron-geoip.cron' in source
+    assert 'Optional MaxMind GeoLite2 license key' in source
+
+
 def test_installer_rejects_unknown_flag():
     r = subprocess.run(["bash", str(INSTALLER), "--bogus"], capture_output=True, text=True)
     assert r.returncode != 0

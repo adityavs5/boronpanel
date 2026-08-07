@@ -858,21 +858,13 @@ class PhpFunctionOverride(Base):
 
 
 class TotpCredential(Base):
-    """Phase 5 feature 10: TOTP 2FA. `secret` is stored in plain base32,
-    not hashed -- unlike a password, a TOTP secret must be *used*
+    """Phase 5 feature 10: TOTP 2FA. `secret` is encrypted with the daemon's
+    Fernet key (it cannot be hashed because a TOTP secret must be *used*
     (HMAC'd against the current time step) on every verification, not
     just compared, so it can't be one-way-hashed the way
-    PanelUser.password_hash is. This project has no generalized
-    application-level encryption-at-rest layer for DB row secrets (the
-    few genuinely irreversible secrets it holds -- MariaDB admin creds,
-    the PowerDNS API key, the session-signing key -- all live in
-    root-only files under /etc/boron/, never in this SQLite DB); a
-    dedicated KMS/envelope-encryption layer for this one field was
-    judged out of scope for this feature, so the DB file's own existing
-    permission boundary (0640 root:boron-api, ARCHITECTURE.md SS4)
-    is the actual protection here -- the same real, documented tradeoff
-    this project already accepts for the PanelUser table it sits
-    alongside. `enabled=False` until a submitted code proves the admin
+    PanelUser.password_hash is. The Fernet key is kept in the root-only
+    secrets file and is available only to the provisioning daemon.
+    `enabled=False` until a submitted code proves the admin
     actually scanned the QR code and can generate valid codes
     (goal: "verify before enabling")."""
 
@@ -880,7 +872,7 @@ class TotpCredential(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     panel_user_id: Mapped[int] = mapped_column(ForeignKey("panel_users.id"), unique=True, index=True)
-    secret: Mapped[str] = mapped_column(String(64))
+    secret: Mapped[str] = mapped_column(String(512))
     enabled: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -1420,7 +1412,7 @@ class ParkedDomain(Base):
 
 class EmailRouting(Base):
     """Phase 8 feature 6: per-domain mail routing mode (local | remote |
-    backup). Stored in the SQLite control plane (not the forgehost_mail
+    backup). Stored in the SQLite control plane (not the boron_mail
     MariaDB schema) because the *authoritative* Postfix acceptance switch is
     the `mail_domain.active` flag the daemon already toggles -- this row is
     the panel's own record of the operator's chosen mode, which

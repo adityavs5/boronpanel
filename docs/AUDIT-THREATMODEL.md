@@ -1,7 +1,7 @@
-# Forgehost — Security Audit Threat Model
+# Boron — Security Audit Threat Model
 
 Written before any audit fixes, per the audit goal's mandatory pre-work.
-Scope: a full-codebase security re-audit of Forgehost as it stands after
+Scope: a full-codebase security re-audit of Boron as it stands after
 Phase 4 (12 features + the cross-account IDOR fix + the password-strength
 audit). This is not a redesign document — it exists to make the trust
 boundaries and attacker classes explicit before findings are triaged, so
@@ -15,19 +15,19 @@ rather than intuition.
 | **Anonymous internet user** | Can reach `:80`/`:443` (hosted sites), `:9443` (panel login page), `:21`/`:25`/`:587`/`:993`/`:143` (FTP/mail), `:53` (DNS) | Untrusted |
 | **Hosting customer** | Valid `PanelUser` session/token scoped to exactly one `Account` | Semi-trusted: authenticated, but must be contained to their own account only |
 | **Panel admin** | Valid `PanelUser` session/token with `role=admin` | Fully trusted for provisioning actions; still not root on the OS |
-| **Provisioning daemon (`forgehostd`)** | Runs as root, the only process that mutates system state | Fully trusted, the actual privilege boundary |
-| **REST API (`forgehost-api`)** | Runs unprivileged, read-only DB access, talks to the daemon only over the RPC socket | Trusted to gate authorization correctly — see §3, this is the load-bearing assumption the whole model leans on |
-| **A hosted PHP application** (WordPress/Joomla/etc., or arbitrary customer-uploaded PHP) | Executes as the account's own Linux uid via LSAPI | Untrusted code, contained by Linux DAC + cgroups, not by Forgehost's own logic |
+| **Provisioning daemon (`borond`)** | Runs as root, the only process that mutates system state | Fully trusted, the actual privilege boundary |
+| **REST API (`boron-api`)** | Runs unprivileged, read-only DB access, talks to the daemon only over the RPC socket | Trusted to gate authorization correctly — see §3, this is the load-bearing assumption the whole model leans on |
+| **A hosted PHP application** (WordPress/Joomla/etc., or arbitrary customer-uploaded PHP) | Executes as the account's own Linux uid via LSAPI | Untrusted code, contained by Linux DAC + cgroups, not by Boron's own logic |
 
 ## 2. Trust boundaries
 
-1. **Internet ↔ forgehost-api (`:9443`)** — the primary web attack surface.
+1. **Internet ↔ boron-api (`:9443`)** — the primary web attack surface.
    Every request is unauthenticated until `get_identity` resolves a session
    cookie or bearer token.
 2. **Internet ↔ hosted vhosts (`:80`/`:443`)** — arbitrary customer PHP code
    runs here; a compromise of one hosted site must not escalate to another
    account or to the panel itself.
-3. **forgehost-api ↔ forgehostd (Unix socket)** — the privilege boundary
+3. **boron-api ↔ borond (Unix socket)** — the privilege boundary
    between "can ask for a privileged action" and "can actually perform one."
    **Load-bearing assumption**: the daemon does not re-derive authorization;
    it trusts that any RPC call it receives has already been authorized by
@@ -48,10 +48,10 @@ rather than intuition.
    admin-only ops (account create/suspend/terminate/limits, DNS zone
    creation, backup destinations/schedules, API tokens). A customer
    reaching any of these is a vertical-escalation finding.
-6. **Forgehost's own control-plane DB (SQLite) — writer vs. reader** —
-   `forgehostd` (root) is the only writer; `forgehost-api` opens the same
+6. **Boron's own control-plane DB (SQLite) — writer vs. reader** —
+   `borond` (root) is the only writer; `boron-api` opens the same
    file read-only, enforced by OS file permissions (0640,
-   `root:forgehost-api`), not just application logic. Any code path that
+   `root:boron-api`), not just application logic. Any code path that
    assumes the API process can write to this DB is a design bug by
    construction (SQLite will refuse the write at the OS level).
 
@@ -59,7 +59,7 @@ rather than intuition.
 
 1. **Root on the host** (via the daemon or a subprocess-injection bug) —
    compromises every hosted account simultaneously. Highest impact.
-2. **The `forgehostd` Unix socket / RPC authorization gate** — since the
+2. **The `borond` Unix socket / RPC authorization gate** — since the
    daemon trusts the API layer, bypassing or confusing that gate is
    equivalent to admin-level access to every account.
 3. **Any single hosting account's data** (files, databases, mail, DNS) —
@@ -98,7 +98,7 @@ rather than intuition.
   (Phase 4-0b, Phase 4-12) as an unresolved gap and never fixed.
 - **A network attacker (MITM/DNS)** — relevant only to outbound fetches
   (app installer downloads, WordPress/Joomla/Drupal/PrestaShop release
-  URLs, ACME callbacks); all of Forgehost's own inbound traffic is TLS
+  URLs, ACME callbacks); all of Boron's own inbound traffic is TLS
   where it matters (panel), so this class is scoped narrowly.
 - **An operator/insider mistake** — e.g. a config value left at an
   insecure default, a service accidentally bound to `0.0.0.0` instead of

@@ -304,10 +304,13 @@ verify_artifacts() {
         || die "checksum self-verification failed"
     # Every member must live under the version prefix with no traversal --
     # the update daemon rejects violations, so catch them at build time.
-    local bad
-    bad="$(tar -tzf "$TARBALL" | grep -Ev "^boron-${version}(/|$)" | head -3 || true)"
+    local bad members
+    # Read the compressed listing once; repeatedly invoking tar for every
+    # member makes dry-run verification unnecessarily slow on constrained CI.
+    members="$(tar -tzf "$TARBALL")"
+    bad="$(printf '%s\n' "$members" | grep -Ev "^boron-${version}(/|$)" | head -3 || true)"
     [[ -z "$bad" ]] || die "tarball contains members outside boron-${version}/: ${bad}"
-    bad="$(tar -tzf "$TARBALL" | grep -E '(^/|(^|/)\.\.(/|$))' | head -3 || true)"
+    bad="$(printf '%s\n' "$members" | grep -E '(^/|(^|/)\.\.(/|$))' | head -3 || true)"
     [[ -z "$bad" ]] || die "tarball contains absolute/traversal paths: ${bad}"
     # The packaged version.py must carry exactly the released version.
     local packaged
@@ -318,7 +321,7 @@ verify_artifacts() {
     local member
     for member in api/main.py daemon/server.py shared/config.py requirements.txt \
                   static/dist/index.html tests/conftest.py deploy/boron-api.service; do
-        tar -tzf "$TARBALL" "boron-${version}/${member}" >/dev/null 2>&1 \
+        grep -qxF "boron-${version}/${member}" <<<"$members" \
             || die "tarball is missing ${member}"
     done
     ok "artifacts verified"

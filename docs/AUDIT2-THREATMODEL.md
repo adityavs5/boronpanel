@@ -1,4 +1,4 @@
-# Forgehost — Security Audit 2 Threat Model
+# Boron — Security Audit 2 Threat Model
 
 Written **before** any Audit 2 fixes, per the audit goal's mandatory pre-work.
 Companion to `docs/AUDIT2-FINDINGS.md`.
@@ -34,7 +34,7 @@ what the new surface *adds* to each.
 Actors, trust levels, and the six trust boundaries from Audit 1 §2 still hold
 verbatim. The two load-bearing invariants this audit re-leans on:
 
-- **B3 — `forgehost-api` ↔ `forgehostd` (Unix socket):** the daemon still does
+- **B3 — `boron-api` ↔ `borond` (Unix socket):** the daemon still does
   **not** re-derive authorization; it trusts that the API layer gated the RPC.
   Every new feature adds new RPC ops and new routers, so "a router that forgets
   a `require_*_access` call is a silent cross-account compromise" is again the
@@ -75,7 +75,7 @@ untrusted string → privileged sink without validation) has new sinks:
   credential-disclosure vector — a first-class concern for this audit.
 - **Webhook signing secret / TOTP secret** — stored plaintext at rest (both
   must be *used*, not merely compared, so neither can be one-way hashed);
-  guarded only by the DB file's `root:forgehost-api 0640` permission. Accepted
+  guarded only by the DB file's `root:boron-api 0640` permission. Accepted
   tradeoff, consistent with existing posture, documented not fixed.
 
 ### 2.3 New DoS surface

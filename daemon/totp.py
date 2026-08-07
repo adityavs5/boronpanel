@@ -17,11 +17,27 @@ from sqlalchemy import select
 
 from shared.db import write_session
 from shared.validation import ValidationError
+from daemon import appcrypto
 
 from shared.models import PanelUser, TotpCredential, TotpRecoveryCode
 
 RECOVERY_CODE_COUNT = 8
 ISSUER_NAME = "Boron"
+
+
+def _decrypt_secret(value: str) -> str:
+    # Backward-compatible one-time migration for installations that stored
+    # base32 seeds before encryption was enabled.
+    if value.startswith("gAAAA"):
+        return appcrypto.decrypt_secret(value)
+    return value
+
+
+def _migrate_secret(row: TotpCredential) -> str:
+    raw = _decrypt_secret(row.secret)
+    if not row.secret.startswith("gAAAA"):
+        row.secret = appcrypto.encrypt_secret(raw)
+    return raw
 
 
 def _generate_recovery_code() -> str:
@@ -51,9 +67,9 @@ def setup_totp(params: dict) -> dict:
         if existing is not None and existing.enabled:
             raise ValidationError("2FA is already enabled -- disable it first to generate a new secret")
         if existing is not None:
-            existing.secret = secret
+            existing.secret = appcrypto.encrypt_secret(secret)
         else:
-            session.add(TotpCredential(panel_user_id=panel_user_id, secret=secret, enabled=False))
+            session.add(TotpCredential(panel_user_id=panel_user_id, secret=appcrypto.encrypt_secret(secret), enabled=False))
         uri = pyotp.TOTP(secret).provisioning_uri(name=user.username, issuer_name=ISSUER_NAME)
         return {"secret": secret, "otpauth_uri": uri}
 
@@ -65,7 +81,7 @@ def verify_totp(params: dict) -> dict:
         row = session.scalar(select(TotpCredential).where(TotpCredential.panel_user_id == panel_user_id))
         if row is None:
             raise ValidationError("no pending 2FA setup for this user -- call setup first")
-        if not pyotp.TOTP(row.secret).verify(code, valid_window=1):
+        if not pyotp.TOTP(_migrate_secret(row)).verify(code, valid_window=1):
             raise ValidationError("invalid or expired code")
         row.enabled = True
         # Regenerate recovery codes every time 2FA is (re-)verified/enabled
@@ -98,7 +114,7 @@ def check_login_code(params: dict) -> dict:
         if cred is None:
             raise ValidationError("2FA is not enabled for this user")
 
-        if pyotp.TOTP(cred.secret).verify(code, valid_window=1):
+        if pyotp.TOTP(_migrate_secret(cred)).verify(code, valid_window=1):
             return {"valid": True, "used_recovery_code": False}
 
         code_hash = _hash_code(code.upper())

@@ -1,0 +1,3 @@
+# Boron GeoLite2-Country refresh. The key is root-only in /etc/boron and is
+# never embedded in this cron file or exposed in the process command line.
+17 3 * * 2 root /bin/sh -c 'key="$(cat /etc/boron/maxmind-license 2>/dev/null)"; [ -n "$key" ] || exit 0; MAXMIND_LICENSE_KEY="$key" /opt/boron/.venv/bin/python -c "import os,sys; sys.path.insert(0,\"/opt/boron\"); from daemon import geoip; geoip.download_database(os.environ[\"MAXMIND_LICENSE_KEY\"])" >> /var/log/boron/geoip-refresh.log 2>&1'

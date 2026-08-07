@@ -10,7 +10,7 @@ from shared.db import read_session
 from shared.models import ApiToken
 
 from api.rpc import call_daemon
-from api.security import Identity, get_identity, require_admin
+from api.security import API_TOKEN_MAX_AGE_SECONDS, Identity, get_identity, require_admin
 from api.templates import templates
 
 api_router = APIRouter(prefix="/api/v1/tokens", tags=["tokens"])
@@ -29,7 +29,9 @@ def list_tokens(identity: Identity = Depends(get_identity)):
     with read_session() as db:
         rows = db.scalars(select(ApiToken)).all()
         return [
-            {"id": r.id, "label": r.label, "role": r.role, "account_id": r.account_id, "revoked": r.revoked_at is not None}
+            {"id": r.id, "label": r.label, "role": r.role, "account_id": r.account_id,
+             "revoked": r.revoked_at is not None,
+             "expires_at": (r.created_at + __import__("datetime").timedelta(seconds=API_TOKEN_MAX_AGE_SECONDS)).isoformat()}
             for r in rows
         ]
 

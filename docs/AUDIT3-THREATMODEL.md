@@ -1,4 +1,4 @@
-# Forgehost — Security Audit 3 Threat Model
+# Boron — Security Audit 3 Threat Model
 
 Written **before** any Audit 3 fixes, per the audit goal's mandatory pre-work.
 Companion to `docs/AUDIT3-FINDINGS.md`.
@@ -10,8 +10,8 @@ namespace isolation / cPanel import / notifications / webhooks / staging /
 2FA). Since Audit 2 (2026-07-06), the following shipped:
 
 - **File manager v2 — FileBrowser Quantum** (2026-07-09): a root-owned Go
-  binary (`forgehost-filebrowser.service`, loopback-only) fronted by an
-  authenticated reverse proxy in `forgehost-api` (`daemon/filebrowser.py`,
+  binary (`boron-filebrowser.service`, loopback-only) fronted by an
+  authenticated reverse proxy in `boron-api` (`daemon/filebrowser.py`,
   `api/routers/filebrowser.py`).
 - **Cloudflare Phase 2+3** (2026-07-09): multi-account token pool, proxy/
   real-IP rails, DNS-01 via Cloudflare, bulk migrate, UFW lockdown — backend
@@ -48,7 +48,7 @@ This document does not re-derive the base trust model — it inherits Audit
 
 ## 1. Inherited model (unchanged)
 
-- **B3 — `forgehost-api` ↔ `forgehostd` (Unix socket):** the daemon does
+- **B3 — `boron-api` ↔ `borond` (Unix socket):** the daemon does
   **not** re-derive authorization; every RPC op the new surface adds is
   another place a missing `require_*_access` call in the API router is a
   silent, full cross-account compromise. This is again the single

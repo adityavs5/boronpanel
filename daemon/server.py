@@ -11,6 +11,8 @@ import asyncio
 import grp
 import logging
 import os
+import pwd
+import socket
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -706,6 +708,23 @@ async def dispatch(op: str, params: dict) -> dict:
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     peer = writer.get_extra_info("peername", "unix-peer")
+    # The socket's group bit is necessary for API access but is not a
+    # sufficient authorization boundary: any future process added to that
+    # group would otherwise gain every root RPC. Require the kernel-reported
+    # peer UID to be the dedicated API service account as defense in depth.
+    sock = writer.get_extra_info("socket")
+    if sock is not None and hasattr(socket, "SO_PEERCRED"):
+        try:
+            peer_pid, peer_uid, _peer_gid = __import__("struct").unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            api_uid = pwd.getpwnam("boron-api").pw_uid
+            if peer_uid != api_uid:
+                logger.warning("rejecting RPC peer uid=%s pid=%s", peer_uid, peer_pid)
+                writer.close()
+                return
+        except (OSError, KeyError, ValueError):
+            logger.exception("could not verify RPC peer credentials")
+            writer.close()
+            return
     try:
         request = await read_frame(reader)
     except (asyncio.IncompleteReadError, ValueError) as exc:

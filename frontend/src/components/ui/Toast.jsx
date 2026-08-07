@@ -81,7 +81,7 @@ export function Toaster() {
           </ToastPrimitive.Root>
         )
       })}
-      <ToastPrimitive.Viewport className="fixed bottom-0 right-0 z-[100] flex w-full max-w-sm flex-col gap-2 p-4 outline-none" />
+      <ToastPrimitive.Viewport className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] right-0 z-[100] flex w-full max-w-sm flex-col gap-2 p-4 outline-none md:bottom-0" />
     </ToastPrimitive.Provider>
   )
 }

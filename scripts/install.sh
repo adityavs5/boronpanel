@@ -34,7 +34,9 @@ readonly MIN_DISK_GB=10
 # Ports the stack binds and expects to own on a fresh box. A conflict here
 # means something else is already installed -- surfaced in pre-flight, not
 # discovered halfway through.
-readonly REQUIRED_PORTS=(9443 8081 80 443 21 25 587 143 993 3306 53)
+# Public TCP listeners plus the panel's internal PowerDNS API/database
+# listeners. Passive FTP is a range and is configured separately below.
+readonly REQUIRED_PORTS=(9443 8081 80 443 21 25 110 143 587 993 995 3306 53)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
@@ -234,19 +236,23 @@ preflight() {
 readonly BASE_PKGS=(
     python3 python3-venv python3-pip python3-dev build-essential
     curl wget jq sqlite3 ufw acl quota quotatool git ca-certificates
+    rsync openssl cron logrotate apache2-utils geoipupdate
     nodejs npm composer
 )
 readonly STACK_PKGS=(
     mariadb-server postfix dovecot-core dovecot-imapd dovecot-lmtp
     dovecot-mysql dovecot-sieve postfix-mysql pdns-server pdns-backend-sqlite3
-    pure-ftpd certbot rclone spamassassin fail2ban redis-server
+    pure-ftpd certbot rclone spamassassin fail2ban redis-server imapsync
 )
 readonly OLS_PKGS=(
-    openlitespeed
-    lsphp81 lsphp81-common lsphp81-curl lsphp81-mysql lsphp81-opcache
-    lsphp83 lsphp83-common lsphp83-curl lsphp83-mysql lsphp83-opcache
-    lsphp83-intl lsphp83-redis lsphp83-sqlite3
+    openlitespeed ols-modsecurity modsecurity-crs
+    lsphp81 lsphp81-common lsphp81-curl lsphp81-mysql lsphp81-opcache lsphp81-intl lsphp81-redis lsphp81-sqlite3 lsphp81-imagick
+    lsphp82 lsphp82-common lsphp82-curl lsphp82-mysql lsphp82-opcache lsphp82-intl lsphp82-redis lsphp82-sqlite3 lsphp82-imagick
+    lsphp83 lsphp83-common lsphp83-curl lsphp83-mysql lsphp83-opcache lsphp83-intl lsphp83-redis lsphp83-sqlite3 lsphp83-imagick
+    lsphp84 lsphp84-common lsphp84-curl lsphp84-mysql lsphp84-opcache lsphp84-intl lsphp84-redis lsphp84-sqlite3 lsphp84-imagick
+    lsphp85 lsphp85-common lsphp85-curl lsphp85-mysql lsphp85-opcache lsphp85-intl lsphp85-redis lsphp85-sqlite3 lsphp85-imagick
 )
+readonly NODE_RUNTIME_VERSIONS=(18.20.8 20.19.6 22.16.0)
 
 apt_update() {
     export DEBIAN_FRONTEND=noninteractive
@@ -281,7 +287,7 @@ install_openlitespeed() {
     fi
     run apt-get install -y "${OLS_PKGS[@]}"
     run systemctl enable --now lshttpd
-    ok "OpenLiteSpeed + PHP 8.1/8.3 installed"
+    ok "OpenLiteSpeed + PHP 8.1 through 8.5 installed"
 }
 
 install_stack_packages() {
@@ -295,6 +301,47 @@ install_stack_packages() {
         run mv /etc/powerdns/pdns.d/bind.conf /etc/powerdns/pdns.d/bind.conf.disabled
     fi
     ok "hosting stack installed"
+}
+
+install_node_runtimes() {
+    info "Installing Boron Node.js runtimes (18, 20, 22)"
+    local version major
+    for version in "${NODE_RUNTIME_VERSIONS[@]}"; do
+        major="${version%%.*}"
+        if [[ -x "/opt/boron-nodejs/${major}/bin/node" ]] && \
+            [[ "$("/opt/boron-nodejs/${major}/bin/node" --version 2>/dev/null || true)" == "v${version}" ]]; then
+            skip "Node.js ${version} already installed"
+            continue
+        fi
+        run_sh "set -euo pipefail
+node_version='v${version}'
+node_archive=\"node-\${node_version}-linux-x64.tar.xz\"
+node_tmp=\$(mktemp -d)
+trap 'rm -rf \"\$node_tmp\"' EXIT
+curl -fsSLo \"\$node_tmp/SHASUMS256.txt\" \"https://nodejs.org/dist/\${node_version}/SHASUMS256.txt\"
+expected=\$(awk -v archive=\"\$node_archive\" '\$2 == archive { print \$1 }' \"\$node_tmp/SHASUMS256.txt\")
+test -n \"\$expected\"
+curl -fsSLo \"\$node_tmp/\$node_archive\" \"https://nodejs.org/dist/\${node_version}/\$node_archive\"
+printf '%s  %s\\n' \"\$expected\" \"\$node_tmp/\$node_archive\" | sha256sum -c -
+install -d -m 0755 '/opt/boron-nodejs/${major}'
+tar -xJf \"\$node_tmp/\$node_archive\" -C '/opt/boron-nodejs/${major}' --strip-components=1"
+        ok "Node.js ${version} installed at /opt/boron-nodejs/${major}"
+    done
+}
+
+install_filebrowser() {
+    info "Installing FileBrowser Quantum"
+    run bash "${DEST}/scripts/install_filebrowser.sh"
+    ok "FileBrowser Quantum installed"
+}
+
+install_imapsync() {
+    info "Validating ImapSync installation"
+    # Ubuntu packages install /usr/bin/imapsync while the daemon uses a
+    # stable Boron-owned path so package upgrades never change it.
+    run ln -sfn /usr/bin/imapsync /usr/local/bin/imapsync
+    run /usr/local/bin/imapsync --version
+    ok "ImapSync available at /usr/local/bin/imapsync"
 }
 
 # --- 2. quotas ---------------------------------------------------------------
@@ -376,22 +423,24 @@ deploy_app() {
         ok "virtualenv created"
     fi
     run "${VENV}/bin/pip" install --upgrade pip
+    # requirements.txt pins Certbot and both DNS providers, including
+    # certbot-dns-cloudflare, inside this venv used by Boron's ACME jobs.
     run "${VENV}/bin/pip" install -r "${DEST}/requirements.txt"
     ok "Python dependencies installed"
 
-    # The React SPA ships prebuilt in static/dist; rebuild only if missing.
-    if [[ -f "${DEST}/static/dist/index.html" ]]; then
-        skip "web UI bundle already present (static/dist)"
-    else
-        run_sh "cd '${DEST}/frontend' && npm install && npm run build"
-        ok "web UI built"
-    fi
+    # Source-only repository: static/dist is generated on every install from
+    # the frontend source. Never trust a stale or operator-supplied bundle.
+    run_sh "cd '${DEST}/frontend' && npm ci --no-audit --no-fund && npm run build"
+    ok "web UI built from frontend source"
 
-    # Run A feature 7: the API (unprivileged) must be able to create its own
-    # log files in the shared log dir -- setgid group-write for boron-api.
+    # Security: logs contain cross-tenant operational data and must never be
+    # readable by hosted accounts. The API writes through its service group;
+    # the daemon's umask and explicit file modes keep files group-readable
+    # only. Never make the directory world-readable/traversable.
     run chgrp boron-api "$LOG_DIR"
-    run chmod 2775 "$LOG_DIR"
-    ok "log dir ${LOG_DIR} group-writable by boron-api"
+    run chmod 2770 "$LOG_DIR"
+    run find "$LOG_DIR" -type f -exec chmod 0640 {} +
+    ok "log dir ${LOG_DIR} restricted to root and boron-api"
 }
 
 # --- 5. secrets + config -----------------------------------------------------
@@ -419,7 +468,12 @@ ensure_secret() {
 
 setup_config() {
     info "Writing configuration + secrets"
-    [[ -z "$SERVER_IP" ]] && SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    # Some minimal/container environments have no assigned address yet; do
+    # not let a SIGPIPE/empty `hostname -I` pipeline abort --dry-run under
+    # `set -e`. A real operator can still provide FH_SERVER_IP explicitly.
+    if [[ -z "$SERVER_IP" ]]; then
+        SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+    fi
 
     write_file "${CONF_DIR}/boron.toml" 640 "root:boron-api" <<EOF
 server_public_ip = "${SERVER_IP}"
@@ -446,23 +500,23 @@ setup_mariadb() {
         return 0
     fi
     if $DRY_RUN; then
-        printf '  %s secure MariaDB root, create forgehost_daemon + forgehost_mailro, create forgehost_mail schema\n' "${C_YELLOW}[dry]${C_RESET}"
+        printf '  %s secure MariaDB root, create boron_daemon + boron_mailro, create boron_mail schema\n' "${C_YELLOW}[dry]${C_RESET}"
         return 0
     fi
     local root_pass daemon_pass mailro_pass
     root_pass="$(_rand_pass)"; daemon_pass="$(_rand_pass)"; mailro_pass="$(_rand_hex 24)"
     mysql -u root <<SQL
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${root_pass}';
-CREATE USER IF NOT EXISTS 'forgehost_daemon'@'localhost' IDENTIFIED BY '${daemon_pass}';
+CREATE USER IF NOT EXISTS 'boron_daemon'@'localhost' IDENTIFIED BY '${daemon_pass}';
 GRANT CREATE, DROP, ALTER, INDEX, CREATE USER, GRANT OPTION, SELECT,
   INSERT, UPDATE, DELETE, RELOAD, PROCESS, LOCK TABLES, REFERENCES,
-  CREATE TEMPORARY TABLES ON *.* TO 'forgehost_daemon'@'localhost';
-CREATE DATABASE IF NOT EXISTS forgehost_mail CHARACTER SET utf8mb4;
-CREATE USER IF NOT EXISTS 'forgehost_mailro'@'localhost' IDENTIFIED BY '${mailro_pass}';
-GRANT SELECT ON forgehost_mail.* TO 'forgehost_mailro'@'localhost';
+  CREATE TEMPORARY TABLES ON *.* TO 'boron_daemon'@'localhost';
+CREATE DATABASE IF NOT EXISTS boron_mail CHARACTER SET utf8mb4;
+CREATE USER IF NOT EXISTS 'boron_mailro'@'localhost' IDENTIFIED BY '${mailro_pass}';
+GRANT SELECT ON boron_mail.* TO 'boron_mailro'@'localhost';
 FLUSH PRIVILEGES;
 SQL
-    mysql -u root -p"${root_pass}" forgehost_mail <<'SQL'
+    mysql -u root -p"${root_pass}" boron_mail <<'SQL'
 CREATE TABLE IF NOT EXISTS mail_domain (
   id INT AUTO_INCREMENT PRIMARY KEY,
   domain VARCHAR(253) NOT NULL UNIQUE,
@@ -478,6 +532,32 @@ CREATE TABLE IF NOT EXISTS mail_user (
   UNIQUE KEY uq_mailbox (domain_id, local_part),
   FOREIGN KEY (domain_id) REFERENCES mail_domain(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS mail_forward (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  domain_id INT NOT NULL,
+  source_local_part VARCHAR(64) NOT NULL,
+  destination VARCHAR(320) NOT NULL,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  UNIQUE KEY uq_forward (domain_id, source_local_part, destination),
+  FOREIGN KEY (domain_id) REFERENCES mail_domain(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS mail_catchall (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  domain_id INT NOT NULL UNIQUE,
+  destination VARCHAR(320) NOT NULL,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  FOREIGN KEY (domain_id) REFERENCES mail_domain(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS mail_autoresponder (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  mail_user_id INT NOT NULL UNIQUE,
+  subject VARCHAR(255) NOT NULL,
+  body TEXT NOT NULL,
+  start_date DATE NULL,
+  end_date DATE NULL,
+  active TINYINT(1) NOT NULL DEFAULT 1,
+  FOREIGN KEY (mail_user_id) REFERENCES mail_user(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
 SQL
     printf '[client]\nuser=root\npassword=%s\n' "${root_pass}" >/root/.my.cnf
     chmod 600 /root/.my.cnf
@@ -487,7 +567,7 @@ SQL
         printf 'MARIADB_DAEMON_PASSWORD=%s\n' "${daemon_pass}"
         printf 'MARIADB_MAILRO_PASSWORD=%s\n' "${mailro_pass}"
     } >>"${CONF_DIR}/secrets.env"
-    ok "MariaDB secured; forgehost_daemon + forgehost_mailro created"
+    ok "MariaDB secured; boron_daemon + boron_mailro created"
 }
 
 setup_powerdns() {
@@ -557,14 +637,115 @@ EOF
     ok "suspended-account page written"
 }
 
+setup_mail_services() {
+    info "Configuring Postfix + Dovecot virtual mail"
+    if $DRY_RUN; then
+        printf '  %s configure Postfix/Dovecot SQL virtual mail, SMTP submission, and TLS\n' "${C_YELLOW}[dry]${C_RESET}"
+        return 0
+    fi
+
+    local mailro_pass
+    mailro_pass="$(awk -F= '$1 == "MARIADB_MAILRO_PASSWORD" { print substr($0, index($0, "=") + 1); exit }' "${CONF_DIR}/secrets.env")"
+    [[ -n "$mailro_pass" ]] || die "MARIADB_MAILRO_PASSWORD is missing from ${CONF_DIR}/secrets.env"
+
+    install -d -m 0750 /etc/postfix/boron
+    cat >/etc/postfix/boron/mysql-virtual-domains.cf <<EOF
+user = boron_mailro
+password = ${mailro_pass}
+hosts = 127.0.0.1
+dbname = boron_mail
+query = SELECT domain FROM mail_domain WHERE domain='%s' AND active=1
+EOF
+    cat >/etc/postfix/boron/mysql-virtual-mailboxes.cf <<EOF
+user = boron_mailro
+password = ${mailro_pass}
+hosts = 127.0.0.1
+dbname = boron_mail
+query = SELECT CONCAT(d.domain, '/', u.local_part, '/') FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%s' AND u.active=1 AND d.active=1
+EOF
+    cat >/etc/postfix/boron/mysql-virtual-forwards.cf <<EOF
+user = boron_mailro
+password = ${mailro_pass}
+hosts = 127.0.0.1
+dbname = boron_mail
+query = SELECT GROUP_CONCAT(destination SEPARATOR ',') FROM ( SELECT f.destination AS destination FROM mail_forward f JOIN mail_domain d ON f.domain_id = d.id WHERE CONCAT(f.source_local_part, '@', d.domain) = '%s' AND f.active = 1 AND d.active = 1 UNION ALL SELECT CONCAT(m.local_part, '@', d.domain) AS destination FROM mail_user m JOIN mail_domain d ON m.domain_id = d.id JOIN mail_catchall c ON c.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%s' AND m.active = 1 AND d.active = 1 AND c.active = 1 UNION ALL SELECT c.destination AS destination FROM mail_catchall c JOIN mail_domain d ON c.domain_id = d.id WHERE CONCAT('@', d.domain) = '%s' AND c.active = 1 AND d.active = 1 ) combined
+EOF
+    chmod 0640 /etc/postfix/boron/*.cf
+    chown root:postfix /etc/postfix/boron/*.cf
+
+    postconf -e "virtual_mailbox_domains = mysql:/etc/postfix/boron/mysql-virtual-domains.cf"
+    postconf -e "virtual_mailbox_maps = mysql:/etc/postfix/boron/mysql-virtual-mailboxes.cf"
+    postconf -e "virtual_alias_maps = mysql:/etc/postfix/boron/mysql-virtual-forwards.cf"
+    postconf -e "virtual_mailbox_base = /var/vmail"
+    postconf -e "virtual_uid_maps = static:150"
+    postconf -e "virtual_gid_maps = static:150"
+    postconf -e "virtual_minimum_uid = 150"
+    postconf -e "virtual_transport = lmtp:unix:private/dovecot-lmtp"
+    postconf -e "smtpd_sasl_type = dovecot"
+    postconf -e "smtpd_sasl_path = private/auth"
+    postconf -e "smtpd_sasl_auth_enable = yes"
+    postconf -e "smtpd_tls_cert_file = ${CONF_DIR}/ssl/default.crt"
+    postconf -e "smtpd_tls_key_file = ${CONF_DIR}/ssl/default.key"
+    postconf -e "smtpd_tls_security_level = may"
+    postconf -e "smtpd_tls_auth_only = yes"
+    postconf -Me 'submission/inet=submission inet n - y - - smtpd'
+    postconf -P 'submission/inet/syslog_name=postfix/submission'
+    postconf -P 'submission/inet/smtpd_tls_security_level=encrypt'
+    postconf -P 'submission/inet/smtpd_sasl_auth_enable=yes'
+    postconf -P 'submission/inet/smtpd_client_restrictions=permit_sasl_authenticated,reject'
+
+    cat >/etc/dovecot/dovecot-sql.conf.ext <<EOF
+driver = mysql
+connect = host=127.0.0.1 dbname=boron_mail user=boron_mailro password=${mailro_pass}
+default_pass_scheme = ARGON2ID
+password_query = SELECT CONCAT(u.local_part, '@', d.domain) AS user, u.password FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%u' AND u.active=1 AND d.active=1
+user_query = SELECT 150 AS uid, 150 AS gid, CONCAT('/var/vmail/', d.domain, '/', u.local_part) AS home, CONCAT('maildir:/var/vmail/', d.domain, '/', u.local_part, '/Maildir') AS mail FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%u' AND u.active=1 AND d.active=1
+EOF
+    chown root:dovecot /etc/dovecot/dovecot-sql.conf.ext
+    chmod 0640 /etc/dovecot/dovecot-sql.conf.ext
+    sed -i 's/^!include auth-system.conf.ext/#!include auth-system.conf.ext/' /etc/dovecot/conf.d/10-auth.conf
+    grep -qxF '!include auth-sql.conf.ext' /etc/dovecot/conf.d/10-auth.conf || echo '!include auth-sql.conf.ext' >>/etc/dovecot/conf.d/10-auth.conf
+    cat >/etc/dovecot/conf.d/90-boron.conf <<EOF
+mail_location = maildir:/var/vmail/%d/%n/Maildir
+first_valid_uid = 150
+last_valid_uid = 150
+first_valid_gid = 150
+last_valid_gid = 150
+ssl = required
+ssl_cert = <${CONF_DIR}/ssl/default.crt
+ssl_key = <${CONF_DIR}/ssl/default.key
+service auth {
+  unix_listener /var/spool/postfix/private/auth {
+    mode = 0660
+    user = postfix
+    group = postfix
+  }
+}
+service lmtp {
+  unix_listener /var/spool/postfix/private/dovecot-lmtp {
+    mode = 0600
+    user = postfix
+    group = postfix
+  }
+}
+EOF
+    run doveconf -n
+    run postfix check
+    run systemctl enable --now dovecot postfix
+    run systemctl restart dovecot postfix
+    ok "Postfix + Dovecot virtual mail configured"
+}
+
 # --- 6. systemd services + cron + logrotate ----------------------------------
 
 install_systemd_units() {
     info "Installing systemd units"
     run install -m 644 "${DEST}/deploy/boron-provisiond.service" /etc/systemd/system/
     run install -m 644 "${DEST}/deploy/boron-api.service" /etc/systemd/system/
+    run install -m 644 "${DEST}/deploy/boron-filebrowser.service" /etc/systemd/system/
     run systemctl daemon-reload
     run systemctl enable boron-provisiond
+    run systemctl enable boron-filebrowser
     ok "systemd units installed + provisiond enabled"
 }
 
@@ -578,20 +759,14 @@ install_cron_and_logrotate() {
     run install -m 644 "${DEST}/deploy/boron-cloudflare.cron" /etc/cron.d/boron-cloudflare
     # Panel update system: daily release check + admin email + old-version pruning.
     run install -m 644 "${DEST}/deploy/boron-update.cron" /etc/cron.d/boron-update
-    # The remaining infrastructure crons (usage, backups, ssl expiry, pma
+    # Core infrastructure crons (health, usage, backups, ssl expiry, pma
     # tokens, usage alerts) -- root-owned, same trust level as the daemon.
-    write_file /etc/cron.d/boron-jobs 644 <<'EOF'
-# Boron infrastructure cron jobs (installed by scripts/install.sh).
-*/15 * * * * root /opt/boron/scripts/usage_snapshot.py >> /var/log/boron/usage-snapshot.log 2>&1
-0 * * * * root /opt/boron/scripts/backup_scheduler.py >> /var/log/boron/backup-scheduler.log 2>&1
-*/5 * * * * root /opt/boron/scripts/pma_token_cleanup.py >> /var/log/boron/pma-token-cleanup.log 2>&1
-0 6 * * * root /opt/boron/scripts/ssl_expiry_check.py >> /var/log/boron/ssl-expiry-check.log 2>&1
-*/15 * * * * root /opt/boron/scripts/usage_alert_check.py >> /var/log/boron/usage-alert-check.log 2>&1
-EOF
+    run install -m 644 "${DEST}/deploy/boron-jobs.cron" /etc/cron.d/boron-jobs
     # Missing-features batch, goal features 2 + 6: maintenance-mode
     # auto-disable sweep + daily site-statistics snapshot.
     run install -m 644 "${DEST}/deploy/boron-maintenance.cron" /etc/cron.d/boron-maintenance
     run install -m 644 "${DEST}/deploy/boron-sitestats.cron" /etc/cron.d/boron-sitestats
+    run install -m 644 "${DEST}/deploy/boron-certbot-renew.cron" /etc/cron.d/boron-certbot-renew
     ok "logrotate + cron jobs installed"
 }
 
@@ -612,7 +787,15 @@ start_services() {
     # One-time: replace OLS's stock Example vhost with a clean baseline.
     run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from shared.rpc import RpcClient; RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_ols', _actor='setup', _role='admin')\" || true"
     run systemctl enable --now boron-api
-    ok "provisiond + api started; OLS baseline applied"
+    run systemctl enable --now boron-filebrowser
+    ok "provisiond + api + FileBrowser started; OLS baseline applied"
+}
+
+bootstrap_security_services() {
+    info "Configuring SpamAssassin + Boron fail2ban jails"
+    run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from daemon.fail2ban import bootstrap_jails; bootstrap_jails()\""
+    run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from daemon.spamfilter import bootstrap_spamassassin; bootstrap_spamassassin()\""
+    ok "SpamAssassin and Boron fail2ban jails configured"
 }
 
 create_admin() {
@@ -639,34 +822,25 @@ setup_firewall() {
     run ufw --force reset
     run ufw default deny incoming
     run ufw default allow outgoing
+    # Always allow SSH before UFW is enabled so a remote installation cannot
+    # lock its operator out. Keep this explicit instead of relying on a
+    # provider-specific default policy.
+    run ufw allow 22/tcp
     local p
-    for p in 22 21 25 53 80 443 587 993 9443; do
-        run ufw allow "$p"
+    for p in 21 25 53 80 110 143 443 587 993 995 9443; do
+        run ufw allow "${p}/tcp"
     done
-    # Passive FTP data range for Pure-FTPd.
-    run ufw allow 30000:50000/tcp
+    run ufw allow 53/udp
+    # Must exactly match Pure-FTPd's PassivePortRange below.
+    run ufw allow 30000:30100/tcp
     run ufw --force enable
     ok "UFW enabled (SSH/web/mail/DNS/FTP/panel allowed)"
 
     run systemctl enable --now fail2ban
-    write_file /etc/fail2ban/jail.d/boron.conf 644 <<'EOF'
-[sshd]
-enabled = true
-
-[postfix]
-enabled = true
-
-[dovecot]
-enabled = true
-
-[pure-ftpd]
-enabled = true
-EOF
-    run systemctl restart fail2ban
-    ok "fail2ban jails enabled (ssh/postfix/dovecot/ftp)"
+    ok "fail2ban service enabled; Boron jails are configured after daemon startup"
 }
 
-# --- 8.5 Pure-FTPd (chroot + PureDB auth + passive port range) --------------
+# --- 8.5 Pure-FTPd (TLS required, chroot + PureDB auth + passive port range) -
 #
 # Promoted from a manual README runbook step ("20. FTP account management")
 # into the installer itself -- these three fixes were previously something
@@ -677,7 +851,7 @@ EOF
 # investigation that found #3/#4 missing on an already-provisioned server).
 
 setup_pureftpd() {
-    info "Configuring Pure-FTPd (chroot, PureDB auth, passive port range)"
+    info "Configuring Pure-FTPd (mandatory TLS, chroot, PureDB, passive range)"
 
     # 1. pure-ftpd's PAM config rejects any login shell not listed in
     # /etc/shells, and every hosting account uses /usr/sbin/nologin (no
@@ -705,17 +879,29 @@ EOF
     run ln -sf ../conf/PureDB /etc/pure-ftpd/auth/30pdb
 
     # 4. Pin the passive-mode data-port range to exactly what
-    # setup_firewall() opens in UFW (30000:50000/tcp). Without this,
+    # setup_firewall() opens in UFW (30000:30100/tcp). Without this,
     # Pure-FTPd picks its own compiled-in/OS-assigned passive range, which
     # can fall outside the firewall hole -- passive-mode transfers (the
     # common case behind NAT/most FTP clients) would stall even once the
     # control connection on port 21 itself succeeds.
     write_file /etc/pure-ftpd/conf/PassivePortRange 644 <<'EOF'
-30000 50000
+30000 30100
+EOF
+
+    # Require encryption before accepting credentials. Reuse the bootstrap
+    # certificate until an operator installs a publicly trusted FTP-specific
+    # certificate; TLS is still mandatory and never silently falls back to
+    # plaintext. Pure-FTPd expects a combined PEM key/certificate file.
+    if [[ -f "${CONF_DIR}/ssl/api/panel.key" && -f "${CONF_DIR}/ssl/api/panel.crt" ]]; then
+        run_sh "cat '${CONF_DIR}/ssl/api/panel.crt' '${CONF_DIR}/ssl/api/panel.key' > /etc/ssl/private/pure-ftpd.pem"
+        run chmod 600 /etc/ssl/private/pure-ftpd.pem
+    fi
+    write_file /etc/pure-ftpd/conf/TLS 644 <<'EOF'
+2
 EOF
 
     run systemctl restart pure-ftpd
-    ok "Pure-FTPd chroot/PureDB/passive-range configured"
+    ok "Pure-FTPd mandatory TLS/chroot/PureDB/passive-range configured"
 }
 
 # --- 8.6 PHP hardening (disable_functions default, item 9) -----------------
@@ -731,7 +917,7 @@ setup_php_hardening() {
         # with no dry-run guard at all, which crashed --dry-run outright
         # with "no such file or directory" under set -e, caught by actually
         # running --dry-run rather than just reading the diff).
-        printf '  %s hardened disable_functions default (daemon/phpdirectives.DEFAULT_DISABLE_FUNCTIONS) into lsphp81/83 php.ini\n' "${C_YELLOW}[dry]${C_RESET}"
+        printf '  %s hardened disable_functions default (daemon/phpdirectives.DEFAULT_DISABLE_FUNCTIONS) into lsphp81 through lsphp85 php.ini files\n' "${C_YELLOW}[dry]${C_RESET}"
         return 0
     fi
     # Single source of truth: daemon/phpdirectives.DEFAULT_DISABLE_FUNCTIONS
@@ -750,8 +936,9 @@ print(','.join(phpdirectives.DEFAULT_DISABLE_FUNCTIONS))
         warn "could not determine the hardened disable_functions list -- skipping PHP hardening (this box's lsphp php.ini files are unchanged; admin overrides still work once configured manually)"
         return 0
     fi
-    local ini changed=false
-    for ini in /usr/local/lsws/lsphp81/etc/php/8.1/litespeed/php.ini /usr/local/lsws/lsphp83/etc/php/8.3/litespeed/php.ini; do
+    local ini version changed=false
+    for version in 8.1 8.2 8.3 8.4 8.5; do
+        ini="/usr/local/lsws/lsphp${version/./}/etc/php/${version}/litespeed/php.ini"
         if [[ -f "$ini" ]]; then
             run sed -i "s/^disable_functions[[:space:]]*=.*/disable_functions = ${funcs}/" "$ini"
             changed=true
@@ -769,7 +956,8 @@ print(','.join(phpdirectives.DEFAULT_DISABLE_FUNCTIONS))
 
 setup_geoip() {
     if [[ -z "$MAXMIND_LICENSE_KEY" ]]; then
-        info "GeoLite2 not configured (no MAXMIND_LICENSE_KEY set) -- site statistics' top-countries breakdown stays hidden until an admin configures one. See README.md's \"GeoLite2 setup\" section, or set one later via POST /api/v1/admin/sitestats/geoip."
+        info "GeoLite2 skipped (no MaxMind license key) -- site-statistics top-countries needs GeoLite2, but the rest of Boron works normally. Configure it later via POST /api/v1/admin/sitestats/geoip; see README.md's \"GeoLite2 setup\" section."
+        run_sh "rm -f /etc/boron/maxmind-license /etc/cron.d/boron-geoip"
         return 0
     fi
     info "Fetching the MaxMind GeoLite2-Country database"
@@ -778,7 +966,15 @@ setup_geoip() {
     # both dry-run and real runs -- a real secret must never appear in it).
     export MAXMIND_LICENSE_KEY
     if run_sh "'${VENV}/bin/python' -c \"import sys, os; sys.path.insert(0, '${DEST}'); from daemon import geoip; geoip.download_database(os.environ['MAXMIND_LICENSE_KEY'])\""; then
+        # Keep the operator credential root-only. The refresh job reads this
+        # file instead of embedding the key in a cron command or process args.
+        run_sh "install -m 600 /dev/null /etc/boron/maxmind-license"
+        if ! $DRY_RUN; then
+            printf '%s' "$MAXMIND_LICENSE_KEY" >/etc/boron/maxmind-license
+        fi
+        run install -m 644 "${DEST}/deploy/boron-geoip.cron" /etc/cron.d/boron-geoip
         ok "GeoLite2-Country database installed"
+        ok "GeoLite2 refresh scheduled (geoipupdate package installed)"
     else
         warn "GeoLite2 download failed (bad license key, or MaxMind unreachable) -- top countries will stay hidden; retry later via POST /api/v1/admin/sitestats/geoip"
     fi
@@ -800,6 +996,10 @@ prompt_inputs() {
         read -r -p "Admin username [admin]: " ADMIN_USER
         ADMIN_USER="${ADMIN_USER:-admin}"
     fi
+    if [[ -z "$MAXMIND_LICENSE_KEY" ]]; then
+        read -r -s -p "Optional MaxMind GeoLite2 license key (blank skips top-countries stats): " MAXMIND_LICENSE_KEY
+        printf '\n'
+    fi
 }
 
 # --- uninstall ---------------------------------------------------------------
@@ -813,10 +1013,10 @@ uninstall() {
         [[ -z "$reply" ]] && read -r reply
         [[ "$reply" =~ ^[Yy] ]] || die "aborted"
     fi
-    run_sh "systemctl disable --now boron-api boron-provisiond 2>/dev/null || true"
-    run_sh "rm -f /etc/systemd/system/boron-api.service /etc/systemd/system/boron-provisiond.service"
+    run_sh "systemctl disable --now boron-api boron-provisiond boron-filebrowser 2>/dev/null || true"
+    run_sh "rm -f /etc/systemd/system/boron-api.service /etc/systemd/system/boron-provisiond.service /etc/systemd/system/boron-filebrowser.service"
     run systemctl daemon-reload
-    run_sh "rm -f /etc/cron.d/boron-monitoring /etc/cron.d/boron-cloudflare /etc/cron.d/boron-update /etc/cron.d/boron-jobs /etc/cron.d/boron-maintenance /etc/cron.d/boron-sitestats"
+    run_sh "rm -f /etc/cron.d/boron-monitoring /etc/cron.d/boron-cloudflare /etc/cron.d/boron-update /etc/cron.d/boron-jobs /etc/cron.d/boron-maintenance /etc/cron.d/boron-sitestats /etc/cron.d/boron-certbot-renew /etc/cron.d/boron-geoip /etc/boron/maxmind-license"
     run_sh "rm -f /etc/logrotate.d/boron-api"
     run_sh "rm -rf '${DEST}'"
     run_sh "rm -rf '${CONF_DIR}'"
@@ -890,17 +1090,22 @@ main() {
     setup_quota
     setup_system_users
     deploy_app
+    install_node_runtimes
+    install_filebrowser
+    install_imapsync
     setup_config
     setup_mariadb
     setup_powerdns
     setup_ssl_bootstrap
+    setup_mail_services
     install_systemd_units
     install_cron_and_logrotate
-    start_services
-    create_admin
     setup_firewall
     setup_pureftpd
     setup_php_hardening
+    start_services
+    bootstrap_security_services
+    create_admin
     setup_geoip
 
     summary

@@ -40,6 +40,63 @@ def _reject_name(name: str) -> None:
         raise UnsafePathError(f"'{name}' is not a single safe path component")
 
 
+def open_dir_beneath(trusted_root: str, relative: str = ".") -> int:
+    """Return an fd for an existing directory below ``trusted_root`` while
+    refusing symlinks in every component.  The caller owns the returned fd."""
+    parts = [p for p in relative.split("/") if p and p != "."]
+    if any(p == ".." for p in parts):
+        raise UnsafePathError(f"'{relative}' contains a '..' segment")
+    current = _open_dir_nofollow(trusted_root)
+    try:
+        for part in parts:
+            _reject_name(part)
+            try:
+                child = _open_dir_nofollow(part, dir_fd=current)
+            except OSError as exc:
+                raise UnsafePathError(f"'{relative}' is not a safe directory") from exc
+            os.close(current)
+            current = child
+        return current
+    except Exception:
+        os.close(current)
+        raise
+
+
+def secure_ensure_file_beneath(
+    trusted_root: str, relative_dir: str, name: str, uid: int, gid: int, mode: int = 0o640
+) -> None:
+    """Symlink-safe variant of :func:`secure_ensure_file` anchored at a
+    trusted root, including all intermediate directory components."""
+    _reject_name(name)
+    dir_fd = open_dir_beneath(trusted_root, relative_dir)
+    try:
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CREAT | os.O_CLOEXEC, mode, dir_fd=dir_fd)
+        except OSError as exc:
+            raise UnsafePathError(f"'{name}' is not a safe regular file") from exc
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise UnsafePathError(f"'{name}' is not a regular file")
+            os.fchown(fd, uid, gid)
+            os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
+
+
+def secure_write_file_beneath(trusted_root: str, relative: str, data: bytes, uid: int, gid: int, mode: int = 0o640) -> None:
+    """Create/replace a file below ``trusted_root`` without following any
+    symlink. Parent directories are created with the account ownership."""
+    relative = relative.replace("\\", "/")
+    parts = [p for p in relative.split("/") if p and p != "."]
+    if not parts or any(p == ".." for p in parts):
+        raise UnsafePathError(f"'{relative}' is not a safe file path")
+    parent = "/".join(parts[:-1]) or "."
+    secure_mkdirs(trusted_root, parent, uid, gid, 0o750)
+    secure_replace_file(os.path.join(trusted_root, parent), parts[-1], data, uid, gid, mode)
+
+
 def secure_mkdirs(trusted_root: str, relative: str, uid: int, gid: int, mode: int = 0o750) -> str:
     """Ensure ``trusted_root/relative`` exists as a real directory tree, owned
     by (uid, gid) with ``mode`` on every component of ``relative``, without ever
@@ -92,6 +149,16 @@ def secure_ensure_file(dir_path: str, name: str, uid: int, gid: int, mode: int =
     _reject_name(name)
     dir_fd = _open_dir_nofollow(dir_path)
     try:
+        # Reject a pre-existing symlink before attempting the metadata update.
+        # O_NOFOLLOW below remains the race-safe enforcement point; this
+        # preflight makes the no-side-effects guarantee explicit even on
+        # platforms whose openat error handling differs for O_CREAT.
+        try:
+            existing = os.lstat(name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and stat.S_ISLNK(existing.st_mode):
+            raise UnsafePathError(f"'{name}' in '{dir_path}' is not a regular file")
         try:
             fd = os.open(
                 name,

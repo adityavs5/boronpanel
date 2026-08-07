@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Inbox, MoreHorizontal, Send, Trash2 } from 'lucide-react'
+import { Inbox, MoreHorizontal, RefreshCw, Send, Trash2 } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatBytes, formatDuration, truncate } from '@/lib/utils'
@@ -22,7 +22,7 @@ export default function MailQueue() {
   const [deleteAllOpen, setDeleteAllOpen] = useState(false)
   const [toDelete, setToDelete] = useState(null) // row pending delete
 
-  const { data, isLoading, error, refetch } = useQuery({
+  const { data, isLoading, error, refetch, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ['mail-queue', username],
     queryFn: () => get('/api/v1/mail-queue'),
     refetchInterval: 10000,
@@ -142,9 +142,10 @@ export default function MailQueue() {
     <div>
       <PageHeader
         title="Mail queue"
-        description={`${count} message${count === 1 ? '' : 's'} currently in the Postfix queue. The list refreshes automatically.`}
+        description={`${count} message${count === 1 ? '' : 's'} currently queued. ${dataUpdatedAt ? `Updated ${new Date(dataUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.` : 'Refreshing automatically.'}`}
         icon={Inbox}
       >
+        <Button variant="secondary" loading={isFetching} onClick={() => refetch()}><RefreshCw className="h-4 w-4" /> Refresh</Button>
         <Button variant="secondary" loading={flushAllMut.isPending} disabled={count === 0} onClick={() => flushAllMut.mutate()}>
           <Send className="h-4 w-4" /> Flush all
         </Button>
@@ -174,6 +175,7 @@ export default function MailQueue() {
         open={deleteAllOpen}
         onOpenChange={setDeleteAllOpen}
         title="Empty the mail queue?"
+        confirmationText="DELETE ALL"
         description="Every message in the queue is permanently deleted and will never be delivered. This cannot be undone."
         confirmLabel="Delete all messages"
         loading={deleteAllMut.isPending}

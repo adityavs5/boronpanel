@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog, FolderOpen, Layers, Ban } from 'lucide-react'
 import { get, post, put, patch, del, impersonate as apiImpersonate } from '@/lib/api'
@@ -29,6 +29,20 @@ import Apps from '@/pages/customer/Apps'
 import AccountIdentity from '@/pages/admin/AccountIdentity'
 import AccountNotes from '@/pages/admin/AccountNotes'
 import Processes from '@/pages/customer/Processes'
+
+const ACCOUNT_TABS = [
+  ['overview', 'Overview'],
+  ['identity', 'Identity'],
+  ['domains', 'Domains'],
+  ['databases', 'Databases'],
+  ['email', 'Email'],
+  ['ssl', 'SSL'],
+  ['backups', 'Backups'],
+  ['apps', 'Apps'],
+  ['php-functions', 'PHP Functions'],
+  ['processes', 'Processes'],
+  ['notes', 'Notes'],
+]
 
 function AdminActions({ username, account }) {
   const qc = useQueryClient()
@@ -97,8 +111,9 @@ function AdminActions({ username, account }) {
         open={confirm === 'terminate'}
         onOpenChange={(o) => !o && setConfirm(null)}
         title={`Terminate ${username}?`}
-        description="This permanently removes the Linux user, vhost, databases, mail and DNS zones. This cannot be undone."
+        description={<>This permanently removes the Linux user, vhost, databases, mail and DNS zones. This cannot be undone. Cancel and <Link to={`/accounts/${username}?tab=backups`} className="font-medium text-accent hover:underline">review available backups</Link> first if you need a recovery point.</>}
         confirmLabel="Terminate account"
+        confirmationText={username}
         loading={terminateMut.isPending}
         onConfirm={() => terminateMut.mutate()}
       />
@@ -421,6 +436,10 @@ function PhpFunctionsTab({ username }) {
 
 export default function AccountDetail() {
   const { username } = useParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const validTabs = new Set(ACCOUNT_TABS.map(([value]) => value))
+  const requestedTab = searchParams.get('tab')
+  const activeTab = validTabs.has(requestedTab) ? requestedTab : 'overview'
   const { data: account, isLoading, error, refetch } = useQuery({
     queryKey: ['account', username],
     queryFn: () => get(`/api/v1/accounts/${username}`),
@@ -443,19 +462,27 @@ export default function AccountDetail() {
             <StatusBadge status={account.status} />
           </PageHeader>
 
-          <Tabs defaultValue="overview">
-            <TabsList>
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="identity">Identity</TabsTrigger>
-              <TabsTrigger value="domains">Domains</TabsTrigger>
-              <TabsTrigger value="databases">Databases</TabsTrigger>
-              <TabsTrigger value="email">Email</TabsTrigger>
-              <TabsTrigger value="ssl">SSL</TabsTrigger>
-              <TabsTrigger value="backups">Backups</TabsTrigger>
-              <TabsTrigger value="apps">Apps</TabsTrigger>
-              <TabsTrigger value="php-functions">PHP Functions</TabsTrigger>
-              <TabsTrigger value="processes">Processes</TabsTrigger>
-              <TabsTrigger value="notes">Notes</TabsTrigger>
+          <Tabs value={activeTab} onValueChange={(tab) => setSearchParams((prev) => {
+            const next = new URLSearchParams(prev)
+            if (tab === 'overview') next.delete('tab')
+            else next.set('tab', tab)
+            return next
+          })}>
+            <Select
+              value={activeTab}
+              onChange={(event) => setSearchParams((prev) => {
+                const next = new URLSearchParams(prev)
+                if (event.target.value === 'overview') next.delete('tab')
+                else next.set('tab', event.target.value)
+                return next
+              })}
+              aria-label="Account section"
+              className="mb-4 sm:hidden"
+            >
+              {ACCOUNT_TABS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </Select>
+            <TabsList className="hidden sm:flex">
+              {ACCOUNT_TABS.map(([value, label]) => <TabsTrigger key={value} value={value}>{label}</TabsTrigger>)}
             </TabsList>
 
             <TabsContent value="overview" className="space-y-6">

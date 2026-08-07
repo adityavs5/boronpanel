@@ -42,11 +42,12 @@ def test_secure_ensure_file_refuses_symlink(tmp_path):
     d.mkdir()
     target = tmp_path / "target"
     target.write_text("secret")
+    original_mode = os.stat(target).st_mode & 0o777
     os.symlink(str(target), str(d / "log"))
     with pytest.raises(safeio.UnsafePathError):
         safeio.secure_ensure_file(str(d), "log", os.getuid(), os.getgid(), 0o640)
-    # Target untouched (mode not changed to 0640).
-    assert (os.stat(target).st_mode & 0o777) != 0o640
+    # Target untouched, regardless of the server's umask.
+    assert (os.stat(target).st_mode & 0o777) == original_mode
 
 
 def test_secure_ensure_file_creates_and_sets_mode(tmp_path):

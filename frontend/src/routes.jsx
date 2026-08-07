@@ -76,6 +76,10 @@ function admin(el) {
   return <ProtectedRoute adminOnly>{el}</ProtectedRoute>
 }
 
+function customer(el) {
+  return <ProtectedRoute customerOnly>{el}</ProtectedRoute>
+}
+
 // A crash inside one page renders an inline error while the shell (sidebar,
 // topbar) stays intact and usable.
 function withPageErrors(children) {
@@ -98,30 +102,30 @@ export const router = createBrowserRouter(
         { index: true, element: <IndexRedirect /> },
 
         // Customer resource pages (scoped to the signed-in account).
-        { path: 'dashboard', element: <Dashboard /> },
-        { path: 'domains', element: <Domains /> },
-        { path: 'domains/:domain', element: <DomainDetail /> },
-        { path: 'php', element: <Php /> },
-        { path: 'email', element: <Email /> },
-        { path: 'databases', element: <Databases /> },
-        { path: 'files', element: <Files /> },
-        { path: 'backups', element: <Backups /> },
-        { path: 'apps', element: <Apps /> },
-        { path: 'redis', element: <Redis /> },
-        { path: 'dns', element: <Dns /> },
-        { path: 'ssl', element: <Ssl /> },
-        { path: 'cron', element: <Cron /> },
-        { path: 'ftp', element: <Ftp /> },
-        { path: 'git', element: <Git /> },
-        { path: 'ssh', element: <SshKeys /> },
-        { path: 'terminal', element: <Terminal /> },
-        { path: 'devtools', element: <DevTools /> },
-        { path: 'processes', element: <Processes /> },
+        { path: 'dashboard', element: customer(<Dashboard />) },
+        { path: 'domains', element: customer(<Domains />) },
+        { path: 'domains/:domain', element: customer(<DomainDetail />) },
+        { path: 'php', element: customer(<Php />) },
+        { path: 'email', element: customer(<Email />) },
+        { path: 'databases', element: customer(<Databases />) },
+        { path: 'files', element: customer(<Files />) },
+        { path: 'backups', element: customer(<Backups />) },
+        { path: 'apps', element: customer(<Apps />) },
+        { path: 'redis', element: customer(<Redis />) },
+        { path: 'dns', element: customer(<Dns />) },
+        { path: 'ssl', element: customer(<Ssl />) },
+        { path: 'cron', element: customer(<Cron />) },
+        { path: 'ftp', element: customer(<Ftp />) },
+        { path: 'git', element: customer(<Git />) },
+        { path: 'ssh', element: customer(<SshKeys />) },
+        { path: 'terminal', element: customer(<Terminal />) },
+        { path: 'devtools', element: customer(<DevTools />) },
+        { path: 'processes', element: customer(<Processes />) },
         { path: 'more', element: <MoreMenu /> },
         { path: 'change-password', element: <ChangePassword /> },
         { path: 'security', element: <Security /> },
-        { path: 'logs', element: <Logs /> },
-        { path: 'disk-usage', element: <DiskUsage /> },
+        { path: 'logs', element: customer(<Logs />) },
+        { path: 'disk-usage', element: customer(<DiskUsage />) },
 
         // Admin pages.
         { path: 'accounts', element: admin(<Accounts />) },

@@ -289,6 +289,7 @@ export default function Domains() {
         title={toDelete ? `Remove ${toDelete.domain}?` : 'Remove domain?'}
         description="Its vhost and any auto-created DNS record are removed. Files on disk are kept. This cannot be undone."
         confirmLabel="Remove domain"
+        confirmationText={toDelete?.domain}
         loading={deleteMut.isPending}
         onConfirm={() => toDelete && deleteMut.mutate(toDelete)}
       />

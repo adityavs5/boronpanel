@@ -7,10 +7,25 @@ would otherwise pollute every later test in the same pytest process.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 
 def configure_logging(log_dir: str) -> None:
+    os.umask(0o027)
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
+    # Keep the installer's setgid + group-write contract: boron-api must be
+    # able to create request logs through its service group. Some hardened
+    # service environments deny chmod even to the daemon's root process; the
+    # installer remains the authority for ownership/mode, and that denial
+    # must not put this critical daemon into a restart loop.
+    try:
+        Path(log_dir).chmod(0o2770)
+    except PermissionError:
+        pass
+    daemon_log = Path(log_dir) / "daemon.log"
+    daemon_log.touch(exist_ok=True, mode=0o640)
+    daemon_log.chmod(0o640)
     """Split borond.proc (daemon/procutil.py's run()) away from the
     journal/stdout sink.
 
@@ -30,11 +45,11 @@ def configure_logging(log_dir: str) -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[
-            logging.FileHandler(Path(log_dir) / "daemon.log"),
+            logging.FileHandler(daemon_log),
             logging.StreamHandler(),
         ],
     )
     proc_logger = logging.getLogger("borond.proc")
     proc_logger.propagate = False
-    proc_logger.handlers = [logging.FileHandler(Path(log_dir) / "daemon.log")]
+    proc_logger.handlers = [logging.FileHandler(daemon_log)]
     proc_logger.setLevel(logging.INFO)

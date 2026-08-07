@@ -17,6 +17,7 @@ from shared.config import settings
 from shared.validation import ValidationError, generate_strong_password, validate_username
 
 from daemon.procutil import run
+from daemon.safeio import secure_mkdirs
 
 NOLOGIN_SHELL = "/usr/sbin/nologin"
 # Phase 4 feature 6: SSH key management. ARCHITECTURE.md SS5 originally
@@ -97,11 +98,8 @@ def ensure_tmp_dir(username: str) -> str:
     that predates this fix."""
     _assert_safe_username(username)
     pw = pwd.getpwnam(username)
-    tmp_dir = f"{settings.home_base}/{username}/tmp"
-    os.makedirs(tmp_dir, exist_ok=True)
-    os.chown(tmp_dir, pw.pw_uid, pw.pw_gid)
-    os.chmod(tmp_dir, 0o750)
-    return tmp_dir
+    home = f"{settings.home_base}/{username}"
+    return secure_mkdirs(home, "tmp", pw.pw_uid, pw.pw_gid, 0o750)
 
 
 def set_initial_password(username: str, password: str) -> None:

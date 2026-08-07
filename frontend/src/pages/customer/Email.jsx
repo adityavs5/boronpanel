@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Mail, Plus, Trash2, Inbox, Forward, ShieldAlert, AtSign, Network, ScrollText,
@@ -22,6 +23,17 @@ import {
 import { EmptyState, ErrorState } from '@/components/ui/States'
 import { CenteredSpinner } from '@/components/ui/Spinner'
 import { toast } from '@/components/ui/Toast'
+
+const EMAIL_TABS = [
+  ['mailboxes', 'Mailboxes', Inbox],
+  ['forwarders', 'Forwarders', Forward],
+  ['catchall', 'Catch-all', AtSign],
+  ['spam', 'Spam filter', ShieldAlert],
+  ['spam-entries', 'Spam Filters', ShieldBan],
+  ['imap-migrate', 'Migrate', ArrowRightLeft],
+  ['routing', 'Routing', Network],
+  ['delivery', 'Delivery log', ScrollText],
+]
 
 // --- Mailboxes -----------------------------------------------------------
 
@@ -177,6 +189,7 @@ function MailboxesTab({ domain }) {
         title="Delete mailbox?"
         description={toDelete ? `${toDelete}@${domain} and all of its stored mail will be permanently removed.` : ''}
         confirmLabel="Delete mailbox"
+        confirmationText={toDelete ? `${toDelete}@${domain}` : undefined}
         loading={deleteMut.isPending}
         onConfirm={() => deleteMut.mutate(toDelete)}
       />
@@ -714,7 +727,7 @@ function MailboxSpamFiltersTab({ username, domain }) {
                     {blacklist.map((e) => (
                       <li key={e.id} className="flex items-center justify-between rounded-btn border border-border px-3 py-1.5 text-sm">
                         <span className="font-mono text-xs">{e.pattern}</span>
-                        <button type="button" onClick={() => deleteMut.mutate(e.id)} className="text-muted-foreground hover:text-danger"><X className="h-3.5 w-3.5" /></button>
+                        <button type="button" onClick={() => deleteMut.mutate(e.id)} className="rounded-btn p-1 text-muted-foreground hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`Delete allow-list pattern ${e.pattern}`}><X className="h-3.5 w-3.5" /></button>
                       </li>
                     ))}
                   </ul>
@@ -727,7 +740,7 @@ function MailboxSpamFiltersTab({ username, domain }) {
                     {whitelist.map((e) => (
                       <li key={e.id} className="flex items-center justify-between rounded-btn border border-border px-3 py-1.5 text-sm">
                         <span className="font-mono text-xs">{e.pattern}</span>
-                        <button type="button" onClick={() => deleteMut.mutate(e.id)} className="text-muted-foreground hover:text-danger"><X className="h-3.5 w-3.5" /></button>
+                        <button type="button" onClick={() => deleteMut.mutate(e.id)} className="rounded-btn p-1 text-muted-foreground hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`Delete block-list pattern ${e.pattern}`}><X className="h-3.5 w-3.5" /></button>
                       </li>
                     ))}
                   </ul>
@@ -927,7 +940,7 @@ function ImapMigrateTab({ username, domain }) {
                     <div className="flex items-center gap-2">
                       <Badge variant={IMAP_JOB_STATUS_VARIANT[job.status] || 'neutral'}>{job.status}</Badge>
                       {['pending', 'connecting', 'running'].includes(job.status) && (
-                        <button type="button" onClick={() => cancelMut.mutate(job.id)} className="text-muted-foreground hover:text-danger" title="Cancel">
+                        <button type="button" onClick={() => cancelMut.mutate(job.id)} className="rounded-btn p-1 text-muted-foreground hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" title="Cancel" aria-label={`Cancel migration job ${job.id}`}>
                           <XCircle className="h-4 w-4" />
                         </button>
                       )}
@@ -972,6 +985,10 @@ function ProgressBarInline({ value, max }) {
 }
 
 export default function Email() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const emailTabs = new Set(EMAIL_TABS.map(([value]) => value))
+  const requestedTab = searchParams.get('tab')
+  const activeTab = emailTabs.has(requestedTab) ? requestedTab : 'mailboxes'
   const username = useAccountUsername()
   const [domain, setDomain] = useState('')
 
@@ -1015,16 +1032,29 @@ export default function Email() {
       ) : !domain ? (
         <CenteredSpinner />
       ) : (
-        <Tabs defaultValue="mailboxes" key={domain}>
-          <TabsList>
-            <TabsTrigger value="mailboxes"><Inbox className="h-4 w-4" /> Mailboxes</TabsTrigger>
-            <TabsTrigger value="forwarders"><Forward className="h-4 w-4" /> Forwarders</TabsTrigger>
-            <TabsTrigger value="catchall"><AtSign className="h-4 w-4" /> Catch-all</TabsTrigger>
-            <TabsTrigger value="spam"><ShieldAlert className="h-4 w-4" /> Spam filter</TabsTrigger>
-            <TabsTrigger value="spam-entries"><ShieldBan className="h-4 w-4" /> Spam Filters</TabsTrigger>
-            <TabsTrigger value="imap-migrate"><ArrowRightLeft className="h-4 w-4" /> Migrate</TabsTrigger>
-            <TabsTrigger value="routing"><Network className="h-4 w-4" /> Routing</TabsTrigger>
-            <TabsTrigger value="delivery"><ScrollText className="h-4 w-4" /> Delivery log</TabsTrigger>
+        <Tabs value={activeTab} key={domain} onValueChange={(tab) => setSearchParams((prev) => {
+          const next = new URLSearchParams(prev)
+          if (tab === 'mailboxes') next.delete('tab')
+          else next.set('tab', tab)
+          return next
+        })}>
+          <Select
+            value={activeTab}
+            onChange={(event) => setSearchParams((prev) => {
+              const next = new URLSearchParams(prev)
+              if (event.target.value === 'mailboxes') next.delete('tab')
+              else next.set('tab', event.target.value)
+              return next
+            })}
+            aria-label="Email section"
+            className="mb-4 sm:hidden"
+          >
+            {EMAIL_TABS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </Select>
+          <TabsList className="hidden sm:flex">
+            {EMAIL_TABS.map(([value, label, Icon]) => (
+              <TabsTrigger key={value} value={value}><Icon className="h-4 w-4" /> {label}</TabsTrigger>
+            ))}
           </TabsList>
           <TabsContent value="mailboxes">
             <MailboxesTab domain={domain} />

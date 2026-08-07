@@ -72,6 +72,17 @@ def test_unwritable_log_dir_does_not_raise(monkeypatch):
     # A path under a file (impossible to mkdir) simulates an unwritable dir.
     monkeypatch.setattr(logsetup.settings, "log_dir", "/proc/1/cmdline/nope")
     logsetup.reset()
+
+
+def test_existing_directory_chmod_denial_does_not_disable_logging(tmp_path, monkeypatch):
+    monkeypatch.setattr(logsetup.settings, "log_dir", str(tmp_path))
+    monkeypatch.setattr(logsetup.Path, "chmod", lambda _self, _mode: (_ for _ in ()).throw(PermissionError()))
+    logsetup.reset()
+
+    logsetup.record_access("GET", "/healthz", 200, 1.0, None, "203.0.113.4")
+
+    assert logsetup.access_log_path(str(tmp_path)).is_file()
+    logsetup.reset()
     # Must not raise -- logging can never take the API down.
     logsetup.record_access("GET", "/healthz", 200, 1.0, None, "203.0.113.4")
     logsetup.reset()

@@ -5,7 +5,7 @@ from daemon.procutil import ProcResult
 
 
 @pytest.fixture()
-def fake_run(monkeypatch):
+def fake_run(monkeypatch, tmp_path):
     calls = []
 
     def _run(args, timeout=30):
@@ -13,18 +13,21 @@ def fake_run(monkeypatch):
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(rclone, "run", _run)
+    monkeypatch.setattr(rclone, "RCLONE_CONFIG_PATH", str(tmp_path / "rclone.conf"))
     return calls
 
 
-def test_create_remote_passes_config_as_key_value_args(fake_run):
+def test_create_remote_keeps_config_values_out_of_argv(fake_run):
     rclone.create_remote("myremote", "s3", {"provider": "AWS", "access_key_id": "AKIA123"})
     args = fake_run[0]
     assert args[:5] == [rclone.settings.rclone_bin, "--config", rclone.RCLONE_CONFIG_PATH, "config", "create"]
     assert "myremote" in args
     assert "s3" in args
     assert "--non-interactive" in args
-    assert "provider=AWS" in args
-    assert "access_key_id=AKIA123" in args
+    assert not any("AWS" in arg or "AKIA123" in arg for arg in args)
+    config = open(rclone.RCLONE_CONFIG_PATH).read()
+    assert "provider = AWS" in config
+    assert "access_key_id = AKIA123" in config
 
 
 def test_create_remote_raises_on_failure(monkeypatch):

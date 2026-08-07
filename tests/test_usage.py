@@ -11,6 +11,11 @@ from shared.db import write_session
 from shared.models import Account, BandwidthDaily, BandwidthDailyDomain, DatabaseGrant, MailDomain, UsageSnapshot, utcnow
 
 
+def _recent_date(days_ago: int = 1) -> str:
+    """Keep reporting fixtures inside the production period windows."""
+    return (utcnow().date() - dt.timedelta(days=days_ago)).isoformat()
+
+
 @pytest.fixture()
 def stub_sysops(monkeypatch):
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
@@ -260,23 +265,25 @@ def test_validate_period_rejects_unknown():
 
 
 def test_get_bandwidth_report_buckets_and_top_domains(isolated_db):
+    date_one = _recent_date(1)
+    date_two = _recent_date(2)
     with write_session() as session:
         account = Account(username="demo1", status="active")
         session.add(account)
         session.flush()
         account_id = account.id
-        for date_str, total in (("2026-07-01", 5000), ("2026-07-02", 3000)):
+        for date_str, total in ((date_one, 5000), (date_two, 3000)):
             session.add(BandwidthDaily(account_id=account_id, date=date_str, bytes_served=total))
-        session.add(BandwidthDailyDomain(account_id=account_id, domain="shop.example", date="2026-07-01", bytes_served=4000))
-        session.add(BandwidthDailyDomain(account_id=account_id, domain="blog.example", date="2026-07-01", bytes_served=1000))
-        session.add(BandwidthDailyDomain(account_id=account_id, domain="shop.example", date="2026-07-02", bytes_served=3000))
+        session.add(BandwidthDailyDomain(account_id=account_id, domain="shop.example", date=date_one, bytes_served=4000))
+        session.add(BandwidthDailyDomain(account_id=account_id, domain="blog.example", date=date_one, bytes_served=1000))
+        session.add(BandwidthDailyDomain(account_id=account_id, domain="shop.example", date=date_two, bytes_served=3000))
 
     account = _account()
     report = usage.get_bandwidth_report(account, "daily")
     assert report["period"] == "daily"
     assert report["total_bytes_served"] == 8000
-    assert {"label": "2026-07-01", "bytes_served": 5000} in report["buckets"]
-    assert {"label": "2026-07-02", "bytes_served": 3000} in report["buckets"]
+    assert {"label": date_one, "bytes_served": 5000} in report["buckets"]
+    assert {"label": date_two, "bytes_served": 3000} in report["buckets"]
     assert report["top_domains"][0] == {"domain": "shop.example", "bytes_served": 7000}
     assert report["top_domains"][1] == {"domain": "blog.example", "bytes_served": 1000}
 
@@ -290,13 +297,14 @@ def test_get_bandwidth_report_rejects_unknown_period(isolated_db):
 
 
 def test_get_bandwidth_report_top_domains_capped_at_five(isolated_db):
+    recent_date = _recent_date()
     with write_session() as session:
         account = Account(username="demo1", status="active")
         session.add(account)
         session.flush()
         for i in range(8):
             session.add(
-                BandwidthDailyDomain(account_id=account.id, domain=f"site{i}.example", date="2026-07-01", bytes_served=(8 - i) * 100)
+                BandwidthDailyDomain(account_id=account.id, domain=f"site{i}.example", date=recent_date, bytes_served=(8 - i) * 100)
             )
     account = _account()
     report = usage.get_bandwidth_report(account, "daily")

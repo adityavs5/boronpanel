@@ -1,10 +1,12 @@
+import datetime as dt
+
 import pytest
 from sqlalchemy import select
 
 from daemon import handlers_account as ha
 from daemon import handlers_usage as hu
 from shared.db import write_session
-from shared.models import BandwidthDaily
+from shared.models import BandwidthDaily, utcnow
 
 
 @pytest.fixture()
@@ -21,9 +23,10 @@ def test_get_bandwidth_unknown_account_raises(isolated_db):
 
 def test_get_bandwidth_delegates_to_usage_module(isolated_db, stub_sysops):
     ha.create_account({"username": "demo1"})
+    recent_date = (utcnow().date() - dt.timedelta(days=1)).isoformat()
     with write_session() as session:
         account = session.scalar(select(ha.Account).where(ha.Account.username == "demo1"))
-        session.add(BandwidthDaily(account_id=account.id, date="2026-07-01", bytes_served=500))
+        session.add(BandwidthDaily(account_id=account.id, date=recent_date, bytes_served=500))
 
     result = hu.get_bandwidth({"username": "demo1", "period": "daily"})
     assert result["username"] == "demo1"

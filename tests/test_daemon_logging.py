@@ -15,6 +15,7 @@ whenever the full suite ran, never in isolation -- a real instance of the
 project's own "no test should require root/live services" principle needing
 the module boundary to actually be side-effect-free, not just usually so)."""
 import logging
+import stat
 
 import pytest
 
@@ -35,6 +36,7 @@ def test_proc_logger_does_not_propagate_to_root(tmp_path):
     configure_logging(str(tmp_path))
     proc_logger = logging.getLogger("borond.proc")
     assert proc_logger.propagate is False
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o2770
 
 
 def test_proc_logger_has_only_a_file_handler_no_stream_handler(tmp_path):
@@ -62,3 +64,18 @@ def test_configure_logging_is_idempotent_no_duplicate_handlers(tmp_path):
     configure_logging(str(tmp_path))
     proc_logger = logging.getLogger("borond.proc")
     assert len(proc_logger.handlers) == 1
+
+
+def test_chmod_denial_does_not_prevent_daemon_logging(tmp_path, monkeypatch):
+    original_chmod = type(tmp_path).chmod
+
+    def deny_directory_only(path, mode):
+        if path == tmp_path:
+            raise PermissionError
+        return original_chmod(path, mode)
+
+    monkeypatch.setattr("daemon.logsetup.Path.chmod", deny_directory_only)
+
+    configure_logging(str(tmp_path))
+
+    assert (tmp_path / "daemon.log").is_file()

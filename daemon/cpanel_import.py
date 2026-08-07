@@ -48,6 +48,7 @@ import re
 import shutil
 import tarfile
 import tempfile
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -70,7 +71,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import audit, handlers_account, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, mariadb, ols
+from daemon import audit, handlers_account, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, mariadb, ols, webhooks
 from daemon.backup import _write_mysql_defaults_file
 from daemon.procutil import run
 from daemon.wordpress import _php_str
@@ -218,14 +219,30 @@ def _obtain_archive(job_id: int, source: str, source_ref: str, work_dir: Path) -
     dest = work_dir / "download.tar.gz"
     max_bytes = settings.cpanel_import_max_upload_bytes
     written = 0
-    with httpx.stream("GET", source_ref, timeout=600.0, follow_redirects=True) as resp:
-        resp.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in resp.iter_bytes():
-                written += len(chunk)
-                if written > max_bytes:
-                    raise CpanelImportError(f"backup download exceeds the {max_bytes} byte limit")
-                f.write(chunk)
+    parsed = urlparse(source_ref)
+    if parsed.scheme not in ("https", "http") or not parsed.hostname:
+        raise CpanelImportError("backup URL must use http or https and include a hostname")
+    pinned_ip = webhooks._assert_public_destination(source_ref)
+    netloc_ip = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    pinned_url = parsed._replace(netloc=f"{netloc_ip}:{port}").geturl()
+    headers = {"Host": parsed.netloc}
+    extensions = {"sni_hostname": parsed.hostname} if parsed.scheme == "https" else {}
+    with httpx.Client(timeout=600.0, follow_redirects=False) as client:
+        request = client.build_request("GET", pinned_url, headers=headers, extensions=extensions)
+        with client.send(request, stream=True) as resp:
+            if resp.is_redirect or resp.is_permanent_redirect:
+                raise CpanelImportError("backup URL redirects are disabled; provide the final public HTTPS URL")
+            resp.raise_for_status()
+            declared = int(resp.headers.get("content-length", "0") or 0)
+            if declared > max_bytes:
+                raise CpanelImportError(f"backup download exceeds the {max_bytes} byte limit")
+            with open(dest, "wb") as f:
+                for chunk in resp.iter_bytes():
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise CpanelImportError(f"backup download exceeds the {max_bytes} byte limit")
+                    f.write(chunk)
     return dest
 
 
@@ -506,7 +523,7 @@ def _strip_dump_database_context(sql_text: str) -> str:
     `USE ...;` lines naming the ORIGINAL database. Fed to `mysql
     <target_db>` as-is, the dump's own `USE` statement silently overrides
     the caller-specified target for every statement after it -- the import
-    would then either fail with an access-denied error (forgehost_daemon's
+    would then either fail with an access-denied error (boron_daemon's
     grants are scoped per-database, HOSTED_DB_PRIVILEGES) or, worse, if a
     same-named database happened to already exist, write into the wrong
     one entirely. Stripped line-by-line before import so this dump always

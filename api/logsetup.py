@@ -49,6 +49,10 @@ def error_log_path(log_dir: str | None = None) -> Path:
 
 def _plain_file_handler(path: Path) -> logging.Handler:
     handler = logging.FileHandler(path, encoding="utf-8")
+    try:
+        path.chmod(0o640)
+    except OSError:
+        pass
     # The record's message IS the finished JSON line -- no level/logger
     # decoration, so the file is machine-parseable one-object-per-line.
     handler.setFormatter(logging.Formatter("%(message)s"))
@@ -74,7 +78,16 @@ def configure(log_dir: str | None = None) -> None:
         lg.propagate = False  # never duplicate access lines onto the root/journal
 
     try:
-        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        directory = Path(log_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        # Production creates this directory as root:boron-api so root-owned
+        # services and the unprivileged API can share it. The API may write
+        # there through the group bit but cannot chmod a root-owned directory;
+        # that harmless EPERM must not disable request logging.
+        try:
+            directory.chmod(0o750)
+        except PermissionError:
+            pass
         access.addHandler(_plain_file_handler(access_log_path(log_dir)))
         error.addHandler(_plain_file_handler(error_log_path(log_dir)))
     except OSError as exc:

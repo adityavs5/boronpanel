@@ -1,9 +1,10 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
-import { Cpu, MemoryStick, HardDrive, Activity, ArrowDownUp, Clock, Cloud, BellRing, Save } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Cpu, MemoryStick, HardDrive, Activity, ArrowDownUp, Clock, Cloud, BellRing, RefreshCw, Save } from 'lucide-react'
 import { get, patch } from '@/lib/api'
 import { formatBytes, formatDuration, formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -16,6 +17,7 @@ import { Switch } from '@/components/ui/Toggle'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/States'
 import { toast } from '@/components/ui/Toast'
+import { useUpdateStatus } from '@/hooks/useUpdateStatus'
 
 function Gauge({ icon: Icon, label, pct, detail }) {
   const p = Math.round(pct ?? 0)
@@ -250,9 +252,16 @@ function MonitoringCard() {
 export default function ServerHealth() {
   const health = useQuery({ queryKey: ['health'], queryFn: () => get('/api/v1/health'), refetchInterval: 10_000 })
   const history = useQuery({ queryKey: ['health-history'], queryFn: () => get('/api/v1/health/history?hours=24') })
+  const { data: updateStatus } = useUpdateStatus()
 
   const h = health.data
   const rootDisk = h?.disks?.find((d) => d.mount === '/') || h?.disks?.[0]
+  const attention = [
+    updateStatus?.update_available && { label: `Boron ${updateStatus.latest_version} is ready to install`, to: '/updates' },
+    rootDisk?.pct >= 85 && { label: `Root disk is ${Math.round(rootDisk.pct)}% full — review account usage`, to: '/accounts' },
+    h?.mem_pct >= 90 && { label: `Memory usage is ${Math.round(h.mem_pct)}% — review services`, to: '/services' },
+    h?.cpu_pct >= 90 && { label: `CPU usage is ${Math.round(h.cpu_pct)}% — review services`, to: '/services' },
+  ].filter(Boolean)
 
   const points = (history.data?.points || []).map((p) => ({
     label: p.taken_at ? new Date(p.taken_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '',
@@ -263,7 +272,27 @@ export default function ServerHealth() {
 
   return (
     <div>
-      <PageHeader title="Server Health" description="Live resource utilisation and 24-hour trends." icon={Activity} />
+      <PageHeader title="Server Health" description={health.dataUpdatedAt ? `Live resources and 24-hour trends. Updated ${new Date(health.dataUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.` : 'Live resource utilisation and 24-hour trends.'} icon={Activity}>
+        <Button variant="secondary" onClick={() => Promise.all([health.refetch(), history.refetch()])} loading={health.isFetching || history.isFetching}><RefreshCw className="h-4 w-4" /> Refresh</Button>
+      </PageHeader>
+
+      {!health.isLoading && !health.isError && (
+        <section className={`mb-6 rounded-card border p-4 ${attention.length ? 'border-warning/40 bg-warning/5' : 'border-success/30 bg-success/5'}`} aria-labelledby="server-attention-heading">
+          <div className="flex items-center gap-2 text-sm font-semibold text-foreground" id="server-attention-heading">
+            {attention.length ? <AlertTriangle className="h-4 w-4 text-warning" /> : <CheckCircle2 className="h-4 w-4 text-success" />}
+            {attention.length ? 'Needs attention' : 'No urgent server conditions'}
+          </div>
+          {attention.length > 0 && (
+            <ul className="mt-2 space-y-1.5">
+              {attention.map((item) => (
+                <li key={item.label}>
+                  <Link to={item.to} className="text-sm font-medium text-accent hover:underline">{item.label} →</Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
 
       {health.isError ? (
         <ErrorState error={health.error} onRetry={health.refetch} />

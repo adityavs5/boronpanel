@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -16,6 +18,7 @@ from api.templates import templates
 
 api_router = APIRouter(prefix="/api/v1/accounts", tags=["accounts"])
 ui_router = APIRouter(prefix="/ui/accounts", tags=["ui:accounts"])
+logger = logging.getLogger(__name__)
 
 
 class CreateAccountBody(BaseModel):
@@ -41,7 +44,19 @@ def create_account(body: CreateAccountBody, identity: Identity = Depends(get_ide
         # same "a failed step doesn't silently undo the previous one"
         # philosophy as terminate_account's fixed-order teardown
         # (ARCHITECTURE.md SS5). The error surfaces to the caller as-is.
-        result = call_daemon("plan.apply", identity, username=result["username"], plan_id=plan_id)
+        # Keep the one-time initial password from account.create even when
+        # plan.apply returns a replacement account payload. If the external
+        # plan side effects fail, return the created account and the failure
+        # marker so the UI can still reveal the otherwise unrecoverable
+        # credential and direct the operator to repair the plan assignment.
+        try:
+            applied = call_daemon("plan.apply", identity, username=result["username"], plan_id=plan_id)
+            applied["initial_password"] = result.get("initial_password")
+            applied["email"] = result.get("email")
+            result = applied
+        except Exception as exc:
+            logger.exception("plan application failed after creating account %s", result["username"])
+            result["plan_apply_error"] = str(exc)
     return result
 
 

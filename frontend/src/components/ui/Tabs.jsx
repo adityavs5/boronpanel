@@ -6,7 +6,7 @@ export const Tabs = TabsPrimitive.Root
 export function TabsList({ className, ...props }) {
   return (
     <TabsPrimitive.List
-      className={cn('inline-flex items-center gap-1 border-b border-border w-full overflow-x-auto', className)}
+      className={cn('flex items-center gap-1 border-b border-border w-full overflow-x-auto scroll-smooth overscroll-x-contain [scrollbar-width:thin]', className)}
       {...props}
     />
   )

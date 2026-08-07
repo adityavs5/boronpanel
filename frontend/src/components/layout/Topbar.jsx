@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useNavigate, useLocation, Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Menu, Search, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck } from 'lucide-react'
@@ -6,6 +7,7 @@ import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
 import { titleCase } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator,
@@ -34,6 +36,7 @@ function SearchTrigger() {
         onClick={() => setPaletteOpen(true)}
         className="rounded-btn p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:hidden"
         title="Search"
+        aria-label="Search the panel"
       >
         <Search className="h-[18px] w-[18px]" />
       </button>
@@ -45,7 +48,7 @@ function Breadcrumb() {
   const { pathname } = useLocation()
   const parts = pathname.split('/').filter(Boolean)
   return (
-    <nav className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex">
+    <nav className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex" aria-label="Breadcrumb">
       {parts.map((part, i) => {
         const to = '/' + parts.slice(0, i + 1).join('/')
         const last = i === parts.length - 1
@@ -68,34 +71,42 @@ function Breadcrumb() {
 
 function AccountSwitcher() {
   const navigate = useNavigate()
+  const [query, setQuery] = useState('')
   const { username: current } = useParams()
   const { data } = useQuery({ queryKey: ['accounts'], queryFn: () => get('/api/v1/accounts'), retry: false })
   const accounts = Array.isArray(data) ? data : []
+  const visible = query.trim() ? accounts.filter((a) => a.username.toLowerCase().includes(query.trim().toLowerCase())) : accounts
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="secondary" size="sm" className="max-w-[200px]">
+        <Button variant="secondary" size="sm" className="hidden max-w-[200px] sm:inline-flex">
           <User className="h-4 w-4 shrink-0" />
           <span className="truncate">{current || 'Select account'}</span>
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
+      <DropdownMenuContent align="start" className="w-64">
         <DropdownMenuLabel>Manage account</DropdownMenuLabel>
+        <div className="px-2 pb-2" onKeyDown={(e) => e.stopPropagation()}>
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search accounts…" aria-label="Search accounts" />
+        </div>
+        <div className="max-h-64 overflow-y-auto">
         {accounts.length === 0 && <div className="px-2.5 py-1.5 text-sm text-muted-foreground">No accounts</div>}
-        {accounts.map((a) => (
+        {accounts.length > 0 && visible.length === 0 && <div className="px-2.5 py-3 text-sm text-muted-foreground">No matching accounts</div>}
+        {visible.map((a) => (
           <DropdownMenuItem key={a.username} onClick={() => navigate(`/accounts/${a.username}`)}>
             <span className="flex-1 truncate">{a.username}</span>
             {a.username === current && <Check className="h-4 w-4 text-accent" />}
           </DropdownMenuItem>
         ))}
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   )
 }
 
 export function Topbar() {
-  const toggleSidebar = useUI((s) => s.toggleSidebar)
+  const setMobileNavOpen = useUI((s) => s.setMobileNavOpen)
   const theme = useUI((s) => s.theme)
   const toggleTheme = useUI((s) => s.toggleTheme)
   const { role, username, logout } = useAuth()
@@ -110,7 +121,7 @@ export function Topbar() {
   return (
     <header className="flex h-16 shrink-0 items-center justify-between gap-4 border-b border-border bg-surface px-4 lg:px-6">
       <div className="flex items-center gap-3 min-w-0">
-        <button onClick={toggleSidebar} className="rounded-btn p-2 text-muted-foreground hover:bg-muted lg:hidden">
+        <button type="button" onClick={() => setMobileNavOpen(true)} className="rounded-btn p-2 text-muted-foreground hover:bg-muted md:hidden" aria-label="Open navigation" aria-haspopup="dialog">
           <Menu className="h-5 w-5" />
         </button>
         <Breadcrumb />
@@ -124,13 +135,14 @@ export function Topbar() {
           onClick={toggleTheme}
           className="rounded-btn p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
         >
           {theme === 'dark' ? <Sun className="h-[18px] w-[18px]" /> : <Moon className="h-[18px] w-[18px]" />}
         </button>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="flex items-center gap-2 rounded-btn px-2 py-1.5 transition-colors hover:bg-muted">
+            <button className="flex items-center gap-2 rounded-btn px-2 py-1.5 transition-colors hover:bg-muted" aria-label="Open account menu">
               <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
                 {(username || role || '?').slice(0, 2).toUpperCase()}
               </div>

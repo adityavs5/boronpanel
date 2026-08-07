@@ -12,11 +12,11 @@ export function PageHeader({ title, description, children, className, icon: Icon
           </div>
         )}
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold text-foreground truncate">{title}</h1>
+          <h1 className="break-words text-xl font-semibold text-foreground">{title}</h1>
           {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
         </div>
       </div>
-      {children && <div className="flex items-center gap-2 shrink-0">{children}</div>}
+      {children && <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">{children}</div>}
     </div>
   )
 }

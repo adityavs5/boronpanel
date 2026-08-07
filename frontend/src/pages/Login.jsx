@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useLocation, Navigate } from 'react-router-dom'
-import { Loader2, ShieldCheck } from 'lucide-react'
+import { Eye, EyeOff, ShieldCheck } from 'lucide-react'
 import { useAuth } from '@/store/auth'
 import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
@@ -17,6 +17,12 @@ export default function Login() {
   const [code, setCode] = useState('')
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const errorRef = useRef(null)
+
+  useEffect(() => {
+    if (error) errorRef.current?.focus()
+  }, [error])
 
   if (role) return <Navigate to={location.state?.from || (role === 'admin' ? '/accounts' : '/dashboard')} replace />
 
@@ -104,9 +110,14 @@ export default function Login() {
                   <Input id="username" autoFocus autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required />
                 </FormField>
                 <FormField label="Password" htmlFor="password">
-                  <Input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+                  <div className="relative">
+                    <Input id="password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required className="pr-10" />
+                    <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute right-1 top-1/2 -translate-y-1/2 rounded-btn p-2 text-muted-foreground hover:text-foreground" aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
                 </FormField>
-                {error && <p className="rounded-btn bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>}
+                {error && <p ref={errorRef} tabIndex={-1} className="rounded-btn bg-danger/10 px-3 py-2 text-sm text-danger outline-none focus-visible:ring-2 focus-visible:ring-ring" role="alert">{error}</p>}
                 <Button type="submit" className="w-full" loading={loading} disabled={loading}>
                   {loading ? 'Signing in…' : 'Sign in'}
                 </Button>
@@ -118,22 +129,21 @@ export default function Login() {
                 <ShieldCheck className="h-5 w-5 text-accent" />
                 <h2 className="text-xl font-semibold text-foreground">Two-factor authentication</h2>
               </div>
-              <p className="mt-1 text-sm text-muted-foreground">Enter the 6-digit code from your authenticator app.</p>
+              <p className="mt-1 text-sm text-muted-foreground">Enter a 6-digit authenticator code or one of your recovery codes.</p>
               <form onSubmit={submit2fa} className="mt-6 space-y-4">
-                <FormField label="Authentication code" htmlFor="code">
+                <FormField label="Authentication or recovery code" htmlFor="code">
                   <Input
                     id="code"
                     autoFocus
-                    inputMode="numeric"
                     autoComplete="one-time-code"
-                    placeholder="123456"
-                    className="text-center text-lg tracking-[0.5em]"
+                    placeholder="123456 or ABCDE-FGHIJ"
+                    className="text-center text-lg tracking-wider"
                     value={code}
                     onChange={(e) => setCode(e.target.value)}
                     required
                   />
                 </FormField>
-                {error && <p className="rounded-btn bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>}
+                {error && <p ref={errorRef} tabIndex={-1} className="rounded-btn bg-danger/10 px-3 py-2 text-sm text-danger outline-none focus-visible:ring-2 focus-visible:ring-ring" role="alert">{error}</p>}
                 <Button type="submit" className="w-full" loading={loading} disabled={loading}>
                   Verify
                 </Button>

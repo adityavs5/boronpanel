@@ -25,6 +25,7 @@ from shared.models import Account, ApiToken, Domain, ImpersonationSession, Panel
 
 COOKIE_NAME = "fh_session"
 COOKIE_MAX_AGE_SECONDS = 7 * 24 * 3600
+API_TOKEN_MAX_AGE_SECONDS = 90 * 24 * 3600
 
 _serializer = URLSafeTimedSerializer(settings.session_secret, salt="boron-session")
 
@@ -131,6 +132,9 @@ def _identity_from_bearer_token(token: str) -> Identity | None:
     with read_session() as db:
         row = db.scalar(select(ApiToken).where(ApiToken.token_hash == token_hash))
         if row is None or row.revoked_at is not None:
+            return None
+        created = row.created_at.replace(tzinfo=dt.timezone.utc) if row.created_at.tzinfo is None else row.created_at
+        if (dt.datetime.now(dt.timezone.utc) - created).total_seconds() > API_TOKEN_MAX_AGE_SECONDS:
             return None
         return Identity(panel_user_id=-1, username=row.label, role=row.role, account_id=row.account_id, auth_method="token")
 

@@ -279,6 +279,9 @@ def test_restrict_backend_access_missing_api_user_does_not_raise(fb_env, monkeyp
 
 def test_bootstrap_calls_restrict_backend_access(fb_env, monkeypatch):
     monkeypatch.setattr("os.path.exists", lambda p: True)
+    # bootstrap normally writes the host systemd unit. Keep this unit test
+    # hermetic: the CI/container filesystem may expose /etc read-only.
+    monkeypatch.setattr(fb, "_write_unit", lambda: None)
     called = []
     monkeypatch.setattr(fb, "restrict_backend_access", lambda: called.append(True))
     fb.bootstrap({})

@@ -246,6 +246,7 @@ export default function Databases() {
         title={toDelete ? `Drop ${toDelete.db_name}?` : 'Drop database?'}
         description="The database and its user are permanently removed. This cannot be undone."
         confirmLabel="Drop database"
+        confirmationText={toDelete?.db_name}
         loading={deleteMut.isPending}
         onConfirm={() => toDelete && deleteMut.mutate(toDelete)}
       />

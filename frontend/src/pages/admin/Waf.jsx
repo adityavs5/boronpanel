@@ -357,6 +357,7 @@ export default function Waf() {
             : ''
         }
         confirmLabel="Delete rule"
+        confirmationText={deleteRule?.domain}
         loading={deleteRuleMut.isPending}
         onConfirm={() => deleteRuleMut.mutate(deleteRule.id)}
       />

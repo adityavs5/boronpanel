@@ -96,10 +96,10 @@ def _assert_source_db_owned_by_account(username: str, db_name: str) -> None:
     """Security-audit-2 (Critical): the source database name comes from the
     account's OWN wp-config.php (`_source_db_name`), which the account can
     freely rewrite (file manager / FTP / its own PHP). `backup._dump_database`
-    runs `mysqldump` as the MariaDB *admin* (forgehost_daemon), which has
+    runs `mysqldump` as the MariaDB *admin* (boron_daemon), which has
     access to every database on the instance -- so without this check an
     account could point its wp-config's DB_NAME at ANOTHER account's database
-    (or the internal `forgehost_mail` schema) and have staging dump it and
+    (or the internal `boron_mail` schema) and have staging dump it and
     restore it into a database the attacker fully controls: full cross-account
     database exfiltration.
 

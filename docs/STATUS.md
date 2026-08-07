@@ -1,5 +1,50 @@
 # Boron Panel — Status (handoff, 2026-06-30/07-01 overnight build)
 
+## Source audit update (2026-08-03)
+
+## Security follow-up (2026-08-06)
+
+Closed Audit 3 A3-7 and GeoLite2/PHP-hardening follow-ups. FileBrowser's
+loopback backend restriction is inserted at `OUTPUT` positions 1 and 2
+(`iptables -I`, ahead of UFW's loopback accept), and `boron-provisiond`
+re-runs FileBrowser bootstrap on every start so the rules self-heal. The
+installer now prompts for an optional MaxMind key, installs `geoipupdate`,
+fetches GeoLite2-Country when supplied, and schedules a root-only weekly
+refresh; an explicit skip message documents that only top-countries stats are
+unavailable. Hardened `disable_functions` defaults and admin-only
+per-account/per-domain overrides remain layered through the OLS vhost path.
+See `docs/CHECKPOINT-security-followup-2026-08-06.md`.
+
+The focused suite also exposed and fixed a test-isolation issue: the
+FileBrowser bootstrap test now mocks its host systemd-unit write when running
+against read-only `/etc`; this does not alter production behavior.
+
+## Release and secret-sweep follow-up (2026-08-06)
+
+`scripts/release.sh` was audited after the Boron rename. It builds
+`boron-${BORON_VERSION}.tar.gz` from tracked files plus the current static
+bundle, writes a SHA256 manifest, optionally creates a detached GPG
+signature, and self-verifies the archive and packaged `version.py`. The
+updater now defaults to `adityavs5/boronpanel`; the example TOML and README
+use the same repository. A root `.env.example` documents placeholder-only
+configuration, and `.gitignore` explicitly covers secrets, databases, logs,
+runtime paths, dependencies, and release/dist artifacts. Current-tree and
+history scans found no high-confidence credential material outside tests or
+non-secret examples. No push was made.
+
+Completed a source-only namespace and installer audit; no service was deployed
+or changed on a live host. The current tree uses the Boron namespace outside
+historical checkpoint records, including `/opt/boron`, `/etc/boron`,
+`/var/log/boron`, `/var/lib/boron`, `boron.toml`, and the Boron systemd
+services. The installer now installs/configures the complete runtime stack:
+OpenLiteSpeed with LSAPI PHP 8.1–8.5, side-by-side Node 18/20/22, MariaDB,
+Postfix/Dovecot virtual mail, PowerDNS, Pure-FTPd, ACME/DNS tooling,
+FileBrowser Quantum, ImapSync, Redis, SpamAssassin, fail2ban, GeoIP tooling,
+and scheduled ACME renewal. UFW permits SSH before activation plus required
+web, panel, mail, DNS, FTP control, and FTP passive `30000:30100/tcp` ports.
+See `docs/CHECKPOINT-installer-rebrand-2026-08-03.md` for the verification
+record.
+
 Built autonomously per the project goal, phases a–h plus final E2E
 validation, all on this live VM (not a simulation) — `104.234.179.64`,
 Ubuntu 24.04. Every phase has its own `docs/CHECKPOINT-{a..h}.md` with full
@@ -12,10 +57,10 @@ check first.
 
 User report: "there is still no way to manage existing wordpress installations" —
 correct, because the live panel ran the pre-qa2 `ac3dd40` lineage (see
-[[forgehost-deploy-flow]]) and qa2 items 2/3 (per-domain WP-CLI management +
+[[boron-deploy-flow]]) and qa2 items 2/3 (per-domain WP-CLI management +
 multi-install/subdirectory support, commit `c8ddf72`) had never been
 deployed. Only the suspension-cache template hunk and the DnsTab #300
-static fix had reached `/opt/forgehost` before this.
+static fix had reached `/opt/boron` before this.
 
 `c8ddf72` was cherry-picked onto a fresh `ac3dd40` worktree (clean
 auto-merge, no conflicts) alongside the already-live #300 fix, verified
@@ -25,21 +70,21 @@ and a subdirectory WordPress install rendering correctly with working
 "Manage (WP-CLI actions)" buttons), then deployed live on explicit user
 go-ahead ("Yeah deploy it"):
 
-1. Live backend files backed up (`/tmp/opt-forgehost-pre-wpmgmt.<ts>/`),
-   live `forgehost.db` snapshotted (`/tmp/forgehost.db.pre-wpmgmt.<ts>.bak`),
-   live `static/dist` snapshotted (`/tmp/opt-forgehost-static-dist.pre-wpmgmt.<ts>.tar.gz`).
+1. Live backend files backed up (`/tmp/opt-boron-pre-wpmgmt.<ts>/`),
+   live `boron.db` snapshotted (`/tmp/boron.db.pre-wpmgmt.<ts>.bak`),
+   live `static/dist` snapshotted (`/tmp/opt-boron-static-dist.pre-wpmgmt.<ts>.tar.gz`).
 2. `daemon/wordpress.py`, `daemon/wpcli.py`, `api/routers/wordpress.py`,
-   `shared/models.py`, `shared/db.py` copied into `/opt/forgehost`
+   `shared/models.py`, `shared/db.py` copied into `/opt/boron`
    (byte-verified identical to the tested worktree), plus the built
    `static/dist`.
-3. `forgehost-provisiond` restarted — clean (`NRestarts=0`), no
+3. `boron-provisiond` restarted — clean (`NRestarts=0`), no
    tracebacks on this restart cycle. The `WordPressInstall` schema
    migration ran automatically at daemon startup: `wordpress_installs`
    gained the `path` column, the old single-column unique index on
    `domain` was replaced with a composite `(domain, path)` unique index,
    and all 5 pre-existing rows survived intact (verified directly
    against the live SQLite file).
-4. `forgehost-api` restarted — clean (`NRestarts=0`), healthz 200, both
+4. `boron-api` restarted — clean (`NRestarts=0`), healthz 200, both
    the new `index-*.js` and `DomainDetail-*.js` chunks served with 200.
 5. End-to-end proof against real data: the deployed `list_installs()`
    was invoked directly (read-only, no session/HTTP layer needed) and
@@ -49,7 +94,7 @@ go-ahead ("Yeah deploy it"):
 
 Rollback, if ever needed: stop both services, restore the 5 backend
 files + `static/dist` from the `/tmp` backups above, restore
-`forgehost.db` from the `.bak` snapshot (only if new WordPress installs
+`boron.db` from the `.bak` snapshot (only if new WordPress installs
 were created live after this deploy — the migration itself is additive
 and safe to leave in place otherwise), restart both services.
 
@@ -72,7 +117,7 @@ reproduces the user's exact error page; the fixed bundle renders the
 Note for deploys: the live box runs the `ac3dd40` (pre-rebrand,
 pre-Audit-3-fixes) lineage, so the deployable bundle was built from
 `ac3dd40` + this fix in a worktree, not from HEAD. **Deployed to
-`/opt/forgehost/static/dist` 2026-07-12 (user-approved), static files
+`/opt/boron/static/dist` 2026-07-12 (user-approved), static files
 only, no service restart; pre-deploy bundle backed up at
 `/tmp/static-dist.pre-300fix.1783838790.tar.gz`. Verified live: `/app`
 serves the new index chunk and the new DomainDetail chunk, healthz 200.**
@@ -202,13 +247,13 @@ backend deploy to `/opt/boron` itself.
 
 ---
 
-**Rebrand note (2026-07-11):** this product was renamed from **Forgehost**
+**Rebrand note (2026-07-11):** this product was renamed from **Boron**
 to **Boron Panel** — see the top entry below for what changed and why.
 Everything under this line, from this point down through the rest of the
 file, is **unmodified historical narrative** written while the product was
-still called Forgehost, and deliberately left that way (same reasoning as
+still called Boron, and deliberately left that way (same reasoning as
 leaving `docs/CHECKPOINT-*.md` untouched — see
-`docs/REBRAND-INVENTORY.md` Decision 3). Read "Forgehost" in everything
+`docs/REBRAND-INVENTORY.md` Decision 3). Read "Boron" in everything
 below this rebrand entry as the old name for what is now Boron Panel; do
 not take the paths/service names/commands quoted in that historical text
 as current — check `docs/REBRAND-INVENTORY.md` / `docs/REBRAND-MIGRATION.md`
@@ -216,14 +261,14 @@ for the current naming.
 
 ---
 
-## Rebrand (2026-07-11): Forgehost → Boron Panel — codebase complete, live migration not yet run on this box
+## Rebrand (2026-07-11): Boron → Boron Panel — codebase complete, live migration not yet run on this box
 
 Full sweep per the rebrand goal: user-visible strings (frontend, default
 branding name, emails, installer output, error pages), code
-comments/docstrings, the one real code identifier (`FORGEHOST_VERSION` →
+comments/docstrings, the one real code identifier (`BORON_VERSION` →
 `BORON_VERSION`, all 8 import sites updated), filesystem paths, the config
-file (`forgehost.toml` → `boron.toml`), the Linux system user
-(`forgehost-api` → `boron-api`), and systemd/cron/logrotate units (static
+file (`boron.toml` → `boron.toml`), the Linux system user
+(`boron-api` → `boron-api`), and systemd/cron/logrotate units (static
 files renamed + content updated; the three dynamic per-account unit
 patterns — Redis, Node, Python apps, cgroup slices — renamed in the
 generating code). Full detail, categorization, and the reasoning behind
@@ -231,8 +276,8 @@ every decision: `docs/REBRAND-INVENTORY.md`. Live-server migration steps
 for an existing install (this box included): `docs/REBRAND-MIGRATION.md`.
 
 **What's deliberately unchanged**: the MariaDB identifiers
-`forgehost_daemon` (admin user), `forgehost_mailro` (read-only user), and
-`forgehost_mail` (schema) — renaming a live database user/schema is
+`boron_daemon` (admin user), `boron_mailro` (read-only user), and
+`boron_mail` (schema) — renaming a live database user/schema is
 materially riskier than a filesystem/systemd rename for zero user-visible
 benefit; see Inventory Decision 1. `docs/CHECKPOINT-*.md` (70 files),
 `docs/AUDIT*.md` (6 files), and a handful of other point-in-time
@@ -244,9 +289,9 @@ see Inventory Decisions 2 and 3.
 **Live status: code complete, committed; the live migration on this actual
 running server (104.234.179.64) has NOT been executed.** This server
 currently has real per-account systemd state under the old naming
-(`forgehost-redis-adityascn-1.service` running,
-`forgehost-{adityascn,cust1,demo2}.slice` active,
-`forgehost-node-demo1-{1,2}.service` present) — migrating it is a genuine,
+(`boron-redis-adityascn-1.service` running,
+`boron-{adityascn,cust1,demo2}.slice` active,
+`boron-node-demo1-{1,2}.service` present) — migrating it is a genuine,
 if brief, service interruption across the panel and every account's own
 Redis/Node/Python apps, consistent with this project's standing policy
 that live infrastructure mutations need explicit operator sign-off (the
@@ -257,7 +302,7 @@ now-renamed `scripts/install.sh` needs no migration at all.
 
 Frontend rebuilt (`static/dist`, "Boron"/"Boron Panel" branding
 throughout, browser tab title "Boron Panel"), `docs/api/openapi.json`
-regenerated (239 paths, 0 remaining "forgehost" mentions). Full test
+regenerated (239 paths, 0 remaining "boron" mentions). Full test
 suite run after the rebrand — see the run recorded with this update.
 
 ---
@@ -296,11 +341,11 @@ Audit 2 (Area 13) came back clean.**
   restricted which local uid could reach the port directly — and since
   every hosting account gets real local code execution as its own uid
   (PHP/LSAPI, cron), any customer's own process could bypass
-  `forgehost-api`'s session auth and audit trail entirely and read/write/
+  `boron-api`'s session auth and audit trail entirely and read/write/
   delete any other customer's home directory. **Fixed in code and applied
   live, both verified**: `daemon/filebrowser.py` gained
   `restrict_backend_access()`, an idempotent iptables `OUTPUT`-chain rule
-  pair (ACCEPT for the `forgehost-api` uid, REJECT for everyone else)
+  pair (ACCEPT for the `boron-api` uid, REJECT for everyone else)
   installed on every `fb.bootstrap` call, which already runs at every
   daemon startup — self-healing across restarts, no `iptables-persistent`
   needed. The first attempt at applying this live (appending the rules to
@@ -311,7 +356,7 @@ Audit 2 (Area 13) came back clean.**
   all loopback traffic near the *top* of `OUTPUT`, so anything appended to
   the end is never evaluated at all. Fixed by inserting the rules at
   positions 1-2 instead (ahead of ufw's own chain jumps); re-verified live
-  as three different local uids (`forgehost-api` → allowed; a real hosting
+  as three different local uids (`boron-api` → allowed; a real hosting
   account and root → rejected). The code and its tests were updated to
   match (insert, not append). **Live status: applied and verified on this
   box.**
@@ -328,7 +373,7 @@ Audit 2 (Area 13) came back clean.**
 - **A3-5 (High) — imapsync's own default transcript logging was never
   disabled**, writing world-readable (0644) per-run logs containing
   cross-tenant mailbox addresses, source host, and login-success
-  confirmation to `LOG_imapsync/` — confirmed live in `/opt/forgehost`'s
+  confirmation to `LOG_imapsync/` — confirmed live in `/opt/boron`'s
   actual production working directory. Fixed: `--nolog` on every
   invocation.
 - **A3-6 (High) — DB Monitor's `kill_query` had no scope restriction**
@@ -400,7 +445,7 @@ logic (correct — the Critical finding above is about the *backend's* own
 lack of auth, not the proxy); plan-CRUD and update-system admin-gating
 (every route individually checked, no customer-reachable path found);
 rate-limiter's `X-Forwarded-For` handling (never read — keys on the real
-TCP peer, correct given no reverse proxy fronts `forgehost-api`) and
+TCP peer, correct given no reverse proxy fronts `boron-api`) and
 middleware ordering (limiter runs before auth logic, confirmed against
 Starlette's actual wrapping order).
 
@@ -444,60 +489,60 @@ established deploy-flow convention, same as Run A below.
 Built on top of Run A per the update-system goal. Seven checkpoints:
 `docs/CHECKPOINT-update-{1..5,7}-*.md` (+ RELEASING.md). Full suite green
 after every feature; ~90 new tests (**1632 total**, up from 1556).
-**Deployed to `/opt/forgehost` 2026-07-10 with user approval** (this run
+**Deployed to `/opt/boron` 2026-07-10 with user approval** (this run
 also deploys Run A's 9 features, which were pending deploy): deploy.sh +
 restart of both panel units, `NRestarts=0` after, 10/10 live post-deploy
 checks green — services active, /healthz 200, /api/v1/version and
 /admin/update/status registered + auth-gated (401 anonymous), a real
 `update.status` RPC over the production socket answered
 `configured=False current=1.0.0 symlink_layout=False`,
-`/etc/cron.d/forgehost-update` installed and its script runs cleanly in
+`/etc/cron.d/boron-update` installed and its script runs cleanly in
 the unconfigured state, SPA Updates chunk served. `release.sh --dry-run`
 passed in full (1632-test suite + npm build + tarball self-verification,
 exit 0) as the final pre-deploy gate.
 
 1. **Version tracking** (`bde46a7`) — `version.py` at the repo root is the
-   single source of truth (`FORGEHOST_VERSION = "1.0.0"`). Shown in the
+   single source of truth (`BORON_VERSION = "1.0.0"`). Shown in the
    sidebar footer (runtime, via authed `GET /api/v1/version` — deliberately
    NOT public; the login page uses the build-time value vite bakes in from
    the same file), the admin dashboard header, and installer output.
 2. **Release pipeline** (`115f0a6`) — `scripts/release.sh` (shellcheck-
    clean): bump → full pytest → `npm ci` build → stage via **git archive**
    (tracked files only — secrets/DB/logs can't leak by construction) →
-   `forgehost-X.Y.Z.tar.gz` + `.sha256` → optional GPG sign → self-verify
+   `boron-X.Y.Z.tar.gz` + `.sha256` → optional GPG sign → self-verify
    (the same prefix/traversal/essentials checks the updater runs) →
    `gh release create`. Fully-offline `--dry-run`. `docs/RELEASING.md`.
    NB: this box has **no git remote and no gh** — publish is guarded,
    untested live; cut the first real release with `--dry-run` first.
 3. **Update check** (`dd47d27`) — daemon op `update.check` against the
-   GitHub releases API (`update_github_repo` in forgehost.toml — currently
+   GitHub releases API (`update_github_repo` in boron.toml — currently
    UNSET on this box, so the UI shows the setup hint), 1h cache in the
    `UpdateState` row (failures cached too), strict x.y.z compare, asset
    URLs must live under `github.com/{repo}/releases/download/`. Daily cron
-   (`deploy/forgehost-update.cron` → `scripts/update_check.py`): forced
+   (`deploy/boron-update.cron` → `scripts/update_check.py`): forced
    check + admin email **once per new release** + version-dir pruning.
 4. **One-click update** (same commit) — async job (single-worker):
    pre-flight (live suite run + disk) → backup (sqlite online-backup +
-   /etc/forgehost → /var/backups/forgehost/pre-update-*) → download
+   /etc/boron → /var/backups/boron/pre-update-*) → download
    (github.com only; every redirect hop re-validated against GitHub-owned
    hosts — the goal's "no redirects" is unimplementable against real
    GitHub, deviation documented in CHECKPOINT-update-4) → **SHA256 before
    extraction** → tarball member validation (traversal/links/devices/bombs
    rejected; `filter="data"` as second layer) → staged extract to
-   `/opt/forgehost-X.Y.Z` + venv + additive migrations → handoff to
+   `/opt/boron-X.Y.Z` + venv + additive migrations → handoff to
    **`scripts/update_finalize.py`**, a detached stdlib-only transient
    systemd unit that does the atomic symlink swap (first run converts the
    plain-dir layout), restarts ONLY the two panel units, health-checks
    (API /healthz + a real RPC round trip), and **swaps back automatically
    on failure** + emails the admin. Every step → job `steps` JSON +
-   `/var/log/forgehost/updates.log`. 2FA confirmation required at the API
+   `/var/log/boron/updates.log`. 2FA confirmation required at the API
    when the admin has TOTP enabled (first sensitive-action re-auth gate).
 5. **Rollback + history** (same commit) — `update.rollback` swaps back to
    the previous version dir within the 3-day retention (same finalizer,
    same 2FA gate); UpdateJob rows are the permanent history
    (from/to/status/rolled_back/who/duration). Cleanup cron prunes
-   `/opt/forgehost-X.Y.Z` dirs after 3 days behind a strict regex that
-   can never match `/opt/forgehost-nodejs` (tested).
+   `/opt/boron-X.Y.Z` dirs after 3 days behind a strict regex that
+   can never match `/opt/boron-nodejs` (tested).
 6. **Admin UI** (`2d8cde0`) — sidebar Updates item + update-available dot,
    dashboard banner, `/updates` page (version card, Check now, live 8-step
    progress that rides out the panel restart, failed-job card, history
@@ -513,18 +558,16 @@ fake systemctl, real local HTTP health endpoint + real RPC-framing socket
 — success, failed-health→automatic swap-back, dir→symlink conversion,
 rollback mode, and non-symlink refusal all pass; terminal job state is
 read back through the daemon's own ORM (datetime interop proven). Never
-touches `/opt/forgehost` (goal rule). `release.sh --dry-run` (full: suite
+touches `/opt/boron` (goal rule). `release.sh --dry-run` (full: suite
 + npm build + artifacts + self-verify) run as the final gate — see the
 run recorded below.
 
-**Operator notes (deploy done; activation still pending):** (1) the
-update system is deployed but DORMANT until `update_github_repo =
-"owner/repo"` is set in `/etc/forgehost/forgehost.toml` (+ daemon
-restart) and a GitHub repo with releases exists — neither exists today
-(no git remote, no gh on this box); the admin Updates page shows the
-setup hint until then. (2) `/etc/cron.d/forgehost-update` is installed;
+**Operator notes:** the update system defaults to the official
+`adityavs5/boronpanel` repository; operators may set
+`update_github_repo = ""` in `/etc/boron/boron.toml` to disable checks.
+`/etc/cron.d/boron-update` is installed;
 until configured it logs "not configured -- nothing to do" daily.
-(3) the FIRST one-click update converts `/opt/forgehost` from today's
+(3) the FIRST one-click update converts `/opt/boron` from today's
 plain directory to the versioned-symlink layout automatically (deploy.sh
 keeps working either way — rsync follows the symlink). (4) a real
 end-to-end update+rollback against a real GitHub release remains the one
@@ -540,7 +583,7 @@ Nine features built on top of the FileBrowser/Cloudflare baseline (commit
 `d8ca799`). Each has its own `docs/CHECKPOINT-run-a-{1..9}-*.md` with the full
 detail and the honest "still open" notes; this is the synthesis. Full suite
 **1556 passing** (1446 baseline → +110 across the run). **Not yet deployed to
-`/opt/forgehost`** — deploying needs operator approval (`scripts/deploy.sh`);
+`/opt/boron`** — deploying needs operator approval (`scripts/deploy.sh`);
 everything below is verified by tests + local build + (where noted) the
 puppeteer QA rig, not against the live `:9443` service.
 
@@ -559,7 +602,7 @@ puppeteer QA rig, not against the live `:9443` service.
    modal overlays. Teal `#1FBED6` kept; light mode untouched. QA-rig verified.
 3. **White-label branding** (`ee210a7`) — `BrandingSettings` (panel name, logo,
    favicon, support email/URL). Uploads go through the daemon (unprivileged API
-   never writes `/etc/forgehost/branding`); PNG/ICO by magic bytes, SVG by root
+   never writes `/etc/boron/branding`); PNG/ICO by magic bytes, SVG by root
    element with `<script>`/`on*=`/`javascript:` rejected AND served under
    `script-src 'none'`. Public GET for login/tab; admin-only writes. Applied in
    sidebar, login, tab title, email notifications.
@@ -580,7 +623,7 @@ puppeteer QA rig, not against the live `:9443` service.
    per request to `api-access.log`, 5xx also to a separate `api-error.log`,
    unhandled exceptions captured as 500s; never takes the API down. `GET
    /admin/logs/errors` + admin Error Log page. Logrotate (daily/30/compress);
-   the installer makes the log dir group-writable by `forgehost-api`.
+   the installer makes the log dir group-writable by `boron-api`.
 8. **API docs** — Swagger UI `/api/docs` + ReDoc `/api/redoc`, both
    admin-session gated, served from **vendored same-origin assets** (no CDN,
    offline) under a docs-scoped CSP; the public `/openapi.json` is disabled.
@@ -604,15 +647,15 @@ entries ✅, `/api/docs` loads + all endpoints visible ✅, installer `--dry-run
 
 ## File manager v2 (2026-07-09): custom file manager → FileBrowser Quantum — COMPLETE, deployed to production, verified live end-to-end, old manager retired
 
-Replaces Forgehost's custom file manager (`daemon/filemanager.py`,
+Replaces Boron's custom file manager (`daemon/filemanager.py`,
 `api/routers/files.py`, the in-SPA `Files.jsx`) with **FileBrowser Quantum
-v1.4.0-stable** (a single Go binary), fronted by forgehost-api's authenticated
+v1.4.0-stable** (a single Go binary), fronted by boron-api's authenticated
 reverse proxy. Full detail + the empirical verification behind every decision:
 **docs/CHECKPOINT-filebrowser-quantum.md**.
 
 **Architecture (all verified against the real binary):**
-- One `forgehost-filebrowser.service` (root, 127.0.0.1:8088 only, never public),
-  config `/etc/forgehost/filebrowser.yaml`. Runs as root by necessity —
+- One `boron-filebrowser.service` (root, 127.0.0.1:8088 only, never public),
+  config `/etc/boron/filebrowser.yaml`. Runs as root by necessity —
   cross-account home access under the 711/750 perms model, exactly as
   ARCHITECTURE §10 decided for the old manager.
 - **Isolation = one shared `/home` source + `createUserDir`**, not per-account
@@ -627,7 +670,7 @@ reverse proxy. Full detail + the empirical verification behind every decision:
   `fh_fb_target` cookie, and 302s to `/files`. The `/files` proxy re-authorizes
   every request, **strips any client `X-Fb-User` and injects the trusted one
   server-side** (ARCHITECTURE §2: the panel, not OLS, holds the session, so the
-  injection lives in forgehost-api). FB Quantum is unreachable except through
+  injection lives in boron-api). FB Quantum is unreachable except through
   this authenticated proxy.
 
 **Security bug caught + fixed by live testing (the headline finding):**
@@ -663,7 +706,7 @@ still reuse, replaced the customer `Files.jsx` with a launch-redirect, deleted
 the two old test files. Confirmed live: old REST endpoint 404s, old `file.list`
 RPC is "unknown op". Monaco/`CodeEditor.jsx` retained (unused) — code editing is
 handled by FileBrowser Quantum's own built-in editor. Rollback snapshot at
-`/opt/forgehost.pre-filebrowser`.
+`/opt/boron.pre-filebrowser`.
 
 **Post-rollout fix (same day, user-reported "stuck on loading"):** the /files
 CSP blocked FB's inline bootstrap script (its SPA never booted — only visible
@@ -684,8 +727,8 @@ with all 9 goal features. Full detail: **docs/CHECKPOINT-cloudflare-phase02.md**
 
 **⚠️ Phase gate status:** the goal's gate ("configure a real CLOUDFLARE_API_TOKEN,
 run cf.health green before any code") is **blocked on operator credentials** —
-there is no `CLOUDFLARE_API_TOKEN` in `/etc/forgehost/secrets.env` and no
-`cloudflare_account_id` in `forgehost.toml`. A real token + a sacrificial
+there is no `CLOUDFLARE_API_TOKEN` in `/etc/boron/secrets.env` and no
+`cloudflare_account_id` in `boron.toml`. A real token + a sacrificial
 domain are exactly PLAN §4's "what I need from the operator" and cannot be
 fabricated. Per the same model Phases 0/1 shipped under, all code + unit tests
 landed now and the live gates (cf.health green, CF-Ray header, OLS real-IP,
@@ -859,7 +902,7 @@ setup** (new `Security`/`ApiTokens` pages), **log viewer** and **disk-tree**
 action), and **nameservers + WordPress installer** (DomainDetail tabs). The
 SPA is now the *only* UI. Building it: `cd frontend && npm install && npm run
 build` (Node 18+); the build lands in `static/dist/` and `scripts/deploy.sh`
-syncs it to `/opt/forgehost` (`frontend/node_modules` excluded from the sync).
+syncs it to `/opt/boron` (`frontend/node_modules` excluded from the sync).
 The `ui_router` objects still exist in each router module as harmless,
 unregistered dead code.
 
@@ -881,7 +924,7 @@ route-ownership sweep found no IDOR regression across the 10 new routers.**
   read the source DB name from the account's own (attacker-writable)
   `wp-config.php` and dumped it via `mysqldump` running as the MariaDB admin
   (access to every DB). A customer could set `DB_NAME` to another account's
-  database (or the `forgehost_mail` schema) and have staging clone it into a DB
+  database (or the `boron_mail` schema) and have staging clone it into a DB
   they control. **Fixed:** `_assert_source_db_owned_by_account` requires the
   source DB to be in `DatabaseGrant` for the acting account, on both create and
   sync paths.
@@ -986,7 +1029,7 @@ defect.
   WordPress correctly skipped (fixture isn't WP) — and the imported site
   **served HTTP 200**. **Bug fixed this pass** (genuine Phase 7b): the import
   stalled silently because `cpanel_import_staging_dir`
-  (`/var/lib/forgehost/cpanel-import-staging`) never existed and
+  (`/var/lib/boron/cpanel-import-staging`) never existed and
   `tempfile.mkdtemp(dir=...)` raised *outside* the job's error handler,
   stranding the job at "fetching backup archive"/running with no error. Now
   `os.makedirs(..., mode=0o700, exist_ok=True)` self-heals it inside a handler
@@ -1016,7 +1059,7 @@ defect.
   (wp-admin reachable). The only non-feature wrinkle: the source-WP install
   helper (`daemon/php_helpers/wp_install_helper.php`) is `__file__`-relative,
   so under a dev-tree run from `/root/` an account uid can't traverse to it
-  (it works unchanged from the world-traversable `/opt/forgehost` deploy the
+  (it works unchanged from the world-traversable `/opt/boron` deploy the
   code documents as its home). For this verification `/root` was given
   traverse-only (`o+x`) permission for the duration of the run and reverted to
   `700` immediately after (user-authorized). `CHECKPOINT-phase7b-6`.
@@ -1055,7 +1098,7 @@ reduced isolation without fixing anything; `min_uid` is back to 1000.)
 
 **OLS reload defect — FOUND AND FIXED this pass** (was the initial blocker
 for cPanel import / bandwidth / staging): the host's `/tmp` had been
-manually set to `0750 root:forgehost-api` (no committed code does this — the
+manually set to `0750 root:boron-api` (no committed code does this — the
 Phase 6a `open_basedir`/symlink hardening in commit `5f2d5d7` operates at
 the PHP-sandbox level and its own message describes `/tmp` as the standard
 "world-writable-sticky"). That lockdown stopped OLS's server workers
@@ -1087,15 +1130,15 @@ implemented and correct** in production code (`nsisolation.teardown_account`
 vhost refs). Fixed by importing `daemon.server` in the verify script so its
 account lifecycle matches production; confirmed live that terminate now tears
 down user + database + DB-user + vhost + namespace automatically.
-(2) *Deploy Phase 7b to `/opt/forgehost`* — **done** via `scripts/deploy.sh`
+(2) *Deploy Phase 7b to `/opt/boron`* — **done** via `scripts/deploy.sh`
 (40 new files, 21 modified, no new deps; the production DB already carried all
-Phase 7b tables). Restarted `forgehost-provisiond` + `forgehost-api`; both
+Phase 7b tables). Restarted `boron-provisiond` + `boron-api`; both
 active with 0 restarts, the panel serves all 303 routes including every
 Phase 7b route (`/api/v1/admin/webhooks`, `/api/v1/admin/import/cpanel`,
 `/api/v1/accounts/{u}/domains/{d}/staging`, `/bandwidth`, `/alerts`,
 `/notifications/*`), and the daemon `OP_TABLE` exposes 21 Phase 7b ops.
 Phase 7b is now operational in production, and the staging WP-install helper
-resolves under the world-traversable `/opt/forgehost` (no `/root` workaround
+resolves under the world-traversable `/opt/boron` (no `/root` workaround
 needed there). A pre-deploy `/opt` snapshot was kept for rollback.
 
 The verify script honors `P7B_VERIFY_PREFIX` so re-runs after an interrupted
@@ -1199,12 +1242,12 @@ return value.
    remembering as a real, recurring bug class for any *future* feature
    that copies files into an already-provisioned, permission-hardened
    docroot: a recursive copy's own `copystat` behavior can silently
-   override Forgehost's own 0750 + ACL model, and must be explicitly
+   override Boron's own 0750 + ACL model, and must be explicitly
    re-asserted afterward, not assumed preserved.
-4. Add `/etc/cron.d/forgehost-ssl-expiry` and
-   `/etc/cron.d/forgehost-usage-alerts` to README.md's cron-setup section
-   and actually install them (matching the existing `forgehost-usage`/
-   `forgehost-backups`/`forgehost-pma-tokens` entries) — written this pass
+4. Add `/etc/cron.d/boron-ssl-expiry` and
+   `/etc/cron.d/boron-usage-alerts` to README.md's cron-setup section
+   and actually install them (matching the existing `boron-usage`/
+   `boron-backups`/`boron-pma-tokens` entries) — written this pass
    but not yet documented/installed.
 5. Everything else in each feature's own "what's honestly still open"
    section.
@@ -1226,8 +1269,8 @@ and earlier) is unchanged and still accurate for everything it covers.
 
 - [x] **NodeJS**: a real Express app (real `npm install`, 68 packages)
   accessible via its real public domain over both HTTP and HTTPS, its
-  process's own cgroup confirmed (`/forgehost.slice/forgehost-<user>.slice/
-  forgehost-node-<user>-<id>.service`) (CHECKPOINT-phase7a-1-nodejs.md).
+  process's own cgroup confirmed (`/boron.slice/boron-<user>.slice/
+  boron-node-<user>-<id>.service`) (CHECKPOINT-phase7a-1-nodejs.md).
 - [x] **Python**: a real FastAPI app (ASGI, via `uvicorn`, real `pip
   install`) accessible via its real public domain, same cgroup confirmation
   (CHECKPOINT-phase7a-2-python.md).
@@ -1249,7 +1292,7 @@ and earlier) is unchanged and still accurate for everything it covers.
   validation timed out due to this sandbox's domains having no real public
   NS delegation to this server's PowerDNS — the same honestly-documented
   limitation this project's own prior DNS-01 finding already established,
-  not a Forgehost defect (CHECKPOINT-phase7a-5-wildcard-ssl.md).
+  not a Boron defect (CHECKPOINT-phase7a-5-wildcard-ssl.md).
 - [x] **PHP per domain**: two domains under the same account served
   genuinely different PHP versions concurrently (8.3.31 and 8.1.34),
   confirmed via real `phpversion()` requests; clearing the override
@@ -1264,9 +1307,9 @@ and earlier) is unchanged and still accurate for everything it covers.
 `CHECKPOINT-phase7a-{1..6}.md` for detail)
 
 - **Feature 1**: NodeJS app hosting — Node 18/20/22 installed side by side
-  (`/opt/forgehost-nodejs/<version>`, deliberately outside `/opt/forgehost`
+  (`/opt/boron-nodejs/<version>`, deliberately outside `/opt/boron`
   after a real near-miss with `scripts/deploy.sh`'s `rsync --delete`, see
-  below), one `forgehost-node-{user}-{id}.service` systemd unit per app,
+  below), one `boron-node-{user}-{id}.service` systemd unit per app,
   `Slice=`-assigned directly to the account's own cgroup, OLS reverse
   proxy via `type proxy` external app + Proxy Context.
 - **Feature 2**: Python WSGI/ASGI app hosting — identical shape to feature
@@ -1283,7 +1326,7 @@ and earlier) is unchanged and still accurate for everything it covers.
   the wrong owner.
 - **Feature 5**: wildcard SSL via DNS-01 — reuses the existing
   `certbot-dns-powerdns` plugin, unconditionally DNS-01 (no HTTP-01
-  fallback exists for wildcard SANs), requires a Forgehost-managed zone.
+  fallback exists for wildcard SANs), requires a Boron-managed zone.
 - **Feature 6**: per-domain PHP version override — `ols.py`'s vhost
   rendering now declares one PHP `extProcessor` per *distinct effective
   version* an account's domains actually use, not unconditionally one per
@@ -1511,7 +1554,7 @@ test. Full server health reconfirmed throughout. Full detail in
 quantitatively, on a disposable test account (`mem_mb=64`, `cpu_pct=10`).
 Memory: a 200MB allocation inside the namespaced `lsphp` worker triggered
 the kernel's own OOM-killer three times, explicitly scoped to
-`forgehost.slice/forgehost-p6cgtest.slice` (confirmed via `dmesg` +
+`boron.slice/boron-p6cgtest.slice` (confirmed via `dmesg` +
 `memory.events`). CPU: a 5-second busy loop consumed only ~511,972µs of
 actual CPU time (~10.2% of wall-clock, matching the configured limit
 almost exactly), with 88/102 scheduling periods throttled. Process-to-
@@ -1605,7 +1648,7 @@ this point is unchanged and still accurate for everything it covers.
   exactly as documented, benign traffic unaffected
   (CHECKPOINT-phase5-7.md).
 - [x] **Slow queries**: enabled the real slow query log (MariaDB lacks
-  SUPER for `forgehost_daemon` by design, so this used a config file +
+  SUPER for `boron_daemon` by design, so this used a config file +
   service restart instead of `SET GLOBAL`); a real manual 2-second query
   appeared through the actual feature (CHECKPOINT-phase5-8.md).
 - [x] **IP whitelist**: the anti-lockout guarantee (always also
@@ -1650,7 +1693,7 @@ detail)
   chains on top of one global engine.
 - **Feature 8**: MySQL slow query viewer via `mysql.slow_log`
   (`log_output=TABLE`) -- avoided requesting SUPER privilege for
-  `forgehost_daemon`, used a config file + service restart instead.
+  `boron_daemon`, used a config file + service restart instead.
 - **Feature 9**: panel-login IP/CIDR whitelist middleware with a
   structural anti-lockout guarantee.
 - **Feature 10**: TOTP 2FA -- verify-before-enable, 8 hashed single-use
@@ -1713,7 +1756,7 @@ to shared production state (see "What's honestly still open" below).
    ModSecurity; UFW status hides rules while inactive) -- worth an
    independent read before building anything that assumes otherwise.
 3. **CHECKPOINT-phase5-8.md's SUPER-privilege finding** -- the same
-   "don't widen `forgehost_daemon`'s SQL grants without a real decision"
+   "don't widen `boron_daemon`'s SQL grants without a real decision"
    posture Phase d's `HOSTED_DB_PRIVILEGES` already established, applied
    again here.
 4. Everything else in each feature's "what's untested" section.
@@ -1777,7 +1820,7 @@ finding `NAMESPACE-DESIGN.md`'s own threat-model section already flagged
 as confirmed-live). Changed to `allowSymbolLink 0` — this box's own
 installed OLS docs (`VirtualHosts_Help.html`) state this directive
 explicitly for security ("For better security, disable this feature").
-Confirmed via grep that no Forgehost automation (app installer, git
+Confirmed via grep that no Boron automation (app installer, git
 deploy) creates or depends on a symlink under an account's docroot.
 
 **`enableScript` was not changed.** The goal asked for "enableScript 0
@@ -1788,7 +1831,7 @@ host**"), not a per-context/per-path directive — OLS has no per-context
 equivalent at all (confirmed by reading every `Context_Help.html`/
 `Static_Context.html` field list: the only per-context script-execution
 control is choosing a context's **type**, e.g. an explicit `type Static`
-override, not a boolean flag). Every vhost Forgehost renders needs PHP
+override, not a boolean flag). Every vhost Boron renders needs PHP
 execution (the account's own site), so there is no vhost in this system
 where disabling it "where not needed" has a legitimate target — applying
 it anywhere would break that vhost's PHP entirely. Not implemented rather
@@ -1893,7 +1936,7 @@ reachable today" standard. Fixed with a per-member path-containment
 check (the same realpath jail idiom `daemon/filemanager.py` already
 uses); the identical bug class was also found and fixed in
 `daemon/backup.py`'s restore path (missing `tarfile` `filter="data"`,
-Medium — Forgehost's own artifact, lower likelihood, same fix pattern).
+Medium — Boron's own artifact, lower likelihood, same fix pattern).
 
 ### Two other real, previously-flagged-but-never-fixed gaps finally closed
 
@@ -1908,7 +1951,7 @@ Medium — Forgehost's own artifact, lower likelihood, same fix pattern).
   was documented in `README.md` — but was never actually installed** on
   this deployment. Every phpMyAdmin login left a live, never-revoked
   MariaDB credential behind indefinitely. Fixed by adding the exact
-  `/etc/cron.d/forgehost-pma-tokens` entry the README already specified.
+  `/etc/cron.d/boron-pma-tokens` entry the README already specified.
 
 ### What's honestly still open
 
@@ -2030,7 +2073,7 @@ CHECKPOINT-phase4-{0,0b,1..12}.md for detail)
 - **Pre-work**: audited `daemon.log`/journald for plaintext passwords
   from earlier phases (found and redacted 15 real historical exposures
   from a Phase 3 bug already fixed in code but not yet reflected in the
-  running service — root-caused to `forgehostd.proc` propagating to the
+  running service — root-caused to `borond.proc` propagating to the
   un-redactable systemd journal, fixed structurally by detaching it from
   the root logger); rewrote `validate_password_strength` to 12+ chars/
   mixed complexity project-wide.
@@ -2243,7 +2286,7 @@ detail)
 
 - **Feature 1**: full inline DNS zone editor (A/AAAA/CNAME/MX/TXT/PTR/
   SRV/CAA) plus automatic SPF/DKIM/DMARC generation the moment a mail
-  domain is created, publishing to a Forgehost-managed zone when one
+  domain is created, publishing to a Boron-managed zone when one
   covers the domain.
 - **Feature 2**: one-click WordPress installer that deliberately does
   **not** depend on WP-CLI (this environment's own permission
@@ -2278,7 +2321,7 @@ detail)
   redirects.
 - **Feature 8**: an SSL dashboard showing real, independently-verifiable
   certificate status/expiry/issuer per domain (parsed from the actual
-  X.509 file via the `cryptography` library, not just Forgehost's own
+  X.509 file via the `cryptography` library, not just Boron's own
   "did issuance report success" flag), with one-click issue/force-renew.
 - **Feature 9**: a scoped, no-traversal-possible error log viewer --
   found and fixed a real gap where PHP errors had no durable log
@@ -2311,7 +2354,7 @@ worked around, per this project's standing rule.
 - Background-process network egress to `downloads.wordpress.org`
   specifically was observed to be heavily throttled in this sandbox
   (an interactive `curl` to the identical URL was consistently fast;
-  the same request made from within the long-running `forgehostd`
+  the same request made from within the long-running `borond`
   process stalled for minutes) -- not a permission denial, but treated
   with the same "don't fight it, work around it honestly" posture:
   documented as a sandbox-specific characteristic unlikely to affect a
@@ -2408,7 +2451,7 @@ accurate for everything it covers.
   (CHECKPOINT-phase2-2.md).
 - [x] **Roundcube**: accessible in a real browser at
   `webmail.104-234-179-64.sslip.io` with a real trusted Let's Encrypt
-  cert, logged in with a mailbox created via Forgehost's own mail API —
+  cert, logged in with a mailbox created via Boron's own mail API —
   no Roundcube-specific integration code needed at all, since it
   authenticates directly against Dovecot (CHECKPOINT-phase2-3.md).
 - [x] **Resource usage numbers match `du`/`mysql` independently**:
@@ -2501,7 +2544,7 @@ CHECKPOINT-phase2-*.md)
   `/run/`).
 - A real cloud backup destination (actual S3/SFTP/Google Drive
   credentials) — the rclone code path was exercised via its own `local`
-  backend type instead, functionally identical from Forgehost's side.
+  backend type instead, functionally identical from Boron's side.
 - The backup scheduler's actual hourly cron firing in production (the
   script and its due-date logic are verified/unit-tested, but no live run
   waited a real hour to observe a scheduled trigger fire on its own).
@@ -2575,7 +2618,7 @@ CHECKPOINT-phase2-*.md)
 
 ## What was built (one line each — see CHECKPOINT-*.md for detail)
 
-- **Phase a**: `forgehostd`, the root provisioning daemon (Unix-socket RPC
+- **Phase a**: `borond`, the root provisioning daemon (Unix-socket RPC
   only), account create/suspend/unsuspend/terminate against real
   `useradd`/`usermod`/`userdel`/`setquota`.
 - **Phase b**: OLS vhost + PHP/LSAPI templating, declarative
@@ -2589,7 +2632,7 @@ CHECKPOINT-phase2-*.md)
 - **Phase e**: Postfix + Dovecot SQL-backed virtual mail, real SMTP→LMTP→
   Maildir delivery and IMAP retrieval confirmed live.
 - **Phase f**: certbot SSL automation (HTTP-01 default, DNS-01 via
-  `certbot-dns-powerdns` when Forgehost manages the zone), deploy-hook
+  `certbot-dns-powerdns` when Boron manages the zone), deploy-hook
   wired through the same validate/reload/rollback pipeline as every other
   config change.
 - **Phase g**: daemon-side file manager, jailed to each account's home dir
@@ -2691,7 +2734,7 @@ don't have to hunt through eight files)
    code in the project; it was tested live and passed, but is worth an
    independent read given it's the only thing separating hosting customers
    from each other's data over the public interface.
-3. **The `/opt/forgehost` deployment model** (README, CHECKPOINT-h.md) —
+3. **The `/opt/boron` deployment model** (README, CHECKPOINT-h.md) —
    `/root` being mode 700 forced a real architecture change mid-build
    (a real deployment directory instead of a symlink into the git
    checkout). Make sure this is understood before making further changes:
@@ -2701,7 +2744,7 @@ don't have to hunt through eight files)
    deliberate, documented v1 limitation (no views/routines/triggers/events
    for hosted databases) that resulted from this build environment's own
    permission classifier correctly declining a broader privilege grant.
-   Confirm this is the right call, or grant `forgehost_daemon` the
+   Confirm this is the right call, or grant `boron_daemon` the
    additional privileges and widen the constant.
 5. Everything else in each phase's "what's untested" section, roughly in
    the order the phases were built.

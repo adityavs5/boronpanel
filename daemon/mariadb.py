@@ -6,7 +6,7 @@ through shared.validation.validate_db_identifier before ever touching SQL --
 CREATE DATABASE/CREATE USER identifiers can't be parameterized, so allowlist
 validation here is the actual injection defense, not a formality.
 
-The daemon authenticates as a dedicated `forgehost_daemon` admin-equivalent
+The daemon authenticates as a dedicated `boron_daemon` admin-equivalent
 MariaDB user, never the bare `root` account (set up once, outside the app,
 documented in README's setup steps) -- this module assumes that user already
 exists with the necessary CREATE/DROP/GRANT privileges.
@@ -125,18 +125,18 @@ def drop_db_user(db_user: str, host: str = "localhost") -> None:
 # Explicit privilege set granted to a hosted account's own DB user --
 # deliberately enumerated rather than using the "ALL PRIVILEGES" keyword.
 # MariaDB requires the granting user to itself hold every privilege it
-# grants, so this list is scoped to exactly what forgehost_daemon's setup
+# grants, so this list is scoped to exactly what boron_daemon's setup
 # grant provides (CREATE/DROP/ALTER/INDEX/REFERENCES + standard DML) --
 # covers ordinary CRUD/DDL use (WordPress and most PHP CMSs need nothing
 # more). It deliberately excludes CREATE VIEW/TRIGGER/EVENT/ROUTINE/EXECUTE:
-# granting those to forgehost_daemon itself was flagged by this
+# granting those to boron_daemon itself was flagged by this
 # environment's permission classifier as a global-privilege expansion
 # requiring explicit operator authorization, since the project goal never
 # asked for that. Rather than work around the block, the hosted-account
 # privilege surface was scoped down to match what was already safely
 # grantable -- documented in CHECKPOINT-d.md as a deliberate v1 limitation,
 # not an oversight. An operator who wants stored-procedure/trigger/view
-# support for hosted databases can grant forgehost_daemon those specific
+# support for hosted databases can grant boron_daemon those specific
 # privileges themselves and widen this constant to match.
 HOSTED_DB_PRIVILEGES = (
     "SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES, "

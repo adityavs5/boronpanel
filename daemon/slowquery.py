@@ -1,7 +1,7 @@
 """Phase 5 feature 8: MySQL/MariaDB slow query viewer.
 
 Enabling `slow_query_log`/`long_query_time`/`log_output` needs MariaDB's
-SUPER privilege via `SET GLOBAL` -- confirmed live that `forgehost_daemon`
+SUPER privilege via `SET GLOBAL` -- confirmed live that `boron_daemon`
 does NOT have it (`Access denied; you need ... SUPER privilege`), and per
 this project's own established precedent (`daemon/mariadb.py`'s
 `HOSTED_DB_PRIVILEGES`, CHECKPOINT-d.md) broadening this account's SQL
@@ -11,7 +11,7 @@ other server-wide config change in this project does: write a real
 MariaDB config file as root (`borond` already has full OS-level
 control of `/etc/mysql/` and of `mariadb.service`) and restart the
 service -- no new SQL privilege needed at all, since the *reading* side
-(querying `mysql.slow_log`) is already covered by `forgehost_daemon`'s
+(querying `mysql.slow_log`) is already covered by `boron_daemon`'s
 existing blanket `SELECT ON *.*` grant, confirmed live.
 """
 from __future__ import annotations

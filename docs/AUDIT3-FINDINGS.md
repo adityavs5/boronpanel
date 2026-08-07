@@ -1,4 +1,4 @@
-# Forgehost — Security Audit 3 Findings
+# Boron — Security Audit 3 Findings
 
 Companion to `docs/AUDIT3-THREATMODEL.md`. Covers all 13 areas the audit goal
 named — every attack surface added since Audit 2. Findings are listed
@@ -54,7 +54,7 @@ on).
 | Router | Route (verb + path) | Auth dependency | Correctly scoped? |
 |---|---|---|---|
 | `imapsync.py` | POST `/accounts/{u}/email/imap-migrate` | `require_account_access` + `require_domain_access` | Y |
-| `imapsync.py` | POST `.../imap-migrate/list-folders` | `require_account_access` | Y (no Forgehost resource targeted) |
+| `imapsync.py` | POST `.../imap-migrate/list-folders` | `require_account_access` | Y (no Boron resource targeted) |
 | `imapsync.py` | GET `.../imap-migrate` (list) | `require_account_access` | Y |
 | `imapsync.py` | GET `.../imap-migrate/{job_id}` | `require_account_access` | Y — daemon `_job_for_account` cross-checks `job.account_id` |
 | `imapsync.py` | POST `.../imap-migrate/{job_id}/cancel` | `require_account_access` | Y — same cross-check |
@@ -201,7 +201,7 @@ path via `tarfile.open(tarball, "r:gz")`).
 verify-by-path-then-act-by-path TOCTOU shape.
 
 **IMPACT**: If anything with write access to `update_download_dir`
-(`/var/lib/forgehost/update-staging`, intended root-only 0700) could replace
+(`/var/lib/boron/update-staging`, intended root-only 0700) could replace
 the file in the gap between the two `open()` calls, the verified hash would
 not correspond to what actually gets extracted and installed as the new
 panel version — a root code-execution vector. Exploitability today is low:
@@ -284,7 +284,7 @@ TOCTOU window exists (contradicted by its own async-queue architecture).
 implements the correct pattern (resolve, validate, and pin the connection to
 the validated IP) for the structurally identical background-delivery case.
 
-**IMPACT**: A low-privileged customer can make the root `forgehostd`/
+**IMPACT**: A low-privileged customer can make the root `borond`/
 `imapsync` process originate connections into the internal network on
 arbitrary ports and speak IMAP-shaped bytes to whatever's listening, with
 partial response/error text (capped 800 chars) echoed back to the
@@ -319,11 +319,11 @@ detected rebind fails the job cleanly and never invokes imapsync.
 
 **LOCATION**: `daemon/imapsync.py:211-224,388-398` (no `--nolog`/
 `--logdir`/`--logfile` passed on any invocation); confirmed live at
-`/opt/forgehost/LOG_imapsync/*.txt` (0644, directory 0755, root:root).
+`/opt/boron/LOG_imapsync/*.txt` (0644, directory 0755, root:root).
 
 **DESCRIPTION**: imapsync's default behavior writes a full transcript to
 `LOG_imapsync/<timestamp>_<user1>_<user2>.txt` relative to its cwd. In
-production `forgehostd` runs with `WorkingDirectory=/opt/forgehost`, and
+production `borond` runs with `WorkingDirectory=/opt/boron`, and
 real, populated, world-readable log files were found there from actual
 prior runs — containing source host/IP, both source and destination mailbox
 addresses in cleartext, and explicit login-success confirmation for both
@@ -340,7 +340,7 @@ disclosure.
 **FIX**: Applied. Every `imapsync` invocation (`list_source_folders` and the
 per-folder sync loop in `_run_job`) now passes `--nolog` to suppress the
 transcript entirely. The pre-existing `LOG_imapsync/` directories (both in
-this repo checkout and, per the live evidence above, under `/opt/forgehost`
+this repo checkout and, per the live evidence above, under `/opt/boron`
 in production) are a live-deployment cleanup item for the operator, flagged
 separately since this repo isn't the live deploy target.
 
@@ -357,7 +357,7 @@ daemon call. Highlights:
   entropy alone makes brute force/timing attacks infeasible. No dedicated
   rate limit exists on wrong-token attempts, and structurally can't — the
   bypass check is resolved entirely inside OLS on the customer vhost, never
-  reaching `forgehost-api`'s rate limiter. Low finding (deferred, entropy
+  reaching `boron-api`'s rate limiter. Low finding (deferred, entropy
   makes it moot in practice).
 - **ACME exclusion**: confirmed live in the current template —
   `RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/` is the first
@@ -402,7 +402,7 @@ No Critical/High findings. Highlights:
   before deleting — confirmed present, plus a full sweep of every other
   entry-touching op (`list_entries`, `add_entry`, `import_entries`,
   `delete_entries_for_mailbox`) found no sibling instance of the same gap.
-- **Sieve/pattern injection**: not exploitable — Forgehost does not use
+- **Sieve/pattern injection**: not exploitable — Boron does not use
   Postfix `header_checks` here (docstrings claiming so are stale; actual
   mechanism is a generated Dovecot Sieve script), and
   `validate_spam_filter_pattern`'s charset (email or domain regex) contains
@@ -497,7 +497,7 @@ the box.
 ### A3-7 — Critical — FileBrowser Quantum backend has no authentication of its own and no OS-level access restriction; any local process can impersonate any account
 
 **LOCATION**: FileBrowser Quantum backend (`127.0.0.1:8088`,
-`/etc/forgehost/filebrowser.yaml`); no `iptables`/`ufw`/uid-based rule
+`/etc/boron/filebrowser.yaml`); no `iptables`/`ufw`/uid-based rule
 restricts loopback access to that port anywhere in this codebase or the
 live firewall config.
 
@@ -509,7 +509,7 @@ full stop, with `auth.methods.proxy.createUser: true` silently
 auto-vivifying a scope for a username it has never seen. Live-confirmed
 (non-mutating `curl -H "X-Fb-User: <arbitrary>" http://127.0.0.1:8088/files/"`
 → HTTP 200, full access, no credential of any kind presented). Since
-Forgehost's hosting model gives every customer real local code execution as
+Boron's hosting model gives every customer real local code execution as
 their own uid (PHP/LSAPI, cron, per Phase 8's web terminal), and `ufw`'s
 default rule set unconditionally accepts all loopback traffic (confirmed:
 `iifname "lo" ... accept` in `ufw-before-input`, with no `-m owner` rule
@@ -518,7 +518,7 @@ anywhere), any hosting customer's own PHP/cron process can reach
 
 **IMPACT**: Complete cross-tenant compromise reachable from ordinary
 customer-level code execution — a customer with a PHP script or cron job
-can bypass `forgehost-api`'s session auth and the `fb.open` audit trail
+can bypass `boron-api`'s session auth and the `fb.open` audit trail
 entirely, and read/write/delete any other customer's entire home directory,
 by sending a raw HTTP request to the loopback port with a forged
 `X-Fb-User: <victim-username>` header. This is the exact class of
@@ -529,7 +529,7 @@ unintended caller.
 
 **FIX**: Code-level fix applied. `daemon/filebrowser.py` gained a new
 `restrict_backend_access()` function: an idempotent iptables `OUTPUT`-chain
-rule pair (`-m owner --uid-owner <forgehost-api uid> -j ACCEPT` followed by
+rule pair (`-m owner --uid-owner <boron-api uid> -j ACCEPT` followed by
 a catch-all `REJECT` for the backend port), installed automatically on every
 `fb.bootstrap` call — which already runs at every daemon startup
 (`daemon/server.py:745`) — so it self-heals across restarts without needing
@@ -545,7 +545,7 @@ The initial version appended the rules (`-A OUTPUT ...`), which the audit's
 own findings write-up (and this section, in its first draft) documented as
 the fix. When later asked to apply the equivalent commands live, they were
 installed successfully but **had zero actual effect**: `curl` as three
-different local uids (the `forgehost-api` service user, a real hosting
+different local uids (the `boron-api` service user, a real hosting
 account, and root) all still reached the backend. Root cause: `ufw`'s own
 baseline `ufw-before-output` chain contains `ACCEPT ... out lo` as its
 *first* rule — unconditionally accepting all loopback traffic — and that
@@ -554,7 +554,7 @@ to the *end* of `OUTPUT` is ever evaluated. **Appending to `OUTPUT` is a
 no-op for loopback traffic on this box.** The fix: insert the rules at
 positions 1 and 2 of `OUTPUT` instead (`iptables -I OUTPUT 1 ...` / `-I
 OUTPUT 2 ...`), ahead of ufw's own chain jumps. Re-verified live afterward
-with the same three-uid test: `forgehost-api` → succeeds; the real hosting
+with the same three-uid test: `boron-api` → succeeds; the real hosting
 account and root → connection refused. `daemon/filebrowser.py` and its
 tests were updated to match (insert, not append) so the code now matches
 what was actually verified to work, not what merely looked plausible.
@@ -563,12 +563,12 @@ what was actually verified to work, not what merely looked plausible.
 user's explicit direction naming this exact live change). Current live
 `OUTPUT` chain, positions 1-2:
 ```
-1  ACCEPT  tcp  --  0.0.0.0/0  127.0.0.1  tcp dpt:8088 owner UID match <forgehost-api uid>
+1  ACCEPT  tcp  --  0.0.0.0/0  127.0.0.1  tcp dpt:8088 owner UID match <boron-api uid>
 2  REJECT  tcp  --  0.0.0.0/0  127.0.0.1  tcp dpt:8088 reject-with tcp-reset
 ```
-Verified: `forgehost-api` (uid 996) → HTTP 301 (normal proxy response);
+Verified: `boron-api` (uid 996) → HTTP 301 (normal proxy response);
 a real hosting account uid and root → `curl: (7) Failed to connect...`
-(rejected). `forgehost-api`/`forgehost-provisiond`/`forgehost-filebrowser`
+(rejected). `boron-api`/`boron-provisiond`/`boron-filebrowser`
 all confirmed still active and healthy afterward (`GET /healthz` → 200).
 This live application predates the corresponding code fix landing via a
 real deploy — a future `fb.bootstrap` run (next deploy + daemon restart)
@@ -583,11 +583,11 @@ data was affected.
 
 ### A3-8 — High — FileBrowser Quantum's systemd unit has zero sandboxing beyond running as root
 
-**LOCATION**: `deploy/forgehost-filebrowser.service`; live unit at
-`/etc/systemd/system/forgehost-filebrowser.service`.
+**LOCATION**: `deploy/boron-filebrowser.service`; live unit at
+`/etc/systemd/system/boron-filebrowser.service`.
 
 **DESCRIPTION**: Confirmed live via `systemd-analyze security
-forgehost-filebrowser.service`: every hardening control
+boron-filebrowser.service`: every hardening control
 (`NoNewPrivileges`, `ProtectSystem`, `CapabilityBoundingSet` restriction,
 `RestrictNamespaces`, `SystemCallFilter`, etc.) is absent — exposure score
 9.6/10 "UNSAFE". This is a deliberate, documented tradeoff (the process
@@ -617,8 +617,8 @@ above to the unit.
 
 **Area 11 Q1 (X-Forwarded-For spoofing)**: no finding. The limiter keys
 strictly on `request.client.host` (the real TCP peer, populated by uvicorn
-from the socket) — confirmed `deploy/forgehost-api.service` runs uvicorn
-with no `--proxy-headers`/trusted-proxy flags, and `forgehost-api` has no
+from the socket) — confirmed `deploy/boron-api.service` runs uvicorn
+with no `--proxy-headers`/trusted-proxy flags, and `boron-api` has no
 reverse proxy in front of it (`ARCHITECTURE.md §2`: binds `0.0.0.0:9443`
 directly). `X-Forwarded-For` is never read anywhere in `api/`/`daemon/`.
 

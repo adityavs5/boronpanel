@@ -190,6 +190,7 @@ export default function Redis() {
         description="This permanently removes every key in this Redis instance. This cannot be undone."
         confirmLabel="Flush all keys"
         variant="danger"
+        confirmationText="FLUSH"
         loading={flushMut.isPending}
         onConfirm={() => flushMut.mutate()}
       />
@@ -201,6 +202,7 @@ export default function Redis() {
         description="This stops the Redis instance and removes its data. You can re-enable it later, but the cached data will be gone."
         confirmLabel="Disable Redis"
         variant="danger"
+        confirmationText={username}
         loading={disableMut.isPending}
         onConfirm={() => disableMut.mutate()}
       />

@@ -2,6 +2,7 @@ import pyotp
 import pytest
 
 from daemon import totp
+from daemon import appcrypto
 from daemon import handlers_auth
 from shared.db import write_session
 from shared.models import PanelUser, TotpCredential, TotpRecoveryCode
@@ -28,7 +29,10 @@ def test_setup_creates_pending_unverified_credential(panel_user_id):
     with write_session() as session:
         row = session.query(TotpCredential).filter_by(panel_user_id=panel_user_id).first()
         assert row.enabled is False
-        assert row.secret == result["secret"]
+        # TOTP seeds are encrypted at rest; compare the recovered seed while
+        # also ensuring the database does not contain the raw secret.
+        assert row.secret != result["secret"]
+        assert appcrypto.decrypt_secret(row.secret) == result["secret"]
 
 
 def test_setup_rejects_when_already_enabled(panel_user_id):

@@ -24,6 +24,21 @@ from api.security import (
 router = APIRouter(tags=["auth"])
 
 
+def _reject_cross_origin_form(request: Request) -> None:
+    """Reject browser form posts originating at a different origin.
+
+    Origin is emitted for modern cross-site POSTs; Referer is the fallback.
+    Requests with neither header remain compatible with non-browser clients.
+    """
+    expected = f"{request.url.scheme}://{request.url.netloc}"
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") != expected:
+        raise HTTPException(status_code=403, detail="cross-origin form submission rejected")
+    referer = request.headers.get("referer")
+    if not origin and referer and not (referer == expected or referer.startswith(expected + "/")):
+        raise HTTPException(status_code=403, detail="cross-origin form submission rejected")
+
+
 @router.get("/login")
 def login_form():
     # The interactive login UI is the React SPA. Keep GET /login as a
@@ -33,6 +48,7 @@ def login_form():
 
 @router.post("/login")
 def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    _reject_cross_origin_form(request)
     with read_session() as db:
         user = db.scalar(select(PanelUser).where(PanelUser.username == username))
         user_id = user.id if user else None
@@ -113,6 +129,7 @@ def whoami(identity: Identity = Depends(get_identity)):
 
 @router.post("/login/2fa")
 def login_2fa_submit(request: Request, pending_token: str = Form(...), code: str = Form(...)):
+    _reject_cross_origin_form(request)
     panel_user_id = unsign_twofactor_pending(pending_token)
     if panel_user_id is None:
         return JSONResponse({"detail": "2FA session expired -- please log in again"}, status_code=401)
@@ -165,6 +182,7 @@ def change_password_submit(
     confirm_password: str = Form(...),
     identity: Identity = Depends(get_identity),
 ):
+    _reject_cross_origin_form(request)
     # Self-service, own-account only: the target is always identity's own
     # username, never taken from the form -- a bearer-token/session
     # identity that's been compromised must not be able to use this

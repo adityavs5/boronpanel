@@ -1,4 +1,4 @@
-# Forgehost — Research
+# Boron — Research
 
 This document precedes ARCHITECTURE.md. It records what was learned from official
 docs and prior-art codebases before any design decision was locked in. Every claim
@@ -8,7 +8,7 @@ be unanswerable with confidence, that is stated explicitly rather than guessed.
 
 ## 1. OpenLiteSpeed (OLS) free vs. licensed boundary
 
-**Bottom line: everything Forgehost v1 needs is free in OLS.** OLS is GPLv3,
+**Bottom line: everything Boron v1 needs is free in OLS.** OLS is GPLv3,
 unlimited domains/traffic, no license-server enforcement of any kind (confirmed by
 reading `lswsctrl` itself — it only does PID/signal management, no license calls).
 The commercial product is a *different binary* (LiteSpeed Web Server Enterprise),
@@ -19,14 +19,14 @@ not a paid unlock of OLS.
 | Unlimited vhosts, unlimited workers | **Yes** | Enterprise is the one that's seat/traffic-metered, not OLS |
 | Per-vhost SSL/SNI, rewrite rules, PHP External Apps | **Yes** | Not server-global-only |
 | Multiple PHP versions side by side (`lsphp74`…`lsphp85`) | **Yes** | Installed as separate packages, selected per-vhost |
-| **suEXEC / per-vhost `RunAsUser`-style PHP isolation** | **Yes** | Critical for Forgehost — see §3. Config keys `extUser`/`extGroup` (External App) and vhost "External App Set UID Mode" / "suEXEC User/Group" are present and functional in OLS; the official edition-comparison table checks "PHP/Ruby/CGI/FCGI/LSAPI suEXEC" for *both* editions. CyberPanel (free, OLS-only) ships this in production. |
+| **suEXEC / per-vhost `RunAsUser`-style PHP isolation** | **Yes** | Critical for Boron — see §3. Config keys `extUser`/`extGroup` (External App) and vhost "External App Set UID Mode" / "suEXEC User/Group" are present and functional in OLS; the official edition-comparison table checks "PHP/Ruby/CGI/FCGI/LSAPI suEXEC" for *both* editions. CyberPanel (free, OLS-only) ships this in production. |
 | ModSecurity (OWASP CRS) | **Yes** | Open-source libmodsecurity v3 engine ships in OLS by default (`mod_security 1.4` confirmed present on this install). Enterprise swaps in a proprietary faster engine — functionally optional. |
 | HTTP/3 / QUIC | **Yes** | lsquic is separately MIT-licensed |
 | Rate limiting / per-IP throttling | **Yes** | Standard OLS feature |
-| LSCache (page cache) | **Yes**, core caching | **ESI (Edge Side Includes) is Enterprise-only** — irrelevant to Forgehost v1 (no caching layer in scope) |
-| `.htaccess` | Partial-free | Only `mod_rewrite` directives honored; requires a restart to pick up changes (no live reload). Full Apache-compatible `.htaccess` + live reload is Enterprise-only. Forgehost should prefer vhost-config-driven rewrites over relying on live `.htaccess` edits. |
-| WebAdmin console (port 7080) | **Yes** | Ships by default; Forgehost does not depend on it but it remains available as an escape hatch for the operator |
-| **REST/management API** | **No such thing in either edition** | Confirmed directly by LiteSpeed staff: there is no API, only WebAdmin (a GUI over the same config files) or hand-editing `httpd_config.conf` / `vhosts/<name>/vhconf.conf` + reload. This is *not* a paywall — it simply doesn't exist. Forgehost's provisioning daemon must template config files directly, exactly like CyberPanel does. |
+| LSCache (page cache) | **Yes**, core caching | **ESI (Edge Side Includes) is Enterprise-only** — irrelevant to Boron v1 (no caching layer in scope) |
+| `.htaccess` | Partial-free | Only `mod_rewrite` directives honored; requires a restart to pick up changes (no live reload). Full Apache-compatible `.htaccess` + live reload is Enterprise-only. Boron should prefer vhost-config-driven rewrites over relying on live `.htaccess` edits. |
+| WebAdmin console (port 7080) | **Yes** | Ships by default; Boron does not depend on it but it remains available as an escape hatch for the operator |
+| **REST/management API** | **No such thing in either edition** | Confirmed directly by LiteSpeed staff: there is no API, only WebAdmin (a GUI over the same config files) or hand-editing `httpd_config.conf` / `vhosts/<name>/vhconf.conf` + reload. This is *not* a paywall — it simply doesn't exist. Boron's provisioning daemon must template config files directly, exactly like CyberPanel does. |
 
 No commercial LSWS feature is required anywhere in the v1 scope. The one feature
 explicitly avoided is ESI-dependent cache plugins (not used — no caching layer in
@@ -40,14 +40,14 @@ v1).
   *only* reload primitive OLS exposes — there is no separate "graceful" vs "hard"
   command for our purposes; the default restart behavior already is graceful.
 - `/usr/local/lsws/bin/openlitespeed -t` validates config syntax without applying
-  it — **must** be run before every restart triggered by Forgehost. This is the
+  it — **must** be run before every restart triggered by Boron. This is the
   validate-before-reload step the project goal requires.
 - New vhosts and renewed/replaced SSL certs both require a graceful restart to be
   picked up — OLS does not hot-watch cert files. LiteSpeed staff's own recommended
   pattern is to chain `systemctl restart lsws` as a certbot `--deploy-hook`,
-  which is exactly what Forgehost's SSL phase will do.
+  which is exactly what Boron's SSL phase will do.
 - Known upstream bugs exist where a graceful restart occasionally fails to fully
-  apply (tracked GitHub issues). **Forgehost must not assume success** — after
+  apply (tracked GitHub issues). **Boron must not assume success** — after
   every restart it should verify the new config is actually live (e.g. re-fetch
   the vhost's listener / check process start time) rather than trust the exit
   code alone, and roll back the config file + retry/alert on mismatch.
@@ -73,7 +73,7 @@ account's PHP process cannot read another account's files, same guarantee as
 cPanel's classic suEXEC/CageFS-adjacent model (minus CloudLinux's kernel-level
 LVE containment, which doesn't exist outside CloudLinux's own kernel).
 
-**Forgehost decision: one External App per (account × PHP version actually in
+**Boron decision: one External App per (account × PHP version actually in
 use)**, each with `extUser`/`extGroup` pinned to that account's Linux user. In
 practice this means: define the small fixed set of installed PHP versions
 (8.1, 8.3 chosen — see ARCHITECTURE.md) as base External App templates, and at
@@ -95,7 +95,7 @@ memory, disk read/write bandwidth+IOPS, and max tasks, server- or vhost-wide,
 keyed to the uid owning the script. Ubuntu 24.04's 6.8 kernel satisfies the
 ≥5.2 requirement. This is **not** CloudLinux LVE — it only governs
 CGI/LSAPI-spawned processes (i.e. PHP), not the account's cron jobs, SSH
-sessions, or FTP transfers. Forgehost v1 enables per-vhost cgroup limits for
+sessions, or FTP transfers. Boron v1 enables per-vhost cgroup limits for
 PHP as a best-effort resource cap; if uniform whole-account governance
 (cron + SSH + PHP together) is ever wanted, that would require wrapping the
 account in a systemd slice — out of scope for v1, noted as a future option.
@@ -103,7 +103,7 @@ account in a systemd slice — out of scope for v1, noted as a future option.
 ## 4. FTP server: Pure-FTPd (chosen) vs. vsftpd
 
 Both can authenticate directly against real Linux accounts (no separate virtual-
-user database needed, which matters because Forgehost accounts already exist as
+user database needed, which matters because Boron accounts already exist as
 system users from account creation): Pure-FTPd via `-l unix`/`-l pam` with
 `ChrootEveryone yes`; vsftpd via PAM + `chroot_local_user=YES` and per-user
 override files under `user_config_dir`.
@@ -142,7 +142,7 @@ polling endpoints and cron instead.
 - **PHP isolation**: confirms §3 — `vhostConfs.py` templates a per-account
   `extprocessor` block (`type lsapi; address UDS://tmp/lshttpd/<user>.sock;
   extUser <user>; extGroup <user>; path .../lsphp<ver>/bin/lsphp`), i.e. exactly
-  the "one LSAPI backend per account, uid-pinned" pattern Forgehost adopts.
+  the "one LSAPI backend per account, uid-pinned" pattern Boron adopts.
 - **Vhost templating/reload**: raw config text built via Python string templates,
   written straight to `/usr/local/lsws/conf/vhosts/<name>/vhost.conf`, applied
   via a full `lswsctrl restart` (not file-watch). Validates the "shell out to
@@ -151,7 +151,7 @@ polling endpoints and cron instead.
   app database for it and writes PowerDNS's `domains`/`records` tables directly
   via Django ORM — i.e., direct SQL writes, not PowerDNS's own REST API. The
   PowerDNS HTTP API is enabled only for Let's Encrypt DNS-01 challenges. See §6
-  for why Forgehost makes a different choice here.
+  for why Boron makes a different choice here.
 - **Mail**: Postfix + Dovecot, MySQL-backed virtual mailboxes, single shared
   `vmail` system account (uid/gid 5000) owning Maildir storage at
   `/home/vmail/<domain>/<user>/`. Confirms the SQL-backed virtual-mail pattern
@@ -169,7 +169,7 @@ unauthenticated `upgrademysqlstatus` endpoint), compounded by an auth/input
 as PUT bypassed it entirely. CVE-2024-51378 was an authorization bypass in a
 DNS/FTP status endpoint leading to root RCE. The October 2024 "PSAUX" ransomware
 wave compromised ~22,000 exposed CyberPanel instances within hours of public
-disclosure. **Forgehost takeaways, enforced in ARCHITECTURE.md**: never build
+disclosure. **Boron takeaways, enforced in ARCHITECTURE.md**: never build
 shell commands by string-concatenating user input — use `subprocess` with
 argument lists (never `shell=True`) and validate/allowlist all identifiers that
 touch a shell-out or SQL statement; apply auth/authz middleware uniformly across
@@ -208,10 +208,10 @@ ISPConfig gets wrong — see DNS below).
   CRUD — a new mailbox is a single `INSERT`, usable on the very next
   delivery/login, with **no Postfix reload required** (only `postfix reload`
   for structural `main.cf`/`master.cf` changes). This matches CyberPanel's own
-  approach (§5) and is the standard "Perfect Server" pattern. **Forgehost
+  approach (§5) and is the standard "Perfect Server" pattern. **Boron
   decision: SQL-backed virtual mailboxes** via `proxy:mysql:` lookup maps,
   schema modeled on ISPConfig's `mail_domain`/`mail_user` two-table pattern,
-  stored in Forgehost's own database so the provisioning daemon owns one
+  stored in Boron's own database so the provisioning daemon owns one
   source of truth (no separate mail-only DB to keep in sync).
 - **Dovecot integration**: passdb/userdb query the same SQL tables; delivery
   is via LMTP (`virtual_transport = lmtp:unix:private/dovecot-lmtp` in
@@ -226,7 +226,7 @@ ISPConfig gets wrong — see DNS below).
   legacy compatibility. Dovecot's own docs list ARGON2ID/ARGON2I (requires
   libsodium, Dovecot ≥2.3) and BLF-CRYPT (bundled, no extra dependency) as its
   strongest schemes, and now disable MD5-CRYPT/DES-CRYPT by default.
-  **Forgehost decision: generate hashes via `doveadm pw -s ARGON2ID` (falling
+  **Boron decision: generate hashes via `doveadm pw -s ARGON2ID` (falling
   back to `BLF-CRYPT` if Argon2 support is unavailable)** rather than
   reimplementing crypt() in application code — guarantees Dovecot-compatible
   output by construction and avoids a "rolled my own password hashing" bug
@@ -246,24 +246,24 @@ ISPConfig gets wrong — see DNS below).
   handles cache invalidation/notification internally, and reduces DNSSEC to a
   single declarative `"dnssec": true` field on the zone object (internally
   equivalent to `pdnsutil zone secure` + `zone rectify`) instead of an
-  imperative multi-step workflow. **Forgehost decision: drive PowerDNS
+  imperative multi-step workflow. **Boron decision: drive PowerDNS
   exclusively through its REST API**, never raw SQL against PowerDNS's
   schema — this also gets correct-by-construction zone/rrset validation
   (PowerDNS itself rejects malformed records) instead of hand-validating
-  record syntax in Forgehost before an insert. Backend storage underneath the
+  record syntax in Boron before an insert. Backend storage underneath the
   API (`gsqlite3` vs `gmysql` vs `lmdb`) is a separate, lower-stakes choice
-  the PowerDNS docs don't prescribe — see ARCHITECTURE.md for Forgehost's
+  the PowerDNS docs don't prescribe — see ARCHITECTURE.md for Boron's
   pick.
 - **DNSSEC**: off by default per-zone in PowerDNS; enabling it is a single API
-  field but still an explicit per-zone opt-in. Forgehost v1 leaves DNSSEC
+  field but still an explicit per-zone opt-in. Boron v1 leaves DNSSEC
   disabled (not in the v1 record-type scope) — this is a pure PowerDNS-side
-  setting an operator can flip later with no Forgehost schema change.
+  setting an operator can flip later with no Boron schema change.
 - **DKIM/SPF/DMARC**: HestiaCP auto-generates a DKIM keypair for every new
   mail domain by default and auto-publishes DKIM/SPF/DMARC TXT records *only
   when it also hosts that domain's DNS zone*. ISPConfig — a mature,
   widely-deployed panel — generates DKIM only on admin request and has **no
   SPF automation at all**. This confirms skipping SPF/DKIM/DMARC automation
-  is an acceptable v1 posture: Forgehost's generic A/AAAA/CNAME/MX/TXT zone
+  is an acceptable v1 posture: Boron's generic A/AAAA/CNAME/MX/TXT zone
   editor is sufficient for an operator to add these records by hand; no
   special-cased automation is built in v1 (matches the locked v1 scope, which
   lists only those five record types).
@@ -273,7 +273,7 @@ ISPConfig gets wrong — see DNS below).
   Postfix's and Dovecot's own docs confirm both checks are cheap, fast, and
   exit non-zero on bad config, and the project's own requirement ("every
   phase touching system config must validate before reload + rollback") is
-  stricter than either incumbent's actual practice. **Forgehost adds this
+  stricter than either incumbent's actual practice. **Boron adds this
   validation deliberately, beyond what HestiaCP/ISPConfig themselves do**:
   `postfix check` + `postconf -n` before `postfix reload`, `doveconf -n`
   before `systemctl reload dovecot`, mirroring the OLS `-t`-before-restart

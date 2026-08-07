@@ -1,13 +1,15 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog'
+import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { Button } from './Button'
+import { Input, FormField } from './Input'
 
 export const Dialog = DialogPrimitive.Root
 export const DialogTrigger = DialogPrimitive.Trigger
 export const DialogClose = DialogPrimitive.Close
 
-export function DialogContent({ className, children, size = 'md', ...props }) {
+export function DialogContent({ className, children, size = 'md', showClose = true, ...props }) {
   const sizes = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl' }
   return (
     <DialogPrimitive.Portal>
@@ -16,17 +18,19 @@ export function DialogContent({ className, children, size = 'md', ...props }) {
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-fade-in" />
       <DialogPrimitive.Content
         className={cn(
-          'fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-card border border-border bg-card shadow-dropdown focus:outline-none data-[state=open]:animate-scale-in',
+          'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-card border border-border bg-card shadow-dropdown focus:outline-none data-[state=open]:animate-scale-in',
           sizes[size],
           className,
         )}
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm p-1 text-muted-foreground opacity-70 transition-opacity hover:opacity-100 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring">
-          <X className="h-4 w-4" />
-          <span className="sr-only">Close</span>
-        </DialogPrimitive.Close>
+        {showClose && (
+          <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm p-1 text-muted-foreground opacity-70 transition-opacity hover:opacity-100 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring">
+            <X className="h-4 w-4" />
+            <span className="sr-only">Close</span>
+          </DialogPrimitive.Close>
+        )}
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   )
@@ -42,10 +46,10 @@ export function DialogDescription({ className, ...props }) {
   return <DialogPrimitive.Description className={cn('text-sm text-muted-foreground mt-1', className)} {...props} />
 }
 export function DialogBody({ className, ...props }) {
-  return <div className={cn('px-6 py-3 max-h-[70vh] overflow-y-auto', className)} {...props} />
+  return <div className={cn('min-h-0 flex-1 overflow-y-auto px-6 py-3', className)} {...props} />
 }
 export function DialogFooter({ className, ...props }) {
-  return <div className={cn('flex items-center justify-end gap-3 px-6 py-4 border-t border-border', className)} {...props} />
+  return <div className={cn('flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-border px-6 py-4', className)} {...props} />
 }
 
 // Confirmation dialog for destructive actions (goal: "confirmation modals on
@@ -60,7 +64,11 @@ export function ConfirmDialog({
   variant = 'danger',
   loading = false,
   onConfirm,
+  confirmationText,
 }) {
+  const [typed, setTyped] = useState('')
+  useEffect(() => { if (!open) setTyped('') }, [open])
+  const confirmed = !confirmationText || typed === confirmationText
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="sm">
@@ -68,11 +76,18 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
+        {confirmationText && (
+          <DialogBody>
+            <FormField label={<>Type <span className="font-mono font-semibold">{confirmationText}</span> to confirm</>}>
+              <Input value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
+            </FormField>
+          </DialogBody>
+        )}
         <DialogFooter>
           <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={loading}>
             {cancelLabel}
           </Button>
-          <Button variant={variant} onClick={onConfirm} loading={loading}>
+          <Button variant={variant} onClick={onConfirm} loading={loading} disabled={!confirmed || loading}>
             {confirmLabel}
           </Button>
         </DialogFooter>
