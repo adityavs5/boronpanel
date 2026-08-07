@@ -240,10 +240,24 @@ readonly BASE_PKGS=(
     nodejs npm composer
 )
 readonly STACK_PKGS=(
-    mariadb-server postfix dovecot-core dovecot-imapd dovecot-lmtp
+    mariadb-server postfix dovecot-core dovecot-imapd dovecot-lmtpd
     dovecot-mysql dovecot-sieve postfix-mysql pdns-server pdns-backend-sqlite3
-    pure-ftpd certbot rclone spamassassin fail2ban redis-server imapsync
+    pure-ftpd certbot rclone spamassassin fail2ban redis-server
 )
+# Ubuntu 24.04 does not publish an `imapsync` binary package. Install the
+# Perl modules it needs from Ubuntu, then install the pinned upstream source
+# archive in install_imapsync() below. Keeping these separate from STACK_PKGS
+# prevents apt from being asked for a package name that Noble cannot resolve.
+readonly IMAPSYNC_PKGS=(
+    perl libdigest-hmac-perl libencode-imaputf7-perl
+    libfile-copy-recursive-perl libfile-tail-perl libio-socket-inet6-perl
+    libio-socket-ssl-perl libio-tee-perl libmail-imapclient-perl
+    libreadonly-perl libregexp-common-perl libsys-meminfo-perl
+    libterm-readkey-perl libunicode-string-perl
+)
+readonly IMAPSYNC_VERSION="2.229"
+readonly IMAPSYNC_URL="https://github.com/imapsync/imapsync/archive/refs/tags/imapsync-2.229.tar.gz"
+readonly IMAPSYNC_SHA256="2199899732d5563e88fa5cc75d332dba69ae3e416a84e0edbb45ca3832e0a127"
 readonly OLS_PKGS=(
     openlitespeed ols-modsecurity modsecurity-crs
     lsphp81 lsphp81-common lsphp81-curl lsphp81-mysql lsphp81-opcache lsphp81-intl lsphp81-redis lsphp81-sqlite3 lsphp81-imagick
@@ -280,9 +294,13 @@ apt_run() {
         cat "$output" >>"$INSTALL_LOG" 2>/dev/null || true
         rm -f "$output"
         return 0
+    else
+        # Capture the command status in the else branch. Reading `$?` after
+        # the `if` compound command would report the status of the `if`
+        # construct (0 when no branch ran), masking apt-get failures.
+        rc=$?
     fi
 
-    rc=$?
     cat "$output" >>"$INSTALL_LOG" 2>/dev/null || true
     fail "${description} failed (exit ${rc})"
     printf '%s\n' "--- ${description} output ---" >&2
@@ -294,13 +312,17 @@ apt_run() {
 
 apt_update() {
     export DEBIAN_FRONTEND=noninteractive
-    apt_run "apt cache update" apt-get update -qq
+    if ! apt_run "apt cache update" apt-get update -qq; then
+        die "apt cache update failed; see ${INSTALL_LOG}"
+    fi
     ok "apt cache updated"
 }
 
 install_base_packages() {
     info "Installing base packages"
-    apt_run "base package installation" apt-get install -y "${BASE_PKGS[@]}"
+    if ! apt_run "base package installation" apt-get install -y "${BASE_PKGS[@]}"; then
+        die "base package installation aborted; see ${INSTALL_LOG}"
+    fi
     ok "base packages installed (python, node, composer, tooling)"
     # wp-cli isn't packaged in apt -- fetch the official phar (curl only).
     if [[ -x /usr/local/bin/wp ]]; then
@@ -323,7 +345,9 @@ install_openlitespeed() {
         run_sh "curl -fsSL https://repo.litespeed.sh | bash"
         ok "LiteSpeed apt repo added"
     fi
-    apt_run "OpenLiteSpeed and lsphp package installation" apt-get install -y "${OLS_PKGS[@]}"
+    if ! apt_run "OpenLiteSpeed and lsphp package installation" apt-get install -y "${OLS_PKGS[@]}"; then
+        die "OpenLiteSpeed and lsphp installation aborted; see ${INSTALL_LOG}"
+    fi
     run systemctl enable --now lshttpd
     ok "OpenLiteSpeed + PHP 8.1 through 8.5 installed"
 }
@@ -333,7 +357,9 @@ install_stack_packages() {
     # Postfix must not launch its interactive config screen.
     run_sh "echo 'postfix postfix/main_mailer_type select Internet Site' | debconf-set-selections"
     run_sh "echo \"postfix postfix/mailname string \$(hostname -f)\" | debconf-set-selections"
-    apt_run "hosting stack package installation" apt-get install -y "${STACK_PKGS[@]}"
+    if ! apt_run "hosting stack package installation" apt-get install -y "${STACK_PKGS[@]}"; then
+        die "hosting stack installation aborted; see ${INSTALL_LOG}"
+    fi
     # The bind backend is pulled in as a pdns dependency but unused here.
     if [[ -f /etc/powerdns/pdns.d/bind.conf ]]; then
         run mv /etc/powerdns/pdns.d/bind.conf /etc/powerdns/pdns.d/bind.conf.disabled
@@ -374,12 +400,33 @@ install_filebrowser() {
 }
 
 install_imapsync() {
-    info "Validating ImapSync installation"
-    # Ubuntu packages install /usr/bin/imapsync while the daemon uses a
-    # stable Boron-owned path so package upgrades never change it.
-    run ln -sfn /usr/bin/imapsync /usr/local/bin/imapsync
+    info "Installing ImapSync"
+    if [[ -x /usr/local/bin/imapsync ]] && \
+        /usr/local/bin/imapsync --version >/dev/null 2>&1; then
+        skip "ImapSync already available at /usr/local/bin/imapsync"
+        return 0
+    fi
+
+    if ! apt_run "ImapSync Perl dependency installation" \
+        apt-get install -y "${IMAPSYNC_PKGS[@]}"; then
+        die "ImapSync dependency installation aborted; see ${INSTALL_LOG}"
+    fi
+
+    # There is no Ubuntu 24.04 `imapsync` package. Fetch the upstream source
+    # archive at a pinned version and verify it before installing the script;
+    # never execute an unverified remote download as root.
+    run_sh "set -euo pipefail
+tmpdir=\$(mktemp -d)
+trap 'rm -rf \"\$tmpdir\"' EXIT
+archive=\"\$tmpdir/imapsync.tar.gz\"
+curl -fsSL -o \"\$archive\" '${IMAPSYNC_URL}'
+printf '%s  %s\\n' '${IMAPSYNC_SHA256}' \"\$archive\" | sha256sum -c -
+tar -xzf \"\$archive\" -C \"\$tmpdir\"
+source=\$(find \"\$tmpdir\" -type f -name imapsync -path '*/imapsync' -print -quit)
+test -n \"\$source\"
+install -m 0755 -o root -g root \"\$source\" /usr/local/bin/imapsync"
     run /usr/local/bin/imapsync --version
-    ok "ImapSync available at /usr/local/bin/imapsync"
+    ok "ImapSync ${IMAPSYNC_VERSION} installed at /usr/local/bin/imapsync"
 }
 
 # --- 2. quotas ---------------------------------------------------------------
