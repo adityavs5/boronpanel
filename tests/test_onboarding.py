@@ -20,6 +20,8 @@ def stub_sysops(monkeypatch):
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
     monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
+    monkeypatch.setattr(ha.handlers_domain, "ensure_docroot", lambda username, docroot, domain_name=None: None)
+    monkeypatch.setattr(ha.ols, "provision_vhost", lambda account: None)
 
 
 def test_fresh_account_is_not_completed(isolated_db, stub_sysops):

@@ -616,6 +616,10 @@ def test_full_update_job_pipeline(update_env, monkeypatch):
     checksum, real staged extraction; subprocess-y steps (pytest/venv/pip/
     migrations/systemd-run) recorded via a fake `run`; ends in `finalizing`
     with the handoff argv pointing the finalizer at the right dirs."""
+    # Keep this pipeline test independent of the checkout's real version.py.
+    # A release/version bump must not make the fixed 1.0.1 fixture cease to be
+    # newer than the version under test.
+    monkeypatch.setattr(updates, "BORON_VERSION", "1.0.0")
     _mock_github(monkeypatch, version="1.0.1")
 
     ran = []
