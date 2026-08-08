@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -25,11 +27,22 @@ def main() -> int:
     parser.add_argument("--password", help="omit to be prompted (recommended -- avoids shell history)")
     args = parser.parse_args()
 
-    password = args.password or getpass.getpass("Password (min 8 chars): ")
+    password = args.password or getpass.getpass("Password (min 12 chars): ")
 
     client = RpcClient(settings.rpc_socket)
     try:
         result = client.call("panel_user.create", username=args.username, password=password, role="admin", _actor="bootstrap-cli", _role="admin")
+    except (ConnectionResetError, PermissionError):
+        if os.geteuid() == 0:
+            command = f"sudo -u boron-api python3 {shlex.quote(str(Path(__file__).resolve()))} --username {shlex.quote(args.username)}"
+            print(
+                "Failed: the provisioning socket rejected the root caller; "
+                f"run this as boron-api: {command}",
+                file=sys.stderr,
+            )
+        else:
+            print("Failed: the provisioning socket reset the connection", file=sys.stderr)
+        return 1
     except RpcError as exc:
         print(f"Failed: {exc}", file=sys.stderr)
         return 1

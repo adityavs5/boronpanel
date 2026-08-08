@@ -254,7 +254,7 @@ readonly BASE_PKGS=(
     python3 python3-venv python3-pip python3-dev build-essential
     curl wget jq sqlite3 ufw acl quota quotatool git ca-certificates
     rsync openssl cron logrotate apache2-utils geoipupdate
-    nodejs npm composer
+    nodejs npm composer sudo
 )
 readonly STACK_PKGS=(
     mariadb-server postfix dovecot-core dovecot-imapd dovecot-lmtpd
@@ -910,10 +910,13 @@ create_admin() {
     if [[ -n "$ADMIN_PASSWORD" ]]; then
         args+=(--password "$ADMIN_PASSWORD")
     fi
-    if "${VENV}/bin/python" "${DEST}/scripts/create_admin.py" "${args[@]}"; then
+    # provisiond authenticates the Unix socket peer and rejects uid 0. The
+    # installer itself runs as root, so bootstrap through the API service
+    # identity just as a manual operator invocation must.
+    if sudo -u boron-api -- "${VENV}/bin/python" "${DEST}/scripts/create_admin.py" "${args[@]}"; then
         ok "admin '${ADMIN_USER}' created"
     else
-        warn "admin creation returned non-zero (may already exist) -- create manually with scripts/create_admin.py"
+        warn "admin creation returned non-zero (may already exist) -- create manually as boron-api: sudo -u boron-api python3 '${DEST}/scripts/create_admin.py' --username '${ADMIN_USER}'"
     fi
 }
 

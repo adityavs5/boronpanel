@@ -63,7 +63,7 @@ below are taken directly from `scripts/install.sh`.
    default means there is normally no username prompt; set the variable to
    choose another name. The username is passed to `scripts/create_admin.py`.
 4. **Admin password** (`FH_ADMIN_PASSWORD`): if not preseeded, the
-   `create_admin.py` step securely prompts for `Password (min 8 chars)`.
+   `create_admin.py` step securely prompts for `Password (min 12 chars)`.
    Prefer this prompt over putting a password in shell history.
 5. **Optional MaxMind GeoLite2 license key** (`FH_MAXMIND_LICENSE_KEY`): the
    hidden prompt accepts a blank value. A key installs GeoLite2-Country and a
