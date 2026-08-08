@@ -69,6 +69,16 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert 'boron-geoip.cron' in source
     assert 'Optional MaxMind GeoLite2 license key' in source
 
+    # Namespace isolation is enabled by the generated OLS config.  The
+    # namespace template and its companion lsns state must exist before the
+    # first lshttpd start, or every fresh account provision fails validation.
+    assert "write_file /usr/local/lsws/conf/nsconf.conf 0644" in source
+    assert "$PASSWD,nobody,mysql" in source
+    assert "$GROUP,nogroup,mysql" in source
+    assert "write_file /usr/local/lsws/lsns/conf/lsns.conf 0644" in source
+    assert "1000" in source[source.index("write_file /usr/local/lsws/lsns/conf/lsns.conf"):]
+    assert source.index("setup_ols_namespace\n    run systemctl enable --now lshttpd") >= 0
+
 
 def test_installer_rejects_unknown_flag():
     r = subprocess.run(["bash", str(INSTALLER), "--bogus"], capture_output=True, text=True)

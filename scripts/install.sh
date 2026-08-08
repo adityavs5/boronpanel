@@ -352,6 +352,71 @@ install_base_packages() {
     fi
 }
 
+# OpenLiteSpeed's namespace directive is enabled in the Boron-generated
+# httpd_config.conf.  OLS resolves namespaceConf relative to its own conf
+# directory, so a fresh install must create this file before lshttpd is
+# started (otherwise the first account provision fails at `openlitespeed -t`).
+#
+# The bind rules below are the live-tested baseline documented in
+# docs/NAMESPACE-ANSWERS.md.  The companion lsns files are OLS runtime state:
+# initialize them on a fresh host, but never erase an operator's denylist or
+# host-exec additions when the installer is re-run.
+setup_ols_namespace() {
+    info "Configuring OpenLiteSpeed namespace isolation"
+    run install -d -m 0755 /usr/local/lsws/conf /usr/local/lsws/lsns/conf
+
+    write_file /usr/local/lsws/conf/nsconf.conf 0644 <<'EOF'
+$HOMEDIR/tmp /tmp,tmp
+/usr,ro-bind
+/lib,ro-bind
+/lib64,ro-bind-try
+/bin,ro-bind
+/sbin,ro-bind
+/var,dir
+/proc,proc
+../tmp var/tmp,symlink
+/dev,dev
+/etc/localtime,ro-bind-try
+/etc/ld.so.cache,ro-bind-try
+/etc/resolv.conf,ro-bind-try
+/etc/ssl,ro-bind-try
+/etc/pki,ro-bind-try
+$HOMEDIR,bind-try
+/run/mysqld/mysqld.sock,bind-try
+/run/user/$UID,bind-try
+/var/lib/php/sessions,bind-try
+/usr/local/lsws/tmp/lshttpd,bind-try
+/var/lib/roundcube,bind-try
+/etc/roundcube,ro-bind-try
+/etc/phpmyadmin,ro-bind-try
+/var/lib/phpmyadmin,bind-try
+$PASSWD,nobody,mysql
+$GROUP,nogroup,mysql
+EOF
+
+    if $DRY_RUN || [[ ! -e /usr/local/lsws/lsns/conf/lsns.conf ]]; then
+        write_file /usr/local/lsws/lsns/conf/lsns.conf 0644 <<'EOF'
+1000
+EOF
+    else
+        skip "OpenLiteSpeed namespace minimum UID already configured"
+    fi
+    if $DRY_RUN || [[ ! -e /usr/local/lsws/lsns/conf/ns_disabled_uids.conf ]]; then
+        write_file /usr/local/lsws/lsns/conf/ns_disabled_uids.conf 0644 <<'EOF'
+EOF
+    else
+        skip "OpenLiteSpeed namespace denylist already configured"
+    fi
+    if $DRY_RUN || [[ ! -e /usr/local/lsws/lsns/conf/hostexec.conf ]]; then
+        write_file /usr/local/lsws/lsns/conf/hostexec.conf 0644 <<'EOF'
+/usr/sbin/sendmail
+EOF
+    else
+        skip "OpenLiteSpeed namespace host-exec list already configured"
+    fi
+    ok "OpenLiteSpeed namespace config installed (min UID 1000)"
+}
+
 install_openlitespeed() {
     info "Installing OpenLiteSpeed + lsphp"
     if [[ -d /usr/local/lsws ]]; then
@@ -365,6 +430,9 @@ install_openlitespeed() {
     if ! apt_run "OpenLiteSpeed and lsphp package installation" apt-get install -y "${OLS_PKGS[@]}"; then
         die "OpenLiteSpeed and lsphp installation aborted; see ${INSTALL_LOG}"
     fi
+    # Must precede the first lshttpd start: httpd_config.conf contains the
+    # namespaceConf directive and OLS rejects it when this file is absent.
+    setup_ols_namespace
     run systemctl enable --now lshttpd
     ok "OpenLiteSpeed + PHP 8.1 through 8.5 installed"
 }
