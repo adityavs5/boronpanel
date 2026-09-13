@@ -906,3 +906,18 @@ proves reconstructed message bytes and read flags survive while the source stays
 unchanged. Mixed owned/foreign selections are rejected before mailbox SQL lookup;
 suspended accounts are refused. Customer restore submission and finalization are
 still pending.
+
+Mailbox preparation now has a batch staging handoff. `snapshot_mail_restore.stage`
+rechecks account/domain ownership and private source paths, then persists an
+exclusive mode-0600 inventory before copying any mailbox beside its live Maildir.
+The inventory binds account and restore IDs to generated sibling names and
+individual placement receipts. It contains no password hashes. Interrupted
+staging deliberately retains the work directory, inventory and completed copies
+for recovery; re-running the batch against that directory is refused.
+
+Validation: 31 staging/file tests passed. An injected interruption before the
+second mailbox proves the first copy has a ready receipt, the second still has
+an inventory entry without a receipt, both original live Maildirs remain unchanged
+and a repeated batch cannot overwrite the recovery inventory. Missing-mailbox
+home provisioning, inventory recovery decisions and the final customer-facing
+coordinator remain outstanding.

@@ -78,3 +78,40 @@ def prepare(account, repo, snapshot_id, addresses):
         import shutil
         shutil.rmtree(work)
         raise
+
+
+def stage(account, prepared, restore_id):
+    """Place prepared mail beside live Maildirs with a durable batch inventory.
+
+    Caller owns account/repository locks and has provisioned missing mailbox
+    homes. On failure retain the work directory and inventory for recovery;
+    earlier copies may have completed. Never repeat this call for that work dir.
+    """
+    from daemon.snapshot_mail_files import stage_for_exchange, _placement_receipt
+    from daemon.snapshot_mail_journal import _path
+    if type(restore_id) is not int or restore_id <= 0:
+        raise ValidationError('Invalid mailbox restore identifier')
+    work = Path(prepared['work'])
+    index = _path(work / 'placement-index.json')
+    entries = prepared['entries']
+    metadata = {}
+    for entry in entries:
+        metadata.setdefault(entry['domain'], {'mailboxes': {}})['mailboxes'][entry['local_part']] = entry['metadata']
+    addresses = [entry['local_part'] + '@' + entry['domain'] for entry in entries]
+    selected_mailboxes(account, metadata, addresses)
+    inventory = []
+    for position, entry in enumerate(entries):
+        source = _path(Path(entry['prepared']))
+        if not source.is_relative_to(work) or not source.is_dir():
+            raise ValidationError('Prepared mailbox is outside its recovery work directory')
+        inventory.append({'domain': entry['domain'], 'local_part': entry['local_part'],
+                          'source': str(source), 'prepared': '.boron-mail-ready-' + uuid.uuid4().hex,
+                          'receipt': str(work / ('placement-' + str(position) + '.json'))})
+    # Exclusive creation is also the retry barrier. Inventory survives a crash
+    # before the first receipt or between two independently durable copies.
+    _placement_receipt(index, dict(format=1, account_id=account.id, restore_id=restore_id,
+                                   entries=inventory), create=True)
+    for entry in inventory:
+        stage_for_exchange(entry['source'], work, entry['domain'], entry['local_part'],
+                           prepared=entry['prepared'], receipt=entry['receipt'], restore_id=restore_id)
+    return {'index': str(index), 'entries': inventory}
