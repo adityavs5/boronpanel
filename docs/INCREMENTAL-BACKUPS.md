@@ -423,3 +423,27 @@ Maildir restore/application and service coordination, panel registration updates
 owned snapshot selection/confirmation/UI, previous-message recovery, restoration of
 routing/Sieve/DKIM and other mail configuration, deleted-domain handling and live
 workflow verification. This metadata primitive does not complete mail recovery.
+
+## Dovecot message restore experiment (development)
+
+`tests/test_snapshot_mail_dovecot.py` exercises the installed Dovecot 2.3.21
+using synthetic Maildirs, an isolated configuration and an unprivileged process.
+No live mail service, authentication database, SMTP or LMTP delivery is involved.
+The experiment exposed a material limitation: reverse `doveadm backup` into an
+existing INBOX fails with `INBOX can't be deleted` when restoring an expunged UID.
+This is consistent with the Dovecot author's explanation at
+https://dovecot.org/list/dovecot/2015-September/102090.html .
+
+The passing test builds a fresh replacement Maildir from the saved source,
+retains the displaced directory and switches the offline fixture to the prepared
+replacement. It verifies original message contents/IDs, read and flagged state,
+Archive subscription, UIDVALIDITY and UIDNEXT, removal of newer messages from the
+restored point, and recovery of those newer messages by preparing and applying
+the pre-restore safety copy. Validation: one real integration test passed.
+
+This is a restore-semantics test, not a deployed mail restore feature. Production
+still needs per-mailbox delivery/client quiescence, authorization, no-follow
+staging validation, encrypted safety snapshots, durable recovery of interrupted
+switches, and API/UI integration. Do not use the fixture's directory rename
+sequence directly against active mailboxes. General Dovecot migration guidance:
+https://doc.dovecot.org/2.3/admin_manual/migrating_mailboxes/ .
