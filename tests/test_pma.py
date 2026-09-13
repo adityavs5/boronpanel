@@ -39,7 +39,7 @@ def stub_mariadb(monkeypatch):
 
     monkeypatch.setattr(pma.mariadb, "create_db_user", create_db_user)
     monkeypatch.setattr(pma.mariadb, "drop_db_user", drop_db_user)
-    monkeypatch.setattr(pma.mariadb, "grant_all", grant_all)
+    monkeypatch.setattr(pma.mariadb, "grant_exact_database", grant_all)
     monkeypatch.setattr(pma.mariadb, "generate_password", lambda length=24: "ephemeralpass123")
     return users
 
@@ -187,3 +187,50 @@ def test_bootstrap_pma_files_reuses_existing_blowfish_secret(tmp_path, monkeypat
     first = pma.bootstrap_pma_files()
     second = pma.bootstrap_pma_files()
     assert first == second
+
+
+def test_cleanup_keeps_failed_revocation_for_retry(account_with_db,stub_mariadb,stub_group,tmp_path,monkeypatch):
+    import datetime as dt
+    monkeypatch.setattr(settings,'pma_token_dir',str(tmp_path/'tokens'))
+    hdb.create_database({'username':'demo1','name':'shop'})
+    pma.create_token({'username':'demo1','name':'shop'})
+    with write_session() as session:
+        session.scalar(select(PmaToken)).expires_at -= dt.timedelta(hours=1)
+    def fail(*args):raise RuntimeError('Database temporarily unavailable')
+    monkeypatch.setattr(pma.mariadb,'drop_db_user',fail)
+    assert pma.cleanup_expired_tokens()==0
+    with write_session() as session:assert session.scalar(select(PmaToken)) is not None
+
+
+def test_token_storage_failure_removes_temporary_login(account_with_db,stub_mariadb,stub_group,tmp_path,monkeypatch):
+    from contextlib import contextmanager
+    monkeypatch.setattr(settings,'pma_token_dir',str(tmp_path/'tokens'))
+    hdb.create_database({'username':'demo1','name':'shop'})
+    before=set(stub_mariadb)
+    original=pma.write_session
+    calls=0
+    @contextmanager
+    def fail_second():
+        nonlocal calls
+        calls+=1
+        if calls==2:raise RuntimeError('Control database unavailable')
+        with original() as session:yield session
+    monkeypatch.setattr(pma,'write_session',fail_second)
+    with pytest.raises(RuntimeError,match='Control database'):
+        pma.create_token({'username':'demo1','name':'shop'})
+    assert set(stub_mariadb)==before
+    assert not list((tmp_path/'tokens').glob('*.json'))
+
+
+def test_prepare_root_keeps_php_worker_from_owning_package(isolated_db,tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    root=tmp_path/'pma';root.mkdir();(root/'index.php').write_text('<?php')
+    monkeypatch.setattr(settings,'pma_hostname','pma.example.com')
+    monkeypatch.setattr(settings,'pma_docroot',str(root))
+    monkeypatch.setattr(pma.pwd,'getpwnam',lambda name:SimpleNamespace(pw_uid=990,pw_gid=990,pw_shell='/usr/sbin/nologin'))
+    ownership=[]
+    monkeypatch.setattr(pma.os,'chown',lambda path,uid,gid:ownership.append((path,uid,gid)))
+    pma._prepare_service_root()
+    assert ownership[0]==(root,990,990)
+    assert root.stat().st_mode & 0o777==0o555
+    assert all(uid==0 for path,uid,gid in ownership[1:])

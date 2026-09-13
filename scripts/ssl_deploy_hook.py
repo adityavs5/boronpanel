@@ -67,6 +67,11 @@ def _apply_for_domain(domain_name: str, is_wildcard: bool = False) -> None:
         logger.info("applied new certificate for webmail host %s", domain_name)
         return
 
+    if domain_name == settings.pma_hostname:
+        ols.refresh_pma_vhost()
+        logger.info("applied new certificate for phpMyAdmin host %s", domain_name)
+        return
+
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain_name))
         if domain_row is None:

@@ -156,6 +156,21 @@ def grant_all(db_name: str, db_user: str, host: str = "localhost") -> None:
         conn.close()
 
 
+def grant_exact_database(db_name: str, db_user: str, host: str = "localhost") -> None:
+    """Database GRANT patterns treat underscores specially even inside backticks."""
+    validate_db_identifier(db_name)
+    validate_db_identifier(db_user)
+    if host != 'localhost':
+        raise ValueError('Temporary database access must be local')
+    db_ident = '`' + db_name.replace('_', r'\_').replace('%', r'\%') + '`'
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"GRANT {HOSTED_DB_PRIVILEGES} ON {db_ident}.* TO '{db_user}'@'localhost'")
+    finally:
+        conn.close()
+
+
 def revoke_all(db_name: str, db_user: str, host: str = "localhost") -> None:
     db_ident = _quote_ident(db_name)
     validate_db_identifier(db_user)

@@ -73,16 +73,26 @@ export default function Databases() {
   })
 
   const pmaMut = useMutation({
-    mutationFn: (r) => post(`/api/v1/accounts/${username}/databases/${r.db_name}/pma-token`, {}),
-    onSuccess: (res) => {
+    mutationFn: ({ row }) => post(`/api/v1/accounts/${username}/databases/${row.db_name}/pma-token`, {}),
+    onSuccess: (res, { popup }) => {
       if (!res?.pma_url) {
+        popup?.close()
         toast.error('phpMyAdmin is not set up', 'Ask your administrator to configure phpMyAdmin access.')
         return
       }
-      window.open(res.pma_url, '_blank', 'noopener')
+      if (popup && !popup.closed) popup.location.replace(res.pma_url)
+      else window.location.assign(res.pma_url)
     },
-    onError: (e) => toast.error('Could not open phpMyAdmin', e.message),
+    onError: (e, { popup }) => { popup?.close(); toast.error('Could not open phpMyAdmin', e.message) },
   })
+
+  function openPma(row) {
+    // Open during the click gesture so slow token creation does not trigger
+    // popup blocking. If the browser blocks it, use this tab after success.
+    const popup = window.open('about:blank', '_blank')
+    if (popup) { popup.opener = null; popup.document.title = 'Opening phpMyAdmin…' }
+    pmaMut.mutate({ row, popup })
+  }
 
   async function copyValue(text, label) {
     const ok = await copyToClipboard(text)
@@ -129,7 +139,7 @@ export default function Databases() {
               <DropdownMenuItem onSelect={() => resetMut.mutate(r)}>
                 <KeyRound className="h-4 w-4" /> Reset password
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => pmaMut.mutate(r)}>
+              <DropdownMenuItem onSelect={() => openPma(r)}>
                 <ExternalLink className="h-4 w-4" /> phpMyAdmin
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -245,7 +255,7 @@ export default function Databases() {
           <DialogHeader><DialogTitle>{selected?.db_name}</DialogTitle><DialogDescription>Manage this database and its dedicated user.</DialogDescription></DialogHeader>
           <DialogBody className="space-y-5">
             <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm"><dt className="text-muted-foreground">Database</dt><dd className="break-all">{selected?.db_name}</dd><dt className="text-muted-foreground">Username</dt><dd className="break-all">{selected?.db_user}</dd><dt className="text-muted-foreground">Created</dt><dd>{selected?.created_at ? formatDate(selected.created_at) : '—'}</dd></dl>
-            <div className="flex flex-wrap gap-3"><Button loading={pmaMut.isPending} onClick={() => pmaMut.mutate(selected)}><ExternalLink className="h-4 w-4"/> Open phpMyAdmin</Button><Button variant="outline" loading={resetMut.isPending} onClick={() => {resetMut.mutate(selected);setSelected(null)}}><KeyRound className="h-4 w-4"/> Reset password</Button></div>
+            <div className="flex flex-wrap gap-3"><Button loading={pmaMut.isPending} onClick={() => openPma(selected)}><ExternalLink className="h-4 w-4"/> Open phpMyAdmin</Button><Button variant="outline" loading={resetMut.isPending} onClick={() => {resetMut.mutate(selected);setSelected(null)}}><KeyRound className="h-4 w-4"/> Reset password</Button></div>
           </DialogBody>
           <DialogFooter><Button variant="danger" onClick={() => {setToDelete(selected);setSelected(null)}}>Delete database</Button><Button variant="secondary" onClick={() => setSelected(null)}>Done</Button></DialogFooter>
         </DialogContent>

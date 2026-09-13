@@ -30,6 +30,7 @@ import hashlib
 import json
 import logging
 import os
+import pwd
 import re
 import secrets
 import time
@@ -40,8 +41,8 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, DatabaseGrant, PmaToken, utcnow
-from shared.validation import validate_username
+from shared.models import Account, DatabaseGrant, Domain, PmaToken, utcnow
+from shared.validation import validate_username, validate_domain, ValidationError
 
 from daemon import mariadb
 from daemon.handlers_database import _resolve_existing_db_name
@@ -91,47 +92,50 @@ def create_token(params: dict) -> dict:
             raise PmaError(f"database '{db_name}' not found for account '{username}'")
         account_id = account.id
 
-    ephemeral_user = f"pma_{secrets.token_hex(6)}"
+    ephemeral_user = f"boronphpmyadminlogin_{secrets.token_hex(6)}"
     ephemeral_password = mariadb.generate_password()
     mariadb.create_db_user(ephemeral_user, ephemeral_password)
+    token_file = None
     try:
-        mariadb.grant_all(db_name, ephemeral_user)
-    except Exception:
-        mariadb.drop_db_user(ephemeral_user)
-        raise
+        mariadb.grant_exact_database(db_name, ephemeral_user)
 
-    token = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-    expires_at_epoch = int(time.time()) + settings.pma_token_ttl_seconds
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        expires_at_epoch = int(time.time()) + settings.pma_token_ttl_seconds
 
-    token_file = _token_dir() / f"{token_hash}.json"
-    token_file.write_text(
-        json.dumps(
-            {
-                "db_user": ephemeral_user,
-                "db_password": ephemeral_password,
-                "db_name": db_name,
-                "expires_at": expires_at_epoch,
-            }
-        )
-    )
-    token_file.chmod(0o640)
-    try:
-        gid = grp.getgrnam("www-data").gr_gid
-        os.chown(token_file, 0, gid)
-    except KeyError:
-        logger.warning("www-data group not found; pma token file left root-only, signon will fail")
-
-    with write_session() as session:
-        session.add(
-            PmaToken(
-                token_hash=token_hash,
-                account_id=account_id,
-                db_name=db_name,
-                ephemeral_db_user=ephemeral_user,
-                expires_at=utcnow() + dt.timedelta(seconds=settings.pma_token_ttl_seconds),
+        token_file = _token_dir() / f"{token_hash}.json"
+        token_file.write_text(
+            json.dumps(
+                {
+                    "db_user": ephemeral_user,
+                    "db_password": ephemeral_password,
+                    "db_name": db_name,
+                    "expires_at": expires_at_epoch,
+                }
             )
         )
+        token_file.chmod(0o640)
+        try:
+            gid = grp.getgrnam("www-data").gr_gid
+            os.chown(token_file, 0, gid)
+        except KeyError:
+            logger.warning("www-data group not found; pma token file left root-only, signon will fail")
+
+        with write_session() as session:
+            session.add(
+                PmaToken(
+                    token_hash=token_hash,
+                    account_id=account_id,
+                    db_name=db_name,
+                    ephemeral_db_user=ephemeral_user,
+                    expires_at=utcnow() + dt.timedelta(seconds=settings.pma_token_ttl_seconds),
+                )
+            )
+    except Exception:
+        if token_file is not None:
+            token_file.unlink(missing_ok=True)
+        mariadb.drop_db_user(ephemeral_user)
+        raise
 
     if not settings.pma_hostname:
         pma_url = None
@@ -159,19 +163,22 @@ def cleanup_expired_tokens() -> int:
         expired = session.scalars(select(PmaToken).where(PmaToken.expires_at < utcnow())).all()
         rows = [(t.id, t.token_hash, t.ephemeral_db_user) for t in expired]
 
+    cleaned = 0
     for token_id, token_hash, ephemeral_user in rows:
         try:
             mariadb.drop_db_user(ephemeral_user)
         except Exception:
             logger.exception("failed to drop ephemeral pma MariaDB user '%s'", ephemeral_user)
+            continue  # Retain the row so the next cleanup retries credential revocation.
         token_file = _token_dir() / f"{token_hash}.json"
         token_file.unlink(missing_ok=True)
         with write_session() as session:
             row = session.get(PmaToken, token_id)
             if row is not None:
                 session.delete(row)
+        cleaned += 1
 
-    return len(rows)
+    return cleaned
 
 
 def bootstrap_pma_files(blowfish_secret: str | None = None) -> str:
@@ -220,6 +227,39 @@ def bootstrap_pma_files(blowfish_secret: str | None = None) -> str:
     return blowfish_secret
 
 
+
+def _prepare_service_root():
+    from daemon.procutil import run
+    hostname = validate_domain(settings.pma_hostname)
+    if hostname in (settings.panel_hostname, settings.webmail_hostname):
+        raise ValidationError('phpMyAdmin hostname conflicts with another panel service')
+    with write_session() as session:
+        if session.scalar(select(Domain.id).where(Domain.domain == hostname)):
+            raise ValidationError('phpMyAdmin hostname belongs to a customer site')
+    root = Path(settings.pma_docroot)
+    if not root.is_absolute() or root.resolve() != root or not (root/'index.php').is_file():
+        raise PmaError('Install phpMyAdmin at its configured absolute document root first')
+    try:
+        owner = pwd.getpwnam('boron-pma')
+    except KeyError:
+        run(['useradd', '--system', '--user-group', '--no-create-home',
+             '--home-dir', '/nonexistent', '--shell', '/usr/sbin/nologin', 'boron-pma'], check=True)
+        owner = pwd.getpwnam('boron-pma')
+    if owner.pw_uid < 11 or owner.pw_gid < 10 or owner.pw_shell != '/usr/sbin/nologin':
+        raise PmaError('The boron-pma identity must be an unprivileged non-login account')
+    # OLS validates docroot UID even though PHP runs explicitly as www-data.
+    # The PHP worker must not own the package directory or replace its code.
+    os.chown(root, owner.pw_uid, owner.pw_gid)
+    root.chmod(0o555)
+    challenge = root/'.well-known/acme-challenge'
+    if challenge.resolve() != challenge:
+        raise PmaError('phpMyAdmin challenge path contains a symbolic link')
+    challenge.mkdir(parents=True, exist_ok=True)
+    for directory in (root/'.well-known', challenge):
+        os.chown(directory, 0, 0)
+        directory.chmod(0o755)
+
+
 def bootstrap_pma() -> None:
     """Full one-time (idempotent) setup: renders config.inc.php + the
     signon script, then provisions the OLS vhost. Run once, explicitly,
@@ -228,5 +268,6 @@ def bootstrap_pma() -> None:
     startup (a config-mutating action on startup would be surprising)."""
     from daemon import ols
 
+    _prepare_service_root()
     bootstrap_pma_files()
     ols.bootstrap_pma()

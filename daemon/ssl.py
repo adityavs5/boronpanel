@@ -28,7 +28,7 @@ from daemon import cloudflare_accounts, dnsprovider, events
 from daemon.ols import letsencrypt_cert_paths
 from daemon.procutil import run
 
-DEPLOY_HOOK_SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "ssl_deploy_hook.py")
+DEPLOY_HOOK_SCRIPT = "/opt/boron/scripts/ssl_deploy_hook.py"
 _VENV_PYTHON = str(Path(settings.certbot_bin).parent / "python")
 
 
@@ -108,6 +108,9 @@ def _challenge_plan(domain: str) -> tuple[str, list[str]]:
     # not something looked up from the accounts/domains tables.
     if domain == settings.webmail_hostname:
         return "http-01", ["--webroot", "-w", settings.webmail_docroot]
+
+    if domain == settings.pma_hostname:
+        return "http-01", ["--webroot", "-w", settings.pma_docroot]
 
     dns01 = _dns01_plan(domain)  # CF-active -> dns-cloudflare, local zone -> dns-powerdns
     if dns01 is not None:

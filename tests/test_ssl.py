@@ -529,3 +529,11 @@ def test_https_www_wordpress_expands_certificate_names(isolated_db, stub_sysops,
     fssl.issue_certificate({'domain':'demo1.example'})
     assert '--expand' in captured
     assert captured.count('-d')==2 and 'www.demo1.example' in captured
+
+
+def test_phpmyadmin_uses_its_own_webroot(monkeypatch):
+    from shared.config import settings
+    monkeypatch.setattr(settings,'pma_hostname','pma.example.com')
+    monkeypatch.setattr(settings,'pma_docroot','/srv/phpmyadmin')
+    assert fssl._challenge_plan('pma.example.com') == ('http-01',['--webroot','-w','/srv/phpmyadmin'])
+    assert fssl.DEPLOY_HOOK_SCRIPT == '/opt/boron/scripts/ssl_deploy_hook.py'

@@ -13,6 +13,7 @@ $i = 0;
 $i++;
 $cfg['Servers'][$i]['auth_type'] = 'signon';
 $cfg['Servers'][$i]['SignonSession'] = 'PMASignon';
+$cfg['Servers'][$i]['SignonCookieParams'] = ['lifetime' => 0, 'path' => '/', 'domain' => '', 'secure' => true, 'httponly' => true, 'samesite' => 'Strict'];
 $cfg['Servers'][$i]['SignonURL'] = '/boron_signon.php';
 $cfg['Servers'][$i]['host'] = 'localhost';
 $cfg['Servers'][$i]['socket'] = {{ mariadb_socket|tojson }};

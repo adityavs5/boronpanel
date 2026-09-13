@@ -76,3 +76,12 @@ def test_missing_renewed_domains_env_returns_error(hook, monkeypatch):
 def test_unknown_domain_is_skipped_not_fatal(hook, isolated_db, monkeypatch):
     monkeypatch.setenv("RENEWED_DOMAINS", "never-provisioned.example")
     assert hook.main() == 0
+
+
+def test_phpmyadmin_renewal_refreshes_infrastructure_vhost(hook,monkeypatch):
+    monkeypatch.setattr(hook.settings,'pma_hostname','pma.example.com')
+    monkeypatch.setenv('RENEWED_DOMAINS','pma.example.com')
+    calls=[]
+    monkeypatch.setattr(hook.ols,'refresh_pma_vhost',lambda:calls.append('pma'))
+    assert hook.main()==0
+    assert calls==['pma']
