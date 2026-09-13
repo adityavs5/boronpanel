@@ -371,3 +371,26 @@ Detailed logs/limits are in `docs/INCREMENTAL-BACKUPS.md`. This remains developm
 work: partial-resource repair, abrupt-interruption reconciliation, mixed recovery
 and remaining mutation-entry-point audit precede deployment. Full backup completion,
 the other unchecked initial requirements and the queued second phase remain open.
+
+### Partial database repair and deployment — 2026-09-13
+
+Added owned partial-resource repair without resetting surviving passwords, and
+persisted reconstruction markers that allow a newly requested restore to reconcile
+an interrupted create/user/grant sequence. Tests verify repaired access, original
+WordPress data, protected surviving resources, changed-password rejection and
+mixed existing/deleted restore undo. Extended SQL mutation coordination through
+staging, existing cPanel import steps and legacy restore workers.
+
+Validation passed: 24 partial/metadata/recovery checks, 39 mixed/SQL/CRUD/concurrency
+checks, 65 staging/import checks and 54 legacy restore/concurrency checks. See
+`docs/INCREMENTAL-BACKUPS.md` for logs. Deployed after idle-queue preflight with a
+code recovery archive. Correct health/UI/login/identity checks passed and services
+were active. The first readiness probe used the wrong `/health` route; `/healthz`
+is correct. No additional restart was needed and no live SQL data was removed.
+
+Remaining backup work includes background-worker behavior under SQL lock contention
+(interactive busy errors are appropriate, scheduled jobs should wait/requeue), full
+live disposable-data lifecycle proof, mail/config restore and the overall backup
+requirements audit. Original unchecked tasks and the queued second phase remain
+active. Do not mark backup completion based solely on these development tests and
+panel deployment checks.

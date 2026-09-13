@@ -319,3 +319,18 @@ newly reconstructed database remains available. Logs under `/root/boron-setup`:
 `database-coordination-audit-tests.log`, `legacy-restore-coordination-tests.log`.
 Frontend code is unchanged from the preceding successful production build and four
 deleted-database browser cases. Live deployment/verification is recorded below.
+
+Deployment of reconstruction/partial repair completed after all WordPress and
+backup/restore queues reported idle. Code recovery archive:
+`/root/boron-setup/db-reconstruction-before/code.tar.gz`. The first readiness probe
+mistakenly used `/health` and received 404; the correct `/healthz` verifier passed,
+along with UI 200, login 303 and administrator identity 200. boron-api,
+boron-provisiond and lshttpd were active; no second restart was required. Evidence:
+`/root/boron-setup/db-reconstruction-deploy.log`. This is deployment/access proof;
+a full live backup/reconstruction lifecycle still needs a dedicated disposable
+SQL dataset. No live database was deleted or recreated in this validation.
+
+Concurrency follow-up: the current global SQL mutation guard returns a retryable
+busy error. Interactive management should retain that behavior, but background
+backup/restore workers should wait or requeue under contention rather than fail a
+scheduled job. Address this before calling multi-job backup behavior complete.
