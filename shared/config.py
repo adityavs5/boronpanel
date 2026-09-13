@@ -132,6 +132,9 @@ class Settings:
 
     # Phase 2 feature 7: backup system
     rclone_bin: str = "/usr/bin/rclone"
+    restic_bin: str = "/usr/bin/restic"
+    snapshot_private_dir: str = "/var/lib/boron/snapshot-private"
+    snapshot_cpu_threads: int = 2
     backup_staging_dir: str = "/var/lib/boron/backup-staging"
     backup_concurrency: int = 2
 
