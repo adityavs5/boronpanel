@@ -186,3 +186,9 @@ production build passed. Logs: `/root/boron-setup/snapshot-safety-retention-test
 Live deployment is recorded separately after verification. Deleted database
 reconstruction, mail/configuration restores and the remaining original checklist
 still require work; this change does not complete the backup product.
+
+Deployment completed after queue-idle preflight. All three panel/web services are
+active and health/UI/login/administrator identity checks passed after API startup.
+The initial immediate probe raced startup; no second restart was needed. Recovery
+code archive: `/root/boron-setup/safety-retention-before/code.tar.gz`. This verifies
+deployment, while full live backup lifecycle validation remains open.

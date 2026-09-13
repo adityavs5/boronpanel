@@ -319,3 +319,23 @@ UIDs below its customer minimum. No customer namespace minimum was changed.
 Final OLS/phpMyAdmin regression run: 91 passed (`pma-assets-tests.log`), in addition
 to the earlier real SQL isolation/concurrent redemption checks and frontend build.
 The broader initial checklist and queued second phase remain active.
+
+### Backup recovery-copy retention — 2026-09-13
+
+Commit `a5f5454` implements separate retention of successful pre-restore copies
+using each job’s configured recovery-point count. Failed/interrupted restores and
+queued/running recovery sources remain protected; history clearly marks expired
+copies. Actual encrypted-repository tests prove deletion, retained-copy recovery,
+and retry after interruption between repository deletion and metadata update.
+Twenty-one backend checks and eight theme/mode browser checks passed; production
+build passed. See `docs/INCREMENTAL-BACKUPS.md` for the behavior and evidence paths.
+
+Deployed after confirming all WordPress, snapshot and legacy backup/restore queues
+idle. Recovery code archive: `/root/boron-setup/safety-retention-before/code.tar.gz`.
+The immediate login probe raced API startup and received connection refused;
+the subsequent probe succeeded: health 200, UI 200, login 303, administrator
+identity 200. boron-api, boron-provisiond and lshttpd all reported active. This is
+deployment/access evidence; it does not substitute for the unfinished full live
+backup/restore workflow audit. Deleted database reconstruction, mail/configuration
+restore and all other unchecked initial requirements remain active, ahead of the
+queued second phase.
