@@ -192,3 +192,42 @@ active and health/UI/login/administrator identity checks passed after API startu
 The initial immediate probe raced startup; no second restart was needed. Recovery
 code archive: `/root/boron-setup/safety-retention-before/code.tar.gz`. This verifies
 deployment, while full live backup lifecycle validation remains open.
+
+## Deleted-database recovery metadata (development)
+
+New database snapshots include a private `database-recovery.json` containing the
+account name, database/login names, character set/collation and the existing local
+login’s native authentication hash. It is created with mode 0600 inside the
+private staging directory and stored in the encrypted repository alongside SQL.
+The metadata is not returned by an API or stored in the API-readable control DB.
+It contains no plaintext database password. Missing registrations/logins or
+unsupported authentication/custom TLS requirements fail explicitly rather than
+producing misleading reconstruction metadata.
+
+`daemon/snapshot_db_metadata.py` validates account prefixes, local authentication,
+hash syntax and charset/collation identifiers. Its reconstruction primitive only
+creates an entirely missing database/login pair, preserves the original password,
+and grants the existing hosting privilege set with exact database-name escaping.
+It refuses existing databases or login names (including alternate hosts), and
+compensates resources created by its own call on failure. It never executes saved
+SQL account-management statements or grants global privileges. This follows the
+MariaDB documented [native-password hash restoration syntax](https://mariadb.com/docs/server/reference/plugins/authentication-plugins/authentication-plugin-mysql_native_password).
+
+This is not yet the customer deleted-database restore feature. The coordinator
+must verify the owned snapshot and metadata, handle partially missing resources,
+re-check current registrations and collisions, persist reconstruction progress,
+and integrate selection/confirmation and recovery after interruptions. Existing
+restore behavior is deliberately unchanged until those checks are implemented.
+Earlier snapshots lack this metadata and require an explicit compatibility path.
+
+Validation: 46 database/metadata/job tests passed; after the final snapshot-content
+assertions, 12 focused tests passed. They use disposable MariaDB and encrypted
+restic repositories and verify original-password authentication, restored WordPress
+data, preserved collation, denied neighboring databases/underscore lookalikes,
+conflicts, compensation, invalid metadata and private file permissions. The
+existing job fixture now includes its registered SQL login, matching production.
+A read-only live check captured and validated all nine QA databases without
+printing credentials or changing SQL resources. Logs:
+`/root/boron-setup/snapshot-db-reconstruction-tests.log` and
+`/root/boron-setup/snapshot-db-metadata-final.log`. These code changes remain in
+development pending restore coordinator integration and deployment.

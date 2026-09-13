@@ -291,6 +291,8 @@ def sources(account, options):
     (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
     if 'databases' in options['components'] and databases:
         from daemon.snapshot_databases import dump_database
+        from daemon.snapshot_db_metadata import capture, write_metadata
+        write_metadata(stage/'database-recovery.json', capture(account.username, databases))
         database_dir=stage/'databases';database_dir.mkdir(mode=0o700)
         for db in databases:
             dump_database(db.db_name,database_dir/f'{db.db_name}.sql',stage)

@@ -50,6 +50,8 @@ def sql(sql_server,monkeypatch,tmp_path):
         cursor.execute("DROP USER IF EXISTS 'snapshot_operator'@'localhost'")
         cursor.execute("CREATE USER 'snapshot_operator'@'localhost' IDENTIFIED BY 'test-only-service-password'")
         cursor.execute(f"GRANT {mariadb.HOSTED_DB_PRIVILEGES}, CREATE USER, RELOAD, PROCESS ON *.* TO 'snapshot_operator'@'localhost' WITH GRANT OPTION")
+        cursor.execute("DROP USER IF EXISTS 'alpha_wp'@'localhost'")
+        cursor.execute("CREATE USER 'alpha_wp'@'localhost' IDENTIFIED BY 'test-only-hosting-password'")
         cursor.execute('CREATE TABLE alpha_wp.posts (id INT PRIMARY KEY, content LONGTEXT, image LONGBLOB)')
         cursor.execute('INSERT INTO alpha_wp.posts VALUES (%s,%s,%s)',(1,'Original WordPress content ☕',b'\0\1\xff\n'))
         cursor.execute('CREATE TABLE bravo_wp.private_data (value VARCHAR(30))')
@@ -159,6 +161,14 @@ def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
     restored=storage.restore_to(repo,account.id,result.snapshot_id,str(work/'restored'))
     dump=restored/str(Path(settings.snapshot_private_dir)/'sources'/f'account-{account.id}'/'databases'/'alpha_wp.sql').lstrip('/')
     assert dump.is_file()
+    import json
+    recovery = dump.parent.parent / 'database-recovery.json'
+    metadata = json.loads(recovery.read_text())
+    assert metadata['username'] == 'alpha'
+    assert metadata['databases'][0]['user'] == 'alpha_wp'
+    assert metadata['databases'][0]['password_hash'].startswith('*')
+    assert recovery.stat().st_mode & 0o777 == 0o600
+    assert 'test-only-hosting-password' not in recovery.read_text()
     assert not list(restored.rglob('client-*.cnf'))
     with connection.cursor() as cursor:cursor.execute("UPDATE alpha_wp.posts SET content='changed after snapshot'")
     database.restore_database('alpha_wp',dump,work)

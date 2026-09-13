@@ -339,3 +339,18 @@ deployment/access evidence; it does not substitute for the unfinished full live
 backup/restore workflow audit. Deleted database reconstruction, mail/configuration
 restore and all other unchecked initial requirements remain active, ahead of the
 queued second phase.
+
+### Database reconstruction foundation — 2026-09-13
+
+Added private, encrypted-snapshot database recovery metadata and a validated
+primitive that recreates an entirely absent database/login pair while retaining
+its original password and charset/collation. No existing database/login is adopted
+or overwritten. Forty-six backend checks passed, followed by 12 final checks of
+actual snapshot metadata and SQL reconstruction; read-only live capture validated
+nine QA databases. See `docs/INCREMENTAL-BACKUPS.md` for evidence and limits.
+
+This remains development work: customer selection/queue integration, partial
+resource reconstruction, registration/conflict coordination, interruption recovery
+and old-snapshot compatibility are unfinished. Live databases were not deleted or
+recreated. Do not mark the backup checkbox complete based on this primitive; the
+full original scope and queued second phase remain active.
