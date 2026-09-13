@@ -188,3 +188,55 @@ certificate. The next deployment work must integrate trusted panel TLS and verif
 real shared/separate listeners, default 2222 and recovery on this server. The full
 original checklist, including unfinished backup/restore and phpMyAdmin work, remains
 active and must be audited before completion.
+
+## User-added second phase — execute only after the original goal is finished
+
+Added by the user on 2026-09-13 during live panel access verification. These are
+part of the continuing goal, not replacements for any original requirement. The
+user explicitly requires finishing the initial goal before starting this phase,
+and authorizes routine implementation decisions while unavailable. Completion of
+the overall goal must include both phases; do not mark it complete at the initial
+phase boundary.
+
+1. Reorder menus into this sequence, preserving role-appropriate access:
+   - Domains, Subdomains, FTP accounts, SSL certificates, Databases, DNS.
+   - Email Accounts, Email Settings, Email DNS Records.
+   - WordPress section.
+   - Backups section.
+   - Node.js, Python, advanced options including Terminal and Redis.
+   - Other features: logs, developer tools, change password, 2FA, security,
+     processes and remaining tools.
+2. Build a built-in filesystem malware scanner using suitable safe open-source
+   tools plus Boron-specific checks. Detect and help block common WordPress
+   compromises, malicious scripts and file exploits. This scanner is explicitly
+   file/script based, not a network or port scanner; network controls belong to
+   the firewall feature below.
+3. Provide a server-level miniature CSF-style firewall utility: block/unblock
+   ports and configure bypass IPs permitted to access all ports.
+4. Provide editable OpenLiteSpeed administration, not a read-only surface; allow
+   administrators to view available OLS credentials or reset its admin password
+   from Boron. Do not claim that an existing one-way password hash is recoverable.
+5. Provide administrator SSL certificate management and domain issuance directly
+   from the admin interface without entering a customer session.
+6. Add three or four prebuilt package templates to simplify package creation.
+   Prefer dropdown choices to manual entry wherever sensible throughout the UI.
+7. Manage multiple server IPs: assign dedicated IPs to users, mark one or multiple
+   addresses as shared, support random shared-IP allocation and a chosen default
+   address for new users.
+8. Provide DirectAdmin-like administrator account backup/restore with a portable,
+   universal account archive that can be restored on another Boron server.
+9. Provide interfaces for importing both cPanel and DirectAdmin accounts.
+10. Provide an administrator disk/resource usage utility showing disk, network,
+    memory and related server usage.
+11. Implement reseller users, reseller plans and a reseller panel with appropriate
+    account ownership and permissions.
+12. Provide prebuilt HTML account suspension templates.
+
+Every item requires implementation and appropriate behavioral/UI/live validation,
+not merely the existence of a menu or stub. Existing related features should be
+inspected and extended. Original backup/restore, phpMyAdmin, access, PHP, clock/2FA
+and usability requirements remain in the initial phase and keep their full scope.
+
+DNS steering: the user reports phpmyadmin.boron.sitecountry.com is corrected and
+asks to retry after propagation. Continue independent initial-phase work while
+periodically verifying DNS; do not repeatedly ask the user while they are away.
