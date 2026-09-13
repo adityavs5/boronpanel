@@ -133,3 +133,12 @@ Ubuntu MOTD, a working prompt and account UID isolation, with ephemeral key clea
 Build, branding/terminal regressions and four theme browser checks passed. See
 TERMINAL-WELCOME.md. Deployment and final integrated verification remain pending;
 the entire original product checklist stays active.
+
+## Progress — independent subdomain sites
+
+New addon/subdomain sites now have their own public_html under their full domain
+name; existing recorded roots remain unchanged. The creation dialog provides an
+owned-parent selector and full-name preview. Backend ownership checks prevent
+cross-account DNS modifications, and zone lookup chooses the most specific match.
+Real ACL tests prove web-server access without granting unrelated accounts access.
+See DOMAIN-ROOTS.md for validation and remaining live deployment/DNS checks.

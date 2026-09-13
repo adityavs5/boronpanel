@@ -13,8 +13,8 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain
-from shared.validation import validate_domain, validate_php_version, validate_username
+from shared.models import Account, Domain, DnsZone
+from shared.validation import ValidationError, validate_domain, validate_php_version, validate_username
 
 from daemon import dnsprovider, handlers_redirect, lscache, ols, sysops
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
@@ -65,11 +65,20 @@ def add_domain(params: dict) -> dict:
         if existing is not None:
             raise RuntimeError(f"domain '{domain_name}' is already in use")
 
+        owned_domains=session.scalars(select(Domain.domain).where(Domain.account_id==account.id)).all()
+        if kind=='subdomain' and not any(domain_name.endswith('.'+parent) for parent in owned_domains):
+            raise ValidationError('Choose a parent domain owned by this account')
+        matching_zones=[zone for zone in session.scalars(select(DnsZone)).all()
+            if domain_name==zone.zone or domain_name.endswith('.'+zone.zone)]
+        matching_zones.sort(key=lambda zone:len(zone.zone),reverse=True)
+        if matching_zones and matching_zones[0].account_id!=account.id:
+            raise ValidationError('The matching DNS zone belongs to another account')
+
         is_primary = kind == "primary"
         docroot = (
             f"{settings.home_base}/{username}/public_html"
             if is_primary
-            else f"{settings.home_base}/{username}/{domain_name}"
+            else f"{settings.home_base}/{username}/{domain_name}/public_html"
         )
         previous_primary_domain = account.primary_domain
         domain = Domain(account_id=account.id, domain=domain_name, kind=kind, docroot=docroot)
@@ -278,6 +287,14 @@ def ensure_docroot(username: str, docroot: str, domain_name: str | None = None) 
     # scoped to the one shared web-server uid ("nobody"), not by loosening
     # the "other" bits for every local user.
     safeio.secure_mkdirs(home, rel, pw.pw_uid, pw.pw_gid, 0o750)
+    # New addon/subdomain roots have a private containing directory. OLS needs
+    # traverse permission on that directory as well as read access at docroot.
+    from pathlib import Path
+    from daemon.procutil import run
+    for parent in Path(docroot).parents:
+        if str(parent)==home:break
+        if str(parent).startswith(home+'/'):
+            run(['setfacl','-m','u:nobody:--x',str(parent)],check=True)
     _grant_webserver_acl(docroot)
 
     # vhost.conf.j2 always declares a context for this path (ACME HTTP-01

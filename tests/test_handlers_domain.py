@@ -310,3 +310,56 @@ def test_set_domain_php_version_rejects_domain_not_owned_by_account(isolated_db,
 
     with pytest.raises(RuntimeError):
         hd.set_domain_php_version({"username": "demo2", "domain": "demo1.example", "php_version": "8.1"})
+
+
+def test_new_sites_get_independent_public_html_roots(isolated_db,stub_sysops,stub_filesystem,stub_ols):
+    ha.create_account({'username':'demo1'})
+    primary=hd.add_domain({'username':'demo1','domain':'demo1.example','kind':'primary'})
+    sub=hd.add_domain({'username':'demo1','domain':'blog.demo1.example','kind':'subdomain'})
+    addon=hd.add_domain({'username':'demo1','domain':'another.example'})
+    assert primary['docroot']==f'{hd.settings.home_base}/demo1/public_html'
+    assert sub['docroot']==f'{hd.settings.home_base}/demo1/blog.demo1.example/public_html'
+    assert addon['docroot']==f'{hd.settings.home_base}/demo1/another.example/public_html'
+
+
+def test_domain_cannot_modify_another_accounts_zone(isolated_db,stub_sysops,stub_filesystem,stub_ols,stub_powerdns):
+    ha.create_account({'username':'demo1'})
+    ha.create_account({'username':'demo2'})
+    _add_zone_owned_by('demo2','foreign.example')
+    with pytest.raises(Exception,match='belongs to another account'):
+        hd.add_domain({'username':'demo1','domain':'blog.foreign.example'})
+    assert stub_powerdns['upsert']==[]
+    assert hd.list_domains({'username':'demo1'})['domains']==[]
+
+
+def test_subdomain_requires_owned_parent(isolated_db,stub_sysops,stub_filesystem,stub_ols):
+    ha.create_account({'username':'demo1'})
+    with pytest.raises(Exception,match='parent domain owned'):
+        hd.add_domain({'username':'demo1','domain':'blog.foreign.example','kind':'subdomain'})
+
+
+def test_most_specific_dns_zone_is_selected(isolated_db,stub_sysops):
+    ha.create_account({'username':'demo1'})
+    _add_zone_owned_by('demo1','example.com')
+    _add_zone_owned_by('demo1','sub.example.com')
+    assert hd._find_parent_zone('blog.sub.example.com')=='sub.example.com'
+
+
+def test_nested_docroot_is_readable_by_webserver_not_other_accounts(monkeypatch):
+    import os,pwd,tempfile
+    from pathlib import Path
+    from daemon.procutil import run
+    if os.geteuid()!=0:pytest.skip('Actual filesystem ACL proof requires root')
+    with tempfile.TemporaryDirectory(prefix='boron-domain-acl-',dir='/tmp') as temporary:
+        base=Path(temporary);base.chmod(0o755)
+        home=base/'demo1';home.mkdir(mode=0o751);os.chown(home,65533,65533)
+        monkeypatch.setattr(hd.settings,'home_base',str(base))
+        fake=pwd.struct_passwd(('demo1','x',65533,65533,'',str(home),'/bin/bash'))
+        monkeypatch.setattr(pwd,'getpwnam',lambda name:fake)
+        monkeypatch.setattr(hd.sysops,'ensure_tmp_dir',lambda username:None)
+        docroot=home/'blog.example.com'/'public_html'
+        hd.ensure_docroot('demo1',str(docroot))
+        target=docroot/'index.html';target.write_text('Independent site')
+        assert run(['setpriv','--reuid=65534','--regid=65534','--clear-groups','cat',str(target)]).stdout=='Independent site'
+        assert not run(['setpriv','--reuid=65532','--regid=65532','--clear-groups','cat',str(target)]).ok
+        assert docroot.stat().st_uid==65533

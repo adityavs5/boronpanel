@@ -132,6 +132,8 @@ export default function Domains() {
   const navigate = useNavigate()
   const [createOpen, setCreateOpen] = useState(false)
   const [domain, setDomain] = useState('')
+  const [kind,setKind]=useState('addon')
+  const [parent,setParent]=useState('')
   const [toDelete, setToDelete] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -261,19 +263,24 @@ export default function Domains() {
           <form
             onSubmit={(e) => {
               e.preventDefault()
-              createMut.mutate({ domain: domain.trim(), kind: 'addon' })
+              createMut.mutate({ domain: kind==='subdomain'?`${domain.trim()}.${parent}`:domain.trim(), kind })
             }}
           >
             <DialogBody className="space-y-4">
-              <FormField label="Domain" required hint="An addon domain gets its own document root and vhost.">
+              <FormField label="Site type" htmlFor="domain-kind"><Select id="domain-kind" value={kind} onChange={e=>{setKind(e.target.value);setDomain('');setParent(data?.domains?.[0]?.domain||'')}}><option value="addon">Domain</option><option value="subdomain" disabled={!data?.domains?.length}>Subdomain</option></Select></FormField>
+              {kind==='subdomain'&&<FormField label="Parent domain" htmlFor="subdomain-parent"><Select id="subdomain-parent" value={parent} onChange={e=>setParent(e.target.value)}>{(data?.domains||[]).map(d=><option key={d.domain} value={d.domain}>{d.domain}</option>)}</Select></FormField>}
+              <FormField label={kind==='subdomain'?'Subdomain name':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter a name such as blog or shop.':'Enter a complete domain name.'}>
                 <Input
+                  id="new-domain-name"
                   autoFocus
                   value={domain}
                   onChange={(e) => setDomain(e.target.value)}
-                  placeholder="example.com"
+                  placeholder={kind==='subdomain'?'blog':'example.com'}
                   required
                 />
               </FormField>
+              <p className="text-sm text-muted-foreground">Each site gets its own public_html folder. A DNS address record is added automatically when its zone is managed here.</p>
+              {domain.trim()&&<p className="break-all text-sm font-medium">{kind==='subdomain'?`${domain.trim()}.${parent}`:domain.trim()}</p>}
             </DialogBody>
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>

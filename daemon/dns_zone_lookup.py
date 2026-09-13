@@ -17,7 +17,7 @@ from shared.models import DnsZone
 def find_managed_zone(domain_name: str) -> str | None:
     with write_session() as session:
         zones = session.scalars(select(DnsZone.zone)).all()
-    return next((z for z in zones if domain_name == z or domain_name.endswith(f".{z}")), None)
+    return next((z for z in sorted(zones,key=len,reverse=True) if domain_name == z or domain_name.endswith(f".{z}")), None)
 
 
 def label_within_zone(domain_name: str, zone: str) -> str:
