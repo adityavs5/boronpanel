@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { useNavigate, useLocation, Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Menu, Search, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck } from 'lucide-react'
+import { Palette, Home, Menu, Search, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck } from 'lucide-react'
+import { ThemeSelector } from '@/components/themes/ThemeSelector'
+import { useBranding } from '@/hooks/useBranding'
 import { get } from '@/lib/api'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
@@ -23,7 +25,7 @@ function SearchTrigger() {
       <button
         type="button"
         onClick={() => setPaletteOpen(true)}
-        className="hidden h-8 w-56 items-center gap-2 rounded-btn border border-border bg-surface px-2.5 text-sm text-muted-foreground transition-colors hover:border-accent/60 hover:text-foreground md:flex"
+        className="topbar-search hidden h-8 w-56 items-center gap-2 rounded-btn border border-border bg-surface px-2.5 text-sm text-muted-foreground transition-colors hover:border-accent/60 hover:text-foreground md:flex"
       >
         <Search className="h-3.5 w-3.5 shrink-0" />
         <span className="flex-1 text-left">Search…</span>
@@ -112,6 +114,7 @@ export function Topbar() {
   const { role, username, logout } = useAuth()
   const navigate = useNavigate()
   const isAdmin = role === 'admin'
+  const { panelName, logoUrl } = useBranding()
 
   async function handleLogout() {
     await logout()
@@ -119,17 +122,22 @@ export function Topbar() {
   }
 
   return (
-    <header className="flex h-16 shrink-0 items-center justify-between gap-4 border-b border-border bg-surface px-4 lg:px-6">
+    <header className="panel-topbar">
       <div className="flex items-center gap-3 min-w-0">
-        <button type="button" onClick={() => setMobileNavOpen(true)} className="rounded-btn p-2 text-muted-foreground hover:bg-muted md:hidden" aria-label="Open navigation" aria-haspopup="dialog">
+        <button type="button" onClick={() => setMobileNavOpen(true)} className="rounded-btn p-2 text-muted-foreground hover:bg-muted" aria-label="Open navigation" aria-haspopup="dialog">
           <Menu className="h-5 w-5" />
         </button>
-        <Breadcrumb />
+        <Link to={isAdmin ? '/overview' : '/dashboard'} className="panel-brand" aria-label={`${panelName} home`}>
+          {logoUrl ? <img src={logoUrl} alt="" /> : <span className="brand-symbol">{panelName.charAt(0).toUpperCase()}</span>}
+          <span>{panelName}<small>web control panel</small></span>
+        </Link>
       </div>
 
       <div className="flex items-center gap-2">
         <SearchTrigger />
-        {isAdmin && <AccountSwitcher />}
+        <span className="access-level"><span>Access Level</span><strong>{isAdmin ? 'Admin' : 'User'}</strong></span>
+        <ThemeSelector />
+
 
         <button
           onClick={toggleTheme}
@@ -162,6 +170,9 @@ export function Topbar() {
             <DropdownMenuItem onClick={() => navigate('/security')}>
               <ShieldCheck className="h-4 w-4" /> Two-factor auth
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => navigate('/appearance')}>
+              <Palette className="h-4 w-4" /> Appearance
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={toggleTheme}>
               {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               {theme === 'dark' ? 'Light mode' : 'Dark mode'}
@@ -175,4 +186,13 @@ export function Topbar() {
       </div>
     </header>
   )
+}
+
+export function PageNavigation() {
+  const isAdmin = useAuth((s) => s.role === 'admin')
+  return <div className="page-navigation">
+    <Link to={isAdmin ? '/overview' : '/dashboard'} className="home-link"><Home size={15} /> Home</Link>
+    <Breadcrumb />
+    <div className="ml-auto">{isAdmin && <AccountSwitcher />}</div>
+  </div>
 }

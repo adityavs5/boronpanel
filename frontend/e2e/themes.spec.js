@@ -1,0 +1,165 @@
+import { test, expect } from '@playwright/test'
+import fs from 'node:fs'
+import vm from 'node:vm'
+const skins = ['evolution', 'paper-lantern']
+const nameOf = (skin) => skin === 'evolution' ? 'Evolution' : 'Paper Lantern'
+
+async function setup(page, role = 'admin', skin = 'evolution', mode = 'light') {
+  await page.addInitScript(({ role, skin, mode }) => {
+    if (!localStorage.getItem('boron.ui')) localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme: mode }, version: 0 }))
+    localStorage.setItem('boron.auth', JSON.stringify({ state: { role, username: role === 'admin' ? 'admin' : 'hostingdemo' }, version: 0 }))
+  }, { role, skin, mode })
+  const errors = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await page.route('**/api/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    let data = {}
+    if (pathname.endsWith('/whoami')) data = { role, username: role === 'admin' ? 'admin' : 'hostingdemo' }
+    else if (pathname.endsWith('/branding')) data = { panel_name: 'Boron' }
+    else if (pathname.endsWith('/version')) data = { version: '1.0.1' }
+    else if (pathname.endsWith('/health')) data = { cpu_pct: 12, mem_pct: 32, disks: [{ mount: '/', pct: 24 }], uptime_seconds: 84600 }
+    else if (pathname === '/api/v1/accounts') data = [{ username: 'hostingdemo', primary_domain: 'example.com', status: 'active', php_version: '8.3' }]
+    else if (pathname.endsWith('/plans')) data = []
+    else if (pathname.endsWith('/onboarding')) data = { completed: true }
+    else if (pathname.endsWith('/usage')) data = { current: { disk_total_bytes: 123456789, disk_home_bytes: 100000000, disk_db_bytes: 13456789, disk_mail_bytes: 10000000 }, quota_hard_mb: 5120, bandwidth_month_to_date_bytes: 987654321 }
+    else if (pathname.endsWith('/domains')) data = { domains: [{ domain: 'example.com', is_primary: true }] }
+    else if (pathname.endsWith('/alerts')) data = { active: [] }
+    else if (pathname === '/api/v1/accounts/hostingdemo') data = { username: 'hostingdemo', primary_domain: 'example.com', status: 'active', php_version: '8.3', quota_hard_mb: 5120 }
+    await route.fulfill({ json: data })
+  })
+  return errors
+}
+async function choose(page, skin) {
+  await page.getByRole('button', { name: 'Choose theme', exact: true }).first().click()
+  await page.getByRole('menuitemradio', { name: new RegExp(nameOf(skin)) }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-skin', skin)
+}
+async function noOverflow(page) {
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth || document.querySelector('main').scrollWidth > document.querySelector('main').clientWidth)
+  expect(overflow).toBe(false)
+}
+for (const role of ['admin', 'customer']) {
+  for (const skin of skins) {
+    test(`${role} ${skin}: dashboard, real tool links, filtering and collapse`, async ({ page }, testInfo) => {
+      const errors = await setup(page, role, skin)
+      await page.goto(role === 'admin' ? '/app/overview' : '/app/dashboard')
+      await expect(page.getByRole('heading', { name: role === 'admin' ? 'Admin Dashboard' : 'Hosting Dashboard', exact: true })).toBeVisible()
+      await expect(page.locator('.tool-link').first()).toBeVisible()
+      await expect(page.locator('.query-notice')).toHaveCount(0)
+      await noOverflow(page)
+      const links = await page.locator('.tool-link').evaluateAll((items) => items.map((item) => item.getAttribute('href')))
+      expect(links).toContain('/app/appearance')
+      expect(links).toContain(role === 'admin' ? '/app/accounts' : '/app/files')
+      if (role === 'customer') expect(links).not.toContain('/app/accounts')
+      await page.screenshot({ path: testInfo.outputPath(`${role}-${skin}.png`), fullPage: true })
+      const section = page.locator('.tool-group').first()
+      await section.locator('button').click()
+      await expect(section.locator('.tool-grid')).toBeHidden()
+      await page.reload()
+      await expect(page.locator('.tool-group').first().locator('.tool-grid')).toBeHidden()
+      await page.getByRole('textbox', { name: 'Filter tools' }).fill(role === 'admin' ? 'accounts' : 'files')
+      await expect(page.locator('.tool-link').first()).toBeVisible()
+      await page.getByRole('textbox', { name: 'Filter tools' }).fill('no-such-tool-xyz')
+      await expect(page.getByRole('heading', { name: 'No tools found' })).toBeVisible()
+      await page.getByRole('button', { name: 'Show all tools' }).click()
+      await expect(page.getByRole('textbox', { name: 'Filter tools' })).toHaveValue('')
+      expect(errors).toEqual([])
+    })
+    test(`${role} ${skin}: phone and tablet layouts`, async ({ page }, testInfo) => {
+      const errors = await setup(page, role, skin)
+      for (const width of [320, 390, 768]) {
+        await page.setViewportSize({ width, height: 844 })
+        await page.goto(role === 'admin' ? '/app/overview' : '/app/dashboard')
+        await expect(page.locator('.tool-link').first()).toBeVisible()
+        await noOverflow(page)
+        if (width === 390) await page.screenshot({ path: testInfo.outputPath(`${role}-${skin}-mobile.png`), fullPage: true })
+      }
+      await page.getByRole('button', { name: 'Open navigation' }).click()
+      await expect(page.getByRole('dialog', { name: 'Panel navigation' })).toBeVisible()
+      await page.getByRole('dialog').getByRole('link', { name: 'Appearance', exact: true }).click()
+      await expect(page).toHaveURL(/\/appearance$/)
+      expect(errors).toEqual([])
+    })
+  }
+}
+test('theme and color mode persist without losing a password form draft', async ({ page }) => {
+  const errors = await setup(page)
+  await page.goto('/app/change-password')
+  const input = page.locator('input[type="password"]').first()
+  await input.fill('unsaved-test-value')
+  await choose(page, 'paper-lantern')
+  await expect(page).toHaveURL(/\/change-password$/)
+  await expect(input).toHaveValue('unsaved-test-value')
+  await page.getByRole('button', { name: 'Switch to dark mode', exact: true }).click()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('data-skin', 'paper-lantern')
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  expect(errors).toEqual([])
+})
+for (const skin of skins) {
+  test(`${skin}: appearance previews, switching, and dark surfaces`, async ({ page }, testInfo) => {
+    const errors = await setup(page, 'admin', skin)
+    await page.goto('/app/appearance')
+    await expect(page.getByRole('button', { name: `Use ${nameOf(skin)} theme` })).toHaveAttribute('aria-pressed', 'true')
+    await page.getByRole('button', { name: 'Dark', exact: true }).click()
+    await page.getByRole('link', { name: 'Back to dashboard' }).click()
+    await expect(page.locator('.tool-link').first()).toBeVisible()
+    await expect(page.locator('html')).toHaveClass(/dark/)
+    expect(await page.locator('main').evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe('rgb(255, 255, 255)')
+    await page.screenshot({ path: testInfo.outputPath(`${skin}-dark.png`), fullPage: true })
+    expect(errors).toEqual([])
+  })
+}
+test('failed statistics offer retry without hiding the tool directory', async ({ page }) => {
+  await setup(page)
+  await page.route('**/api/v1/health', (route) => route.fulfill({ status: 500, json: { detail: 'Unavailable' } }))
+  await page.goto('/app/overview')
+  await expect(page.getByRole('button', { name: 'Retry server statistics' })).toBeVisible()
+  await expect(page.locator('.tool-link').first()).toBeVisible()
+  await page.route('**/api/v1/health', (route) => route.fulfill({ json: { cpu_pct: 0, mem_pct: 0, disks: [] } }))
+  await page.getByRole('button', { name: 'Retry server statistics' }).click()
+  await expect(page.getByRole('progressbar', { name: 'CPU Usage' })).toHaveAttribute('aria-valuenow', '0')
+})
+test('preferences synchronize across tabs without navigation', async ({ page, context }) => {
+  await setup(page)
+  await page.goto('/app/overview')
+  const second = await context.newPage()
+  await setup(second)
+  await second.goto('/app/appearance')
+  await choose(page, 'paper-lantern')
+  await expect(second.locator('html')).toHaveAttribute('data-skin', 'paper-lantern')
+  await expect(second).toHaveURL(/\/appearance$/)
+})
+test('prepaint preference loader tolerates old, invalid and unavailable storage', () => {
+  const script = fs.readFileSync('public/theme-init.js', 'utf8')
+  for (const [saved, expectedSkin, expectedDark] of [
+    ['{}', 'evolution', false], ['{bad', 'evolution', false],
+    [JSON.stringify({ state: { theme: 'dark' } }), 'evolution', true],
+    [JSON.stringify({ state: { skin: 'paper-lantern', theme: 'dark' } }), 'paper-lantern', true],
+    [JSON.stringify({ state: { skin: 'unknown', theme: 'invalid' } }), 'evolution', false],
+    [null, 'evolution', false],
+  ]) {
+    let dark
+    const root = { dataset: {}, style: {}, classList: { toggle: (_, value) => { dark = value } } }
+    vm.runInNewContext(script, { document: { documentElement: root }, localStorage: { getItem: () => { if (saved === null) throw Error('blocked'); return saved } } })
+    expect(root.dataset.skin).toBe(expectedSkin)
+    expect(dark).toBe(expectedDark)
+  }
+})
+
+test('keyboard navigation can switch themes and reach Appearance', async ({ page }) => {
+  await setup(page)
+  await page.goto('/app/overview')
+  await page.getByRole('button', { name: 'Choose theme', exact: true }).first().focus()
+  await page.keyboard.press('Enter')
+  await page.keyboard.press('p')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('html')).toHaveAttribute('data-skin', 'paper-lantern')
+  await page.keyboard.press('Control+k')
+  const dialog = page.getByRole('dialog', { name: 'Search the panel' })
+  await expect(dialog).toBeVisible()
+  await dialog.locator('input').fill('Appearance')
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/appearance$/)
+})

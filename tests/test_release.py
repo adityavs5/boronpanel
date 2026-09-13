@@ -62,6 +62,7 @@ def test_release_rejects_malformed_version():
     assert "x.y.z" in r.stderr
 
 
+@pytest.mark.skipif(not (REPO_ROOT / ".git").exists(), reason="release builds require a source checkout")
 def test_release_dry_run_builds_verified_artifacts(tmp_path):
     from version import BORON_VERSION
 
@@ -101,6 +102,7 @@ def test_release_dry_run_builds_verified_artifacts(tmp_path):
         assert not any(n.startswith(f"{prefix}/frontend/") for n in names), "frontend source leaked"
 
 
+@pytest.mark.skipif(not (REPO_ROOT / ".git").exists(), reason="release builds require a source checkout")
 def test_release_dry_run_does_not_touch_version_py():
     before = (REPO_ROOT / "version.py").read_text()
     r = _run("--dry-run", "--skip-tests", "--skip-build", "--output-dir",

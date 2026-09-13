@@ -1,8 +1,8 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { Sidebar } from './Sidebar'
-import { Topbar } from './Topbar'
+import { PaperRail } from '@/components/themes/PaperRail'
+import { Topbar, PageNavigation } from './Topbar'
 import { MobileBottomNav } from './MobileBottomNav'
 import { MobileNavDrawer } from './MobileNavDrawer'
 import { ImpersonationBanner } from './ImpersonationBanner'
@@ -30,6 +30,7 @@ function PageFallback() {
 // The authenticated app frame: iron sidebar (md+), topbar, scrollable content,
 // a mobile bottom nav below 768px, and the Ctrl/Cmd+K command palette.
 export function AppShell() {
+  const skin = useUI((s) => s.skin)
   const syncIdentity = useAuth((s) => s.syncIdentity)
   const togglePalette = useUI((s) => s.togglePalette)
 
@@ -51,14 +52,13 @@ export function AppShell() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <ImpersonationBanner />
+      <Topbar />
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="hidden md:flex">
-          <Sidebar />
-        </div>
+        {skin === 'paper-lantern' && <PaperRail />}
         <div className="flex min-w-0 flex-1 flex-col">
-          <Topbar />
+          <PageNavigation />
           <main className="flex-1 overflow-y-auto bg-background">
-            <div className="mx-auto w-full max-w-[1400px] p-4 pb-24 sm:p-6 md:pb-6">
+            <div className="panel-content">
               <Suspense fallback={<PageFallback />}>
                 <Outlet />
               </Suspense>

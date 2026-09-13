@@ -40,9 +40,9 @@ export function MobileNavDrawer() {
   return (
     <DialogPrimitive.Root open={open} onOpenChange={setOpen}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/55 data-[state=open]:animate-fade-in md:hidden" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/55 data-[state=open]:animate-fade-in" />
         <DialogPrimitive.Content
-          className="fixed inset-y-0 left-0 z-50 flex w-[min(88vw,320px)] flex-col bg-sidebar text-white shadow-dropdown outline-none md:hidden"
+          className="fixed inset-y-0 left-0 z-50 flex w-[min(88vw,320px)] flex-col bg-sidebar text-white shadow-dropdown outline-none"
           aria-describedby={undefined}
         >
           <DialogPrimitive.Title className="sr-only">Panel navigation</DialogPrimitive.Title>

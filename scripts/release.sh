@@ -122,7 +122,7 @@ next_version() {
 cleanup_on_exit() {
     local status=$?
     if [[ $status -ne 0 ]] && $BUMPED; then
-        git -C "$REPO_ROOT" checkout -q -- version.py frontend/package.json 2>/dev/null || true
+        git -C "$REPO_ROOT" checkout -q -- version.py frontend/package.json frontend/package-lock.json 2>/dev/null || true
         warn "failure after version bump -- version.py/package.json restored from git"
     fi
     [[ -n "${STAGE_DIR:-}" && -d "${STAGE_DIR:-}" ]] && rm -rf "$STAGE_DIR"
@@ -194,6 +194,11 @@ p = pathlib.Path("frontend/package.json")
 data = json.loads(p.read_text())
 data["version"] = sys.argv[1]
 p.write_text(json.dumps(data, indent=2) + "\n")
+lock = pathlib.Path("frontend/package-lock.json")
+data = json.loads(lock.read_text())
+data["version"] = sys.argv[1]
+data["packages"][""]["version"] = sys.argv[1]
+lock.write_text(json.dumps(data, indent=2) + "\n")
 PYEOF
     BUMPED=true
     [[ "$(current_version)" == "$new" ]] || die "version bump failed to apply"
@@ -338,7 +343,7 @@ publish() {
         return
     fi
     info "Publishing v${version}"
-    git -C "$REPO_ROOT" add version.py frontend/package.json
+    git -C "$REPO_ROOT" add version.py frontend/package.json frontend/package-lock.json
     git -C "$REPO_ROOT" commit -m "release: v${version}"
     BUMPED=false   # the bump is committed now; the failure trap must not revert it
     git -C "$REPO_ROOT" tag -a "v${version}" -m "Boron v${version}"

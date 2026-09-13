@@ -1,11 +1,11 @@
 import { cn } from '@/lib/cn'
 
 export function Card({ className, ...props }) {
-  return <div className={cn('rounded-card border border-border bg-card shadow-card', className)} {...props} />
+  return <div className={cn('panel-card rounded-card border border-border bg-card shadow-card', className)} {...props} />
 }
 
 export function CardHeader({ className, ...props }) {
-  return <div className={cn('flex items-start justify-between gap-4 px-6 pt-5 pb-3', className)} {...props} />
+  return <div className={cn('panel-card-header flex items-start justify-between gap-4 px-6 pt-5 pb-3', className)} {...props} />
 }
 
 export function CardTitle({ className, ...props }) {
@@ -13,7 +13,7 @@ export function CardTitle({ className, ...props }) {
 }
 
 export function CardDescription({ className, ...props }) {
-  return <p className={cn('text-sm text-muted-foreground mt-0.5', className)} {...props} />
+  return <p className={cn('panel-card-description text-sm text-muted-foreground mt-0.5', className)} {...props} />
 }
 
 export function CardContent({ className, ...props }) {

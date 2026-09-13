@@ -6,14 +6,16 @@ import { router } from './routes'
 import { queryClient } from './lib/queryClient'
 import { registerAuthHandlers } from './lib/api'
 import { useAuth } from './store/auth'
-import { useUI, applyTheme } from './store/ui'
+import { useUI, applyTheme, syncUIPreferences } from './store/ui'
 import { TooltipProvider } from './components/ui/Tooltip'
 import { Toaster } from './components/ui/Toast'
 import { BrandingBootstrap } from './components/layout/BrandingBootstrap'
 import './index.css'
+import './themes.css'
 
 // Apply persisted theme before first paint.
-applyTheme(useUI.getState().theme)
+applyTheme(useUI.getState().theme, useUI.getState().skin)
+window.addEventListener('storage', syncUIPreferences)
 
 // Wire global auth/maintenance handling into the axios interceptor.
 registerAuthHandlers({

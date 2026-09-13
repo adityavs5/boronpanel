@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sync the git checkout (/root/cpanel-clone, source of truth) to the real
+# Sync this git checkout (source of truth) to the real
 # deployment directory (/opt/boron) that borond and boron-api
 # actually run from. Needed because /root is mode 700 -- the unprivileged
 # boron-api user can never traverse into /root/cpanel-clone, even via a
@@ -17,13 +17,14 @@
 # step can't be forgotten.
 set -euo pipefail
 
-SRC=/root/cpanel-clone
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DST=/opt/boron
 
 rsync -a --delete \
   --exclude='.venv' --exclude='.git' --exclude='__pycache__' \
   --exclude='.pytest_cache' --exclude='*.pyc' \
   --exclude='frontend/node_modules' --exclude='frontend/.vite' \
+  --exclude='frontend/test-results' --exclude='frontend/playwright-report' \
   "$SRC"/ "$DST"/
 
 # Excludes .venv: it's not touched by rsync above either, and a previous

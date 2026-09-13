@@ -955,7 +955,8 @@ start_services() {
         done
     fi
     # One-time: replace OLS's stock Example vhost with a clean baseline.
-    run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from shared.rpc import RpcClient; RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_ols', _actor='setup', _role='admin')\" || true"
+    run_sh "sudo -u boron-api -- '${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from shared.rpc import RpcClient; RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_ols', _actor='setup', _role='admin')\""
+    run systemctl restart lshttpd
     run systemctl enable --now boron-api
     run systemctl enable --now boron-filebrowser
     ok "provisiond + api + FileBrowser started; OLS baseline applied"
@@ -1291,7 +1292,9 @@ main() {
     summary
     if [[ "$STEP_FAIL" -eq 0 ]]; then
         info "Done. Boron Panel v${BORON_VERSION} -- https://${PANEL_DOMAIN:-${SERVER_IP:-<server-ip>}}:9443/login"
-        $DRY_RUN && info "This was a dry-run -- nothing was changed."
+        if $DRY_RUN; then
+            info "This was a dry-run -- nothing was changed."
+        fi
     else
         die "${STEP_FAIL} step(s) failed -- see ${INSTALL_LOG}"
     fi

@@ -4,6 +4,7 @@
 // tokenizers run in the main thread — no per-language service worker needed for
 // a file editor), and just the base editor worker. Lazy-loaded (React.lazy in
 // Files.jsx) so Monaco only enters the bundle when the editor opens.
+import { useUI } from '@/store/ui'
 import Editor, { loader } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
@@ -47,7 +48,7 @@ export function languageForName(name) {
 }
 
 export default function CodeEditor({ value, onChange, filename, height = '60vh' }) {
-  const prefersDark = typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches
+  const prefersDark = useUI((s) => s.theme === 'dark')
   return (
     <Editor
       height={height}

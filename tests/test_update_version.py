@@ -89,7 +89,10 @@ def test_installer_sed_extracts_the_version():
 def test_vite_config_reads_version_py():
     """The SPA bundle bakes the version in at build time; pin the regex the
     vite config uses against the actual file format."""
-    vite = (REPO_ROOT / "frontend" / "vite.config.js").read_text()
+    vite_path = REPO_ROOT / "frontend" / "vite.config.js"
+    if not vite_path.exists():
+        pytest.skip("frontend build configuration is only present in source checkouts")
+    vite = vite_path.read_text()
     assert "version.py" in vite
     # The JS regex literal /BORON_VERSION\s*=\s*"([^"]+)"/ must match
     # version.py's actual assignment line.

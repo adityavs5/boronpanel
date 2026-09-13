@@ -50,3 +50,7 @@ frontend/dist/
 # Deployment data paths (explicit entries retained for audit tooling).
 /var/lib/
 /var/log/
+
+# Browser test evidence is generated locally, never release content.
+frontend/test-results/
+frontend/playwright-report/

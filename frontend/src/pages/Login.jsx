@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useLocation, Navigate } from 'react-router-dom'
 import { Eye, EyeOff, ShieldCheck } from 'lucide-react'
+import { ThemeSelector } from '@/components/themes/ThemeSelector'
 import { useAuth } from '@/store/auth'
 import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
@@ -24,10 +25,10 @@ export default function Login() {
     if (error) errorRef.current?.focus()
   }, [error])
 
-  if (role) return <Navigate to={location.state?.from || (role === 'admin' ? '/accounts' : '/dashboard')} replace />
+  if (role) return <Navigate to={location.state?.from || (role === 'admin' ? '/overview' : '/dashboard')} replace />
 
   function landing(r) {
-    return r === 'admin' ? '/accounts' : '/dashboard'
+    return r === 'admin' ? '/overview' : '/dashboard'
   }
 
   async function submitCredentials(e) {
@@ -59,7 +60,7 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-full">
+    <div className="login-page flex min-h-full">
       {/* Brand panel (hidden on small screens) */}
       <div className="hidden w-1/2 flex-col justify-between bg-sidebar p-12 lg:flex">
         <div className="flex items-center gap-3">
@@ -101,6 +102,7 @@ export default function Login() {
             </div>
           </div>
 
+          <div className="mb-6 flex justify-end"><ThemeSelector /></div>
           {!pending2fa ? (
             <>
               <h2 className="text-xl font-semibold text-foreground">Sign in</h2>

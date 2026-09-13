@@ -35,11 +35,15 @@ export const customerNav = [
   { label: 'Processes', to: '/processes', icon: Cpu },
   { label: 'Logs', to: '/logs', icon: ScrollText },
   { label: 'Security', to: '/security', icon: ShieldCheck },
+  { section: 'Preferences' },
+  { label: 'Appearance', to: '/appearance', icon: Palette },
+  { label: 'Change Password', to: '/change-password', icon: KeyRound },
 ]
 
 // Admin nav — server-wide administration + the accounts hub.
 export const adminNav = [
   { section: 'Administration' },
+  { label: 'Dashboard', to: '/overview', icon: LayoutDashboard },
   { label: 'Accounts', to: '/accounts', icon: Users },
   { label: 'Server Health', to: '/health', icon: Activity },
   { label: 'Services', to: '/services', icon: Cog },
@@ -52,6 +56,9 @@ export const adminNav = [
   { label: 'Maintenance Mode', to: '/maintenance-mode', icon: Construction },
   { section: 'Panel Configuration' },
   { label: 'Branding', to: '/branding', icon: Palette },
+  { label: 'Appearance', to: '/appearance', icon: Palette },
+  { label: 'Change Password', to: '/change-password', icon: KeyRound },
+  { label: 'Security', to: '/security', icon: ShieldCheck },
   { label: 'Templates', to: '/templates', icon: FileText },
   { section: 'Mail & Network' },
   { label: 'Mail Queue', to: '/mail-queue', icon: Inbox },

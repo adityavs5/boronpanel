@@ -1,7 +1,10 @@
-// Applies the persisted dark-mode class before first paint. Lives in its own
-// file (not inline in index.html) because the panel's CSP is script-src 'self'
-// — inline scripts are blocked.
-try {
-  var s = JSON.parse(localStorage.getItem('boron.ui') || '{}')
-  if (s.state && s.state.theme === 'dark') document.documentElement.classList.add('dark')
-} catch (e) {}
+// External script for CSP compatibility: apply preferences before first paint.
+(function () {
+  var state = {}
+  try { state = JSON.parse(localStorage.getItem('boron.ui') || '{}').state || {} } catch (e) {}
+  var root = document.documentElement
+  var dark = state.theme === 'dark'
+  root.dataset.skin = state.skin === 'paper-lantern' ? 'paper-lantern' : 'evolution'
+  root.classList.toggle('dark', dark)
+  root.style.colorScheme = dark ? 'dark' : 'light'
+})()

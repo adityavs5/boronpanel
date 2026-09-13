@@ -10,7 +10,8 @@ import { Maintenance, NotFound, RouteError } from '@/pages/system'
 
 // Every page is code-split: the shell paints immediately and each page loads
 // on first visit (then stays cached). AppShell provides the Suspense fallback.
-const Dashboard = lazy(() => import('@/pages/customer/Dashboard'))
+const Dashboard = lazy(() => import('@/components/themes/ToolDashboard'))
+const Appearance = lazy(() => import('@/pages/Appearance'))
 const Domains = lazy(() => import('@/pages/customer/Domains'))
 const DomainDetail = lazy(() => import('@/pages/customer/DomainDetail'))
 const Email = lazy(() => import('@/pages/customer/Email'))
@@ -69,7 +70,7 @@ const ImapMigrations = lazy(() => import('@/pages/admin/ImapMigrations'))
 
 function IndexRedirect() {
   const role = useAuth.getState().role
-  return <Navigate to={role === 'admin' ? '/accounts' : '/dashboard'} replace />
+  return <Navigate to={role === 'admin' ? '/overview' : '/dashboard'} replace />
 }
 
 function admin(el) {
@@ -100,6 +101,9 @@ export const router = createBrowserRouter(
       errorElement: <RouteError />,
       children: withPageErrors([
         { index: true, element: <IndexRedirect /> },
+
+        { path: 'overview', element: admin(<Dashboard />) },
+        { path: 'appearance', element: <Appearance /> },
 
         // Customer resource pages (scoped to the signed-in account).
         { path: 'dashboard', element: customer(<Dashboard />) },

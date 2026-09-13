@@ -10,19 +10,9 @@ export default {
       colors: {
         // Brand accent (teal) — full ramp derived from #1FBED6.
         accent: {
-          DEFAULT: '#1FBED6',
-          50: '#ECFBFD',
-          100: '#D0F5FA',
-          200: '#A6ECF4',
-          300: '#6FDCEB',
-          400: '#3DCADF',
-          500: '#1FBED6',
-          600: '#1697AC',
-          700: '#15788A',
-          800: '#176272',
-          900: '#185260',
-          950: '#0A3742',
-          foreground: '#04222A',
+          DEFAULT: 'rgb(var(--accent) / <alpha-value>)',
+          ...Object.fromEntries([50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950].map((n) => [n, `rgb(var(--accent-${n}) / <alpha-value>)`])),
+          foreground: 'rgb(var(--accent-fg) / <alpha-value>)',
         },
         // Semantic status colors (goal spec).
         danger: { DEFAULT: '#EF4444', foreground: '#FFFFFF' },
@@ -60,15 +50,15 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['Inter Variable', 'Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
+        sans: ['var(--font-ui)', 'Arial', 'sans-serif'],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
       },
       borderRadius: {
         // Run A feature 2: 6px cards, 4px buttons per the goal's exact spec
         // (was 8px/6px) -- lg/md follow card/btn so nothing that used the
         // generic Tailwind scale silently keeps the old radius.
-        card: '6px',
-        btn: '4px',
+        card: 'var(--radius-card)',
+        btn: 'var(--radius-btn)',
         lg: '6px',
         md: '4px',
         sm: '4px',
