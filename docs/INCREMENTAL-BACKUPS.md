@@ -822,3 +822,25 @@ The tested binary is now installed on the development server at
 directory. Compilation and the Dovecot-identity access probe succeeded on the
 real paths. Dovecot configuration has not been changed or reloaded; activation,
 installer/update wiring and customer restore coordination remain outstanding.
+
+## Guard configuration activation
+
+`install_configuration` now preserves the original Dovecot configuration in a
+private root-owned backup, atomically writes an ordered managed include, and
+validates the effective guard configuration before an optional reload. Validation,
+reload or post-reload health-check failures restore the original configuration;
+reload attempts also reload the restored configuration on failure. Existing
+unmanaged fragments are refused. Repeated installation retains one managed include.
+
+Validation: all 17 configuration tests passed, including exact original-file
+restoration on validation and post-reload health-check failures. The development
+server now has the guard activated. Independent live verification confirmed the
+QA mailbox still resolves, a temporary marker for a nonexistent probe address
+returns a retryable lookup failure, and removing that marker restores the normal
+unknown-address result. The marker directory is empty and Dovecot remains active.
+No mail messages were sent or mailbox contents changed by these checks. The
+original live configuration is retained in a private backup under
+`/root/boron-setup/mail-guard-config-backups`.
+
+This activates the lookup guard only. Customer mailbox restore submission,
+coordinator recovery and installer/update wiring still require implementation.

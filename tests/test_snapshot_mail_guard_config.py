@@ -114,3 +114,62 @@ def test_guard_preflight_rejects_inaccessible_ancestor(configured):
             config.verify(binary=binary, config=path)
     finally:
         parent.chmod(0o755)
+
+
+def test_configuration_installer_preserves_original_and_is_idempotent(configured, tmp_path):
+    from pathlib import Path
+    path, binary, directory, normal = configured
+    path.write_text('ssl = no\n' + normal)
+    original = path.read_bytes()
+    result = config.install_configuration(tmp_path / 'backups', config=path, binary=binary)
+    assert (Path(result['backup']) / path.name).read_bytes() == original
+    assert Path(result['backup']).stat().st_mode & 0o777 == 0o700
+    assert config.verify(binary=binary, config=path) == {'guard': 'ready'}
+    current = path.read_bytes()
+    config.install_configuration(tmp_path / 'backups', config=path, binary=binary)
+    assert path.read_bytes() == current
+    assert current.count(b'!include ') == 1
+
+
+def test_configuration_validation_failure_restores_original(configured, tmp_path):
+    path, binary, directory, normal = configured
+    path.write_text('ssl = no\nauth_cache_size = 1 M\n' + normal)
+    original = path.read_bytes()
+    with pytest.raises(ValidationError, match='caching'):
+        config.install_configuration(tmp_path / 'backups', config=path, binary=binary)
+    assert path.read_bytes() == original
+    assert not path.with_name('boron-restore-guard.conf.ext').exists()
+
+
+def test_configuration_installer_refuses_unmanaged_fragment(configured, tmp_path):
+    path, binary, directory, normal = configured
+    fragment = path.with_name('boron-restore-guard.conf.ext')
+    fragment.write_text('# Custom administrator configuration\n')
+    original = path.read_bytes()
+    with pytest.raises(ValidationError, match='unmanaged'):
+        config.install_configuration(tmp_path / 'backups', config=path, binary=binary)
+    assert path.read_bytes() == original
+    assert fragment.read_text() == '# Custom administrator configuration\n'
+
+
+def test_failed_post_reload_health_check_rolls_back(configured, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    path, binary, directory, normal = configured
+    path.write_text('ssl = no\n' + normal)
+    before = path.read_bytes()
+    original = config.run
+    reloads = []
+    def run(args, **kwargs):
+        if args[0] == '/usr/bin/doveadm':
+            reloads.append(args)
+            return SimpleNamespace(ok=True)
+        return original(args, **kwargs)
+    monkeypatch.setattr(config, 'run', run)
+    def unhealthy():
+        raise ValidationError('health probe failed')
+    with pytest.raises(ValidationError, match='health probe'):
+        config.install_configuration(tmp_path / 'backups', config=path, binary=binary,
+                                     reload=True, health_check=unhealthy)
+    assert len(reloads) == 2
+    assert path.read_bytes() == before
+    assert not path.with_name('boron-restore-guard.conf.ext').exists()

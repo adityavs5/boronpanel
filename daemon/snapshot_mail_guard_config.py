@@ -5,12 +5,102 @@ import stat
 import os
 import tempfile
 import grp
+import uuid
 
 from daemon.procutil import run
 from shared.config import settings
 from shared.validation import ValidationError
 
 GUARD_BINARY = '/usr/local/libexec/boron-mail-restore-gate'
+MANAGED_HEADER = '# Managed by Boron: mailbox restore guard\n'
+
+
+def _write_config(path, data, mode=0o644, uid=0, gid=0):
+    fd, temporary = tempfile.mkstemp(prefix='.boron-mail-config-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(data)
+            handle.flush()
+            os.fchown(handle.fileno(), uid, gid)
+            os.fchmod(handle.fileno(), mode)
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def install_configuration(backup_dir, *, config='/etc/dovecot/dovecot.conf', binary=GUARD_BINARY,
+                          reload=False, health_check=None):
+    """Prepend a managed guard, validate effective config, and optionally reload.
+
+    Existing configuration bytes/permissions are preserved in a private backup.
+    Validation/reload failures restore them. No mailbox data is changed here.
+    """
+    render(binary)
+    main = Path(config)
+    fragment = main.with_name('boron-restore-guard.conf.ext')
+    render(str(fragment))
+    backup = Path(backup_dir)
+    if os.geteuid() != 0 or any(path.resolve() != path for path in (main, fragment, backup)):
+        raise ValidationError('Mail guard configuration requires root-controlled paths')
+    parent_info = main.parent.stat()
+    if parent_info.st_uid != 0 or parent_info.st_mode & 0o022:
+        raise ValidationError('Dovecot configuration directory is not controlled by root')
+    originals = {}
+    for path in (main, fragment):
+        if path.exists():
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+                raise ValidationError('Dovecot configuration is not controlled by root')
+            originals[path] = (path.read_bytes(), stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid)
+    if main not in originals:
+        raise ValidationError('Main Dovecot configuration is missing')
+    if fragment in originals and not originals[fragment][0].startswith(MANAGED_HEADER.encode()):
+        raise ValidationError('An unmanaged file occupies the mail guard configuration path')
+    backup.mkdir(mode=0o700, exist_ok=True)
+    if backup.stat().st_uid != 0 or backup.stat().st_mode & 0o077:
+        raise ValidationError('Mail configuration backup must be private and root-owned')
+    saved = backup / uuid.uuid4().hex
+    saved.mkdir(mode=0o700)
+    parent = os.open(backup, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+    for path, original in originals.items():
+        _write_config(saved / path.name, original[0], 0o600)
+    include = '!include ' + str(fragment)
+    original_main = originals[main][0].decode()
+    updated = include + '\n' + ''.join(line for line in original_main.splitlines(keepends=True)
+                                      if line.strip() != include)
+    try:
+        _write_config(fragment, (MANAGED_HEADER + render(binary)).encode())
+        _write_config(main, updated.encode(), *originals[main][1:])
+        verify(binary=binary, config=main)
+        if reload:
+            result = run(['/usr/bin/doveadm', '-c', str(main), 'reload'], timeout=20)
+            if not result.ok:
+                raise ValidationError('Dovecot rejected the guard configuration reload')
+            if health_check is not None:
+                health_check()
+    except Exception:
+        for path in (main, fragment):
+            if path in originals:
+                original = originals[path]
+                _write_config(path, original[0], *original[1:])
+            else:
+                path.unlink(missing_ok=True)
+        if reload:
+            restored = run(['/usr/bin/doveadm', '-c', str(main), 'reload'], timeout=20)
+            if not restored.ok:
+                raise ValidationError('Original configuration restored; Dovecot reload still requires recovery') from None
+        raise
+    return {'configuration': str(fragment), 'backup': str(saved), 'reloaded': reload}
 
 
 def install_binary(*, binary=GUARD_BINARY):
