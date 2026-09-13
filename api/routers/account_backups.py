@@ -48,6 +48,30 @@ def browse_snapshot(username: str, run_id: int, directory: str = '/', identity: 
     return call_daemon('snapshot.run.browse', identity, username=username, run_id=run_id, directory=directory)
 
 
+class SnapshotRestoreBody(BaseModel):
+    confirmation: str
+    kind: str = 'files'
+    paths: list[str] = []
+
+
+@api_router.post('/snapshots/runs/{run_id}/restore')
+def restore_snapshot(username: str, run_id: int, body: SnapshotRestoreBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon('snapshot.restore.trigger', identity, username=username, run_id=run_id, **body.model_dump())
+
+
+@api_router.get('/snapshots/restores')
+def snapshot_restore_history(username: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon('snapshot.restore.list', identity, username=username)
+
+
+@api_router.post('/snapshots/restores/{restore_id}/undo')
+def undo_snapshot_restore(username: str, restore_id: int, body: SnapshotRestoreBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon('snapshot.restore.undo', identity, username=username, restore_id=restore_id, confirmation=body.confirmation)
+
+
 @api_router.get("/{job_id}")
 def get_job(username: str, job_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)

@@ -21,7 +21,7 @@ from daemon import snapshot_storage as storage
 from daemon.procutil import run
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, DatabaseGrant, Domain, MailDomain, SnapshotDestination, SnapshotPolicy, SnapshotRun, utcnow
+from shared.models import Account, BackupJob, RestoreJob, DatabaseGrant, Domain, MailDomain, SnapshotDestination, SnapshotPolicy, SnapshotRun, SnapshotRestore, utcnow
 from shared.validation import ValidationError, validate_username
 
 logger = logging.getLogger('borond.snapshot_jobs')
@@ -250,7 +250,7 @@ def queue_policy(params):
         accounts=[a for a in accounts if (not options['accounts'] or a.username in options['accounts']) and a.username not in options['excluded_accounts']]
         skipped=[]
         for account in accounts:
-            if session.scalar(select(SnapshotRun).where(SnapshotRun.account_id==account.id,SnapshotRun.status.in_(ACTIVE))):
+            if any(session.scalar(select(model.id).where(model.account_id==account.id,model.status.in_(ACTIVE))) for model in (SnapshotRun,SnapshotRestore,BackupJob,RestoreJob)):
                 skipped.append(account.username);continue
             row=SnapshotRun(policy_id=policy.id,destination_id=policy.destination_id,account_id=account.id,
                 options=options,status='pending',trigger='scheduled' if scheduled else 'manual')
@@ -365,6 +365,11 @@ def execute_run(ident):
         if should_notify:_notify(_row(SnapshotRun,ident),account)
 
 
+def _restore_entries(entries,account):
+    home=Path(settings.home_base)/account.username
+    return [{**row,'restore_path':str(Path(row['path']).relative_to(home)) if Path(row['path']).is_relative_to(home) and not Path(row['path']).is_relative_to(home/'.php') else None} for row in entries]
+
+
 def browse(params):
     account=_account(params['username'])
     row=_row(SnapshotRun,params['run_id'])
@@ -387,8 +392,8 @@ def browse(params):
                     elif path.is_relative_to(Path(settings.mail_base)):label=f'Email: {path.name}'
                     else:label='Database exports & configuration'
                     roots.append({**node,'name':label})
-                return {'entries':roots}
-            return {'entries':storage.entries(repo,account.id,row.snapshot_id,directory)}
+                return {'entries':_restore_entries(roots,account)}
+            return {'entries':_restore_entries(storage.entries(repo,account.id,row.snapshot_id,directory),account)}
     except BlockingIOError:
         raise ValidationError('This destination is busy with a backup or retention task. Try again shortly.') from None
 

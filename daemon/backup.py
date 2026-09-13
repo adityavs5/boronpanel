@@ -42,6 +42,8 @@ from shared.models import (
     MailDomain,
     MailUser,
     RestoreJob,
+    SnapshotRun,
+    SnapshotRestore,
     utcnow,
 )
 from shared.validation import ValidationError, validate_domain, validate_username
@@ -241,6 +243,12 @@ def _job_to_dict(j: BackupJob) -> dict:
 
 
 def trigger_backup(params: dict) -> dict:
+    from daemon.snapshot_jobs import lock
+    with lock('queue'):
+        return _trigger_backup_locked(params)
+
+
+def _trigger_backup_locked(params: dict) -> dict:
     username = validate_username(params["username"])
     kind = params.get("kind", "full")
     if kind not in BACKUP_KINDS:
@@ -254,6 +262,10 @@ def trigger_backup(params: dict) -> dict:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise BackupError(f"account '{username}' not found")
+
+        for model in (SnapshotRun, SnapshotRestore, RestoreJob):
+            if session.scalar(select(model.id).where(model.account_id == account.id, model.status.in_(("pending", "running")))):
+                raise BackupError("a backup or restore is already in progress for this account")
 
         # Security audit finding F9: the scheduled path is safely bounded
         # (frequency is an enum -- daily/weekly/monthly, never a raw cron
@@ -727,6 +739,12 @@ def _restore_to_dict(r: RestoreJob) -> dict:
 
 
 def trigger_restore(params: dict) -> dict:
+    from daemon.snapshot_jobs import lock
+    with lock('queue'):
+        return _trigger_restore_locked(params)
+
+
+def _trigger_restore_locked(params: dict) -> dict:
     backup_job_id = int(params["backup_job_id"])
     item_ref = params.get("item_ref")
     account_id = _resolve_account_id(validate_username(params["username"]))
@@ -738,6 +756,10 @@ def trigger_restore(params: dict) -> dict:
         if backup_job.status != "completed":
             raise BackupError(f"backup job {backup_job_id} is not completed")
         account = session.get(Account, backup_job.account_id)
+
+        for model in (SnapshotRun, SnapshotRestore, BackupJob):
+            if session.scalar(select(model.id).where(model.account_id == account.id, model.status.in_(("pending", "running")))):
+                raise BackupError("a backup or restore is already in progress for this account")
 
         effective_kind = params.get("kind") or backup_job.kind
         if effective_kind not in BACKUP_KINDS:

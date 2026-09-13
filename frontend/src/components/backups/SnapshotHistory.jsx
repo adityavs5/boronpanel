@@ -1,3 +1,4 @@
+import { SnapshotFileRestore, SnapshotRestoreHistory } from './SnapshotRestore'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Archive, ArrowUp, Folder, File, RefreshCw } from 'lucide-react'
@@ -14,6 +15,7 @@ function RunStatus({ status }) { return <Badge variant={status==='completed'?'su
 function RunDialog({ run, username, onClose }) {
   const [directory,setDirectory]=useState('/')
   const [browsing,setBrowsing]=useState(false)
+  const [restorePaths,setRestorePaths]=useState('')
   const files=useQuery({queryKey:['snapshot-files',username,run.id,directory],queryFn:()=>get(`/api/v1/accounts/${encodeURIComponent(username)}/backups/snapshots/runs/${run.id}/browse?directory=${encodeURIComponent(directory)}`),enabled:!!username&&browsing&&!!run.snapshot_id&&run.status!=='expired'})
   return <Dialog open onOpenChange={open=>!open&&onClose()}><DialogContent size="xl"><DialogHeader><DialogTitle>Recovery point #{run.id}</DialogTitle><DialogDescription>{username} · {formatDate(run.started_at)}</DialogDescription></DialogHeader><DialogBody className="space-y-5">
     <div className="flex flex-wrap items-center gap-3"><RunStatus status={run.status}/><span className="text-sm text-muted-foreground">{run.progress_message}</span></div>
@@ -26,8 +28,11 @@ function RunDialog({ run, username, onClose }) {
         {key:'name',header:'Name',render:r=><span className="flex items-center gap-2">{r.type==='dir'?<Folder className="h-4 w-4 text-accent"/>:<File className="h-4 w-4 text-muted-foreground"/>}{r.type==='dir'?<button className="text-accent-600 dark:text-accent-300 hover:underline" onClick={()=>setDirectory(r.path)}>{r.name}</button>:r.name}</span>},
         {key:'type',header:'Type',render:r=>r.type==='dir'?'Folder':r.type==='symlink'?'Symbolic link':'File'},
         {key:'size',header:'Size',render:r=>r.type==='file'?formatBytes(r.size||0):'—'},
+        {key:'restore',header:'Restore',render:r=>r.restore_path!=null?<Button size="sm" variant="secondary" onClick={e=>{e.stopPropagation();setRestorePaths(p=>[...new Set([...p.split('\n').filter(Boolean),r.restore_path])].join('\n'))}}>Select for restore</Button>:null},
       ]}/></>}
     </div>}
+    <SnapshotFileRestore username={username} run={run} paths={restorePaths} onPathsChange={setRestorePaths}/>
+    <SnapshotRestoreHistory username={username}/>
   </DialogBody><DialogFooter><Button variant="secondary" onClick={onClose}>Done</Button></DialogFooter></DialogContent></Dialog>
 }
 
@@ -45,5 +50,5 @@ export function SnapshotHistory({ admin=false, username }) {
   ]
   const contents=<><DataTable data={history.data?.runs} loading={history.isLoading} error={history.error} onRetry={history.refetch} onRowClick={setSelected} columns={columns} filterable pageSize={15} emptyIcon={Archive} emptyTitle="No scheduled recovery points yet" emptyDescription={admin?'Run a backup job to create the first recovery point.':'Recovery points from your hosting provider’s backup jobs will appear here.'}/>{selected&&<RunDialog run={history.data?.runs.find(r=>r.id===selected.id)||selected} username={username||selected.username} onClose={()=>setSelected(null)}/>}</>
   if (admin) return contents
-  return <Card className="mb-6"><CardHeader><div><CardTitle>Scheduled recovery points</CardTitle><CardDescription>Encrypted snapshots created by your hosting provider.</CardDescription></div><Button size="sm" variant="ghost" loading={history.isFetching} onClick={()=>history.refetch()}><RefreshCw className="h-4 w-4"/>Refresh</Button></CardHeader><CardContent>{contents}</CardContent></Card>
+  return <Card className="mb-6"><CardHeader><div><CardTitle>Scheduled recovery points</CardTitle><CardDescription>Encrypted snapshots created by your hosting provider.</CardDescription></div><Button size="sm" variant="ghost" loading={history.isFetching} onClick={()=>history.refetch()}><RefreshCw className="h-4 w-4"/>Refresh</Button></CardHeader><CardContent>{contents}<SnapshotRestoreHistory username={username}/></CardContent></Card>
 }

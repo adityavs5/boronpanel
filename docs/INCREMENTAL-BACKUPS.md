@@ -24,9 +24,9 @@ The integration log is `/root/boron-setup/snapshot-storage-tests.log`. Real stor
 
 ## Remaining product integration
 
-The storage and persistent job APIs do **not** yet complete the requested backup product. The service described below now provides destinations, policies, filters, raw database dumps, scheduling, recovery, retention, notifications and account-scoped browsing. Remaining work includes the admin/customer management screens, safely applying verified full or granular restores, broader account configuration recovery, and live deployment and verification.
+The storage and persistent job APIs do **not** yet complete the requested backup product. The service described below now provides destinations, policies, filters, raw database dumps, scheduling, recovery, retention, notifications and account-scoped browsing. Remaining work includes database, mail and broader account configuration restore application, bounded retention for pre-restore recovery points, and live deployment and verification.
 
-The service resolves source paths from account ownership rather than accepting arbitrary customer paths. Account and repository locks coordinate its workers, including retention/pruning. Account metadata and database dumps use stable private staging paths so incremental snapshots can reuse unchanged data. Coordination with legacy archive restores and other account-changing operations still needs a final audit before deployment. Existing archive backups remain available during this integration.
+The service resolves source paths from account ownership rather than accepting arbitrary customer paths. Account and repository locks coordinate its workers, including retention/pruning. Account metadata and database dumps use stable private staging paths so incremental snapshots can reuse unchanged data. Snapshot and legacy archive backup/restore queues now coordinate account activity. Other account-changing operations still need a final audit before deployment. Existing archive backups remain available during this integration.
 
 References: [restic repository setup](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html), [backup and filtering](https://restic.readthedocs.io/en/stable/040_backup.html), [restore](https://restic.readthedocs.io/en/stable/050_restore.html).
 
@@ -40,7 +40,7 @@ Policies select accounts (an empty selection includes all active accounts), excl
 
 Workers export raw SQL with a consistent transaction and stable private paths, then snapshot raw home/mail files and metadata. Account and repository file locks coordinate daemon and scheduled processes. Startup requeues pending work and identifies interrupted running work by checking its account lock. Retention marks old history entries expired. Notifications report dispatch or suppression; SMTP acceptance/webhook queueing is not proof of delivery.
 
-Admin APIs are under `/api/v1/backups/snapshots`; customer history and browsing are under `/api/v1/accounts/{username}/backups/snapshots/runs`. Customer history omits global policy account lists and notification selections. The management UI, applying staged restores, broader metadata recovery and live deployment remain unfinished; these endpoints are not yet a shipped replacement for the archive backup screens.
+Admin APIs are under `/api/v1/backups/snapshots`; customer history and browsing are under `/api/v1/accounts/{username}/backups/snapshots/runs`. Customer history omits global policy account lists and notification selections. The management UI and file restore application are implemented below. Database/mail/configuration restore, broader metadata recovery and live deployment remain unfinished.
 
 Persistent job verification: **69 passed** across the new job tests, existing archive backup tests and RPC tests. After the duplicate-worker notification fix, **12 job tests passed** again. Logs: `/root/boron-setup/snapshot-job-tests.log` and `/root/boron-setup/snapshot-job-final-tests.log`. The only warning was the existing FastAPI/Starlette TestClient dependency deprecation.
 
@@ -52,6 +52,20 @@ Customers see scheduled recovery points above their existing on-demand archive b
 
 The new admin page is loaded on demand (5.79 kB gzip); shared history is 2.46 kB gzip in this build. No new fonts, image assets or frontend packages were added. These sizes are build evidence, not a measured end-to-end performance benchmark.
 
-Applying restored snapshot contents remains unfinished, and this new backup UI has not yet been deployed to the live panel. Existing archive restore functionality is retained.
+File restore application is implemented below; database/mail/configuration restore remains unfinished. This new backup UI has not yet been deployed to the live panel. Existing archive restore functionality is retained.
 
 UI verification: production build passed; **6 browser tests passed** across admin light/dark themes and customer browsing, followed by **2 final customer tests** that also submitted the existing full archive-backup form. **12 backend tests passed** for the updated history and browsing behavior. Evidence: `/root/boron-setup/backup-ui-build.log`, `backup-ui-browser.log`, `backup-ui-customer-final.log`, `backup-ui-api.log`, and screenshots in `/root/boron-setup/backup-ui-proof`. Browser flows use mocked API data; they are not evidence of live deployment or completed snapshot restore application.
+
+## File restore application and previous-file recovery
+
+`daemon/snapshot_restores.py` queues account-scoped file restores and stages verified snapshot contents before touching the account home. Users select files/folders from the browser or restore all captured account files, then type the account username to confirm. Current versions are saved in a separate encrypted pre-restore snapshot. History exposes recovery of those previous versions. This is not an exact filesystem rollback: files with no prior version are retained, and file/directory type conflicts fail rather than deleting existing directories.
+
+`daemon/snapshot_file_worker.py` opens source and destination directory descriptors and permanently drops to the account UID/GID before writing into its home. It copies through directory descriptors, refuses target directory symlinks, rejects source links escaping the home, uses atomic file replacement, strips privileged mode bits, and preserves unrelated/new files. Root-managed `.php` runtime configuration is excluded from file restore application, including full-home restores; explicit selections are rejected. PHP configuration remains managed through panel settings. The worker runs with reduced CPU and I/O priority.
+
+The snapshot and legacy archive systems share a queue lock and check each other's pending/running records. Interrupted restores become failed records with a clear warning that some files may have changed; pre-restore recovery points remain available. Those recovery points currently have no automatic retention cleanup, which must be addressed before shipping this system.
+
+The account APIs add `/snapshots/runs/{run_id}/restore`, `/snapshots/restores`, and `/snapshots/restores/{restore_id}/undo` under the existing account-backup prefix. Despite the internal `undo` endpoint name, the UI accurately calls the operation **Recover previous files**. The API derives its source snapshot from an owned restore record; customers cannot supply an arbitrary internal source override.
+
+File restore verification: **70 backend regression checks passed**, then **18 targeted authorization/recovery checks passed**. The final protected-PHP dataset passed **7 restore checks**, covering real selected/all-file restoration, previous-version recovery, account UID and reduced priority, unchanged/new file preservation, symlink rejection and preservation of root-managed PHP configuration. The production frontend build passed; **10 backup/restore browser checks passed**, followed by **4 final restore checks** after clarifying previous-file recovery behavior in the UI. Browser flows use mocked APIs; backend restore tests use actual encrypted repositories and subprocess privilege changes with disposable homes.
+
+Logs: `/root/boron-setup/snapshot-file-restore-tests.log`, `snapshot-restore-final-tests.log`, `snapshot-protected-restore-tests.log`, `snapshot-restore-priority.log`, `snapshot-restore-all-files.log`, `snapshot-restore-build.log`, `snapshot-restore-browser.log`, and `snapshot-restore-browser-final.log`. These changes have not yet been deployed to the live panel.

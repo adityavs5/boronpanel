@@ -28,6 +28,7 @@ def isolated_db(tmp_path, monkeypatch):
     gets a clean schema instead of sharing state across tests."""
     import shared.db as db_module
 
+    monkeypatch.setattr(settings, "snapshot_private_dir", str(tmp_path / "snapshot-private"))
     db_path = tmp_path / "boron-test.db"
     monkeypatch.setattr(settings, "db_path", str(db_path))
     monkeypatch.setattr(db_module, "_write_engine", None)

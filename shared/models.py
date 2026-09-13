@@ -1911,3 +1911,18 @@ class SnapshotRun(Base):
     error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SnapshotRestore(Base):
+    __tablename__ = 'snapshot_restores'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey('snapshot_runs.id'), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'), index=True)
+    selection: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default='pending', index=True)
+    safety_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    progress_message: Mapped[str] = mapped_column(String(256), default='Queued')
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

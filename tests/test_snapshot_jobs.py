@@ -152,6 +152,14 @@ def test_snapshot_api_authorization_and_customer_scope(environment,monkeypatch):
         assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs').status_code==200
         assert calls[-1]==('snapshot.run.list',{'username':'alpha'})
         assert client.get('/api/v1/accounts/bravo/backups/snapshots/runs').status_code==403
+        response=client.post('/api/v1/accounts/alpha/backups/snapshots/runs/1/restore',json={'confirmation':'alpha','paths':['site.txt'],'_safety':999})
+        assert response.status_code==200
+        assert calls[-1][0]=='snapshot.restore.trigger'
+        assert calls[-1][1]['username']=='alpha'
+        assert '_safety' not in calls[-1][1]
+        assert client.post('/api/v1/accounts/bravo/backups/snapshots/runs/1/restore',json={'confirmation':'bravo'}).status_code==403
+        assert client.post('/api/v1/accounts/bravo/backups/snapshots/restores/1/undo',json={'confirmation':'bravo'}).status_code==403
+        assert client.get('/api/v1/accounts/bravo/backups/snapshots/restores').status_code==403
         identity.role='admin'
         response=client.post('/api/v1/backups/snapshots/destinations/1/recovery-key')
         assert response.status_code==200
