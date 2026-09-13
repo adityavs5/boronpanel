@@ -28,7 +28,7 @@ def isolated_service(tmp_path):
         yield name, operations
     finally:
         for operation in operations:
-            unit = 'boron-mail-switch-' + operation + '.service'
+            unit = service.switch_unit(name)
             ctl('stop', unit)
             ctl('reset-failed', unit)
         ctl('stop', name)

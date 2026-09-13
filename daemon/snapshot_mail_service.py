@@ -5,6 +5,7 @@ must only validate its private journal and exchange already prepared directories
 No customer command or service name may reach this internal entry point.
 """
 import re
+from pathlib import Path
 
 from daemon.procutil import run
 from shared.validation import ValidationError
@@ -34,6 +35,13 @@ def require_stopped(service='dovecot.service'):
         raise ValidationError('Mail service has not stopped completely; no mailbox may be exchanged')
 
 
+def switch_unit(service='dovecot.service'):
+    service = _service_name(service)
+    if service == 'dovecot.service':
+        return 'boron-mail-switch.service'
+    return 'boron-mail-switch-test-' + service[len('boron-mail-test-'):]
+
+
 def supervised_command(command, operation_id, *, service='dovecot.service'):
     """Run a trusted internal switch command independently of the panel process.
 
@@ -51,9 +59,13 @@ def supervised_command(command, operation_id, *, service='dovecot.service'):
     if (state.get('LoadState') != 'loaded' or state.get('ActiveState') != 'active'
             or state.get('SubState') != 'running' or state.get('KillMode') != 'control-group'):
         raise ValidationError('Mail service must be running with complete process-group shutdown')
-    unit = 'boron-mail-switch-' + operation_id
+    # A stable unit per mail service prevents two callers from independently
+    # stopping/resuming it around overlapping exchanges, even if a caller dies.
+    unit = switch_unit(service)
     result = run([
         '/usr/bin/systemd-run', '--quiet', '--wait', '--unit=' + unit,
+        '--description=Boron mailbox switch ' + operation_id,
+        '--property=WorkingDirectory=' + str(Path(__file__).resolve().parents[1]),
         '--property=Type=oneshot', '--property=RemainAfterExit=no',
         '--property=TimeoutStartSec=60', '--property=TimeoutStopSec=60',
         '--property=KillMode=control-group',
@@ -66,4 +78,4 @@ def supervised_command(command, operation_id, *, service='dovecot.service'):
         raise ValidationError('Mail service did not resume; retain restore guards and inspect recovery')
     if not result.ok:
         raise ValidationError('Mail switch failed; inspect its journal before retrying')
-    return {'unit': unit + '.service', 'mail_service': 'running'}
+    return {'unit': unit, 'operation_id': operation_id, 'mail_service': 'running'}

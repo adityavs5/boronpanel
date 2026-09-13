@@ -613,3 +613,43 @@ enabled in the panel. The exchange worker entry point, journal validation,
 guard installation, exact safety-copy handling, account ownership checks and
 UI remain required. Full server reboot recovery and failed service restart also
 need coordinator handling; systemd supervision alone does not complete recovery.
+
+## Private journal worker (development)
+
+`daemon/snapshot_mail_journal.py` now creates exclusive, fsynced mode-0600 switch
+journals beneath private root-owned snapshot storage. Journals contain the job
+and operation IDs, intended direction, mailbox names, guard ownership tokens and
+device/inode exchange plans. Reads are bounded and reject symbolic links, unsafe
+permissions, duplicate mailboxes, malformed tokens and invalid plans. Tokens are
+never included in the worker command line or inspection output.
+
+The worker verifies that the mail service is fully stopped, holds the guard
+directory lock while verifying ownership of every selected mailbox, checks all
+plans before changing any directory, then performs the atomic exchanges. Guards
+are retained after both success and failure. Interrupted batches are inspected
+per mailbox; blindly replaying a partially applied batch is refused. A launcher
+uses the persisted operation ID and invokes the private module through systemd;
+systemd's working directory is pinned to the running code tree.
+
+Supervision now uses one stable switch unit per mail service instead of a separate
+unit for each operation. This supersedes the earlier operation-specific unit
+naming: the production unit is `boron-mail-switch.service`, with operation ID in
+its description and journal. Systemd refuses overlapping transient creation,
+preventing independently resumed services around concurrent exchanges even if a
+caller dies. Recovery must inspect the unit's operation identity before acting
+on it, and explicitly resolve a retained failed unit before scheduling another
+operation. Test services use their own distinct stable unit names.
+
+Validation includes real systemd execution of the journal worker against synthetic
+maildirs: complete batches switch both mailboxes, interrupted batches retain one
+applied and one ready mailbox, the test service resumes and all guards remain
+owned. Focused tests also cover wrong guard ownership preventing the entire batch,
+service barrier refusal, malformed/public/symlink journals, exclusive creation,
+launcher arguments and replay refusal. These checks use test-only mail services;
+live Dovecot has not been paused or changed. Final focused result: 27 tests passed.
+
+This is still not an enabled customer restore feature. The coordinator must supply
+account authorization, encrypted snapshot selection and safety retention, copied
+Maildirs at the correct ownership/location, installed Dovecot guards, persistent
+job status/recovery decisions, service restart failure handling and UI. Full
+reboot recovery and the live customer workflow remain unverified.

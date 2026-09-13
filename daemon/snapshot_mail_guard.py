@@ -76,19 +76,33 @@ def release(domain, local_part, restore_id, token):
         raise ValidationError('Invalid mail restore guard ownership')
     name = marker_name(domain, local_part)
     with _directory() as directory:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-        with os.fdopen(fd, 'r') as handle:
-            info = os.fstat(handle.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 512:
-                raise ValidationError('Mail restore guard requires recovery inspection')
-            try:
-                payload = json.loads(handle.read(513))
-                valid = (payload['format'] == 1 and payload['restore_id'] == restore_id
-                         and isinstance(payload['token'], str)
-                         and secrets.compare_digest(payload['token'], token))
-            except (ValueError, TypeError, KeyError):
-                valid = False
-            if not valid:
-                raise ValidationError('Mail restore guard belongs to another job or requires recovery')
+        _verify(directory, name, restore_id, token)
         os.unlink(name, dir_fd=directory)
         os.fsync(directory)
+
+
+def _verify(directory, name, restore_id, token):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    with os.fdopen(fd, 'r') as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 512:
+            raise ValidationError('Mail restore guard requires recovery inspection')
+        try:
+            payload = json.loads(handle.read(513))
+            valid = (payload['format'] == 1 and payload['restore_id'] == restore_id
+                     and isinstance(payload['token'], str)
+                     and secrets.compare_digest(payload['token'], token))
+        except (ValueError, TypeError, KeyError):
+            valid = False
+        if not valid:
+            raise ValidationError('Mail restore guard belongs to another job or requires recovery')
+
+
+@contextmanager
+def owned_guards(entries, restore_id):
+    """Hold guard ownership stable while an already quiesced batch is exchanged."""
+    with _directory() as directory:
+        for entry in entries:
+            _verify(directory, marker_name(entry['domain'], entry['local_part']),
+                    restore_id, entry['token'])
+        yield
