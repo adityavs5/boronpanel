@@ -447,3 +447,20 @@ staging validation, encrypted safety snapshots, durable recovery of interrupted
 switches, and API/UI integration. Do not use the fixture's directory rename
 sequence directly against active mailboxes. General Dovecot migration guidance:
 https://doc.dovecot.org/2.3/admin_manual/migrating_mailboxes/ .
+
+`daemon/snapshot_mail_files.py` now prepares a fresh Maildir copy inside a
+service-owned mode-0700 staging root. Source and destination parent must resolve
+inside that root without symbolic-link components; existing destinations and
+destinations inside the source are rejected. The entire source is checked for
+symlinks/special files and required Maildir directories before copying begins.
+Files are opened with no-follow/nonblocking flags and checked again as regular
+files. Copies retain message bytes/names and Dovecot control files with private
+0700 directory / 0600 file permissions. Hardlinked messages become independent
+copies. Any copy failure removes only the newly created destination.
+
+Validation: 12 preparation tests plus the real offline Dovecot restore/undo test
+passed together (13 total). Coverage includes outside/linked/nested destinations,
+file and directory links, FIFO rejection, incomplete Maildirs, existing-target
+retention, exact binary bytes, private permissions, hardlinks and simulated disk
+full. The primitive is not yet connected to the restore coordinator or deployed;
+it does not change ownership for Dovecot or touch live mailboxes.
