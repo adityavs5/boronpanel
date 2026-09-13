@@ -519,3 +519,32 @@ already authenticated clients or LMTP recipients accepted before the marker.
 Those sessions must be coordinated and tested before any live mailbox switch;
 durable marker management, startup recovery, installer integration and performance
 measurement also remain required. Do not treat the guard alone as a restore lock.
+
+`daemon/snapshot_mail_guard.py` now manages persistent marker ownership. Markers
+contain a restore job ID and an unpredictable ownership token in private files;
+the mailbox address maps to the same lowercase SHA-256 name used by the C guard.
+Creation is exclusive, marker and directory entries are fsynced, and directory
+flocks serialize acquisition/release. Incorrect job IDs/tokens, corrupt markers
+and stale releases leave protection intact. No context manager automatically
+releases a mailbox when a worker fails. The coordinator must establish a usable
+mailbox state before calling release. Guard storage is configured by
+`mail_restore_guard_dir`, defaulting to the C helper's built-in path; deployment
+must keep these paths consistent. Marker tokens belong in private restore state,
+not public API responses.
+
+Validation: 22 guard tests passed together, then seven ownership tests passed
+again after adding parent-directory fsync. The real isolated Dovecot test now
+uses the production Python marker manager. With `lmtp_user_concurrency_limit=10`,
+it accepts a synthetic recipient before blocking the mailbox, confirms the anvil
+`LOOKUP lmtp/<address>` count remains one, verifies new recipient attempts get
+451, then uses RSET to end the original transaction and observes zero. No DATA
+command was issued. This proves an already accepted recipient outlives creation
+of the guard; it does not prove the full mailbox is quiescent. Dovecot's LMTP
+anvil tracking is disabled when `lmtp_user_concurrency_limit=0`.
+
+Source inspected: Dovecot `src/lmtp/lmtp-local.c` in tag 2.3.21.1,
+https://github.com/dovecot/core/blob/2.3.21.1/src/lmtp/lmtp-local.c .
+Anvil tracking alone is insufficient: a lookup admitted before guard creation
+could complete after a zero observation, and authenticated IMAP sessions remain
+separate. Admission/draining coordination, durable switch/recovery and installer
+integration remain unfinished. These changes are not enabled on the live server.

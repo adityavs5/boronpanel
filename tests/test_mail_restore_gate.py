@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import shutil
 import smtplib
+import socket
 import subprocess
 import time
 
@@ -94,10 +95,13 @@ def test_symlink_marker_blocks_without_following_target(gate):
     assert lookup() == 111
 
 
-def test_real_dovecot_userdb_delegation_and_temporary_failure(gate, tmp_path):
+def test_real_dovecot_userdb_delegation_and_temporary_failure(gate, tmp_path, monkeypatch):
     if not shutil.which('dovecot'):
         pytest.skip('Dovecot required')
     directory, lookup = gate
+    from daemon import snapshot_mail_guard as guard
+    from shared.config import settings
+    monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(directory))
     root = tmp_path
     root.chmod(0o755)
     for name in ('run', 'state', 'home'):
@@ -109,7 +113,7 @@ def test_real_dovecot_userdb_delegation_and_temporary_failure(gate, tmp_path):
         f'mail_location = maildir:{root}/home/Maildir\n'
         'service lmtp {\n'
         ' unix_listener lmtp {\n mode = 0600\n user = root\n }\n}\n'
-        'first_valid_uid = 1\nauth_cache_size = 0\n'
+        'first_valid_uid = 1\nauth_cache_size = 0\nlmtp_user_concurrency_limit = 10\n'
         'service auth {\n user = root\n}\n'
         'service auth-worker {\n user = root\n}\n'
         'userdb {\n driver = checkpassword\n'
@@ -138,19 +142,40 @@ def test_real_dovecot_userdb_delegation_and_temporary_failure(gate, tmp_path):
             return subprocess.run(['doveadm', '-c', str(config), 'user', address],
                                   capture_output=True, text=True, timeout=10)
         assert user('inbox@example.test').returncode == 0
-        marker(directory).touch()
-        blocked = user('inbox@example.test')
-        assert blocked.returncode != 0
-        assert 'auth user lookup failed' in blocked.stderr.lower(), blocked.stderr
-        # Only recipient negotiation: no DATA command or message is sent.
-        with smtplib.LMTP(str(root / 'run/lmtp'), timeout=10) as client:
-            assert client.ehlo()[0] == 250
-            assert client.mail('sender@example.test')[0] == 250
-            code, response = client.rcpt('inbox@example.test')
-            assert code == 451, (code, response)
-            assert client.rcpt('other@example.test')[0] == 250
+        def deliveries():
+            with socket.socket(socket.AF_UNIX) as connection:
+                connection.settimeout(5)
+                connection.connect(str(root / 'run/anvil'))
+                connection.sendall(b'VERSION\tanvil\t1\t0\nLOOKUP\tlmtp/inbox@example.test\n')
+                with connection.makefile('rb') as stream:
+                    return int(stream.readline().strip())
+
+        # A recipient accepted before the guard remains tracked until RSET.
+        # Merely creating the marker is therefore insufficient for switching.
+        with smtplib.LMTP(str(root / 'run/lmtp'), timeout=10) as existing:
+            assert existing.ehlo()[0] == 250
+            assert existing.mail('sender@example.test')[0] == 250
+            assert existing.rcpt('inbox@example.test')[0] == 250
+            token = guard.block('example.test', 'inbox', 1)
+            blocked = user('inbox@example.test')
+            assert blocked.returncode != 0
+            assert 'auth user lookup failed' in blocked.stderr.lower(), blocked.stderr
+            assert deliveries() == 1
+            # Only recipient negotiation: no DATA command or message is sent.
+            with smtplib.LMTP(str(root / 'run/lmtp'), timeout=10) as client:
+                assert client.ehlo()[0] == 250
+                assert client.mail('sender@example.test')[0] == 250
+                code, response = client.rcpt('inbox@example.test')
+                assert code == 451, (code, response)
+                assert client.rcpt('other@example.test')[0] == 250
+            assert existing.rset()[0] == 250
+            for _ in range(50):
+                if deliveries() == 0:
+                    break
+                time.sleep(.02)
+            assert deliveries() == 0
         assert user('other@example.test').returncode == 0
-        marker(directory).unlink()
+        guard.release('example.test', 'inbox', 1, token)
         assert user('inbox@example.test').returncode == 0
     finally:
         process.terminate()
