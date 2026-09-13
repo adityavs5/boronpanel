@@ -30,3 +30,27 @@ Tests include real sockets, cleanup after partial binding failure, forged Host
 headers, session/token role checks, customer-port firewall protection and TLS
 verification on both ports. Evidence: `/root/boron-setup/panel-port-tests.log` and
 `/root/boron-setup/panel-port-final-tests.log`. Live port migration is not yet performed.
+
+## Port transaction foundation
+
+`daemon/panel_config.py` now provides the change worker's transaction: strict port
+validation, real bind conflict probes, a private configuration backup and a file
+lock against concurrent changes. It preserves unrelated TOML and file ownership
+and permissions. New TCP ports are admitted through UFW before restarting the API.
+Both new listeners must return a healthy response with the exact installed TLS
+certificate. Failed restart or health checks restore the previous configuration
+through ConfigWriter, restart it and check the previous listeners. The surviving
+daemon's runtime settings change only after success.
+
+Existing firewall rules are never removed. New admissions are retained after a
+failed change; this avoids removing a rule another administrator could depend on.
+External/provider firewalls remain outside this local transaction. Bind probes
+reduce conflicts but cannot reserve a port throughout the service restart; the
+post-restart checks cover that race with rollback.
+
+This is not yet an exposed admin feature. The asynchronous job/API/UI integration,
+process-interruption recovery, live migration and external connectivity checks
+remain pending. No live settings were changed by this work. Validation includes
+real local socket conflicts, TLS health/certificate rejection, serialization,
+metadata preservation, firewall failures and rollback; evidence is in
+`/root/boron-setup/panel-config-final-tests.log`.
