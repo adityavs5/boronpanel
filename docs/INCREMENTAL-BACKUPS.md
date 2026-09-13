@@ -43,3 +43,15 @@ Workers export raw SQL with a consistent transaction and stable private paths, t
 Admin APIs are under `/api/v1/backups/snapshots`; customer history and browsing are under `/api/v1/accounts/{username}/backups/snapshots/runs`. Customer history omits global policy account lists and notification selections. The management UI, applying staged restores, broader metadata recovery and live deployment remain unfinished; these endpoints are not yet a shipped replacement for the archive backup screens.
 
 Persistent job verification: **69 passed** across the new job tests, existing archive backup tests and RPC tests. After the duplicate-worker notification fix, **12 job tests passed** again. Logs: `/root/boron-setup/snapshot-job-tests.log` and `/root/boron-setup/snapshot-job-final-tests.log`. The only warning was the existing FastAPI/Starlette TestClient dependency deprecation.
+
+## Management screens
+
+The admin Backup Manager at `/app/backup-jobs` provides destination setup (local or SSH), public-key copying, explicit recovery-key reveal/download, job creation/editing, all/selected/excluded account filters, component and path filters, schedule/mode/retention selection, selected notification channels, manual runs and run history. Jobs and destinations have visible clickable names and management controls. Both dashboard theme grids and fuzzy search include the new page.
+
+Customers see scheduled recovery points above their existing on-demand archive backups. Shared details show status, processed files, stored data, components, notification dispatch results and account-scoped browsing. Root shortcuts identify account files, email and database/configuration exports. Long forms keep their action buttons visible while their body scrolls. Admin and customer routes remain role-scoped.
+
+The new admin page is loaded on demand (5.79 kB gzip); shared history is 2.46 kB gzip in this build. No new fonts, image assets or frontend packages were added. These sizes are build evidence, not a measured end-to-end performance benchmark.
+
+Applying restored snapshot contents remains unfinished, and this new backup UI has not yet been deployed to the live panel. Existing archive restore functionality is retained.
+
+UI verification: production build passed; **6 browser tests passed** across admin light/dark themes and customer browsing, followed by **2 final customer tests** that also submitted the existing full archive-backup form. **12 backend tests passed** for the updated history and browsing behavior. Evidence: `/root/boron-setup/backup-ui-build.log`, `backup-ui-browser.log`, `backup-ui-customer-final.log`, `backup-ui-api.log`, and screenshots in `/root/boron-setup/backup-ui-proof`. Browser flows use mocked API data; they are not evidence of live deployment or completed snapshot restore application.

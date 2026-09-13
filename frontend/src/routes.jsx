@@ -17,6 +17,7 @@ const DomainDetail = lazy(() => import('@/pages/customer/DomainDetail'))
 const Email = lazy(() => import('@/pages/customer/Email'))
 const Databases = lazy(() => import('@/pages/customer/Databases'))
 const Files = lazy(() => import('@/pages/customer/Files'))
+const BackupJobs = lazy(() => import('@/pages/admin/BackupJobs'))
 const Backups = lazy(() => import('@/pages/customer/Backups'))
 const Apps = lazy(() => import('@/pages/customer/Apps'))
 const Redis = lazy(() => import('@/pages/customer/Redis'))
@@ -115,6 +116,7 @@ export const router = createBrowserRouter(
         { path: 'databases', element: customer(<Databases />) },
         { path: 'files', element: customer(<Files />) },
         { path: 'backups', element: customer(<Backups />) },
+        { path: 'backup-jobs', element: admin(<BackupJobs />) },
         { path: 'apps', element: customer(<Apps />) },
         { path: 'node-apps', element: customer(<Apps type="node" />) },
         { path: 'python-apps', element: customer(<Apps type="python" />) },

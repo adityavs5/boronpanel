@@ -1,3 +1,4 @@
+import { SnapshotHistory } from '@/components/backups/SnapshotHistory'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Archive, Plus, RotateCcw, History, FolderOpen } from 'lucide-react'
@@ -240,6 +241,8 @@ export default function Backups() {
         </Button>
       </PageHeader>
 
+      <SnapshotHistory username={username} />
+      <h2 className="mb-3 text-lg font-semibold">On-demand archive backups</h2>
       <DataTable
         columns={backupColumns}
         data={backups.data?.jobs}

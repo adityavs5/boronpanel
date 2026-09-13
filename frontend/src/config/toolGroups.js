@@ -23,7 +23,7 @@ const customerGroups = {
 }
 const adminGroups = {
   evolution: [
-    ['Account Manager', ['/accounts', '/plans', '/bandwidth', '/change-password']],
+    ['Account Manager', ['/backup-jobs', '/accounts', '/plans', '/bandwidth', '/change-password']],
     ['Server Manager', ['/health', '/services', '/db-monitor', '/slow-queries', '/mail-queue', '/cloudflare']],
     ['Admin Tools', ['/updates', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
     ['System Info & Files', ['/site-stats', '/audit-log', '/account-log', '/error-log', '/templates', '/maintenance-mode']],
@@ -32,7 +32,7 @@ const adminGroups = {
     ['Account & Preferences', ['/branding', '/appearance', '/security', '/api/docs']],
   ],
   'paper-lantern': [
-    ['Accounts', ['/accounts', '/plans', '/import/cpanel']],
+    ['Accounts', ['/backup-jobs', '/accounts', '/plans', '/import/cpanel']],
     ['Server & Databases', ['/health', '/services', '/db-monitor', '/slow-queries']],
     ['Domains & Network', ['/cloudflare', '/maintenance-mode']],
     ['Email', ['/mail-queue', '/imap-migrations', '/notifications']],

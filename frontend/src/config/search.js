@@ -9,6 +9,7 @@ const synonyms = {
   '/databases': 'database mysql mariadb sql phpmyadmin db users',
   '/files': 'file manager upload download folders permissions documents',
   '/ssl': 'ssl tls https certificate lets encrypt security',
+  '/backup-jobs': 'backup restore recovery snapshots jetbackup incremental schedules jobs destinations ssh retention',
   '/backups': 'backup restore recovery snapshots archive',
   '/php': 'php version extensions settings configuration ini memory upload limit',
   '/ftp': 'ftp sftp file transfer accounts', '/cron': 'cron scheduled task jobs automation',

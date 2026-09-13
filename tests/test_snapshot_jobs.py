@@ -52,6 +52,10 @@ def test_real_persistent_job_incremental_retention_and_restore(environment):
     assert (first/str(root/'home/alpha/site.txt').lstrip('/')).read_text()=='alpha original content'
     assert not (first/str(root/'home/alpha/exclude.txt').lstrip('/')).exists()
     assert jobs.browse({'username':'alpha','run_id':ident,'directory':str(root/'home/alpha')})['entries']
+    assert any(r['name']=='Account files' for r in jobs.browse({'username':'alpha','run_id':ident})['entries'])
+    with jobs.lock(f'repository-{dest["id"]}'):
+        with pytest.raises(Exception,match='busy'):
+            jobs.browse({'username':'alpha','run_id':ident})
     with pytest.raises(Exception,match='not found for this account'):
         jobs.browse({'username':'bravo','run_id':ident})
     assert jobs.queue_policy({'id':policy['id'],'trigger':'scheduled'})['run_ids']==[]

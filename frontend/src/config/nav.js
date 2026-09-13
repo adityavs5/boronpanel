@@ -53,6 +53,7 @@ export const adminNav = [
   // Sidebar shows an accent dot on this item while an update is available.
   { label: 'Updates', to: '/updates', icon: ArrowUpCircle },
   { section: 'Hosting Management' },
+  { label: 'Backup Manager', to: '/backup-jobs', icon: Archive },
   { label: 'Plans', to: '/plans', icon: Layers },
   { label: 'Bandwidth', to: '/bandwidth', icon: Gauge },
   { label: 'Site Statistics', to: '/site-stats', icon: BarChart3 },

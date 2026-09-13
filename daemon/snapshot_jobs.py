@@ -228,7 +228,9 @@ def runs(params):
     with write_session() as session:
         query = select(SnapshotRun).order_by(SnapshotRun.id.desc()).limit(200)
         if account: query=query.where(SnapshotRun.account_id==account.id)
-        return {'runs':[_run_dict(row,customer=account is not None) for row in session.scalars(query).all()]}
+        rows=session.scalars(query).all()
+        names=dict(session.execute(select(Account.id,Account.username).where(Account.id.in_([row.account_id for row in rows]))).all())
+        return {'runs':[{**_run_dict(row,customer=account is not None),'username':names.get(row.account_id)} for row in rows]}
 
 
 def queue_policy(params):
@@ -367,9 +369,28 @@ def browse(params):
     account=_account(params['username'])
     row=_row(SnapshotRun,params['run_id'])
     if row.account_id!=account.id or not row.snapshot_id:raise ValidationError('Snapshot not found for this account')
-    with lock(f'repository-{row.destination_id}',blocking=False):
-        repo=repository(_row(SnapshotDestination,row.destination_id))
-        return {'entries':storage.entries(repo,account.id,row.snapshot_id,params.get('directory','/'))}
+    try:
+        with lock(f'repository-{row.destination_id}',blocking=False):
+            repo=repository(_row(SnapshotDestination,row.destination_id))
+            directory=params.get('directory','/')
+            if directory=='/':
+                snapshot=storage.owned_snapshot(repo,account.id,row.snapshot_id)
+                roots=[]
+                home=Path(settings.home_base)/account.username
+                for source in snapshot.get('paths',[]):
+                    path=Path(source)
+                    nodes=storage.entries(repo,account.id,row.snapshot_id,str(path.parent))
+                    node=next((n for n in nodes if n.get('path')==str(path)),None)
+                    if node is None:continue
+                    if path==home:label='Account files'
+                    elif path.is_relative_to(home):label=str(path.relative_to(home))
+                    elif path.is_relative_to(Path(settings.mail_base)):label=f'Email: {path.name}'
+                    else:label='Database exports & configuration'
+                    roots.append({**node,'name':label})
+                return {'entries':roots}
+            return {'entries':storage.entries(repo,account.id,row.snapshot_id,directory)}
+    except BlockingIOError:
+        raise ValidationError('This destination is busy with a backup or retention task. Try again shortly.') from None
 
 
 def run_scheduled():
