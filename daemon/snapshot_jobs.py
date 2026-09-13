@@ -290,16 +290,10 @@ def sources(account, options):
         'databases':[{'name':d.db_name,'user':d.db_user} for d in databases],'mail_domains':[d.domain for d in mail_domains]}
     (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
     if 'databases' in options['components'] and databases:
-        from daemon.backup import _write_mysql_defaults_file
+        from daemon.snapshot_databases import dump_database
         database_dir=stage/'databases';database_dir.mkdir(mode=0o700)
-        cnf=_write_mysql_defaults_file()
-        try:
-            for db in databases:
-                if not re.fullmatch(r'[A-Za-z0-9_]+',db.db_name):raise ValidationError('Invalid database name in account inventory')
-                result=run(['mysqldump',f'--defaults-extra-file={cnf}','--single-transaction','--quick','--skip-dump-date',
-                    '--routines','--events','--triggers',f'--result-file={database_dir/db.db_name}.sql','--',db.db_name],timeout=1800)
-                result.raise_if_failed('Database snapshot')
-        finally:os.unlink(cnf)
+        for db in databases:
+            dump_database(db.db_name,database_dir/f'{db.db_name}.sql',stage)
     if 'mail' in options['components']:
         for domain in mail_domains:
             root=Path(settings.mail_base)/domain.domain

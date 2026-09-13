@@ -8,6 +8,7 @@ function in this module that accepts a single command string.
 from __future__ import annotations
 
 import logging
+from contextlib import ExitStack
 import subprocess
 from dataclasses import dataclass
 
@@ -44,6 +45,7 @@ class ProcResult:
 def run(
     args: list[str], *, input_text: str | None = None, timeout: float = 30.0, check: bool = False,
     redact: list[str] | None = None, cwd: str | None = None,
+    input_path: str | None = None, discard_stdout: bool = False,
 ) -> ProcResult:
     """redact: values that must appear as literal CLI arguments (a
     third-party tool's own documented flag syntax, e.g. `--password=...`,
@@ -63,16 +65,22 @@ def run(
     else:
         logged_args = args
     logger.info("exec: %s", " ".join(logged_args))
-    proc = subprocess.run(
-        args,
-        input=input_text,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        shell=False,
-        cwd=cwd,
-    )
-    result = ProcResult(args=args, returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+    if input_path is not None and input_text is not None:
+        raise ValueError("Choose either input_text or input_path")
+    with ExitStack() as stack:
+        source = stack.enter_context(open(input_path, "rb")) if input_path is not None else None
+        proc = subprocess.run(
+            args,
+            input=input_text,
+            stdin=source,
+            stdout=subprocess.DEVNULL if discard_stdout else subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            shell=False,
+            cwd=cwd,
+        )
+    result = ProcResult(args=args, returncode=proc.returncode, stdout=proc.stdout or "", stderr=proc.stderr or "")
     if check:
         result.raise_if_failed()
     return result

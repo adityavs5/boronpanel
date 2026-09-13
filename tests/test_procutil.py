@@ -35,3 +35,11 @@ def test_run_redact_none_is_a_no_op(caplog):
     with caplog.at_level(logging.INFO, logger="borond.proc"):
         run(["echo", "plain"], timeout=5, redact=None)
     assert any("exec: echo plain" in r.message for r in caplog.records)
+
+
+def test_streamed_input_and_discarded_output(tmp_path):
+    source=tmp_path/'input';source.write_bytes(b'raw\0bytes\n')
+    result=run(['/usr/bin/wc','-c'],input_path=str(source))
+    assert result.ok and int(result.stdout.strip())==len(source.read_bytes())
+    result=run(['/usr/bin/cat'],input_path=str(source),discard_stdout=True)
+    assert result.ok and result.stdout==''
