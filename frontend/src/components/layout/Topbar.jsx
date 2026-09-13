@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useLocation, Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Palette, Home, Menu, Search, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck } from 'lucide-react'
+import { Palette, Home, Search, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck } from 'lucide-react'
 import { ThemeSelector } from '@/components/themes/ThemeSelector'
 import { useBranding } from '@/hooks/useBranding'
 import { get } from '@/lib/api'
@@ -58,10 +58,10 @@ function Breadcrumb() {
           <span key={to} className="flex items-center gap-1.5">
             {i > 0 && <span className="text-border">/</span>}
             {last ? (
-              <span className="font-medium text-foreground">{titleCase(part)}</span>
+              <span className="font-medium text-foreground">{({wordpress:'WordPress',dns:'DNS',ssl:'SSL',php:'PHP',ftp:'FTP',ssh:'SSH'})[part] || titleCase(part)}</span>
             ) : (
               <Link to={to} className="hover:text-foreground transition-colors">
-                {titleCase(part)}
+                {({wordpress:'WordPress',dns:'DNS',ssl:'SSL',php:'PHP',ftp:'FTP',ssh:'SSH'})[part] || titleCase(part)}
               </Link>
             )}
           </span>
@@ -108,7 +108,6 @@ function AccountSwitcher() {
 }
 
 export function Topbar() {
-  const setMobileNavOpen = useUI((s) => s.setMobileNavOpen)
   const theme = useUI((s) => s.theme)
   const toggleTheme = useUI((s) => s.toggleTheme)
   const { role, username, logout } = useAuth()
@@ -124,9 +123,6 @@ export function Topbar() {
   return (
     <header className="panel-topbar">
       <div className="flex items-center gap-3 min-w-0">
-        <button type="button" onClick={() => setMobileNavOpen(true)} className="rounded-btn p-2 text-muted-foreground hover:bg-muted" aria-label="Open navigation" aria-haspopup="dialog">
-          <Menu className="h-5 w-5" />
-        </button>
         <Link to={isAdmin ? '/overview' : '/dashboard'} className="panel-brand" aria-label={`${panelName} home`}>
           {logoUrl ? <img src={logoUrl} alt="" /> : <span className="brand-symbol">{panelName.charAt(0).toUpperCase()}</span>}
           <span>{panelName}<small>web control panel</small></span>

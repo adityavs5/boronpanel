@@ -74,9 +74,9 @@ for (const role of ['admin', 'customer']) {
         await noOverflow(page)
         if (width === 390) await page.screenshot({ path: testInfo.outputPath(`${role}-${skin}-mobile.png`), fullPage: true })
       }
-      await page.getByRole('button', { name: 'Open navigation' }).click()
-      await expect(page.getByRole('dialog', { name: 'Panel navigation' })).toBeVisible()
-      await page.getByRole('dialog').getByRole('link', { name: 'Appearance', exact: true }).click()
+      await expect(page.getByRole('button', { name: 'Open navigation' })).toHaveCount(0)
+      await page.getByRole('textbox', { name: 'Filter tools' }).fill('change style')
+      await page.locator('.tool-link').filter({ hasText: 'Change Style' }).click()
       await expect(page).toHaveURL(/\/appearance$/)
       expect(errors).toEqual([])
     })

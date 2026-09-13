@@ -216,7 +216,7 @@ def _build(action: str, p: dict):
     raise ValidationError(f"unknown WP-CLI action '{action}'")
 
 
-def run_wpcli(params: dict) -> dict:
+def _run_wpcli(params: dict) -> dict:
     username = validate_username(params["username"])
     domain = validate_domain(params["domain"])
     path = (params.get("path") or "").strip().strip("/")
@@ -230,6 +230,13 @@ def run_wpcli(params: dict) -> dict:
         username, "wpcli", docroot, argv, f"wp {display}",
         redact=redact, revealed_secret=secret,
     )
+
+
+def run_wpcli(params: dict) -> dict:
+    from daemon.wpmanager import _operation_lock, ensure_idle
+    with _operation_lock:
+        ensure_idle(params['username'])
+        return _run_wpcli(params)
 
 
 def get_run(params: dict) -> dict:

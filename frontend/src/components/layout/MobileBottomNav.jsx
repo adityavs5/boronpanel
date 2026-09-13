@@ -9,14 +9,14 @@ const customerItems = [
   { label: 'Domains', to: '/domains', icon: Globe },
   { label: 'Email', to: '/email', icon: Mail },
   { label: 'DBs', to: '/databases', icon: Database },
-  { label: 'More', to: '/more', icon: Menu },
+  { label: 'WordPress', to: '/wordpress', icon: Globe },
 ]
 const adminItems = [
   { label: 'Home', to: '/overview', icon: LayoutDashboard },
   { label: 'Accounts', to: '/accounts', icon: Users },
   { label: 'Health', to: '/health', icon: Activity },
   { label: 'Services', to: '/services', icon: Cog },
-  { label: 'More', to: '/more', icon: Menu },
+  { label: 'WordPress', to: '/wordpress', icon: Globe },
 ]
 
 export function MobileBottomNav() {

@@ -236,6 +236,10 @@ async def _security_headers(request, call_next):
                 "media-src 'self' blob:; connect-src 'self'; "
                 "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
             )
+    elif path.startswith("/api/v1/accounts/") and path.endswith("/wordpress/login/open") and "content-security-policy" in response.headers:
+        # This authenticated POST handoff permits only its verified WordPress
+        # destination and a one-use nonce, without relaxing the panel's CSP.
+        response.headers["Referrer-Policy"] = "no-referrer"
     else:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; "
@@ -320,6 +324,7 @@ app.include_router(terminal.router)
 app.include_router(terminal.http_router)
 # Phase 8 features 8/9: WP-CLI + Composer.
 app.include_router(devtools.wpcli_router)
+app.include_router(wordpress.manager_router)
 app.include_router(devtools.composer_router)
 # Phase 8 features 10/11/12: process manager, account notes, bulk actions.
 app.include_router(processes.api_router)

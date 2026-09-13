@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
 from api.rpc import call_daemon
-from api.security import Identity, get_identity, require_account_access, require_domain_access
+from api.security import Identity, get_identity, require_account_access, require_domain_access, require_admin
 from api.templates import templates
 
 api_router = APIRouter(prefix="/api/v1/accounts/{username}/domains/{domain}/wordpress", tags=["wordpress"])
@@ -129,3 +129,59 @@ def ui_job_status(request: Request, username: str, domain: str, job_id: int, ide
     return templates.TemplateResponse(
         request, "wordpress_install.html", {"identity": identity, "username": username, "domain": domain, "existing": None, "job": job}
     )
+
+
+manager_router = APIRouter(prefix="/api/v1/wordpress", tags=["wordpress-manager"])
+
+@manager_router.get("")
+def manager_inventory(username: str | None = None, identity: Identity = Depends(get_identity)):
+    if username: require_account_access(identity, username)
+    else: require_admin(identity)
+    return call_daemon("wpmanager.inventory", identity, username=username)
+
+class ManagerBody(BaseModel):
+    path: str = ""
+    action: str
+    backup: str = ""
+    target_domain: str = ""
+    target_path: str = ""
+    confirm: bool = False
+
+@api_router.post("/manage")
+def manage_site(username: str, domain: str, body: ManagerBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("wpmanager.operation", identity, username=username, domain=domain, **body.model_dump())
+
+class LoginBody(BaseModel):
+    path: str = ""
+
+@api_router.post("/login")
+def login_site(username: str, domain: str, body: LoginBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("wpmanager.login", identity, username=username, domain=domain, path=body.path)
+
+
+@api_router.post("/login/open", response_class=HTMLResponse)
+def open_wordpress_login(username: str, domain: str, path: str = Form(""), identity: Identity = Depends(get_identity)):
+    """Same-origin POST handoff with a CSP scoped to this verified site's URL."""
+    import html
+    import secrets
+    from urllib.parse import urlsplit
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    link = call_daemon("wpmanager.login", identity, username=username, domain=domain, path=path)
+    nonce = secrets.token_urlsafe(24)
+    origin = urlsplit(link['url'])
+    destination = f"https://{origin.netloc}"
+    document = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Opening WordPress</title></head>
+<body><p>Opening your WordPress dashboard…</p>
+<form id="login" action="{html.escape(link['url'], quote=True)}" method="post">
+<input type="hidden" name="token" value="{html.escape(link['token'], quote=True)}"><button type="submit">Continue to WordPress</button></form>
+<script nonce="{nonce}">document.getElementById('login').submit()</script></body></html>"""
+    return HTMLResponse(document, headers={
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': f"default-src 'none'; script-src 'nonce-{nonce}'; form-action {destination}; base-uri 'none'; frame-ancestors 'none'",
+        'Referrer-Policy': 'no-referrer',
+    })

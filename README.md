@@ -77,9 +77,9 @@ application tree.
   autoresponders, spam filtering, delivery logs, and IMAP migrations.
 - **Databases:** account-scoped MariaDB databases and users with one-time
   credentials plus a scoped phpMyAdmin launch.
-- **WordPress:** install in a document root or subdirectory, then manage core,
-  plugins, themes, cache, maintenance mode, admin passwords, and safe
-  search/replace through WP-CLI.
+- **WordPress:** a guided installer, user site manager and admin inventory,
+  one-click login, private backup/restore, independent staging clones, and
+  core/plugin/theme management. See the [WordPress Manager guide](docs/WORDPRESS-MANAGER.md).
 - **Files and access:** FileBrowser Quantum, scoped FTP with explicit TLS and
   passive ports, Git deployment, SSH keys, web terminal, cron jobs, and logs.
 - **Applications:** Node.js and Python apps, Composer, Redis, PHP version

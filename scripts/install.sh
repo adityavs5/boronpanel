@@ -254,7 +254,7 @@ readonly BASE_PKGS=(
     python3 python3-venv python3-pip python3-dev build-essential
     curl wget jq sqlite3 ufw acl quota quotatool git ca-certificates
     rsync openssl cron logrotate apache2-utils geoipupdate
-    nodejs npm composer sudo
+    nodejs npm composer sudo php-cli php-mysql
 )
 readonly STACK_PKGS=(
     mariadb-server postfix dovecot-core dovecot-imapd dovecot-lmtpd
@@ -341,15 +341,21 @@ install_base_packages() {
         die "base package installation aborted; see ${INSTALL_LOG}"
     fi
     ok "base packages installed (python, node, composer, tooling)"
-    # wp-cli isn't packaged in apt -- fetch the official phar (curl only).
-    if [[ -x /usr/local/bin/wp ]]; then
-        skip "wp-cli already installed"
+    # Pin and verify the release before making it executable.
+    local wp_version=2.12.0
+    local wp_sha256=ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c
+    if [[ -f /usr/local/bin/wp-cli.phar ]] && [[ "$(sha256sum /usr/local/bin/wp-cli.phar | cut -d ' ' -f1)" == "$wp_sha256" ]]; then
+        skip "verified wp-cli already installed"
     else
-        run curl -fsSL -o /usr/local/bin/wp \
-            https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
-        run chmod +x /usr/local/bin/wp
-        ok "wp-cli installed"
+        local wp_download
+        wp_download=$(mktemp)
+        curl -fsSL --retry 3 -o "$wp_download" "https://github.com/wp-cli/wp-cli/releases/download/v${wp_version}/wp-cli-${wp_version}.phar" || { rm -f "$wp_download"; die "WP-CLI download failed"; }
+        [[ "$(sha256sum "$wp_download" | cut -d ' ' -f1)" == "$wp_sha256" ]] || { rm -f "$wp_download"; die "WP-CLI checksum mismatch"; }
+        run install -m 0755 "$wp_download" /usr/local/bin/wp-cli.phar
+        rm -f "$wp_download"
+        ok "verified wp-cli installed"
     fi
+
 }
 
 # OpenLiteSpeed's namespace directive is enabled in the Boron-generated

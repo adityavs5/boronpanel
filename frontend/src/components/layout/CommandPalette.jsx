@@ -5,6 +5,7 @@ import { Search, CornerDownLeft, Sun, Moon, KeyRound, LogOut } from 'lucide-reac
 import { cn } from '@/lib/cn'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
+import { searchEntries } from '@/config/search'
 import { customerNav, adminNav } from '@/config/nav'
 
 // Flattens the role-aware nav into palette entries, keeping section names.
@@ -48,9 +49,7 @@ export function CommandPalette() {
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return entries
-    return entries.filter(
-      (e) => e.label.toLowerCase().includes(q) || e.section.toLowerCase().includes(q) || (e.to || '').includes(q),
-    )
+    return searchEntries(entries, q)
   }, [entries, query])
 
   // Reset state whenever the palette opens or the query changes.

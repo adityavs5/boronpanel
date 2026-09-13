@@ -151,7 +151,7 @@ def _docroot_is_empty_enough(docroot: str) -> bool:
     allowed to remain."""
     if not os.path.isdir(docroot):
         return True
-    visible = [name for name in os.listdir(docroot) if not name.startswith(".")]
+    visible = [name for name in os.listdir(docroot) if not name.startswith(".") and not (name == "error_pages" and os.path.isdir(os.path.join(docroot, name)) and not os.listdir(os.path.join(docroot, name)))]
     return not visible
 
 
@@ -202,9 +202,11 @@ def _run_silent_install(
             "runuser", "-u", username, "--",
             "env", f"HOME={home_dir}",
             settings.php_cli_bin, str(INSTALL_HELPER_PATH),
-            docroot, site_url, title, admin_user, admin_email, admin_password,
+            docroot, site_url, title, admin_user, admin_email,
         ],
         timeout=90,
+        input_text=admin_password,
+        redact=[admin_password],
     )
     if not result.ok:
         raise WordPressError(f"WordPress install script failed: {result.stderr.strip() or result.stdout.strip()}")
@@ -342,6 +344,9 @@ def install(params: dict) -> dict:
         raise
 
     run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", target_dir], check=True)
+    # Newly created subfolders and extracted modes can mask the default ACL.
+    # Restore OLS worker access as the account, without root following site files.
+    run(["runuser", "-u", username, "--", "setfacl", "-R", "-m", "u:nobody:rX", "-d", "-m", "u:nobody:rX", target_dir], check=True)
 
     with write_session() as session:
         session.add(
@@ -393,7 +398,7 @@ def _update_job(job_id: int, **fields) -> None:
             setattr(job, key, value)
 
 
-def trigger_install(params: dict) -> dict:
+def _trigger_install(params: dict) -> dict:
     username = validate_username(params["username"])
     domain_name = validate_domain(params["domain"])
 
@@ -409,6 +414,13 @@ def trigger_install(params: dict) -> dict:
 
     _executor.submit(_run_install_job, job_id, params)
     return result
+
+
+def trigger_install(params: dict) -> dict:
+    from daemon.wpmanager import _operation_lock, ensure_idle
+    with _operation_lock:
+        ensure_idle(params['username'])
+        return _trigger_install(params)
 
 
 def _run_install_job(job_id: int, params: dict) -> None:

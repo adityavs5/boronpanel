@@ -6,13 +6,14 @@
 // sake -- this file must be readable by the *hosting account's own uid*,
 // since it's executed via `runuser -u <account>`, so it cannot live
 // under that tree). Invoked as:
-//   php wp_install_helper.php <docroot> <site_url> <title> <admin_user> <admin_email> <admin_password>
+//   php wp_install_helper.php <docroot> <site_url> <title> <admin_user> <admin_email> (password via stdin)
 // Values are passed via argv, never interpolated into this file's own
 // source text -- avoids any PHP-string-escaping injection class entirely.
 // Calls WordPress core's own wp_install() (wp-admin/includes/upgrade.php)
 // -- the same function WP-CLI's `wp core install` wraps internally.
 error_reporting(E_ERROR | E_PARSE);
-list($docroot, $site_url, $title, $admin_user, $admin_email, $admin_password) = array_slice($argv, 1);
+list($docroot, $site_url, $title, $admin_user, $admin_email) = array_slice($argv, 1);
+$admin_password = stream_get_contents(STDIN);
 
 $parts = parse_url($site_url);
 $_SERVER['HTTP_HOST'] = $parts['host'];

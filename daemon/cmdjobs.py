@@ -49,6 +49,8 @@ def submit(
     redact: list[str] | None = None,
     revealed_secret: str | None = None,
     timeout: float | None = None,
+    input_text: str | None = None,
+    on_failure=None,
 ) -> dict:
     """Create a CommandRun row and run `argv` as the account user in `target`.
     Returns the created job dict (status 'pending'). argv is the FULL command to
@@ -68,17 +70,19 @@ def submit(
 
     wrapped = ["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", *argv]
     _executor.submit(
-        _run_job, job_id, wrapped, target, redact or [], timeout or settings.command_run_timeout_seconds
+        _run_job, job_id, wrapped, target, redact or [], timeout or settings.command_run_timeout_seconds, input_text, on_failure
     )
     return _job_dict(_get(job_id), reveal=False)
 
 
-def _run_job(job_id: int, argv: list[str], cwd: str, redact: list[str], timeout: float) -> None:
+def _run_job(job_id: int, argv: list[str], cwd: str, redact: list[str], timeout: float, input_text: str | None = None, on_failure=None) -> None:
     with write_session() as session:
         job = session.get(CommandRun, job_id)
         job.status = "running"
     try:
-        result = run(argv, cwd=cwd, timeout=timeout, redact=redact or None)
+        result = run(argv, cwd=cwd, timeout=timeout, redact=redact or None, **({"input_text": input_text} if input_text is not None else {}))
+        if result.returncode != 0 and on_failure:
+            on_failure()
         stdout = result.stdout[:MAX_CAPTURE]
         stderr = result.stderr[:MAX_CAPTURE]
         with write_session() as session:
@@ -92,6 +96,9 @@ def _run_job(job_id: int, argv: list[str], cwd: str, redact: list[str], timeout:
             job.completed_at = utcnow()
     except Exception as exc:  # noqa: BLE001
         logger.exception("command run %s failed", job_id)
+        if on_failure:
+            try: on_failure()
+            except Exception: logger.exception("cleanup failed for command run %s", job_id)
         with write_session() as session:
             job = session.get(CommandRun, job_id)
             job.status = "failed"

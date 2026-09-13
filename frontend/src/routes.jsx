@@ -58,6 +58,7 @@ const NotificationSettings = lazy(() => import('@/pages/admin/NotificationSettin
 const CpanelImport = lazy(() => import('@/pages/admin/CpanelImport'))
 const ApiTokens = lazy(() => import('@/pages/admin/ApiTokens'))
 const Cloudflare = lazy(() => import('@/pages/admin/Cloudflare'))
+const WordPressManager = lazy(() => import('@/pages/WordPressManager'))
 const Updates = lazy(() => import('@/pages/admin/Updates'))
 const DbMonitor = lazy(() => import('@/pages/admin/DbMonitor'))
 // Named MaintenanceOverview locally -- `Maintenance` (the panel's own
@@ -156,6 +157,7 @@ export const router = createBrowserRouter(
         { path: 'notifications', element: admin(<NotificationSettings />) },
         { path: 'import/cpanel', element: admin(<CpanelImport />) },
         { path: 'tokens', element: admin(<ApiTokens />) },
+        { path: 'wordpress', element: <WordPressManager /> },
         { path: 'updates', element: admin(<Updates />) },
         { path: 'db-monitor', element: admin(<DbMonitor />) },
         { path: 'maintenance-mode', element: admin(<MaintenanceOverview />) },

@@ -5,6 +5,7 @@ import { Search, X, ChevronDown, Plus, Minus, ArrowUpRight, Server, AlertTriangl
 import { get } from '@/lib/api'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
+import { searchScore } from '@/config/search'
 import { getToolGroups } from '@/config/toolGroups'
 import { useVersion } from '@/hooks/useVersion'
 import { useBranding } from '@/hooks/useBranding'
@@ -68,7 +69,7 @@ export default function ToolDashboard() {
   const version = useVersion()
   const query = search.trim().toLowerCase()
   const allGroups = useMemo(() => getToolGroups(role, skin), [role, skin])
-  const groups = useMemo(() => allGroups.map((group) => ({ ...group, items: group.items.filter((item) => !query || `${item.label} ${group.title}`.toLowerCase().includes(query)) })).filter((group) => group.items.length), [allGroups, query])
+  const groups = useMemo(() => allGroups.map((group) => ({ ...group, items: group.items.filter((item) => searchScore({ ...item, group: group.title }, query) > 0) })).filter((group) => group.items.length), [allGroups, query])
   const options = { retry: false, staleTime: 30_000 }
   const health = useQuery({ queryKey: ['health'], queryFn: () => get('/api/v1/health'), enabled: isAdmin, refetchInterval: 30_000, ...options })
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: () => get('/api/v1/accounts'), enabled: isAdmin, ...options })
@@ -88,7 +89,7 @@ export default function ToolDashboard() {
     {!isAdmin && alerts.data?.active?.length > 0 && <div className="dashboard-alert" role="status"><AlertTriangle size={18} /><div><strong>Resource usage needs attention</strong>{alerts.data.active.map((alert, index) => <p key={alert.id ?? index}>{alert.resource}: {alert.threshold_pct}% threshold reached.</p>)}<Link to="/disk-usage">Review resource usage</Link></div></div>}
     <div className="dashboard-columns">
       <div className="tools-column">
-        <div className="tool-filter"><Search size={19} aria-hidden="true" /><input aria-label="Filter tools" placeholder={skin === 'paper-lantern' ? 'Find functions quickly by typing here.' : 'Filter tools by name…'} value={search} onChange={(e) => setSearch(e.target.value)} />{search && <button type="button" aria-label="Clear tool filter" onClick={() => setSearch('')}><X size={17} /></button>}<span className="filter-shortcut">{skin === 'evolution' ? 'Navigation filter' : ''}</span></div>
+        <div className="tool-filter"><Search size={19} aria-hidden="true" /><input aria-label="Filter tools" placeholder="What would you like to do? Try WordPress, DNS zone editor, or email…" value={search} onChange={(e) => setSearch(e.target.value)} />{search && <button type="button" aria-label="Clear tool filter" onClick={() => setSearch('')}><X size={17} /></button>}<span className="filter-shortcut">Search tools</span></div>
         {query && <p className="filter-results" role="status">{count} {count === 1 ? 'tool' : 'tools'} found</p>}
         {groups.map((group) => <ToolGroup key={group.title} group={group} searching={!!query} role={role} skin={skin} />)}
         {groups.length === 0 && <div className="tools-empty"><Search size={32} /><h2>No tools found</h2><p>Try a different name, such as “{isAdmin ? 'accounts' : 'files'}”.</p><button type="button" onClick={() => setSearch('')}>Show all tools</button></div>}

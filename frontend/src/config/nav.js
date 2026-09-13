@@ -12,6 +12,7 @@ import {
 export const customerNav = [
   { section: 'Overview' },
   { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard },
+  { label: 'WordPress Manager', to: '/wordpress', icon: Globe },
   { section: 'Hosting' },
   { label: 'Domains', to: '/domains', icon: Globe },
   { label: 'PHP', to: '/php', icon: FileCode2 },
@@ -44,6 +45,7 @@ export const customerNav = [
 export const adminNav = [
   { section: 'Administration' },
   { label: 'Dashboard', to: '/overview', icon: LayoutDashboard },
+  { label: 'WordPress Installations', to: '/wordpress', icon: Globe },
   { label: 'Accounts', to: '/accounts', icon: Users },
   { label: 'Server Health', to: '/health', icon: Activity },
   { label: 'Services', to: '/services', icon: Cog },
