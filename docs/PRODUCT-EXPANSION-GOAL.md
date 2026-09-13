@@ -161,3 +161,13 @@ checks, certificate issuance helper and stable renewal deploy hook with key/name
 validation, served-certificate verification and rollback. The real certificate has
 not been issued. Admin configuration, live deployment/issuance/trust/renewal checks
 and separate configurable ports remain required; see PANEL-TLS.md.
+
+## Progress — shared/separate panel listener foundation
+
+A single API process now supports shared or separate admin/customer sockets, with
+2222 as the fresh-install default. Role restrictions use the real local socket and
+cover login, 2FA, session/token requests and terminal WebSockets. Firewall protection
+and certificate verification cover both listeners. Real two-socket tests prove Host
+header spoofing cannot cross roles. The live listener remains unchanged at 9443;
+admin configuration/change rollback, TLS issuance and live migration remain required.
+See PANEL-PORTS.md. The full goal is still active.

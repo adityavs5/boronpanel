@@ -36,7 +36,7 @@ readonly MIN_DISK_GB=10
 # discovered halfway through.
 # Public TCP listeners plus the panel's internal PowerDNS API/database
 # listeners. Passive FTP is a range and is configured separately below.
-readonly REQUIRED_PORTS=(9443 8081 80 443 21 25 110 143 587 993 995 3306 53)
+readonly REQUIRED_PORTS=(2222 8081 80 443 21 25 110 143 587 993 995 3306 53)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
@@ -1007,7 +1007,7 @@ setup_firewall() {
     # provider-specific default policy.
     run ufw allow 22/tcp
     local p
-    for p in 21 25 53 80 110 143 443 587 993 995 9443; do
+    for p in 21 25 53 80 110 143 443 587 993 995 2222; do
         run ufw allow "${p}/tcp"
     done
     run ufw allow 53/udp
@@ -1298,7 +1298,7 @@ main() {
 
     summary
     if [[ "$STEP_FAIL" -eq 0 ]]; then
-        info "Done. Boron Panel v${BORON_VERSION} -- https://${PANEL_DOMAIN:-${SERVER_IP:-<server-ip>}}:9443/login"
+        info "Done. Boron Panel v${BORON_VERSION} -- https://${PANEL_DOMAIN:-${SERVER_IP:-<server-ip>}}:2222/login"
         if $DRY_RUN; then
             info "This was a dry-run -- nothing was changed."
         fi

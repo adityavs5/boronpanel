@@ -67,3 +67,17 @@ def test_issue_uses_stable_renewal_hook_and_dedicated_webroot(monkeypatch):
     assert calls[0][calls[0].index('-w')+1]=='/var/www/panel-acme'
     assert '/opt/boron/scripts/panel_ssl_deploy.py' in calls[0][-1]
     assert '--hostname panel.example' in calls[0][-1]
+
+
+def test_certificate_verification_checks_both_ports(tmp_path,monkeypatch):
+    from contextlib import nullcontext
+    cert,_=pair()
+    expected=x509.load_pem_x509_certificate(cert).public_bytes(serialization.Encoding.DER)
+    path=tmp_path/'boron.toml';path.write_text('api_bind_port=2222\napi_customer_port=3333\n')
+    monkeypatch.setattr(hook,'CONFIG_PATH',path)
+    connections=[]
+    monkeypatch.setattr(hook.socket,'create_connection',lambda address,timeout:(connections.append(address) or nullcontext(object())))
+    context=SimpleNamespace(wrap_socket=lambda connection,server_hostname:nullcontext(SimpleNamespace(getpeercert=lambda binary_form:expected)))
+    monkeypatch.setattr(hook.ssl,'SSLContext',lambda protocol:context)
+    hook._wait_for_certificate('panel.example',cert)
+    assert {address[1] for address in connections}=={2222,3333}

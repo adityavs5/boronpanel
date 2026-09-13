@@ -44,17 +44,21 @@ def _replace(path,content,gid):
 
 
 def _wait_for_certificate(hostname,certificate):
-    with CONFIG_PATH.open('rb') as handle:port=int(tomllib.load(handle).get('api_bind_port',9443))
+    with CONFIG_PATH.open('rb') as handle:config=tomllib.load(handle)
+    admin=int(config.get('api_bind_port',2222))
+    pending={admin,int(config.get('api_customer_port') or admin)}
     expected=x509.load_pem_x509_certificate(certificate).public_bytes(serialization.Encoding.DER)
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname=False;context.verify_mode=ssl.CERT_NONE
     deadline=time.monotonic()+20
     while time.monotonic()<deadline:
-        try:
-            with socket.create_connection(('127.0.0.1',port),timeout=2) as connection:
-                with context.wrap_socket(connection,server_hostname=hostname) as tls:
-                    if tls.getpeercert(binary_form=True)==expected:return
-        except (OSError,ssl.SSLError):pass
+        for port in tuple(pending):
+            try:
+                with socket.create_connection(('127.0.0.1',port),timeout=2) as connection:
+                    with context.wrap_socket(connection,server_hostname=hostname) as tls:
+                        if tls.getpeercert(binary_form=True)==expected:pending.remove(port)
+            except (OSError,ssl.SSLError):pass
+        if not pending:return
         time.sleep(.25)
     raise RuntimeError('Panel did not serve the newly installed certificate')
 

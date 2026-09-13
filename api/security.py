@@ -140,6 +140,18 @@ def _identity_from_bearer_token(token: str) -> Identity | None:
         return Identity(panel_user_id=-1, username=row.label, role=row.role, account_id=row.account_id, auth_method="token")
 
 
+def enforce_listener_role(identity,connection):
+    from shared.panel_ports import listener_ports
+    admin,customer=listener_ports()
+    if admin==customer:return
+    server=connection.scope.get('server')
+    port=server[1] if server else None
+    role='admin' if identity.impersonator else identity.role
+    expected=admin if role=='admin' else customer
+    if port!=expected:
+        raise HTTPException(status_code=403,detail=f'Use the {role} panel on port {expected}.')
+
+
 def get_identity(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -153,6 +165,7 @@ def get_identity(
     if authorization and authorization.lower().startswith("bearer "):
         identity = _identity_from_bearer_token(authorization[7:].strip())
         if identity is not None:
+            enforce_listener_role(identity,request)
             identity.ip = client_ip
             # Run A feature 7: let the access-log middleware name the user
             # without repeating this resolution (it runs outside every
@@ -164,6 +177,7 @@ def get_identity(
     if fh_session:
         identity = _identity_from_session_cookie(fh_session)
         if identity is not None:
+            enforce_listener_role(identity,request)
             identity.ip = client_ip
             request.state.identity = identity
             return identity

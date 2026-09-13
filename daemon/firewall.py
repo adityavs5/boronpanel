@@ -57,7 +57,8 @@ def _ssh_port() -> int:
 
 
 def protected_ports() -> set[int]:
-    return {_ssh_port(), settings.api_bind_port, 80, 443, 25, 587, 993}
+    from shared.panel_ports import listener_ports
+    return {_ssh_port(), *listener_ports(), 80, 443, 25, 587, 993}
 
 
 def _validate_port(port) -> int:

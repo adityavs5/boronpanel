@@ -132,6 +132,11 @@ async def terminal_ws(websocket: WebSocket, username: str):
     if identity is None:
         await websocket.close(code=4401)  # unauthenticated
         return
+    from api.security import enforce_listener_role
+    try:enforce_listener_role(identity,websocket)
+    except HTTPException:
+        await websocket.close(code=4403)
+        return
     if not _authorized(identity, username):
         await websocket.close(code=4403)  # forbidden
         return

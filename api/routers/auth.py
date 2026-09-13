@@ -85,6 +85,8 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
     # has 2FA enabled the session must not be created yet -- a second
     # step (code or recovery code) is required first. The SPA reads this JSON
     # and shows its inline 2FA step.
+    from api.security import enforce_listener_role
+    enforce_listener_role(login_identity,request)
     totp_status = call_daemon("totp.status", login_identity, panel_user_id=user_id)
     if totp_status["enabled"]:
         pending_token = sign_twofactor_pending(user_id)
@@ -153,6 +155,8 @@ def login_2fa_submit(request: Request, pending_token: str = Form(...), code: str
             status_code=429,
         )
 
+    from api.security import enforce_listener_role
+    enforce_listener_role(check_identity,request)
     result = call_daemon("totp.check_login_code", check_identity, panel_user_id=panel_user_id, code=code)
     call_daemon("auth.record_login_result", check_identity, username=user.username, success=bool(result["valid"]))
     if not result["valid"]:

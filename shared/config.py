@@ -71,7 +71,8 @@ class Settings:
     # bootstrap circularity of the panel managing the vhost that serves
     # itself) and still terminates its own TLS.
     api_bind_host: str = "0.0.0.0"
-    api_bind_port: int = 9443
+    api_bind_port: int = 2222
+    api_customer_port: int | None = None
     panel_hostname: str = ""
     panel_acme_webroot: str = "/var/www/boron-panel-acme"
 
