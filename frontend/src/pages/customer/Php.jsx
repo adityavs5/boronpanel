@@ -72,6 +72,7 @@ export default function Php() {
       />
       <div className="space-y-6">
         <VersionCard username={username} />
+        <SiteVersionsCard username={username} />
         <SettingsCard username={username} />
         <ExtensionsCard username={username} />
       </div>
@@ -86,6 +87,7 @@ function VersionCard({ username }) {
     queryFn: () => get(`/api/v1/accounts/${username}`),
     enabled: !!username,
   })
+  const {data: runtime}=useQuery({queryKey:['php-ini',username],queryFn:()=>get(`/api/v1/accounts/${username}/php-ini`),enabled:!!username})
   const [version, setVersion] = useState('')
   useEffect(() => {
     if (account?.php_version) setVersion(account.php_version)
@@ -94,7 +96,7 @@ function VersionCard({ username }) {
   const mut = useMutation({
     mutationFn: () => patch(`/api/v1/accounts/${username}/php-version`, { php_version: version }),
     onSuccess: () => {
-      toast.success('PHP version updated', `This account now runs PHP ${version}.`)
+      toast.success('PHP version updated', `Sites using the account default now run PHP ${version}.`)
       qc.invalidateQueries({ queryKey: ['account', username] })
     },
     onError: (e) => toast.error('Could not change PHP version', e.message),
@@ -103,10 +105,10 @@ function VersionCard({ username }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>PHP version</CardTitle>
+        <div><CardTitle>Default PHP version</CardTitle>
         <CardDescription>
-          The default runtime for every domain on this account. Individual domains can override it from their domain page.
-        </CardDescription>
+          The default runtime for every domain on this account. New sites inherit this version. Sites with an override below keep their chosen version.
+        </CardDescription></div>
       </CardHeader>
       <CardContent>
         <div className="flex items-center gap-2">
@@ -116,7 +118,7 @@ function VersionCard({ username }) {
             onChange={(e) => setVersion(e.target.value)}
             className="max-w-[10rem]"
           >
-            {PHP_VERSIONS.map((v) => <option key={v} value={v}>PHP {v}</option>)}
+            {(runtime?.php_versions||PHP_VERSIONS).map((v) => <option key={v} value={v}>PHP {v}</option>)}
           </Select>
           <Button
             variant="secondary"
@@ -132,9 +134,27 @@ function VersionCard({ username }) {
   )
 }
 
+function SiteVersionsCard({ username }) {
+  const account=useQuery({queryKey:['account',username],queryFn:()=>get(`/api/v1/accounts/${username}`),enabled:!!username})
+  const runtime=useQuery({queryKey:['php-ini',username],queryFn:()=>get(`/api/v1/accounts/${username}/php-ini`),enabled:!!username})
+  const sites=useQuery({queryKey:['domains',username],queryFn:()=>get(`/api/v1/accounts/${username}/domains`),enabled:!!username})
+  return <Card><CardHeader><div><CardTitle>PHP version per site</CardTitle><CardDescription className="mt-1.5">Choose a version for a site, or let it follow your account default.</CardDescription></div></CardHeader><CardContent>
+    {sites.isLoading?<CardSkeleton/>:sites.error?<ErrorState error={sites.error} onRetry={sites.refetch}/>:sites.data?.domains?.length?<div className="divide-y divide-border">{sites.data.domains.map(site=><SiteVersionRow key={site.domain} username={username} site={site} defaultVersion={account.data?.php_version} versions={runtime.data?.php_versions||PHP_VERSIONS}/>)}</div>:<p className="text-sm text-muted-foreground">Your sites will appear here after you create a domain.</p>}
+  </CardContent></Card>
+}
+
+function SiteVersionRow({ username, site, defaultVersion, versions }) {
+  const [version,setVersion]=useState(site.php_version||'')
+  const qc=useQueryClient()
+  useEffect(()=>setVersion(site.php_version||''),[site.php_version])
+  const save=useMutation({mutationFn:()=>patch(`/api/v1/accounts/${username}/domains/${encodeURIComponent(site.domain)}/php-version`,{php_version:version||null}),onSuccess:()=>{toast.success('Site PHP version updated',site.domain);qc.invalidateQueries({queryKey:['domains',username]})},onError:e=>toast.error('Could not change site PHP version',e.message)})
+  return <div className="flex flex-wrap items-center justify-between gap-3 py-4 first:pt-0 last:pb-0"><div className="min-w-0"><p className="break-all font-medium">{site.domain}</p><p className="text-xs text-muted-foreground">Currently PHP {site.php_version||defaultVersion||'…'} · {site.php_version?'Site override':'Account default'}</p></div><div className="flex max-w-full flex-wrap gap-2"><Select aria-label={`PHP version for ${site.domain}`} value={version} onChange={e=>setVersion(e.target.value)} className="max-w-[16rem]" disabled={save.isPending}><option value="">Account default{defaultVersion?` (PHP ${defaultVersion})`:''}</option>{versions.map(v=><option key={v} value={v}>PHP {v}</option>)}</Select><Button variant="secondary" disabled={version===(site.php_version||'')} loading={save.isPending} aria-label={`Save PHP version for ${site.domain}`} onClick={()=>save.mutate()}>Save</Button></div></div>
+}
+
 function SettingsCard({ username }) {
   const qc = useQueryClient()
   const [form, setForm] = useState({})
+  const [preset,setPreset]=useState('custom')
   const [resetOpen, setResetOpen] = useState(false)
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -144,7 +164,7 @@ function SettingsCard({ username }) {
   })
 
   const directives = data?.directives || []
-  useEffect(() => { setForm({}) }, [data])
+  useEffect(() => { setForm({});setPreset('custom') }, [data])
 
   const effective = (d) => {
     if (Object.prototype.hasOwnProperty.call(form, d.name)) return form[d.name]
@@ -216,6 +236,7 @@ function SettingsCard({ username }) {
           <form
             onSubmit={(e) => { e.preventDefault(); if (dirty.length) saveMut.mutate() }}
           >
+            <div className="mb-6 rounded-btn border border-border bg-muted/20 p-4"><FormField label="PHP limits template" htmlFor="php-limit-preset" hint="Choose a starting point, review the values, then save. Custom lets you edit every field."><Select id="php-limit-preset" value={preset} onChange={e=>{const id=e.target.value;setPreset(id);const chosen=data?.limit_presets?.find(p=>p.id===id);if(chosen)setForm(f=>({...f,...Object.fromEntries(Object.entries(chosen.directives).map(([k,v])=>[k,String(v)]))}))}}><option value="custom">Custom (default)</option>{(data?.limit_presets||[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</Select></FormField>{preset!=='custom'&&<p className="mt-2 text-sm text-muted-foreground">{data?.limit_presets?.find(p=>p.id===preset)?.description}</p>}<p className="mt-2 text-xs text-muted-foreground">Templates adjust resource limits only. Your timezone and error settings stay as configured. Account resource limits still apply.</p></div>
             <div className="grid grid-cols-1 gap-x-8 gap-y-5 sm:grid-cols-2">
               {directives.map((d) => (
                 <DirectiveField
@@ -223,7 +244,7 @@ function SettingsCard({ username }) {
                   descriptor={d}
                   value={effective(d)}
                   overridden={d.value !== null && d.value !== undefined}
-                  onChange={(v) => setForm((f) => ({ ...f, [d.name]: v }))}
+                  onChange={(v) => {setPreset('custom');setForm((f) => ({ ...f, [d.name]: v }))}}
                 />
               ))}
             </div>

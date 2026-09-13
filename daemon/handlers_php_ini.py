@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
+from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, PhpIniDirective, PhpIniOverride, utcnow
 from shared.validation import (
@@ -27,6 +28,15 @@ from daemon import ols, phpdirectives, sysops
 # needs it too and importing this module from there would be circular), but
 # every existing caller/test referencing handlers_php_ini.DEFAULTS still works.
 DEFAULTS = phpdirectives.DEFAULTS
+
+LIMIT_PRESETS = [
+    {'id':'lite','name':'Lite','description':'Small websites and lightweight scripts.',
+     'directives':{'memory_limit':'128M','upload_max_filesize':'32M','post_max_size':'40M','max_execution_time':30,'max_input_time':60,'max_input_vars':1000,'max_file_uploads':20}},
+    {'id':'moderate','name':'Moderate','description':'WordPress sites with typical plugins and media uploads.',
+     'directives':{'memory_limit':'256M','upload_max_filesize':'64M','post_max_size':'80M','max_execution_time':120,'max_input_time':120,'max_input_vars':3000,'max_file_uploads':20}},
+    {'id':'max','name':'Max','description':'Larger stores, page builders and demanding imports. Uses more resources per request.',
+     'directives':{'memory_limit':'512M','upload_max_filesize':'256M','post_max_size':'320M','max_execution_time':300,'max_input_time':300,'max_input_vars':5000,'max_file_uploads':50}},
+]
 
 LEGACY_FIELDS = ("memory_limit", "upload_max_filesize", "post_max_size",
                  "max_execution_time", "display_errors", "error_reporting")
@@ -85,6 +95,8 @@ def get_php_ini(params: dict) -> dict:
         legacy = _row_to_dict(row) if row else None
         return {
             "username": username,
+            "php_versions": list(settings.php_versions),
+            "limit_presets": LIMIT_PRESETS,
             "php_ini": legacy,
             "defaults": DEFAULTS,
             "extras": extras,

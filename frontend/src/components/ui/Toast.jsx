@@ -75,7 +75,7 @@ export function Toaster() {
                 </ToastPrimitive.Description>
               )}
             </div>
-            <ToastPrimitive.Close className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground">
+            <ToastPrimitive.Close aria-label="Dismiss notification" className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground">
               <X className="h-4 w-4" />
             </ToastPrimitive.Close>
           </ToastPrimitive.Root>

@@ -113,3 +113,13 @@ the saved recovery copy. Cross-database foreign keys and unsupported SQL object 
 fail explicitly before replacement. This supersedes the earlier table-preservation
 limitation, but does not complete deleted-database reconstruction, mail/config restore,
 safety retention or deployment. The full product checklist remains active.
+
+## Progress — PHP versions and resource templates
+
+The PHP page now exposes account default and per-site version selectors together,
+including returning a site to inheritance. Available versions come from the server.
+Lite, Moderate and Max templates populate editable resource fields; Custom is the
+default and resumes automatically on manual edits. Changes require Save and use the
+existing validated account settings endpoint. Preset details are in PHP-CONTROLS.md.
+Live deployment and served-PHP verification remain required, along with the other
+open backup, server configuration and product requirements.

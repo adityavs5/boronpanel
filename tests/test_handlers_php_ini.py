@@ -187,3 +187,15 @@ def test_terminate_account_php_ini(account, stub_ols):
     result = hpi.get_php_ini({"username": "demo1"})
     assert result["php_ini"] is None
     assert result["extras"] == {}
+
+
+@pytest.mark.parametrize('preset',hpi.LIMIT_PRESETS,ids=lambda p:p['id'])
+def test_limit_presets_apply_through_normal_validation(account,stub_ols,stub_recycle,preset):
+    hpi.set_php_ini({'username':'demo1','directives':preset['directives']})
+    result=hpi.get_php_ini({'username':'demo1'})
+    values={d['name']:d['value'] if d['value'] is not None else d['default'] for d in result['directives']}
+    for key,value in preset['directives'].items():
+        assert str(values[key])==str(value)
+    assert result['php_ini']['display_errors'] is False
+    assert result['php_versions']
+    assert [p['id'] for p in result['limit_presets']]==['lite','moderate','max']
