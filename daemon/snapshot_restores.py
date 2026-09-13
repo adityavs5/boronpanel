@@ -112,6 +112,45 @@ def _update(ident,**values):
         for key,value in values.items():setattr(row,key,value)
 
 
+def apply_safety_retention(repo, account_id, destination_id, policy_id, keep):
+    """Called under the account/repository locks after a successful backup.
+
+    Failed/interrupted restores retain their recovery copies until resolved.
+    Only known successful restores belonging to this policy are eligible;
+    unrelated repository snapshots are never inferred to be disposable.
+    """
+    if isinstance(keep, bool) or not isinstance(keep, int) or keep < 1:
+        raise ValidationError('Keep at least one pre-restore recovery point')
+    with write_session() as session:
+        pairs = session.execute(select(SnapshotRestore, SnapshotRun.policy_id).join(
+            SnapshotRun, SnapshotRun.id == SnapshotRestore.run_id).where(
+                SnapshotRestore.account_id == account_id,
+                SnapshotRun.destination_id == destination_id).order_by(SnapshotRestore.id.desc())).all()
+    eligible = [row for row, policy in pairs if policy == policy_id
+                and row.status == 'completed' and row.safety_snapshot_id]
+    candidates = eligible[keep:]
+    candidate_ids = {row.id for row in candidates}
+    protected = {row.safety_snapshot_id for row, _ in pairs
+                 if row.id not in candidate_ids and row.safety_snapshot_id}
+    protected.update(row.selection.get('source_snapshot_id') for row, _ in pairs
+                     if row.status in jobs.ACTIVE)
+    obsolete = sorted({row.safety_snapshot_id for row in candidates} - protected)
+    if not obsolete:
+        return 0
+    # A failed repository operation leaves the recovery metadata available.
+    existing = {item['id'] for item in storage.snapshots(repo, account_id)}
+    remaining = [ident for ident in obsolete if ident in existing]
+    if remaining:
+        storage.forget(repo, account_id, remaining, prune=True)
+    with write_session() as session:
+        for row in session.scalars(select(SnapshotRestore).where(
+                SnapshotRestore.id.in_(candidate_ids),
+                SnapshotRestore.safety_snapshot_id.in_(obsolete))).all():
+            row.safety_snapshot_id = None
+            row.summary = {**row.summary, 'safety_snapshot_expired': True}
+    return len(obsolete)
+
+
 def _restore_paths(account,snapshot,selection):
     home=Path(settings.home_base)/account.username
     if home.is_symlink() or home.resolve()!=home or not home.is_dir():raise ValidationError('Account home is not a regular directory')

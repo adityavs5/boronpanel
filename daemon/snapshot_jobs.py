@@ -351,6 +351,9 @@ def execute_run(ident):
                     expired=session.scalars(select(SnapshotRun).where(SnapshotRun.account_id==account.id,
                         SnapshotRun.destination_id==row.destination_id,SnapshotRun.snapshot_id.in_(obsolete))).all()
                     for old in expired:old.status='expired';old.progress_message='Removed by retention policy'
+            from daemon.snapshot_restores import apply_safety_retention
+            apply_safety_retention(repo, account.id, row.destination_id, row.policy_id,
+                                   row.options['retention_count'])
             _update(ident,status='completed',progress_message='Snapshot ready',completed_at=utcnow())
     except Exception as exc:
         logger.exception('Snapshot run %s failed',ident)

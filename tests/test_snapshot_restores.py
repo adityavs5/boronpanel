@@ -154,3 +154,58 @@ def test_real_all_captured_files_restore_keeps_new_files_and_home_permissions(en
     assert (home/'.php/runtime.ini').read_text()=='current protected PHP settings'
     assert next(r for r in jobs.browse({'username':'alpha','run_id':ident,'directory':str(home)})['entries'] if r['name']=='.php')['restore_path'] is None
     assert result['summary']['effective_uid']==65534
+
+
+def test_safety_retention_keeps_failed_and_queued_recovery_copies(environment):
+    root, home, ident, dest, policy = environment
+    rows = []
+    for index in range(4):
+        (home / 'site.txt').write_text(f'previous version {index}')
+        request = restores.trigger({'username': 'alpha', 'run_id': ident,
+                                    'confirmation': 'alpha', 'paths': ['site.txt']})
+        restores.execute(request['id'])
+        row = jobs._row(SnapshotRestore, request['id'])
+        assert row.status == 'completed', row.error
+        rows.append(row)
+    # Failed restores are retained even when newer successful points exist.
+    restores._update(rows[0].id, status='failed')
+    queued = restores.undo({'username': 'alpha', 'restore_id': rows[1].id, 'confirmation': 'alpha'})
+    repo = jobs.repository(jobs._row(SnapshotDestination, dest['id']))
+    assert restores.apply_safety_retention(repo, rows[0].account_id, dest['id'], policy['id'], 1) == 1
+    points = {item['id'] for item in storage.snapshots(repo, rows[0].account_id)}
+    assert rows[0].safety_snapshot_id in points
+    assert rows[1].safety_snapshot_id in points
+    assert rows[2].safety_snapshot_id not in points
+    assert rows[3].safety_snapshot_id in points
+    expired = jobs._row(SnapshotRestore, rows[2].id)
+    assert expired.safety_snapshot_id is None
+    assert expired.summary['safety_snapshot_expired'] is True
+    with pytest.raises(Exception, match='recovery point not found'):
+        restores.undo({'username': 'alpha', 'restore_id': rows[2].id, 'confirmation': 'alpha'})
+    restores.execute(queued['id'])
+    assert jobs._row(SnapshotRestore, queued['id']).status == 'completed'
+    assert (home / 'site.txt').read_text() == 'previous version 1'
+
+
+def test_safety_retention_failure_keeps_metadata_and_retries_missing_snapshot(environment, monkeypatch):
+    root, home, ident, dest, policy = environment
+    rows = []
+    for index in range(2):
+        (home / 'site.txt').write_text(f'recovery {index}')
+        request = restores.trigger({'username': 'alpha', 'run_id': ident,
+                                    'confirmation': 'alpha', 'paths': ['site.txt']})
+        restores.execute(request['id'])
+        rows.append(jobs._row(SnapshotRestore, request['id']))
+    repo = jobs.repository(jobs._row(SnapshotDestination, dest['id']))
+    original = storage.forget
+    def interrupted(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError('Interrupted after repository deletion')
+    monkeypatch.setattr(storage, 'forget', interrupted)
+    with pytest.raises(RuntimeError, match='Interrupted'):
+        restores.apply_safety_retention(repo, rows[0].account_id, dest['id'], policy['id'], 1)
+    assert jobs._row(SnapshotRestore, rows[0].id).safety_snapshot_id
+    monkeypatch.setattr(storage, 'forget', original)
+    assert restores.apply_safety_retention(repo, rows[0].account_id, dest['id'], policy['id'], 1) == 1
+    assert jobs._row(SnapshotRestore, rows[0].id).safety_snapshot_id is None
+    assert jobs._row(SnapshotRestore, rows[1].id).safety_snapshot_id

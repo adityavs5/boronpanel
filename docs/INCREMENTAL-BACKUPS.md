@@ -160,3 +160,29 @@ build passed. All four theme/mode database browser checks passed with the new ta
 replacement confirmation. Logs: `/root/boron-setup/snapshot-replacement-final-tests.log`,
 `/root/boron-setup/snapshot-database-replacement-build.log`, and
 `/root/boron-setup/snapshot-replacement-browser.log`.
+
+## Pre-restore recovery-copy retention
+
+Successful backup jobs now apply the configured retention count separately to
+successful pre-restore recovery copies for that account, destination and policy.
+For example, a count of seven retains seven scheduled recovery points and seven
+successful pre-restore copies. Copies from failed/interrupted restores and sources
+referenced by pending/running recovery jobs remain protected. Other policies and
+unregistered repository snapshots are excluded from this cleanup.
+
+Retention runs under the existing account/repository locks. Repository deletion
+must succeed before history loses its recovery action. If a process stops after
+repository deletion but before updating history, a retry reconciles the missing
+snapshot and completes the metadata update. History explains when a previous
+version expired; it does not offer a broken recovery button. The settings form
+explains the separate allowance and failed-restore protection.
+
+Verification: 21 backend checks passed, including real encrypted repositories,
+queued recovery completing after retention, failed-copy preservation and an actual
+repository deletion followed by simulated interruption and retry. Eight browser
+checks passed across both themes/light-dark modes for file and SQL restore flows;
+production build passed. Logs: `/root/boron-setup/snapshot-safety-retention-tests.log`,
+`snapshot-safety-retention-browser.log` and `snapshot-safety-retention-build.log`.
+Live deployment is recorded separately after verification. Deleted database
+reconstruction, mail/configuration restores and the remaining original checklist
+still require work; this change does not complete the backup product.
