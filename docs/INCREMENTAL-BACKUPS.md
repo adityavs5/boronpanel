@@ -581,3 +581,35 @@ restart/recovery mechanism, exact safety-point capture, durable journal wiring,
 installer support and live proof remain required. The per-mailbox guard still
 protects an incomplete restore after mail service resumes. An anvil count alone
 must not replace the service barrier until its admission races are resolved.
+
+## Supervised service pause (development)
+
+`daemon/snapshot_mail_service.py` now provides the supervision mechanism for the
+short offline switch. It checks that Dovecot is running with
+`KillMode=control-group`, then launches a named transient systemd oneshot unit.
+`ExecStartPre` stops mail; `ExecStopPost` starts it after success, command failure,
+worker termination or timeout. The operation has bounded start/stop timeouts and
+runs independently of the calling panel process. A separate `require_stopped`
+barrier checks inactive/dead state, zero main/control PIDs and complete process
+group shutdown before the exchange worker may modify mailboxes. Initially stopped
+services are rejected rather than implicitly started by a restore request.
+
+The operation ID must be persisted before launch. On a caller observation timeout,
+the coordinator must inspect that same transient unit and private exchange journal
+instead of launching again. A resumed service does not imply a successful mailbox
+restore: failed operations report failure and guards remain until journal and
+directory state are verified. This internal function accepts only trusted service
+commands; it is not exposed as a customer command execution API.
+
+Validation: six real systemd tests passed using unique temporary
+`boron-mail-test-*` services whose only normal command is sleep. Tests prove the
+switch command starts only after the test service is stopped, restart after both
+normal completion and SIGKILL, refusal of initially inactive/arbitrary services,
+and independent completion/restart after the calling panel process is killed.
+Only test-owned units were created/stopped/removed. Live Dovecot was not stopped.
+
+The supervised mechanism is not yet wired to a persistent mail restore job or
+enabled in the panel. The exchange worker entry point, journal validation,
+guard installation, exact safety-copy handling, account ownership checks and
+UI remain required. Full server reboot recovery and failed service restart also
+need coordinator handling; systemd supervision alone does not complete recovery.
