@@ -97,9 +97,8 @@ identifier. Progress and completed database names survive worker failures.
 Imports retain existing database users and credentials. The daemon removes only
 reserved abandoned import logins before recovering queued workers at startup.
 Deleted databases currently fail explicitly; account reconstruction and encrypted
-credential metadata are still required. SQL imports replace captured tables but
-can retain tables created after the snapshot: exact schema replacement is not yet
-implemented. Database selection UI, mail/config restores, safety-snapshot retention,
+credential metadata are still required. SQL imports now replace all ordinary tables in the selected database, including
+removal of tables created after the snapshot. Database selection UI, mail/config restores, safety-snapshot retention,
 mutation coordination beyond backup queues and live verification remain required.
 
 Validation: 25 real database/file-restore tests passed, including queued database
@@ -119,9 +118,9 @@ returns a retryable busy message instead of competing with backup/retention work
 
 Both themes support selecting databases, typed confirmation, queued progress and
 previous-database recovery. History identifies files versus databases and explains
-partial failures. The UI explicitly states current import behavior: captured tables
-are replaced, later-created tables remain, and existing users/passwords remain.
-Deleted-database reconstruction, exact schema replacement and other previously
+partial failures. The UI explicitly states current import behavior: all current tables
+are replaced, later-created tables are removed, and existing users/passwords remain.
+Deleted-database reconstruction and other previously
 listed backup requirements are still unfinished. No backup code has been deployed.
 
 Validation for database selection: production build passed; 30 backend database/job
@@ -132,3 +131,32 @@ previous-version recovery and existing archive/file restore flows. Screenshots a
 in `/root/boron-setup/snapshot-database-ui-proof`; logs use the
 `/root/boron-setup/snapshot-database-` prefix. The snapshot interface is lazy-loaded
 and 4.80 KB gzip in this build; no dependencies were added.
+
+### Complete ordinary-table replacement
+
+Queued database restores now clear the selected database's ordinary tables before
+importing its verified SQL snapshot. The previously saved encrypted recovery copy
+contains later-created tables too, so previous-version recovery can restore them.
+Table removal uses the same temporary login with exact database privileges; account
+users and passwords remain unchanged. Table identifiers are quoted from database
+metadata, including embedded backticks. Foreign-key checks are disabled only within
+the reset connection. Cross-database foreign-key relationships cause an explicit
+failure before changes; the worker does not damage a neighboring database's links.
+Empty SQL files fail before clearing tables. Unsupported views, routines, events,
+triggers and special table types are rejected instead of being silently omitted.
+
+Table replacement/import is not transactional. An interrupted or failed import may
+leave partial data; its encrypted pre-restore copy remains available. Website writes
+must be paused during restoration. Reconstruction of deleted databases, broader SQL
+object support, mail/config restores, safety retention and deployment remain open.
+
+Implementation reference: [MariaDB DROP TABLE](https://mariadb.com/docs/server/reference/sql-statements/data-definition/drop/drop-table)
+and [foreign-key constraints](https://mariadb.com/docs/server/architecture/server-constraints/foreign-key-constraints).
+
+Validation: final database suite passed 23 tests, including real replacement and
+previous-version recovery, foreign keys, quoted table names, neighboring databases,
+empty-input rejection and unsupported sequences/system-versioned tables. Production
+build passed. All four theme/mode database browser checks passed with the new table
+replacement confirmation. Logs: `/root/boron-setup/snapshot-replacement-final-tests.log`,
+`/root/boron-setup/snapshot-database-replacement-build.log`, and
+`/root/boron-setup/snapshot-replacement-browser.log`.

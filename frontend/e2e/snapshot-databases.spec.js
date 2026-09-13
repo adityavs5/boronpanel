@@ -28,6 +28,7 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
   const detail=page.getByRole('dialog').filter({has:page.getByRole('heading',{name:'Recovery point #1',exact:true})})
   await detail.getByRole('button',{name:'Restore databases',exact:true}).click()
   const form=detail.getByRole('form',{name:'Database restore'})
+  await expect(form.getByText(/including removal of tables created afterward/)).toBeVisible()
   await expect(form.getByRole('checkbox',{name:/alpha_old/})).toBeDisabled()
   await expect(form.getByRole('button',{name:'Restore selected databases',exact:true})).toBeDisabled()
   await form.getByRole('checkbox',{name:/alpha_wp/}).check()

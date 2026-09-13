@@ -5,6 +5,7 @@ privilege. SQL dump bytes never pass through a panel Python string.
 """
 from contextlib import contextmanager
 import os
+import pymysql
 from pathlib import Path
 import re
 import secrets
@@ -103,6 +104,8 @@ def validate_supported_objects(db_name):
         with connection.cursor() as cursor:
             cursor.execute('SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s AND TABLE_TYPE=%s',(db_name,'VIEW'))
             views=cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s AND TABLE_TYPE NOT IN ('BASE TABLE','VIEW')",(db_name,))
+            special_tables=cursor.fetchone()[0]
             cursor.execute('SELECT COUNT(*) FROM mysql.proc WHERE db=%s',(db_name,))
             routines=cursor.fetchone()[0]
             cursor.execute('SELECT COUNT(*) FROM mysql.event WHERE db=%s',(db_name,))
@@ -117,6 +120,7 @@ def validate_supported_objects(db_name):
         triggers=any(path.suffix=='.TRG' for path in folder.iterdir())
         unsupported=[]
         if views:unsupported.append('views')
+        if special_tables:unsupported.append('special table types')
         if routines:unsupported.append('stored routines')
         if events:unsupported.append('events')
         if triggers:unsupported.append('triggers')
@@ -144,11 +148,45 @@ def dump_database(db_name,output_path,work_directory):
     return output_path
 
 
-def restore_database(db_name,dump_path,work_directory):
+def _validate_database_boundary(db_name):
+    # A table reset must not leave foreign keys in another schema dangling.
+    connection=mariadb._connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
+                WHERE (TABLE_SCHEMA=%s AND REFERENCED_TABLE_SCHEMA<>%s)
+                   OR (REFERENCED_TABLE_SCHEMA=%s AND TABLE_SCHEMA<>%s)""",(db_name,db_name,db_name,db_name))
+            if cursor.fetchone()[0]:
+                raise ValidationError('Database has foreign keys linked to another database; restore both through a coordinated migration')
+    finally:connection.close()
+
+
+def _clear_tables(db_name,username,password):
+    validate_supported_objects(db_name)
+    _validate_database_boundary(db_name)
+    connection=pymysql.connect(unix_socket=settings.mariadb_socket,user=username,password=password,
+        database=db_name,autocommit=True,connect_timeout=15,read_timeout=120,write_timeout=120)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SET SESSION lock_wait_timeout=30')
+            cursor.execute('SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s AND TABLE_TYPE=%s',(db_name,'BASE TABLE'))
+            tables=[row[0] for row in cursor.fetchall()]
+            cursor.execute('SET SESSION FOREIGN_KEY_CHECKS=0')
+            for table in tables:
+                # Table names are database metadata, not restricted panel identifiers.
+                quoted='`'+table.replace('`','``')+'`'
+                cursor.execute('DROP TABLE '+quoted)
+            return len(tables)
+    finally:connection.close()
+
+
+def restore_database(db_name,dump_path,work_directory,*,replace_tables=False):
     """The caller must check account ownership and save current DB contents first."""
     _database_name(db_name)
     dump_path=_sql_file(dump_path)
+    if dump_path.stat().st_size==0:raise ValidationError('Database export is empty')
     with import_login(db_name) as (username,password):
+        if replace_tables:_clear_tables(db_name,username,password)
         with client_config(work_directory,username,password) as config:
             result=run(['/usr/bin/nice','-n','10','/usr/bin/ionice','-c','2','-n','7','/usr/bin/mariadb',
                 f'--defaults-file={config}','--batch','--binary-mode','--sandbox','--local-infile=0',

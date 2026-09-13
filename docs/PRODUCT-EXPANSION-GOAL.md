@@ -104,3 +104,12 @@ history distinguishes files and databases. Remaining backup requirements include
 deleted-database reconstruction, exact schema replacement, mail/config restoration,
 safety-snapshot retention, interaction audits and live deployment. The full product
 goal remains open.
+
+## Progress — complete ordinary-table replacement
+
+Database restore now removes tables created after a snapshot and imports all captured
+ordinary tables. Previous-version recovery restores the later-created tables from
+the saved recovery copy. Cross-database foreign keys and unsupported SQL object types
+fail explicitly before replacement. This supersedes the earlier table-preservation
+limitation, but does not complete deleted-database reconstruction, mail/config restore,
+safety retention or deployment. The full product checklist remains active.

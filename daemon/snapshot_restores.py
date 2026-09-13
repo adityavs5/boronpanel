@@ -156,6 +156,7 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
         if not mariadb.database_exists(name):
             raise ValidationError('Database '+name+' no longer exists; account reconstruction is required')
         database.validate_supported_objects(name)
+        database._validate_database_boundary(name)
     stage=jobs.private_directory('database-safety',f'account-{account.id}')
     dumps=stage/'databases'
     if dumps.exists():shutil.rmtree(dumps)
@@ -169,7 +170,7 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
         for name,path in zip(names,paths):
             _owned_databases(account,[name])
             _update(ident,progress_message='Restoring database '+name)
-            database.restore_database(name,data/str(path).lstrip('/'),work)
+            database.restore_database(name,data/str(path).lstrip('/'),work,replace_tables=True)
             completed.append(name)
             _update(ident,summary={'databases':completed.copy()})
         _update(ident,status='completed',progress_message='Selected databases restored',completed_at=utcnow())

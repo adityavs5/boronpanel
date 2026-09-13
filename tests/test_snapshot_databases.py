@@ -119,6 +119,8 @@ def test_import_rejects_cross_database_and_client_file_commands(sql,statement):
     'CREATE TRIGGER alpha_wp.keep_post BEFORE DELETE ON alpha_wp.posts FOR EACH ROW SET @snapshot_test = 1',
     'CREATE PROCEDURE alpha_wp.example() SELECT 1',
     'CREATE EVENT alpha_wp.example ON SCHEDULE EVERY 1 DAY DO SELECT 1',
+    'CREATE SEQUENCE alpha_wp.sequence_example',
+    'CREATE TABLE alpha_wp.history (id INT) WITH SYSTEM VERSIONING',
 ])
 def test_unsupported_objects_are_reported_instead_of_silently_omitted(sql,statement):
     connection,work=sql
@@ -171,7 +173,10 @@ def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
     assert catalog['databases'][0]['name']=='alpha_wp'
     assert catalog['databases'][0]['available'] is True
     assert catalog['databases'][0]['size']>0
-    with connection.cursor() as cursor:cursor.execute("UPDATE alpha_wp.posts SET content='version before queued restore'")
+    with connection.cursor() as cursor:
+        cursor.execute("UPDATE alpha_wp.posts SET content='version before queued restore'")
+        cursor.execute('CREATE TABLE alpha_wp.added_later (id INT)')
+        cursor.execute('INSERT INTO alpha_wp.added_later VALUES (42)')
     with pytest.raises(Exception,match='not found for this account'):
         restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'databases','databases':['bravo_wp']})
     request=restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'databases','databases':['alpha_wp']})
@@ -183,6 +188,8 @@ def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
     with connection.cursor() as cursor:
         cursor.execute('SELECT content FROM alpha_wp.posts WHERE id=1')
         assert cursor.fetchone()[0]=='Original WordPress content ☕'
+        cursor.execute("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='alpha_wp' AND TABLE_NAME='added_later'")
+        assert cursor.fetchone()[0]==0
         cursor.execute('SELECT value FROM bravo_wp.private_data')
         assert cursor.fetchone()[0]=='must remain private'
     recovery=restores.undo({'username':'alpha','restore_id':request['id'],'confirmation':'alpha'})
@@ -192,6 +199,8 @@ def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
     with connection.cursor() as cursor:
         cursor.execute('SELECT content FROM alpha_wp.posts WHERE id=1')
         assert cursor.fetchone()[0]=='version before queued restore'
+        cursor.execute('SELECT id FROM alpha_wp.added_later')
+        assert cursor.fetchone()[0]==42
     assert not list(Path(settings.snapshot_private_dir).rglob('client-*.cnf'))
     assert not (Path(settings.snapshot_private_dir)/'database-safety'/f'account-{account.id}'/'databases').exists()
     from sqlalchemy import delete
@@ -242,3 +251,48 @@ def test_export_cannot_write_outside_private_work_directory(sql):
     with pytest.raises(Exception,match='private work directory'):
         database.dump_database('alpha_wp',work.parent/'outside.sql',work)
     assert not (work.parent/'outside.sql').exists()
+
+
+def test_replace_tables_handles_foreign_keys_and_quoted_names(sql):
+    connection,work=sql
+    with connection.cursor() as cursor:
+        cursor.execute('CREATE TABLE alpha_wp.child (id INT PRIMARY KEY, post_id INT, FOREIGN KEY(post_id) REFERENCES alpha_wp.posts(id))')
+        cursor.execute('INSERT INTO alpha_wp.child VALUES (1,1)')
+        cursor.execute('CREATE TABLE alpha_wp.`strange``table` (id INT)')
+        cursor.execute('INSERT INTO alpha_wp.`strange``table` VALUES (17)')
+    dump=database.dump_database('alpha_wp',work/'tables.sql',work)
+    with connection.cursor() as cursor:
+        cursor.execute('CREATE TABLE alpha_wp.later (id INT)')
+        cursor.execute('DELETE FROM alpha_wp.child')
+    database.restore_database('alpha_wp',dump,work,replace_tables=True)
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT post_id FROM alpha_wp.child');assert cursor.fetchone()[0]==1
+        cursor.execute('SELECT id FROM alpha_wp.`strange``table`');assert cursor.fetchone()[0]==17
+        cursor.execute("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='alpha_wp' AND TABLE_NAME='later'");assert cursor.fetchone()[0]==0
+        cursor.execute('SELECT @@FOREIGN_KEY_CHECKS');assert cursor.fetchone()[0]==1
+        cursor.execute('SELECT value FROM bravo_wp.private_data');assert cursor.fetchone()[0]=='must remain private'
+
+
+def test_replace_rejects_external_foreign_keys_before_changes(sql):
+    connection,work=sql
+    dump=database.dump_database('alpha_wp',work/'tables.sql',work)
+    with connection.cursor() as cursor:
+        cursor.execute('CREATE TABLE bravo_wp.linked (id INT, FOREIGN KEY(id) REFERENCES alpha_wp.posts(id))')
+        cursor.execute('INSERT INTO bravo_wp.linked VALUES (1)')
+    try:
+        with pytest.raises(Exception,match='linked to another database'):
+            database.restore_database('alpha_wp',dump,work,replace_tables=True)
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT COUNT(*) FROM alpha_wp.posts');assert cursor.fetchone()[0]==1
+            cursor.execute('SELECT COUNT(*) FROM bravo_wp.linked');assert cursor.fetchone()[0]==1
+    finally:
+        with connection.cursor() as cursor:cursor.execute('DROP TABLE bravo_wp.linked')
+
+
+def test_replace_rejects_empty_dump_before_changes(sql):
+    connection,work=sql
+    dump=work/'empty.sql';dump.touch()
+    with pytest.raises(Exception,match='empty'):
+        database.restore_database('alpha_wp',dump,work,replace_tables=True)
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT COUNT(*) FROM alpha_wp.posts');assert cursor.fetchone()[0]==1
