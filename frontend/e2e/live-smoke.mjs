@@ -51,6 +51,22 @@ try {
     await page.setViewportSize({ width: 1440, height: 1000 })
     console.log(`${name}: real login, live statistics, accounts, form, appearance, persistence and mobile passed`)
   }
+  if (process.env.BORON_EXPECTED_VERSION) {
+    const response = await context.request.get(`${base}/api/v1/admin/update/status`)
+    expect(response.status()).toBe(200)
+    const status = await response.json()
+    expect(status.current_version).toBe(process.env.BORON_EXPECTED_VERSION)
+    expect(status.active_job).toBeNull()
+    expect(status.last_job.status).toBe('completed')
+    expect(status.rollback_available).toBe(true)
+    const history = await context.request.get(`${base}/api/v1/admin/update/history`)
+    expect(history.status()).toBe(200)
+    await page.goto(`${base}/app/updates`)
+    await expect(page.getByRole('heading', { name: 'Updates', exact: true })).toBeVisible()
+    await expect(page.getByText('v' + process.env.BORON_EXPECTED_VERSION, { exact: true }).first()).toBeVisible()
+    await page.screenshot({ path: `${output}/updates-completed.png` })
+    console.log('Updates page, version, completed job, history and rollback availability passed.')
+  }
   expect(errors).toEqual([])
   expect(missingAssets).toEqual([])
   console.log('No uncaught browser errors or failed static assets.')
