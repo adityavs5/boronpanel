@@ -81,3 +81,27 @@ def test_certificate_verification_checks_both_ports(tmp_path,monkeypatch):
     monkeypatch.setattr(hook.ssl,'SSLContext',lambda protocol:context)
     hook._wait_for_certificate('panel.example',cert)
     assert {address[1] for address in connections}=={2222,3333}
+
+
+def test_challenge_owner_is_dedicated_non_login_service(monkeypatch):
+    from daemon import panel_tls,procutil
+    owner=SimpleNamespace(pw_uid=990,pw_gid=990,pw_shell='/usr/sbin/nologin')
+    calls=[]
+    def lookup(name):
+        assert name=='boron-acme'
+        if not calls:raise KeyError(name)
+        return owner
+    monkeypatch.setattr(panel_tls.pwd,'getpwnam',lookup)
+    monkeypatch.setattr(procutil,'run',lambda args,**kwargs:calls.append(args))
+    assert panel_tls._challenge_owner() is owner
+    assert '--no-create-home' in calls[0] and '--system' in calls[0]
+    assert panel_tls._challenge_owner() is owner
+    assert len(calls)==1
+
+
+def test_challenge_owner_rejects_root_or_login_shell(monkeypatch):
+    from daemon import panel_tls
+    from shared.validation import ValidationError
+    for uid,gid,shell in ((0,0,'/usr/sbin/nologin'),(990,990,'/bin/bash')):
+        monkeypatch.setattr(panel_tls.pwd,'getpwnam',lambda name:SimpleNamespace(pw_uid=uid,pw_gid=gid,pw_shell=shell))
+        with pytest.raises(ValidationError):panel_tls._challenge_owner()

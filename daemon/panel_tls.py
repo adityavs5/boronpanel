@@ -1,4 +1,6 @@
 """Dedicated panel HTTP-01 routing, independent of hosted customer sites."""
+import os
+import pwd
 from pathlib import Path
 from sqlalchemy import select
 from shared.config import settings
@@ -7,6 +9,24 @@ from shared.models import Domain
 from shared.validation import ValidationError,validate_domain
 from daemon import ols
 from daemon.configtx import ConfigWriterMulti
+
+
+
+def _challenge_owner():
+    # OLS validates docroot ownership even for static, script-disabled vhosts.
+    # A dedicated non-login identity avoids root-UID validation warnings without
+    # giving its worker or any hosting account ownership of the challenge tree.
+    from daemon.procutil import run
+    try:
+        owner = pwd.getpwnam('boron-acme')
+    except KeyError:
+        run(['useradd', '--system', '--user-group', '--no-create-home',
+             '--home-dir', '/nonexistent', '--shell', '/usr/sbin/nologin',
+             'boron-acme'], check=True)
+        owner = pwd.getpwnam('boron-acme')
+    if owner.pw_uid < 11 or owner.pw_gid < 10 or owner.pw_shell != '/usr/sbin/nologin':
+        raise ValidationError('The boron-acme service identity must be an unprivileged non-login account')
+    return owner
 
 
 def bootstrap_challenge():
@@ -24,7 +44,12 @@ def bootstrap_challenge():
     challenge=webroot/'.well-known/acme-challenge'
     if challenge.resolve()!=challenge:raise ValidationError('Panel challenge directory contains a symbolic link')
     challenge.mkdir(parents=True,exist_ok=True,mode=0o755)
-    for directory in (webroot,webroot/'.well-known',challenge):directory.chmod(0o755)
+    owner = _challenge_owner()
+    os.chown(webroot, owner.pw_uid, owner.pw_gid)
+    webroot.chmod(0o555)
+    for directory in (webroot/'.well-known', challenge):
+        os.chown(directory, 0, 0)
+        directory.chmod(0o755)
     content=ols._env.get_template('panel_acme_vhost.conf.j2').render(webroot=str(webroot))
     writer=ConfigWriterMulti(targets={'main':ols.HTTPD_CONFIG_PATH,'panel':str(Path(settings.vhost_conf_dir)/'boron-panel-acme/vhconf.conf')},
         validate=ols._validate_multi,reload=ols._reload,verify=ols._verify,backup_dir=settings.backup_dir,subsystem='ols')

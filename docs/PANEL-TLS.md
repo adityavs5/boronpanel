@@ -37,3 +37,19 @@ validity/key matching, rollback, HTTP-only route rendering and renewal-hook comm
 construction. Logs: `/root/boron-setup/panel-tls-tests.log` and
 `/root/boron-setup/panel-tls-final-tests.log`. These are development tests; real OLS
 route deployment and ACME issuance remain pending.
+
+## Live ownership compatibility fix
+
+The first real OLS challenge-vhost validation rejected the root-owned document
+root; ConfigWriterMulti restored the previous configuration. OLS checks the
+owner even for this static, script-disabled vhost. Bootstrap now uses a dedicated
+`boron-acme` system identity with a nologin shell for the read-only document root.
+The `.well-known` and challenge directories remain root-owned and readable by the
+worker, without giving hosting accounts or the web worker write access. Existing
+unsafe service identities are rejected. The corrected vhost passed real OLS
+validation and its challenge was fetched through the public hostname.
+
+Focused OLS/TLS regressions passed 84 tests, including the service identity checks.
+Trusted production certificate issuance and public HTTPS trust verification passed
+on port 9443. Renewal rehearsal and subsequent port migration are being recorded
+in `/root/boron-setup/panel-tls-live.log` and the live port checks.
