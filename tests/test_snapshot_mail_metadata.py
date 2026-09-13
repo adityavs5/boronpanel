@@ -106,6 +106,8 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
     home = work/'homes'/'alpha';home.mkdir(parents=True)
     message = work/'mail'/'alpha.example.test'/'inbox'/'Maildir'/'cur'/'proof:2,S'
     message.parent.mkdir(parents=True)
+    for folder in ('new', 'tmp'):
+        (message.parent.parent / folder).mkdir()
     content = b'Subject: Recovery fixture\r\n\r\nOriginal offline message.\r\n'
     message.write_bytes(content)
     retained = message.parents[2]/('.boron-mail-ready-'+'a'*32)
@@ -146,6 +148,19 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
         'domain': 'alpha.example.test', 'local_part': 'inbox', 'quota_mb': 2048,
         'active': True, 'available': True, 'action': 'existing', 'reason': None}]
     assert hashed not in repr(options) and password not in repr(options)
+    from daemon import snapshot_mail_restore as restore_mail
+    import shutil
+    prepared = restore_mail.prepare(account, repo, run.snapshot_id, ['inbox@alpha.example.test'])
+    try:
+        entry = prepared['entries'][0]
+        assert entry['action'] == 'existing'
+        files = list((Path(entry['prepared']) / 'cur').iterdir())
+        assert len(files) == 1 and files[0].read_bytes() == content
+        assert ':2,S' in files[0].name
+        assert message.read_bytes() == content
+        assert entry['metadata']['password_hash'] == hashed
+    finally:
+        shutil.rmtree(prepared['work'])
     with connection.cursor() as cursor:
         cursor.execute("DELETE u FROM mail_user u JOIN mail_domain d ON u.domain_id=d.id WHERE d.domain='alpha.example.test'")
     assert restores.mailbox_options({'username': 'alpha', 'run_id': run_id})['mailboxes'][0]['action'] == 'recreate'

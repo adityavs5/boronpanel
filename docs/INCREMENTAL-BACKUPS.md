@@ -885,3 +885,24 @@ The interrupted case rolls back one changed mailbox while retaining the other.
 Guards remain owned throughout. These are coordinator building blocks; customer
 submission, safety snapshot finalization, guard release and startup recovery are
 still not enabled for mailbox restoration.
+
+`snapshot_mail_restore.prepare` now connects account authorization, encrypted
+recovery metadata, selected-path decryption and offline Dovecot rebuilding. It
+checks snapshot ownership, current account status and every selected domain's
+ownership before looking up any mailbox SQL users. Duplicate addresses collapse
+to one selection. Missing recovery metadata or missing backed-up Maildir trees
+are refused; an excluded tree must not be mistaken for an empty mailbox.
+
+Preparation uses an exclusive private directory, cleans it on failure and returns
+private entries for the coordinator. Those entries include hashes for later
+deleted-mailbox reconstruction and must never reach public summaries or API
+responses. Existing SQL users and live mail trees are unchanged. The coordinator
+must retain account/repository locks, recheck ownership before exchange and persist
+placement receipts before moving prepared files beside live mailboxes.
+
+Validation: 22 metadata/catalog tests passed. The real encrypted-restic and
+isolated-MariaDB fixture now prepares its selected mailbox through this path and
+proves reconstructed message bytes and read flags survive while the source stays
+unchanged. Mixed owned/foreign selections are rejected before mailbox SQL lookup;
+suspended accounts are refused. Customer restore submission and finalization are
+still pending.

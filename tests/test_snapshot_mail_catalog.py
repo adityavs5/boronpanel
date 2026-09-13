@@ -82,3 +82,30 @@ def test_catalog_checks_live_domain_ownership_and_never_exposes_hashes(saved, is
     if owner == 'alpha':
         monkeypatch.setattr(mail, 'list_mailboxes', lambda domain: [])
         assert restores.mailbox_options({'username': 'alpha', 'run_id': 1})['mailboxes'][0]['action'] == 'recreate'
+
+
+def test_selected_restore_rechecks_all_owners_before_sql(saved, isolated_db, monkeypatch):
+    from daemon.snapshot_mail_restore import selected_mailboxes
+    path, payload = saved
+    with write_session() as session:
+        alpha = Account(username='alpha', status='active', uid=65534, gid=65534)
+        bravo = Account(username='bravo', status='active', uid=65533, gid=65533)
+        session.add_all([alpha, bravo]); session.flush()
+        session.add(MailDomain(account_id=alpha.id, domain='alpha.example.test'))
+        foreign = MailDomain(account_id=bravo.id, domain='bravo.example.test')
+        session.add(foreign)
+    document = metadata.read_mailboxes(path, 'alpha')
+    document['bravo.example.test'] = copy.deepcopy(document['alpha.example.test'])
+    calls = []
+    monkeypatch.setattr(mail, 'list_mailboxes', lambda domain: calls.append(domain) or [])
+    with pytest.raises(ValidationError, match='no longer owned'):
+        selected_mailboxes(alpha, document, ['inbox@alpha.example.test', 'inbox@bravo.example.test'])
+    assert calls == []
+    result = selected_mailboxes(alpha, document, ['inbox@alpha.example.test'] * 2)
+    assert len(result) == 1 and result[0]['action'] == 'recreate'
+    with write_session() as session:
+        session.get(Account, alpha.id).status = 'suspended'
+    calls.clear()
+    with pytest.raises(ValidationError, match='no longer active'):
+        selected_mailboxes(alpha, document, ['inbox@alpha.example.test'])
+    assert calls == []
