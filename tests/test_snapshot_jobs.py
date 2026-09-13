@@ -163,6 +163,9 @@ def test_snapshot_api_authorization_and_customer_scope(environment,monkeypatch):
         assert calls[-1][1]['databases']==['alpha_wp']
         assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs/1/databases').status_code==200
         assert calls[-1]==('snapshot.restore.databases',{'username':'alpha','run_id':1})
+        assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs/1/mailboxes').status_code==200
+        assert calls[-1]==('snapshot.restore.mailboxes',{'username':'alpha','run_id':1})
+        assert client.get('/api/v1/accounts/bravo/backups/snapshots/runs/1/mailboxes').status_code==403
         assert client.get('/api/v1/accounts/bravo/backups/snapshots/runs/1/databases').status_code==403
         assert client.post('/api/v1/accounts/bravo/backups/snapshots/runs/1/restore',json={'confirmation':'bravo'}).status_code==403
         assert client.post('/api/v1/accounts/bravo/backups/snapshots/restores/1/undo',json={'confirmation':'bravo'}).status_code==403

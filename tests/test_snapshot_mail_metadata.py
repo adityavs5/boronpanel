@@ -132,3 +132,20 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
     assert restored['domains'][0]['mailboxes'][0]['password_hash'] == hashed
     assert password not in documents[0].read_text()
     assert 'bravo.example.test' not in documents[0].read_text()
+    from daemon import snapshot_restores as restores
+    from shared.validation import ValidationError
+    options = restores.mailbox_options({'username': 'alpha', 'run_id': run_id})
+    assert options['mailboxes'] == [{'address': 'inbox@alpha.example.test',
+        'domain': 'alpha.example.test', 'local_part': 'inbox', 'quota_mb': 2048,
+        'active': True, 'available': True, 'action': 'existing', 'reason': None}]
+    assert hashed not in repr(options) and password not in repr(options)
+    with connection.cursor() as cursor:
+        cursor.execute("DELETE u FROM mail_user u JOIN mail_domain d ON u.domain_id=d.id WHERE d.domain='alpha.example.test'")
+    assert restores.mailbox_options({'username': 'alpha', 'run_id': run_id})['mailboxes'][0]['action'] == 'recreate'
+    with write_session() as session:
+        session.add(Account(username='bravo', status='active', uid=65533, gid=65533))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Foreign snapshot must be rejected before decryption')
+    monkeypatch.setattr(storage, 'restore_to', forbidden)
+    with pytest.raises(ValidationError):
+        restores.mailbox_options({'username': 'bravo', 'run_id': run_id})

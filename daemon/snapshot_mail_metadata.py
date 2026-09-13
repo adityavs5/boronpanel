@@ -1,5 +1,9 @@
 """Private virtual-mail recovery metadata, separate from customer-facing APIs."""
 import re
+import json
+import os
+from pathlib import Path
+import stat
 from daemon import mail
 from shared.validation import ValidationError, validate_domain, validate_mailbox_local_part, validate_username
 
@@ -17,6 +21,44 @@ def validate_mailbox(entry):
     if type(entry.get('active')) is not bool:
         raise ValidationError('Invalid mailbox recovery status')
     return dict(local_part=local, password_hash=password, quota_mb=quota, active=entry['active'])
+
+
+def read_mailboxes(path, username):
+    """Read validated mailbox credentials privately; routing rules are not returned.
+
+    Account ownership must be checked against the snapshot before decrypting.
+    The caller must not serialize this result into a public response.
+    """
+    validate_username(username)
+    path = Path(path)
+    if path.resolve() != path:
+        raise ValidationError('Invalid private mail recovery metadata path')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_size > 8 * 1024 * 1024:
+            raise ValidationError('Invalid private mail recovery metadata file')
+        try:
+            payload = json.loads(handle.read(8 * 1024 * 1024 + 1))
+            if type(payload['format']) is not int or payload['format'] != 1 or payload['username'] != username:
+                raise ValueError()
+            if not isinstance(payload['domains'], list):
+                raise ValueError()
+            result = {}
+            for entry in payload['domains']:
+                domain = validate_domain(entry['domain'])
+                if domain in result or type(entry['active']) is not bool or not isinstance(entry['mailboxes'], list):
+                    raise ValueError()
+                mailboxes = {}
+                for saved in entry['mailboxes']:
+                    mailbox = validate_mailbox(saved)
+                    if mailbox['local_part'] in mailboxes:
+                        raise ValueError()
+                    mailboxes[mailbox['local_part']] = mailbox
+                result[domain] = {'active': entry['active'], 'mailboxes': mailboxes}
+            return result
+        except (ValueError, TypeError, KeyError, AttributeError, UnicodeError):
+            raise ValidationError('Invalid private mail recovery metadata') from None
 
 
 def capture(username, domains):

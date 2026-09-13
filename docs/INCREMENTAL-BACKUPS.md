@@ -653,3 +653,36 @@ account authorization, encrypted snapshot selection and safety retention, copied
 Maildirs at the correct ownership/location, installed Dovecot guards, persistent
 job status/recovery decisions, service restart failure handling and UI. Full
 reboot recovery and the live customer workflow remain unverified.
+
+## Mailbox recovery catalog (development)
+
+`snapshot_mail_metadata.read_mailboxes` now reads bounded private metadata files,
+validates the owning account, format, domain/mailbox uniqueness, active flags,
+quota limits and supported password hashes, and returns mailbox metadata only.
+Routing/autoresponder configuration is not passed through this reader. Symlinks,
+unsafe permissions and malformed metadata are rejected without including saved
+authentication material in error messages.
+
+The account-scoped `/snapshots/runs/{run_id}/mailboxes` API and reporting RPC
+decrypt only the owned snapshot's private mail recovery metadata. The public
+catalog is explicitly constructed from address/domain/local-part, saved quota and
+active state, action/availability and explanation fields. It never includes hashes
+or guard tokens. It checks current mail-domain ownership before querying live
+mailbox listings; foreign-owned domains are unavailable without querying their
+mailboxes. Existing mailboxes and deleted mailboxes eligible for reconstruction
+are distinguished. Missing mail-domain provisioning remains unavailable pending
+the domain recovery coordinator. Older points without mailbox metadata return an
+empty catalog.
+
+This endpoint is a read-only catalog and is not deployed yet. It does not enable
+mail restore submissions or show a working restore button; job execution and UI
+must be connected before the customer workflow is considered complete.
+
+Validation: 33 catalog/metadata/backup-job tests passed. The real encrypted mail
+backup test now reads the public catalog, verifies saved credentials are absent,
+recognizes deletion of its isolated SQL mailbox as reconstructable, and rejects
+another account before any decryption. API checks reject cross-account mailbox
+catalog requests. Additional tests cover malformed metadata, duplicate entries,
+unsafe files and foreign-domain ownership. Only isolated SQL fixtures were
+changed; no live mailbox was deleted. One existing TestClient dependency
+deprecation warning was emitted.

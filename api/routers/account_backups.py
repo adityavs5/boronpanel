@@ -54,6 +54,12 @@ def snapshot_databases(username: str, run_id: int, identity: Identity = Depends(
     return call_daemon('snapshot.restore.databases', identity, username=username, run_id=run_id)
 
 
+@api_router.get('/snapshots/runs/{run_id}/mailboxes')
+def snapshot_mailboxes(username: str, run_id: int, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon('snapshot.restore.mailboxes', identity, username=username, run_id=run_id)
+
+
 class SnapshotRestoreBody(BaseModel):
     confirmation: str
     kind: str = 'files'

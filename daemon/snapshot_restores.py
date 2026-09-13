@@ -11,7 +11,7 @@ from daemon import snapshot_jobs as jobs, snapshot_storage as storage
 from daemon.procutil import run
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, BackupJob, DatabaseGrant, RestoreJob, SnapshotDestination, SnapshotRestore, SnapshotRun, utcnow
+from shared.models import Account, BackupJob, DatabaseGrant, MailDomain, RestoreJob, SnapshotDestination, SnapshotRestore, SnapshotRun, utcnow
 from shared.validation import ValidationError
 
 logger=logging.getLogger('borond.snapshot_restores')
@@ -61,6 +61,55 @@ def _recovery_metadata(repo, account, snapshot_id):
         return read_metadata(data/str(path).lstrip('/'), account.username)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _mail_recovery_metadata(repo, account, snapshot_id):
+    from daemon.snapshot_mail_metadata import read_mailboxes
+    stage = Path(settings.snapshot_private_dir)/'sources'/f'account-{account.id}'
+    path = stage/'mail-recovery.json'
+    nodes = storage.entries(repo, account.id, snapshot_id, str(stage))
+    if not any(node.get('path') == str(path) and node.get('type') == 'file' for node in nodes):
+        return {}
+    work = jobs.private_directory('metadata', uuid.uuid4().hex)
+    try:
+        data = storage.restore_to(repo, account.id, snapshot_id, str(work/'data'), selected_paths=[str(path)])
+        return read_mailboxes(data/str(path).lstrip('/'), account.username)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def mailbox_options(params):
+    from daemon import mail
+    account, source = _owned_run(params['username'], params['run_id'])
+    if 'mail' not in source.options['components']:
+        return {'mailboxes': []}
+    try:
+        with jobs.lock(f'repository-{source.destination_id}', blocking=False):
+            repo = jobs.repository(jobs._row(SnapshotDestination, source.destination_id))
+            metadata = _mail_recovery_metadata(repo, account, source.snapshot_id)
+    except BlockingIOError:
+        raise ValidationError('This destination is busy. Try again shortly.') from None
+    with write_session() as session:
+        owners = {row.domain: row.account_id for row in session.scalars(
+            select(MailDomain).where(MailDomain.domain.in_(list(metadata))))}
+    options = []
+    for domain, saved in metadata.items():
+        reason = None
+        if owners.get(domain) != account.id:
+            reason = ('This mail domain is not currently owned by this account.' if domain in owners else
+                      'Restore this account’s mail domain registration before restoring its mailboxes.')
+        current = set()
+        if reason is None:
+            try:
+                current = {row['local_part'] for row in mail.list_mailboxes(domain)}
+            except ValueError:
+                reason = 'The mail domain needs provisioning before restoring its mailboxes.'
+        for local, mailbox in saved['mailboxes'].items():
+            action = 'unavailable' if reason else ('existing' if local in current else 'recreate')
+            options.append({'address': local+'@'+domain, 'domain': domain, 'local_part': local,
+                            'quota_mb': mailbox['quota_mb'], 'active': mailbox['active'],
+                            'available': reason is None, 'action': action, 'reason': reason})
+    return {'mailboxes': sorted(options, key=lambda item: item['address'])}
 
 
 def _database_state(account, name, metadata):

@@ -31,6 +31,7 @@ OP_TABLE = {
     "panel.config.status": panel_jobs.status,
     "panel.config.start": panel_jobs.start,
     "snapshot.restore.databases": snapshot_restores.database_options,
+    "snapshot.restore.mailboxes": snapshot_restores.mailbox_options,
     "snapshot.restore.trigger": snapshot_restores.trigger,
     "snapshot.restore.undo": snapshot_restores.undo,
     "snapshot.restore.list": snapshot_restores.list_restores,
@@ -505,7 +506,7 @@ OP_TABLE = {
 # so a burst of usage polling can never starve the rest of the daemon.
 REPORTING_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reporting")
 REPORTING_OPS = {
-    "snapshot.destination.initialize", "snapshot.run.browse", "snapshot.restore.databases",
+    "snapshot.destination.initialize", "snapshot.run.browse", "snapshot.restore.databases", "snapshot.restore.mailboxes",
     "disktree.get", "disktree.top_files", "usage.get",
     # Phase 5: admin-only polling/dashboard ops that shell out or sample
     # live system state -- same isolation reasoning as disktree/usage
