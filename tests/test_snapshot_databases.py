@@ -165,6 +165,32 @@ def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
         assert cursor.fetchone()[0]=='Original WordPress content ☕'
 
 
+    from daemon import snapshot_restores as restores
+    with connection.cursor() as cursor:cursor.execute("UPDATE alpha_wp.posts SET content='version before queued restore'")
+    with pytest.raises(Exception,match='not found for this account'):
+        restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'databases','databases':['bravo_wp']})
+    request=restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'databases','databases':['alpha_wp']})
+    restores.execute(request['id'])
+    result=restores.list_restores({'username':'alpha'})['restores'][0]
+    assert result['status']=='completed',result['error']
+    assert result['safety_snapshot_id']
+    assert result['summary']['databases']==['alpha_wp']
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT content FROM alpha_wp.posts WHERE id=1')
+        assert cursor.fetchone()[0]=='Original WordPress content ☕'
+        cursor.execute('SELECT value FROM bravo_wp.private_data')
+        assert cursor.fetchone()[0]=='must remain private'
+    recovery=restores.undo({'username':'alpha','restore_id':request['id'],'confirmation':'alpha'})
+    restores.execute(recovery['id'])
+    result=restores.list_restores({'username':'alpha'})['restores'][0]
+    assert result['status']=='completed',result['error']
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT content FROM alpha_wp.posts WHERE id=1')
+        assert cursor.fetchone()[0]=='version before queued restore'
+    assert not list(Path(settings.snapshot_private_dir).rglob('client-*.cnf'))
+    assert not (Path(settings.snapshot_private_dir)/'database-safety'/f'account-{account.id}'/'databases').exists()
+
+
 def test_startup_cleanup_only_removes_reserved_worker_names(sql):
     connection,_=sql
     with connection.cursor() as cursor:

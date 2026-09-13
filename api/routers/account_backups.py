@@ -52,6 +52,7 @@ class SnapshotRestoreBody(BaseModel):
     confirmation: str
     kind: str = 'files'
     paths: list[str] = []
+    databases: list[str] = []
 
 
 @api_router.post('/snapshots/runs/{run_id}/restore')

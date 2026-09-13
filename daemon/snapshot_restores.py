@@ -9,7 +9,7 @@ from daemon import snapshot_jobs as jobs, snapshot_storage as storage
 from daemon.procutil import run
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, BackupJob, RestoreJob, SnapshotDestination, SnapshotRestore, SnapshotRun, utcnow
+from shared.models import Account, BackupJob, DatabaseGrant, RestoreJob, SnapshotDestination, SnapshotRestore, SnapshotRun, utcnow
 from shared.validation import ValidationError
 
 logger=logging.getLogger('borond.snapshot_restores')
@@ -51,16 +51,19 @@ def trigger(params):
     account,source=_owned_run(params['username'],params['run_id'],allow_expired=safety is not None)
     if safety and (safety.account_id!=account.id or safety.run_id!=source.id or not safety.safety_snapshot_id):
         raise ValidationError('Pre-restore recovery point not found for this account')
-    if account.status!='active':raise ValidationError('Reactivate the account before restoring its files')
+    if account.status!='active':raise ValidationError('Reactivate the account before restoring its data')
     if params.get('confirmation')!=account.username:raise ValidationError('Type the account username to confirm this restore')
-    if params.get('kind','files')!='files':raise ValidationError('Unsupported snapshot restore type')
+    kind=safety.selection['kind'] if safety else params.get('kind','files')
+    if kind not in ('files','databases'):raise ValidationError('Unsupported snapshot restore type')
     paths=[] if safety else _paths(params.get('paths',[]))
-    if 'files' not in source.options['components']:raise ValidationError('This recovery point does not contain account files')
+    databases=_owned_databases(account,safety.selection.get('databases',[]) if safety else params.get('databases',[])) if kind=='databases' else []
+    if kind not in source.options['components']:raise ValidationError('This recovery point does not contain '+kind)
     with jobs.lock('queue'),write_session() as session:
         for model in (SnapshotRestore,SnapshotRun,BackupJob,RestoreJob):
             if session.scalar(select(model.id).where(model.account_id==account.id,model.status.in_(jobs.ACTIVE))):
                 raise ValidationError('A backup or restore is already in progress for this account')
-        selection={'kind':'files','paths':paths}
+        selection={'kind':kind,'paths':paths}
+        if databases:selection['databases']=databases
         if safety:selection['source_snapshot_id']=safety.safety_snapshot_id
         row=SnapshotRestore(run_id=source.id,account_id=account.id,selection=selection,status='pending')
         session.add(row);session.flush();result=_serialize(row)
@@ -100,6 +103,53 @@ def _restore_paths(account,snapshot,selection):
     return home,unique
 
 
+def _owned_databases(account, names):
+    from daemon.snapshot_databases import _database_name
+    names=jobs._strings(names,'database names')
+    if not names:raise ValidationError('Select at least one database to restore')
+    with write_session() as session:
+        owned=set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id==account.id)).all())
+    for name in names:
+        _database_name(name)
+        if name not in owned or not name.startswith(account.username+'_'):
+            raise ValidationError('Database not found for this account')
+    return sorted(set(names))
+
+
+def _restore_databases(ident,account,row,repo,snapshot_id,work):
+    from daemon import snapshot_databases as database, mariadb
+    names=_owned_databases(account,row.selection['databases'])
+    base=Path(settings.snapshot_private_dir)
+    source=base/('database-safety' if row.selection.get('source_snapshot_id') else 'sources')/f'account-{account.id}'/'databases'
+    paths=[source/f'{name}.sql' for name in names]
+    data=storage.restore_to(repo,account.id,snapshot_id,str(work/'data'),selected_paths=[str(p) for p in paths])
+    # Verify every selected source and current database before changing any data.
+    for name,path in zip(names,paths):
+        database._sql_file(data/str(path).lstrip('/'))
+        if not mariadb.database_exists(name):
+            raise ValidationError('Database '+name+' no longer exists; account reconstruction is required')
+        database.validate_supported_objects(name)
+    stage=jobs.private_directory('database-safety',f'account-{account.id}')
+    dumps=stage/'databases'
+    if dumps.exists():shutil.rmtree(dumps)
+    dumps.mkdir(mode=0o700)
+    _update(ident,progress_message='Saving current databases before restore')
+    try:
+        for name in names:database.dump_database(name,dumps/f'{name}.sql',stage)
+        safety=storage.backup(repo,account.id,[str(dumps)])
+        _update(ident,safety_snapshot_id=safety['snapshot_id'])
+        completed=[]
+        for name,path in zip(names,paths):
+            _owned_databases(account,[name])
+            _update(ident,progress_message='Restoring database '+name)
+            database.restore_database(name,data/str(path).lstrip('/'),work)
+            completed.append(name)
+            _update(ident,summary={'databases':completed.copy()})
+        _update(ident,status='completed',progress_message='Selected databases restored',completed_at=utcnow())
+    finally:
+        shutil.rmtree(dumps,ignore_errors=True)
+
+
 def execute(ident):
     row=jobs._row(SnapshotRestore,ident)
     source=jobs._row(SnapshotRun,row.run_id)
@@ -115,8 +165,11 @@ def execute(ident):
             repo=jobs.repository(jobs._row(SnapshotDestination,source.destination_id))
             snapshot_id=row.selection.get('source_snapshot_id') or source.snapshot_id
             snapshot=storage.owned_snapshot(repo,account.id,snapshot_id)
-            home,paths=_restore_paths(account,snapshot,row.selection)
             work=jobs.private_directory('restores',f'restore-{ident}')
+            if row.selection['kind']=='databases':
+                _restore_databases(ident,account,row,repo,snapshot_id,work)
+                return
+            home,paths=_restore_paths(account,snapshot,row.selection)
             data=storage.restore_to(repo,account.id,snapshot_id,str(work/'data'),selected_paths=[str(p) for p in paths])
             _update(ident,progress_message='Saving current files before restore')
             current=[str(p) for p in paths if p.exists() or p.is_symlink()]
@@ -149,5 +202,5 @@ def recover_restores():
                 current=jobs._row(SnapshotRestore,row.id)
                 if current.status=='running':
                     _update(row.id,status='failed',progress_message='Interrupted',
-                        error='Restore worker was interrupted. Some files may have been restored; the pre-restore snapshot is retained.',completed_at=utcnow())
+                        error='Restore worker was interrupted. Some selected data may have been restored; the pre-restore snapshot is retained.',completed_at=utcnow())
         except BlockingIOError:continue

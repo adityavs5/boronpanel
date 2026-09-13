@@ -790,6 +790,8 @@ async def _cgroup_reconcile_loop() -> None:
 async def amain() -> None:
     init_db()
     try:
+        from daemon.snapshot_databases import cleanup_abandoned_logins
+        cleanup_abandoned_logins()
         snapshot_jobs.recover_runs()
         snapshot_restores.recover_restores()
     except Exception:

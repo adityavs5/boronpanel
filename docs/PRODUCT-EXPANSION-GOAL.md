@@ -84,3 +84,13 @@ Database/mail/configuration restore, broader backup metadata, retention for pre-
 The snapshot exporter now streams raw SQL with the server's actual hosting privileges, fixing the previously unverified `--events` failure for ordinary WordPress databases. Real isolated MariaDB tests verify Unicode/binary contents through export, encrypted backup-job snapshots and import; temporary imports use exact database grants, reject system schemas and filesystem commands, and clean up their credentials. Unsupported SQL objects cause an explicit failure instead of an incomplete backup.
 
 Database restore job/API/UI integration, previous-database recovery and deleted-database recreation remain required. No live database permissions were changed and no new backup code has been deployed yet. The full goal remains active.
+
+## Progress — queued database restore and previous-version recovery
+
+Database restores now run through the persistent account-scoped queue/API, verify
+selected SQL snapshot files, save current databases to an encrypted recovery point,
+and support recovering that previous version. Startup cleans abandoned temporary
+import logins before queue recovery. This remains development code. Deleted-database
+reconstruction, exact schema replacement, database UI, mail/config restore, safety
+retention and deployment are still required; all other open product requirements
+remain unchanged.

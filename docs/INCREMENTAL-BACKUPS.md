@@ -83,3 +83,28 @@ The SQL import primitive is tested, but database restore job/API/UI integration,
 Primary references: [MariaDB client options](https://mariadb.com/docs/server/clients-and-utilities/mariadb-client/mariadb-command-line-client), [MariaDB dump](https://mariadb.com/docs/server/clients-and-utilities/backup-restore-and-import-clients/mariadb-dump), and [database GRANT semantics](https://mariadb.com/docs/server/reference/sql-statements/account-management-sql-statements/grant). Integration tests use an isolated socket-only MariaDB 10.11 instance and verify actual contents, denial of cross-database access (including underscore lookalikes), denial of client/server filesystem operations, cleanup and unsupported-object detection.
 
 Database transport verification: **31 database/process/job checks passed** before the final hardening batch. The final **23 database/process checks passed**, including the actual encrypted backup-job database round trip, existing SQL-file sourcing rejection, local-file import rejection with server-side local infile enabled, reserved-login cleanup, private output paths and INFO-level password-log checks. Logs: `/root/boron-setup/snapshot-database-tests.log`, `snapshot-database-final-tests.log`, `snapshot-database-log-proof.log`, and `snapshot-database-file-guards.log`. All SQL integration tests use a disposable socket-only server; they do not alter the live server's accounts or privileges.
+
+### Database restore jobs (development)
+
+The customer-scoped restore endpoint accepts `kind: databases` and an explicit
+`databases` list. The worker checks current account ownership and the hosting
+name prefix, verifies every selected SQL file from the encrypted snapshot, and
+exports all selected current databases before importing any of them. That export
+becomes a separate encrypted safety snapshot recorded in restore history. Previous
+version recovery uses that recorded snapshot, never a customer-supplied snapshot
+identifier. Progress and completed database names survive worker failures.
+
+Imports retain existing database users and credentials. The daemon removes only
+reserved abandoned import logins before recovering queued workers at startup.
+Deleted databases currently fail explicitly; account reconstruction and encrypted
+credential metadata are still required. SQL imports replace captured tables but
+can retain tables created after the snapshot: exact schema replacement is not yet
+implemented. Database selection UI, mail/config restores, safety-snapshot retention,
+mutation coordination beyond backup queues and live verification remain required.
+
+Validation: 25 real database/file-restore tests passed, including queued database
+restore, previous-version recovery, neighboring database isolation and file-restore
+regressions. Twelve backup job/API tests also passed, including forwarding selected
+database names only through the authorized customer endpoint. Logs are retained at
+`/root/boron-setup/snapshot-database-job-tests.log` and
+`/root/boron-setup/snapshot-database-job-api-tests.log`.
