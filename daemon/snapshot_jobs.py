@@ -357,7 +357,8 @@ def execute_run(ident):
             _update(ident,progress_message='Saving encrypted snapshot')
             repo=repository(_row(SnapshotDestination,row.destination_id))
             summary=storage.backup(repo,account.id,paths,policy_id=row.policy_id,
-                excludes=row.options['exclude_patterns'],full_scan=row.options['mode']=='full')
+                excludes=row.options['exclude_patterns'],full_scan=row.options['mode']=='full',
+                exclude_mail_staging='mail' in row.options['components'])
             _update(ident,snapshot_id=summary['snapshot_id'],summary=summary,progress_message='Applying retention')
             items=[s for s in storage.snapshots(repo,account.id) if f'policy:{row.policy_id}' in s.get('tags',[])]
             items.sort(key=lambda s:s['time'],reverse=True)

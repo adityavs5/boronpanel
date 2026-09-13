@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import stat
 import tempfile
+import uuid
 
 from daemon.procutil import run
 from shared.validation import ValidationError
@@ -131,3 +132,82 @@ def build_maildir(source, destination, private_root, *, uid=150, gid=150, timeou
         if destination.exists():
             shutil.rmtree(destination)
         raise
+
+
+def stage_for_exchange(source, private_root, domain, local_part, *, uid=150, gid=150, prepared=None):
+    """Place a durable prepared sibling on the mailbox filesystem before pausing.
+
+    Caller verifies account ownership first. Source must be within private,
+    service-owned staging. The destination is created exclusively through the
+    validated mailbox home descriptor. A job should persist its generated name
+    before calling and pass it as prepared so crash cleanup can identify it.
+    Never modify the live Maildir here.
+    """
+    from daemon.snapshot_mail_exchange import _home, _prepared_name
+    if os.geteuid() != 0 or any(type(value) is not int or value <= 0 for value in (uid, gid)):
+        raise ValidationError('Mail preparation requires an unprivileged mailbox identity')
+    source, private_root = Path(source), Path(private_root)
+    info = private_root.lstat()
+    if (private_root.resolve() != private_root or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != 0 or info.st_mode & 0o077 or source.resolve() != source
+            or source == private_root or not source.is_relative_to(private_root)):
+        raise ValidationError('Prepared mail must come from private service staging')
+    name = _prepared_name(prepared if prepared is not None else '.boron-mail-ready-' + uuid.uuid4().hex)
+    counts = {'files': 0, 'bytes': 0}
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with _home(domain, local_part) as home:
+        incoming = os.open(source, flags)
+        try:
+            for part in ('cur', 'new', 'tmp'):
+                check = os.open(part, flags, dir_fd=incoming)
+                os.close(check)
+            os.mkdir(name, 0o700, dir_fd=home)
+            outgoing = os.open(name, flags, dir_fd=home)
+            try:
+                _copy_mail_tree(incoming, outgoing, uid, gid, counts)
+                os.fsync(home)
+            except BaseException:
+                # Do not delete a substituted directory after a path race.
+                actual = os.stat(name, dir_fd=home, follow_symlinks=False)
+                expected = os.fstat(outgoing)
+                if (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino):
+                    shutil.rmtree(name, dir_fd=home)
+                    os.fsync(home)
+                raise
+            finally:
+                os.close(outgoing)
+        finally:
+            os.close(incoming)
+    return {'prepared': name, **counts}
+
+
+def _copy_mail_tree(source, target, uid, gid, counts):
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    for name in os.listdir(source):
+        fd = os.open(name, flags, dir_fd=source)
+        try:
+            info = os.fstat(fd)
+            if stat.S_ISDIR(info.st_mode):
+                os.mkdir(name, 0o700, dir_fd=target)
+                child = os.open(name, flags | os.O_DIRECTORY, dir_fd=target)
+                try:
+                    _copy_mail_tree(fd, child, uid, gid, counts)
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(info.st_mode):
+                out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=target)
+                with os.fdopen(out, 'wb') as destination, os.fdopen(os.dup(fd), 'rb') as incoming:
+                    shutil.copyfileobj(incoming, destination, length=1024*1024)
+                    destination.flush()
+                    os.fchown(destination.fileno(), uid, gid)
+                    os.fchmod(destination.fileno(), 0o600)
+                    os.fsync(destination.fileno())
+                    counts['bytes'] += destination.tell()
+                    counts['files'] += 1
+            else:
+                raise ValidationError('Prepared mailbox contains a special file')
+        finally:
+            os.close(fd)
+    os.fchown(target, uid, gid)
+    os.fchmod(target, 0o700)
+    os.fsync(target)

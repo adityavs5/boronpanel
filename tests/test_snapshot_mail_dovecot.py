@@ -7,7 +7,7 @@ import tempfile
 
 import pytest
 
-from daemon.snapshot_mail_files import build_maildir
+from daemon.snapshot_mail_files import build_maildir, stage_for_exchange
 from daemon import snapshot_mail_exchange as exchange
 from shared.config import settings
 
@@ -68,9 +68,7 @@ def test_point_in_time_mail_restore_and_safety_undo(mailbox_store, tmp_path, mon
         target = tmp_path / output
         build_maildir(source, target, tmp_path, uid=65534, gid=65534)
         assert {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()} == before
-        shutil.move(str(target), root / output)
-        for path in [root / output, *(root / output).rglob('*')]:
-            os.chown(path, 65534, 65534)
+        return target
     message('INBOX', 'original', 'S')
     message('Archive', 'archived', 'SF')
     command('mailbox', 'subscribe', 'Archive')
@@ -85,14 +83,14 @@ def test_point_in_time_mail_restore_and_safety_undo(mailbox_store, tmp_path, mon
     # Maildir cannot reinsert expunged IMAP UIDs into INBOX in place. Build
     # a fresh replacement first. This fixture has no connected clients or LMTP;
     # production must quiesce the selected mailbox before any directory switch.
-    prepare('snapshot', 'prepared')
+    prepared_source = prepare('snapshot', 'prepared')
     mail_base = root / 'vmail'
     home = mail_base / 'example.test/inbox'
     home.mkdir(parents=True)
     monkeypatch.setattr(settings, 'mail_base', str(mail_base))
     (root / 'live').rename(home / 'Maildir')
-    name = '.boron-mail-ready-' + 'a' * 32
-    (root / 'prepared').rename(home / name)
+    name = stage_for_exchange(prepared_source, tmp_path, 'example.test', 'inbox',
+                             uid=65534, gid=65534)['prepared']
     saved = exchange.plan('example.test', 'inbox', name)
     assert exchange.apply('example.test', 'inbox', saved) == 'applied'
     original_command = command
@@ -105,9 +103,9 @@ def test_point_in_time_mail_restore_and_safety_undo(mailbox_store, tmp_path, mon
     assert '\\Seen' in messages and '\\Flagged' in messages
     assert 'Archive' in command('mailbox', 'list', '-s')
     assert command('mailbox', 'status', 'messages uidvalidity uidnext', '*') == before
-    prepare('safety', 'prepared-undo')
-    undo_name = '.boron-mail-ready-' + 'b' * 32
-    (root / 'prepared-undo').rename(home / undo_name)
+    undo_source = prepare('safety', 'prepared-undo')
+    undo_name = stage_for_exchange(undo_source, tmp_path, 'example.test', 'inbox',
+                                  uid=65534, gid=65534)['prepared']
     undo_saved = exchange.plan('example.test', 'inbox', undo_name)
     assert exchange.apply('example.test', 'inbox', undo_saved) == 'applied'
     undone = command('fetch', 'hdr.message-id', 'ALL')

@@ -147,3 +147,74 @@ def test_worker_rejects_privileged_or_invalid_identity(staged, uid, gid):
     with pytest.raises(ValidationError):
         build_maildir(*staged, uid=uid, gid=gid)
     assert not staged[1].exists()
+
+
+@pytest.fixture
+def mailbox_home(tmp_path, monkeypatch):
+    if os.geteuid() != 0:
+        pytest.skip('Mailbox staging sets unprivileged ownership')
+    from shared.config import settings
+    base = tmp_path / 'mail'
+    home = base / 'example.test/inbox'
+    (home / 'Maildir/cur').mkdir(parents=True)
+    (home / 'Maildir/cur/current').write_bytes(b'retain live mail')
+    monkeypatch.setattr(settings, 'mail_base', str(base))
+    return home
+
+
+def test_stage_for_exchange_sets_ownership_and_preserves_live_mail(staged, mailbox_home):
+    from daemon.snapshot_mail_files import stage_for_exchange
+    source, _, root = staged
+    result = stage_for_exchange(source, root, 'example.test', 'inbox', uid=65534, gid=65534)
+    target = mailbox_home / result['prepared']
+    assert result['files'] == 4
+    for path in [target, *target.rglob('*')]:
+        info = path.stat()
+        assert (info.st_uid, info.st_gid) == (65534, 65534)
+        assert info.st_mode & 0o777 == (0o700 if path.is_dir() else 0o600)
+        if path.is_file():
+            assert path.read_bytes() == (source / path.relative_to(target)).read_bytes()
+    assert (mailbox_home / 'Maildir/cur/current').read_bytes() == b'retain live mail'
+    assert (source / 'cur/message:2,S').stat().st_uid == 0
+
+
+@pytest.mark.parametrize('bad', ['link', 'fifo', 'disk-full'])
+def test_failed_staging_removes_only_new_sibling(staged, mailbox_home, monkeypatch, bad):
+    import daemon.snapshot_mail_files as files
+    source, _, root = staged
+    if bad == 'link':
+        (source / 'cur/link').symlink_to('/etc/passwd')
+    elif bad == 'fifo':
+        os.mkfifo(source / 'cur/fifo')
+    else:
+        def fail(*args, **kwargs):
+            raise OSError('disk full')
+        monkeypatch.setattr(files.shutil, 'copyfileobj', fail)
+    with pytest.raises((OSError, ValidationError)):
+        files.stage_for_exchange(source, root, 'example.test', 'inbox', uid=65534, gid=65534)
+    assert list(mailbox_home.iterdir()) == [mailbox_home / 'Maildir']
+    assert (mailbox_home / 'Maildir/cur/current').read_bytes() == b'retain live mail'
+
+
+def test_staging_rejects_mailbox_home_symlink(staged, mailbox_home):
+    from daemon.snapshot_mail_files import stage_for_exchange
+    source, _, root = staged
+    retained = mailbox_home.with_name('retained')
+    mailbox_home.rename(retained)
+    mailbox_home.symlink_to(retained, target_is_directory=True)
+    with pytest.raises(OSError):
+        stage_for_exchange(source, root, 'example.test', 'inbox', uid=65534, gid=65534)
+    assert list(retained.iterdir()) == [retained / 'Maildir']
+
+
+def test_persisted_prepared_name_is_exclusive(staged, mailbox_home):
+    from daemon.snapshot_mail_files import stage_for_exchange
+    source, _, root = staged
+    name = '.boron-mail-ready-' + 'd'*32
+    result = stage_for_exchange(source, root, 'example.test', 'inbox',
+                               uid=65534, gid=65534, prepared=name)
+    assert result['prepared'] == name
+    with pytest.raises(FileExistsError):
+        stage_for_exchange(source, root, 'example.test', 'inbox',
+                           uid=65534, gid=65534, prepared=name)
+    assert (mailbox_home/name/'cur/message:2,S').read_bytes() == (source/'cur/message:2,S').read_bytes()

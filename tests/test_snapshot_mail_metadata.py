@@ -108,6 +108,9 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
     message.parent.mkdir(parents=True)
     content = b'Subject: Recovery fixture\r\n\r\nOriginal offline message.\r\n'
     message.write_bytes(content)
+    retained = message.parents[2]/('.boron-mail-ready-'+'a'*32)
+    retained.mkdir()
+    (retained/'old-message').write_bytes(b'retained recovery-only message')
     monkeypatch.setattr(settings,'home_base',str(home.parent))
     monkeypatch.setattr(settings,'mail_base',str(work/'mail'))
     monkeypatch.setattr(jobs._executor,'submit',lambda *args:None)
@@ -125,6 +128,10 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
     repo = jobs.repository(jobs._row(SnapshotDestination,destination['id']))
     data = storage.restore_to(repo,account.id,run.snapshot_id,str(work/'restored'))
     assert (data/str(message).lstrip('/')).read_bytes() == content
+    assert not (data/str(retained).lstrip('/')).exists()
+    safety = storage.backup(repo, account.id, [str(retained)])
+    safety_data = storage.restore_to(repo, account.id, safety['snapshot_id'], str(work/'safety-restored'))
+    assert (safety_data/str(retained).lstrip('/')/'old-message').read_bytes() == b'retained recovery-only message'
     documents = list(data.rglob('mail-recovery.json'))
     assert len(documents) == 1
     assert documents[0].stat().st_mode & 0o777 == 0o600

@@ -686,3 +686,35 @@ catalog requests. Additional tests cover malformed metadata, duplicate entries,
 unsafe files and foreign-domain ownership. Only isolated SQL fixtures were
 changed; no live mailbox was deleted. One existing TestClient dependency
 deprecation warning was emitted.
+
+## Prepared mailbox placement (development)
+
+`snapshot_mail_files.stage_for_exchange` now places the built mailbox beside its
+live Maildir before pausing mail service. It verifies the source is beneath private
+service-owned staging and opens the destination home through validated, no-follow
+directory descriptors. An exclusive generated sibling is copied through directory
+FDs; links and special files are rejected. Files and directories receive the mail
+service UID/GID and private 0600/0700 permissions. Jobs can supply an already
+persisted prepared-directory name; existing copies are never overwritten. File contents and directory
+entries are fsynced before returning. Failed copies remove only their newly
+created sibling after checking its identity; the live Maildir and private source
+remain intact. Account ownership authorization remains the coordinator's duty.
+
+The real offline Dovecot restore/undo test now uses this placement function, the
+production preparation worker and the atomic exchange. All 39 focused file/
+Dovecot/exchange checks passed, including ownership, failed-copy cleanup and
+mailbox-home symlink rejection. An initial sandboxed run could not perform chown;
+the permitted run on temporary fixtures passed.
+
+Normal mail backup jobs exclude only recovery siblings matching the configured
+mail root's `domain/mailbox/.boron-mail-ready-*` location. Explicit safety backups
+retain their ability to save these displaced trees. The real encrypted mail-job
+test proves the sibling is absent from an ordinary backup and present with exact
+bytes in a separate safety snapshot. No live staging or mailbox switch has been
+performed. This does not yet connect customer restore submission, recovery-point
+retention or job cleanup to the new mail worker.
+
+The additional storage and backup-job regression run passed all 21 tests, with
+one existing TestClient dependency deprecation warning. The real encrypted-mail
+exclusion/safety test passed separately. Persisting the prepared name in the
+coordinator before placement remains required for deterministic crash cleanup.

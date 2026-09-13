@@ -143,7 +143,7 @@ def _filters(patterns):
         yield pattern
 
 
-def backup(repository, account_id, paths, *, policy_id=None, excludes=(), full_scan=False):
+def backup(repository, account_id, paths, *, policy_id=None, excludes=(), full_scan=False, exclude_mail_staging=False):
     if not paths or len(paths)>200:
         raise ValidationError('Select between 1 and 200 backup paths')
     source_paths = [str(_absolute(p)) for p in paths]
@@ -151,6 +151,10 @@ def backup(repository, account_id, paths, *, policy_id=None, excludes=(), full_s
     if full_scan: args += ['--force']
     if policy_id is not None: args += ['--tag',f'policy:{_positive(policy_id)}']
     for pattern in _filters(excludes): args += ['--exclude',pattern]
+    if exclude_mail_staging:
+        # Ordinary mail jobs must not absorb prepared/displaced recovery trees.
+        # Explicit safety snapshots leave this off so those trees can be saved.
+        args += ['--exclude', _literal_pattern(_absolute(settings.mail_base)) + '/*/*/.boron-mail-ready-*']
     # The repository/cache must never recursively become part of a snapshot.
     if repository.kind == 'local': args += ['--exclude',_literal_pattern(_absolute(repository.path))]
     args += ['--exclude',_literal_pattern(_absolute(repository.cache_dir)),'--exclude',_literal_pattern(_absolute(repository.password_file))]
