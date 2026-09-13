@@ -25,6 +25,7 @@ from pathlib import Path
 from shared.config import settings
 from shared.db import write_session
 from shared.models import BrandingSettings
+from shared.terminal_welcome import DEFAULT_TERMINAL_BANNER, validate_terminal_banner
 from shared.validation import ValidationError, validate_email_address, validate_redirect_target
 
 logger = logging.getLogger("borond.branding")
@@ -137,6 +138,8 @@ def _get_row(session) -> BrandingSettings:
 def _to_dict(row: BrandingSettings) -> dict:
     return {
         "panel_name": row.panel_name,
+        "terminal_banner": row.terminal_banner,
+        "default_terminal_banner": DEFAULT_TERMINAL_BANNER,
         "has_logo": row.logo_filename is not None,
         "has_favicon": row.favicon_filename is not None,
         "support_email": row.support_email,
@@ -153,6 +156,8 @@ def get_settings(params: dict | None = None) -> dict:
 def set_settings(params: dict) -> dict:
     with write_session() as session:
         row = _get_row(session)
+        if "terminal_banner" in params:
+            row.terminal_banner=validate_terminal_banner(params["terminal_banner"])
         if "panel_name" in params:
             name = (params["panel_name"] or "").strip()
             if not name:

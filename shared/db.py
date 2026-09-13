@@ -75,6 +75,7 @@ def init_db() -> None:
 # helper stays tiny and strictly additive -- it only ever ADDs a declared
 # missing column, never drops/renames/retypes anything.
 _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
+    "branding_settings": {"terminal_banner": "TEXT"},
     "cloudflare_zones": {"cf_account_id": "INTEGER", "last_purge_at": "DATETIME"},
     # Run A feature 1 (plan templates): both tables predate the Plan model.
     "accounts": {"plan_id": "INTEGER"},

@@ -112,7 +112,8 @@ export default function Branding() {
         icon={Palette}
       />
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <TerminalBannerCard />
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Panel name &amp; support</CardTitle>
@@ -173,4 +174,20 @@ export default function Branding() {
       </div>
     </div>
   )
+}
+
+
+function TerminalBannerCard() {
+  const qc=useQueryClient()
+  const settings=useQuery({queryKey:['admin-branding'],queryFn:()=>get('/api/v1/admin/branding')})
+  const [draft,setDraft]=useState(null)
+  const value=draft??settings.data?.terminal_banner??settings.data?.default_terminal_banner??''
+  const save=useMutation({mutationFn:banner=>patch('/api/v1/admin/branding',{terminal_banner:banner}),onSuccess:()=>{setDraft(null);qc.invalidateQueries({queryKey:['admin-branding']});toast.success('Terminal welcome updated','Applies to new admin terminal sessions.')},onError:e=>toast.error('Could not update terminal welcome',e.message)})
+  return <Card><CardHeader><div><CardTitle>Admin terminal welcome</CardTitle><CardDescription>Show your ASCII artwork when opening a terminal as an admin. Customer terminals retain their normal login information.</CardDescription></div></CardHeader><CardContent>
+    {settings.error?<p role="alert" className="text-sm text-danger">{settings.error.message}</p>:settings.isLoading?<p>Loading terminal welcome…</p>:<form className="space-y-4" onSubmit={e=>{e.preventDefault();save.mutate(value)}}>
+      <FormField label="Terminal banner" htmlFor="terminal-banner" hint="Plain ASCII text, up to 30 lines and 4000 characters. Leave empty for no banner."><textarea id="terminal-banner" value={value} maxLength={4000} rows={7} spellCheck={false} onChange={e=>setDraft(e.target.value)} className="w-full rounded-btn border border-border bg-background p-3 font-mono text-sm"/></FormField>
+      <div><p className="mb-2 text-sm font-medium">Preview</p><pre aria-label="Terminal banner preview" className="overflow-x-auto rounded-btn bg-slate-950 p-4 font-mono text-xs text-slate-100">{value||'(No banner)'}</pre></div>
+      <div className="flex flex-wrap gap-2"><Button type="submit" loading={save.isPending} disabled={draft===null}>Save terminal welcome</Button><Button type="button" variant="secondary" disabled={save.isPending} onClick={()=>save.mutate(null)}>Reset to BORON</Button></div>
+    </form>}
+  </CardContent></Card>
 }

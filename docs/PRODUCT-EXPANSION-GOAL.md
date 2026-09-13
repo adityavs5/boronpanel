@@ -123,3 +123,13 @@ default and resumes automatically on manual edits. Changes require Save and use 
 existing validated account settings endpoint. Preset details are in PHP-CONTROLS.md.
 Live deployment and served-PHP verification remain required, along with the other
 open backup, server configuration and product requirements.
+
+## Progress — configurable terminal welcome
+
+Branding now provides a private admin terminal banner editor, preview, save and
+reset to BORON. New admin web-terminal sessions use a quiet interactive SSH shell;
+customer sessions retain their login behavior. The real QA SSH check verified no
+Ubuntu MOTD, a working prompt and account UID isolation, with ephemeral key cleanup.
+Build, branding/terminal regressions and four theme browser checks passed. See
+TERMINAL-WELCOME.md. Deployment and final integrated verification remain pending;
+the entire original product checklist stays active.

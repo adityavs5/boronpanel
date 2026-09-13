@@ -1627,6 +1627,7 @@ class BrandingSettings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     panel_name: Mapped[str] = mapped_column(String(64), default="Boron")
+    terminal_banner: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     logo_filename: Mapped[str | None] = mapped_column(String(64), nullable=True)
     favicon_filename: Mapped[str | None] = mapped_column(String(64), nullable=True)
     support_email: Mapped[str | None] = mapped_column(String(253), nullable=True)

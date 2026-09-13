@@ -92,7 +92,14 @@ def get_favicon():
     return _serve_asset("favicon")
 
 
+@admin_api_router.get("")
+def get_admin_branding(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("branding.get", identity)
+
+
 class BrandingBody(BaseModel):
+    terminal_banner: str | None = None
     panel_name: str | None = None
     support_email: str | None = None
     support_url: str | None = None

@@ -253,3 +253,49 @@ def test_patch_branding_as_admin_succeeds(isolated_db, monkeypatch):
         assert r.json()["panel_name"] == "Acme"
     finally:
         main.app.dependency_overrides.pop(get_identity, None)
+
+
+def test_terminal_banner_persists_as_literal_text_and_resets(isolated_db):
+    from shared.terminal_welcome import DEFAULT_TERMINAL_BANNER,render_terminal_banner
+    value='BORON\n$(touch /tmp/never-execute-this)'
+    assert branding.set_settings({'terminal_banner':value})['terminal_banner']==value
+    assert render_terminal_banner(value)=='BORON\r\n$(touch /tmp/never-execute-this)\r\n\r\n'
+    assert branding.set_settings({'terminal_banner':None})['terminal_banner'] is None
+    assert DEFAULT_TERMINAL_BANNER in render_terminal_banner().replace('\r','')
+    assert render_terminal_banner('')==''
+
+
+@pytest.mark.parametrize('value',['\x1b]52;c;clipboard\x07','hello\rworld','\x00','é','x'*4001,'\n'*31])
+def test_terminal_banner_rejects_controls_and_oversized_text(isolated_db,value):
+    from shared.validation import ValidationError
+    with pytest.raises(ValidationError):branding.set_settings({'terminal_banner':value})
+
+
+def test_public_branding_does_not_disclose_terminal_banner(isolated_db):
+    branding.set_settings({'terminal_banner':'Private admin welcome'})
+    with TestClient(main.app) as client:
+        assert 'terminal_banner' not in client.get('/api/v1/branding').json()
+
+
+def test_terminal_banner_additive_migration_preserves_branding(tmp_path):
+    from sqlalchemy import create_engine,text,inspect
+    from shared.db import _apply_additive_migrations
+    engine=create_engine('sqlite:///'+str(tmp_path/'old-branding.db'))
+    with engine.begin() as connection:
+        connection.execute(text('CREATE TABLE branding_settings (id INTEGER PRIMARY KEY, panel_name VARCHAR(64))'))
+        connection.execute(text("INSERT INTO branding_settings VALUES (1,'Existing brand')"))
+    _apply_additive_migrations(engine)
+    _apply_additive_migrations(engine)
+    assert 'terminal_banner' in {col['name'] for col in inspect(engine).get_columns('branding_settings')}
+    with engine.connect() as connection:
+        assert tuple(connection.execute(text('SELECT panel_name,terminal_banner FROM branding_settings')).one())==('Existing brand',None)
+    engine.dispose()
+
+
+def test_customer_cannot_read_admin_terminal_branding(isolated_db):
+    customer=Identity(panel_user_id=2,username='cust1',role='customer',account_id=1,auth_method='session')
+    main.app.dependency_overrides[get_identity]=lambda:customer
+    try:
+        with TestClient(main.app) as client:
+            assert client.get('/api/v1/admin/branding').status_code==403
+    finally:main.app.dependency_overrides.clear()

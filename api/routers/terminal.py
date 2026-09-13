@@ -90,7 +90,7 @@ def _authorized(identity: Identity, username: str) -> bool:
         return account is not None and account.username == username
 
 
-def _connect_ssh(username: str, private_key_pem: str, host: str, port: int):
+def _connect_ssh(username: str, private_key_pem: str, host: str, port: int, quiet=False):
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     pkey = paramiko.Ed25519Key.from_private_key(io.StringIO(private_key_pem))
@@ -98,7 +98,14 @@ def _connect_ssh(username: str, private_key_pem: str, host: str, port: int):
         host, port=port, username=username, pkey=pkey, timeout=10,
         allow_agent=False, look_for_keys=False,
     )
-    chan = client.invoke_shell(term="xterm-256color", width=80, height=24)
+    if quiet:
+        chan=client.get_transport().open_session()
+        chan.get_pty(term="xterm-256color",width=80,height=24)
+        # An exec session skips SSH's login MOTD. Bash stays interactive for
+        # editing/job control, without loading login or interactive rc files.
+        chan.exec_command("exec /bin/bash --noprofile --norc -i")
+    else:
+        chan = client.invoke_shell(term="xterm-256color", width=80, height=24)
     chan.settimeout(_RECV_TIMEOUT)
     return client, chan
 
@@ -152,7 +159,7 @@ async def terminal_ws(websocket: WebSocket, username: str):
     # 2) Connect to sshd as the account user with the in-memory ephemeral key.
     try:
         client, chan = await loop.run_in_executor(
-            _TERMINAL_IO, lambda: _connect_ssh(username, private_key, session["host"], session["port"])
+            _TERMINAL_IO, lambda: _connect_ssh(username, private_key, session["host"], session["port"], quiet=identity.role=="admin")
         )
     except Exception as exc:  # noqa: BLE001
         logger.info("terminal SSH connect failed for %s: %s", username, exc)
@@ -162,6 +169,14 @@ async def terminal_ws(websocket: WebSocket, username: str):
         return
 
     try:
+        if identity.role=="admin":
+            from shared.db import read_session
+            from shared.models import BrandingSettings
+            from shared.terminal_welcome import render_terminal_banner
+            with read_session() as db:
+                branding=db.get(BrandingSettings,1)
+                banner=render_terminal_banner(branding.terminal_banner if branding else None)
+            if banner:await websocket.send_text(banner)
         await _pump(websocket, chan, loop)
     finally:
         try:
