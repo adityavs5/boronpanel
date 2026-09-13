@@ -136,3 +136,85 @@ def ui_set_schedule(
         enabled=True,
     )
     return RedirectResponse("/ui/backups", status_code=303)
+
+
+# Incremental jobs live alongside the existing archive backup endpoints.
+class SnapshotDestinationBody(BaseModel):
+    name: str
+    kind: str = 'local'
+    path: str
+    ssh_host: str = ''
+    ssh_user: str = ''
+    ssh_port: int = 22
+    ssh_host_key: str = ''
+
+
+class SnapshotPolicyBody(BaseModel):
+    name: str
+    destination_id: int
+    frequency: str = 'manual'
+    enabled: bool = True
+    mode: str = 'incremental'
+    accounts: list[str] = []
+    excluded_accounts: list[str] = []
+    components: list[str] = ['files', 'databases', 'mail', 'config']
+    include_paths: list[str] = []
+    exclude_patterns: list[str] = []
+    notification_channels: list[str] = []
+    retention_count: int = 7
+
+
+@api_router.get('/snapshots/destinations')
+def snapshot_destinations(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.destination.list', identity)
+
+
+@api_router.post('/snapshots/destinations')
+def snapshot_create_destination(body: SnapshotDestinationBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.destination.create', identity, **body.model_dump())
+
+
+@api_router.post('/snapshots/destinations/{destination_id}/initialize')
+def snapshot_initialize_destination(destination_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.destination.initialize', identity, id=destination_id)
+
+
+@api_router.post('/snapshots/destinations/{destination_id}/recovery-key')
+def snapshot_recovery_key(destination_id: int, identity: Identity = Depends(get_identity)):
+    from fastapi.responses import JSONResponse
+    require_admin(identity)
+    return JSONResponse(call_daemon('snapshot.destination.recovery_key', identity, id=destination_id),
+        headers={'Cache-Control':'no-store','Pragma':'no-cache'})
+
+
+@api_router.get('/snapshots/policies')
+def snapshot_policies(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.policy.list', identity)
+
+
+@api_router.post('/snapshots/policies')
+def snapshot_create_policy(body: SnapshotPolicyBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.policy.save', identity, **body.model_dump())
+
+
+@api_router.put('/snapshots/policies/{policy_id}')
+def snapshot_update_policy(policy_id: int, body: SnapshotPolicyBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.policy.save', identity, id=policy_id, **body.model_dump())
+
+
+@api_router.post('/snapshots/policies/{policy_id}/run')
+def snapshot_run_policy(policy_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.policy.run', identity, id=policy_id)
+
+
+@api_router.get('/snapshots/runs')
+def snapshot_runs(username: str | None = None, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.run.list', identity, username=username)

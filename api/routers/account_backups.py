@@ -36,6 +36,18 @@ def list_account_jobs(username: str, identity: Identity = Depends(get_identity))
     return call_daemon("backup.job.list", identity, username=username)
 
 
+@api_router.get('/snapshots/runs')
+def list_snapshot_runs(username: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon('snapshot.run.list', identity, username=username)
+
+
+@api_router.get('/snapshots/runs/{run_id}/browse')
+def browse_snapshot(username: str, run_id: int, directory: str = '/', identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon('snapshot.run.browse', identity, username=username, run_id=run_id, directory=directory)
+
+
 @api_router.get("/{job_id}")
 def get_job(username: str, job_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)

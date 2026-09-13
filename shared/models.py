@@ -1867,3 +1867,47 @@ class WordPressSiteState(Base):
     hidden: Mapped[bool] = mapped_column(default=False)
     site_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     scanned_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SnapshotDestination(Base):
+    """Public repository metadata. Encryption and SSH keys stay outside SQLite."""
+    __tablename__ = 'snapshot_destinations'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    path: Mapped[str] = mapped_column(String(1024))
+    namespace: Mapped[str] = mapped_column(String(64), unique=True)
+    connection: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default='draft')
+    error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SnapshotPolicy(Base):
+    __tablename__ = 'snapshot_policies'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    destination_id: Mapped[int] = mapped_column(ForeignKey('snapshot_destinations.id'))
+    options: Mapped[dict] = mapped_column(JSON, default=dict)
+    frequency: Mapped[str] = mapped_column(String(16), default='manual')
+    enabled: Mapped[bool] = mapped_column(default=True)
+    last_queued_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SnapshotRun(Base):
+    __tablename__ = 'snapshot_runs'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    policy_id: Mapped[int] = mapped_column(ForeignKey('snapshot_policies.id'), index=True)
+    destination_id: Mapped[int] = mapped_column(ForeignKey('snapshot_destinations.id'))
+    account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'), index=True)
+    options: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default='pending', index=True)
+    trigger: Mapped[str] = mapped_column(String(16), default='manual')
+    snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    notification_results: Mapped[dict] = mapped_column(JSON, default=dict)
+    progress_message: Mapped[str] = mapped_column(String(256), default='Queued')
+    error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

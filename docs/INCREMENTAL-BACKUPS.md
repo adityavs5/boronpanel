@@ -24,10 +24,22 @@ The integration log is `/root/boron-setup/snapshot-storage-tests.log`. Real stor
 
 ## Remaining product integration
 
-This module alone does **not** complete the requested backup product. It is not yet connected to the current archive-based backup API or UI. Remaining work includes persistent destinations and reusable policies; account/component/path filters; stable raw database dumps and account metadata; scheduling and crash recovery; progress and selected notification channels; SSH setup and recovery-key export; admin/customer browsing; and safely applying verified full or granular restores.
+The storage and persistent job APIs do **not** yet complete the requested backup product. The service described below now provides destinations, policies, filters, raw database dumps, scheduling, recovery, retention, notifications and account-scoped browsing. Remaining work includes the admin/customer management screens, safely applying verified full or granular restores, broader account configuration recovery, and live deployment and verification.
 
-The service layer must resolve source paths from account ownership rather than accept arbitrary paths from customers. Repository operations need coordination across workers, especially retention/pruning. Account metadata and database dumps must use stable private staging paths so incremental snapshots can reuse unchanged data. Existing archive backups remain available during this integration.
+The service resolves source paths from account ownership rather than accepting arbitrary customer paths. Account and repository locks coordinate its workers, including retention/pruning. Account metadata and database dumps use stable private staging paths so incremental snapshots can reuse unchanged data. Coordination with legacy archive restores and other account-changing operations still needs a final audit before deployment. Existing archive backups remain available during this integration.
 
 References: [restic repository setup](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html), [backup and filtering](https://restic.readthedocs.io/en/stable/040_backup.html), [restore](https://restic.readthedocs.io/en/stable/050_restore.html).
 
 Latest integration run: **9 passed in 76.07 seconds**, including both local and SSH restores and literal special-character path selection. This validates the storage adapter, not the unfinished job/UI integration.
+
+## Persistent job service
+
+`daemon/snapshot_jobs.py` adds destinations, policies and per-account runs in separate SQLite tables. Secrets stay in the private repository directory, outside the API-readable control database. Administrators create a destination, install its generated SSH public key remotely when applicable, supply a trusted SSH server host key, and initialize the repository. The explicit recovery-key endpoint is admin-only and returns `Cache-Control: no-store`.
+
+Policies select accounts (an empty selection includes all active accounts), excluded accounts, files/databases/mail/config, home-relative included paths, exclusion patterns, full/incremental mode, retention count, and email/webhook channels. Each queued run freezes those options. Hourly/daily/weekly schedules use the existing hourly scheduler; manual jobs run on demand. Repeated scheduling and busy accounts do not enqueue duplicate account work.
+
+Workers export raw SQL with a consistent transaction and stable private paths, then snapshot raw home/mail files and metadata. Account and repository file locks coordinate daemon and scheduled processes. Startup requeues pending work and identifies interrupted running work by checking its account lock. Retention marks old history entries expired. Notifications report dispatch or suppression; SMTP acceptance/webhook queueing is not proof of delivery.
+
+Admin APIs are under `/api/v1/backups/snapshots`; customer history and browsing are under `/api/v1/accounts/{username}/backups/snapshots/runs`. Customer history omits global policy account lists and notification selections. The management UI, applying staged restores, broader metadata recovery and live deployment remain unfinished; these endpoints are not yet a shipped replacement for the archive backup screens.
+
+Persistent job verification: **69 passed** across the new job tests, existing archive backup tests and RPC tests. After the duplicate-worker notification fix, **12 job tests passed** again. Logs: `/root/boron-setup/snapshot-job-tests.log` and `/root/boron-setup/snapshot-job-final-tests.log`. The only warning was the existing FastAPI/Starlette TestClient dependency deprecation.

@@ -18,15 +18,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from daemon import backup  # noqa: E402
+from daemon import backup, snapshot_jobs  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s backup_scheduler: %(message)s")
 logger = logging.getLogger("backup_scheduler")
 
 
 def main() -> int:
+    from shared.db import init_db
+    init_db()
     triggered = backup.run_scheduled_backups()
+    triggered += snapshot_jobs.run_scheduled()
     logger.info("triggered %d scheduled backup(s)", triggered)
+    # Finish workers before interpreter shutdown so their notification workers
+    # can still be submitted normally.
+    backup._executor.shutdown(wait=True)
+    snapshot_jobs._executor.shutdown(wait=True)
     return 0
 
 

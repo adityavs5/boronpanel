@@ -22,12 +22,21 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, procmanager, pythonapps, redisacct, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, procmanager, pythonapps, redisacct, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("borond")
 
 OP_TABLE = {
+    "snapshot.destination.list": snapshot_jobs.destinations,
+    "snapshot.destination.create": snapshot_jobs.create_destination,
+    "snapshot.destination.initialize": snapshot_jobs.initialize_destination,
+    "snapshot.destination.recovery_key": snapshot_jobs.recovery_key,
+    "snapshot.policy.list": snapshot_jobs.policies,
+    "snapshot.policy.save": snapshot_jobs.save_policy,
+    "snapshot.policy.run": snapshot_jobs.queue_policy,
+    "snapshot.run.list": snapshot_jobs.runs,
+    "snapshot.run.browse": snapshot_jobs.browse,
     "account.create": handlers_account.create_account,
     "account.get": handlers_account.get_account,
     "account.list": handlers_account.list_accounts,
@@ -490,6 +499,7 @@ OP_TABLE = {
 # so a burst of usage polling can never starve the rest of the daemon.
 REPORTING_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reporting")
 REPORTING_OPS = {
+    "snapshot.destination.initialize", "snapshot.run.browse",
     "disktree.get", "disktree.top_files", "usage.get",
     # Phase 5: admin-only polling/dashboard ops that shell out or sample
     # live system state -- same isolation reasoning as disktree/usage
@@ -776,6 +786,10 @@ async def _cgroup_reconcile_loop() -> None:
 
 async def amain() -> None:
     init_db()
+    try:
+        snapshot_jobs.recover_runs()
+    except Exception:
+        logger.exception("Snapshot worker recovery failed at startup")
     try:
         await asyncio.get_running_loop().run_in_executor(None, cgroups.bootstrap_all_slices)
     except Exception:
