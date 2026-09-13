@@ -39,7 +39,7 @@ logger = logging.getLogger("borond.monitoring")
 
 # servicemgr's registry + fail2ban (monitored, not manageable -- see module
 # docstring). Key order is the display order in the admin UI.
-MONITORED_SERVICES = {**servicemgr.SERVICE_REGISTRY, "fail2ban": "fail2ban.service"}
+MONITORED_SERVICES = {**servicemgr.SERVICE_REGISTRY, "fail2ban": "fail2ban.service", "clock": "clock-sync"}
 
 # Same retention posture as HealthSnapshot (daemon/health.py): 24h of UI
 # data plus margin; this table has no natural cleanup event.
@@ -95,6 +95,9 @@ def set_settings(params: dict) -> dict:
 
 
 def _is_active(unit: str) -> bool:
+    if unit=="clock-sync":
+        from daemon.clock_health import get_status
+        return get_status(refresh=True)["status"]=="healthy"
     result = run(["systemctl", "is-active", unit], timeout=10)
     return result.stdout.strip() == "active"
 

@@ -257,6 +257,7 @@ export default function ServerHealth() {
   const h = health.data
   const rootDisk = h?.disks?.find((d) => d.mount === '/') || h?.disks?.[0]
   const attention = [
+    h?.clock && h.clock.status!=='healthy' && {label:'Clock synchronization needs attention',to:'#clock-health'},
     updateStatus?.update_available && { label: `Boron ${updateStatus.latest_version} is ready to install`, to: '/updates' },
     rootDisk?.pct >= 85 && { label: `Root disk is ${Math.round(rootDisk.pct)}% full — review account usage`, to: '/accounts' },
     h?.mem_pct >= 90 && { label: `Memory usage is ${Math.round(h.mem_pct)}% — review services`, to: '/services' },
@@ -342,6 +343,7 @@ export default function ServerHealth() {
 
       <MonitoringCard />
 
+      <Card id="clock-health" className="mb-6"><CardHeader><div><CardTitle>Clock &amp; 2FA health</CardTitle><CardDescription>Accurate server time keeps authenticator codes working.</CardDescription></div><Badge variant={h?.clock?.status==='healthy'?'success':h?.clock?.status==='critical'?'danger':'warning'}>{h?.clock?.status||'Unknown'}</Badge></CardHeader><CardContent><p className="text-sm">{h?.clock?.message||'Clock synchronization has not been verified.'}</p>{h?.clock?.source&&<dl className="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-3"><div><dt className="text-muted-foreground">Time source</dt><dd>{h.clock.source}</dd></div><div><dt className="text-muted-foreground">Clock offset</dt><dd>{(h.clock.offset_seconds*1000).toFixed(2)} ms</dd></div><div><dt className="text-muted-foreground">Estimated error bound</dt><dd>{(h.clock.error_bound_seconds*1000).toFixed(2)} ms</dd></div></dl>}<p className="mt-3 text-xs text-muted-foreground">Chrony corrects time continuously. Monitoring tracks clock failures and recovery; configure alert delivery in Service monitoring. Keep your 2FA recovery codes available.</p></CardContent></Card>
       <CloudflareCard />
 
       {/* 24h charts */}

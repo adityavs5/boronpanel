@@ -142,3 +142,13 @@ owned-parent selector and full-name preview. Backend ownership checks prevent
 cross-account DNS modifications, and zone lookup chooses the most specific match.
 Real ACL tests prove web-server access without granting unrelated accounts access.
 See DOMAIN-ROOTS.md for validation and remaining live deployment/DNS checks.
+
+## Progress — clock health and restart protection
+
+The installer now validates chrony configuration and applies bounded automatic
+restart after service failure. This protection is live and chrony has re-synchronized.
+Development health UI reports offset, uncertainty, stale measurements and sync failure;
+the existing monitor now includes clock transitions and notification cooldown. The
+probe is cached to keep dashboard polling inexpensive. CLOCK-HEALTH.md records live
+evidence and boundaries. Deployment of UI/monitoring and the complete admin/customer
+2FA workflow audit are still required; all other remaining requirements stay open.

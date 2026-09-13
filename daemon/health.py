@@ -14,6 +14,7 @@ import datetime as dt
 import time
 
 import psutil
+from daemon import clock_health
 from sqlalchemy import delete, select
 
 from shared.db import write_session
@@ -58,6 +59,7 @@ def get_live(params: dict | None = None) -> dict:
     net = psutil.net_io_counters()
     uptime_seconds = int(time.time() - psutil.boot_time())
     return {
+        "clock": clock_health.get_status(),
         "cpu_pct": round(cpu_pct, 1),
         "cpu_count": psutil.cpu_count() or 1,
         "load1": load1,

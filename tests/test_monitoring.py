@@ -35,6 +35,8 @@ def configured(isolated_db, mail_spy):
 
 
 def _stub_status(monkeypatch, down: set[str] = frozenset()):
+    from daemon import clock_health
+    monkeypatch.setattr(clock_health,"get_status",lambda refresh=False:{"status":"critical" if "clock" in down else "healthy"})
     def fake_run(argv, timeout=10):
         unit = argv[-1]
         service = next((k for k, u in monitoring.MONITORED_SERVICES.items() if u == unit), None)
@@ -190,12 +192,12 @@ def test_history_uptime_pct_and_state(configured, monkeypatch):
     assert len(by_service["dovecot"]["series"]) == 2
 
 
-def test_history_includes_all_seven_services(isolated_db, monkeypatch):
+def test_history_includes_services_and_clock(isolated_db, monkeypatch):
     _stub_status(monkeypatch)
     monitoring.check_services()
     data = monitoring.get_history({})
     assert {s["service"] for s in data["services"]} == set(monitoring.MONITORED_SERVICES)
-    assert len(data["services"]) == 7
+    assert len(data["services"]) == 8
 
 
 def test_retention_prunes_old_checks(configured, monkeypatch):
@@ -208,3 +210,12 @@ def test_retention_prunes_old_checks(configured, monkeypatch):
             select(ServiceCheck).where(ServiceCheck.checked_at < utcnow() - dt.timedelta(hours=48))
         ).all()
         assert old == []
+
+
+def test_clock_failure_and_recovery_use_alert_cooldown(configured,monkeypatch):
+    _stub_status(monkeypatch,down={'clock'})
+    assert monitoring.check_services()['alerts_sent']==['clock:down']
+    assert monitoring.check_services()['alerts_sent']==[]
+    _stub_status(monkeypatch)
+    assert monitoring.check_services()['alerts_sent']==['clock:recovery']
+    assert len(configured.sent)==2

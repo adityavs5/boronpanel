@@ -1272,6 +1272,7 @@ main() {
 
     apt_update
     install_base_packages
+    run bash "${REPO_ROOT}/scripts/install_time_sync.sh"
     install_openlitespeed
     install_stack_packages
     setup_quota
