@@ -166,6 +166,11 @@ def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
 
 
     from daemon import snapshot_restores as restores
+    catalog=restores.database_options({'username':'alpha','run_id':ident})
+    assert len(catalog['databases'])==1
+    assert catalog['databases'][0]['name']=='alpha_wp'
+    assert catalog['databases'][0]['available'] is True
+    assert catalog['databases'][0]['size']>0
     with connection.cursor() as cursor:cursor.execute("UPDATE alpha_wp.posts SET content='version before queued restore'")
     with pytest.raises(Exception,match='not found for this account'):
         restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'databases','databases':['bravo_wp']})
@@ -189,6 +194,14 @@ def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
         assert cursor.fetchone()[0]=='version before queued restore'
     assert not list(Path(settings.snapshot_private_dir).rglob('client-*.cnf'))
     assert not (Path(settings.snapshot_private_dir)/'database-safety'/f'account-{account.id}'/'databases').exists()
+    from sqlalchemy import delete
+    with write_session() as session:
+        session.execute(delete(DatabaseGrant).where(DatabaseGrant.account_id==account.id))
+    catalog=restores.database_options({'username':'alpha','run_id':ident})
+    assert catalog['databases'][0]['available'] is False
+    assert 'no longer registered' in catalog['databases'][0]['reason']
+    with pytest.raises(Exception,match='not found for this account'):
+        restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'databases','databases':['alpha_wp']})
 
 
 def test_startup_cleanup_only_removes_reserved_worker_names(sql):

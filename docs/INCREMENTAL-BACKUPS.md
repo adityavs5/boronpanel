@@ -108,3 +108,27 @@ regressions. Twelve backup job/API tests also passed, including forwarding selec
 database names only through the authorized customer endpoint. Logs are retained at
 `/root/boron-setup/snapshot-database-job-tests.log` and
 `/root/boron-setup/snapshot-database-job-api-tests.log`.
+
+### Database restore selection (development UI)
+
+Recovery-point details now include a database selector populated from the selected
+snapshot's SQL entries. The API enforces account access, and the daemon matches
+entries against current account ownership before marking them available. Removed
+registrations remain visible but disabled. Listing uses the repository lock and
+returns a retryable busy message instead of competing with backup/retention work.
+
+Both themes support selecting databases, typed confirmation, queued progress and
+previous-database recovery. History identifies files versus databases and explains
+partial failures. The UI explicitly states current import behavior: captured tables
+are replaced, later-created tables remain, and existing users/passwords remain.
+Deleted-database reconstruction, exact schema replacement and other previously
+listed backup requirements are still unfinished. No backup code has been deployed.
+
+Validation for database selection: production build passed; 30 backend database/job
+checks passed, plus a final real snapshot/SQL round trip proving removed ownership
+registrations disable and reject restores. Fourteen browser checks passed across
+Evolution and Paper Lantern, light/dark modes, mobile database confirmation,
+previous-version recovery and existing archive/file restore flows. Screenshots are
+in `/root/boron-setup/snapshot-database-ui-proof`; logs use the
+`/root/boron-setup/snapshot-database-` prefix. The snapshot interface is lazy-loaded
+and 4.80 KB gzip in this build; no dependencies were added.

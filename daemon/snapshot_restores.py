@@ -46,6 +46,33 @@ def _paths(values):
     return values
 
 
+def database_options(params):
+    account,source=_owned_run(params['username'],params['run_id'])
+    if 'databases' not in source.options['components']:return {'databases':[]}
+    directory=Path(settings.snapshot_private_dir)/'sources'/f'account-{account.id}'/'databases'
+    with write_session() as session:
+        owned=set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id==account.id)).all())
+    try:
+        with jobs.lock(f'repository-{source.destination_id}',blocking=False):
+            repo=jobs.repository(jobs._row(SnapshotDestination,source.destination_id))
+            nodes=storage.entries(repo,account.id,source.snapshot_id,str(directory))
+    except BlockingIOError:
+        raise ValidationError('This destination is busy. Try again shortly.') from None
+    databases=[]
+    for node in nodes:
+        path=Path(node.get('path',''))
+        if node.get('type')!='file' or path.parent!=directory or path.suffix!='.sql':continue
+        name=path.stem
+        try:
+            from daemon.snapshot_databases import _database_name
+            _database_name(name)
+        except ValidationError:continue
+        allowed=name in owned and name.startswith(account.username+'_')
+        databases.append({'name':name,'size':node.get('size',0),'available':allowed,
+            'reason':None if allowed else 'This database is no longer registered to this account.'})
+    return {'databases':sorted(databases,key=lambda item:item['name'])}
+
+
 def trigger(params):
     safety=jobs._row(SnapshotRestore,params['_safety']) if params.get('_safety') else None
     account,source=_owned_run(params['username'],params['run_id'],allow_expired=safety is not None)

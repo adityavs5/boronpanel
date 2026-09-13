@@ -48,6 +48,12 @@ def browse_snapshot(username: str, run_id: int, directory: str = '/', identity: 
     return call_daemon('snapshot.run.browse', identity, username=username, run_id=run_id, directory=directory)
 
 
+@api_router.get('/snapshots/runs/{run_id}/databases')
+def snapshot_databases(username: str, run_id: int, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon('snapshot.restore.databases', identity, username=username, run_id=run_id)
+
+
 class SnapshotRestoreBody(BaseModel):
     confirmation: str
     kind: str = 'files'

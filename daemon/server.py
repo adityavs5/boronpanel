@@ -28,6 +28,7 @@ from daemon.logsetup import configure_logging
 logger = logging.getLogger("borond")
 
 OP_TABLE = {
+    "snapshot.restore.databases": snapshot_restores.database_options,
     "snapshot.restore.trigger": snapshot_restores.trigger,
     "snapshot.restore.undo": snapshot_restores.undo,
     "snapshot.restore.list": snapshot_restores.list_restores,
@@ -502,7 +503,7 @@ OP_TABLE = {
 # so a burst of usage polling can never starve the rest of the daemon.
 REPORTING_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reporting")
 REPORTING_OPS = {
-    "snapshot.destination.initialize", "snapshot.run.browse",
+    "snapshot.destination.initialize", "snapshot.run.browse", "snapshot.restore.databases",
     "disktree.get", "disktree.top_files", "usage.get",
     # Phase 5: admin-only polling/dashboard ops that shell out or sample
     # live system state -- same isolation reasoning as disktree/usage

@@ -94,3 +94,13 @@ import logins before queue recovery. This remains development code. Deleted-data
 reconstruction, exact schema replacement, database UI, mail/config restore, safety
 retention and deployment are still required; all other open product requirements
 remain unchanged.
+
+## Progress — database restore selection in both themes
+
+Database restore selection and previous-version recovery are now connected to the
+customer recovery-point dialog. The snapshot-backed catalog is account-scoped and
+disables database entries whose ownership registration has been removed. Restore
+history distinguishes files and databases. Remaining backup requirements include
+deleted-database reconstruction, exact schema replacement, mail/config restoration,
+safety-snapshot retention, interaction audits and live deployment. The full product
+goal remains open.
