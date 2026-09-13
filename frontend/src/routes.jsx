@@ -116,6 +116,8 @@ export const router = createBrowserRouter(
         { path: 'files', element: customer(<Files />) },
         { path: 'backups', element: customer(<Backups />) },
         { path: 'apps', element: customer(<Apps />) },
+        { path: 'node-apps', element: customer(<Apps type="node" />) },
+        { path: 'python-apps', element: customer(<Apps type="python" />) },
         { path: 'redis', element: customer(<Redis />) },
         { path: 'dns', element: customer(<Dns />) },
         { path: 'ssl', element: customer(<Ssl />) },

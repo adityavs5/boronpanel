@@ -511,3 +511,21 @@ def test_check_expiring_certificates_no_active_domains_returns_zero(isolated_db,
     ha.create_account({"username": "demo1"})
     hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
     assert fssl.check_expiring_certificates() == 0
+
+
+def test_https_www_wordpress_expands_certificate_names(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    from shared.models import WordPressSiteState
+    from daemon.procutil import ProcResult
+    monkeypatch.setattr(fssl.settings,'letsencrypt_email','ops@example.com')
+    ha.create_account({'username':'demo1'})
+    hd.add_domain({'username':'demo1','domain':'demo1.example','kind':'primary'})
+    with write_session() as s:
+        s.add(WordPressSiteState(account_id=1,domain='demo1.example',path='',site_url='https://www.demo1.example'))
+    captured=[]
+    def run(args,**kw):
+        captured.extend(args)
+        return ProcResult(args=args,returncode=0,stdout='',stderr='')
+    monkeypatch.setattr(fssl,'run',run)
+    fssl.issue_certificate({'domain':'demo1.example'})
+    assert '--expand' in captured
+    assert captured.count('-d')==2 and 'www.demo1.example' in captured

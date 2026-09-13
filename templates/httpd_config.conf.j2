@@ -357,7 +357,7 @@ listener HTTP{
        this listener still wins for its own exact hostname (OLS's own
        documented most-specific-match-first lookup), so an existing explicit
        subdomain is never shadowed by enabling this. #}
-    map                      {{ vh.vhost_name }} {{ vh.domain }}{{ (", *." + vh.domain) if vh.get('wildcard') else "" }}
+    map                      {{ vh.vhost_name }} {{ vh.domain }}{{ (", www." + vh.domain) if vh.get("www_alias") else "" }}{{ (", *." + vh.domain) if vh.get('wildcard') else "" }}
 {% endfor %}
 }
 
@@ -384,7 +384,7 @@ listener HTTPS{
        this listener still wins for its own exact hostname (OLS's own
        documented most-specific-match-first lookup), so an existing explicit
        subdomain is never shadowed by enabling this. #}
-    map                      {{ vh.vhost_name }} {{ vh.domain }}{{ (", *." + vh.domain) if vh.get('wildcard') else "" }}
+    map                      {{ vh.vhost_name }} {{ vh.domain }}{{ (", www." + vh.domain) if vh.get("www_alias") else "" }}{{ (", *." + vh.domain) if vh.get('wildcard') else "" }}
 {% endfor %}
 }
 

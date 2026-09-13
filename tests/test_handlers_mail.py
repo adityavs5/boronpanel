@@ -347,3 +347,23 @@ def test_set_spam_filter_rejects_out_of_range_threshold(mail_domain_row):
 def test_get_spam_filter_rejects_unprovisioned_domain(isolated_db):
     with pytest.raises(ValidationError):
         hm.get_spam_filter({"domain": "never-provisioned.example"})
+
+
+def test_mailbox_provisions_owned_hosting_domain_on_demand(isolated_db, stub_mail, monkeypatch):
+    from shared.db import write_session
+    from shared.models import Account, Domain, MailDomain
+    from sqlalchemy import select
+    with write_session() as session:
+        a=Account(username='mailqa',status='active');session.add(a);session.flush()
+        session.add(Domain(account_id=a.id,domain='mailqa.example',docroot='/home/mailqa/public_html',kind='primary'))
+    monkeypatch.setattr(hm.dkim,'setup_dns_signing',lambda domain:{})
+    result=hm.create_mailbox({'domain':'mailqa.example','local_part':'hello','password':'StrongMailPassword_123!'})
+    assert result['email']=='hello@mailqa.example'
+    with write_session() as session:
+        assert session.scalar(select(MailDomain).where(MailDomain.domain=='mailqa.example')).account_id is not None
+    hm.create_mailbox({'domain':'mailqa.example','local_part':'second','password':'StrongMailPassword_123!'})
+
+
+def test_auto_mail_provisioning_rejects_unowned_domain(isolated_db, stub_mail):
+    with pytest.raises(RuntimeError,match='active hosting account'):
+        hm.ensure_mail_domain('unknown.example')

@@ -871,3 +871,17 @@ def test_all_active_vhosts_declares_separate_extprocessor_per_effective_version(
 
     php_app_names = sorted(p["php_app_name"] for p in account_procs)
     assert php_app_names == ["demo1_php81", "demo1_php83"]  # one per DISTINCT effective version, not per domain
+
+
+def test_www_alias_mapping_preserves_explicit_hosts(isolated_db):
+    from shared.db import write_session
+    from shared.models import Domain
+    with write_session() as s:
+        a=Account(username='alice',status='active');s.add(a);s.flush()
+        for name in ('alice.example','www.alice.example','other.example'):
+            s.add(Domain(account_id=a.id,domain=name,kind='addon',docroot='/home/alice/'+name))
+    with write_session() as s:
+        hosts,_=ols._all_active_vhosts(s)
+    assert not next(h for h in hosts if h['domain']=='alice.example')['www_alias']
+    assert not next(h for h in hosts if h['domain']=='www.alice.example')['www_alias']
+    assert next(h for h in hosts if h['domain']=='other.example')['www_alias']

@@ -5,10 +5,12 @@ what the admin UI links out to.
 """
 from __future__ import annotations
 
+import threading
+
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, MailDomain, MailUser
+from shared.models import Account, Domain, MailDomain, MailUser
 from shared.validation import (
     ValidationError,
     validate_domain,
@@ -105,6 +107,29 @@ def delete_mail_domain(params: dict) -> dict:
     return {"domain": domain_name, "status": "deleted"}
 
 
+_mail_provision_lock = threading.RLock()
+
+
+def ensure_mail_domain(domain_name: str) -> None:
+    """Provision mail lazily for an existing active hosting domain."""
+    with _mail_provision_lock:
+        with write_session() as session:
+            existing = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))
+            if existing is not None:
+                return
+            domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
+            account = session.get(Account, domain.account_id) if domain else None
+            if account is None or account.status != 'active':
+                raise RuntimeError(f"mail domain '{domain_name}' not provisioned for an active hosting account")
+            username, account_id = account.username, account.id
+        if mail.domain_exists(domain_name):
+            # Repair a cache row after an interrupted provisioning operation.
+            with write_session() as session:
+                session.add(MailDomain(account_id=account_id, domain=domain_name))
+        else:
+            create_mail_domain({'username': username, 'domain': domain_name})
+
+
 def create_mailbox(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
@@ -118,6 +143,8 @@ def create_mailbox(params: dict) -> dict:
         raise ValidationError("quota_mb must be an integer") from None
     if not (MAILBOX_QUOTA_MIN_MB <= quota_mb <= MAILBOX_QUOTA_MAX_MB):
         raise ValidationError(f"quota_mb must be between {MAILBOX_QUOTA_MIN_MB} and {MAILBOX_QUOTA_MAX_MB}")
+
+    ensure_mail_domain(domain_name)
 
     with write_session() as session:
         mail_domain = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))

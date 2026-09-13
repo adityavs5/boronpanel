@@ -336,18 +336,18 @@ function LogsDialog({ base, app, onOpenChange }) {
   )
 }
 
-export default function Apps() {
+export default function Apps({ type }) {
   const username = useAccountUsername()
 
   return (
     <div>
       <PageHeader
-        title="Applications"
-        description="Run Node.js and Python applications behind your domains."
+        title={type === "python" ? "Python App" : type === "node" ? "Node.js App" : "Applications"}
+        description={type ? `Create and manage ${type === "node" ? "Node.js" : "Python"} applications on your domains.` : "Run Node.js and Python applications behind your domains."}
         icon={Boxes}
       />
 
-      <Tabs defaultValue="node">
+      {type ? <AppsPanel key={type} username={username} type={type}/> : <Tabs defaultValue="node">
         <TabsList>
           <TabsTrigger value="node">Node.js</TabsTrigger>
           <TabsTrigger value="python">Python</TabsTrigger>
@@ -358,7 +358,7 @@ export default function Apps() {
         <TabsContent value="python">
           <AppsPanel username={username} type="python" />
         </TabsContent>
-      </Tabs>
+      </Tabs>}
     </div>
   )
 }

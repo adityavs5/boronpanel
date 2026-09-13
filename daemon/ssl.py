@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, DnsZone, SslExpiryNotice
+from shared.models import Account, Domain, DnsZone, SslExpiryNotice, WordPressSiteState
 from shared.validation import validate_domain, validate_username
 
 from daemon import cloudflare_accounts, dnsprovider, events
@@ -125,6 +125,15 @@ def issue_certificate(params: dict) -> dict:
     if not settings.letsencrypt_email:
         raise SslError("letsencrypt_email is not set in boron.toml")
 
+    with write_session() as session:
+        site_domain = session.scalar(select(Domain).where(Domain.domain == domain))
+        www_used = site_domain is not None and session.scalar(select(WordPressSiteState.id).where(
+            WordPressSiteState.account_id == site_domain.account_id,
+            WordPressSiteState.domain == domain,
+            WordPressSiteState.site_url.like('https://www.' + domain + '%'))) is not None
+        if www_used and session.scalar(select(Domain).where(Domain.domain == 'www.' + domain)) is not None:
+            raise SslError('The www hostname belongs to a separate site; update the WordPress address before requesting its certificate')
+    extra_names = ['--expand', '-d', 'www.' + domain] if www_used else []
     mode, challenge_args = _challenge_plan(domain)
     # Phase 3 feature 8: the SSL dashboard's "renew" button targets a
     # domain that may already have a perfectly valid, non-expiring-soon
@@ -145,6 +154,7 @@ def issue_certificate(params: dict) -> dict:
         "--email", settings.letsencrypt_email,
         "--cert-name", domain,
         "-d", domain,
+        *extra_names,
         "--deploy-hook", f"{_VENV_PYTHON} {DEPLOY_HOOK_SCRIPT}",
         *force_args,
         *challenge_args,

@@ -351,3 +351,22 @@ def test_install_subdirectory_rejects_path_traversal(
     with pytest.raises(wp.WordPressError, match="outside"):
         wp.install({"username": "demo1", "domain": "demo1.example", "path": "../../etc"})
     assert not stub_database["created"]
+
+
+@pytest.mark.parametrize('protocol,use_www', [('http',False),('https',False),('http',True),('https',True)])
+def test_install_address_options_reach_wordpress_and_inventory(account_with_domain, stub_network, stub_system, stub_install_script, stub_database, protocol, use_www):
+    from daemon import wpmanager
+    result=wp.install({'username':'demo1','domain':'demo1.example','protocol':protocol,'use_www':use_www})
+    url=protocol+'://'+('www.' if use_www else '')+'demo1.example'
+    assert result['admin_url']==url+'/wp-admin/'
+    assert stub_install_script[0][3]==url
+    assert wpmanager.inventory({'username':'demo1'})['installs'][0]['url']==url
+
+
+def test_www_address_refuses_separate_site(account_with_domain):
+    from shared.models import Domain
+    with write_session() as s:
+        s.add(Domain(account_id=account_with_domain['account_id'] if 'account_id' in account_with_domain else 1,
+            domain='www.demo1.example',kind='addon',docroot='/separate/site'))
+    with pytest.raises(wp.WordPressError,match='separate site'):
+        wp.website_url('demo1.example',use_www=True)

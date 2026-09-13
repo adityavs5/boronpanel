@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import RedirectResponse, HTMLResponse
 from pydantic import BaseModel
+from typing import Literal
 from starlette.requests import Request
 
 from api.rpc import call_daemon
@@ -14,6 +15,8 @@ ui_router = APIRouter(prefix="/ui/accounts/{username}/domains/{domain}/wordpress
 
 
 class InstallWordPressBody(BaseModel):
+    protocol: Literal["http", "https"] = "https"
+    use_www: bool = False
     path: str = ""  # QA round 2, item 3: install into a subdirectory (e.g. "blog") instead of the docroot itself
     title: str | None = None
     admin_user: str | None = None
@@ -145,6 +148,8 @@ class ManagerBody(BaseModel):
     backup: str = ""
     target_domain: str = ""
     target_path: str = ""
+    target_protocol: Literal["http", "https"] = "https"
+    target_www: bool = False
     confirm: bool = False
 
 @api_router.post("/manage")

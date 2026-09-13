@@ -1,5 +1,7 @@
 // One searchable vocabulary for dashboard tools and the keyboard palette.
 const synonyms = {
+  '/node-apps': 'node nodejs node.js javascript application apps express npm runtime',
+  '/python-apps': 'python application apps django flask fastapi wsgi asgi pip runtime',
   '/wordpress': 'wordpress wp blog website cms softaculous installer install clone staging backup login plugins themes',
   '/dns': 'dns zone editor zones records nameserver nameservers a aaaa cname mx txt spf dkim domain name management',
   '/domains': 'domain subdomain addon parked alias website redirect',

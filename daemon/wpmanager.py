@@ -71,6 +71,8 @@ def _operation(p):
         if not p.get('confirm'): raise ValidationError('Confirm restoring this site')
         c['backup'] = p.get('backup', '')
     cleanup = None
+    completed = None
+    clone_files_ready = False
     if action == 'clone':
         if p.get('target_path') and not re.fullmatch(r'[A-Za-z0-9_-]+', p['target_path']):
             raise ValidationError('Use a single folder name for the clone')
@@ -82,15 +84,24 @@ def _operation(p):
         if real == original or original.startswith(real + '/') or (real.startswith(original + '/') and os.path.dirname(real) != original):
             raise ValidationError('Choose a separate destination, not inside the source site')
         if os.path.exists(real) and any(name != '.well-known' and not (name == 'error_pages' and os.path.isdir(os.path.join(real,name)) and not os.listdir(os.path.join(real,name))) for name in os.listdir(real)): raise ValidationError('The clone destination must be empty')
+        target_url = wordpress.website_url(target_domain, p.get('target_path',''), p.get('target_protocol','https'), p.get('target_www',False))
         grant, suffix = wordpress._allocate_database(username, p.get('target_path',''))
         def cleanup():
+            if clone_files_ready: return
             wordpress.handlers_database.drop_database({'username': username, 'name': suffix})
-        c.update(target=target, database=grant, url='https://' + target_domain + ('/' + p['target_path'].strip('/') if p.get('target_path') else ''))
+        c.update(target=target, database=grant, url=target_url)
+        def completed():
+            nonlocal clone_files_ready
+            clone_files_ready = True
+            account = cmdjobs._account(username)
+            with write_session() as session:
+                state = _state(session, account.id, target_domain, p.get('target_path','').strip('/'))
+                state.hidden, state.site_url, state.scanned_at = False, target_url, utcnow()
     # The account worker owns every file operation; no customer PHP is run as root.
     try:
         return cmdjobs.submit(username, 'wpmanager', root, ['/usr/bin/python3', WORKER],
                               f'WordPress {action}: {domain}', input_text=json.dumps(c), timeout=1800,
-                              **({'on_failure': cleanup} if cleanup else {}))
+                              **({'on_failure': cleanup, 'on_success': completed} if cleanup else {}))
     except Exception:
         if cleanup: cleanup()
         raise
@@ -140,7 +151,7 @@ wp_safe_redirect(admin_url()); exit;
     parsed = urlsplit(site_url)
     # The bridge lives in the physical installation folder, even if WordPress
     # has a separately configured homepage URL.
-    origin = parsed.scheme + '://' + parsed.netloc
+    origin = wordpress.website_url(domain, '', parsed.scheme, parsed.hostname == 'www.' + domain)
     return {'url': origin + '/' + (path+'/' if path else '') + filename, 'token': token, 'expires_in': 90}
 
 
@@ -197,6 +208,7 @@ def refresh_site(p):
         parsed = urlsplit(url)
         if parsed.scheme not in ('http', 'https') or parsed.hostname not in (domain, 'www.'+domain) or parsed.username or parsed.password or parsed.port not in (None,80,443) or parsed.query or parsed.fragment:
             raise ValidationError('WordPress site URL must use this domain or its www alias over HTTP or HTTPS')
+        wordpress.website_url(domain, path, parsed.scheme, parsed.hostname == 'www.' + domain)
         database = _database_at(username, root)
         db_user = _account_command(username, root, ['config', 'get', 'DB_USER'])
         with write_session() as session:

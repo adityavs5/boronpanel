@@ -277,6 +277,21 @@ def _allocate_database(username: str, path: str = "") -> tuple[dict, str]:
     raise WordPressError(f"could not allocate a database for the WordPress install: {last_error}")
 
 
+def website_url(domain: str, path: str = '', protocol: str = 'https', use_www: bool = False) -> str:
+    domain = validate_domain(domain)
+    if protocol not in ('http', 'https') or not isinstance(use_www, bool):
+        raise WordPressError('Choose HTTP or HTTPS and a valid www option')
+    if use_www:
+        if domain.startswith('www.'):
+            raise WordPressError('This domain already starts with www; select the address without an extra www prefix')
+        with write_session() as session:
+            if session.scalar(select(Domain).where(Domain.domain == 'www.' + domain)) is not None:
+                raise WordPressError('The www address is configured as a separate site; select that domain instead')
+        if 'www.' + domain in (settings.webmail_hostname, settings.pma_hostname):
+            raise WordPressError('The www address is reserved for a panel service')
+    return protocol + '://' + ('www.' if use_www else '') + domain + ('/' + path.strip('/') if path else '')
+
+
 def install(params: dict) -> dict:
     """Synchronous core install -- see trigger_install for the async job
     wrapper the API/UI actually calls. QA round 2, item 3: an optional
@@ -287,6 +302,7 @@ def install(params: dict) -> dict:
     username = validate_username(params["username"])
     domain_name = validate_domain(params["domain"])
     path = (params.get("path") or "").strip().strip("/")
+    site_url = website_url(domain_name, path, params.get("protocol", "https"), params.get("use_www", False))
     title = (params.get("title") or domain_name).strip()
     admin_user = (params.get("admin_user") or "admin").strip()
     admin_email = (params.get("admin_email") or f"webmaster@{domain_name}").strip()
@@ -334,7 +350,6 @@ def install(params: dict) -> dict:
         _write_wp_config(target_dir, db_grant["db_name"], db_grant["db_user"], db_grant["password"])
         run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", target_dir], check=True)
 
-        site_url = f"https://{domain_name}" if not path else f"https://{domain_name}/{path}"
         _run_silent_install(target_dir, username, home_dir, site_url, title, admin_user, admin_email, admin_password)
     except Exception:
         try:
@@ -352,10 +367,12 @@ def install(params: dict) -> dict:
         state = session.scalar(select(WordPressSiteState).where(
             WordPressSiteState.account_id == account_id,
             WordPressSiteState.domain == domain_name, WordPressSiteState.path == path))
-        if state is not None:
-            state.hidden = False
-            state.site_url = site_url
-            state.scanned_at = utcnow()
+        if state is None:
+            state = WordPressSiteState(account_id=account_id, domain=domain_name, path=path)
+            session.add(state)
+        state.hidden = False
+        state.site_url = site_url
+        state.scanned_at = utcnow()
         session.add(
             WordPressInstall(
                 account_id=account_id,

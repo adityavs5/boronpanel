@@ -4,13 +4,13 @@ Open **WordPress Manager** from the user dashboard. Administrators have **WordPr
 
 ## Create a website
 
-1. Choose **Install WordPress** and select a domain.
+1. Choose **Install WordPress**, select a domain, and choose HTTP or HTTPS with or without www.
 2. Leave the folder empty for the main website, or enter a folder such as `blog`.
 3. Set the website name, administrator username and email. A strong password is generated automatically; you can change it or reveal it.
 4. Review the address and choose **Install WordPress**. The panel downloads the current stable WordPress release, creates its database and completes setup.
 5. Save the credentials shown when installation finishes. Use **Log in** on the site card to open its WordPress dashboard without entering them again.
 
-The domain must point to this server and have a valid certificate for normal HTTPS access. Installation refuses to overwrite an existing website. Boron's empty provisioning folders are preserved. Manually uploaded WordPress sites are detected too, at the domain root or one subfolder level.
+The selected hostname must point to this server. HTTPS requires a valid certificate covering that hostname. When an installed WordPress site uses HTTPS with www, issuing its certificate from SSL Management includes both the domain and its www name. Installation refuses to overwrite an existing website. Boron's empty provisioning folders are preserved. Manually uploaded WordPress sites are detected too, at the domain root or one subfolder level.
 
 ## Manage an existing website
 
@@ -22,7 +22,7 @@ Choose **Manage website** on a site card:
 - **Plugins / Themes:** inspect installed extensions, activate a theme, activate/deactivate plugins, and update extensions.
 - **Backups:** create a private backup of website files and the database; select a restore point to recover the site. Restore requires confirmation and first creates a safety backup. If recovery fails, the worker attempts to restore the pre-operation files and database.
 - **Remove:** remove only the panel record while keeping the live website, or permanently remove its files and account-owned database. Permanent removal requires typing the exact installation address and refuses shared databases or shared database users. A scan can rediscover a site whose panel record was removed.
-- **Clone site:** defaults to a `staging` folder on the same domain. Choose another empty folder or another domain if preferred. The copy receives a separate database, fresh authentication salts and updated URLs, including serialized WordPress data. Existing WordPress users are retained, and search engine indexing starts disabled.
+- **Clone site:** defaults to a `staging` folder on the same domain. Choose another empty folder or another domain if preferred, and select the destination’s HTTP/HTTPS and www format. The copy receives a separate database, fresh authentication salts and updated URLs, including serialized WordPress data. Existing WordPress users are retained, and search engine indexing starts disabled.
 
 Backups are local to the hosting account, outside the public website. They are not an off-server disaster-recovery service. Subfolder WordPress installations are handled independently: a parent-site backup excludes them, and restoring the parent preserves them. Symbolic links and special files are excluded from backups and clones. Cloning does not reconfigure external services used by third-party plugins.
 

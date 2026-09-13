@@ -4,7 +4,7 @@ const customerGroups = {
   evolution: [
     ['Account Manager', ['/domains', '/dns', '/ssl', '/databases', '/ftp', '/change-password']],
     ['E-mail Manager', ['/email']],
-    ['WordPress & Websites', ['/wordpress', '/apps']],
+    ['WordPress & Websites', ['/wordpress', '/node-apps', '/python-apps']],
     ['Advanced Features', [ '/php', '/redis', '/cron', '/git', '/ssh', '/devtools']],
     ['System Info & Files', ['/files', '/backups', '/disk-usage', '/processes', '/logs', '/terminal']],
     ['Account & Preferences', ['/security', '/appearance']],
@@ -16,7 +16,7 @@ const customerGroups = {
     ['Email', ['/email']],
     ['Metrics', ['/logs', '/processes']],
     ['Security', ['/ssl', '/ssh', '/security']],
-    ['Software', ['/wordpress', '/apps', '/php', '/devtools']],
+    ['Software', ['/wordpress', '/node-apps', '/python-apps', '/php', '/devtools']],
     ['Advanced', ['/cron', '/terminal']],
     ['Preferences', ['/change-password', '/appearance']],
   ],
@@ -45,7 +45,7 @@ const adminGroups = {
 const labels = {
   '/files': 'File Manager', '/email': 'Email Accounts', '/ftp': 'FTP Accounts',
   '/ssl': 'SSL Certificates', '/dns': 'DNS Management', '/php': 'PHP Settings',
-  '/git': 'Git Version Control', '/apps': 'Applications', '/redis': 'Redis',
+  '/git': 'Git Version Control', '/apps': 'Applications', '/node-apps': 'Node.js App', '/python-apps': 'Python App', '/redis': 'Redis',
   '/accounts': 'Manage Accounts', '/health': 'Server Information', '/services': 'Service Monitor',
   '/updates': 'Panel Updates', '/appearance': 'Change Style',
 }

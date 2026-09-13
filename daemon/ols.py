@@ -398,6 +398,8 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
     # env line on their extProcessor (daemon/phpext.py's mechanism); everyone
     # else keeps the compiled-in stock scan dir by rendering nothing.
     ext_override_ids = set(session.scalars(select(PhpExtensionSet.account_id)).all())
+    reserved_hosts = set(session.scalars(select(Domain.domain)).all())
+    reserved_hosts.update((settings.webmail_hostname, settings.pma_hostname))
     domain_vhosts = []
     account_procs = []
     for account in accounts:
@@ -436,6 +438,7 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
             domain_vhosts.append({
                 "vhost_name": _vhost_name(d.domain),
                 "domain": d.domain,
+                "www_alias": not d.domain.startswith("www.") and "www." + d.domain not in reserved_hosts,
                 "account_home": account_home,
                 "app_proxy": app_proxies.get(d.domain),
                 # Missing-features batch, goal feature 3: whether

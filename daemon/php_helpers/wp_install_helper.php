@@ -18,7 +18,8 @@ $admin_password = stream_get_contents(STDIN);
 $parts = parse_url($site_url);
 $_SERVER['HTTP_HOST'] = $parts['host'];
 $_SERVER['SERVER_NAME'] = $parts['host'];
-$_SERVER['REQUEST_URI'] = '/';
+$_SERVER['PHP_SELF'] = rtrim($parts['path'] ?? '', '/') . '/wp-admin/install.php';
+$_SERVER['REQUEST_URI'] = $_SERVER['PHP_SELF'];
 $_SERVER['SERVER_PORT'] = (isset($parts['scheme']) && $parts['scheme'] === 'https') ? 443 : 80;
 $_SERVER['HTTPS'] = (isset($parts['scheme']) && $parts['scheme'] === 'https') ? 'on' : '';
 
@@ -28,4 +29,8 @@ require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 require_once ABSPATH . 'wp-admin/includes/translation-install.php';
 
 $result = wp_install($title, $admin_user, $admin_email, true, '', $admin_password);
+// Persist the selected scheme, hostname and folder; URL guessing in CLI
+// installations otherwise drops subdirectory paths.
+update_option('siteurl', rtrim($site_url, '/'));
+update_option('home', rtrim($site_url, '/'));
 echo json_encode(array('success' => true, 'result' => $result));

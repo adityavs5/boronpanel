@@ -65,3 +65,14 @@ The follow-up deployment adds explicit scan/import and per-site refresh, panel-r
 - Production build, Python compilation and whitespace checks passed. The pre-deployment code backup is `wp-polish-pre-deploy.tar.gz` under the protected setup directory.
 
 The final deployed services and login were checked after restart. Live evidence is in `wp-polish-live.log`, `wp-polish-live-browser.log` and `wp-scan-access-check.log` under `/root/boron-setup/`.
+
+
+## Address-selection and removal integration follow-up
+
+- 167 affected WordPress, OLS and SSL tests passed; four PHP-helper tests exercise actual PHP execution and prove exact URL persistence. 24 browser tests cover both themes, dedicated Python/Node.js routes and installer address controls; two final wizard checks passed after strengthening generated passwords.
+- Live HTTP www installation and HTTP/non-www and HTTPS/www cloning passed. The PHP install helper was corrected to preserve subdirectory URLs; a new `addressverify` installation confirmed both actual WordPress URL options without manual repair.
+- HTTP www and HTTPS www one-click login reached authenticated dashboards and rejected reused tokens. HTTP naturally produces browser mixed-content console notices; the login flow completed without bypassing browser controls.
+- The QA mailbox was created on a previously unprovisioned mail domain and authenticated to real IMAP.
+- Soft record removal left the QA website online, and scanning restored its inventory entry. After the user specifically approved deletion, job 30 permanently removed only the newly created `plainhttp` clone’s files/database/database user. All other installations remained registered. The initial retained-site HTTP probe exceeded its default five-second timeout; a read-only follow-up with a 45-second timeout returned 200 for all three retained test sites.
+
+Evidence under `/root/boron-setup/`: `wp-url-tests.log`, `wp-php-helper-tests.log`, `wp-url-browser.log`, `wp-url-final-wizard.log`, `wp-fresh-url-proof.log`, `wp-url-login-browser.log`, `wp-https-www-login.log`, `mail-provision-proof.log`, `wp-soft-remove-proof.log`, and `wp-hard-remove-proof.log`.
