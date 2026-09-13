@@ -15,6 +15,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import pwd
 import shutil
 import socket
 import struct
@@ -99,6 +100,7 @@ def health_servers(sandbox):
     def rpc_server():
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(sandbox["rpc_socket"])
+        os.chmod(sandbox["rpc_socket"], 0o666)
         srv.listen(4)
         srv.settimeout(0.5)
         while not stop.is_set():
@@ -110,6 +112,10 @@ def health_servers(sandbox):
                 break
             with conn:
                 try:
+                    _, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+                    sandbox.setdefault("rpc_peer_uids", []).append(uid)
+                    if "expected_rpc_uid" in sandbox and uid != sandbox["expected_rpc_uid"]:
+                        continue
                     header = conn.recv(4)
                     if len(header) < 4:
                         continue
@@ -140,7 +146,7 @@ def _make_job(kind="update", status="finalizing", old_dir="", new_dir="") -> int
 
 
 def _run_finalizer(sandbox, job_id, *, mode="update", api_url, health_timeout=20,
-                   convert=False, old=None, new=None):
+                   convert=False, old=None, new=None, rpc_user=None):
     argv = [
         sys.executable, str(sandbox["script"]),
         "--job-id", str(job_id),
@@ -152,6 +158,7 @@ def _run_finalizer(sandbox, job_id, *, mode="update", api_url, health_timeout=20
         "--log", str(sandbox["log"]),
         "--api-health-url", api_url,
         "--rpc-socket", sandbox["rpc_socket"],
+        "--rpc-user", rpc_user or pwd.getpwuid(os.geteuid()).pw_name,
         "--systemctl-bin", str(sandbox["systemctl"]),
         "--health-timeout", str(health_timeout),
     ]
@@ -283,3 +290,15 @@ def test_swap_is_refused_on_non_symlink_without_convert_flag(sandbox, health_ser
     job = _read_job(job_id)
     assert job.status == "failed"
     assert "not a symlink" in job.error
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="credential switching requires root")
+def test_health_probe_uses_api_identity_then_restores_root(sandbox, health_servers):
+    account = pwd.getpwnam("nobody")
+    sandbox["base"].chmod(0o711)
+    sandbox["expected_rpc_uid"] = account.pw_uid
+    job_id = _make_job()
+    proc = _run_finalizer(sandbox, job_id, api_url=health_servers["api_url"], rpc_user="nobody")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert sandbox["rpc_peer_uids"] == [account.pw_uid]
+    assert _read_job(job_id).status == "completed"  # root-only DB write after probe

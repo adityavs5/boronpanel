@@ -41,6 +41,7 @@ import argparse
 import datetime
 import json
 import os
+import pwd
 import socket
 import sqlite3
 import ssl
@@ -169,13 +170,21 @@ class Finalizer:
         """One real RPC round trip: 4-byte BE length + JSON, op update.status.
         ANY well-formed reply frame (ok:true or ok:false) proves the daemon
         is serving -- a rolled-back-to version may not know the op."""
+        original_uid, original_gid = os.geteuid(), os.getegid()
         try:
+            # The daemon authenticates SO_PEERCRED and rejects root peers.
+            # This finalizer is single-threaded: drop identity for the socket
+            # round trip only, then restore it before DB/log/symlink work.
+            account = pwd.getpwnam(self.args.rpc_user)
+            if account.pw_uid != original_uid:
+                os.setegid(account.pw_gid)
+                os.seteuid(account.pw_uid)
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.settimeout(5)
                 sock.connect(self.args.rpc_socket)
                 payload = json.dumps({
                     "op": "update.status",
-                    "params": {"_actor": "update-finalizer", "_role": "system", "_ip": None},
+                    "params": {"_actor": "update-finalizer", "_role": "admin", "_ip": None},
                     "request_id": f"finalize-{self.args.job_id}",
                 }).encode()
                 sock.sendall(struct.pack(">I", len(payload)) + payload)
@@ -185,8 +194,13 @@ class Finalizer:
                     return False
                 body = json.loads(self._recv_exact(sock, length).decode())
                 return isinstance(body, dict) and "ok" in body
-        except (OSError, ValueError):
+        except (OSError, ValueError, KeyError):
             return False
+        finally:
+            if os.geteuid() != original_uid:
+                os.seteuid(original_uid)
+            if os.getegid() != original_gid:
+                os.setegid(original_gid)
 
     @staticmethod
     def _recv_exact(sock: socket.socket, n: int) -> bytes:
@@ -315,6 +329,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--log", required=True)
     p.add_argument("--api-health-url", required=True)
     p.add_argument("--rpc-socket", required=True)
+    p.add_argument("--rpc-user", default="boron-api")
     p.add_argument("--alert-sender", default="")
     p.add_argument("--alert-recipient", default="")
     p.add_argument("--convert-live-dir", action="store_true",
