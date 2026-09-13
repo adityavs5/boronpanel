@@ -275,8 +275,22 @@ themes. See `/root/boron-setup/expansion-predeploy-tests.log`,
 `panel-access-live-browser-final.log`. External crawler verification of the
 nonstandard port was unsupported; DNS-based browser/API checks ran on this server.
 
-phpMyAdmin packages are installed without replacing the web server. Public DNS,
-vhost/SSL, one-click database access and renewal integration remain unfinished.
+phpMyAdmin packages are installed without replacing the web server. Public DNS
+now resolves phpmyadmin.boron.sitecountry.com to 104.234.179.66 from 1.1.1.1 and
+the authoritative Cloudflare nameserver. Vhost/SSL, one-click database access
+and renewal integration remain unfinished.
 The user reports the record corrected and requests retrying after propagation;
 continue without repeated questions while they are away. Remaining original
 requirements must finish before the recorded second phase begins.
+
+
+phpMyAdmin follow-up findings for initial-phase implementation: `_challenge_plan`
+in `daemon/ssl.py` currently special-cases webmail but not phpMyAdmin, and the
+standard SSL deploy hook also lacks the phpMyAdmin refresh branch. The current
+signon template reads then unlinks the token file, which does not prove atomic
+single-use under concurrent requests; address this before exposing the service.
+Verify secure session/caching/referrer behavior and real database-scoped access.
+OLS may require the same non-root docroot-owner compatibility handling as the
+panel challenge root; keep executable package files unwritable by the PHP worker.
+The package is installed at `/usr/share/phpmyadmin`; token cleanup cron already
+exists. Do not start second-phase additions until the original checklist is done.
