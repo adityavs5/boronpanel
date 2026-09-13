@@ -45,7 +45,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, WordPressInstall, WordPressJob
+from shared.models import Account, Domain, WordPressInstall, WordPressJob, WordPressSiteState, utcnow
 from shared.validation import generate_strong_password, validate_domain, validate_password_strength, validate_username
 
 from daemon import handlers_database
@@ -349,6 +349,13 @@ def install(params: dict) -> dict:
     run(["runuser", "-u", username, "--", "setfacl", "-R", "-m", "u:nobody:rX", "-d", "-m", "u:nobody:rX", target_dir], check=True)
 
     with write_session() as session:
+        state = session.scalar(select(WordPressSiteState).where(
+            WordPressSiteState.account_id == account_id,
+            WordPressSiteState.domain == domain_name, WordPressSiteState.path == path))
+        if state is not None:
+            state.hidden = False
+            state.site_url = site_url
+            state.scanned_at = utcnow()
         session.add(
             WordPressInstall(
                 account_id=account_id,

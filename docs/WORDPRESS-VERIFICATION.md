@@ -51,3 +51,17 @@ Protected server logs, screenshots and the pre-change deployment backup are outs
 User instructions: [WordPress Manager](WORDPRESS-MANAGER.md). Design sources: [UX research](WORDPRESS-UX-RESEARCH.md).
 
 The QA account was retained: automatic approval review required explicit permission before permanently deleting its sites and databases.
+
+## Discovery and interior-page follow-up
+
+The follow-up deployment adds explicit scan/import and per-site refresh, panel-record removal, confirmed permanent removal, and directly accessible database/SSL management dialogs.
+
+- Full regression run: **1,895 passed, 2 optional skips, 3 existing warnings** (`wp-polish-full-tests.log`).
+- Browser suite: **22 passed** in both themes, including discovery/refresh controls, permanent-removal confirmation, installation, extensions, backups, cloning, search, mobile layouts, and database/SSL dialogs (`wp-lifecycle-browser.log`).
+- Focused backend run: **98 passed**; additional callback, removal-transaction and inventory-ownership checks passed. These overlap the broad suite and should not be added to its count.
+- Final ownership review verifies that metadata from a domain's previous account cannot appear in the current account's inventory. Seven affected regressions passed after that adjustment (`wp-inventory-isolation-tests.log`).
+- Live scanning refreshed six existing QA installations; individual refresh, authenticated one-click login and consumed-token rejection passed. Customer whole-server/cross-account scans and cross-account refresh were rejected.
+- Permanent-removal tests exercise filesystem staging/rollback, nested-site preservation, database ownership/shared-database refusal and database-cleanup callback ordering. They do not delete existing live user installations.
+- Production build, Python compilation and whitespace checks passed. The pre-deployment code backup is `wp-polish-pre-deploy.tar.gz` under the protected setup directory.
+
+The final deployed services and login were checked after restart. Live evidence is in `wp-polish-live.log`, `wp-polish-live-browser.log` and `wp-scan-access-check.log` under `/root/boron-setup/`.

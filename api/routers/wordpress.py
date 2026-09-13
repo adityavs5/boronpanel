@@ -174,7 +174,7 @@ def open_wordpress_login(username: str, domain: str, path: str = Form(""), ident
     link = call_daemon("wpmanager.login", identity, username=username, domain=domain, path=path)
     nonce = secrets.token_urlsafe(24)
     origin = urlsplit(link['url'])
-    destination = f"https://{origin.netloc}"
+    destination = f"{origin.scheme}://{origin.netloc}"
     document = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Opening WordPress</title></head>
 <body><p>Opening your WordPress dashboard…</p>
 <form id="login" action="{html.escape(link['url'], quote=True)}" method="post">
@@ -185,3 +185,34 @@ def open_wordpress_login(username: str, domain: str, path: str = Form(""), ident
         'Content-Security-Policy': f"default-src 'none'; script-src 'nonce-{nonce}'; form-action {destination}; base-uri 'none'; frame-ancestors 'none'",
         'Referrer-Policy': 'no-referrer',
     })
+
+
+class ScanBody(BaseModel):
+    username: str | None = None
+
+
+@manager_router.post('/scan')
+def scan_installations(body: ScanBody, identity: Identity = Depends(get_identity)):
+    if body.username: require_account_access(identity, body.username)
+    else: require_admin(identity)
+    return call_daemon('wpmanager.scan', identity, username=body.username)
+
+
+@api_router.post('/refresh')
+def refresh_installation(username: str, domain: str, body: LoginBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon('wpmanager.refresh', identity, username=username, domain=domain, path=body.path)
+
+
+class RemoveBody(BaseModel):
+    path: str = ''
+    mode: str
+    confirmation: str = ''
+
+
+@api_router.post('/remove')
+def remove_installation(username: str, domain: str, body: RemoveBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon('wpmanager.remove', identity, username=username, domain=domain, **body.model_dump())

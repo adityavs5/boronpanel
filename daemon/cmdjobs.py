@@ -51,6 +51,7 @@ def submit(
     timeout: float | None = None,
     input_text: str | None = None,
     on_failure=None,
+    on_success=None,
 ) -> dict:
     """Create a CommandRun row and run `argv` as the account user in `target`.
     Returns the created job dict (status 'pending'). argv is the FULL command to
@@ -70,12 +71,12 @@ def submit(
 
     wrapped = ["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", *argv]
     _executor.submit(
-        _run_job, job_id, wrapped, target, redact or [], timeout or settings.command_run_timeout_seconds, input_text, on_failure
+        _run_job, job_id, wrapped, target, redact or [], timeout or settings.command_run_timeout_seconds, input_text, on_failure, on_success
     )
     return _job_dict(_get(job_id), reveal=False)
 
 
-def _run_job(job_id: int, argv: list[str], cwd: str, redact: list[str], timeout: float, input_text: str | None = None, on_failure=None) -> None:
+def _run_job(job_id: int, argv: list[str], cwd: str, redact: list[str], timeout: float, input_text: str | None = None, on_failure=None, on_success=None) -> None:
     with write_session() as session:
         job = session.get(CommandRun, job_id)
         job.status = "running"
@@ -83,6 +84,8 @@ def _run_job(job_id: int, argv: list[str], cwd: str, redact: list[str], timeout:
         result = run(argv, cwd=cwd, timeout=timeout, redact=redact or None, **({"input_text": input_text} if input_text is not None else {}))
         if result.returncode != 0 and on_failure:
             on_failure()
+        if result.returncode == 0 and on_success:
+            on_success()
         stdout = result.stdout[:MAX_CAPTURE]
         stderr = result.stderr[:MAX_CAPTURE]
         with write_session() as session:

@@ -236,3 +236,125 @@ def test_install_cannot_overlap_management_and_management_cannot_overlap_install
         s.add(WordPressJob(account_id=a.id,domain='alice.example',status='running'))
     with pytest.raises(Exception,match='already running'):
         manager.operation({'username':'alice','domain':'alice.example','action':'backup'})
+
+
+def test_soft_remove_hides_record_and_scan_rediscovers(sites, monkeypatch):
+    monkeypatch.setattr(manager, '_account_command', lambda user, root, args:
+        'http://alice.example' if args[0] == 'option' else 'alice_wp')
+    p = {'username':'alice','domain':'alice.example'}
+    assert manager.remove({**p,'mode':'soft'})['status'] == 'removed'
+    assert manager.inventory({'username':'alice'})['installs'] == []
+    assert (sites/'alice/wp-config.php').exists()
+    assert manager.scan({'username':'alice'})['found'] == 1
+    site = manager.inventory({'username':'alice'})['installs'][0]
+    assert site['url'] == 'http://alice.example'
+    assert site['scanned_at']
+
+
+def test_refresh_rejects_foreign_url(sites, monkeypatch):
+    monkeypatch.setattr(manager, '_account_command', lambda *args:'https://bob.example')
+    with pytest.raises(Exception, match='this domain'):
+        manager.refresh_site({'username':'alice','domain':'alice.example'})
+
+
+def test_hard_remove_requires_confirmation_and_owned_database(sites, monkeypatch):
+    p = {'username':'alice','domain':'alice.example','mode':'hard'}
+    with pytest.raises(Exception, match='exact installation address'):
+        manager.remove(p)
+    monkeypatch.setattr(manager, '_database_at', lambda *args:'unowned_database')
+    with pytest.raises(Exception, match='not registered'):
+        manager.remove({**p,'confirmation':'alice.example'})
+    assert (sites/'alice/wp-config.php').exists()
+
+
+def test_hard_remove_refuses_shared_database(sites, monkeypatch):
+    from shared.models import DatabaseGrant
+    from sqlalchemy import select
+    with write_session() as s:
+        account = s.scalar(select(Account).where(Account.username=='alice'))
+        s.add(DatabaseGrant(account_id=account.id, db_name='alice_wp', db_user='alice_wp'))
+    nested = sites/'alice/blog';nested.mkdir();(nested/'wp-config.php').write_text('<?php')
+    monkeypatch.setattr(manager, '_database_at', lambda *args:'alice_wp')
+    with pytest.raises(Exception, match='shares this database'):
+        manager.remove({'username':'alice','domain':'alice.example','mode':'hard','confirmation':'alice.example'})
+    assert (nested/'wp-config.php').exists()
+
+
+def test_remove_worker_rollback_and_commit_preserve_other_sites(worker, monkeypatch):
+    m,root,c,_ = worker
+    monkeypatch.setattr(m.subprocess,'run',lambda *args,**kw:SimpleNamespace(returncode=0,stdout='alice_wp',stderr=''))
+    nested=root/'blog';nested.mkdir();(nested/'wp-config.php').write_text('independent site')
+    cert=root/'.well-known';cert.mkdir();(cert/'token').write_text('validation')
+    c={**c,'database_name':'alice_wp','removal_id':'a'*32}
+    m.main({**c,'action':'remove_prepare'})
+    assert not (root/'wp-config.php').exists()
+    assert (nested/'wp-config.php').exists() and (cert/'token').exists()
+    m.main({**c,'action':'remove_rollback'})
+    assert (root/'index.php').read_text()=='original page'
+    m.main({**c,'action':'remove_prepare'})
+    m.main({**c,'action':'remove_commit'})
+    assert not (root/'wp-config.php').exists()
+    assert (nested/'wp-config.php').read_text()=='independent site'
+
+
+def test_remove_worker_database_change_leaves_files_intact(worker):
+    m,root,c,_=worker
+    with pytest.raises(RuntimeError, match='database changed'):
+        m.main({**c,'action':'remove_prepare','database_name':'expected','removal_id':'b'*32})
+    assert (root/'wp-config.php').read_text()=='original config'
+
+
+def test_customer_cannot_scan_other_accounts():
+    customer=Identity(panel_user_id=1,username='alice',role='customer',account_id=1,auth_method='session')
+    with pytest.raises(HTTPException):api.scan_installations(api.ScanBody(),customer)
+    with pytest.raises(HTTPException):api.scan_installations(api.ScanBody(username='bob'),customer)
+
+
+@pytest.mark.parametrize('database_failure', [False, True])
+def test_hard_removal_commits_only_after_database_cleanup(sites, monkeypatch, database_failure):
+    from shared.models import DatabaseGrant
+    from sqlalchemy import select
+    with write_session() as s:
+        a=s.scalar(select(Account).where(Account.username=='alice'))
+        grant=DatabaseGrant(account_id=a.id,db_name='alice_wp',db_user='alice_wp')
+        s.add(grant);s.flush();grant_id=grant.id
+    monkeypatch.setattr(manager,'_database_at',lambda *args:'alice_wp')
+    monkeypatch.setattr(manager.wpcli,'ensure_wpcli',lambda:'/fake/wp')
+    events=[]
+    def drop_database(name):
+        events.append('database')
+        if database_failure: raise RuntimeError('database unavailable')
+    monkeypatch.setattr(manager.wordpress.handlers_database.mariadb,'drop_database',drop_database)
+    monkeypatch.setattr(manager.wordpress.handlers_database.mariadb,'drop_db_user',lambda name:events.append('user'))
+    monkeypatch.setattr(manager,'_removal_worker',lambda u,r,c:events.append(c['action']))
+    def submit(*args,**kw):
+        try: kw['on_success']()
+        except Exception:
+            kw['on_failure']()
+            raise
+        return {'status':'completed'}
+    monkeypatch.setattr(manager.cmdjobs,'submit',submit)
+    p={'username':'alice','domain':'alice.example','mode':'hard','confirmation':'alice.example'}
+    if database_failure:
+        with pytest.raises(RuntimeError,match='database unavailable'):manager.remove(p)
+        assert events==['database','remove_rollback']
+        assert len(manager.inventory({'username':'alice'})['installs'])==1
+    else:
+        assert manager.remove(p)['status']=='completed'
+        assert events==['database','user','remove_commit']
+        assert manager.inventory({'username':'alice'})['installs']==[]
+    with write_session() as s:
+        assert (s.get(DatabaseGrant,grant_id) is not None)==database_failure
+
+
+def test_inventory_does_not_use_previous_domain_owners_metadata(sites):
+    from sqlalchemy import select
+    from shared.models import WordPressInstall
+    with write_session() as s:
+        bob=s.scalar(select(Account).where(Account.username=='bob'))
+        s.add(WordPressInstall(account_id=bob.id,domain='alice.example',path='',
+            admin_user='previous_owner_admin',db_name='bob_old',db_user='bob_old',wp_version='6.0'))
+    for scope in ({}, {'username':'alice'}):
+        site=next(i for i in manager.inventory(scope)['installs'] if i['domain']=='alice.example')
+        assert site['admin_user']==''
+        assert site['installed_at'] is None

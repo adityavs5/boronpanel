@@ -11,7 +11,7 @@ import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Badge } from '@/components/ui/Badge'
-import { ConfirmDialog } from '@/components/ui/Dialog'
+import { ConfirmDialog, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter } from '@/components/ui/Dialog'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '@/components/ui/DropdownMenu'
@@ -22,6 +22,7 @@ export default function Ssl() {
   const qc = useQueryClient()
   // confirm = { action: 'issue' | 'wildcard', row }
   const [confirm, setConfirm] = useState(null)
+  const [selected, setSelected] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['ssl', username],
@@ -57,7 +58,7 @@ export default function Ssl() {
       header: 'Domain',
       sortable: true,
       searchable: true,
-      render: (r) => <span className="font-medium text-foreground">{r.domain}</span>,
+      render: (r) => <button type="button" className="font-medium text-accent hover:underline text-left" onClick={() => setSelected(r)} aria-label={`Manage SSL for ${r.domain}`}>{r.domain}</button>,
     },
     {
       key: 'cert_status',
@@ -106,7 +107,8 @@ export default function Ssl() {
       render: (r) => {
         const hasCert = r.cert_status && r.cert_status !== 'missing' && r.cert_status !== 'none'
         return (
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setSelected(r)}>Manage SSL</Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon-sm" aria-label={`SSL actions for ${r.domain}`}>
@@ -167,6 +169,13 @@ export default function Ssl() {
         Wildcard SSL requires this domain's DNS zone to be managed by Boron (DNS-01 challenge);
         issuance is rejected with a clear reason otherwise.
       </p>
+
+      <Dialog open={!!selected} onOpenChange={open => !open && setSelected(null)}>
+        <DialogContent size="lg"><DialogHeader><DialogTitle>SSL for {selected?.domain}</DialogTitle><DialogDescription>View certificate details and keep this site protected.</DialogDescription></DialogHeader>
+          <DialogBody className="space-y-5"><dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm"><dt className="text-muted-foreground">Status</dt><dd><StatusBadge status={selected?.cert_status}/></dd><dt className="text-muted-foreground">Issuer</dt><dd>{selected?.issuer || 'No certificate issued'}</dd><dt className="text-muted-foreground">Expires</dt><dd>{selected?.expiry_date ? formatDateShort(selected.expiry_date) : '—'}</dd><dt className="text-muted-foreground">Automatic renewal</dt><dd>{timerActive ? 'Enabled' : 'Not active'}</dd></dl>
+          <div className="flex flex-wrap gap-3"><Button onClick={() => {setConfirm({action:'issue',row:selected});setSelected(null)}}><RefreshCw className="h-4 w-4"/> {selected?.cert_status && !['missing','none'].includes(selected.cert_status) ? 'Renew certificate' : 'Issue certificate'}</Button><Button variant="outline" onClick={() => {setConfirm({action:'wildcard',row:selected});setSelected(null)}}><Asterisk className="h-4 w-4"/> Wildcard certificate</Button></div></DialogBody>
+          <DialogFooter><Button variant="secondary" onClick={() => setSelected(null)}>Done</Button></DialogFooter></DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={!!confirm}

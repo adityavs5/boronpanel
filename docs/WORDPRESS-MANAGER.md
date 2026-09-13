@@ -14,11 +14,14 @@ The domain must point to this server and have a valid certificate for normal HTT
 
 ## Manage an existing website
 
+**Scan for installations** discovers uploaded/imported sites and refreshes their registered URLs. A site card’s **Refresh** action updates that site’s metadata. Scans report configuration or database errors per site.
+
 Choose **Manage website** on a site card:
 
 - **Overview:** update WordPress core, clear its object cache, or enable/disable maintenance mode.
 - **Plugins / Themes:** inspect installed extensions, activate a theme, activate/deactivate plugins, and update extensions.
 - **Backups:** create a private backup of website files and the database; select a restore point to recover the site. Restore requires confirmation and first creates a safety backup. If recovery fails, the worker attempts to restore the pre-operation files and database.
+- **Remove:** remove only the panel record while keeping the live website, or permanently remove its files and account-owned database. Permanent removal requires typing the exact installation address and refuses shared databases or shared database users. A scan can rediscover a site whose panel record was removed.
 - **Clone site:** defaults to a `staging` folder on the same domain. Choose another empty folder or another domain if preferred. The copy receives a separate database, fresh authentication salts and updated URLs, including serialized WordPress data. Existing WordPress users are retained, and search engine indexing starts disabled.
 
 Backups are local to the hosting account, outside the public website. They are not an off-server disaster-recovery service. Subfolder WordPress installations are handled independently: a parent-site backup excludes them, and restoring the parent preserves them. Symbolic links and special files are excluded from backups and clones. Cloning does not reconfigure external services used by third-party plugins.
@@ -37,7 +40,7 @@ Only tools available to the current role appear. Evolution retains the requested
 
 ## Implementation and operational notes
 
-WordPress management executes as the hosting Linux account, never as root. Database credentials travel over private standard input rather than process arguments. The one-click login handoff is an authenticated same-origin POST with a nonce-based security policy permitting only the selected site's HTTPS destination. Its token is hashed in a temporary bridge, expires after 90 seconds, and is claimed atomically for single use. Tokens are not placed in URLs. Expired bridge files are cleaned during subsequent logins.
+WordPress management executes as the hosting Linux account, never as root. Database credentials travel over private standard input rather than process arguments. The one-click login handoff is an authenticated same-origin POST with a nonce-based security policy permitting only the selected site's verified HTTP or HTTPS destination. Its token is hashed in a temporary bridge, expires after 90 seconds, and is claimed atomically for single use. Tokens are not placed in URLs. Expired bridge files are cleaned during subsequent logins.
 
 The installer pins WP-CLI 2.12.0 and verifies its SHA-256 before installation at `/usr/local/bin/wp-cli.phar`. PHP CLI and its MySQL extension are installed as dependencies. The API's graceful shutdown is bounded so long-lived file-browser streams cannot indefinitely stall a panel restart.
 

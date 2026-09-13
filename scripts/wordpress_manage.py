@@ -60,6 +60,33 @@ def main(c):
         return {'name': name, 'size': dest.stat().st_size, 'created_at': dest.stat().st_mtime}
 
     action = c['action']
+    if action in ('remove_prepare', 'remove_commit', 'remove_rollback'):
+        token = c.get('removal_id', '')
+        if not re.fullmatch(r'[a-f0-9]{32}', token): raise RuntimeError('Invalid removal operation')
+        stage = store / ('removal-' + token)
+        if stage.is_symlink(): raise RuntimeError('Invalid removal staging directory')
+        if action == 'remove_prepare':
+            if wp('config', 'get', 'DB_NAME') != c['database_name']:
+                raise RuntimeError('WordPress database changed; refresh the installation and try again')
+            stage.mkdir(mode=0o700)
+            keep = nested_sites | {'.well-known', 'error_pages'} | set(c.get('protected', []))
+            try:
+                for child in root.iterdir():
+                    if child.name not in keep: child.rename(stage / child.name)
+            except Exception:
+                for child in stage.iterdir(): child.rename(root / child.name)
+                stage.rmdir()
+                raise
+            return {'message': 'Installation files and database removed. Separate nested sites and existing backups were preserved.'}
+        if not stage.exists(): return {'message': 'Removal cleanup already complete'}
+        if action == 'remove_rollback':
+            for child in stage.iterdir():
+                if (root / child.name).exists(): raise RuntimeError('A new file prevents automatic removal rollback')
+                child.rename(root / child.name)
+            stage.rmdir()
+            return {'message': 'Original files restored after failed removal'}
+        shutil.rmtree(stage)
+        return {'message': 'Removed installation files'}
     if action == 'backup': return capture()
     if action == 'backups':
         return {'backups': [{'name': f.name, 'size': f.stat().st_size, 'created_at': f.stat().st_mtime} for f in sorted(store.glob('*.tar.gz'), reverse=True) if f.is_file() and not f.is_symlink()]}

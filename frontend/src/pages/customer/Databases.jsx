@@ -22,6 +22,7 @@ export default function Databases() {
   const username = useAccountUsername()
   const qc = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
+  const [selected, setSelected] = useState(null)
   const [form, setForm] = useState({ name: '', password: '' })
   const [toDelete, setToDelete] = useState(null)
   const [creds, setCreds] = useState(null) // { title, db_name, db_user, password }
@@ -95,7 +96,7 @@ export default function Databases() {
       header: 'Database',
       sortable: true,
       searchable: true,
-      render: (r) => <span className="font-medium text-foreground">{r.db_name}</span>,
+      render: (r) => <button type="button" className="font-medium text-accent hover:underline text-left" onClick={() => setSelected(r)} aria-label={`Manage database ${r.db_name}`}>{r.db_name}</button>,
     },
     {
       key: 'db_user',
@@ -116,7 +117,8 @@ export default function Databases() {
       align: 'right',
       searchable: false,
       render: (r) => (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <Button size="sm" variant="outline" onClick={() => setSelected(r)}>Manage</Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.db_name}`}>
@@ -152,8 +154,7 @@ export default function Databases() {
       </PageHeader>
       {(data?.databases?.length ?? 0) > 0 && (
         <p className="mb-4 -mt-2 text-sm text-muted-foreground">
-          Open phpMyAdmin for a specific database from its <MoreHorizontal className="inline h-3.5 w-3.5 align-text-bottom" />{' '}
-          menu below — each session is scoped to that one database.
+          Select a database to open phpMyAdmin, manage credentials, or remove it.
         </p>
       )}
 
@@ -236,6 +237,17 @@ export default function Databases() {
           <DialogFooter>
             <Button variant="secondary" onClick={() => setCreds(null)}>Done</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!selected} onOpenChange={open => !open && setSelected(null)}>
+        <DialogContent size="lg">
+          <DialogHeader><DialogTitle>{selected?.db_name}</DialogTitle><DialogDescription>Manage this database and its dedicated user.</DialogDescription></DialogHeader>
+          <DialogBody className="space-y-5">
+            <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm"><dt className="text-muted-foreground">Database</dt><dd className="break-all">{selected?.db_name}</dd><dt className="text-muted-foreground">Username</dt><dd className="break-all">{selected?.db_user}</dd><dt className="text-muted-foreground">Created</dt><dd>{selected?.created_at ? formatDate(selected.created_at) : '—'}</dd></dl>
+            <div className="flex flex-wrap gap-3"><Button loading={pmaMut.isPending} onClick={() => pmaMut.mutate(selected)}><ExternalLink className="h-4 w-4"/> Open phpMyAdmin</Button><Button variant="outline" loading={resetMut.isPending} onClick={() => {resetMut.mutate(selected);setSelected(null)}}><KeyRound className="h-4 w-4"/> Reset password</Button></div>
+          </DialogBody>
+          <DialogFooter><Button variant="danger" onClick={() => {setToDelete(selected);setSelected(null)}}>Delete database</Button><Button variant="secondary" onClick={() => setSelected(null)}>Done</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

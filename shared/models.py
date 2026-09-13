@@ -1854,3 +1854,16 @@ class UpdateJob(Base):
     new_dir: Mapped[str | None] = mapped_column(String(255), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WordPressSiteState(Base):
+    """Discovery metadata and explicit suppression of removed panel records."""
+    __tablename__ = 'wordpress_site_states'
+    __table_args__ = (UniqueConstraint('account_id', 'domain', 'path', name='uq_wp_site_state'),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'), index=True)
+    domain: Mapped[str] = mapped_column(String(253))
+    path: Mapped[str] = mapped_column(String(255), default='')
+    hidden: Mapped[bool] = mapped_column(default=False)
+    site_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    scanned_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

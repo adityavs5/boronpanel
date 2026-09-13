@@ -13,6 +13,8 @@ for (const skin of ['evolution','paper-lantern']) {
       if(p.endsWith('/whoami')) data={role:'customer',username:'hostingdemo'}
       else if(p.endsWith('/onboarding')) data={completed:true}
       else if(p==='/api/v1/wordpress') data={installs:[{id:'example.com',username:'hostingdemo',domain:'example.com',path:'',wp_version:'6.8',admin_user:'siteadmin',url:'https://example.com'}],domains:[{username:'hostingdemo',domain:'example.com'},{username:'hostingdemo',domain:'clone.example.com'}],errors:[]}
+      else if(p.endsWith('/wordpress/scan')) data={found:1,errors:[]}
+      else if(p.endsWith('/wordpress/refresh')) data={status:'refreshed'}
       else if(p.endsWith('/wordpress') && route.request().method()==='POST') {installed=true;requests.push(route.request().postDataJSON());data={id:88,status:'pending'}}
       else if(p.endsWith('/jobs/88')) data={id:88,status:'completed'}
       else if(p.endsWith('/manage') || p.endsWith('/actions')) {const body=route.request().postDataJSON();requests.push(body);lastAction=body.action;data={id:requests.length,status:'pending'}}
@@ -27,6 +29,10 @@ for (const skin of ['evolution','paper-lantern']) {
     await page.getByRole('textbox',{name:'Filter tools'}).fill('softaculous')
     await page.locator('.tool-link').filter({hasText:'WordPress'}).click()
     await expect(page.getByRole('heading',{name:'WordPress Manager',exact:true})).toBeVisible()
+    await page.getByRole('button',{name:'Scan for installations'}).click()
+    await expect(page.getByText('Scan complete. 1 WordPress installation refreshed.')).toBeVisible()
+    await page.getByRole('button',{name:'Refresh example.com',exact:true}).click()
+    await expect(page.getByText('example.com refreshed from WordPress.')).toBeVisible()
     await page.screenshot({path:info.outputPath(`${skin}-wordpress.png`),fullPage:true})
     await page.getByRole('button',{name:'Install WordPress',exact:true}).click()
     await page.getByRole('combobox',{name:'Installation domain',exact:true}).selectOption('hostingdemo:clone.example.com')
@@ -57,6 +63,16 @@ for (const skin of ['evolution','paper-lantern']) {
     await page.getByRole('textbox',{name:'Clone folder',exact:true}).fill('')
     await page.getByRole('button',{name:'Clone website',exact:true}).click()
     await expect(page.getByRole('link',{name:'Open cloned website'})).toHaveAttribute('href','https://clone.example.com')
+    await page.getByRole('button',{name:'Done',exact:true}).click()
+    await page.getByRole('button',{name:'Manage website',exact:true}).click()
+    await page.getByRole('tab',{name:'Remove',exact:true}).click()
+    await expect(page.getByRole('combobox',{name:'Removal type'})).toHaveValue('soft')
+    await page.getByRole('combobox',{name:'Removal type'}).selectOption('hard')
+    await expect(page.getByRole('button',{name:'Permanently delete installation'})).toBeDisabled()
+    await page.getByRole('textbox',{name:'Confirm installation address'}).fill('wrong.example.com')
+    await expect(page.getByRole('button',{name:'Permanently delete installation'})).toBeDisabled()
+    await page.getByRole('textbox',{name:'Confirm installation address'}).fill('example.com')
+    await expect(page.getByRole('button',{name:'Permanently delete installation'})).toBeEnabled()
     await page.getByRole('button',{name:'Done',exact:true}).click()
     for(const width of [320,390,768]){
       await page.setViewportSize({width,height:844})
