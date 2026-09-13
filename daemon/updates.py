@@ -524,9 +524,16 @@ def _pytest_run(python_bin: str, live_dir: str):
     """Isolated so tests can monkeypatch it. Runs the LIVE tree's own suite
     (goal 4a) -- the same discipline as a manual run on this box: conftest's
     autouse isolation keeps tests away from production log/db state."""
+    # Tests exercise setgid directory semantics and must not inherit the
+    # daemon's RestrictSUIDSGID seccomp filter. A transient service provides
+    # the same execution context as a manual release check without relaxing
+    # the long-running daemon. RuntimeMaxSec also kills orphaned test workers.
     return run(
-        [python_bin, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider"],
-        cwd=live_dir, timeout=3600.0,
+        ["systemd-run", "--quiet", "--wait", "--pipe", "--collect",
+         f"--property=WorkingDirectory={live_dir}",
+         "--property=RuntimeMaxSec=3600",
+         python_bin, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider"],
+        cwd=live_dir, timeout=3660.0,
     )
 
 

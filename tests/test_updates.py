@@ -103,6 +103,7 @@ def _mock_github(monkeypatch, version="1.0.1", repo="acme/boron",
 def update_env(isolated_db, tmp_path, monkeypatch):
     """Filesystem sandbox: versions root, live symlink layout, download and
     backup dirs, log dir all under tmp_path."""
+    monkeypatch.setattr(settings, "update_preflight_min_free_mb", 0)
     root = tmp_path / "opt"
     root.mkdir()
     live_target = root / "boron-1.0.0"
@@ -781,3 +782,27 @@ def test_staged_venv_is_readable_under_daemon_umask(update_env, monkeypatch, tmp
     assert (target / ".venv/lib/dependency.py").stat().st_mode & 0o777 == 0o644
     assert (target / ".venv/bin/pip").stat().st_mode & 0o777 == 0o755
     assert outside.stat().st_mode & 0o777 == 0o700
+
+
+def test_preflight_tests_use_separate_service(monkeypatch):
+    calls = []
+    result = object()
+    monkeypatch.setattr(updates, "run", lambda argv, **kw: (calls.append((argv, kw)), result)[1])
+    assert updates._pytest_run("/opt/boron/.venv/bin/python", "/opt/boron") is result
+    argv, kwargs = calls[0]
+    assert argv[:5] == ["systemd-run", "--quiet", "--wait", "--pipe", "--collect"]
+    assert "--scope" not in argv  # scopes inherit the caller's seccomp filter
+    assert "--property=WorkingDirectory=/opt/boron" in argv
+    assert "--property=RuntimeMaxSec=3600" in argv
+    assert kwargs["timeout"] > 3600
+
+
+def test_preflight_refuses_insufficient_disk_space(update_env, monkeypatch):
+    from collections import namedtuple
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(settings, "update_preflight_min_free_mb", 2048)
+    monkeypatch.setattr(updates.shutil, "disk_usage", lambda path: usage(100, 90, 10))
+    job_id = _make_job()
+    with pytest.raises(updates._StepFailed):
+        updates._preflight(job_id)
+    assert "need 2048MB" in _get_job(job_id)["error"]
