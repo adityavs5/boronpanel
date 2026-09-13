@@ -4,6 +4,7 @@ import pytest
 
 from daemon.snapshot_mail_files import prepare_maildir
 from shared.validation import ValidationError
+from types import SimpleNamespace
 
 
 @pytest.fixture
@@ -107,3 +108,42 @@ def test_hardlinked_messages_become_independent_copies(staged):
     second = target / '.Archive/cur/linked:2,S'
     assert first.read_bytes() == second.read_bytes()
     assert first.stat().st_ino != second.stat().st_ino
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason='Worker drops root privileges')
+@pytest.mark.parametrize('failure', ['open', 'backup', 'timeout'])
+def test_worker_failure_removes_workspace_and_preserves_snapshot(staged, monkeypatch, failure):
+    import daemon.snapshot_mail_files as files
+    source, target, root = staged
+    workspaces = []
+    calls = []
+    original = (source / 'cur/message:2,S').read_bytes()
+
+    def run(args, **kwargs):
+        work = files.Path(kwargs['cwd'])
+        workspaces.append(work)
+        calls.append(args)
+        assert work.stat().st_mode & 0o777 == 0o710
+        assert '--no-new-privs' in args and '--clear-groups' in args
+        assert '--reuid=65534' in args and '--regid=65534' in args
+        assert kwargs['discard_stdout'] is True
+        if failure == 'timeout':
+            from subprocess import TimeoutExpired
+            raise TimeoutExpired(args, 1)
+        return SimpleNamespace(ok=failure == 'backup' and len(calls) == 1)
+
+    monkeypatch.setattr(files, 'run', run)
+    from subprocess import TimeoutExpired
+    with pytest.raises((ValidationError, TimeoutExpired)):
+        files.build_maildir(source, target, root, uid=65534, gid=65534)
+    assert workspaces and all(not path.exists() for path in workspaces)
+    assert not target.exists()
+    assert (source / 'cur/message:2,S').read_bytes() == original
+
+
+@pytest.mark.parametrize('uid,gid', [(0, 150), (150, 0), (True, 150), (150, -1)])
+def test_worker_rejects_privileged_or_invalid_identity(staged, uid, gid):
+    from daemon.snapshot_mail_files import build_maildir
+    with pytest.raises(ValidationError):
+        build_maildir(*staged, uid=uid, gid=gid)
+    assert not staged[1].exists()

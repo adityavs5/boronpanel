@@ -7,6 +7,8 @@ import tempfile
 
 import pytest
 
+from daemon.snapshot_mail_files import build_maildir
+
 
 @pytest.fixture
 def mailbox_store():
@@ -52,8 +54,21 @@ def mailbox_store():
         yield root, command, message
 
 
-def test_point_in_time_mail_restore_and_safety_undo(mailbox_store):
+@pytest.mark.skipif(os.geteuid() != 0, reason='Recovery worker requires root to drop privileges')
+def test_point_in_time_mail_restore_and_safety_undo(mailbox_store, tmp_path):
     root, command, message = mailbox_store
+    tmp_path.chmod(0o700)
+
+    def prepare(saved, output):
+        source = tmp_path / saved
+        shutil.copytree(root / saved, source)
+        before = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}
+        target = tmp_path / output
+        build_maildir(source, target, tmp_path, uid=65534, gid=65534)
+        assert {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()} == before
+        shutil.move(str(target), root / output)
+        for path in [root / output, *(root / output).rglob('*')]:
+            os.chown(path, 65534, 65534)
     message('INBOX', 'original', 'S')
     message('Archive', 'archived', 'SF')
     command('mailbox', 'subscribe', 'Archive')
@@ -68,8 +83,7 @@ def test_point_in_time_mail_restore_and_safety_undo(mailbox_store):
     # Maildir cannot reinsert expunged IMAP UIDs into INBOX in place. Build
     # a fresh replacement first. This fixture has no connected clients or LMTP;
     # production must quiesce the selected mailbox before any directory switch.
-    command('-o', 'mail_location=maildir:' + str(root / 'snapshot'),
-            'backup', '-f', 'maildir:' + str(root / 'prepared'))
+    prepare('snapshot', 'prepared')
     (root / 'live').rename(root / 'displaced')
     (root / 'prepared').rename(root / 'live')
     messages = command('fetch', 'hdr.message-id flags', 'ALL')
@@ -79,11 +93,30 @@ def test_point_in_time_mail_restore_and_safety_undo(mailbox_store):
     assert '\\Seen' in messages and '\\Flagged' in messages
     assert 'Archive' in command('mailbox', 'list', '-s')
     assert command('mailbox', 'status', 'messages uidvalidity uidnext', '*') == before
-    command('-o', 'mail_location=maildir:' + str(root / 'safety'),
-            'backup', '-f', 'maildir:' + str(root / 'prepared-undo'))
+    prepare('safety', 'prepared-undo')
     (root / 'live').rename(root / 'displaced-undo')
     (root / 'prepared-undo').rename(root / 'live')
     undone = command('fetch', 'hdr.message-id', 'ALL')
     assert '<newer@example.test>' in undone
     assert '<original@example.test>' not in undone
     assert '<archived@example.test>' in undone
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason='Recovery worker requires root to drop privileges')
+@pytest.mark.parametrize('with_message', [False, True])
+def test_worker_builds_raw_maildir_without_indexes(tmp_path, with_message):
+    tmp_path.chmod(0o700)
+    source = tmp_path / 'source'
+    for name in ('cur', 'new', 'tmp'):
+        (source / name).mkdir(parents=True)
+    if with_message:
+        (source / 'new/raw').write_bytes(b'Message-ID: <raw@example.test>\nSubject: raw\n\nhello\n')
+    target = tmp_path / 'prepared'
+    result = build_maildir(source, target, tmp_path, uid=65534, gid=65534)
+    assert target.is_dir() and result['files'] > 0
+    assert not (source / 'dovecot-uidlist').exists()
+    assert (target / 'dovecot-uidlist').exists()
+    messages = [*target.joinpath('cur').iterdir(), *target.joinpath('new').iterdir()]
+    assert len(messages) == int(with_message)
+    if with_message:
+        assert messages[0].read_bytes() == (source / 'new/raw').read_bytes()

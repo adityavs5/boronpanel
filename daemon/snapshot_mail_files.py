@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import tempfile
 
+from daemon.procutil import run
 from shared.validation import ValidationError
 
 
@@ -66,4 +68,66 @@ def prepare_maildir(source, destination, private_root):
         return {'files': count, 'bytes': size}
     except BaseException:
         shutil.rmtree(destination)
+        raise
+
+
+def build_maildir(source, destination, private_root, *, uid=150, gid=150, timeout=3600):
+    """Build a Dovecot-consistent replacement without opening a live mailbox.
+
+    The restore service must still authorize the snapshot, preserve a safety
+    snapshot and quiesce delivery/clients before applying the resulting tree.
+    Dovecot runs with no supplementary groups and an isolated configuration.
+    Only the mail-service identity can traverse its temporary working directory.
+    Neither the original snapshot nor its private ancestors are made accessible.
+    """
+    if os.geteuid() != 0:
+        raise ValidationError('Mail recovery preparation requires the backup service')
+    if any(type(value) is not int or value <= 0 for value in (uid, gid)):
+        raise ValidationError('Mail recovery worker must use an unprivileged identity')
+    destination = Path(destination)
+    # This also validates the destination boundary and rejects existing targets.
+    prepare_maildir(source, destination, private_root)
+    try:
+        with tempfile.TemporaryDirectory(prefix='boron-mail-build-', dir='/tmp') as directory:
+            work = Path(directory)
+            shutil.move(str(destination), work / 'source')
+            for name in ('home', 'run'):
+                (work / name).mkdir(mode=0o700)
+            for base, directories, files in os.walk(work):
+                for path in [Path(base), *[Path(base) / name for name in files]]:
+                    if path != work:
+                        os.chown(path, uid, gid, follow_symlinks=False)
+            config = work / 'dovecot.conf'
+            config.write_text(
+                f'base_dir = {work}/run\nmail_home = {work}/home\n'
+                f'mail_location = maildir:{work}/source\n'
+                f'mail_uid = {uid}\nmail_gid = {gid}\nfirst_valid_uid = 1\n'
+                'log_path = /dev/stderr\nssl = no\nmail_plugins =\n'
+                'namespace inbox {\n inbox = yes\n separator = /\n}\n'
+            )
+            os.chown(config, 0, gid)
+            config.chmod(0o640)
+            os.chown(work, 0, gid)
+            work.chmod(0o710)
+            prefix = ['/usr/bin/setpriv', f'--reuid={uid}', f'--regid={gid}',
+                      '--clear-groups', '--no-new-privs', '/usr/bin/doveadm', '-c', str(config)]
+            try:
+                # Raw snapshots can precede Dovecot's first index creation.
+                result = run([*prefix, 'mailbox', 'status', 'messages', '*'],
+                             cwd=str(work), timeout=timeout, discard_stdout=True)
+                if not result.ok:
+                    raise ValidationError('Dovecot could not open the saved mailbox')
+                result = run([*prefix, 'backup', '-f', 'maildir:' + str(work / 'home/prepared')],
+                             cwd=str(work), timeout=timeout, discard_stdout=True)
+                if not result.ok:
+                    raise ValidationError('Dovecot could not prepare the saved mailbox')
+            finally:
+                work.chmod(0o700)
+            result = prepare_maildir(work / 'home/prepared', work / 'exported', work)
+            shutil.move(str(work / 'exported'), destination)
+            return result
+    except BaseException:
+        # Destination was created by this call only. The source is never changed.
+        if destination.exists():
+            shutil.rmtree(destination)
         raise

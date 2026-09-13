@@ -464,3 +464,27 @@ file and directory links, FIFO rejection, incomplete Maildirs, existing-target
 retention, exact binary bytes, private permissions, hardlinks and simulated disk
 full. The primitive is not yet connected to the restore coordinator or deployed;
 it does not change ownership for Dovecot or touch live mailboxes.
+
+The same module now provides `build_maildir`, which consumes the validated copy
+and builds a fresh mailbox through the installed Dovecot binary. A root-owned
+temporary directory permits traversal only by the configured mail-service group;
+the isolated configuration is root-owned and group-readable. Source, home and run
+directories are owned by the unprivileged worker. `setpriv` clears supplementary
+groups, drops UID/GID and sets no-new-privileges before executing Dovecot. No live
+configuration, authentication database, delivery service or mailbox is opened.
+The original private staging ancestors remain mode 0700 and the original saved
+files are not changed. Worker UID/GID zero and malformed identities are rejected.
+
+Dovecot first initializes any missing source indexes, then performs a forward
+backup into a new replacement Maildir. The temporary root is made private again
+before validating and copying the generated output back to service-owned staging.
+Failures, including command timeout, clean up temporary work and the newly created
+destination while preserving the original saved tree. Dovecot output is not
+included in public error messages. Preparation is bounded by command timeouts.
+
+Validation: 22 focused tests passed, including production-worker preparation in
+the real restore/undo test, byte-for-byte source preservation, empty and unindexed
+Maildirs, process privilege arguments, and open/backup/timeout failure cleanup.
+This worker remains development-only. Delivery/client coordination, crash cleanup
+of abandoned temporary workspaces, durable application/rollback, ownership-aware
+API selection and UI integration still need implementation before deployment.
