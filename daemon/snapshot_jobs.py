@@ -295,6 +295,9 @@ def sources(account, options):
         manifest['databases']=[{'name':db.db_name,'user':db.db_user} for db in current_databases]
         (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
     if 'mail' in options['components']:
+        from daemon.snapshot_mail_metadata import capture as capture_mail
+        from daemon.snapshot_db_metadata import write_metadata
+        write_metadata(stage/'mail-recovery.json', capture_mail(account.username, mail_domains))
         for domain in mail_domains:
             root=Path(settings.mail_base)/domain.domain
             if root.exists():

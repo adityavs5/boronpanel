@@ -386,3 +386,40 @@ Evidence: `/root/boron-setup/live-database-recovery.log`,
 `live-database-recovery.py`, `live-database-incremental.py` and private state under
 `live-database-recovery/`. Mail/configuration restore, live SSH lifecycle/filter/
 notification coverage and the broader requirement audit remain unfinished.
+
+## Private mail recovery metadata (development)
+
+Mail-component snapshots now include `mail-recovery.json` in private staging and
+the encrypted repository. It captures the account's registered mail domains and
+SQL-backed mailbox hashes, quotas, active state, forwarding rules, catch-all and
+autoresponder settings. SQL IDs are replaced by domain/local-part names and dates
+are normalized to ISO strings. Capture explicitly uses a repeatable-read SQL
+transaction. The JSON file has mode 0600; existing public mailbox APIs are unchanged
+and do not expose hashes. Plaintext authentication schemes and malformed mailbox
+recovery fields are rejected.
+
+`daemon/snapshot_mail_metadata.py` also provides a missing-mailbox SQL primitive.
+It validates the mailbox fields, locks the existing mail-domain row, refuses an
+existing mailbox and inserts the original Dovecot hash/quota/status using bound
+parameters. It neither overwrites existing credentials nor creates message files,
+activates routing rules or updates panel cache registrations. The future restore
+coordinator must validate account/domain/snapshot ownership before calling it.
+
+Validation: 22 metadata/job checks passed. Tests create the actual installer mail
+schema in an isolated MariaDB server, verify other domains are excluded, preserve
+routing/autoresponder settings and confirm hashes/plaintext are absent from public
+listing/log output. A recreated fixture mailbox retains its original hash/quota;
+Dovecot's password verifier accepts its original synthetic password. Existing
+mailboxes retain their current quota/status. Real restic backup/restore preserves
+message bytes and mode-0600 recovery metadata. No email was delivered or sent.
+The first run had an ambiguous unqualified `active` column in a test query; the
+corrected final run passed. Evidence:
+`/root/boron-setup/mail-recovery-metadata-final-tests.log`.
+
+A read-only live source check captured the QA account's one mail domain and one
+mailbox successfully, without printing credentials or changing the live mail
+service. These development changes have not been deployed. Remaining work includes
+Maildir restore/application and service coordination, panel registration updates,
+owned snapshot selection/confirmation/UI, previous-message recovery, restoration of
+routing/Sieve/DKIM and other mail configuration, deleted-domain handling and live
+workflow verification. This metadata primitive does not complete mail recovery.

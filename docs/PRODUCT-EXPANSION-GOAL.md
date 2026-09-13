@@ -418,3 +418,19 @@ restores and full SSH/filter/notification/live workflow coverage are still requi
 Cold catalog latency and the label “Scheduled recovery points” for manual jobs
 also belong in the final UI/performance audit. Other initial requirements and the
 queued second phase remain active.
+
+### Email recovery metadata groundwork — 2026-09-13
+
+Added private encrypted-snapshot mail metadata for SQL mailbox credentials, quotas,
+status and routing/autoresponder settings, plus an internal missing-mailbox SQL
+primitive that preserves Dovecot password hashes and refuses existing mailboxes.
+Twenty-two tests passed against the real installer schema in an isolated MariaDB
+instance, including Dovecot verification of the original fixture password and an
+actual encrypted message/metadata round trip. A read-only live source check covered
+the QA account's one domain and one mailbox. No real mail was modified or sent.
+
+See `docs/INCREMENTAL-BACKUPS.md` for evidence and limits. This remains development
+work, not a deployed customer mail-restore feature: Maildir application, cache and
+ownership coordination, UI, previous-message recovery, mail configuration resources
+and live end-to-end verification are still required. All other unchecked initial
+requirements and the queued second phase remain active.
