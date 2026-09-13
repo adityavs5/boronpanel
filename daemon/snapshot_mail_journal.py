@@ -107,6 +107,9 @@ def inspect(path):
 
 def execute(path, *, service='dovecot.service'):
     payload = read(path)
+    if service == 'dovecot.service':
+        from daemon.snapshot_mail_guard_config import verify
+        verify()
     require_stopped(service)
     with guard.owned_guards(payload['entries'], payload['restore_id']):
         required = 'applied' if payload['undo'] else 'ready'
@@ -124,6 +127,8 @@ def launch(path):
     """Launch only a fresh, privately authorized batch; caller owns account checks."""
     path = _path(path)
     payload = read(path)
+    from daemon.snapshot_mail_guard_config import verify
+    verify()
     with guard.owned_guards(payload['entries'], payload['restore_id']):
         required = 'applied' if payload['undo'] else 'ready'
         if any(row['state'] != required for row in inspect(path)):

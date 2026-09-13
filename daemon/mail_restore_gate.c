@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <openssl/sha.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -18,8 +19,12 @@
 #define BORON_MAIL_RESTORE_GATES "/var/lib/boron/mail-restore-gates"
 #endif
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "--guard-directory") == 0) {
+        puts(BORON_MAIL_RESTORE_GATES);
+        return 0;
+    }
     const char *authorized = getenv("AUTHORIZED");
     if (authorized == NULL || strcmp(authorized, "1") != 0)
         return 111;

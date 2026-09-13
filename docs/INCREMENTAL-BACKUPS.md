@@ -745,3 +745,27 @@ exclusive receipts, observed pre-copy persistence, completed counts, real atomic
 exchange/undo recognition and rejection of a substituted sibling. These changes
 are development-only and still require the restore coordinator to request and
 consume the receipts.
+
+## Guard activation preflight (development)
+
+`snapshot_mail_guard_config` renders the guard userdb block and verifies the
+effective configuration using the installed `doveconf` parser. Preflight requires
+a root-controlled regular executable, private root-owned guard storage, no
+symlink paths, matching compiled/runtime guard directory, disabled authentication
+caching, and the guard as the first userdb with the required failure/skip policy.
+An unexpected successful guard result also fails closed. The compiled C helper
+now supports `--guard-directory` for this non-secret compatibility check.
+
+Both the private journal launcher (before pausing service) and its production
+worker verify guard readiness. The production executable location is
+`/usr/local/libexec/boron-mail-restore-gate`. Merely creating guard files is no
+longer sufficient to launch a production mailbox switch. Test-only service
+workers continue to use isolated service fixtures; journal unit tests mock the
+separately tested configuration preflight.
+
+Validation: 37 focused guard/configuration/journal tests passed. Actual compiled
+fixtures and `doveconf` prove the accepted configuration and rejection of later
+guard ordering, enabled caching, permissive failure/success/skip policies,
+compiled-directory mismatch and a writable guard executable. Installation of the
+binary and ordered configuration, rollout to existing servers and the customer
+restore coordinator remain unfinished. Live Dovecot configuration is unchanged.

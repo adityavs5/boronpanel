@@ -14,6 +14,8 @@ from tests.test_snapshot_mail_service import isolated_service
 def saved(tmp_path, monkeypatch):
     if os.geteuid() != 0:
         pytest.skip('Private root-owned journals required')
+    from daemon import snapshot_mail_guard_config
+    monkeypatch.setattr(snapshot_mail_guard_config, 'verify', lambda: {'guard': 'ready'})
     private = tmp_path / 'private'
     private.mkdir(mode=0o700)
     monkeypatch.setattr(settings, 'snapshot_private_dir', str(private))
