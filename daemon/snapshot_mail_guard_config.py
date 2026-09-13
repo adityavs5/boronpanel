@@ -4,6 +4,7 @@ import re
 import stat
 import os
 import tempfile
+import grp
 
 from daemon.procutil import run
 from shared.config import settings
@@ -20,13 +21,15 @@ def install_binary(*, binary=GUARD_BINARY):
     render(str(directory))  # same conservative path alphabet for the C literal
     if os.geteuid() != 0 or directory == Path('/'):
         raise ValidationError('Mail restore guard installation requires root-owned storage')
-    for parent, mode in ((path.parent, 0o755), (directory, 0o700)):
+    for parent, mode in ((path.parent, 0o755), (directory, 0o710)):
         if parent.resolve() != parent:
             raise ValidationError('Mail restore guard paths must not contain symbolic links')
         parent.mkdir(exist_ok=True, mode=mode)
         info = parent.stat()
-        if info.st_uid != 0 or info.st_mode & (0o077 if parent == directory else 0o022):
+        if info.st_uid != 0 or info.st_mode & (0o067 if parent == directory else 0o022):
             raise ValidationError('Mail restore guard installation directories have unsafe ownership or permissions')
+    os.chown(directory, 0, grp.getgrnam('dovecot').gr_gid)
+    directory.chmod(0o710)
     if path.exists() or path.is_symlink():
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -49,6 +52,7 @@ def install_binary(*, binary=GUARD_BINARY):
         checked = run([temporary, '--guard-directory'], timeout=5)
         if not checked.ok or checked.stdout.strip() != str(directory):
             raise ValidationError('Built mail restore guard failed its storage-path check')
+        _verify_access(temporary)
         with open(temporary, 'rb') as handle:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
@@ -71,6 +75,13 @@ def render(binary=GUARD_BINARY):
             '  result_success = return-fail\n  skip = never\n}\n')
 
 
+def _verify_access(binary):
+    result = run(['/usr/bin/setpriv', '--reuid=dovecot', '--regid=dovecot',
+                  '--clear-groups', binary, '--check-access'], timeout=5)
+    if not result.ok:
+        raise ValidationError('Dovecot cannot traverse the mail restore guard path')
+
+
 def verify(*, binary=GUARD_BINARY, config=None):
     """Read-only preflight; configuration and compilation are separate operations."""
     render(binary)
@@ -84,11 +95,13 @@ def verify(*, binary=GUARD_BINARY, config=None):
             raise ValidationError('Mail restore guard paths must be controlled by root')
     if not stat.S_ISREG(path.stat().st_mode) or not path.stat().st_mode & 0o111:
         raise ValidationError('Mail restore guard executable is unavailable')
-    if not directory.is_dir() or directory.stat().st_mode & 0o077:
+    if (not directory.is_dir() or stat.S_IMODE(directory.stat().st_mode) != 0o710
+            or directory.stat().st_gid != grp.getgrnam('dovecot').gr_gid):
         raise ValidationError('Mail restore guard storage must be private')
     compiled = run([binary, '--guard-directory'], timeout=5)
     if not compiled.ok or compiled.stdout.strip() != str(directory):
         raise ValidationError('Mail restore guard was built for a different storage directory')
+    _verify_access(binary)
     command = ['/usr/bin/doveconf', *(['-c', str(config)] if config else [])]
     cache = run([*command, '-h', 'auth_cache_size'], timeout=10)
     if not cache.ok or cache.stdout.strip() != '0':

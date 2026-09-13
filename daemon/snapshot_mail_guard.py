@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import secrets
 import stat
+import grp
 
 from shared.config import settings
 from shared.validation import ValidationError, validate_domain, validate_mailbox_local_part
@@ -30,12 +31,16 @@ def _directory():
         raise ValidationError('Mail restore guards require private service-owned storage')
     # The panel data directory must already exist. Persist creation of its
     # guard subdirectory as well as the later marker entries.
-    path.mkdir(exist_ok=True, mode=0o700)
+    path.mkdir(exist_ok=True, mode=0o710)
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
-        if info.st_uid != 0 or info.st_mode & 0o077:
+        if info.st_uid != 0 or stat.S_IMODE(info.st_mode) not in (0o700, 0o710):
             raise ValidationError('Mail restore guard directory must be private and root-owned')
+        # Auth may stat a known marker name, but cannot list the directory or
+        # read root-only ownership tokens. The C helper uses O_PATH for this.
+        os.fchown(fd, 0, grp.getgrnam('dovecot').gr_gid)
+        os.fchmod(fd, 0o710)
         parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(fd)

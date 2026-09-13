@@ -7,6 +7,8 @@ import smtplib
 import socket
 import subprocess
 import time
+import tempfile
+import grp
 
 import pytest
 
@@ -15,25 +17,29 @@ import pytest
 def gate(tmp_path):
     if os.geteuid() != 0 or not shutil.which('cc'):
         pytest.skip('Root and a C compiler required for the service-owned gate')
-    directory = tmp_path / 'gates'
-    directory.mkdir(mode=0o700)
-    binary = tmp_path / 'gate'
-    source = Path(__file__).parents[1] / 'daemon/mail_restore_gate.c'
-    compiled = subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
-                               f'-DBORON_MAIL_RESTORE_GATES="{directory}"', str(source), '-o', str(binary), '-lcrypto'],
-                              capture_output=True, text=True, timeout=30)
-    assert compiled.returncode == 0, compiled.stderr
+    with tempfile.TemporaryDirectory(prefix='boron-mail-guard-test-', dir='/tmp') as temporary:
+        root = Path(temporary)
+        root.chmod(0o755)
+        directory = root / 'gates'
+        directory.mkdir(mode=0o710)
+        os.chown(directory, 0, grp.getgrnam('dovecot').gr_gid)
+        binary = root / 'gate'
+        source = Path(__file__).parents[1] / 'daemon/mail_restore_gate.c'
+        compiled = subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                                   f'-DBORON_MAIL_RESTORE_GATES="{directory}"', str(source), '-o', str(binary), '-lcrypto'],
+                                  capture_output=True, text=True, timeout=30)
+        assert compiled.returncode == 0, compiled.stderr
 
-    def lookup(user=b'inbox@example.test', authorized='1'):
-        payload = tmp_path / 'request'
-        payload.write_bytes(user + b'\0synthetic-unused-password\0')
-        environment = {'PATH': '/usr/bin:/bin', 'AUTHORIZED': authorized}
-        result = subprocess.run(['/bin/sh', '-c', 'exec 3<"$1"; exec "$2"',
-                                 'gate-test', str(payload), str(binary)],
-                                env=environment, capture_output=True, timeout=5)
-        assert result.stdout == b'' and result.stderr == b''
-        return result.returncode
-    return directory, lookup
+        def lookup(user=b'inbox@example.test', authorized='1'):
+            payload = root / 'request'
+            payload.write_bytes(user + b'\0synthetic-unused-password\0')
+            environment = {'PATH': '/usr/bin:/bin', 'AUTHORIZED': authorized}
+            result = subprocess.run(['/bin/sh', '-c', 'exec 3<"$1"; exec "$2"',
+                                     'gate-test', str(payload), str(binary)],
+                                    env=environment, capture_output=True, timeout=5)
+            assert result.stdout == b'' and result.stderr == b''
+            return result.returncode
+        yield directory, lookup
 
 
 def marker(directory, user='inbox@example.test'):
@@ -95,14 +101,33 @@ def test_symlink_marker_blocks_without_following_target(gate):
     assert lookup() == 111
 
 
-def test_real_dovecot_userdb_delegation_and_temporary_failure(gate, tmp_path, monkeypatch):
+def test_auth_process_can_stat_but_not_list_or_read_markers(gate):
+    directory, lookup = gate
+    path = marker(directory)
+    path.write_text('synthetic-private-ownership-token')
+    path.chmod(0o600)
+    code = ('import os, sys\n'
+            'os.stat(sys.argv[1])\n'
+            'for operation in (lambda: os.listdir(sys.argv[2]), lambda: open(sys.argv[1]).read()):\n'
+            ' try: operation()\n'
+            ' except PermissionError: pass\n'
+            ' else: raise AssertionError("private marker data became readable")\n')
+    result = subprocess.run(['/usr/bin/setpriv', '--reuid=dovecot', '--regid=dovecot',
+                             '--clear-groups', '/usr/bin/python3', '-c', code, str(path), str(directory)],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("auth_user", ["root", "dovecot"])
+def test_real_dovecot_userdb_delegation_and_temporary_failure(gate, tmp_path, monkeypatch, auth_user):
     if not shutil.which('dovecot'):
         pytest.skip('Dovecot required')
     directory, lookup = gate
     from daemon import snapshot_mail_guard as guard
     from shared.config import settings
     monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(directory))
-    root = tmp_path
+    root = directory.parent
     root.chmod(0o755)
     for name in ('run', 'state', 'home'):
         (root / name).mkdir()
@@ -114,7 +139,7 @@ def test_real_dovecot_userdb_delegation_and_temporary_failure(gate, tmp_path, mo
         'service lmtp {\n'
         ' unix_listener lmtp {\n mode = 0600\n user = root\n }\n}\n'
         'first_valid_uid = 1\nauth_cache_size = 0\nlmtp_user_concurrency_limit = 10\n'
-        'service auth {\n user = root\n}\n'
+        f'service auth {{\n user = {auth_user}\n}}\n'
         'service auth-worker {\n user = root\n}\n'
         'userdb {\n driver = checkpassword\n'
         f' args = {root}/gate\n result_failure = continue\n'

@@ -791,3 +791,34 @@ the installer script. Tests verify a working atomic replacement, preservation of
 the old executable on compiler failure, removal of temporary compiler output,
 storage-path mismatch refusal and symlink refusal, alongside the existing guard
 protocol and isolated LMTP checks.
+
+## Production privilege correction and binary installation
+
+Testing the guard with Dovecot's normal unprivileged authentication process
+exposed a real incompatibility hidden by earlier root-auth fixtures: that process
+could not traverse the mode-0700 marker directory. The C helper now opens the
+directory using `O_PATH` and tests marker existence using `fstatat`. Guard storage
+is root-owned, group `dovecot`, mode 0710. Dovecot can traverse a known name but
+cannot list directory contents; ownership-token files remain root-only mode 0600.
+Python marker management and installation/preflight enforce these permissions.
+
+The live panel data parent `/var/lib/boron` is mode 0750, so putting the guard
+under it would still be inaccessible. The default is now the separate
+`/var/lib/boron-mail-restore-gates`, superseding the earlier nested default. This
+does not relax panel data permissions. The helper's new `--check-access` probe is
+run as the `dovecot` UID/GID during build verification and readiness checks,
+detecting inaccessible ancestors before publication/activation.
+
+Validation: 50 affected guard/journal/configuration tests passed together; all 13
+configuration tests then passed after adding explicit ancestor-denial coverage.
+Real isolated LMTP tests now run with both root and unprivileged auth processes.
+A direct process running as dovecot proves marker stat works while listing the
+directory and reading a root-owned token file both fail with PermissionError.
+Fixtures use standalone temporary paths so pytest-private ancestors do not mask
+the service's actual access requirements.
+
+The tested binary is now installed on the development server at
+`/usr/local/libexec/boron-mail-restore-gate`, with the new restricted marker
+directory. Compilation and the Dovecot-identity access probe succeeded on the
+real paths. Dovecot configuration has not been changed or reloaded; activation,
+installer/update wiring and customer restore coordination remain outstanding.

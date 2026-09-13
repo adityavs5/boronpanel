@@ -16,7 +16,7 @@
 #include <unistd.h>
 
 #ifndef BORON_MAIL_RESTORE_GATES
-#define BORON_MAIL_RESTORE_GATES "/var/lib/boron/mail-restore-gates"
+#define BORON_MAIL_RESTORE_GATES "/var/lib/boron-mail-restore-gates"
 #endif
 
 int main(int argc, char **argv)
@@ -24,6 +24,15 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "--guard-directory") == 0) {
         puts(BORON_MAIL_RESTORE_GATES);
         return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "--check-access") == 0) {
+        int fd = open(BORON_MAIL_RESTORE_GATES, O_PATH | O_DIRECTORY | O_NOFOLLOW);
+        struct stat info;
+        if (fd < 0)
+            return 111;
+        int result = fstatat(fd, ".", &info, AT_SYMLINK_NOFOLLOW);
+        close(fd);
+        return result == 0 ? 0 : 111;
     }
     const char *authorized = getenv("AUTHORIZED");
     if (authorized == NULL || strcmp(authorized, "1") != 0)
@@ -67,7 +76,7 @@ int main(int argc, char **argv)
     }
     marker[sizeof(marker) - 1] = '\0';
 
-    int directory = open(BORON_MAIL_RESTORE_GATES, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    int directory = open(BORON_MAIL_RESTORE_GATES, O_PATH | O_DIRECTORY | O_NOFOLLOW);
     /* The installer creates this directory. Missing/unreadable state must
      * never silently let a partially restored mailbox accept delivery. */
     if (directory < 0)

@@ -10,7 +10,7 @@ from tests.test_mail_restore_gate import gate
 def configured(gate, tmp_path, monkeypatch):
     directory, lookup = gate
     monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(directory))
-    binary = str(tmp_path / 'gate')
+    binary = str(directory.parent / 'gate')
     path = tmp_path / 'dovecot.conf'
     normal = 'userdb {\n driver = static\n args = uid=65534 gid=65534\n}\n'
     path.write_text('ssl = no\n' + config.render(binary) + normal)
@@ -37,9 +37,11 @@ def test_unsafe_effective_configuration_is_refused(configured, bad):
 
 
 def test_compiled_directory_must_match_runtime_settings(configured, tmp_path, monkeypatch):
+    import grp, os
     path, binary, directory, normal = configured
     other = tmp_path / 'other'
-    other.mkdir(mode=0o700)
+    other.mkdir(mode=0o710)
+    os.chown(other, 0, grp.getgrnam('dovecot').gr_gid)
     monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(other))
     with pytest.raises(ValidationError, match='different storage'):
         config.verify(binary=binary, config=path)
@@ -100,3 +102,15 @@ def test_installer_refuses_symlink_executable(configured):
     with pytest.raises(ValidationError):
         config.install_binary(binary=binary)
     assert target.is_file() and Path(binary).is_symlink()
+
+
+def test_guard_preflight_rejects_inaccessible_ancestor(configured):
+    from pathlib import Path
+    path, binary, directory, normal = configured
+    parent = Path(binary).parent
+    parent.chmod(0o700)
+    try:
+        with pytest.raises(ValidationError, match='cannot traverse'):
+            config.verify(binary=binary, config=path)
+    finally:
+        parent.chmod(0o755)
