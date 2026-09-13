@@ -394,3 +394,27 @@ live disposable-data lifecycle proof, mail/config restore and the overall backup
 requirements audit. Original unchecked tasks and the queued second phase remain
 active. Do not mark backup completion based solely on these development tests and
 panel deployment checks.
+
+### Background waiting and live SQL backup/recovery proof — 2026-09-13
+
+Background SQL backup/restore/import workers now wait under contention, while
+interactive management retains prompt busy responses. Registration metadata is
+refreshed after waiting, and credentials/SQL export are coordinated. The change
+was tested, committed as `324bf20`, deployed after idle preflight and verified via
+live health/UI/login/identity checks.
+
+A new disposable QA database was created, backed up, deleted and reconstructed
+through the actual administrator/customer APIs. Its original password and sentinel
+contents were verified, and all nine neighboring registrations were retained.
+No existing WordPress database was selected for deletion or restore. A second
+manual backup reported only 6,819 new bytes versus 4,123,104 on the first. Live
+browser checks passed both themes for the recovery point, database selector and
+completed restore history. Destination/policy 1, backup runs 1/2 and restore 1 are
+retained as QA evidence; the policy is disabled and manual. Credentials are private.
+
+See `docs/INCREMENTAL-BACKUPS.md` for test counts, log paths, verifier corrections
+and retained artifact details. The backup checkbox remains open: mail/configuration
+restores and full SSH/filter/notification/live workflow coverage are still required.
+Cold catalog latency and the label “Scheduled recovery points” for manual jobs
+also belong in the final UI/performance audit. Other initial requirements and the
+queued second phase remain active.

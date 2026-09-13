@@ -334,3 +334,55 @@ Concurrency follow-up: the current global SQL mutation guard returns a retryable
 busy error. Interactive management should retain that behavior, but background
 backup/restore workers should wait or requeue under contention rather than fail a
 scheduled job. Address this before calling multi-job backup behavior complete.
+
+## Background contention and live database lifecycle — 2026-09-13
+
+Background snapshot SQL capture/restores, legacy restores and existing cPanel
+import workers now wait for the shared SQL mutation lock. Interactive database
+management retains a prompt retryable busy error. The lock remains reentrant for
+nested operations and coordinates both threads and processes. Credential capture
+and SQL export run in one critical section; the worker refreshes registrations
+after acquiring the lock and writes that same set into the manifest. Accounts
+without registered databases produce empty metadata without opening SQL.
+
+Validation: initial 39 database/job/coordination checks and 89 legacy/import checks
+passed. After refreshing registrations under the lock, 17 focused checks passed;
+the final empty-registration optimization passed its no-SQL-connection test.
+Evidence: `database-worker-wait-tests.log`, `background-restore-wait-tests.log`,
+`database-worker-wait-final-tests.log`, `empty-database-manifest-tests.log` under
+`/root/boron-setup`. Deployed after a fresh idle preflight; health, UI and admin
+login/identity passed. Recovery archive: `worker-wait-before/code.tar.gz` in the
+same directory; deployment log `worker-wait-deploy.log`.
+
+Live proof used a newly created disposable database `wpdevqa_recoveryproof`, whose
+name was verified absent before creation. Through authenticated panel APIs, the
+administrator created a private local repository and a disabled manual policy
+scoped only to wpdevqa, with notifications disabled. Backup run 1 completed. The
+customer API then deleted only this new database/login pair and queued restore 1.
+The original generated password authenticated successfully after reconstruction,
+and the original sentinel table/content returned. All nine neighboring database
+registrations remained present. Existing WordPress databases were backed up but
+were not selected for restore or deletion.
+
+A second unchanged manual backup (run 2) completed and reported 6,819 bytes of new
+data, versus 4,123,104 on the first, while processing 4,116,284 bytes. This proves
+live job-level data reuse in addition to the isolated storage tests. Destination
+and policy IDs are both 1. The disposable database, encrypted recovery points and
+private resumable state are retained for further validation; the policy is disabled
+and manual, so it does not add recurring scheduled work. Credentials remain only
+in the private state/secret files and were not printed.
+
+Both Evolution and Paper Lantern passed live customer-browser checks for the
+recovery point, enabled database selector and completed restore history. The first
+browser probe used a five-second assertion while the encrypted catalog was still
+loading; it was corrected to allow the real request to finish. A second assertion
+matched hidden responsive text as well as the desktop table; the final probe
+selected the visible table and passed. These were verifier issues. Cold catalog
+loading time should still be considered in the final performance polish.
+
+Evidence: `/root/boron-setup/live-database-recovery.log`,
+`live-database-incremental.log`, `live-database-recovery-browser-verified.log`,
+`live-recovery-evolution.png`, `live-recovery-paper-lantern.png`; resumable helpers
+`live-database-recovery.py`, `live-database-incremental.py` and private state under
+`live-database-recovery/`. Mail/configuration restore, live SSH lifecycle/filter/
+notification coverage and the broader requirement audit remain unfinished.
