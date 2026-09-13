@@ -298,7 +298,16 @@ def check(params: dict | None = None) -> dict:
 def _job_to_dict(job: UpdateJob) -> dict:
     duration = None
     if job.completed_at and job.started_at:
-        duration = (job.completed_at - job.started_at).total_seconds()
+        # SQLAlchemy's SQLite adapter reads naive UTC timestamps, while
+        # the stdlib finalizer writes explicit UTC offsets. Older completed
+        # jobs can contain both forms; normalize before subtracting.
+        started = job.started_at
+        completed = job.completed_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=dt.timezone.utc)
+        if completed.tzinfo is None:
+            completed = completed.replace(tzinfo=dt.timezone.utc)
+        duration = (completed - started).total_seconds()
     return {
         "id": job.id,
         "kind": job.kind,

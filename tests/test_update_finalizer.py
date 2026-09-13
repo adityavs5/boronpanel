@@ -301,4 +301,7 @@ def test_health_probe_uses_api_identity_then_restores_root(sandbox, health_serve
     proc = _run_finalizer(sandbox, job_id, api_url=health_servers["api_url"], rpc_user="nobody")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert sandbox["rpc_peer_uids"] == [account.pw_uid]
-    assert _read_job(job_id).status == "completed"  # root-only DB write after probe
+    job = _read_job(job_id)
+    assert job.status == "completed"  # root-only DB write after probe
+    from daemon.updates import _job_to_dict
+    assert _job_to_dict(job)["duration_seconds"] >= 0

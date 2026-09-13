@@ -806,3 +806,16 @@ def test_preflight_refuses_insufficient_disk_space(update_env, monkeypatch):
     with pytest.raises(updates._StepFailed):
         updates._preflight(job_id)
     assert "need 2048MB" in _get_job(job_id)["error"]
+
+
+@pytest.mark.parametrize("aware_start,aware_end", [(False, False), (False, True), (True, False), (True, True)])
+def test_job_duration_accepts_sqlite_and_finalizer_timestamps(aware_start, aware_end):
+    import datetime as dt
+    start = dt.datetime(2026, 9, 13, 12, 0, 0)
+    end = start + dt.timedelta(seconds=90)
+    if aware_start:
+        start = start.replace(tzinfo=dt.timezone.utc)
+    if aware_end:
+        end = end.replace(tzinfo=dt.timezone.utc)
+    job = UpdateJob(kind="update", status="completed", from_version="1.0.1", to_version="1.1.2", started_at=start, completed_at=end)
+    assert updates._job_to_dict(job)["duration_seconds"] == 90
