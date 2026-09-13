@@ -36,6 +36,8 @@ def validate_entry(username, entry):
 def capture(username, grants):
     validate_username(username)
     entries = []
+    if not grants:
+        return {'format': 1, 'username': username, 'databases': entries}
     connection = mariadb._connect()
     try:
         with connection.cursor() as cursor:

@@ -163,3 +163,8 @@ def test_partial_repair_failure_does_not_remove_existing_database(sql, monkeypat
     with connection.cursor() as cursor:
         cursor.execute('SELECT content FROM alpha_wp.posts WHERE id=1')
         assert cursor.fetchone()[0] == 'Original WordPress content ☕'
+
+
+def test_empty_database_manifest_does_not_open_sql_connection(isolated_db, monkeypatch):
+    monkeypatch.setattr(mariadb, '_connect', lambda: pytest.fail('No SQL connection is needed for an empty registration set'))
+    assert metadata.capture('alpha', []) == {'format':1, 'username':'alpha', 'databases':[]}

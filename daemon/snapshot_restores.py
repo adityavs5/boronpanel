@@ -1,5 +1,5 @@
 """Account-scoped snapshot restore jobs with pre-restore recovery points."""
-from daemon.database_operations import serialized
+from daemon.database_operations import serialized_worker
 import json
 import logging
 from pathlib import Path
@@ -240,7 +240,7 @@ def _owned_databases(account, names):
     return sorted(set(names))
 
 
-@serialized
+@serialized_worker
 def _restore_databases(ident,account,row,repo,snapshot_id,work):
     from daemon import snapshot_databases as database, mariadb
     names=row.selection['databases']

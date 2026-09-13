@@ -41,7 +41,7 @@ description of it" -- and in several of the exact functions reused here).
 """
 from __future__ import annotations
 
-from daemon.database_operations import serialized
+from daemon.database_operations import serialized_worker
 import logging
 import os
 import pwd
@@ -873,7 +873,7 @@ def _relocate_docroot_step(root: Path, username: str, domain: str) -> str:
     return detail or "no relocation needed (docroot already matches, or none recorded)"
 
 
-@serialized
+@serialized_worker
 def _import_database_step(username: str, dump_path: Path, old_username: str | None, db_name_map: dict) -> str:
     suffix = _db_suffix_from_dump(dump_path, old_username)
     grant = handlers_database.create_database({"username": username, "name": suffix})
@@ -882,7 +882,7 @@ def _import_database_step(username: str, dump_path: Path, old_username: str | No
     return f"imported into '{grant['db_name']}'"
 
 
-@serialized
+@serialized_worker
 def _wordpress_rewrite_step(username: str, domain: str, db_name_map: dict[str, str]) -> str:
     """Only one imported database is realistically guessable without
     actually reading the pre-rewrite wp-config.php's own DB_NAME -- try

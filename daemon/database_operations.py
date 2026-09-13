@@ -10,8 +10,8 @@ _state = threading.local()
 
 
 @contextmanager
-def mutation_lock():
-    if not _local.acquire(blocking=False):
+def mutation_lock(*, blocking=False):
+    if not _local.acquire(blocking=blocking):
         raise ValidationError('A database backup or management operation is in progress. Try again shortly.')
     try:
         if getattr(_state, 'active', False):
@@ -19,7 +19,7 @@ def mutation_lock():
             return
         from daemon.snapshot_jobs import lock
         try:
-            with lock('database-mutations', blocking=False):
+            with lock('database-mutations', blocking=blocking):
                 _state.active = True
                 try:
                     yield
@@ -35,5 +35,14 @@ def serialized(function):
     @wraps(function)
     def wrapped(*args, **kwargs):
         with mutation_lock():
+            return function(*args, **kwargs)
+    return wrapped
+
+
+def serialized_worker(function):
+    """Background jobs wait without holding an API request open."""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with mutation_lock(blocking=True):
             return function(*args, **kwargs)
     return wrapped

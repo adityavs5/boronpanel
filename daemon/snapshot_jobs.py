@@ -19,6 +19,7 @@ import uuid
 from sqlalchemy import select
 from daemon import snapshot_storage as storage
 from daemon.procutil import run
+from daemon.database_operations import serialized_worker
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, BackupJob, RestoreJob, DatabaseGrant, Domain, MailDomain, SnapshotDestination, SnapshotPolicy, SnapshotRun, SnapshotRestore, utcnow
@@ -289,13 +290,10 @@ def sources(account, options):
         'components':options['components'],'home':str(home),'domains':[{'domain':d.domain,'docroot':d.docroot,'kind':d.kind,'php_version':d.php_version} for d in domains],
         'databases':[{'name':d.db_name,'user':d.db_user} for d in databases],'mail_domains':[d.domain for d in mail_domains]}
     (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
-    if 'databases' in options['components'] and databases:
-        from daemon.snapshot_databases import dump_database
-        from daemon.snapshot_db_metadata import capture, write_metadata
-        write_metadata(stage/'database-recovery.json', capture(account.username, databases))
-        database_dir=stage/'databases';database_dir.mkdir(mode=0o700)
-        for db in databases:
-            dump_database(db.db_name,database_dir/f'{db.db_name}.sql',stage)
+    if 'databases' in options['components']:
+        current_databases=_database_sources(account, stage)
+        manifest['databases']=[{'name':db.db_name,'user':db.db_user} for db in current_databases]
+        (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
     if 'mail' in options['components']:
         for domain in mail_domains:
             root=Path(settings.mail_base)/domain.domain
@@ -311,6 +309,20 @@ def sources(account, options):
         manifest['dns_zones']=[{'zone':z.zone,'records':dnsprovider.list_records(z.zone)} for z in zones]
         (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
     return paths+[str(stage)]
+
+
+@serialized_worker
+def _database_sources(account, stage):
+    # Keep credentials and SQL export together while panel mutations are excluded.
+    from daemon.snapshot_databases import dump_database
+    from daemon.snapshot_db_metadata import capture, write_metadata
+    with write_session() as session:
+        databases=session.scalars(select(DatabaseGrant).where(DatabaseGrant.account_id==account.id)).all()
+    write_metadata(stage/'database-recovery.json', capture(account.username, databases))
+    database_dir=stage/'databases';database_dir.mkdir(mode=0o700)
+    for db in databases:
+        dump_database(db.db_name,database_dir/f'{db.db_name}.sql',stage)
+    return databases
 
 
 def _notify(row,account):
