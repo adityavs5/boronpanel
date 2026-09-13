@@ -488,3 +488,34 @@ Maildirs, process privilege arguments, and open/backup/timeout failure cleanup.
 This worker remains development-only. Delivery/client coordination, crash cleanup
 of abandoned temporary workspaces, durable application/rollback, ownership-aware
 API selection and UI integration still need implementation before deployment.
+
+## Per-mailbox access guard (development)
+
+`daemon/mail_restore_gate.c` implements a Dovecot 2.3 checkpassword userdb guard,
+to precede the SQL userdb with `result_failure = continue` and
+`result_internalfail = return-fail`. An unblocked lookup exits 3 to delegate to
+the real userdb; a blocked lookup exits 111 for a temporary internal failure.
+It never authenticates, reads a password, changes SQL active flags or outputs
+credentials. The directory must already exist and be root-owned/non-writable by
+other users; unreadable/missing/unsafe directory state fails closed. The helper
+checks SHA-256 filenames derived from lowercase addresses, supporting addresses
+longer than a filesystem component without placing addresses in filenames.
+Marker symlinks block access without being followed. Build requires a C compiler
+and OpenSSL development headers (`cc ... -lcrypto`); no binary is committed.
+
+Tests compile with warnings treated as errors and exercise the fd-3 interface.
+A separate Dovecot process using only temporary Unix sockets proves lookup
+delegation, temporary lookup failure, unaffected neighboring mailbox lookup and
+resumption after removing the marker. LMTP recipient negotiation returns 451 for
+the blocked mailbox and 250 for another mailbox. No DATA command or message was
+sent. Initial fixture errors were corrected (assertion wording and duplicate
+listener definition); final focused checks passed. Protocol reference:
+https://doc.dovecot.org/2.3/configuration_manual/authentication/checkpassword/ .
+
+This guard is not installed or enabled in live Dovecot. Checkpassword is supported
+by this Ubuntu 24/Dovecot 2.3 installation but removed in Dovecot 2.4, so future
+upgrades need a replacement. Crucially, blocking new lookups does not drain
+already authenticated clients or LMTP recipients accepted before the marker.
+Those sessions must be coordinated and tested before any live mailbox switch;
+durable marker management, startup recovery, installer integration and performance
+measurement also remain required. Do not treat the guard alone as a restore lock.
