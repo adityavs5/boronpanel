@@ -399,7 +399,7 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
     # else keeps the compiled-in stock scan dir by rendering nothing.
     ext_override_ids = set(session.scalars(select(PhpExtensionSet.account_id)).all())
     reserved_hosts = set(session.scalars(select(Domain.domain)).all())
-    reserved_hosts.update((settings.webmail_hostname, settings.pma_hostname))
+    reserved_hosts.update((settings.webmail_hostname, settings.pma_hostname, settings.panel_hostname))
     domain_vhosts = []
     account_procs = []
     for account in accounts:
@@ -538,6 +538,8 @@ def render_httpd_config(
         default_ssl_cert="/etc/boron/ssl/default.crt",
         domain_vhosts=domain_vhosts,
         account_procs=account_procs,
+        panel_hostname=settings.panel_hostname,
+        panel_acme_webroot=settings.panel_acme_webroot,
         webmail_hostname=settings.webmail_hostname,
         webmail_docroot=settings.webmail_docroot,
         webmail_lsphp_path=_lsphp_path(settings.default_php_version),

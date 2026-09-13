@@ -72,6 +72,8 @@ class Settings:
     # itself) and still terminates its own TLS.
     api_bind_host: str = "0.0.0.0"
     api_bind_port: int = 9443
+    panel_hostname: str = ""
+    panel_acme_webroot: str = "/var/www/boron-panel-acme"
 
     # accounts
     # Phase 2 goal asked for 7.4/8.0/8.1/8.2/8.3 -- 7.4 and 8.0 are both EOL

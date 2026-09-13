@@ -1,0 +1,8 @@
+docRoot                   {{ webroot }}
+allowSymbolLink           0
+
+context /.well-known/acme-challenge/ {
+    type                  static
+    location              {{ webroot }}/.well-known/acme-challenge/
+    allowBrowse           1
+}

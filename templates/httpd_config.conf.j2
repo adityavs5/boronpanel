@@ -166,6 +166,17 @@ scriptHandler{
     add lsapi:lsphp  php
 }
 
+{% if panel_hostname %}
+virtualHost boron_panel_acme{
+    vhRoot                   {{ panel_acme_webroot }}/
+    allowSymbolLink          0
+    enableScript             0
+    restrained               1
+    setUIDMode               0
+    configFile               conf/vhosts/boron-panel-acme/vhconf.conf
+}
+{% endif %}
+
 {% if webmail_hostname %}
 # Phase 2 feature 3: Roundcube, deployed once server-wide (not a
 # per-account resource -- infrastructure like the extProcessor/vhost
@@ -337,6 +348,9 @@ virtualHost {{ vh.vhost_name }}{
 {% endfor %}
 
 listener HTTP{
+{% if panel_hostname %}
+    map                      boron_panel_acme {{ panel_hostname }}
+{% endif %}
     address                  *:80
     secure                   0
 {% if cloudflare_trusted_ips %}

@@ -152,3 +152,12 @@ the existing monitor now includes clock transitions and notification cooldown. T
 probe is cached to keep dashboard polling inexpensive. CLOCK-HEALTH.md records live
 evidence and boundaries. Deployment of UI/monitoring and the complete admin/customer
 2FA workflow audit are still required; all other remaining requirements stay open.
+
+## Progress — panel certificate automation foundation
+
+Current live inspection confirmed a self-signed panel certificate and no HTTP route
+for its hostname. Development now has a dedicated static HTTP-01 vhost, collision
+checks, certificate issuance helper and stable renewal deploy hook with key/name/date
+validation, served-certificate verification and rollback. The real certificate has
+not been issued. Admin configuration, live deployment/issuance/trust/renewal checks
+and separate configurable ports remain required; see PANEL-TLS.md.

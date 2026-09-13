@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Certbot deploy hook for the panel's own TLS listener."""
+import argparse
+import datetime as dt
+import grp
+import os
+from pathlib import Path
+import re
+import subprocess
+import socket
+import ssl
+import time
+import tomllib
+import tempfile
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+
+
+LINEAGE_ROOT=Path('/etc/letsencrypt/live')
+TLS_DIRECTORY=Path('/etc/boron/ssl/api')
+CONFIG_PATH=Path('/etc/boron/boron.toml')
+
+def validate_pair(hostname,certificate,key):
+    if not hostname or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',label) for label in hostname.split('.')):
+        raise ValueError('Invalid panel hostname')
+    cert=x509.load_pem_x509_certificate(certificate)
+    private=serialization.load_pem_private_key(key,password=None)
+    names=cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
+    if hostname not in names:raise ValueError('Certificate does not cover the panel hostname')
+    now=dt.datetime.now(dt.timezone.utc)
+    if not cert.not_valid_before_utc<=now<cert.not_valid_after_utc:raise ValueError('Certificate is not currently valid')
+    def public_bytes(public):return public.public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
+    if public_bytes(cert.public_key())!=public_bytes(private.public_key()):raise ValueError('Certificate and private key do not match')
+
+
+def _replace(path,content,gid):
+    fd,temporary=tempfile.mkstemp(prefix='.panel-tls-',dir=path.parent)
+    try:
+        with os.fdopen(fd,'wb') as handle:
+            handle.write(content);handle.flush();os.fsync(handle.fileno())
+            os.fchown(handle.fileno(),0,gid);os.fchmod(handle.fileno(),0o640)
+        os.replace(temporary,path)
+    finally:Path(temporary).unlink(missing_ok=True)
+
+
+def _wait_for_certificate(hostname,certificate):
+    with CONFIG_PATH.open('rb') as handle:port=int(tomllib.load(handle).get('api_bind_port',9443))
+    expected=x509.load_pem_x509_certificate(certificate).public_bytes(serialization.Encoding.DER)
+    context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname=False;context.verify_mode=ssl.CERT_NONE
+    deadline=time.monotonic()+20
+    while time.monotonic()<deadline:
+        try:
+            with socket.create_connection(('127.0.0.1',port),timeout=2) as connection:
+                with context.wrap_socket(connection,server_hostname=hostname) as tls:
+                    if tls.getpeercert(binary_form=True)==expected:return
+        except (OSError,ssl.SSLError):pass
+        time.sleep(.25)
+    raise RuntimeError('Panel did not serve the newly installed certificate')
+
+
+def deploy(hostname,lineage):
+    lineage=Path(lineage)
+    expected=LINEAGE_ROOT/hostname
+    if lineage!=expected:raise ValueError('Unexpected panel certificate lineage')
+    certificate=(lineage/'fullchain.pem').read_bytes()
+    key=(lineage/'privkey.pem').read_bytes()
+    validate_pair(hostname,certificate,key)
+    destination=TLS_DIRECTORY
+    gid=grp.getgrnam('boron-api').gr_gid
+    certpath=destination/'panel.crt';keypath=destination/'panel.key'
+    oldcert=certpath.read_bytes();oldkey=keypath.read_bytes()
+    try:
+        _replace(keypath,key,gid);_replace(certpath,certificate,gid)
+        subprocess.run(['systemctl','restart','boron-api.service'],check=True,timeout=45)
+        subprocess.run(['systemctl','is-active','--quiet','boron-api.service'],check=True,timeout=10)
+        _wait_for_certificate(hostname,certificate)
+    except Exception:
+        _replace(keypath,oldkey,gid);_replace(certpath,oldcert,gid)
+        subprocess.run(['systemctl','restart','boron-api.service'],check=False,timeout=45)
+        raise
+
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--hostname',required=True)
+    args=parser.parse_args()
+    lineage=os.environ.get('RENEWED_LINEAGE','')
+    if args.hostname not in os.environ.get('RENEWED_DOMAINS','').split():
+        raise SystemExit('Panel hostname missing from renewed certificate domains')
+    deploy(args.hostname,lineage)
