@@ -69,20 +69,31 @@ def _database_state(account, name, metadata):
         registration = session.scalar(select(DatabaseGrant).where(DatabaseGrant.db_name == name))
         if registration and registration.account_id != account.id:
             return 'unavailable', 'This database name is registered to another account.'
-        if registration and mariadb.database_exists(name):
-            if not mariadb.user_exists(registration.db_user):
-                return 'unavailable', 'The registered database login is missing; repair this partial state before restoring.'
-            return 'existing', None
         entry = metadata.get(name)
+        present = mariadb.database_exists(name)
+        login = bool(registration and mariadb.user_exists(registration.db_user))
+        pending = any(name in (item.summary or {}).get('reconstruction_pending', [])
+            for item in session.scalars(select(SnapshotRestore).where(
+                SnapshotRestore.account_id == account.id,
+                SnapshotRestore.status.in_(['failed','running']))).all())
+        if registration and present and login and not pending:
+            return 'existing', None
         if not entry:
             return 'unavailable', 'This recovery point lacks metadata needed to recreate the deleted database.'
         if registration and registration.db_user != entry['user']:
             return 'unavailable', 'The database login registration has changed.'
-        if mariadb.database_exists(name) or mariadb.user_exists(entry['user']):
-            return 'unavailable', 'Database or login resources still exist; resolve the name conflict before reconstruction.'
+        from daemon.snapshot_db_metadata import resource_state
+        resources = resource_state(account.username, entry)
+        if resources['database'] or resources['login']:
+            if not registration:
+                return 'unavailable', 'Database or login resources still exist; resolve the name conflict before reconstruction.'
+            if resources['login'] and not resources['login_matches']:
+                return 'unavailable', 'The surviving database login differs from the backed-up credentials.'
         other = session.scalar(select(DatabaseGrant.id).where(DatabaseGrant.db_user == entry['user'], DatabaseGrant.db_name != name))
         if other:
             return 'unavailable', 'Another database uses this login.'
+    if resources['database'] or resources['login']:
+        return 'repair', 'Repair missing database resources using the backed-up credentials.'
     return 'recreate', 'Deleted database: recreate with its backed-up login and password.'
 
 
@@ -246,7 +257,7 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
     # Verify every selected source and current database before changing any data.
     for name,path in zip(names,paths):
         database._sql_file(data/str(path).lstrip('/'))
-        if states[name]=='existing':
+        if mariadb.database_exists(name):
             database.validate_supported_objects(name)
             database._validate_database_boundary(name)
     stage=jobs.private_directory('database-safety',f'account-{account.id}')
@@ -255,7 +266,7 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
     dumps.mkdir(mode=0o700)
     _update(ident,progress_message='Saving current databases before restore')
     try:
-        existing=[name for name in names if states[name]=='existing']
+        existing=[name for name in names if mariadb.database_exists(name)]
         for name in existing:database.dump_database(name,dumps/f'{name}.sql',stage)
         if existing:
             safety=storage.backup(repo,account.id,[str(dumps)])
@@ -263,16 +274,22 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
         completed=[]
         reconstructed=[]
         for name,path in zip(names,paths):
-            if states[name]=='recreate':
-                from daemon.snapshot_db_metadata import recreate_missing
+            if states[name] in ('recreate','repair'):
+                from daemon.snapshot_db_metadata import recreate_missing,repair_missing
                 state,reason=_database_state(account,name,metadata)
-                if state!='recreate':raise ValidationError('Database reconstruction state changed; retry after reviewing ownership')
+                if state!=states[name]:raise ValidationError('Database reconstruction state changed; retry after reviewing ownership')
                 with write_session() as session:
                     registration=session.scalar(select(DatabaseGrant).where(DatabaseGrant.db_name==name))
                     if registration is None:
                         session.add(DatabaseGrant(account_id=account.id,db_name=name,db_user=metadata[name]['user']))
-                _update(ident,progress_message='Recreating database '+name)
-                recreate_missing(account.username,metadata[name])
+                _update(ident,progress_message='Recreating database resources for '+name,
+                    summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),'safety_databases':existing,'reconstruction_pending':[name]})
+                (recreate_missing if state=='recreate' else repair_missing)(account.username,metadata[name])
+                with write_session() as session:
+                    for previous in session.scalars(select(SnapshotRestore).where(SnapshotRestore.account_id==account.id)).all():
+                        pending=previous.summary.get('reconstruction_pending',[])
+                        if name in pending:
+                            previous.summary={**previous.summary,'reconstruction_pending':[n for n in pending if n!=name]}
                 reconstructed.append(name)
                 _update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),'safety_databases':existing})
             _owned_databases(account,[name])

@@ -16,6 +16,7 @@ row on account termination.
 """
 from __future__ import annotations
 
+from daemon.database_operations import serialized
 import logging
 import os
 import pwd
@@ -220,6 +221,7 @@ def _allocate_staging_database(username: str) -> dict:
     raise StagingError(f"could not allocate a staging database: {last_error}")
 
 
+@serialized
 def _clone_database_for_staging(username: str, source_docroot: str, staging_docroot: str, staging_domain: str) -> dict:
     source_db_name = _source_db_name(source_docroot)
     _assert_source_db_owned_by_account(username, source_db_name)
@@ -293,6 +295,7 @@ def create_staging(params: dict) -> dict:
         return _to_dict(row)
 
 
+@serialized
 def sync_staging(params: dict) -> dict:
     """Re-clones from production: files re-copied (fresh, wiping whatever
     was in staging before), and -- for a WordPress site -- the database
@@ -358,6 +361,7 @@ def get_staging(params: dict) -> dict:
     return result
 
 
+@serialized
 def delete_staging(params: dict) -> dict:
     username = validate_username(params["username"])
     source_domain = validate_domain(params["domain"])

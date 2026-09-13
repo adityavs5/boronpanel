@@ -128,3 +128,55 @@ def read_metadata(path, username):
         return result
     except (ValueError, TypeError, KeyError, AttributeError):
         raise ValidationError('Invalid database recovery metadata') from None
+
+
+def resource_state(username, entry):
+    """Inspect surviving resources without exposing authentication material."""
+    import hmac
+    entry = validate_entry(username, entry)
+    connection = mariadb._connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s', (entry['name'],))
+            database_exists = cursor.fetchone() is not None
+            cursor.execute('SELECT Host,plugin,authentication_string,Password,ssl_type FROM mysql.user WHERE User=%s', (entry['user'],))
+            users = cursor.fetchall()
+            matches = len(users) == 1 and users[0][0] == 'localhost' and (users[0][1] or 'mysql_native_password') == 'mysql_native_password' and not users[0][4] and hmac.compare_digest(users[0][2] or users[0][3], entry['password_hash'])
+            return {'database': database_exists, 'login': bool(users), 'login_matches': matches}
+    finally:
+        connection.close()
+
+
+@serialized
+def repair_missing(username, entry):
+    """Repair only a pair whose current panel registration the caller verified.
+
+    Surviving logins must match the saved local authentication identity. Their
+    passwords are never reset. Reapplying the exact grant makes an interrupted
+    create/create-user/grant sequence retryable without adopting another login.
+    """
+    entry = validate_entry(username, entry)
+    state = resource_state(username, entry)
+    if state['login'] and not state['login_matches']:
+        raise ValidationError('Surviving database login differs from the recovery metadata')
+    name, user = entry['name'], entry['user']
+    connection = mariadb._connect()
+    created_database = created_user = False
+    try:
+        with connection.cursor() as cursor:
+            if not state['database']:
+                cursor.execute(f"CREATE DATABASE `{name}` CHARACTER SET {entry['charset']} COLLATE {entry['collation']}")
+                created_database = True
+            if not state['login']:
+                cursor.execute(f"CREATE USER '{user}'@'localhost' IDENTIFIED BY PASSWORD %s", (entry['password_hash'],))
+                created_user = True
+        mariadb.grant_exact_database(name, user)
+    except Exception:
+        if created_user:
+            mariadb.drop_db_user(user)
+        if created_database:
+            mariadb.drop_database(name)
+        raise
+    finally:
+        connection.close()
+    return {'created_database': created_database, 'created_login': created_user}

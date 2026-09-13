@@ -114,3 +114,52 @@ def test_read_recovery_metadata_rejects_symlinks_and_oversized_files(tmp_path):
         handle.truncate(4 * 1024 * 1024 + 1)
     with pytest.raises(Exception, match='metadata file'):
         metadata.read_metadata(path, 'alpha')
+
+
+@pytest.mark.parametrize('missing', ['database', 'login'])
+def test_partial_resource_repair_preserves_surviving_resource(sql, missing):
+    connection, work = sql
+    saved = entry()
+    if missing == 'database':
+        mariadb.drop_database('alpha_wp')
+    else:
+        mariadb.drop_db_user('alpha_wp')
+    result = metadata.repair_missing('alpha', saved)
+    assert result == {'created_database': missing == 'database', 'created_login': missing == 'login'}
+    assert metadata.repair_missing('alpha', saved) == {'created_database': False, 'created_login': False}
+    scoped = pymysql.connect(unix_socket=settings.mariadb_socket, user='alpha_wp', password='test-only-hosting-password')
+    try:
+        with scoped.cursor() as cursor:
+            if missing == 'login':
+                cursor.execute('SELECT content FROM alpha_wp.posts WHERE id=1')
+                assert cursor.fetchone()[0] == 'Original WordPress content ☕'
+            else:
+                cursor.execute('CREATE TABLE alpha_wp.recovered_access (id INT)')
+            with pytest.raises(pymysql.Error):
+                cursor.execute('SELECT * FROM bravo_wp.private_data')
+    finally:
+        scoped.close()
+
+
+def test_partial_repair_refuses_changed_surviving_password(sql):
+    saved = entry()
+    mariadb.drop_database('alpha_wp')
+    mariadb.set_password('alpha_wp', 'different-test-only-password')
+    with pytest.raises(Exception, match='differs'):
+        metadata.repair_missing('alpha', saved)
+    assert not mariadb.database_exists('alpha_wp')
+    scoped = pymysql.connect(unix_socket=settings.mariadb_socket, user='alpha_wp', password='different-test-only-password')
+    scoped.close()
+
+
+def test_partial_repair_failure_does_not_remove_existing_database(sql, monkeypatch):
+    connection, work = sql
+    saved = entry()
+    mariadb.drop_db_user('alpha_wp')
+    monkeypatch.setattr(mariadb, 'grant_exact_database', lambda *args: (_ for _ in ()).throw(RuntimeError('grant failed')))
+    with pytest.raises(RuntimeError):
+        metadata.repair_missing('alpha', saved)
+    assert not mariadb.user_exists('alpha_wp')
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT content FROM alpha_wp.posts WHERE id=1')
+        assert cursor.fetchone()[0] == 'Original WordPress content ☕'

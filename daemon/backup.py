@@ -17,6 +17,7 @@ progress-reporting channel the UI polls, updated at each stage.
 """
 from __future__ import annotations
 
+from daemon.database_operations import serialized
 import gzip
 import json
 import logging
@@ -839,6 +840,7 @@ def _update_restore(restore_job_id: int, **fields) -> None:
             setattr(r, key, value)
 
 
+@serialized
 def _restore_database_dump(db_name: str, dump_path: Path) -> None:
     if not mariadb.database_exists(db_name):
         raise BackupError(f"database '{db_name}' does not exist -- create it (db.create) before restoring into it")
@@ -853,6 +855,7 @@ def _restore_database_dump(db_name: str, dump_path: Path) -> None:
         os.unlink(cnf_path)
 
 
+@serialized
 def _restore_full(username: str, account_status: str, local_artifact: str, tmp_dir: str, restore_job_id: int) -> None:
     _update_restore(restore_job_id, progress_message="extracting backup")
     extract_dir = Path(tmp_dir) / "extracted"

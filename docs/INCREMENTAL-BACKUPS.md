@@ -282,3 +282,40 @@ reconstruction is queued, a newly created database at that name causes the worke
 to fail without replacing its sentinel table/content. Removing only that disposable
 test database then allows a newly queued reconstruction to restore the original
 WordPress data and authenticate with its original password.
+
+## Partial-resource and interrupted reconstruction recovery
+
+An owned registration now permits repair when only the database or its login
+survives. A surviving login must match the saved local native-password identity;
+its password is never reset. Unregistered survivors, changed login mappings,
+foreign/shared registrations and nonmatching credentials remain explicit conflicts.
+Existing database contents receive a pre-restore safety snapshot even when their
+login is missing. Reapplying the exact database grant repairs an incomplete
+create/database-user/grant sequence without adding global privileges.
+
+The worker persists `reconstruction_pending` before SQL creation. If interrupted,
+startup marks the running operation failed while retaining that marker. A newly
+requested restore recognizes the owned incomplete reconstruction, verifies its
+surviving login against snapshot metadata, repairs the grant and imports the data.
+Successful repair clears the account/name's prior pending markers. This is explicit
+user-triggered retry, not automatic replay of an interrupted destructive import.
+Ordinary exceptions compensate only newly created resources; pre-existing data and
+logins are retained.
+
+The mutation audit extended coordination to staging clone/sync/delete, existing
+cPanel import database/password steps and legacy full-account/SQL restore workers.
+Temporary phpMyAdmin/import identities use reserved prefixes and do not claim
+hosting registrations. This coordination covers panel management operations;
+application SQL writes still require the maintenance/pause described in restore UI.
+
+Validation: 24 metadata/partial/restart-recovery checks, 39 mixed restore/SQL/CRUD/
+coordination checks, 65 staging/import regressions and 54 legacy restore/coordination
+checks passed. The interrupted test raises a worker-termination exception between
+user creation and grant, runs startup recovery, queues a fresh restore and verifies
+original-password authentication and restored WordPress data. Mixed restore/undo
+proves that the prior existing database returns to its previous contents while the
+newly reconstructed database remains available. Logs under `/root/boron-setup`:
+`snapshot-partial-recovery-tests.log`, `snapshot-mixed-recovery-tests.log`,
+`database-coordination-audit-tests.log`, `legacy-restore-coordination-tests.log`.
+Frontend code is unchanged from the preceding successful production build and four
+deleted-database browser cases. Live deployment/verification is recorded below.
