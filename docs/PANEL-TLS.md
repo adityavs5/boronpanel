@@ -53,3 +53,14 @@ Focused OLS/TLS regressions passed 84 tests, including the service identity chec
 Trusted production certificate issuance and public HTTPS trust verification passed
 on port 9443. Renewal rehearsal and subsequent port migration are being recorded
 in `/root/boron-setup/panel-tls-live.log` and the live port checks.
+
+## Live issuance and renewal verified
+
+Production issuance, system-trusted HTTPS and the renewal dry run with
+`--run-deploy-hooks` succeeded. Certbot's log confirms both initial and rehearsal
+calls to `/opt/boron/scripts/panel_ssl_deploy.py --hostname boron.sitecountry.com`.
+The final listener is now 2222, still serving the trusted certificate (issuer
+Let's Encrypt YE1, expires 2026-12-12). Administrator login and both live theme
+browser checks passed with normal TLS verification. The existing renewal cron
+runs at 03:17 and 15:17 UTC. Evidence: `/root/boron-setup/panel-tls-live.log` and
+`/root/boron-setup/panel-access-live-browser-final.log`.

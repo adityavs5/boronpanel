@@ -9,8 +9,8 @@ The complete user objective remains active. A checked item requires implementati
 - [x] WordPress URLs: functional http/https and www/non-www installation selection, login and clone compatibility.
 - [x] Applications: separate Python App and Node.js App navigation and user workflows.
 - [ ] phpMyAdmin: provision and verify real database-scoped access.
-- [ ] Panel SSL: issue and serve a valid certificate for the requested panel hostname, with renewal.
-- [ ] Panel ports: default shared admin/customer port 2222; admin configuration supports changing both ports, preserving access and enforcing intended role behavior.
+- [x] Panel SSL: issue and serve a valid certificate for the requested panel hostname, with renewal.
+- [x] Panel ports: default shared admin/customer port 2222; admin configuration supports changing both ports, preserving access and enforcing intended role behavior.
 - [ ] Direct interactions: database and SSL names/actions first, then audit other comparable lists; accessible desktop/mobile management views.
 - [ ] Terminal: configurable BORON ASCII welcome from admin configuration, suppress default Ubuntu status/MOTD in admin terminal; preserve usable prompts and appropriate customer behavior.
 - [ ] PHP: account default version inherited by new sites; per-site override dropdown; Lite/Moderate/Max limit presets and editable Custom selected by default.
@@ -240,3 +240,43 @@ and usability requirements remain in the initial phase and keep their full scope
 DNS steering: the user reports phpmyadmin.boron.sitecountry.com is corrected and
 asks to retry after propagation. Continue independent initial-phase work while
 periodically verifying DNS; do not repeatedly ask the user while they are away.
+
+
+## Live deployment — panel access verified 2026-09-13
+
+The accumulated development build is deployed under `/opt/boron`, with the new
+API service launcher. The initial deployment preserved 9443 and verified the API,
+admin login and configuration RPC. Recovery backup:
+`/root/boron-setup/expansion-before-20260913-202747` (private code/config/database).
+The OLS root-ownership compatibility fix is also deployed.
+
+The requested panel hostname now serves a trusted Let's Encrypt certificate.
+Public-hostname HTTP challenge retrieval, normal TLS trust validation, a Certbot
+renewal dry run and its real deploy hook all succeeded. The certificate expires
+2026-12-12 and the existing twice-daily renewal cron invokes the stable hook.
+
+Live configuration jobs 1–3 moved shared access to 2222, tested separate admin 2222
+and customer 2223 with wrong-role rejection, and restored final shared 2222.
+Admin/customer password login and retained WordPress inventory passed. The
+customer QA account had no PanelUser identity; a customer-only identity was created
+for that existing isolated account using its privately saved test password. The
+temporary 2223 firewall admission was removed. Both real themes passed browser
+checks on `https://boron.sitecountry.com:2222/app`, with trusted TLS enabled.
+
+Regression evidence: 2031 full-suite checks passed and two optional tests skipped;
+one fixture failed due to leaked daemon umask. The logging fixture now restores
+umask and the ACL fixture matches the actual explicitly chmodded account home.
+Thirty ordered logging/domain tests and the real ACL check under umask 027 passed.
+Eighty-four OLS/TLS checks passed after the live ownership fix. The initial live
+browser assertion used incorrect text casing; the corrected checks passed both
+themes. See `/root/boron-setup/expansion-predeploy-tests.log`,
+`domain-order-fix-tests.log`, `domain-daemon-umask-proof.log`,
+`panel-tls-owner-tests.log`, `panel-tls-live.log`, `panel-ports-live-resume.log`, and
+`panel-access-live-browser-final.log`. External crawler verification of the
+nonstandard port was unsupported; DNS-based browser/API checks ran on this server.
+
+phpMyAdmin packages are installed without replacing the web server. Public DNS,
+vhost/SSL, one-click database access and renewal integration remain unfinished.
+The user reports the record corrected and requests retrying after propagation;
+continue without repeated questions while they are away. Remaining original
+requirements must finish before the recorded second phase begins.

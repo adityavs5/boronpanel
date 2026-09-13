@@ -92,3 +92,17 @@ Logs: `/root/boron-setup/panel-jobs-final-tests.log`,
 `/root/boron-setup/panel-settings-browser-final.log`. The initial sandboxed API
 runner was terminated after stalling in TestClient setup; the final complete suite
 ran successfully with local socket access and isolated databases.
+
+## Live verification
+
+The development build is deployed. Successful persistent jobs 1, 2 and 3 exercised
+9443 → shared 2222 → admin 2222/customer 2223 → shared 2222. Real password login
+checks accepted each intended role and rejected the wrong role on separate
+listeners. Final settings and the actual listening socket both show shared 2222;
+WordPress inventory remained accessible. The test-only 2223 firewall opening was
+removed. Both live themes rendered the expected settings/history with trusted TLS.
+Evidence: `/root/boron-setup/panel-ports-live-resume.log` and
+`/root/boron-setup/panel-access-live-browser-final.log`. Runtime failure rollback
+and interruption are covered by isolated tests; they were not induced on the live
+panel. The OLS challenge configuration did exercise real rollback on its initially
+rejected ownership setting before correction.
