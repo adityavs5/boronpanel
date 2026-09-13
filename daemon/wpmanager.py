@@ -296,6 +296,8 @@ def remove(p):
         def rollback():
             if not removed['database']:
                 _removal_worker(username,root,{**config,'action':'remove_rollback'})
+        from daemon.database_operations import serialized
+        @serialized
         def finish():
             wordpress.handlers_database.mariadb.drop_database(database)
             removed['database'] = True

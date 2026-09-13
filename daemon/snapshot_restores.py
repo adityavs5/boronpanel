@@ -1,8 +1,10 @@
 """Account-scoped snapshot restore jobs with pre-restore recovery points."""
+from daemon.database_operations import serialized
 import json
 import logging
 from pathlib import Path
 import shutil
+import uuid
 
 from sqlalchemy import select
 from daemon import snapshot_jobs as jobs, snapshot_storage as storage
@@ -46,16 +48,53 @@ def _paths(values):
     return values
 
 
+def _recovery_metadata(repo, account, snapshot_id):
+    from daemon.snapshot_db_metadata import read_metadata
+    stage = Path(settings.snapshot_private_dir)/'sources'/f'account-{account.id}'
+    path = stage/'database-recovery.json'
+    nodes = storage.entries(repo, account.id, snapshot_id, str(stage))
+    if not any(node.get('path') == str(path) and node.get('type') == 'file' for node in nodes):
+        return {}
+    work = jobs.private_directory('metadata', uuid.uuid4().hex)
+    try:
+        data = storage.restore_to(repo, account.id, snapshot_id, str(work/'data'), selected_paths=[str(path)])
+        return read_metadata(data/str(path).lstrip('/'), account.username)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _database_state(account, name, metadata):
+    from daemon import mariadb
+    with write_session() as session:
+        registration = session.scalar(select(DatabaseGrant).where(DatabaseGrant.db_name == name))
+        if registration and registration.account_id != account.id:
+            return 'unavailable', 'This database name is registered to another account.'
+        if registration and mariadb.database_exists(name):
+            if not mariadb.user_exists(registration.db_user):
+                return 'unavailable', 'The registered database login is missing; repair this partial state before restoring.'
+            return 'existing', None
+        entry = metadata.get(name)
+        if not entry:
+            return 'unavailable', 'This recovery point lacks metadata needed to recreate the deleted database.'
+        if registration and registration.db_user != entry['user']:
+            return 'unavailable', 'The database login registration has changed.'
+        if mariadb.database_exists(name) or mariadb.user_exists(entry['user']):
+            return 'unavailable', 'Database or login resources still exist; resolve the name conflict before reconstruction.'
+        other = session.scalar(select(DatabaseGrant.id).where(DatabaseGrant.db_user == entry['user'], DatabaseGrant.db_name != name))
+        if other:
+            return 'unavailable', 'Another database uses this login.'
+    return 'recreate', 'Deleted database: recreate with its backed-up login and password.'
+
+
 def database_options(params):
     account,source=_owned_run(params['username'],params['run_id'])
     if 'databases' not in source.options['components']:return {'databases':[]}
     directory=Path(settings.snapshot_private_dir)/'sources'/f'account-{account.id}'/'databases'
-    with write_session() as session:
-        owned=set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id==account.id)).all())
     try:
         with jobs.lock(f'repository-{source.destination_id}',blocking=False):
             repo=jobs.repository(jobs._row(SnapshotDestination,source.destination_id))
             nodes=storage.entries(repo,account.id,source.snapshot_id,str(directory))
+            metadata=_recovery_metadata(repo,account,source.snapshot_id)
     except BlockingIOError:
         raise ValidationError('This destination is busy. Try again shortly.') from None
     databases=[]
@@ -67,9 +106,8 @@ def database_options(params):
             from daemon.snapshot_databases import _database_name
             _database_name(name)
         except ValidationError:continue
-        allowed=name in owned and name.startswith(account.username+'_')
-        databases.append({'name':name,'size':node.get('size',0),'available':allowed,
-            'reason':None if allowed else 'This database is no longer registered to this account.'})
+        state,reason=_database_state(account,name,metadata) if name.startswith(account.username+'_') else ('unavailable','Database not found for this account')
+        databases.append({'name':name,'size':node.get('size',0),'available':state!='unavailable','action':state,'reason':reason})
     return {'databases':sorted(databases,key=lambda item:item['name'])}
 
 
@@ -83,7 +121,16 @@ def trigger(params):
     kind=safety.selection['kind'] if safety else params.get('kind','files')
     if kind not in ('files','databases'):raise ValidationError('Unsupported snapshot restore type')
     paths=[] if safety else _paths(params.get('paths',[]))
-    databases=_owned_databases(account,safety.selection.get('databases',[]) if safety else params.get('databases',[])) if kind=='databases' else []
+    databases=[]
+    if kind=='databases':
+        if safety:
+            databases=_owned_databases(account,safety.summary.get('safety_databases',safety.selection.get('databases',[])))
+        else:
+            databases=jobs._strings(params.get('databases',[]),'database names')
+            options={item['name']:item for item in database_options({'username':account.username,'run_id':source.id})['databases']}
+            if not databases or any(name not in options or not options[name]['available'] for name in databases):
+                raise ValidationError('Database not found for this account or unavailable for reconstruction')
+            databases=sorted(set(databases))
     if kind not in source.options['components']:raise ValidationError('This recovery point does not contain '+kind)
     with jobs.lock('queue'),write_session() as session:
         for model in (SnapshotRestore,SnapshotRun,BackupJob,RestoreJob):
@@ -182,9 +229,16 @@ def _owned_databases(account, names):
     return sorted(set(names))
 
 
+@serialized
 def _restore_databases(ident,account,row,repo,snapshot_id,work):
     from daemon import snapshot_databases as database, mariadb
-    names=_owned_databases(account,row.selection['databases'])
+    names=row.selection['databases']
+    metadata={} if row.selection.get('source_snapshot_id') else _recovery_metadata(repo,account,snapshot_id)
+    states={}
+    for name in names:
+        state,reason=_database_state(account,name,metadata)
+        if state=='unavailable':raise ValidationError(reason)
+        states[name]=state
     base=Path(settings.snapshot_private_dir)
     source=base/('database-safety' if row.selection.get('source_snapshot_id') else 'sources')/f'account-{account.id}'/'databases'
     paths=[source/f'{name}.sql' for name in names]
@@ -192,26 +246,40 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
     # Verify every selected source and current database before changing any data.
     for name,path in zip(names,paths):
         database._sql_file(data/str(path).lstrip('/'))
-        if not mariadb.database_exists(name):
-            raise ValidationError('Database '+name+' no longer exists; account reconstruction is required')
-        database.validate_supported_objects(name)
-        database._validate_database_boundary(name)
+        if states[name]=='existing':
+            database.validate_supported_objects(name)
+            database._validate_database_boundary(name)
     stage=jobs.private_directory('database-safety',f'account-{account.id}')
     dumps=stage/'databases'
     if dumps.exists():shutil.rmtree(dumps)
     dumps.mkdir(mode=0o700)
     _update(ident,progress_message='Saving current databases before restore')
     try:
-        for name in names:database.dump_database(name,dumps/f'{name}.sql',stage)
-        safety=storage.backup(repo,account.id,[str(dumps)])
-        _update(ident,safety_snapshot_id=safety['snapshot_id'])
+        existing=[name for name in names if states[name]=='existing']
+        for name in existing:database.dump_database(name,dumps/f'{name}.sql',stage)
+        if existing:
+            safety=storage.backup(repo,account.id,[str(dumps)])
+            _update(ident,safety_snapshot_id=safety['snapshot_id'],summary={'safety_databases':existing})
         completed=[]
+        reconstructed=[]
         for name,path in zip(names,paths):
+            if states[name]=='recreate':
+                from daemon.snapshot_db_metadata import recreate_missing
+                state,reason=_database_state(account,name,metadata)
+                if state!='recreate':raise ValidationError('Database reconstruction state changed; retry after reviewing ownership')
+                with write_session() as session:
+                    registration=session.scalar(select(DatabaseGrant).where(DatabaseGrant.db_name==name))
+                    if registration is None:
+                        session.add(DatabaseGrant(account_id=account.id,db_name=name,db_user=metadata[name]['user']))
+                _update(ident,progress_message='Recreating database '+name)
+                recreate_missing(account.username,metadata[name])
+                reconstructed.append(name)
+                _update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),'safety_databases':existing})
             _owned_databases(account,[name])
             _update(ident,progress_message='Restoring database '+name)
             database.restore_database(name,data/str(path).lstrip('/'),work,replace_tables=True)
             completed.append(name)
-            _update(ident,summary={'databases':completed.copy()})
+            _update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),'safety_databases':existing})
         _update(ident,status='completed',progress_message='Selected databases restored',completed_at=utcnow())
     finally:
         shutil.rmtree(dumps,ignore_errors=True)

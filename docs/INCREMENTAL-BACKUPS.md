@@ -231,3 +231,54 @@ printing credentials or changing SQL resources. Logs:
 `/root/boron-setup/snapshot-db-reconstruction-tests.log` and
 `/root/boron-setup/snapshot-db-metadata-final.log`. These code changes remain in
 development pending restore coordinator integration and deployment.
+
+## Queued deleted-database reconstruction (development)
+
+The snapshot database catalog now distinguishes an existing owned database, a
+fully deleted database/login pair with verified recovery metadata, and unavailable
+names. The UI permits selecting a reconstructable deleted database and explains
+that its backed-up credentials will be restored. Legacy snapshots still restore
+existing owned databases; deleted names without reconstruction metadata are
+explicitly unavailable. Metadata is restored into private temporary staging,
+validated for format/account ownership, and removed after reading. Hashes remain
+internal, never serialized to the catalog or restore history.
+
+Trigger authorization checks the owned snapshot catalog. The worker verifies
+source SQL and rechecks current registration and SQL resources before changes.
+It registers an absent name to the account, reconstructs the database/login with
+its saved password and collation, and imports the verified SQL. Progress records
+reconstructed names and completed imports. Existing databases retain their
+credentials and receive encrypted pre-restore copies. Previous-version recovery
+selects only databases that existed before the operation; newly recreated
+databases are retained, as explained in the confirmation UI.
+
+A reentrant, cross-process database mutation lock now covers database CRUD/account
+database termination, metadata capture/reconstruction, queued snapshot database
+restores and the WordPress hard-removal database completion callback. Concurrent
+operations receive a retryable busy message. This prevents covered panel operations
+from changing ownership between restore checks and SQL creation; a final audit of
+other mutation/legacy entry points remains required.
+
+Current limits before deployment: partially missing database/login resources are
+explicitly refused. Reconstruction progress and owned registration survive worker
+failure, but abrupt interruption between individual SQL creation/grant steps needs
+additional reconciliation. Existing resources are not silently adopted. Mixed
+existing/deleted recovery and all remaining full backup lifecycle requirements
+still need their final audit. This development change is not yet deployed.
+
+Validation: 97 broader database/metadata/backup/WordPress checks passed. A separate
+final run passed three checks covering actual queued reconstruction plus real
+cross-process exclusion/reentrancy. Six metadata reader rejection checks passed.
+Four new browser cases passed across both themes/light-dark modes, including
+existing and deleted selections, typed confirmation, mobile layout and previous
+version recovery. Production build passed. Logs under `/root/boron-setup`:
+`snapshot-queued-reconstruction-tests.log`, `snapshot-db-queue-final.log`,
+`snapshot-metadata-reader-tests.log`, `snapshot-reconstruction-selection-browser.log`
+and `snapshot-reconstruction-build.log`. The SQL tests use disposable socket-only
+MariaDB servers and encrypted repositories, not the live customer databases.
+
+The final name-reuse test passed (`snapshot-db-name-race-tests.log`): after a
+reconstruction is queued, a newly created database at that name causes the worker
+to fail without replacing its sentinel table/content. Removing only that disposable
+test database then allows a newly queued reconstruction to restore the original
+WordPress data and authenticate with its original password.

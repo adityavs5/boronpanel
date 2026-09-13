@@ -3,6 +3,7 @@
 Password hashes belong only inside encrypted repositories/private staging, never
 in API responses or the API-readable panel database. Stored SQL is never executed.
 """
+from daemon.database_operations import serialized
 import json
 import os
 import re
@@ -31,6 +32,7 @@ def validate_entry(username, entry):
     return {key: entry[key] for key in ('name', 'user', 'host', 'plugin', 'password_hash', 'charset', 'collation')}
 
 
+@serialized
 def capture(username, grants):
     validate_username(username)
     entries = []
@@ -66,6 +68,7 @@ def write_metadata(path, metadata):
         json.dump(metadata, handle, sort_keys=True)
 
 
+@serialized
 def recreate_missing(username, entry):
     """Recreate an entirely missing database/login pair; caller checks registration.
 
@@ -99,3 +102,29 @@ def recreate_missing(username, entry):
         raise
     finally:
         connection.close()
+
+
+def read_metadata(path, username):
+    """Read only verified, privately restored metadata; never return it to an API."""
+    import stat
+    from pathlib import Path
+    path = Path(path)
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 4 * 1024 * 1024:
+        raise ValidationError('Invalid database recovery metadata file')
+    try:
+        payload = json.loads(path.read_text())
+        if payload.get('format') != 1 or payload.get('username') != username:
+            raise ValueError()
+        entries = payload['databases']
+        if not isinstance(entries, list):
+            raise ValueError()
+        result = {}
+        for entry in entries:
+            value = validate_entry(username, entry)
+            if value['name'] in result:
+                raise ValueError()
+            result[value['name']] = value
+        return result
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise ValidationError('Invalid database recovery metadata') from None

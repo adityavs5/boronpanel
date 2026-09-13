@@ -56,6 +56,7 @@ def sql(sql_server,monkeypatch,tmp_path):
         cursor.execute('INSERT INTO alpha_wp.posts VALUES (%s,%s,%s)',(1,'Original WordPress content ☕',b'\0\1\xff\n'))
         cursor.execute('CREATE TABLE bravo_wp.private_data (value VARCHAR(30))')
         cursor.execute("INSERT INTO bravo_wp.private_data VALUES ('must remain private')")
+    monkeypatch.setattr(settings,'snapshot_private_dir',str(tmp_path/'snapshot-private'))
     monkeypatch.setattr(settings,'mariadb_socket',sql_server)
     monkeypatch.setattr(settings,'mariadb_admin_user','snapshot_operator')
     monkeypatch.setitem(settings.secrets,'MARIADB_DAEMON_PASSWORD','test-only-service-password')
@@ -141,7 +142,7 @@ def test_system_database_cannot_get_a_restore_login(sql):
 def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
     from daemon import snapshot_jobs as jobs,snapshot_storage as storage
     from shared.db import write_session
-    from shared.models import Account,DatabaseGrant,SnapshotDestination,SnapshotRun
+    from shared.models import Account,DatabaseGrant,SnapshotDestination,SnapshotRun,SnapshotRestore
     connection,work=sql
     home=work/'homes'/'alpha';home.mkdir(parents=True)
     monkeypatch.setattr(settings,'home_base',str(home.parent))
@@ -218,9 +219,44 @@ def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
         session.execute(delete(DatabaseGrant).where(DatabaseGrant.account_id==account.id))
     catalog=restores.database_options({'username':'alpha','run_id':ident})
     assert catalog['databases'][0]['available'] is False
-    assert 'no longer registered' in catalog['databases'][0]['reason']
+    assert 'conflict' in catalog['databases'][0]['reason']
     with pytest.raises(Exception,match='not found for this account'):
         restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'databases','databases':['alpha_wp']})
+    from sqlalchemy import select
+    # An unregistered live database is a conflict; a fully deleted pair is recoverable.
+    mariadb.drop_database('alpha_wp')
+    mariadb.drop_db_user('alpha_wp')
+    catalog=restores.database_options({'username':'alpha','run_id':ident})
+    assert catalog['databases'][0]['available'] is True
+    assert catalog['databases'][0]['action']=='recreate'
+    # A name reused after queueing must not be adopted or overwritten.
+    conflict=restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'databases','databases':['alpha_wp']})
+    mariadb.create_database('alpha_wp')
+    with connection.cursor() as cursor:
+        cursor.execute('CREATE TABLE alpha_wp.reused_name (value INT)')
+        cursor.execute('INSERT INTO alpha_wp.reused_name VALUES (17)')
+    restores.execute(conflict['id'])
+    assert jobs._row(SnapshotRestore,conflict['id']).status=='failed'
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT value FROM alpha_wp.reused_name')
+        assert cursor.fetchone()[0]==17
+    mariadb.drop_database('alpha_wp')
+    request=restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'databases','databases':['alpha_wp']})
+    restores.execute(request['id'])
+    recreated=jobs._row(SnapshotRestore,request['id'])
+    assert recreated.status=='completed',recreated.error
+    assert recreated.summary['reconstructed']==['alpha_wp']
+    assert recreated.safety_snapshot_id is None
+    scoped=pymysql.connect(unix_socket=settings.mariadb_socket,user='alpha_wp',password='test-only-hosting-password')
+    try:
+        with scoped.cursor() as cursor:
+            cursor.execute('SELECT content FROM alpha_wp.posts WHERE id=1')
+            assert cursor.fetchone()[0]=='Original WordPress content ☕'
+    finally:scoped.close()
+    with write_session() as session:
+        registration=session.scalar(select(DatabaseGrant).where(DatabaseGrant.db_name=='alpha_wp'))
+        assert registration.account_id==account.id
+
 
 
 def test_startup_cleanup_only_removes_reserved_worker_names(sql):

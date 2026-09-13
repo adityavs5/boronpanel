@@ -88,3 +88,29 @@ def test_private_metadata_refuses_overwrite_or_symlink(tmp_path):
         with pytest.raises(FileExistsError):
             metadata.write_metadata(path, {})
     assert existing.read_text() == 'preserve'
+
+
+@pytest.mark.parametrize('payload', [
+    [], {'format': 99, 'username': 'alpha', 'databases': []},
+    {'format': 1, 'username': 'bravo', 'databases': []},
+    {'format': 1, 'username': 'alpha', 'databases': {}},
+    {'format': 1, 'username': 'alpha', 'databases': [{'name': 'alpha_wp'}]},
+])
+def test_read_recovery_metadata_rejects_invalid_or_foreign_documents(tmp_path, payload):
+    path = tmp_path / 'metadata.json'
+    path.write_text(json.dumps(payload))
+    with pytest.raises(Exception, match='Invalid database recovery metadata'):
+        metadata.read_metadata(path, 'alpha')
+
+
+def test_read_recovery_metadata_rejects_symlinks_and_oversized_files(tmp_path):
+    path = tmp_path / 'metadata.json'
+    path.write_text('{}')
+    link = tmp_path / 'link'
+    link.symlink_to(path)
+    with pytest.raises(Exception, match='metadata file'):
+        metadata.read_metadata(link, 'alpha')
+    with path.open('wb') as handle:
+        handle.truncate(4 * 1024 * 1024 + 1)
+    with pytest.raises(Exception, match='metadata file'):
+        metadata.read_metadata(path, 'alpha')

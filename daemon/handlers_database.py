@@ -7,6 +7,7 @@ from shared.db import write_session
 from shared.models import Account, DatabaseGrant
 from shared.validation import ValidationError, validate_db_identifier, validate_password_strength, validate_username
 
+from daemon.database_operations import serialized
 from daemon import mariadb
 
 
@@ -47,6 +48,7 @@ def _resolve_existing_db_name(username: str, name: str) -> str:
     return _scoped_name(username, candidate)
 
 
+@serialized
 def create_database(params: dict) -> dict:
     username = validate_username(params["username"])
     suffix = params["name"]
@@ -97,6 +99,7 @@ def list_databases(params: dict) -> dict:
         return {"databases": [_grant_dict(g) for g in grants]}
 
 
+@serialized
 def drop_database(params: dict) -> dict:
     username = validate_username(params["username"])
     db_name = _resolve_existing_db_name(username, params["name"])
@@ -118,6 +121,7 @@ def drop_database(params: dict) -> dict:
     return {"db_name": db_name, "status": "dropped"}
 
 
+@serialized
 def change_password(params: dict) -> dict:
     username = validate_username(params["username"])
     db_name = _resolve_existing_db_name(username, params["name"])
@@ -138,6 +142,7 @@ def change_password(params: dict) -> dict:
     return {"db_name": db_name, "db_user": db_user, "password": new_password}
 
 
+@serialized
 def terminate_account_databases(account: Account) -> None:
     """TERMINATE_HOOKS entry: drop every DB + DB user this account owns.
     Idempotent -- safe even if the account never had a database."""

@@ -354,3 +354,20 @@ resource reconstruction, registration/conflict coordination, interruption recove
 and old-snapshot compatibility are unfinished. Live databases were not deleted or
 recreated. Do not mark the backup checkbox complete based on this primitive; the
 full original scope and queued second phase remain active.
+
+### Queued database reconstruction — 2026-09-13
+
+Connected private snapshot metadata to the catalog, queued restore worker and
+both-theme selection UI for fully deleted database/login pairs. The real encrypted
+backup/deletion/reconstruction test restores WordPress data, original credentials,
+collation and account registration. A name reused after queueing is rejected and
+its new contents remain intact. Added cross-process coordination for covered SQL
+ownership mutations and validated metadata parsing with private temporary staging.
+
+Evidence: 97 broader regression checks, three final reconstruction/coordination
+checks, six metadata-reader checks and the final name-reuse integration test passed.
+Four deleted-database selection browser cases and the production build passed.
+Detailed logs/limits are in `docs/INCREMENTAL-BACKUPS.md`. This remains development
+work: partial-resource repair, abrupt-interruption reconciliation, mixed recovery
+and remaining mutation-entry-point audit precede deployment. Full backup completion,
+the other unchecked initial requirements and the queued second phase remain open.
