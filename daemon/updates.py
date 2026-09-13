@@ -719,7 +719,27 @@ def _build_venv(job_id: int, new_dir: str) -> None:
     )
     if proc.returncode != 0:
         _fail_step(job_id, "venv", f"pip install failed: {(proc.stderr or '')[-500:]}")
+    # The daemon runs with UMask=0027. tarfile's data filter and venv/pip
+    # inherit it, leaving root-owned directories inaccessible to boron-api.
+    # This staged tree contains public application/dependency files only;
+    # config, secrets and databases remain outside it with their own modes.
+    try:
+        _make_runtime_readable(new_dir)
+    except OSError as exc:
+        _fail_step(job_id, "venv", f"cannot make staged runtime readable: {exc}")
     _step(job_id, "venv", "ok")
+
+
+def _make_runtime_readable(root: str) -> None:
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        os.chmod(directory, 0o755)
+        for name in files:
+            path = os.path.join(directory, name)
+            if os.path.islink(path):
+                continue  # venv interpreter links must never chmod system files
+            mode = os.stat(path).st_mode
+            os.chmod(path, 0o755 if mode & 0o111 else 0o644)
+
 
 
 def _run_migrations(job_id: int, new_dir: str) -> None:

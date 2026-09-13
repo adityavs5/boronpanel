@@ -746,3 +746,38 @@ def test_stale_finalizing_job_expires_and_unblocks(update_env, monkeypatch):
     with pytest.raises(ValidationError, match="already finalizing"):
         updates.start_update({"initiated_by": "admin"})
     assert _get_job(fresh_id)["status"] == "finalizing"
+
+
+def test_staged_venv_is_readable_under_daemon_umask(update_env, monkeypatch, tmp_path):
+    from daemon.procutil import ProcResult
+
+    archive = tmp_path / "permissions.tar.gz"
+    archive.write_bytes(_make_tarball_bytes("1.0.1"))
+    outside = tmp_path / "system-python"
+    outside.write_text("system interpreter")
+    outside.chmod(0o700)
+    job_id = _make_job()
+
+    def fake_run(args, **kwargs):
+        if "venv" in args:
+            venv = Path(args[-1])
+            (venv / "bin").mkdir(parents=True)
+            (venv / "lib").mkdir()
+            (venv / "bin" / "python").symlink_to(outside)
+            (venv / "bin" / "pip").write_text("#!/bin/python")
+            (venv / "bin" / "pip").chmod(0o750)
+            (venv / "lib" / "dependency.py").write_text("# dependency")
+        return ProcResult(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(updates, "run", fake_run)
+    old_umask = os.umask(0o027)
+    try:
+        target = Path(updates._extract_staged(job_id, str(archive), "1.0.1"))
+        updates._build_venv(job_id, str(target))
+    finally:
+        os.umask(old_umask)
+    for directory in (target, target / "api", target / ".venv", target / ".venv/lib"):
+        assert directory.stat().st_mode & 0o777 == 0o755
+    assert (target / ".venv/lib/dependency.py").stat().st_mode & 0o777 == 0o644
+    assert (target / ".venv/bin/pip").stat().st_mode & 0o777 == 0o755
+    assert outside.stat().st_mode & 0o777 == 0o700
