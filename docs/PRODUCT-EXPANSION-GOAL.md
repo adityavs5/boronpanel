@@ -171,3 +171,20 @@ and certificate verification cover both listeners. Real two-socket tests prove H
 header spoofing cannot cross roles. The live listener remains unchanged at 9443;
 admin configuration/change rollback, TLS issuance and live migration remain required.
 See PANEL-PORTS.md. The full goal is still active.
+
+## Progress — administrator port-change workflow
+
+The development admin Panel Settings page now previews and changes shared or
+separate ports through persistent asynchronous jobs. Port transactions preserve
+configuration and metadata, admit local firewall ports, verify both HTTPS listeners
+against the installed certificate and roll back failures. Startup recovery recognizes
+verified completed changes or restores the private recovery journal. API endpoints
+are admin-only; dashboard search includes port/listener terms. Focused backend tests
+passed 48 checks; theme/mobile browser verification and build evidence are recorded
+in PANEL-PORTS.md and `/root/boron-setup/panel-settings-*` logs.
+
+This feature is not deployed. The live panel still uses 9443 and its current
+certificate. The next deployment work must integrate trusted panel TLS and verify
+real shared/separate listeners, default 2222 and recovery on this server. The full
+original checklist, including unfinished backup/restore and phpMyAdmin work, remains
+active and must be audited before completion.

@@ -29,7 +29,7 @@ const adminGroups = {
     ['System Info & Files', ['/site-stats', '/audit-log', '/account-log', '/error-log', '/templates', '/maintenance-mode']],
     ['WordPress & Websites', ['/wordpress']],
     ['Extra Features', ['/import/cpanel', '/imap-migrations', '/webhooks', '/notifications']],
-    ['Account & Preferences', ['/branding', '/appearance', '/security', '/api/docs']],
+    ['Account & Preferences', ['/panel-settings', '/branding', '/appearance', '/security', '/api/docs']],
   ],
   'paper-lantern': [
     ['Accounts', ['/backup-jobs', '/accounts', '/plans', '/import/cpanel']],

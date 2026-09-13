@@ -19,10 +19,9 @@ completion links now use 2222. Update health checks already follow api_bind_port
 The panel certificate deploy hook verifies the expected leaf certificate on both
 configured listeners after restart, before treating deployment as successful.
 
-The live server remains on 9443. Administrator configuration UI, persisted change
-jobs, conflict checks, firewall admission, rollback after failed listener changes,
-TLS issuance and live migration/verification are still required. Do not interpret
-this startup/authorization foundation as the finished configurable-port feature.
+The live server remains on 9443. The administrator UI, persisted jobs, conflict
+checks, firewall admission and rollback are now implemented in development as
+described below. TLS issuance and live migration/verification are still required.
 
 Validation: the first 44 listener/firewall/terminal/TOTP checks passed. Final focused
 and installer/update regression checks passed 74 tests with one optional test skipped.
@@ -48,9 +47,48 @@ External/provider firewalls remain outside this local transaction. Bind probes
 reduce conflicts but cannot reserve a port throughout the service restart; the
 post-restart checks cover that race with rollback.
 
-This is not yet an exposed admin feature. The asynchronous job/API/UI integration,
-process-interruption recovery, live migration and external connectivity checks
-remain pending. No live settings were changed by this work. Validation includes
+The asynchronous job/API/UI integration and process-interruption recovery are
+implemented below. Live migration and external connectivity checks remain pending.
+No live settings were changed by this work. Validation includes
 real local socket conflicts, TLS health/certificate rejection, serialization,
 metadata preservation, firewall failures and rollback; evidence is in
 `/root/boron-setup/panel-config-final-tests.log`.
+
+## Administrator workflow
+
+The administrator-only Panel Settings page now offers independent admin/customer
+ports, address previews, an explicit restart confirmation, a link to the new
+administrator address and recent change history. It is available in both theme
+catalogs and dashboard search (including port/listener synonyms). Customer
+navigation does not expose it; both read and mutation endpoints require admin.
+Polling stops after the requested job reaches a terminal state. Cross-port
+navigation uses an explicit link, so browser same-origin protections remain intact.
+
+`panel_config_jobs` stores requested ports, initiating administrator, status,
+result and timestamps. The API queues work and returns 202; a daemon worker owns
+the restart. A second request is rejected while a job is pending or running.
+Before mutating configuration the worker saves a root-private recovery journal;
+the API-readable database never stores its contents. At daemon startup, queued
+jobs resume, and interrupted running jobs inspect actual configuration and HTTPS
+health. A verified requested configuration is recorded as complete; otherwise the
+journal restores the previous configuration using ConfigWriter. Recovery begins
+after the RPC socket is available. Failed recovery is reported explicitly.
+
+The focused backend suite passed 48 checks, including admin/customer API isolation,
+strict request validation, job lifecycle, duplicate-worker prevention, startup
+recovery, real bind conflicts, TLS certificate/health rejection and transaction
+rollback. Four initial browser checks passed across both themes/light-dark modes,
+including request payloads, failure feedback, new-address links and mobile width.
+The page is code-split and adds no dependencies.
+
+Development only: live deployment, real service restart/recovery exercises,
+external access verification, the change to port 2222, and trusted TLS issuance
+are still pending. Source tests do not prove those deployment outcomes.
+
+Final verification after mobile heading/polling polish: production build passed
+(PanelSettings chunk 2.17 kB gzip), and all four theme/browser cases passed again.
+Logs: `/root/boron-setup/panel-jobs-final-tests.log`,
+`/root/boron-setup/panel-settings-final-build.log`, and
+`/root/boron-setup/panel-settings-browser-final.log`. The initial sandboxed API
+runner was terminated after stalling in TestClient setup; the final complete suite
+ran successfully with local socket access and isolated databases.

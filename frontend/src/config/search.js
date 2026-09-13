@@ -1,5 +1,6 @@
 // One searchable vocabulary for dashboard tools and the keyboard palette.
 const synonyms = {
+  '/panel-settings': 'panel configuration admin administrator customer user port ports listener address access 2222',
   '/node-apps': 'node nodejs node.js javascript application apps express npm runtime',
   '/python-apps': 'python application apps django flask fastapi wsgi asgi pip runtime',
   '/wordpress': 'wordpress wp blog website cms softaculous installer install clone staging backup login plugins themes',

@@ -1927,3 +1927,16 @@ class SnapshotRestore(Base):
     error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PanelConfigJob(Base):
+    __tablename__ = 'panel_config_jobs'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default='pending', index=True)
+    admin_port: Mapped[int] = mapped_column(Integer)
+    customer_port: Mapped[int] = mapped_column(Integer)
+    initiated_by: Mapped[str] = mapped_column(String(100))
+    error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

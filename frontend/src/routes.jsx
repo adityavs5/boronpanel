@@ -11,6 +11,7 @@ import { Maintenance, NotFound, RouteError } from '@/pages/system'
 // Every page is code-split: the shell paints immediately and each page loads
 // on first visit (then stays cached). AppShell provides the Suspense fallback.
 const Dashboard = lazy(() => import('@/components/themes/ToolDashboard'))
+const PanelSettings = lazy(() => import('@/pages/admin/PanelSettings'))
 const Appearance = lazy(() => import('@/pages/Appearance'))
 const Domains = lazy(() => import('@/pages/customer/Domains'))
 const DomainDetail = lazy(() => import('@/pages/customer/DomainDetail'))
@@ -140,6 +141,7 @@ export const router = createBrowserRouter(
         { path: 'accounts', element: admin(<Accounts />) },
         { path: 'accounts/:username', element: admin(<AccountDetail />) },
         { path: 'plans', element: admin(<Plans />) },
+        { path: 'panel-settings', element: admin(<PanelSettings />) },
         { path: 'branding', element: admin(<Branding />) },
         { path: 'templates', element: admin(<Templates />) },
         { path: 'accounts/:username/domains/:domain', element: admin(<DomainDetail />) },

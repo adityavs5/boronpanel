@@ -28,7 +28,7 @@ from shared.models import IpWhitelistEntry
 
 from api import logsetup, ratelimit
 from api.security import Identity, get_identity, require_admin
-from api.routers import account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, monitoring, nameservers, nodeapps, notes, notifications, onboarding, parked, php_functions, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
+from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, monitoring, nameservers, nodeapps, notes, notifications, onboarding, parked, php_functions, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
 
 
 @asynccontextmanager
@@ -345,6 +345,7 @@ app.include_router(plans.apply_api_router)
 # Run A feature 3: white-label branding (public GET, admin-only writes).
 app.include_router(branding.api_router)
 app.include_router(branding.admin_api_router)
+app.include_router(panel_config.api_router)
 # Run A feature 4: client onboarding wizard (once-only, account-scoped).
 app.include_router(onboarding.api_router)
 # Run A feature 5: service health monitoring (admin-only).

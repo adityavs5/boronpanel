@@ -59,6 +59,7 @@ export const adminNav = [
   { label: 'Site Statistics', to: '/site-stats', icon: BarChart3 },
   { label: 'Maintenance Mode', to: '/maintenance-mode', icon: Construction },
   { section: 'Panel Configuration' },
+  { label: 'Panel Settings', to: '/panel-settings', icon: Cog },
   { label: 'Branding', to: '/branding', icon: Palette },
   { label: 'Appearance', to: '/appearance', icon: Palette },
   { label: 'Change Password', to: '/change-password', icon: KeyRound },
