@@ -158,6 +158,38 @@ def test_real_supervised_journal_worker(saved, isolated_service, tmp_path, inter
     assert supervisor.service_status(service_name)['ActiveState'] == 'active'
     with guard.owned_guards(payload['entries'], payload['restore_id']):
         pass
+    observed = journal.recovery_state(path, service=service_name)
+    assert observed['state'] == ('partial' if interrupted else 'applied')
+    assert all(entry['token'] not in repr(observed) for entry in payload['entries'])
+    before = path.read_bytes()
+    rollback = journal.prepare_rollback(path, path.with_name('undo.json'), service=service_name)
+    undo_payload = journal.read(rollback)
+    assert len(undo_payload['entries']) == (1 if interrupted else 2)
+    assert undo_payload['operation_id'] != operation
+    assert undo_payload['undo'] is True
+    assert path.read_bytes() == before
+    # A failed transient unit deliberately remains until terminal-state
+    # inspection. Retire only this disposable test unit before the undo worker.
+    if interrupted:
+        import subprocess
+        subprocess.run(['/usr/bin/systemctl', 'reset-failed', supervisor.switch_unit(service_name)],
+                       capture_output=True, check=True, timeout=20)
+    undo_script = tmp_path / 'undo-worker.py'
+    undo_script.write_text(
+        f'import sys\nsys.path.insert(0, {str(repo)!r})\n'
+        'from shared.config import settings\n'
+        'from daemon import snapshot_mail_journal as journal\n'
+        f'settings.snapshot_private_dir = {settings.snapshot_private_dir!r}\n'
+        f'settings.mail_restore_guard_dir = {settings.mail_restore_guard_dir!r}\n'
+        f'settings.mail_base = {settings.mail_base!r}\n'
+        f'journal.execute({str(rollback)!r}, service={service_name!r})\n')
+    operations.append(undo_payload['operation_id'])
+    supervisor.supervised_command([str(repo / '.venv/bin/python'), str(undo_script)],
+                                 undo_payload['operation_id'], service=service_name)
+    assert [row['state'] for row in journal.inspect(path)] == ['ready', 'ready']
+    assert journal.recovery_state(rollback, service=service_name)['state'] == 'applied'
+    with guard.owned_guards(payload['entries'], payload['restore_id']):
+        pass
 
 
 def test_launch_uses_persisted_operation_and_private_worker(saved, monkeypatch):
@@ -169,3 +201,30 @@ def test_launch_uses_persisted_operation_and_private_worker(saved, monkeypatch):
     assert operation == payload['operation_id']
     assert command[1:] == ['-m', 'daemon.snapshot_mail_journal', str(path)]
     assert all(entry['token'] not in repr(command) for entry in payload['entries'])
+
+
+def test_running_worker_prevents_directory_inspection_and_rollback(saved, monkeypatch):
+    from daemon import snapshot_mail_service as supervisor
+    path, payload = saved
+    monkeypatch.setattr(supervisor, 'inspect_switch', lambda *a, **kw: {'state': 'running'})
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Cannot inspect changing mail trees')
+    monkeypatch.setattr(journal, 'inspect', forbidden)
+    assert journal.recovery_state(path)['state'] == 'waiting'
+    target = path.with_name('undo.json')
+    with pytest.raises(ValidationError, match='not ready'):
+        journal.prepare_rollback(path, target)
+    assert not target.exists()
+
+
+def test_completed_switch_requires_mail_service_recovery_before_rollback(saved, monkeypatch):
+    from daemon import snapshot_mail_service as supervisor
+    path, payload = saved
+    monkeypatch.setattr(journal, 'require_stopped', lambda service: None)
+    journal.execute(path)
+    monkeypatch.setattr(supervisor, 'inspect_switch', lambda *a, **kw: {'state': 'missing'})
+    monkeypatch.setattr(supervisor, 'service_status', lambda *a: {'ActiveState': 'failed'})
+    state = journal.recovery_state(path)
+    assert state['state'] == 'service_recovery_required' and state['outcome'] == 'applied'
+    with pytest.raises(ValidationError, match='not ready'):
+        journal.prepare_rollback(path, path.with_name('undo.json'))

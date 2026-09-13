@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import uuid
 
 from daemon import snapshot_mail_exchange as exchange, snapshot_mail_guard as guard
 from daemon.snapshot_mail_service import require_stopped, supervised_command
@@ -103,6 +104,53 @@ def inspect(path):
     return [{'domain': entry['domain'], 'local_part': entry['local_part'],
              'state': exchange.inspect(entry['domain'], entry['local_part'], entry['plan'])}
             for entry in payload['entries']]
+
+
+def recovery_state(path, *, service='dovecot.service'):
+    """Observe worker termination before interpreting the directory journal.
+
+    Caller holds the restore/account lock. A completed exchange still needs its
+    displaced-mail safety backup and mailbox validation before guards are lifted.
+    No status here authorizes deleting either tree or releasing a guard.
+    """
+    from daemon.snapshot_mail_service import inspect_switch, service_status
+    payload = read(path)
+    worker = inspect_switch(payload['operation_id'], service=service)
+    if worker['state'] == 'running':
+        return {'state': 'waiting', 'worker': worker, 'mailboxes': []}
+    with guard.owned_guards(payload['entries'], payload['restore_id']):
+        mailboxes = inspect(path)
+    desired = 'ready' if payload['undo'] else 'applied'
+    count = sum(row['state'] == desired for row in mailboxes)
+    outcome = 'applied' if count == len(mailboxes) else ('not_applied' if count == 0 else 'partial')
+    mail = service_status(service)
+    running = (mail.get('LoadState') == 'loaded' and mail.get('ActiveState') == 'active'
+               and mail.get('SubState') == 'running' and mail.get('ControlPID') == '0')
+    return {'state': outcome if running else 'service_recovery_required',
+            'outcome': outcome, 'worker': worker, 'mailboxes': mailboxes}
+
+
+def prepare_rollback(path, destination, *, service='dovecot.service'):
+    """Persist a separate undo journal for exactly the exchanged mailboxes.
+
+    Caller retains its account/restore lock and must separately supervise this
+    new journal. The original journal and both mail trees remain untouched.
+    """
+    payload = read(path)
+    if payload['undo']:
+        raise ValidationError('An undo journal cannot be reversed automatically')
+    state = recovery_state(path, service=service)
+    if state['state'] not in ('applied', 'partial'):
+        raise ValidationError('Mailbox switch is not ready for rollback preparation')
+    changed = {(row['domain'], row['local_part']) for row in state['mailboxes'] if row['state'] == 'applied'}
+    entries = [entry for entry in payload['entries'] if (entry['domain'], entry['local_part']) in changed]
+    with guard.owned_guards(payload['entries'], payload['restore_id']):
+        # A replaced tree or changed state between observation and persistence
+        # must never become an automatically executable undo instruction.
+        if inspect(path) != state['mailboxes']:
+            raise ValidationError('Mailbox switch changed during rollback preparation')
+        return create(destination, dict(format=1, restore_id=payload['restore_id'],
+                                         operation_id=uuid.uuid4().hex, undo=True, entries=entries))
 
 
 def execute(path, *, service='dovecot.service'):

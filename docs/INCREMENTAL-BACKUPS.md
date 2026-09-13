@@ -863,3 +863,25 @@ evidence of a successful exchange: the coordinator must still inspect its inode
 journal. Twelve supervision tests passed, including real systemd worker failure,
 continued observation after caller SIGKILL, missing units and operation mismatch.
 The observation API still needs integration into the customer restore coordinator.
+
+Journal recovery now consumes that observation API. It waits without inspecting
+changing directories while the supervised worker is running. After termination or
+unit collection, it verifies retained guard ownership and classifies directory
+identities as fully applied, not applied or partially applied. Failed mail service
+resumption is reported separately; a worker exit code alone does not establish
+the restore outcome. Recovery reports omit private guard tokens.
+
+For a fully or partly applied forward switch, `prepare_rollback` writes an
+exclusive new private undo journal covering only the changed mailboxes. It keeps
+the original journal, operation identifier and both directory trees intact and
+rechecks identities before persistence. The caller must retain its account lock
+and separately supervise the undo worker. Running workers, unavailable mail
+service and attempts to automatically reverse an undo journal are refused.
+
+Validation: 28 journal/supervision tests passed. Real isolated systemd workers
+exercise both complete and interrupted two-mailbox switches, then execute the
+generated undo journal and prove both original directory identities are restored.
+The interrupted case rolls back one changed mailbox while retaining the other.
+Guards remain owned throughout. These are coordinator building blocks; customer
+submission, safety snapshot finalization, guard release and startup recovery are
+still not enabled for mailbox restoration.
