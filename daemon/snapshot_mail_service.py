@@ -42,6 +42,38 @@ def switch_unit(service='dovecot.service'):
     return 'boron-mail-switch-test-' + service[len('boron-mail-test-'):]
 
 
+def inspect_switch(operation_id, *, service='dovecot.service'):
+    """Observe the persisted operation without starting, stopping or retrying it.
+
+    A collected unit has no remaining exit status. Both missing and terminal
+    results require journal inspection; neither proves that mail was exchanged.
+    ExecStopPost and queued unit jobs are still running for recovery purposes.
+    """
+    if not isinstance(operation_id, str) or not re.fullmatch(r'[a-f0-9]{32}', operation_id):
+        raise ValidationError('Invalid mail switch operation identifier')
+    unit = switch_unit(service)
+    result = run(['/usr/bin/systemctl', 'show', unit, '--property=LoadState',
+                  '--property=ActiveState', '--property=SubState', '--property=Description',
+                  '--property=MainPID', '--property=ControlPID', '--property=Job',
+                  '--property=Result'], timeout=10)
+    fields = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    if (fields.get('LoadState') == 'not-found' and fields.get('ActiveState') == 'inactive'
+            and fields.get('MainPID') == '0' and fields.get('ControlPID') == '0'
+            and fields.get('Job') in ('', '0')):
+        return {'unit': unit, 'state': 'missing', 'result': None}
+    if not result.ok or fields.get('LoadState') != 'loaded':
+        raise ValidationError('Could not inspect the mailbox switch; retain recovery state')
+    if fields.get('Description') != 'Boron mailbox switch ' + operation_id:
+        raise ValidationError('The mailbox switch unit belongs to another operation; retain recovery state')
+    active = fields.get('ActiveState')
+    if active not in ('active', 'activating', 'deactivating', 'reloading', 'inactive', 'failed'):
+        raise ValidationError('Mailbox switch state is unknown; retain recovery state')
+    terminal = (active in ('inactive', 'failed') and fields.get('MainPID') == '0'
+                and fields.get('ControlPID') == '0' and fields.get('Job') in ('', '0'))
+    return {'unit': unit, 'state': 'terminal' if terminal else 'running',
+            'result': fields.get('Result') if terminal else None}
+
+
 def supervised_command(command, operation_id, *, service='dovecot.service'):
     """Run a trusted internal switch command independently of the panel process.
 

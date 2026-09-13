@@ -64,6 +64,13 @@ def test_systemd_resumes_service_after_success_or_worker_kill(isolated_service, 
     after = service.service_status(name)
     assert after['ActiveState'] == 'active' and after['SubState'] == 'running'
     assert after['MainPID'] != before['MainPID']
+    observed = service.inspect_switch(operation, service=name)
+    assert observed['state'] in ('terminal', 'missing')
+    if crash:
+        assert observed['state'] == 'terminal'
+        assert observed['result'] == 'signal'
+        with pytest.raises(ValidationError, match='another operation'):
+            service.inspect_switch(uuid.uuid4().hex, service=name)
 
 
 def test_inactive_service_is_not_started_by_a_restore(isolated_service):
@@ -111,8 +118,10 @@ def test_switch_survives_loss_of_calling_panel_process(isolated_service, tmp_pat
             assert time.monotonic() < deadline
             time.sleep(.05)
         service.require_stopped(name)
+        assert service.inspect_switch(operation, service=name)['state'] == 'running'
         process.kill()
         process.wait(timeout=5)
+        assert service.inspect_switch(operation, service=name)['state'] == 'running'
         finish.touch()
         deadline = time.monotonic() + 10
         while service.service_status(name)['ActiveState'] != 'active':
@@ -123,3 +132,32 @@ def test_switch_survives_loss_of_calling_panel_process(isolated_service, tmp_pat
         if process.poll() is None:
             process.kill()
         process.wait(timeout=5)
+
+
+def test_absent_switch_is_observed_without_creating_a_unit(isolated_service):
+    name, operations = isolated_service
+    assert service.inspect_switch(uuid.uuid4().hex, service=name) == {
+        'unit': service.switch_unit(name), 'state': 'missing', 'result': None}
+
+
+@pytest.mark.parametrize('change', [
+    {'ControlPID': '123'}, {'MainPID': '123'}, {'Job': '123'},
+    {'ActiveState': 'deactivating'},
+])
+def test_cleanup_or_pending_job_is_not_terminal(monkeypatch, change):
+    from types import SimpleNamespace
+    operation = uuid.uuid4().hex
+    fields = {'LoadState': 'loaded', 'ActiveState': 'inactive', 'SubState': 'dead',
+              'Description': 'Boron mailbox switch ' + operation,
+              'MainPID': '0', 'ControlPID': '0', 'Job': '', 'Result': 'success'}
+    fields.update(change)
+    monkeypatch.setattr(service, 'run', lambda *a, **kw: SimpleNamespace(
+        ok=True, stdout='\n'.join(k+'='+v for k, v in fields.items())))
+    assert service.inspect_switch(operation)['state'] == 'running'
+
+
+def test_observation_error_is_not_a_missing_worker(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(service, 'run', lambda *a, **kw: SimpleNamespace(ok=False, stdout=''))
+    with pytest.raises(ValidationError, match='Could not inspect'):
+        service.inspect_switch(uuid.uuid4().hex)

@@ -206,3 +206,22 @@ def verify(*, binary=GUARD_BINARY, config=None):
     if any(fields.get(key) != value for key, value in expected.items()):
         raise ValidationError('Dovecot must run the mailbox restore guard before every other userdb')
     return {'guard': 'ready'}
+
+
+def main():
+    """Fresh-install entry point; Dovecot is started by the installer afterwards."""
+    import argparse
+    parser = argparse.ArgumentParser(description='Install the Dovecot mailbox restore guard')
+    parser.add_argument('--backup-dir', required=True)
+    args = parser.parse_args()
+    try:
+        install_binary()
+        install_configuration(args.backup_dir)
+    except Exception:
+        # Configuration can contain SQL credentials; never print exception data.
+        parser.exit(1, 'Mailbox restore guard installation failed; inspect Dovecot configuration and build dependencies.\n')
+    print('Mailbox restore guard installed and configuration validated; Dovecot must load it on startup.')
+
+
+if __name__ == '__main__':
+    main()

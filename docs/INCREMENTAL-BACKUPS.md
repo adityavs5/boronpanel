@@ -844,3 +844,22 @@ original live configuration is retained in a private backup under
 
 This activates the lookup guard only. Customer mailbox restore submission,
 coordinator recovery and installer/update wiring still require implementation.
+
+Fresh installation now invokes `daemon.snapshot_mail_guard_config` after mail
+configuration and before Dovecot service activation. The entry point builds the
+binary, saves the original configuration and validates the managed include.
+Failure aborts activation; it does not print configuration-bearing exception
+data. The installer starts/restarts Dovecot afterwards. Existing-server update
+wiring remains pending. Installer and guard validation: 23 passed, one skipped
+because ShellCheck is unavailable; Bash syntax and installer dry-run passed.
+
+`snapshot_mail_service.inspect_switch` observes the fixed supervisor unit against
+the persisted operation identifier. It distinguishes a running operation from a
+terminal or garbage-collected unit without launching or retrying work. A queued
+systemd job or remaining main/control process prevents a terminal classification,
+including the service restart in ExecStopPost. Another operation's unit and
+observation failures require retaining recovery state. A missing unit is not
+evidence of a successful exchange: the coordinator must still inspect its inode
+journal. Twelve supervision tests passed, including real systemd worker failure,
+continued observation after caller SIGKILL, missing units and operation mismatch.
+The observation API still needs integration into the customer restore coordinator.

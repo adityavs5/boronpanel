@@ -908,6 +908,12 @@ service lmtp {
 EOF
     run doveconf -n
     run postfix check
+    # Validate the ordered guard before starting mail. Do not proceed to service
+    # activation when compilation or configuration validation fails.
+    if ! run env PYTHONPATH="${DEST}" "${VENV}/bin/python" -m daemon.snapshot_mail_guard_config \
+        --backup-dir /var/lib/boron/mail-guard-config-backups; then
+        die "Mailbox restore guard setup failed; mail service activation stopped"
+    fi
     run systemctl enable --now dovecot postfix
     run systemctl restart dovecot postfix
     ok "Postfix + Dovecot virtual mail configured"
