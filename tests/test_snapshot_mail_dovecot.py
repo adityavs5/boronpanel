@@ -8,6 +8,8 @@ import tempfile
 import pytest
 
 from daemon.snapshot_mail_files import build_maildir
+from daemon import snapshot_mail_exchange as exchange
+from shared.config import settings
 
 
 @pytest.fixture
@@ -55,7 +57,7 @@ def mailbox_store():
 
 
 @pytest.mark.skipif(os.geteuid() != 0, reason='Recovery worker requires root to drop privileges')
-def test_point_in_time_mail_restore_and_safety_undo(mailbox_store, tmp_path):
+def test_point_in_time_mail_restore_and_safety_undo(mailbox_store, tmp_path, monkeypatch):
     root, command, message = mailbox_store
     tmp_path.chmod(0o700)
 
@@ -84,8 +86,18 @@ def test_point_in_time_mail_restore_and_safety_undo(mailbox_store, tmp_path):
     # a fresh replacement first. This fixture has no connected clients or LMTP;
     # production must quiesce the selected mailbox before any directory switch.
     prepare('snapshot', 'prepared')
-    (root / 'live').rename(root / 'displaced')
-    (root / 'prepared').rename(root / 'live')
+    mail_base = root / 'vmail'
+    home = mail_base / 'example.test/inbox'
+    home.mkdir(parents=True)
+    monkeypatch.setattr(settings, 'mail_base', str(mail_base))
+    (root / 'live').rename(home / 'Maildir')
+    name = '.boron-mail-ready-' + 'a' * 32
+    (root / 'prepared').rename(home / name)
+    saved = exchange.plan('example.test', 'inbox', name)
+    assert exchange.apply('example.test', 'inbox', saved) == 'applied'
+    original_command = command
+    def command(*args):
+        return original_command('-o', 'mail_location=maildir:' + str(home / 'Maildir'), *args)
     messages = command('fetch', 'hdr.message-id flags', 'ALL')
     assert '<original@example.test>' in messages
     assert '<archived@example.test>' in messages
@@ -94,8 +106,10 @@ def test_point_in_time_mail_restore_and_safety_undo(mailbox_store, tmp_path):
     assert 'Archive' in command('mailbox', 'list', '-s')
     assert command('mailbox', 'status', 'messages uidvalidity uidnext', '*') == before
     prepare('safety', 'prepared-undo')
-    (root / 'live').rename(root / 'displaced-undo')
-    (root / 'prepared-undo').rename(root / 'live')
+    undo_name = '.boron-mail-ready-' + 'b' * 32
+    (root / 'prepared-undo').rename(home / undo_name)
+    undo_saved = exchange.plan('example.test', 'inbox', undo_name)
+    assert exchange.apply('example.test', 'inbox', undo_saved) == 'applied'
     undone = command('fetch', 'hdr.message-id', 'ALL')
     assert '<newer@example.test>' in undone
     assert '<original@example.test>' not in undone

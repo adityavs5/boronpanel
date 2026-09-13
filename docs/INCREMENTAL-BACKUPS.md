@@ -548,3 +548,36 @@ Anvil tracking alone is insufficient: a lookup admitted before guard creation
 could complete after a zero observation, and authenticated IMAP sessions remain
 separate. Admission/draining coordination, durable switch/recovery and installer
 integration remain unfinished. These changes are not enabled on the live server.
+
+## Atomic Maildir exchange (development)
+
+`daemon/snapshot_mail_exchange.py` resolves the configured mail root and validated
+domain/local-part through no-follow directory descriptors. A prepared sibling
+must use a generated `.boron-mail-ready-<32 hex>` name. Planning records the home,
+current Maildir and replacement device/inode identities. The coordinator must
+persist that plan before applying it. Application rechecks identities, exchanges
+both names in one Linux `renameat2(RENAME_EXCHANGE)` operation, and fsyncs the
+parent directory. There is no non-atomic fallback and neither tree is deleted.
+Inspection recognizes ready/applied states from identities, including a worker
+exit after the syscall but before completion recording. Duplicate apply and
+stale/foreign-directory plans are refused. Undo exchanges the same retained
+directories back, again subject to service coordination.
+
+Validation: 55 combined recovery tests passed. This includes an actual forked
+worker exit immediately after the exchange, followed by state inspection and
+undo in the parent, plus simulated fsync failure, symlink rejection and stale
+plans. The offline Dovecot restore/undo test was then connected to this production
+exchange primitive; its 14 focused Dovecot/exchange checks passed. Message IDs,
+flags, subscriptions, UIDVALIDITY/UIDNEXT and recovery of newer messages remain
+covered. These process-crash tests do not simulate storage hardware power loss.
+
+No live switch is enabled. For the first full-restore implementation, the service
+coordinator must briefly stop Dovecot and verify all its processes have exited
+before exchanging directories, then resume it. The replacement should be fully
+prepared beforehand to keep that pause short. This affects existing mail client
+connections server-wide and must be stated in the restore interface; Postfix
+must retain incoming mail for retry while Dovecot is unavailable. A service
+restart/recovery mechanism, exact safety-point capture, durable journal wiring,
+installer support and live proof remain required. The per-mailbox guard still
+protects an incomplete restore after mail service resumes. An anvil count alone
+must not replace the service barrier until its admission races are resolved.
