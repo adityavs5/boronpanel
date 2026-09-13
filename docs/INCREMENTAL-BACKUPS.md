@@ -718,3 +718,30 @@ The additional storage and backup-job regression run passed all 21 tests, with
 one existing TestClient dependency deprecation warning. The real encrypted-mail
 exclusion/safety test passed separately. Persisting the prepared name in the
 coordinator before placement remains required for deterministic crash cleanup.
+
+## Placement receipts and inspection (development)
+
+Mailbox placement can now write a private receipt before creating the sibling.
+The receipt records restore ID, mailbox, generated name and home identity, then
+durably records the created directory identity in a `copying` phase before
+copying message bytes. Successful placement atomically publishes `ready` with
+file/byte counts. Receipt creation is exclusive; another job's record is never
+overwritten. Updates use temporary files, fsync and atomic replacement. A failed
+or interrupted write may leave an older phase, which requires inspection rather
+than assuming completion.
+
+`inspect_placement` validates private bounded receipt data and compares inode
+identities through the mailbox home descriptor. It distinguishes copying/ready
+siblings, a prepared tree that has been exchanged into `Maildir`, a missing
+sibling and a planned-but-unconfirmed creation. Changed home identities or
+substituted directories are rejected. It never deletes/adopts files or changes
+job status: recovery must first confirm the worker is terminal and revalidate
+account ownership. A ready receipt alone is not sufficient for cleanup.
+
+Validation: all 44 focused file/Dovecot/exchange tests passed. A forked worker
+exits during placement after its identity receipt is persisted; the parent finds
+the exact incomplete copy and confirms live mail is retained. Tests also cover
+exclusive receipts, observed pre-copy persistence, completed counts, real atomic
+exchange/undo recognition and rejection of a substituted sibling. These changes
+are development-only and still require the restore coordinator to request and
+consume the receipts.

@@ -1,4 +1,5 @@
 import os
+import json
 
 import pytest
 
@@ -157,6 +158,8 @@ def mailbox_home(tmp_path, monkeypatch):
     base = tmp_path / 'mail'
     home = base / 'example.test/inbox'
     (home / 'Maildir/cur').mkdir(parents=True)
+    (home / 'Maildir/new').mkdir()
+    (home / 'Maildir/tmp').mkdir()
     (home / 'Maildir/cur/current').write_bytes(b'retain live mail')
     monkeypatch.setattr(settings, 'mail_base', str(base))
     return home
@@ -218,3 +221,89 @@ def test_persisted_prepared_name_is_exclusive(staged, mailbox_home):
         stage_for_exchange(source, root, 'example.test', 'inbox',
                            uid=65534, gid=65534, prepared=name)
     assert (mailbox_home/name/'cur/message:2,S').read_bytes() == (source/'cur/message:2,S').read_bytes()
+
+
+def test_placement_receipt_is_persisted_before_copy_and_marks_ready(staged, mailbox_home, monkeypatch):
+    import daemon.snapshot_mail_files as files
+    source, _, root = staged
+    receipt = root / 'placement.json'
+    original = files._copy_mail_tree
+    observed = []
+    def copy(source_fd, target_fd, uid, gid, counts):
+        record = json.loads(receipt.read_text())
+        assert record['status'] == 'copying' and record['restore_id'] == 7
+        assert record['home'] == [mailbox_home.stat().st_dev, mailbox_home.stat().st_ino]
+        target = mailbox_home / record['prepared']
+        assert record['identity'] == [target.stat().st_dev, target.stat().st_ino]
+        observed.append(True)
+        return original(source_fd, target_fd, uid, gid, counts)
+    monkeypatch.setattr(files, '_copy_mail_tree', copy)
+    result = files.stage_for_exchange(source, root, 'example.test', 'inbox', uid=65534, gid=65534,
+                                     receipt=receipt, restore_id=7)
+    record = json.loads(receipt.read_text())
+    assert observed and record['status'] == 'ready'
+    assert record['prepared'] == result['prepared'] and record['files'] == 4
+    assert receipt.stat().st_mode & 0o777 == 0o600
+    assert files.inspect_placement(receipt, root) == 'ready'
+
+
+def test_placement_crash_retains_record_of_incomplete_copy(staged, mailbox_home):
+    import daemon.snapshot_mail_files as files
+    source, _, root = staged
+    receipt = root / 'placement.json'
+    pid = os.fork()
+    if pid == 0:
+        try:
+            files._copy_mail_tree = lambda *args: os._exit(91)
+            files.stage_for_exchange(source, root, 'example.test', 'inbox', uid=65534, gid=65534,
+                                     receipt=receipt, restore_id=7)
+        finally:
+            os._exit(92)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    record = json.loads(receipt.read_text())
+    assert record['status'] == 'copying'
+    target = mailbox_home / record['prepared']
+    assert record['identity'] == [target.stat().st_dev, target.stat().st_ino]
+    assert files.inspect_placement(receipt, root) == 'copying'
+    assert (mailbox_home / 'Maildir/cur/current').read_bytes() == b'retain live mail'
+
+
+def test_existing_receipt_prevents_another_placement(staged, mailbox_home):
+    from daemon.snapshot_mail_files import stage_for_exchange
+    source, _, root = staged
+    receipt = root / 'placement.json'
+    receipt.write_text('retain original job record')
+    receipt.chmod(0o600)
+    with pytest.raises(FileExistsError):
+        stage_for_exchange(source, root, 'example.test', 'inbox', uid=65534, gid=65534,
+                           receipt=receipt, restore_id=7)
+    assert list(mailbox_home.iterdir()) == [mailbox_home / 'Maildir']
+    assert receipt.read_text() == 'retain original job record'
+
+
+def test_placement_inspection_recognizes_exchanged_tree(staged, mailbox_home):
+    from daemon.snapshot_mail_files import stage_for_exchange, inspect_placement
+    from daemon import snapshot_mail_exchange as exchange
+    source, _, root = staged
+    receipt = root / 'placement.json'
+    result = stage_for_exchange(source, root, 'example.test', 'inbox', uid=65534, gid=65534,
+                                receipt=receipt, restore_id=7)
+    plan = exchange.plan('example.test', 'inbox', result['prepared'])
+    exchange.apply('example.test', 'inbox', plan)
+    assert inspect_placement(receipt, root) == 'exchanged'
+    exchange.apply('example.test', 'inbox', plan, undo=True)
+    assert inspect_placement(receipt, root) == 'ready'
+
+
+def test_placement_inspection_rejects_substituted_sibling(staged, mailbox_home):
+    from daemon.snapshot_mail_files import stage_for_exchange, inspect_placement
+    source, _, root = staged
+    receipt = root / 'placement.json'
+    result = stage_for_exchange(source, root, 'example.test', 'inbox', uid=65534, gid=65534,
+                                receipt=receipt, restore_id=7)
+    target = mailbox_home / result['prepared']
+    target.rename(mailbox_home / 'retained')
+    target.mkdir()
+    with pytest.raises(ValidationError):
+        inspect_placement(receipt, root)

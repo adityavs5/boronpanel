@@ -9,6 +9,7 @@ import shutil
 import stat
 import tempfile
 import uuid
+import json
 
 from daemon.procutil import run
 from shared.validation import ValidationError
@@ -134,7 +135,8 @@ def build_maildir(source, destination, private_root, *, uid=150, gid=150, timeou
         raise
 
 
-def stage_for_exchange(source, private_root, domain, local_part, *, uid=150, gid=150, prepared=None):
+def stage_for_exchange(source, private_root, domain, local_part, *, uid=150, gid=150, prepared=None,
+                       receipt=None, restore_id=None):
     """Place a durable prepared sibling on the mailbox filesystem before pausing.
 
     Caller verifies account ownership first. Source must be within private,
@@ -155,17 +157,36 @@ def stage_for_exchange(source, private_root, domain, local_part, *, uid=150, gid
     name = _prepared_name(prepared if prepared is not None else '.boron-mail-ready-' + uuid.uuid4().hex)
     counts = {'files': 0, 'bytes': 0}
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if receipt is not None:
+        receipt = Path(receipt)
+        if (type(restore_id) is not int or restore_id <= 0 or receipt.resolve() != receipt
+                or receipt == private_root or not receipt.is_relative_to(private_root)):
+            raise ValidationError('Invalid private mailbox placement receipt')
     with _home(domain, local_part) as home:
         incoming = os.open(source, flags)
         try:
             for part in ('cur', 'new', 'tmp'):
                 check = os.open(part, flags, dir_fd=incoming)
                 os.close(check)
+            parent = os.fstat(home)
+            record = {'format': 1, 'restore_id': restore_id, 'domain': domain, 'local_part': local_part,
+                      'prepared': name, 'home': [parent.st_dev, parent.st_ino],
+                      'identity': None, 'status': 'planned'}
+            if receipt is not None:
+                _placement_receipt(receipt, record, create=True)
             os.mkdir(name, 0o700, dir_fd=home)
             outgoing = os.open(name, flags, dir_fd=home)
             try:
+                identity = os.fstat(outgoing)
+                record.update(identity=[identity.st_dev, identity.st_ino], status='copying')
+                os.fsync(home)
+                if receipt is not None:
+                    _placement_receipt(receipt, record)
                 _copy_mail_tree(incoming, outgoing, uid, gid, counts)
                 os.fsync(home)
+                record.update(status='ready', **counts)
+                if receipt is not None:
+                    _placement_receipt(receipt, record)
             except BaseException:
                 # Do not delete a substituted directory after a path race.
                 actual = os.stat(name, dir_fd=home, follow_symlinks=False)
@@ -179,6 +200,92 @@ def stage_for_exchange(source, private_root, domain, local_part, *, uid=150, gid
         finally:
             os.close(incoming)
     return {'prepared': name, **counts}
+
+
+def _placement_receipt(path, payload, *, create=False):
+    """Persist placement phases atomically; an older phase means inspect first.
+
+    Only the placement worker writes this private file. Recovery must establish
+    that worker termination is authoritative before using it for cleanup.
+    """
+    temporary = path if create else path.with_name('.placement-' + uuid.uuid4().hex)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            json.dump(payload, handle, separators=(',', ':'))
+            handle.flush()
+            os.fsync(handle.fileno())
+        if not create:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+                raise ValidationError('Mailbox placement receipt changed unexpectedly')
+            os.replace(temporary, path)
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        if not create:
+            temporary.unlink(missing_ok=True)
+
+
+def inspect_placement(receipt, private_root):
+    """Inspect a receipt without deleting/adopting files or deciding job status.
+
+    The coordinator must confirm worker termination and account ownership before
+    making a recovery decision from this observation.
+    """
+    from daemon.snapshot_mail_exchange import _home, _prepared_name
+    receipt, private_root = Path(receipt), Path(private_root)
+    info = private_root.lstat()
+    if (private_root.resolve() != private_root or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != 0 or info.st_mode & 0o077 or receipt.resolve() != receipt
+            or receipt == private_root or not receipt.is_relative_to(private_root)):
+        raise ValidationError('Invalid private mailbox placement receipt')
+    fd = os.open(receipt, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 8192:
+            raise ValidationError('Invalid private mailbox placement receipt')
+        try:
+            record = json.loads(handle.read(8193))
+            if type(record['format']) is not int or record['format'] != 1 or type(record['restore_id']) is not int or record['restore_id'] <= 0:
+                raise ValueError()
+            name = _prepared_name(record['prepared'])
+            if record['status'] not in ('planned', 'copying', 'ready'):
+                raise ValueError()
+            for key in ('home', 'identity'):
+                value = record[key]
+                if key == 'identity' and value is None and record['status'] == 'planned':
+                    continue
+                if not isinstance(value, list) or len(value) != 2 or any(type(v) is not int or v < 0 for v in value):
+                    raise ValueError()
+            domain, local_part = record['domain'], record['local_part']
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            raise ValidationError('Invalid private mailbox placement receipt') from None
+    with _home(domain, local_part) as home:
+        parent = os.fstat(home)
+        if record['home'] != [parent.st_dev, parent.st_ino]:
+            raise ValidationError('Mailbox home no longer matches its placement receipt')
+        if record['identity'] is None:
+            return 'unconfirmed'
+        def identity(name):
+            try:
+                info = os.stat(name, dir_fd=home, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValidationError('Mailbox placement path is no longer a directory')
+            return [info.st_dev, info.st_ino]
+        prepared = identity(name)
+        if prepared == record['identity']:
+            return record['status']
+        if identity('Maildir') == record['identity']:
+            return 'exchanged'
+        if prepared is None:
+            return 'missing'
+        raise ValidationError('Prepared mailbox no longer matches its placement receipt')
 
 
 def _copy_mail_tree(source, target, uid, gid, counts):
