@@ -254,7 +254,9 @@ virtualHost phpmyadmin{
     vhRoot                   {{ pma_docroot }}/
     allowSymbolLink          1
     enableScript             1
-    restrained                1
+    # Debian package assets link to /usr/share/javascript outside this
+    # root-managed docroot. Customer vhosts retain restrained mode.
+    restrained                0
     setUIDMode               0
     configFile               conf/vhosts/phpmyadmin/vhconf.conf
 }

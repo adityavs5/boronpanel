@@ -234,3 +234,15 @@ def test_prepare_root_keeps_php_worker_from_owning_package(isolated_db,tmp_path,
     assert ownership[0]==(root,990,990)
     assert root.stat().st_mode & 0o777==0o555
     assert all(uid==0 for path,uid,gid in ownership[1:])
+
+
+def test_package_configuration_outside_webroot_is_used(tmp_path, monkeypatch):
+    root = tmp_path / 'pma'
+    (root / 'libraries').mkdir(parents=True)
+    config = tmp_path / 'config.inc.php'
+    (root / 'libraries/vendor_config.php').write_text("<?php return ['configFile' => '" + str(config) + "'];")
+    monkeypatch.setattr(settings, 'pma_docroot', str(root))
+    secret = pma.bootstrap_pma_files()
+    assert "'auth_type'] = 'signon'" in config.read_text()
+    assert not (root / 'config.inc.php').exists()
+    assert pma.bootstrap_pma_files() == secret

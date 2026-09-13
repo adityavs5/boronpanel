@@ -8,7 +8,7 @@ The complete user objective remains active. A checked item requires implementati
 - [x] Mail: fix missing mail-domain provisioning and verify mailbox creation.
 - [x] WordPress URLs: functional http/https and www/non-www installation selection, login and clone compatibility.
 - [x] Applications: separate Python App and Node.js App navigation and user workflows.
-- [ ] phpMyAdmin: provision and verify real database-scoped access.
+- [x] phpMyAdmin: provision and verify real database-scoped access.
 - [x] Panel SSL: issue and serve a valid certificate for the requested panel hostname, with renewal.
 - [x] Panel ports: default shared admin/customer port 2222; admin configuration supports changing both ports, preserving access and enforcing intended role behavior.
 - [ ] Direct interactions: database and SSL names/actions first, then audit other comparable lists; accessible desktop/mobile management views.
@@ -294,3 +294,28 @@ OLS may require the same non-root docroot-owner compatibility handling as the
 panel challenge root; keep executable package files unwritable by the PHP worker.
 The package is installed at `/usr/share/phpmyadmin`; token cleanup cron already
 exists. Do not start second-phase additions until the original checklist is done.
+
+
+### phpMyAdmin live completion — 2026-09-13
+
+DNS propagation is complete. phpmyadmin.boron.sitecountry.com serves a trusted
+Let’s Encrypt certificate; issuance and simulated renewal including the OLS
+certificate deploy hook passed. Real customer browser launches in Evolution and
+Paper Lantern rendered the QA WordPress database and its tables, kept the popup
+opener isolated, and rejected replay of consumed signon tokens. No hosted tables
+were modified. Evidence: `/root/boron-setup/pma-live-setup.log` and
+`/root/boron-setup/pma-live-success.log`; screenshots `pma-live-evolution.png` and
+`pma-live-paper-lantern.png` in the same directory.
+
+Live validation exposed three package integration issues, now fixed: the PHP
+namespace needed the token-directory mount; Ubuntu loads configuration from its
+vendor-declared `/etc/phpmyadmin/config.inc.php`; and root-managed phpMyAdmin
+assets link outside its docroot into `/usr/share/javascript`. Customer vhost
+restrictions remain enabled. Token directory DAC remains root:www-data 0770.
+Only the www-data service namespace/PHP workers were refreshed. The supported
+`unmount_ns -u 33` utility was required because `lsnsctl --uid 33 unmount` rejects
+UIDs below its customer minimum. No customer namespace minimum was changed.
+
+Final OLS/phpMyAdmin regression run: 91 passed (`pma-assets-tests.log`), in addition
+to the earlier real SQL isolation/concurrent redemption checks and frontend build.
+The broader initial checklist and queued second phase remain active.

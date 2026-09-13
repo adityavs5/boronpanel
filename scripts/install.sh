@@ -396,6 +396,7 @@ $HOMEDIR,bind-try
 /etc/roundcube,ro-bind-try
 /etc/phpmyadmin,ro-bind-try
 /var/lib/phpmyadmin,bind-try
+/var/lib/boron-pma-tokens,bind-try
 $PASSWD,nobody,mysql
 $GROUP,nogroup,mysql
 EOF

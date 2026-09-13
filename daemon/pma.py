@@ -181,6 +181,17 @@ def cleanup_expired_tokens() -> int:
     return cleaned
 
 
+def _config_path(docroot: Path) -> Path:
+    # Distribution packages may relocate configuration outside the webroot.
+    # Read the literal package declaration without executing PHP.
+    vendor = docroot / "libraries/vendor_config.php"
+    if vendor.is_file():
+        match = re.search(r"['\"]configFile['\"]\s*=>\s*['\"](/[^'\"\r\n]+)['\"]", vendor.read_text())
+        if match:
+            return Path(match.group(1))
+    return docroot / "config.inc.php"
+
+
 def bootstrap_pma_files(blowfish_secret: str | None = None) -> str:
     """Renders config.inc.php + the signon script into phpMyAdmin's own
     docroot. Idempotent (safe to re-run); generates a fresh
@@ -189,7 +200,7 @@ def bootstrap_pma_files(blowfish_secret: str | None = None) -> str:
     "reuse if present" convention -- rotating it on every re-run would
     invalidate any live phpMyAdmin session pointlessly)."""
     docroot = Path(settings.pma_docroot)
-    config_path = docroot / "config.inc.php"
+    config_path = _config_path(docroot)
     if blowfish_secret is None:
         if config_path.exists():
             for line in config_path.read_text().splitlines():

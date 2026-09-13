@@ -29,4 +29,20 @@ concurrent PHP redemption and a temporary MariaDB instance proving allowed datab
 access while denying an underscore-wildcard match and a foreign database. Four
 browser cases passed across both themes/light-dark modes. Production build passed.
 Evidence: `/root/boron-setup/pma-final-tests.log`, `pma-browser.log`, `pma-build.log`.
-Live vhost/certificate/signon verification remains required.
+Live verification passed on 2026-09-13: trusted HTTPS, certificate renewal with
+its deployment hook, and actual customer WordPress table access from both themes.
+Consumed tokens returned HTTP 403 on replay. Evidence: `pma-live-setup.log` and
+`pma-live-success.log` under `/root/boron-setup`.
+
+Ubuntu package integration: bootstrap reads the literal `configFile` declaration
+from `libraries/vendor_config.php` and writes that configuration location. It adds
+the token directory to the existing OLS namespace configuration in the same
+rollback-capable config transaction. The root:www-data 0770 directory continues
+to exclude hosting account identities. phpMyAdmin alone permits root-managed
+package symlinks outside its docroot, as Debian serves shared JavaScript that way.
+Customer vhosts retain restrained mode. On an existing persisted service namespace,
+refresh it with LiteSpeed’s `unmount_ns -u 33` and recycle the www-data PHP workers;
+never lower the customer namespace minimum. See the upstream
+[namespace documentation](https://docs.litespeedtech.com/lsws/namespaces/).
+
+The final OLS/phpMyAdmin regression run passed 91 checks (`pma-assets-tests.log`).

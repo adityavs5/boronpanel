@@ -337,6 +337,7 @@ def test_render_vhost_conf_uses_domain_specific_ssl_paths():
 
 
 def test_render_httpd_config_empty_vhosts_has_no_virtualhost_block(monkeypatch):
+    monkeypatch.setattr(ols.settings, "panel_hostname", "")
     # Explicit, not incidental: this test's whole point is "no vhosts in ->
     # no virtualHost block out", so it must not depend on whatever
     # webmail_hostname/pma_hostname happen to be set to in this
@@ -885,3 +886,32 @@ def test_www_alias_mapping_preserves_explicit_hosts(isolated_db):
     assert not next(h for h in hosts if h['domain']=='alice.example')['www_alias']
     assert not next(h for h in hosts if h['domain']=='www.alice.example')['www_alias']
     assert next(h for h in hosts if h['domain']=='other.example')['www_alias']
+
+
+def test_pma_bootstrap_includes_token_mount_in_config_transaction(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    conf = tmp_path / 'conf'
+    conf.mkdir()
+    (conf / 'nsconf.conf').write_text('/usr,ro-bind\n/var,dir\n')
+    monkeypatch.setattr(ols, 'OLS_SERVER_BASE', str(tmp_path))
+    monkeypatch.setattr(ols.settings, 'pma_hostname', 'pma.example.test')
+    monkeypatch.setattr(ols.settings, 'pma_token_dir', '/var/lib/boron-pma-tokens')
+    monkeypatch.setattr(ols, 'write_session', lambda: nullcontext(None))
+    monkeypatch.setattr(ols, '_all_active_vhosts', lambda _: ([], []))
+    monkeypatch.setattr(ols, '_pma_ssl_paths', lambda _: ('key', 'cert'))
+    monkeypatch.setattr(ols, 'waf_template_context', lambda _: {})
+    captured = {}
+    class Writer:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+        def apply(self, contents):
+            captured['contents'] = contents
+            return SimpleNamespace(ok=True)
+    monkeypatch.setattr(ols, 'ConfigWriterMulti', Writer)
+    ols.bootstrap_pma()
+    assert captured['targets']['namespace'] == str(conf / 'nsconf.conf')
+    assert captured['contents']['namespace'] == '/usr,ro-bind\n/var,dir\n/var/lib/boron-pma-tokens,bind-try\n'
+    (conf / 'nsconf.conf').write_text(captured['contents']['namespace'])
+    ols.bootstrap_pma()
+    assert captured['contents']['namespace'].count('/var/lib/boron-pma-tokens,bind-try') == 1

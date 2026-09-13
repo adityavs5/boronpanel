@@ -645,15 +645,31 @@ def bootstrap_pma() -> None:
     httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf)
     pma_content = render_pma_vhost_conf(ssl_key_file, ssl_cert_file)
 
+    targets = {"main": HTTPD_CONFIG_PATH, "pma": _pma_vhost_conf_path()}
+    contents = {"main": httpd_content, "pma": pma_content}
+    # PHP namespaces hide /var/lib by default. Bind only the token directory;
+    # its root:www-data 0770 permissions still deny hosting account identities.
+    namespace_path = Path(OLS_SERVER_BASE) / "conf/nsconf.conf"
+    if namespace_path.exists():
+        token_path = str(settings.pma_token_dir)
+        if not token_path.startswith("/") or any(c.isspace() or c in ',\"$' for c in token_path):
+            raise RuntimeError("unsafe phpMyAdmin token namespace path")
+        namespace_content = namespace_path.read_text()
+        binding = f"{token_path},bind-try"
+        if binding not in namespace_content.splitlines():
+            namespace_content = namespace_content.rstrip() + "\n" + binding + "\n"
+        targets["namespace"] = str(namespace_path)
+        contents["namespace"] = namespace_content
+
     writer = ConfigWriterMulti(
-        targets={"main": HTTPD_CONFIG_PATH, "pma": _pma_vhost_conf_path()},
+        targets=targets,
         validate=_validate_multi,
         reload=_reload,
         verify=_verify,
         backup_dir=settings.backup_dir,
         subsystem="ols",
     )
-    result = writer.apply({"main": httpd_content, "pma": pma_content})
+    result = writer.apply(contents)
     if not result.ok:
         raise RuntimeError(f"OLS config transaction failed during bootstrap_pma: {result.summary()}")
 
