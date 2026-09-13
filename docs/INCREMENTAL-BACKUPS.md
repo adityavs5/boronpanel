@@ -769,3 +769,25 @@ guard ordering, enabled caching, permissive failure/success/skip policies,
 compiled-directory mismatch and a writable guard executable. Installation of the
 binary and ordered configuration, rollout to existing servers and the customer
 restore coordinator remain unfinished. Live Dovecot configuration is unchanged.
+
+`snapshot_mail_guard_config.install_binary` now builds the guard with compiler
+warnings treated as errors, stack protection, fortified calls and RELRO/NOW
+linker hardening. It compiles for the configured marker directory, verifies the
+result's reported directory, sets root ownership/mode 0755, fsyncs it and replaces
+the installed executable atomically. Compilation happens in an exclusive file on
+the target filesystem. Existing unsafe/symlink executables are refused; a guard
+compiled for a different storage directory requires an explicit migration rather
+than silently abandoning existing markers. Storage and executable directories
+must have appropriate root-controlled permissions. The function does not write
+Dovecot configuration or reload the service.
+
+The installer package list now includes `libssl-dev` alongside its existing
+`build-essential`, supplying the guard's OpenSSL headers. Wiring binary creation
+and ordered configuration activation into fresh-install/update flows remains
+pending; this function has only been executed against test paths so far.
+
+Validation: 27 compiled-guard/configuration tests passed and `bash -n` accepted
+the installer script. Tests verify a working atomic replacement, preservation of
+the old executable on compiler failure, removal of temporary compiler output,
+storage-path mismatch refusal and symlink refusal, alongside the existing guard
+protocol and isolated LMTP checks.

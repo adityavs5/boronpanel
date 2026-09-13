@@ -2,12 +2,65 @@
 from pathlib import Path
 import re
 import stat
+import os
+import tempfile
 
 from daemon.procutil import run
 from shared.config import settings
 from shared.validation import ValidationError
 
 GUARD_BINARY = '/usr/local/libexec/boron-mail-restore-gate'
+
+
+def install_binary(*, binary=GUARD_BINARY):
+    """Build and atomically install the guard; does not activate/reload Dovecot."""
+    render(binary)
+    path = Path(binary)
+    directory = Path(settings.mail_restore_guard_dir)
+    render(str(directory))  # same conservative path alphabet for the C literal
+    if os.geteuid() != 0 or directory == Path('/'):
+        raise ValidationError('Mail restore guard installation requires root-owned storage')
+    for parent, mode in ((path.parent, 0o755), (directory, 0o700)):
+        if parent.resolve() != parent:
+            raise ValidationError('Mail restore guard paths must not contain symbolic links')
+        parent.mkdir(exist_ok=True, mode=mode)
+        info = parent.stat()
+        if info.st_uid != 0 or info.st_mode & (0o077 if parent == directory else 0o022):
+            raise ValidationError('Mail restore guard installation directories have unsafe ownership or permissions')
+    if path.exists() or path.is_symlink():
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValidationError('Existing mail restore guard cannot be replaced safely')
+        current = run([binary, '--guard-directory'], timeout=5)
+        if not current.ok or current.stdout.strip() != str(directory):
+            raise ValidationError('Existing guard requires an explicit storage-path migration')
+    source = Path(__file__).with_name('mail_restore_gate.c')
+    fd, temporary = tempfile.mkstemp(prefix='.boron-mail-guard-', dir=path.parent)
+    os.close(fd)
+    try:
+        result = run(['/usr/bin/cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                      '-fstack-protector-strong', '-D_FORTIFY_SOURCE=2', '-Wl,-z,relro,-z,now',
+                      f'-DBORON_MAIL_RESTORE_GATES="{directory}"', str(source), '-o', temporary, '-lcrypto'],
+                     timeout=60)
+        if not result.ok:
+            raise ValidationError('Could not build mail restore guard; install build-essential and libssl-dev')
+        os.chown(temporary, 0, 0)
+        os.chmod(temporary, 0o755)
+        checked = run([temporary, '--guard-directory'], timeout=5)
+        if not checked.ok or checked.stdout.strip() != str(directory):
+            raise ValidationError('Built mail restore guard failed its storage-path check')
+        with open(temporary, 'rb') as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        for parent in (path.parent, directory, directory.parent):
+            fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return {'binary': str(path), 'guard_directory': str(directory)}
 
 
 def render(binary=GUARD_BINARY):
