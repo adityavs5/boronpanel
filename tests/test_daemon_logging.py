@@ -15,6 +15,7 @@ whenever the full suite ran, never in isolation -- a real instance of the
 project's own "no test should require root/live services" principle needing
 the module boundary to actually be side-effect-free, not just usually so)."""
 import logging
+import os
 import stat
 
 import pytest
@@ -27,7 +28,10 @@ def _reset_proc_logger():
     proc_logger = logging.getLogger("borond.proc")
     original_handlers = list(proc_logger.handlers)
     original_propagate = proc_logger.propagate
+    original_umask = os.umask(0o027)
+    os.umask(original_umask)
     yield
+    os.umask(original_umask)
     proc_logger.handlers = original_handlers
     proc_logger.propagate = original_propagate
 

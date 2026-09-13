@@ -352,7 +352,9 @@ def test_nested_docroot_is_readable_by_webserver_not_other_accounts(monkeypatch)
     if os.geteuid()!=0:pytest.skip('Actual filesystem ACL proof requires root')
     with tempfile.TemporaryDirectory(prefix='boron-domain-acl-',dir='/tmp') as temporary:
         base=Path(temporary);base.chmod(0o755)
-        home=base/'demo1';home.mkdir(mode=0o751);os.chown(home,65533,65533)
+        home=base/'demo1';home.mkdir(mode=0o711)
+        # Match create_linux_user's explicit chmod, independent of daemon umask.
+        home.chmod(0o711);os.chown(home,65533,65533)
         monkeypatch.setattr(hd.settings,'home_base',str(base))
         fake=pwd.struct_passwd(('demo1','x',65533,65533,'',str(home),'/bin/bash'))
         monkeypatch.setattr(pwd,'getpwnam',lambda name:fake)
