@@ -1377,3 +1377,36 @@ lock before child launch, prompt offline lock-contention rejection, and no state
 inspection while the supervisor reports the worker running. Service shutdown and
 supervisor execution were mocked; no live service was stopped. These results do
 not establish live systemd orchestration or complete rollback/finalization.
+
+
+### Routing finalization and durable guard release — 2026-09-14
+
+Added finalization for verified routing operations under SQL coordination and
+caller-held account/repository locks. It checks the existing supervisor operation,
+waits while that worker is running, requires the mail service to have resumed,
+decrypts and matches the previous-state safety bundle, and verifies actual desired
+SQL/script state. It then verifies guard ownership and durably records release
+intent before invoking batch guard release. Completion is persisted afterward.
+
+An interrupted release resumes from its durable intent, accepts already removed
+markers, and verifies every remaining token before removal. A newer job’s guard
+is never adopted or released. Changed actual state requires recovery inspection;
+finalization does not overwrite later edits. Completed journals are idempotent and
+recovery does not inspect a supervisor unit that may have been reused by a later
+operation. Release-intent recovery routes to finalization rather than ordinary
+inspection, which requires every guard still to exist.
+
+Still not deployed: partial-application rollback/recovery decisions, queue/UI and
+undo integration, direct-mutation coordination across worker phases, and live
+supervised proof remain open. Cloudflare-native DNS recovery and the full final
+backup audit remain required before the initial goal is complete.
+
+Validation: seven finalization tests passed (74.47s), plus two release/recovery
+cases passed (32.30s). They cover durable intent preceding release, idempotent
+completion, running-worker/decryption exclusion, stopped-service refusal,
+mismatched encrypted-state refusal, lost release acknowledgement, lost completion
+checkpoint, changed-state refusal, protection of a later job’s guard, and recovery
+after supervisor reuse. SQL and guard files were real isolated fixtures; supervisor
+and mail-service status plus safety-loader prerequisites were mocked here (real
+encrypted safety loading is covered by the preceding storage/journal tests). No
+live mail service or production mailbox was changed.

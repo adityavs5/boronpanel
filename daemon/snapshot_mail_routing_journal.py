@@ -20,7 +20,8 @@ from daemon.snapshot_mail_service import require_stopped
 from shared.config import settings
 from shared.validation import ValidationError
 
-PHASES = {'prepared', 'guarding', 'guarded', 'applying_sql', 'sql_applied', 'applying_scripts', 'verified'}
+PHASES = {'prepared', 'guarding', 'guarded', 'applying_sql', 'sql_applied', 'applying_scripts',
+          'verified', 'release_intent', 'completed'}
 MAX_BYTES = 64 * 1024 * 1024
 
 
@@ -70,8 +71,8 @@ def _validate(account, payload):
     if (not isinstance(completed, list) or any(not isinstance(address, str) for address in completed)
             or len(set(completed)) != len(completed) or not set(completed) <= addresses):
         raise ValidationError('Invalid mail-routing script checkpoints')
-    if (payload['phase'] not in ('applying_scripts', 'verified') and completed
-            or payload['phase'] == 'verified' and set(completed) != addresses):
+    if (payload['phase'] not in ('applying_scripts', 'verified', 'release_intent', 'completed') and completed
+            or payload['phase'] in ('verified', 'release_intent', 'completed') and set(completed) != addresses):
         raise ValidationError('Mail-routing script checkpoints do not match the journal phase')
     return payload
 
@@ -215,10 +216,56 @@ def recovery_state(account, path, *, service='dovecot.service'):
     """Check the existing worker before interpreting observed routing state."""
     from daemon.snapshot_mail_service import inspect_switch
     payload = read(account, path)
+    if payload['phase'] == 'completed':
+        return {'state': 'completed', 'guards_released': True, 'safety_snapshot_id': payload['safety_snapshot_id']}
     worker = inspect_switch(payload['operation_id'], service=service)
     if worker['state'] == 'running':
         return {'state': 'waiting', 'worker': worker}
+    if payload['phase'] == 'release_intent':
+        # Some/all markers may already be gone. Finalization owns the remaining
+        # token checks; ordinary inspection requires every guard to be present.
+        return {'state': 'finalizing', 'worker': worker, 'phase': payload['phase']}
     return {'state': 'observed', 'worker': worker, **inspect(account, path)}
+
+
+@serialized_worker
+def finalize(repo, account, path, *, service='dovecot.service'):
+    """Verify recovery before durably authorizing guard release.
+
+    Caller holds account/repository locks. Resume an interrupted release only
+    while actual state still matches the verified operation. Never overwrite
+    changes made after that operation or release another job's guard.
+    """
+    from daemon.snapshot_mail_service import inspect_switch, service_status
+    payload = read(account, path)
+    result = {'state': 'completed', 'safety_snapshot_id': payload['safety_snapshot_id'],
+              'domains': [entry['domain'] for entry in payload['desired_routing']['domains']],
+              'mailboxes': len(payload['guards']), 'guards_released': True}
+    if payload['phase'] == 'completed':
+        return result
+    if payload['phase'] not in ('verified', 'release_intent'):
+        raise ValidationError('Mail-routing application needs recovery before finalization')
+    worker = inspect_switch(payload['operation_id'], service=service)
+    if worker['state'] == 'running':
+        return {'state': 'waiting', 'worker': worker}
+    state = service_status(service)
+    if state.get('ActiveState') != 'active' or state.get('SubState') != 'running':
+        raise ValidationError('Mail service has not resumed; routing guards retained')
+    previous = recovery.load_previous(repo, account, payload['safety_snapshot_id'], payload['restore_id'])
+    if previous != payload['previous']:
+        raise ValidationError('Encrypted routing safety changed; routing guards retained')
+    observed = _observed(account, payload)
+    if not observed['sql_matches_desired'] or not observed['scripts_match_desired']:
+        raise ValidationError('Mail-routing state changed before finalization; inspect recovery')
+    if payload['phase'] == 'verified':
+        with guard.owned_guards(payload['guards'], payload['restore_id']):
+            payload['phase'] = 'release_intent'
+            _write(path, payload)
+    # release_batch validates every remaining token before the first unlink and
+    # accepts missing markers only because release intent is already durable.
+    guard.release_batch(payload['guards'], payload['restore_id'])
+    payload['phase'] = 'completed'; _write(path, payload)
+    return result
 
 
 if __name__ == '__main__':
