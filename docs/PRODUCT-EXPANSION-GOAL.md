@@ -1676,3 +1676,21 @@ passed. This change is not deployed.
 Remaining initial work: real supervised routing proof and deployment, final
 recovery integration/audit, Cloudflare-native DNS recovery, full requirement and
 release/self-update audit. The queued expansion remains after the initial goal.
+
+### Real systemd mail-routing proof — 2026-09-14
+
+Added and passed two real supervisor tests (122.67s). Independent Python workers
+use isolated SQLite, MariaDB, vmail files and guard paths plus a disposable
+systemd service. The real service barrier, supervisor and routing SQL/Sieve worker
+are exercised without mocking service state. Successful application changes actual
+rules/scripts and finalizes. The interruption case SIGKILLs the original worker
+after script activation but before verification, prepares encrypted rollback,
+SIGKILLs the reverse worker after SQL commit, then continues the same reverse
+operation and verifies exact original script bytes and rules. Each worker run
+proves service restart with a new PID; guards remain until final verification.
+The original and rollback safety copies remain bound and retained. Temporary unit
+cleanup belongs to the fixture. Production Dovecot and hosting data were untouched.
+
+This proves real systemd supervision with isolated data; actual panel deployment
+and live account/API routing recovery verification are the next steps. Remaining
+Cloudflare recovery and full-goal/release audits are unchanged.
