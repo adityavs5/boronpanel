@@ -59,7 +59,12 @@ def init_db() -> None:
     """Create tables. Only the daemon (writer) should call this."""
     global _write_engine, _WriteSession
     _write_engine = make_engine()
-    Base.metadata.create_all(_write_engine)
+    # sqlite3's legacy transaction mode does not begin a transaction for DDL.
+    # Explicitly group schema creation so every table/index does not incur its
+    # own durable commit, and a failed creation cannot leave a partial schema.
+    with _write_engine.begin() as connection:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        Base.metadata.create_all(connection)
     _apply_additive_migrations(_write_engine)
     _WriteSession = sessionmaker(bind=_write_engine, future=True, expire_on_commit=False)
     _grant_api_group_read()

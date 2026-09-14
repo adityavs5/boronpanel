@@ -17,3 +17,11 @@ Update versioning, finalizer success/rollback, update API and archive-release te
 Fresh authenticated HTTPS checks confirmed both configured panel ports are 2222, the backup page and 2FA status endpoint respond successfully, and the deployed table source matches the tested checkout. API, provisioner, OpenLiteSpeed, PowerDNS, Dovecot and chrony are active; the clock is synchronized. Read-only proof: `/root/boron-setup/final-health-20260914.json`.
 
 The saved live DNS, PHP, cron and mail-routing proofs were inspected again: all record restoration of their original QA state; the routing proof also records test-mailbox removal and disabling its temporary policy. No existing installation or hosting configuration was changed in this verification pass.
+
+## Complete browser regression and schema timing
+
+All 114 browser checks passed in 15.0 minutes against the production build (`/tmp/boron-full-final-browser-tests.log`). This includes WordPress install/management/backup/clone/search, both roles and themes, PHP defaults and per-site presets, terminal welcome, 2FA, clock diagnostics, local font budgets, and backup recovery workflows.
+
+An isolated schema-creation timing check measured 14.006 seconds with separate implicit DDL commits versus 0.990 seconds inside one explicit transaction. Schema creation now uses an explicit transaction, improving startup time and preventing partially created tables/indexes after an error. Seven schema atomicity/data-preservation and legacy WordPress migration checks passed in 22.34 seconds (`/tmp/boron-schema-transaction-tests.log`). Two warnings concern cleanup of an older pytest temporary directory.
+
+The earlier full backend run was deliberately interrupted after this validated implementation change; its partial result is not a full-suite pass. A new complete run must verify the revised schema implementation before deployment or release. The live panel still uses the prior verified revision.
