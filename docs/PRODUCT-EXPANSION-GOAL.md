@@ -13,7 +13,7 @@ The complete user objective remains active. A checked item requires implementati
 - [x] Panel ports: default shared admin/customer port 2222; admin configuration supports changing both ports, preserving access and enforcing intended role behavior.
 - [ ] Direct interactions: database and SSL names/actions first, then audit other comparable lists; accessible desktop/mobile management views.
 - [ ] Terminal: configurable BORON ASCII welcome from admin configuration, suppress default Ubuntu status/MOTD in admin terminal; preserve usable prompts and appropriate customer behavior.
-- [ ] PHP: account default version inherited by new sites; per-site override dropdown; Lite/Moderate/Max limit presets and editable Custom selected by default.
+- [x] PHP: account default version inherited by new sites; per-site override dropdown; Lite/Moderate/Max limit presets and editable Custom selected by default.
 - [ ] Typography: improve font and dashboard icon-label sizing with local assets and no performance regression.
 - [ ] Security/time: admin/customer 2FA setup, recovery, reliable clock synchronization, drift/unsynchronized state detection and actionable diagnostics. Do not claim absolute immunity to host/network failure.
 - [ ] Final build, targeted and broad regression checks, real workflows, deployment, and requirement-by-requirement completion audit.
@@ -463,3 +463,26 @@ verification. Real Dovecot supervision resumed mail after each switch and no
 restore guards remained. Deployment retained port 2222/configuration and a private
 rollback copy. Details and job IDs are in INCREMENTAL-BACKUPS.md. Backup lifecycle
 cleanup and the remaining unchecked initial requirements are still open.
+
+## Live served-PHP verification — 2026-09-14
+
+A separate QA hosting account was created for runtime checks, so existing
+WordPress/customer accounts were not changed. A temporary PHP endpoint confirmed
+that account default changes switch the served interpreter, an explicit site
+override takes precedence, clearing it restores inheritance, and a newly created
+independent site inherits the current account default. The complete advertised
+PHP 8.1/8.2/8.3/8.4/8.5 set served successfully.
+
+Every directive in the Lite, Moderate and Max presets matched its actual web
+request `ini_get` value. A custom 384M memory limit applied, and resetting overrides
+restored the previously observed baseline directives. Temporary PHP probes were
+removed; the QA site again inherits its account default. Existing four-theme-mode
+Playwright results (`/root/boron-setup/php-controls-browser.log`) cover dropdowns,
+Custom selected initially, preset application and switching back to Custom when a
+field is edited. Together these satisfy the PHP checklist item.
+
+Live proof scripts and private QA inventory are in
+`/root/boron-setup/live-php-controls.py`, `live-php-version-matrix.py` and
+`live-php-controls.json`. The latter contains generated QA credentials and is
+root-only; no credential values are included in this repository or test output.
+The remaining unchecked product requirements and queued expansion are unchanged.
