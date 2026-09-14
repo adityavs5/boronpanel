@@ -14,7 +14,7 @@ chronological notes in PRODUCT-EXPANSION-GOAL.md include superseded limitations.
 | Database restoration | Actual SQL export/import, encrypted credential metadata, existing/deleted database handling, previous-version recovery and ownership isolation. | Final broad regression. |
 | Mailbox restoration | Existing/deleted mailbox handling, guarded atomic switch, encrypted previous-message recovery, restart recovery, undo, and completed-work cleanup. | Final broad regression. |
 | Retention | Policy snapshots and pre-restore copies, active/failed recovery protection, shared repository ownership. Pending displaced cleanup protects its encrypted copy. | Final UI/history audit. |
-| Account configuration recovery | The config component captures domain/PHP metadata, cron jobs and owned DNS zones in manifest.json. | **Partially complete:** scheduled-task restore/undo is wired into the worker and snapshot dialog and verified live. DNS/PHP settings recovery remains incomplete. |
+| Account configuration recovery | The config component captures complete PHP versions/limits/extensions, separate administrator function policy, the complete crontab and owned DNS zones in manifest.json. | **Partially complete:** scheduled-task restore/undo is wired into the worker and snapshot dialog and verified live. DNS/PHP settings recovery remains incomplete. |
 | Mail routing recovery | Private mail metadata captures forwarding, catch-all and autoresponder records. | **Incomplete:** current mailbox restore deliberately restores mailbox accounts/messages, not these routing records. |
 
 Remaining DNS/PHP configuration recovery and mail routing recovery must be addressed before calling

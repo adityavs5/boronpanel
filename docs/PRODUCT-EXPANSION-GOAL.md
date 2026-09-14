@@ -793,3 +793,11 @@ was restored and checked for versions, limits, extra directives and an empty
 extension selection. Existing scheduled-task restore tests remained green.
 22 PHP/configuration/job regressions passed (112.31 seconds). PHP restoration,
 DNS recovery and mail-routing recovery remain open.
+
+Revision 3899066 deployed successfully; rollback copy:
+/root/boron-setup/mail-recovery-before-20260914-035412. HTTPS, admin login and
+configuration checks passed. Existing manual QA policy 3 produced configuration
+backup run 5. Its encrypted manifest was restored privately and the complete PHP
+payload matched the live QA account's current settings across all three sites.
+No PHP runtime settings were changed. Private proof script/state:
+/root/boron-setup/php-configuration-backup-proof.py and its JSON sibling.
