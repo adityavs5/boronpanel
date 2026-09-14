@@ -306,6 +306,8 @@ def sources(account, options):
     if 'config' in options['components']:
         from daemon import cron, dnsprovider
         from shared.models import DnsZone
+        from daemon.snapshot_php import capture as capture_php
+        manifest['php_configuration']=capture_php(account)
         manifest['cron_configuration']=cron.capture_configuration(account.username)
         manifest['cron_jobs']=cron.parse_jobs(manifest['cron_configuration']['lines'])
         with write_session() as session:

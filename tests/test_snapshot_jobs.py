@@ -206,6 +206,13 @@ def test_configuration_snapshot_preserves_complete_crontab(environment, monkeypa
         reads.append(username)
         return list(raw)
     monkeypatch.setattr(cron, '_read_raw', read)
+    from shared.models import PhpIniOverride, PhpIniDirective, PhpExtensionSet
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == 'alpha'))
+        account.php_version = '8.2'
+        session.add(PhpIniOverride(account_id=account.id, memory_limit='512M'))
+        session.add(PhpIniDirective(account_id=account.id, name='max_input_vars', value='6000'))
+        session.add(PhpExtensionSet(account_id=account.id, enabled=[]))
     dest = make_destination(root)
     policy = jobs.save_policy(dict(name='Account configuration', destination_id=dest['id'],
                                     accounts=['alpha'], components=['config'], frequency='manual'))
@@ -220,5 +227,9 @@ def test_configuration_snapshot_preserves_complete_crontab(environment, monkeypa
     assert len(manifests) == 1
     manifest = json.loads(manifests[0].read_text())
     assert manifest['cron_configuration'] == {'format': 1, 'username': 'alpha', 'lines': raw}
+    assert manifest['php_configuration']['default_version'] == '8.2'
+    assert manifest['php_configuration']['ini_override']['memory_limit'] == '512M'
+    assert manifest['php_configuration']['extra_directives'] == {'max_input_vars': '6000'}
+    assert manifest['php_configuration']['enabled_extensions'] == []
     assert manifest['cron_jobs'][0]['schedule'] == '@hourly'
     assert manifest['cron_jobs'][0]['command'] == '/usr/bin/php /home/alpha/hourly.php'

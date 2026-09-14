@@ -775,3 +775,21 @@ Private script/state: /root/boron-setup/cron-snapshot-workflow-proof.py and
 cron-snapshot-workflow.json. Configuration backups/recovery copies remain retained.
 DNS/PHP configuration recovery and mail routing recovery are the next open backup
 work; the full goal and queued expansion remain active.
+
+## Complete PHP configuration capture — 2026-09-14
+
+Configuration snapshots now include a versioned, account-bound PHP payload with
+account default version, per-site version overrides, all six legacy ini fields,
+extra directives and extension selections. Null values preserve inherited defaults;
+an explicit empty extension list remains distinct from the server default set.
+Administrator-controlled disabled-function rules are recorded separately as private
+metadata and must not be applied by customer self-service restoration.
+
+Capture reads all PHP tables in one SQLite read transaction, verifies current
+account identity and domain ownership, and excludes neighboring accounts. A test
+commits another settings change between reads and confirms the snapshot retains
+one consistent view rather than mixing old/new values. Real encrypted job output
+was restored and checked for versions, limits, extra directives and an empty
+extension selection. Existing scheduled-task restore tests remained green.
+22 PHP/configuration/job regressions passed (112.31 seconds). PHP restoration,
+DNS recovery and mail-routing recovery remain open.
