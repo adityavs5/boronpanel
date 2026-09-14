@@ -63,7 +63,7 @@ def test_routing_capture_waits_and_resumes_after_sql_mutation(monkeypatch):
     assert read.is_set()
 
 
-def test_routing_worker_can_nest_direct_mail_edits(monkeypatch):
+def test_routing_worker_can_nest_direct_mail_edits(isolated_db, monkeypatch):
     calls = []
     monkeypatch.setattr(mail, '_domain_id', lambda domain: 7)
     class Cursor:

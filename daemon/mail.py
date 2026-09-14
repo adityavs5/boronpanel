@@ -25,7 +25,7 @@ from shared.config import settings
 from shared.validation import ValidationError, validate_domain, validate_mailbox_local_part
 
 from daemon.procutil import run
-from daemon.database_operations import serialized
+from daemon.mail_mutation import serialized
 
 # A low *system* uid/gid (SYS_UID_MAX on this distro is 999), matching
 # convention for service accounts (mysql/postfix/dovecot are all in this

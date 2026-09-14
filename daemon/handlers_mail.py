@@ -23,7 +23,7 @@ from shared.validation import (
 )
 
 from daemon import autoresponder, dkim, mail, spamfilter
-from daemon.database_operations import serialized
+from daemon.mail_mutation import serialized
 
 # Bounds for a single mailbox's quota. 100 GB is a generous shared-hosting
 # ceiling that still rejects an accidental/absurd value or an overflow, and the

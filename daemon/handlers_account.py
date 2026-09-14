@@ -357,6 +357,8 @@ def suspend_account(params: dict) -> dict:
             return _account_to_dict(account)
         if account.status != "active":
             raise RuntimeError(f"cannot suspend account in status '{account.status}'")
+        from daemon.mail_mutation import require_accounts_available
+        require_accounts_available(session, {account.id})
 
         sysops.lock_user(username)
         for hook in SUSPEND_HOOKS:
@@ -421,6 +423,8 @@ def _terminate_account(params: dict) -> dict:
             if session.scalar(select(model.id).where(model.account_id == account.id,
                                                      model.status.in_(jobs.ACTIVE))):
                 raise ValidationError('A backup or restore is pending for this account. Complete its recovery before termination.')
+        from daemon.mail_mutation import require_accounts_available
+        require_accounts_available(session, {account.id})
         account.status = "terminating"
         session.flush()
         account_snapshot = _account_to_dict(account)

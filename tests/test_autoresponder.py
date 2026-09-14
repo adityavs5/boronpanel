@@ -5,6 +5,12 @@ import pytest
 from daemon import autoresponder as ar
 
 
+@pytest.fixture(autouse=True)
+def isolated_control_plane(isolated_db):
+    # Ordinary script edits now consult persisted routing-recovery jobs.
+    pass
+
+
 def test_render_no_date_range_is_valid_sieve():
     content = ar.render_sieve_script("Re: your message", "I'll reply soon.", None, None)
     ar._validate_sieve_content(content)

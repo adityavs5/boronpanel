@@ -30,7 +30,7 @@ from shared.config import settings
 
 from daemon.mail import VMAIL_GID, VMAIL_UID, VMAIL_BASE
 from daemon.procutil import run
-from daemon.database_operations import serialized
+from daemon.mail_mutation import serialized
 
 SIEVEC_BIN = "/usr/bin/sievec"
 SIEVE_FILENAME = ".dovecot.sieve"

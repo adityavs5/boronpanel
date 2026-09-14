@@ -26,7 +26,7 @@ from shared.models import Account, Domain, EmailRouting
 from shared.validation import ValidationError, validate_domain, validate_username
 
 from daemon import mail
-from daemon.database_operations import serialized
+from daemon.mail_mutation import serialized
 from daemon.procutil import run
 
 logger = logging.getLogger("borond.email_routing")

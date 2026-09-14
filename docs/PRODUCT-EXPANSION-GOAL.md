@@ -1485,3 +1485,44 @@ Two existing real encrypted file-recovery retention regressions passed (53.08s),
 and the mailbox displaced-cleanup retention regression passed (4.26s). New routing
 selection tests mocked repository listing/deletion; existing file tests exercised
 real restic repositories. No production snapshot or live account was changed.
+
+
+### Persisted routing recovery excludes ordinary mail mutations — 2026-09-14
+
+Added ordinary-mail mutation coordination that checks persisted routing restore
+jobs while holding the existing SQL mutation lock. It resolves ownership through
+mail-domain and hosting-domain registrations, explicit account usernames during
+provisioning, or account objects during teardown. Positional and keyword calls are
+handled. Pending/running routing jobs block edits; failed or unfinalized jobs with
+safety state remain protected after their process exits. Finalized rollback can
+permit edits while retaining its encrypted safety copies. Failure before any safety
+copy does not indefinitely block the account.
+
+Mail provisioning/deletion, forwarding/catch-all/reply changes, password changes,
+Sieve application/removal, and email-routing mode changes check before provider,
+cache or filesystem side effects. Internal recovery continues through its own
+account/guard-authorized SQL/Sieve primitives, not an editable bypass flag.
+Suspension and termination also check before locking the system user, invoking
+teardown hooks or changing account status. Read-only mailbox listings and other
+accounts remain available. Lookups filter routing jobs within the account scope.
+
+The pending queue integration must use kind=mail_routing, register safety copies
+before guard acquisition and persist routing_finalized only after journal release
+completion. This closes the ordinary-edit gap for those persisted jobs; it does
+not assert that the unintegrated development workflow is already exposed. Queue/UI,
+interrupted rollback handling and live supervision remain open, as do Cloudflare
+DNS recovery and the final backup audit. Not deployed.
+
+Validation: the mail/coordination/Sieve suite reported 96 passed and one fixture
+failure (181.47s); the lifecycle selection reported 33 passed and the same fixture
+failure (114.21s). The test's source SnapshotRun was unintentionally pending, so
+termination correctly hit the older pending-backup guard before the new failed
+routing-recovery check. The fixture was corrected to mark that backup completed.
+All 16 persisted-recovery tests then passed (51.55s), including termination before
+status/system changes. No other regression failed. These cases cover absent-worker
+protection, positional/keyword calls, lazy-domain ownership, provisioning username
+scope, another account/read-only access, finalized recovery, and pre-safety failure.
+System-account operations and mail providers were mocked in lifecycle/handler
+checks; Sieve compiler regressions used the local compiler. Test control-plane
+lookups are isolated, including previously filesystem-only autoresponder tests.
+No production account or mail settings changed.
