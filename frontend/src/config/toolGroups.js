@@ -7,7 +7,7 @@ const customerGroups = {
     ['WordPress', ['/wordpress']],
     ['Backups', ['/backups']],
     ['Applications & Advanced', ['/node-apps', '/python-apps', '/terminal', '/redis']],
-    ['Other Tools', ['/files', '/php', '/cron', '/git', '/ssh', '/disk-usage', '/logs', '/devtools', '/change-password', '/security', '/processes', '/appearance']],
+    ['Other Tools', ['/files', '/php', '/cron', '/git', '/ssh', '/disk-usage', '/logs', '/devtools', '/change-password', '/malware', '/security', '/processes', '/appearance']],
   ],
   'paper-lantern': [
     ['Domains', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns']],
@@ -15,14 +15,14 @@ const customerGroups = {
     ['WordPress', ['/wordpress']],
     ['Backups', ['/backups']],
     ['Software', ['/node-apps', '/python-apps', '/terminal', '/redis']],
-    ['Advanced', ['/files', '/php', '/cron', '/git', '/ssh', '/disk-usage', '/logs', '/devtools', '/change-password', '/security', '/processes', '/appearance']],
+    ['Advanced', ['/files', '/php', '/cron', '/git', '/ssh', '/disk-usage', '/logs', '/devtools', '/change-password', '/malware', '/security', '/processes', '/appearance']],
   ],
 }
 const adminGroups = {
   evolution: [
     ['Account Manager', ['/backup-jobs', '/accounts', '/plans', '/bandwidth', '/change-password']],
     ['Server Manager', ['/health', '/services', '/db-monitor', '/slow-queries', '/mail-queue', '/cloudflare']],
-    ['Admin Tools', ['/updates', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
+    ['Admin Tools', ['/updates', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
     ['System Info & Files', ['/site-stats', '/audit-log', '/account-log', '/error-log', '/templates', '/maintenance-mode']],
     ['WordPress & Websites', ['/wordpress']],
     ['Extra Features', ['/import/cpanel', '/imap-migrations', '/webhooks', '/notifications']],
@@ -34,7 +34,7 @@ const adminGroups = {
     ['Domains & Network', ['/cloudflare', '/maintenance-mode']],
     ['Email', ['/mail-queue', '/imap-migrations', '/notifications']],
     ['Metrics', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log']],
-    ['Security', ['/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens', '/security']],
+    ['Security', ['/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens', '/security']],
     ['Software & Advanced', ['/wordpress', '/updates', '/templates', '/webhooks', '/api/docs']],
     ['Preferences', ['/branding', '/change-password', '/appearance']],
   ],

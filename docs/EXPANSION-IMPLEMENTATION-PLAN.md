@@ -4,12 +4,24 @@ The initial product and release gate closed on 2026-09-14 with the successful pr
 
 ## Batch A — navigation and simpler plans
 
+Implementation status: complete in commit `5afe051`; focused browser coverage
+passes in both themes. Deployment is grouped with the expansion release gate.
+
 - Reorder customer tools into the requested hosting, email, WordPress, backup, application and advanced sequence.
 - Give subdomains and the three email areas direct entries while retaining the shared underlying management workflows.
 - Add four editable starting templates for hosting plans and keep Custom for administrators who need every field.
 - Verify sidebar, dashboard search, keyboard navigation, mobile layout and both skins.
 
 ## Batch B — filesystem malware protection
+
+Implementation status: complete on 2026-09-14, pending the grouped expansion
+release. The scanner uses descriptor-relative `O_NOFOLLOW` walks and actions,
+runs ClamAV as the account UID/GID, binds findings to pre/post-scan SHA-256
+content, and keeps quarantine reversible. Focused backend/API coverage passed 21
+checks; the Evolution and Paper Lantern customer flows plus the administrator
+fleet flow passed 3 browser checks. Ubuntu ClamAV 1.5.3 with current signatures
+detected the isolated EICAR standard test through Boron's unprivileged engine
+handoff; both temporary test files were removed afterward.
 
 - Add persistent scan jobs, findings, exclusions and quarantine records with account/domain ownership.
 - Use ClamAV when installed, supplement it with bounded Boron checks for common WordPress web shells, obfuscated PHP, malicious upload patterns and unexpected executable files.

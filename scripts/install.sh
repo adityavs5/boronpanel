@@ -259,7 +259,7 @@ readonly BASE_PKGS=(
 readonly STACK_PKGS=(
     mariadb-server postfix dovecot-core dovecot-imapd dovecot-lmtpd
     dovecot-mysql dovecot-sieve postfix-mysql pdns-server pdns-backend-sqlite3
-    pure-ftpd certbot rclone restic spamassassin fail2ban redis-server
+    pure-ftpd certbot rclone restic spamassassin fail2ban redis-server clamav clamav-freshclam
 )
 # Ubuntu 24.04 does not publish an `imapsync` binary package. Install the
 # Perl modules it needs from Ubuntu, then install the pinned upstream source

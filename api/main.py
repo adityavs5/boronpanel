@@ -28,7 +28,7 @@ from shared.models import IpWhitelistEntry
 
 from api import logsetup, ratelimit
 from api.security import Identity, get_identity, require_admin
-from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, monitoring, nameservers, nodeapps, notes, notifications, onboarding, parked, php_functions, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
+from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, malware, monitoring, nameservers, nodeapps, notes, notifications, onboarding, parked, php_functions, php_ini, plans, pma, processes, pythonapps, redirects, redis_router, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
 
 
 @asynccontextmanager
@@ -291,7 +291,7 @@ app.include_router(auth.router)
 # `api_router`s (and their extra-router-object siblings) are mounted; the SPA
 # consumes the same /api/v1/... surface. The ui_router objects still exist in
 # each module (harmless dead code) but templates_ui/ has been removed.
-for module in (accounts, domains, dns, databases, mail, ssl_router, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, php_functions, site_templates, redirects, logs_router, hotlink, ipblock, ipban, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor, nodeapps, pythonapps, redis_router, lscache_router, cpanel_import, bandwidth, webhooks, usage_alerts, staging, cloudflare):
+for module in (accounts, domains, dns, databases, mail, ssl_router, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, php_functions, site_templates, redirects, logs_router, hotlink, ipblock, ipban, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, malware, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor, nodeapps, pythonapps, redis_router, lscache_router, cpanel_import, bandwidth, webhooks, usage_alerts, staging, cloudflare):
     app.include_router(module.api_router)
 # Extra JSON router objects that don't fit the uniform api_router/ui_router
 # pair (see each module): account-scoped alerts, admin bandwidth ranking,
@@ -307,6 +307,7 @@ app.include_router(apps.domain_api_router)
 app.include_router(ssl_router.account_api_router)
 app.include_router(mail.account_api_router)
 app.include_router(email.admin_router)
+app.include_router(malware.admin_router)
 # Phase 8 feature 1: login-as-user. admin_api_router mints the token under
 # /api/v1/admin/accounts/{u}/impersonate; api_router redeems/returns.
 app.include_router(impersonation.admin_api_router)

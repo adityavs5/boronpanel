@@ -36,6 +36,7 @@ const MoreMenu = lazy(() => import('@/pages/customer/MoreMenu'))
 const Security = lazy(() => import('@/pages/customer/Security'))
 const Logs = lazy(() => import('@/pages/customer/Logs'))
 const DiskUsage = lazy(() => import('@/pages/customer/DiskUsage'))
+const MalwareScanner = lazy(() => import('@/pages/MalwareScanner'))
 
 const Accounts = lazy(() => import('@/pages/admin/Accounts'))
 const AccountDetail = lazy(() => import('@/pages/admin/AccountDetail'))
@@ -139,6 +140,7 @@ export const router = createBrowserRouter(
         { path: 'security', element: <Security /> },
         { path: 'logs', element: customer(<Logs />) },
         { path: 'disk-usage', element: customer(<DiskUsage />) },
+        { path: 'malware', element: <MalwareScanner /> },
 
         // Admin pages.
         { path: 'accounts', element: admin(<Accounts />) },

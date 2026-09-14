@@ -648,6 +648,56 @@ class WordPressJob(Base):
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class MalwareScanJob(Base):
+    """One bounded filesystem-malware scan for an account or owned domain.
+
+    Scans are asynchronous so large WordPress trees cannot block the daemon
+    RPC pool. ``options`` records the immutable limits/exclusions used for the
+    run; ``engine_summary`` reports which independent engines actually ran.
+    """
+
+    __tablename__ = "malware_scan_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str | None] = mapped_column(String(253), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    options: Mapped[dict] = mapped_column(JSON, default=dict)
+    engine_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    files_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    bytes_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_files: Mapped[int] = mapped_column(Integer, default=0)
+    finding_count: Mapped[int] = mapped_column(Integer, default=0)
+    progress_message: Mapped[str] = mapped_column(String(256), default="queued")
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MalwareFinding(Base):
+    """Hash-bound result from a malware scan, with reversible disposition."""
+
+    __tablename__ = "malware_findings"
+    __table_args__ = (UniqueConstraint("scan_id", "relative_path", "signature", name="uq_malware_scan_path_signature"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scan_id: Mapped[int] = mapped_column(ForeignKey("malware_scan_jobs.id"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    domain: Mapped[str | None] = mapped_column(String(253), nullable=True, index=True)
+    relative_path: Mapped[str] = mapped_column(String(1024))
+    file_sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    severity: Mapped[str] = mapped_column(String(16))
+    category: Mapped[str] = mapped_column(String(32))
+    signature: Mapped[str] = mapped_column(String(160))
+    evidence: Mapped[str] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(24), default="active")
+    quarantine_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    original_meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    detected_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RestoreJob(Base):
     """Restores FROM a BackupJob's artifact -- never requires the account
     to be re-terminated/absent first (goal's explicit requirement):

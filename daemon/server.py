@@ -22,7 +22,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import panel_jobs, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipwhitelist, logs, lscache, maillog, mailqueue, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, procmanager, pythonapps, redisacct, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import panel_jobs, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, procmanager, pythonapps, redisacct, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("borond")
@@ -278,6 +278,16 @@ OP_TABLE = {
     "firewall.status": firewall.get_status,
     "firewall.enable": firewall.enable_firewall,
     "firewall.disable": firewall.disable_firewall,
+    # Product expansion: account-scoped file/script malware scans. Scans run
+    # on malware.py's own bounded executor; actions remain explicit.
+    "malware.engine.status": malware.engine_status,
+    "malware.scan.start": malware.trigger_scan,
+    "malware.scan.list": malware.list_scans,
+    "malware.scan.get": malware.get_scan,
+    "malware.finding.list": malware.list_findings,
+    "malware.finding.quarantine": malware.quarantine,
+    "malware.finding.restore": malware.restore,
+    "malware.finding.ignore": malware.ignore,
     # QA round 2, item 14: permanent server-wide IP/CIDR bans (daemon/ipban.py) --
     # distinct from firewall.* above (port-scoped rules) and from
     # ipwhitelist.* below (panel-login allowlist).
@@ -527,6 +537,7 @@ REPORTING_OPS = {
     "services.status", "services.list",
     "mailqueue.list",
     "firewall.list",
+    "malware.engine.status", "malware.scan.list", "malware.scan.get", "malware.finding.list",
     "fail2ban.list_jails", "fail2ban.get_jail", "fail2ban.recent_events",
     "waf.status", "waf.blocked_requests",
     "slowquery.list", "slowquery.status",
@@ -820,6 +831,11 @@ async def amain() -> None:
         await asyncio.get_running_loop().run_in_executor(None, redisacct.bootstrap_all_redis)
     except Exception:
         logger.exception("Redis bootstrap failed at startup")
+
+    try:
+        malware.recover_interrupted()
+    except Exception:
+        logger.exception("Malware scan recovery failed at startup")
 
     try:
         await asyncio.get_running_loop().run_in_executor(None, phpext.bootstrap_all_php_extensions)

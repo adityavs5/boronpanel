@@ -21,6 +21,7 @@ const synonyms = {
   '/accounts': 'hosting users customers accounts domains management', '/updates': 'panel upgrade update version release',
   '/logs': 'logs errors access debug troubleshooting', '/disk-usage': 'disk storage space quota usage',
   '/ssh': 'ssh keys secure shell', '/devtools': 'developer composer wpcli tools',
+  '/malware': 'malware virus scanner scan wordpress hack compromise webshell clamav quarantine restore security files scripts',
 }
 export function normalize(text) { return String(text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() }
 function distance(a, b) {

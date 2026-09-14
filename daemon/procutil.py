@@ -46,6 +46,7 @@ def run(
     args: list[str], *, input_text: str | None = None, timeout: float = 30.0, check: bool = False,
     redact: list[str] | None = None, cwd: str | None = None,
     input_path: str | None = None, discard_stdout: bool = False,
+    uid: int | None = None, gid: int | None = None,
 ) -> ProcResult:
     """redact: values that must appear as literal CLI arguments (a
     third-party tool's own documented flag syntax, e.g. `--password=...`,
@@ -69,6 +70,11 @@ def run(
         raise ValueError("Choose either input_text or input_path")
     with ExitStack() as stack:
         source = stack.enter_context(open(input_path, "rb")) if input_path is not None else None
+        privilege_args = {}
+        if uid is not None or gid is not None:
+            if uid is None or gid is None or isinstance(uid, bool) or isinstance(gid, bool) or uid <= 0 or gid <= 0:
+                raise ValueError("uid and gid must both be positive integers")
+            privilege_args = {"user": uid, "group": gid, "extra_groups": ()}
         proc = subprocess.run(
             args,
             input=input_text,
@@ -79,6 +85,7 @@ def run(
             timeout=timeout,
             shell=False,
             cwd=cwd,
+            **privilege_args,
         )
     result = ProcResult(args=args, returncode=proc.returncode, stdout=proc.stdout or "", stderr=proc.stderr or "")
     if check:
