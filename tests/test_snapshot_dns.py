@@ -118,3 +118,59 @@ def test_native_dns_configuration_survives_encrypted_backup(environment, monkeyp
     assert dns['account_id']==account.id and dns['username']=='alpha'
     assert len(dns['zones'])==1 and dns['zones'][0]['zone']=='alpha.test'
     assert dns['zones'][0]['records']==records
+    from daemon.snapshot_configuration import load_dns
+    assert load_dns(repo,account,run.snapshot_id)['zones'][0]['records']==records
+
+
+@pytest.fixture
+def local_recovery(dns_account, monkeypatch):
+    account,foreign=dns_account
+    records=[dict(name='alpha.test.',type='NS',ttl=3600,records=[dict(content='ns.alpha.test.',disabled=False)]),
+             dict(name='*.alpha.test.',type='A',ttl=600,records=[dict(content='192.0.2.1',disabled=True)],comments=[]),
+             dict(name='_acme-challenge.alpha.test.',type='TXT',ttl=60,records=[dict(content='"saved token"',disabled=False)])]
+    monkeypatch.setattr(powerdns,'get_zone',lambda zone:dict(name=zone+'.',rrsets=records))
+    return account, snapshot_dns.capture(account)
+
+
+def test_local_recovery_validates_native_records_and_preserves_current_nameservers(local_recovery):
+    account,payload=local_recovery
+    result=snapshot_dns.validate_for_restore(account,payload)
+    records=result['zones'][0]['records']
+    assert len(records)==2 and all(row['type']!='NS' for row in records)
+    assert records[0]['records'][0]['disabled'] is True
+    assert records[1]['name']=='_acme-challenge.alpha.test.'
+    assert len(payload['zones'][0]['records'])==3
+
+
+@pytest.mark.parametrize('field,value', [('name','evil.test.'),('ttl',True),('ttl',-1),
+    ('records',[{'content':'not an IP','disabled':False}]),('records',[{'content':'192.0.2.1','disabled':1}]),
+    ('type','AXFR')])
+def test_local_recovery_rejects_invalid_records(local_recovery, field, value):
+    account,payload=local_recovery
+    payload['zones'][0]['records'][1][field]=value
+    with pytest.raises(ValidationError):snapshot_dns.validate_for_restore(account,payload)
+
+
+def test_dns_recovery_rejects_changed_binding_and_duplicate_selection(local_recovery):
+    account,payload=local_recovery
+    with pytest.raises(ValidationError,match='selection'):
+        snapshot_dns.validate_for_restore(account,payload,['alpha.test','alpha.test'])
+    payload['zones'][0]['binding']['zone_id']=True
+    with pytest.raises(ValidationError,match='registration'):
+        snapshot_dns.validate_for_restore(account,payload)
+
+
+def test_dns_recovery_allows_selecting_owned_subset(local_recovery):
+    account,payload=local_recovery
+    payload['zones'].append(dict(zone='deleted.test',provider='local',binding={},records=[]))
+    assert len(snapshot_dns.validate_for_restore(account,payload,['alpha.test'])['zones'])==1
+    with pytest.raises(ValidationError,match='registration'):
+        snapshot_dns.validate_for_restore(account,payload)
+
+
+def test_dns_recovery_rejects_apex_cname(local_recovery):
+    account,payload=local_recovery
+    payload['zones'][0]['records'][1]=dict(name='alpha.test.',type='CNAME',ttl=60,
+                                         records=[dict(content='target.test.',disabled=False)])
+    with pytest.raises(ValidationError,match='apex'):
+        snapshot_dns.validate_for_restore(account,payload)

@@ -962,3 +962,27 @@ configuration backup tests passed outside the sandbox (12.04s; existing Starlett
 warning). The earlier combined run was interrupted after 17 completed checks when
 its sandboxed TestClient stalled; the remaining two checks were the targeted
 unsandboxed run. No DNS records changed and this capture change is not deployed.
+
+### DNS recovery validation and encrypted loading — 2026-09-14
+
+Added local-provider recovery validation bound to the current account, zone ID,
+and provider registration, including strict binding value types. Customers can
+select an owned subset without being blocked by a different deleted saved zone.
+Record owners must remain inside the selected zone; dnspython validates native
+RDATA against its type. TTLs, disabled flags, comments, duplicate rrsets, DNS
+meta-types and CNAME conflicts are checked. SOA, apex NS and generated DNSSEC
+records are excluded from customer recovery; an apex CNAME is rejected because
+it would conflict with the retained zone authority records.
+
+The encrypted configuration loader now reads DNS through the existing snapshot
+ownership/private-path/source-job checks. Cloudflare restore currently reports
+unavailable until its separate native record validator/application is implemented.
+This is not the final DNS recovery scope: both configured providers still need
+supported restore/undo paths. No DNS mutation worker or UI is wired yet, and no
+live DNS records changed.
+
+Validation: all 17 final DNS tests passed (44.34s). The real encrypted backup test
+now loads its DNS payload through the shared configuration loader and validates
+that disabled records survive. Additional cases cover out-of-zone names, invalid
+addresses/meta-types/TTLs/disabled flags, duplicate selection, binding type changes,
+owned subset selection and apex CNAME rejection. This step is not deployed.

@@ -85,3 +85,102 @@ def legacy_zones(configuration):
             records = list(grouped.values())
         result.append(dict(zone=zone['zone'], records=records))
     return result
+
+
+def validate_for_restore(account, payload, selected_zones=None):
+    """Validate selected local zones; never use saved provider IDs as authority.
+
+    Server-managed SOA, apex nameservers and DNSSEC records are excluded from
+    customer recovery. Cloudflare application requires its own native validator.
+    """
+    import dns.name
+    import dns.rdata
+    import dns.rdatatype
+    if (not isinstance(payload, dict) or type(payload.get('format')) is not int or payload['format'] != 1
+            or type(payload.get('account_id')) is not int or payload['account_id'] != account.id
+            or payload.get('username') != account.username or not isinstance(payload.get('zones'), list)):
+        raise ValidationError('DNS recovery metadata belongs to another account or format')
+    saved = {}
+    for zone in payload['zones']:
+        if not isinstance(zone, dict) or not isinstance(zone.get('zone'), str) or zone['zone'] in saved:
+            raise ValidationError('Invalid or duplicate DNS recovery zone')
+        saved[zone['zone']] = zone
+    if selected_zones is None:
+        selected_zones = list(saved)
+    if (not isinstance(selected_zones, list) or any(not isinstance(name, str) for name in selected_zones)
+            or len(set(selected_zones)) != len(selected_zones) or any(name not in saved for name in selected_zones)):
+        raise ValidationError('Invalid DNS recovery zone selection')
+    current = {binding['zone']: binding for binding in _bindings(account)}
+    zones = []
+    protected = {'SOA', 'DNSKEY', 'CDNSKEY', 'CDS', 'RRSIG', 'NSEC', 'NSEC3', 'NSEC3PARAM'}
+    for name in selected_zones:
+        zone = saved[name]
+        binding = zone.get('binding')
+        actual = current.get(name)
+        if (actual is None or not isinstance(binding, dict) or binding != actual
+                or any(type(binding[key]) is not type(actual[key]) for key in actual)):
+            raise ValidationError('A selected DNS zone changed ownership or provider registration')
+        provider = 'cloudflare' if actual['cloudflare_status'] == 'active' else 'local'
+        if zone.get('provider') != provider:
+            raise ValidationError('DNS recovery provider does not match the current zone')
+        if provider != 'local':
+            raise ValidationError('Cloudflare DNS recovery is not available yet')
+        raw = zone.get('records')
+        if not isinstance(raw, list) or len(raw) > 100000:
+            raise ValidationError('Invalid DNS recovery record collection')
+        origin = dns.name.from_text(name + '.')
+        records = []
+        seen = set()
+        for rrset in raw:
+            if (not isinstance(rrset, dict) or not isinstance(rrset.get('name'), str)
+                    or not isinstance(rrset.get('type'), str)):
+                raise ValidationError('Invalid saved DNS record set')
+            try:
+                owner = dns.name.from_text(rrset['name'], origin=dns.name.root)
+                if not owner.is_subdomain(origin):
+                    raise ValueError('outside zone')
+                rtype = dns.rdatatype.from_text(rrset['type'])
+                type_name = dns.rdatatype.to_text(rtype)
+            except Exception:
+                raise ValidationError('Invalid DNS record name or type in recovery point') from None
+            key = (owner.canonicalize().to_text(), type_name)
+            if key in seen:
+                raise ValidationError('Duplicate DNS record set in recovery point')
+            seen.add(key)
+            if type_name in protected or (type_name == 'NS' and owner == origin):
+                continue
+            if type_name == 'CNAME' and owner == origin:
+                raise ValidationError('A zone apex cannot be restored as a CNAME')
+            if rtype in (0, 41, 249, 250, 251, 252, 253, 254, 255):
+                raise ValidationError('Unsupported DNS meta-record type')
+            ttl = rrset.get('ttl')
+            values = rrset.get('records')
+            if type(ttl) is not int or not 0 <= ttl <= 2147483647 or not isinstance(values, list) or not values:
+                raise ValidationError('Invalid saved DNS TTL or values')
+            normalized = []
+            for value in values:
+                if (not isinstance(value, dict) or not isinstance(value.get('content'), str)
+                        or type(value.get('disabled')) is not bool or len(value['content']) > 65535
+                        or '\x00' in value['content']):
+                    raise ValidationError('Invalid saved DNS record content or disabled flag')
+                try:
+                    dns.rdata.from_text('IN', rtype, value['content'], origin=origin, relativize=False)
+                except Exception:
+                    raise ValidationError('Saved DNS record content is not valid for its type') from None
+                normalized.append(dict(content=value['content'], disabled=value['disabled']))
+            comments = rrset.get('comments', [])
+            if not isinstance(comments, list):
+                raise ValidationError('Invalid saved DNS comments')
+            normalized_comments = []
+            for comment in comments:
+                if (not isinstance(comment, dict) or not isinstance(comment.get('content'), str)
+                        or not isinstance(comment.get('account'), str)
+                        or type(comment.get('modified_at')) is not int or comment['modified_at'] < 0):
+                    raise ValidationError('Invalid saved DNS comment')
+                normalized_comments.append({field: comment[field] for field in ('content', 'account', 'modified_at')})
+            records.append(dict(name=owner.to_text(), type=type_name, ttl=ttl, records=normalized, comments=normalized_comments))
+        cnames = {row['name'].lower() for row in records if row['type'] == 'CNAME'}
+        if any(row['name'].lower() in cnames and (row['type'] != 'CNAME' or len(row['records']) != 1) for row in records):
+            raise ValidationError('Saved CNAME conflicts with other DNS records')
+        zones.append(dict(zone=name, provider=provider, binding=deepcopy(actual), records=records))
+    return dict(format=1, account_id=account.id, username=account.username, zones=zones)

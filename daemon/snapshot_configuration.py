@@ -102,3 +102,11 @@ def restore_php(ident, account, row, repo, snapshot_id, work, update):
     snapshot_php.apply_configuration(account, selected, save_previous)
     update(ident, status='completed', summary={'config_sections': ['php']},
            progress_message='PHP settings restored', completed_at=utcnow())
+
+
+def load_dns(repo, account, snapshot_id, *, source_restore_id=None, selected_zones=None):
+    from daemon import snapshot_dns
+    payload = _load_metadata(repo, account, snapshot_id, source_restore_id=source_restore_id)
+    if 'dns_configuration' not in payload:
+        raise ValidationError('This recovery point has no complete DNS settings; create a new configuration backup')
+    return snapshot_dns.validate_for_restore(account, payload['dns_configuration'], selected_zones)
