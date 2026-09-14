@@ -1055,3 +1055,22 @@ selection rejection. Nine existing encrypted PHP/cron configuration tests passed
 (152.37s). The API account-authorization/forwarding test passed (10.07s, existing
 Starlette warning) with authorized local TestClient transport. DNS backend writes
 in tests are simulated; this does not establish live provider recovery completion.
+
+### DNS restore controls in both themes — 2026-09-14
+
+Added a DNS records section to the shared configuration restore form. It lists
+saved zones with record counts or unavailability reasons, requires a nonempty zone
+selection and typed account confirmation, and resets confirmation when selections
+or sections change. It explains that records created after the backup will be
+removed and that website/email behavior can change. Server-managed authority and
+DNSSEC settings remain preserved by the worker.
+
+Restore history identifies DNS records, and previous-version confirmation names
+the affected zones with a DNS-specific action. PHP and scheduled-task flows remain
+separate. Production build passed (28.27s). This is not deployed; live DNS recovery
+and Cloudflare-native restoration remain outstanding.
+
+All 16 browser tests passed (1.4m) against the production build with mocked APIs:
+cron/PHP/DNS restore and undo across both themes and light/dark modes, exact DNS
+selection payloads, unavailable-zone disabling, confirmation resets, mobile
+horizontal overflow, and unavailable PHP/DNS sections retaining cron access.
