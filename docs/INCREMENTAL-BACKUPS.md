@@ -1334,3 +1334,17 @@ file-restore cases passed: normal restore/undo and a termination race between
 request preparation and queue insertion. Legacy backup/restore submission already
 uses the same queue lock around account lookup. Live deployment and retained-mail
 artifact lifecycle verification remain pending.
+
+## Combined regression checkpoint — 2026-09-14
+
+The complete `tests/test_snapshot*.py` suite plus `tests/test_mail_restore_gate.py`
+passed together: 240 passed in 725.91 seconds. Coverage includes real isolated
+local/SSH restic storage, filtering, incremental reuse, ownership and retention,
+file/database restore, mailbox metadata/preparation/guard/switch/safety/undo,
+recovery dispatch and temporary systemd supervision. The sole warning is the
+existing Starlette test-client httpx deprecation. Log on the development server:
+`/tmp/boron-backup-regression.log`. No live mailbox restore was performed by this
+suite; isolated fixtures are not a substitute for deployment/live QA validation.
+The live terminal/clock and zero-active-job preflight evidence is recorded in
+PRODUCT-EXPANSION-GOAL.md. Retained mailbox artifact lifecycle, deployment and the
+remaining initial product requirements are still open.
