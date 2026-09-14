@@ -763,3 +763,15 @@ undo and undo-of-undo with isolated crontab transport; 13 cron handler/API check
 passed; eight browser scenarios passed across both themes/modes for scheduled-task
 and database recovery. Frontend build passed. DNS/PHP configuration and mail-routing
 recovery are still outstanding; this does not mark the broader backup goal complete.
+
+Revision 58efeee deployed successfully; rollback copy:
+/root/boron-setup/mail-recovery-before-20260914-034413. HTTPS, admin login and
+configuration checks passed. Live HTTPS workflow on disposable pq0914020151:
+destination 3, manual policy 3, configuration backup run 4, scheduled-task restore
+4 and undo 5 all completed. Actual crontab contents matched the selected backup
+after restore and the newer pre-restore configuration after undo; both restores
+recorded encrypted safety copies. The original QA crontab was restored in cleanup.
+Private script/state: /root/boron-setup/cron-snapshot-workflow-proof.py and
+cron-snapshot-workflow.json. Configuration backups/recovery copies remain retained.
+DNS/PHP configuration recovery and mail routing recovery are the next open backup
+work; the full goal and queued expansion remain active.
