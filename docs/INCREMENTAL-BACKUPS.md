@@ -1348,3 +1348,32 @@ suite; isolated fixtures are not a substitute for deployment/live QA validation.
 The live terminal/clock and zero-active-job preflight evidence is recorded in
 PRODUCT-EXPANSION-GOAL.md. Retained mailbox artifact lifecycle, deployment and the
 remaining initial product requirements are still open.
+
+## Live deployment and mailbox restore — 2026-09-14
+
+The tested development tree through e0207fb was deployed to /opt/boron. Deployment
+saved a private code/config/database rollback copy at
+`/root/boron-setup/mail-recovery-before-20260914-015120`, stopped the two panel
+services, rechecked active operations, synchronized source, applied additive DB
+initialization and restarted the panel. HTTPS, admin authentication, configuration
+RPC and the backup page passed on the existing port 2222. The configuration file
+remained byte-for-byte unchanged. Websites/mail were not restarted by deployment.
+
+Live QA then created one uniquely named restoreqa mailbox under the existing
+wpdevqa-owned wpclone.boron.sitecountry.com mail domain, containing only a synthetic
+message. A separate manual encrypted destination/job (destination 2, policy 2,
+run 3) completed a mail backup and the deployed catalog marked the mailbox
+available. Restore 2 returned its original message; undo 3 recovered its newer
+pre-restore message and saved a second encrypted safety copy. Both used the real
+production Dovecot guard and supervised service switch, briefly pausing mail
+access as described in the UI. Dovecot resumed after each switch and all guard
+markers were released.
+
+After undo, local IMAPS authenticated with the mailbox's unchanged password using
+the server's configured certificate as its trust anchor, and returned the expected
+single newer message. API/provisioning, Dovecot and OLS were all active. Only the
+new synthetic QA mailbox contents were replaced. QA records, encrypted snapshots
+and private recovery artifacts are retained for subsequent lifecycle tests.
+Private resumable inventory and scripts are under /root/boron-setup/live-mail-recovery*;
+credential values are not logged or committed. Retained artifact cleanup and the
+remaining overall product requirements still prevent goal completion.

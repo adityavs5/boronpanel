@@ -453,3 +453,13 @@ a substitute for the outstanding admin/customer 2FA workflow checks.
 Read-only live deployment preflight also found zero active WordPress operations,
 legacy BackupJob/RestoreJob records, or SnapshotRun/SnapshotRestore records at
 this checkpoint. Recheck immediately before any later service deployment.
+
+## Live mailbox recovery deployment — 2026-09-14
+
+The accumulated backup changes are now deployed after 240 combined regression
+checks. A fresh synthetic QA mailbox passed live incremental backup, selected
+mail restore, previous-mail recovery, and post-restore IMAPS authentication/content
+verification. Real Dovecot supervision resumed mail after each switch and no
+restore guards remained. Deployment retained port 2222/configuration and a private
+rollback copy. Details and job IDs are in INCREMENTAL-BACKUPS.md. Backup lifecycle
+cleanup and the remaining unchecked initial requirements are still open.
