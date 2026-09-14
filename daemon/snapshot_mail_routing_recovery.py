@@ -15,7 +15,7 @@ from daemon import snapshot_jobs as jobs, snapshot_storage as storage
 from daemon import snapshot_mail_routing as routing, snapshot_mail_sieve as sieve
 from daemon.database_operations import serialized_worker
 from shared.config import settings
-from shared.validation import ValidationError
+from shared.validation import ValidationError, validate_domain
 
 MAX_BUNDLE_BYTES = 24 * 1024 * 1024
 
@@ -98,17 +98,17 @@ def save_previous(repo, account, restore_id, bundle, *, kind='restore'):
     return {'snapshot_id': result['snapshot_id']}
 
 
-def _read(path):
+def _read(path, *, max_bytes=MAX_BUNDLE_BYTES):
     if path.resolve() != path:
         raise ValidationError('Unsafe private mail-routing safety path')
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, 'rb') as handle:
         info = os.fstat(handle.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077
-                or info.st_size > MAX_BUNDLE_BYTES):
+                or info.st_size > max_bytes):
             raise ValidationError('Unsafe private mail-routing safety file')
         try:
-            return json.loads(handle.read(MAX_BUNDLE_BYTES + 1))
+            return json.loads(handle.read(max_bytes + 1))
         except (ValueError, UnicodeError):
             raise ValidationError('Invalid private mail-routing safety data') from None
 
@@ -135,13 +135,36 @@ def load_previous(repo, account, snapshot_id, restore_id, *, kind='restore'):
         shutil.rmtree(work)
 
 
-def load_routing(repo, account, snapshot_id, selected_domains):
-    """Load existing mail backup metadata after checking snapshot ownership."""
+def _load_mail_metadata(repo, account, snapshot_id):
+    """Decrypt owned private metadata once; only internal validators receive it."""
     storage.owned_snapshot(repo, account.id, snapshot_id)
     source = Path(settings.snapshot_private_dir) / 'sources' / f'account-{account.id}' / 'mail-recovery.json'
     work = jobs.private_directory('mail-routing-metadata', uuid.uuid4().hex)
     try:
         data = storage.restore_to(repo, account.id, snapshot_id, str(work / 'data'), selected_paths=[str(source)])
-        return routing.read_routing(data / str(source).lstrip('/'), account, selected_domains)
+        return _read(data / str(source).lstrip('/'), max_bytes=8 * 1024 * 1024)
     finally:
         shutil.rmtree(work)
+
+
+def load_routing(repo, account, snapshot_id, selected_domains):
+    """Load existing mail backup metadata after checking snapshot ownership."""
+    return routing.validate_for_restore(account, _load_mail_metadata(repo, account, snapshot_id), selected_domains)
+
+
+def catalog(repo, account, snapshot_id):
+    """Expose availability/counts by saved domain, never credentials or rules."""
+    payload = _load_mail_metadata(repo, account, snapshot_id)
+    routing.validate_for_restore(account, payload, [])
+    result = []
+    for entry in payload['domains']:
+        name = validate_domain(entry['domain'])
+        try:
+            selected = routing.validate_for_restore(account, payload, [name])['domains'][0]
+        except ValidationError as exc:
+            result.append(dict(domain=name, available=False, reason=str(exc)))
+            continue
+        result.append(dict(domain=selected['domain'], available=True, reason=None,
+                           forwarders=len(selected['forwards']), catchall=selected['catchall'] is not None,
+                           autoresponders=len(selected['autoresponders'])))
+    return {'domains': sorted(result, key=lambda entry: entry['domain'])}

@@ -1526,3 +1526,35 @@ System-account operations and mail providers were mocked in lifecycle/handler
 checks; Sieve compiler regressions used the local compiler. Test control-plane
 lookups are isolated, including previously filesystem-only autoresponder tests.
 No production account or mail settings changed.
+
+
+### Account-scoped mail-routing recovery preview — 2026-09-14
+
+Added a mail-routing catalog for existing encrypted mail backup metadata. It
+checks snapshot ownership before decryption, validates the private document once,
+and reports each saved domain independently as available or unavailable according
+to current ownership and responder-mailbox requirements. Public results contain
+only domain names, availability/reasons, and forwarding/catch-all/responder counts;
+no mailbox credentials, destinations, reply text or script content are returned.
+A transferred/unavailable domain does not hide the account’s other valid domains.
+
+The daemon preview uses the owned backup-run check and a nonblocking repository
+lock. A backup without the mail component returns an empty preview without
+restoring metadata. The account backup API exposes the preview through the same
+account-access check as existing restore previews. The daemon registers the new
+read operation in its blocking-work pool. Existing routing loading now shares the
+bounded private metadata reader with the preview.
+
+This is the preview layer only: restore kind/queue execution and frontend controls
+are not yet enabled for mail routing. Worker checkpoint/retention integration,
+interrupted rollback recovery, live supervised proof, Cloudflare-native DNS
+recovery and the final broad audit remain outstanding. Not deployed.
+
+Validation: five tests passed (72.44s). Real isolated MariaDB and restic fixtures
+verify one metadata decryption, counts-only output, credential/content exclusion,
+independent transferred-domain unavailability, private staging cleanup, foreign-run
+and busy-repository rejection before decryption, no-mail-component handling, and
+unchanged owned routing loading. The account API test confirms the new route calls
+the intended daemon operation and denies another account before making any RPC.
+One existing Starlette TestClient deprecation warning was reported. No live account,
+mail service, production repository or routing rule was changed.

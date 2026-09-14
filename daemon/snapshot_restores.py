@@ -260,6 +260,19 @@ def configuration_options(params):
         raise ValidationError('This destination is busy. Try again shortly.') from None
 
 
+def routing_options(params):
+    account, source = _owned_run(params['username'], params['run_id'])
+    if 'mail' not in source.options.get('components', []):
+        return {'domains': [], 'reason': 'This recovery point has no mail routing settings'}
+    from daemon.snapshot_mail_routing_recovery import catalog
+    try:
+        with jobs.lock(f'repository-{source.destination_id}', blocking=False):
+            repo = jobs.repository(jobs._row(SnapshotDestination, source.destination_id))
+            return catalog(repo, account, source.snapshot_id)
+    except BlockingIOError:
+        raise ValidationError('This destination is busy. Try again shortly.') from None
+
+
 def trigger(params):
     safety=jobs._row(SnapshotRestore,params['_safety']) if params.get('_safety') else None
     account,source=_owned_run(params['username'],params['run_id'],allow_expired=safety is not None)

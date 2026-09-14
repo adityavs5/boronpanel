@@ -66,6 +66,12 @@ def snapshot_configuration(username: str, run_id: int, identity: Identity = Depe
     return call_daemon('snapshot.restore.configuration', identity, username=username, run_id=run_id)
 
 
+@api_router.get('/snapshots/runs/{run_id}/mail-routing')
+def snapshot_mail_routing(username: str, run_id: int, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon('snapshot.restore.mail_routing', identity, username=username, run_id=run_id)
+
+
 class SnapshotRestoreBody(BaseModel):
     confirmation: str
     kind: str = 'files'
