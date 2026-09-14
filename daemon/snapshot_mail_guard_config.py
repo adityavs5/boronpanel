@@ -6,6 +6,7 @@ import os
 import tempfile
 import grp
 import uuid
+import time
 
 from daemon.procutil import run
 from shared.config import settings
@@ -13,6 +14,24 @@ from shared.validation import ValidationError
 
 GUARD_BINARY = '/usr/local/libexec/boron-mail-restore-gate'
 MANAGED_HEADER = '# Managed by Boron: mailbox restore guard\n'
+
+
+def _require_mail_running(service_status, *, wait_for_reload=False, timeout=20.0):
+    """Require a steady Dovecot service, allowing its bounded reload state.
+
+    ``doveadm reload`` returns before systemd necessarily changes the service
+    substate back to ``running``.  The initial activation gate remains strict;
+    only the post-reload probe waits through active/reloading transitions.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        state = service_status('dovecot.service')
+        if state.get('ActiveState') == 'active' and state.get('SubState') == 'running':
+            return
+        transitional = state.get('ActiveState') in {'active', 'activating', 'reloading'}
+        if not wait_for_reload or not transitional or time.monotonic() >= deadline:
+            raise ValidationError('Dovecot must be running during guard activation')
+        time.sleep(0.25)
 
 
 def _write_config(path, data, mode=0o644, uid=0, gid=0):
@@ -216,16 +235,13 @@ def main():
     parser.add_argument('--reload', action='store_true')
     args = parser.parse_args()
     try:
-        def healthy():
-            from daemon.snapshot_mail_service import service_status
-            state = service_status('dovecot.service')
-            if state.get('ActiveState') != 'active' or state.get('SubState') != 'running':
-                raise ValidationError('Dovecot must be running during guard activation')
+        from daemon.snapshot_mail_service import service_status
         if args.reload:
-            healthy()
+            _require_mail_running(service_status)
         install_binary()
         install_configuration(args.backup_dir, reload=args.reload,
-                              health_check=healthy if args.reload else None)
+                              health_check=(lambda: _require_mail_running(
+                                  service_status, wait_for_reload=True)) if args.reload else None)
     except Exception:
         # Configuration can contain SQL credentials; never print exception data.
         parser.exit(1, 'Mailbox restore guard installation failed; inspect Dovecot configuration and build dependencies.\n')

@@ -175,6 +175,25 @@ def test_failed_post_reload_health_check_rolls_back(configured, tmp_path, monkey
     assert not path.with_name('boron-restore-guard.conf.ext').exists()
 
 
+def test_post_reload_health_waits_for_running_state(monkeypatch):
+    states = iter([
+        {'ActiveState': 'reloading', 'SubState': 'reload'},
+        {'ActiveState': 'active', 'SubState': 'reload'},
+        {'ActiveState': 'active', 'SubState': 'running'},
+    ])
+    sleeps = []
+    monkeypatch.setattr(config.time, 'sleep', lambda seconds: sleeps.append(seconds))
+    config._require_mail_running(lambda name: next(states), wait_for_reload=True)
+    assert sleeps == [0.25, 0.25]
+
+
+def test_initial_health_does_not_wait_for_reload_state(monkeypatch):
+    monkeypatch.setattr(config.time, 'sleep', lambda seconds: pytest.fail('unexpected wait'))
+    with pytest.raises(ValidationError, match='must be running'):
+        config._require_mail_running(
+            lambda name: {'ActiveState': 'reloading', 'SubState': 'reload'})
+
+
 @pytest.mark.parametrize('running', [True, False])
 def test_update_entrypoint_requires_running_mail_and_checks_after_reload(monkeypatch, tmp_path, running):
     import sys
