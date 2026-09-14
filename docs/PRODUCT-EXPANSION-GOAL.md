@@ -11,7 +11,7 @@ The complete user objective remains active. A checked item requires implementati
 - [x] phpMyAdmin: provision and verify real database-scoped access.
 - [x] Panel SSL: issue and serve a valid certificate for the requested panel hostname, with renewal.
 - [x] Panel ports: default shared admin/customer port 2222; admin configuration supports changing both ports, preserving access and enforcing intended role behavior.
-- [ ] Direct interactions: database and SSL names/actions first, then audit other comparable lists; accessible desktop/mobile management views.
+- [x] Direct interactions: database and SSL names/actions first, then comparable domain, application, FTP, Git, cron, DNS, mailbox and SSH-key lists; desktop/mobile management and keyboard interaction verified. Final deployment and regression evidence: FINAL-REGRESSION-2026-09-14.md.
 - [x] Terminal: configurable BORON ASCII welcome from admin configuration, suppress default Ubuntu status/MOTD in admin terminal; preserve usable prompts and appropriate customer behavior.
 - [x] PHP: account default version inherited by new sites; per-site override dropdown; Lite/Moderate/Max limit presets and editable Custom selected by default.
 - [x] Typography: improve font and dashboard icon-label sizing with local assets and no performance regression.
