@@ -97,6 +97,30 @@ def release(domain, local_part, restore_id, token):
         os.fsync(directory)
 
 
+def release_batch(entries, restore_id):
+    """Resume an authorized finalization after partial guard release.
+
+    Caller must persist release intent and validate mailbox/safety state first.
+    Missing markers are allowed; any remaining marker must match this job/token.
+    Validate all remaining owners before removing the first marker.
+    """
+    if type(restore_id) is not int or restore_id <= 0:
+        raise ValidationError('Invalid mail restore guard ownership')
+    with _directory() as directory:
+        present = set()
+        for entry in entries:
+            name = marker_name(entry['domain'], entry['local_part'])
+            try:
+                _verify(directory, name, restore_id, entry['token'])
+                present.add(name)
+            except FileNotFoundError:
+                pass
+        for name in sorted(present):
+            os.unlink(name, dir_fd=directory)
+            os.fsync(directory)
+    return {'released': len(present)}
+
+
 def _verify(directory, name, restore_id, token):
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     with os.fdopen(fd, 'r') as handle:

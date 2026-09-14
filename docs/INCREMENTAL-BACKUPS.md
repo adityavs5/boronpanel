@@ -1027,3 +1027,24 @@ local safety receipt, idempotent reconciliation, duplicate-operation refusal,
 local and SSH incremental restore, host-key enforcement, encryption-key rejection
 and account-isolated retention. The mailbox job's finalization and startup
 recovery wiring remain unfinished.
+
+Forward-restore finalization is now available internally. It requires a terminal
+switch worker, resumed mail service, valid production guard configuration,
+current account/domain ownership, existing SQL mailboxes, applied directory
+identities and private vmail-owned live Maildirs. It verifies the safety receipt
+against the owned repository snapshot, operation tag and archived path set.
+
+Before releasing guards, finalization persists a private release intent binding
+account, restore, operation and safety snapshot IDs. Batch release verifies every
+remaining marker before removing any; already-missing markers are allowed only
+through this recovery path. Another job's marker prevents release. Re-entry after
+an interrupted release revalidates the saved intent and mailbox/snapshot state.
+It retains displaced trees and private records and returns completion evidence
+for the job coordinator to persist.
+
+Validation: 11 safety/guard tests passed. The encrypted-snapshot integration now
+injects interruption after one guard is released, resumes finalization, verifies
+all remaining owned guards are released and checks idempotent re-entry. A separate
+test proves a later mismatched owner prevents removal of an earlier valid guard.
+Customer submission, job-state integration and full startup recovery remain
+unfinished.

@@ -84,3 +84,13 @@ def test_failure_after_publication_retains_complete_persisted_token(directory, m
     assert len(list(directory.iterdir())) == 1
     guard.release('example.test', 'inbox', 1, 'a' * 64)
     assert list(directory.iterdir()) == []
+
+
+def test_batch_release_checks_every_remaining_owner_before_unlink(directory):
+    first = guard.block('example.test', 'one', 1)
+    second = guard.block('example.test', 'two', 2)
+    entries = [dict(domain='example.test', local_part='one', token=first),
+               dict(domain='example.test', local_part='two', token=second)]
+    with pytest.raises(ValidationError):
+        guard.release_batch(entries, 1)
+    assert len(list(directory.iterdir())) == 2

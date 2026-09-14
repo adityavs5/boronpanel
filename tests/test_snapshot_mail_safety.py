@@ -60,3 +60,25 @@ def test_displaced_mail_is_encrypted_and_guards_remain(isolated_db, saved, repo,
                    recovery_operation=payload['operation_id'])
     with pytest.raises(ValidationError, match='ambiguous'):
         restore.backup_displaced(account, repo, path, 1, recover=True)
+    from daemon import mail
+    import os
+    monkeypatch.setattr(mail, 'list_mailboxes', lambda domain: [{'local_part': 'one'}, {'local_part': 'two'}])
+    for entry in payload['entries']:
+        live = Path(settings.mail_base) / entry['domain'] / entry['local_part'] / 'Maildir'
+        os.chown(live, 150, 150)
+        live.chmod(0o700)
+    original_release = guard.release_batch
+    def partial_release(entries, restore_id):
+        first = entries[0]
+        guard.release(first['domain'], first['local_part'], restore_id, first['token'])
+        raise RuntimeError('caller interrupted during release')
+    monkeypatch.setattr(guard, 'release_batch', partial_release)
+    with pytest.raises(RuntimeError, match='interrupted'):
+        restore.finalize(account, repo, path, 1)
+    assert path.with_name('release-intent.json').exists()
+    assert len(list(Path(settings.mail_restore_guard_dir).iterdir())) == 1
+    monkeypatch.setattr(guard, 'release_batch', original_release)
+    finished = restore.finalize(account, repo, path, 1)
+    assert finished == {'safety_snapshot_id': result['snapshot_id'], 'mailboxes': 2, 'guards_released': True}
+    assert not list(Path(settings.mail_restore_guard_dir).iterdir())
+    assert restore.finalize(account, repo, path, 1) == finished

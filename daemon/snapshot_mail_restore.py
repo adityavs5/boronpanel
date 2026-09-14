@@ -362,3 +362,62 @@ def _private_document(path):
             return json.loads(handle.read(1024*1024+1))
         except (ValueError, UnicodeError):
             raise ValidationError('Invalid private mail recovery document') from None
+
+
+def finalize(account, repo, path, restore_id, *, service='dovecot.service'):
+    """Validate a forward restore and release its guards with durable intent.
+
+    Caller holds account/repository locks. Retains displaced mail and all private
+    recovery records; returns evidence for the job to commit its completed state.
+    """
+    from daemon import snapshot_mail_journal as journal, snapshot_mail_guard as guard
+    from daemon import snapshot_mail_service as supervisor, snapshot_mail_exchange as exchange
+    from daemon.snapshot_mail_files import _placement_receipt
+    payload = journal.read(path)
+    if type(restore_id) is not int or payload['restore_id'] != restore_id or payload['undo']:
+        raise ValidationError('Invalid forward mailbox finalization')
+    if supervisor.inspect_switch(payload['operation_id'], service=service)['state'] == 'running':
+        raise ValidationError('Mailbox switch is still running')
+    state = supervisor.service_status(service)
+    if state.get('ActiveState') != 'active' or state.get('SubState') != 'running' or state.get('ControlPID') != '0':
+        raise ValidationError('Mail service has not resumed')
+    if service == 'dovecot.service':
+        from daemon.snapshot_mail_guard_config import verify
+        verify()
+    with write_session() as session:
+        current = session.get(Account, account.id)
+        domains = {entry['domain'] for entry in payload['entries']}
+        owners = {row.domain: row.account_id for row in session.scalars(
+            select(MailDomain).where(MailDomain.domain.in_(domains)))}
+        if current is None or current.username != account.username or any(owners.get(domain) != account.id for domain in domains):
+            raise ValidationError('Mailbox finalization ownership changed')
+    current_mail = {domain: {entry['local_part'] for entry in mail.list_mailboxes(domain)} for domain in domains}
+    for entry in payload['entries']:
+        if entry['local_part'] not in current_mail[entry['domain']]:
+            raise ValidationError('Restored SQL mailbox is missing')
+        if exchange.inspect(entry['domain'], entry['local_part'], entry['plan']) != 'applied':
+            raise ValidationError('Mailbox switch is not fully applied')
+        with exchange._home(entry['domain'], entry['local_part']) as home:
+            info = os.stat('Maildir', dir_fd=home, follow_symlinks=False)
+            if info.st_uid != 150 or info.st_gid != 150 or info.st_mode & 0o077:
+                raise ValidationError('Restored Maildir has unsafe ownership or permissions')
+    work = Path(path).parent
+    receipt = _private_document(work / 'mail-safety-result.json')
+    expected = dict(format=1, account_id=account.id, restore_id=restore_id, snapshot_id=receipt.get('snapshot_id'))
+    if receipt != expected:
+        raise ValidationError('Mail safety receipt does not match finalization')
+    snapshot = storage.owned_snapshot(repo, account.id, receipt['snapshot_id'])
+    paths = {str(Path(settings.mail_base) / entry['domain'] / entry['local_part'] / entry['plan']['prepared'])
+             for entry in payload['entries']} | {str(work / 'mail-safety.json')}
+    if 'mail-safety:' + payload['operation_id'] not in snapshot.get('tags', []) or set(snapshot.get('paths', [])) != paths:
+        raise ValidationError('Mail safety snapshot does not match finalization')
+    intent = work / 'release-intent.json'
+    expected['operation_id'] = payload['operation_id']
+    if intent.exists() or intent.is_symlink():
+        if _private_document(intent) != expected:
+            raise ValidationError('Mailbox release intent does not match finalization')
+    else:
+        with guard.owned_guards(payload['entries'], restore_id):
+            _placement_receipt(journal._path(intent), expected, create=True)
+    guard.release_batch(payload['entries'], restore_id)
+    return {'safety_snapshot_id': receipt['snapshot_id'], 'mailboxes': len(payload['entries']), 'guards_released': True}
