@@ -707,3 +707,9 @@ payload and empty-selection validation; production frontend build passed.
 
 Current backup capability/gap audit: BACKUP-COMPLETION-AUDIT.md. Account
 configuration and captured mail routing restore actions remain unfinished.
+
+Revision `700be88` deployed successfully. Private rollback copy:
+`/root/boron-setup/mail-recovery-before-20260914-032403`. HTTPS health, admin login
+and configuration checks passed. The live backend event catalog and both public
+HTTPS bundles (shared event list and webhook form) matched the tested source/build.
+Existing webhook subscriptions were retained; no live webhook was created or sent.
