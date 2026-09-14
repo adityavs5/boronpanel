@@ -1010,3 +1010,28 @@ provider writes and encrypted previous-record loading. A separate readback-misma
 test passed (4.98s): provider success without matching records is not treated as
 completed recovery. Provider writes use an in-memory test backend or mocked HTTP
 transport; no live DNS record was changed and this step is not deployed.
+
+### DNS mutation and provider transition coordination — 2026-09-14
+
+Added a dedicated reentrant DNS mutation lock shared across threads and processes.
+Snapshot DNS capture/application waits for it as background work; competing direct
+edits fail promptly with a DNS-specific busy message. Protected paths include both
+providers' native record/zone writes, dnsprovider routing, managed-zone creation and
+removal, Cloudflare activation/status transitions/revert/proxy enable/termination,
+and forced pool-account removal or legacy-token migration. Outer operations retain
+the lock across provider calls and control-plane registration updates; nested calls
+reuse the same lock rather than deadlocking.
+
+This does not coordinate changes made outside Boron directly against a provider.
+DNS recovery dispatch/UI and Cloudflare-native restore remain outstanding. No live
+DNS record or provider registration was changed in this development step.
+
+Validation: 37 recovery/coordination tests passed in the initial run; one low-level
+PowerDNS test lacked a temporary lock-directory fixture and hit the read-only
+sandbox path. After adding its isolated fixture, the targeted rerun passed (5.27s).
+The 81 existing DNS handler/Cloudflare client/zone lifecycle tests passed (82.40s),
+including activation/resync/revert and nested provider operations. Lock tests cover
+cross-process exclusion, thread waiting, release after exceptions and reentrancy.
+Three selected Cloudflare pool deletion/migration tests also passed (8.38s;
+14 unrelated tests deselected). Changes are committed for further integration,
+not deployed; current live DNS and provider state remain unchanged.

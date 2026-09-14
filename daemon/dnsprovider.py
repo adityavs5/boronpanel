@@ -19,6 +19,8 @@ best-effort deletes stay best-effort whichever backend serves the zone.
 """
 from __future__ import annotations
 
+from daemon import dns_operations
+
 from sqlalchemy import select
 
 from shared.db import write_session
@@ -70,6 +72,7 @@ def zone_exists(zone: str) -> bool:
     return powerdns.zone_exists(zone)
 
 
+@dns_operations.serialized
 def create_zone(zone: str, ns_records: list[str]) -> dict:
     """New zones are always created in PowerDNS: it is the local provider,
     the fallback, and the revert target (plan SS0/SS1.9). Moving a zone to
@@ -77,6 +80,7 @@ def create_zone(zone: str, ns_records: list[str]) -> dict:
     return powerdns.create_zone(zone, ns_records)
 
 
+@dns_operations.serialized
 def delete_zone(zone: str) -> None:
     """Deletes the zone from every backend that has it: the Cloudflare
     zone + row when one exists (any status), and the PowerDNS zone (which
@@ -109,6 +113,7 @@ def get_zone(zone: str) -> dict:
     return powerdns.get_zone(zone)
 
 
+@dns_operations.serialized
 def upsert_record(
     zone: str,
     subdomain: str,
@@ -126,6 +131,7 @@ def upsert_record(
         powerdns.upsert_record(zone, subdomain, rtype, values, ttl=ttl)
 
 
+@dns_operations.serialized
 def delete_record(zone: str, subdomain: str, rtype: str) -> None:
     row = cloudflare_zone_row(zone)
     if row is not None and row.status == "active":

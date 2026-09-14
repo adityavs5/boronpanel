@@ -239,7 +239,7 @@ def test_dns_apply_reports_unconfirmed_provider_result_without_leaking_details(m
     assert captured and 'private provider detail' not in str(error.value)
 
 
-def test_powerdns_recovery_uses_one_patch(monkeypatch):
+def test_powerdns_recovery_uses_one_patch(isolated_db,monkeypatch):
     import httpx
     from shared.config import settings
     changes=[dict(name='old.alpha.test.',type='A',changetype='DELETE'),

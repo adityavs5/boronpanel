@@ -20,6 +20,8 @@ on the pool.
 """
 from __future__ import annotations
 
+from daemon import dns_operations
+
 import logging
 
 from sqlalchemy import func, select
@@ -247,6 +249,7 @@ def test_account(params: dict) -> dict:
     return result
 
 
+@dns_operations.serialized
 def delete_account(params: dict) -> dict:
     """cf.account_delete: remove a pool account. Refuses while it still
     serves zones -- those must be reverted/migrated first, or the token they
@@ -306,6 +309,7 @@ def set_account(params: dict) -> dict:
 # --- startup migration ------------------------------------------------------
 
 
+@dns_operations.serialized
 def migrate_single_token() -> bool:
     """Fold the legacy single-token config into a first pool row (goal
     feature 1: "Migrate existing single-token config into first row").

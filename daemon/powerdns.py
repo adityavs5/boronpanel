@@ -9,6 +9,8 @@ nothing for configtx to wrap here, PowerDNS already does it.
 """
 from __future__ import annotations
 
+from daemon import dns_operations
+
 import httpx
 
 from shared.config import settings
@@ -43,6 +45,7 @@ def zone_exists(zone: str) -> bool:
         return resp.status_code == 200
 
 
+@dns_operations.serialized
 def create_zone(zone: str, ns_records: list[str]) -> dict:
     """Create a new authoritative zone with the given NS records. PowerDNS
     auto-generates the SOA from default-soa-content (configured in
@@ -61,6 +64,7 @@ def create_zone(zone: str, ns_records: list[str]) -> dict:
     return resp.json()
 
 
+@dns_operations.serialized
 def delete_zone(zone: str) -> None:
     with _client() as client:
         resp = client.delete(f"/servers/{settings.powerdns_server_id}/zones/{_zone_id(zone)}")
@@ -83,6 +87,7 @@ def _record_name(zone: str, subdomain: str) -> str:
     return f"{subdomain}.{fqdn}"
 
 
+@dns_operations.serialized
 def upsert_record(zone: str, subdomain: str, rtype: str, values: list[str], ttl: int = DEFAULT_TTL) -> None:
     """REPLACE semantics: this becomes the complete rrset for (name, type) --
     matches how Boron's UI/API models "edit this A record", not an
@@ -106,6 +111,7 @@ def upsert_record(zone: str, subdomain: str, rtype: str, values: list[str], ttl:
         raise PowerDnsError(resp.status_code, resp.text)
 
 
+@dns_operations.serialized
 def delete_record(zone: str, subdomain: str, rtype: str) -> None:
     name = _record_name(zone, subdomain)
     payload = {"rrsets": [{"name": name, "type": rtype, "changetype": "DELETE"}]}
@@ -132,6 +138,7 @@ def list_records(zone: str) -> list[dict]:
     return records
 
 
+@dns_operations.serialized
 def apply_rrset_changes(zone: str, rrsets: list[dict]) -> None:
     """Apply a validated recovery change set in a single zone PATCH request."""
     if not rrsets:

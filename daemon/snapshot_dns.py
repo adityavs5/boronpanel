@@ -1,4 +1,5 @@
 """Account-bound DNS provider documents for encrypted configuration recovery."""
+from daemon import dns_operations
 from copy import deepcopy
 from sqlalchemy import select, text
 
@@ -30,6 +31,7 @@ def _bindings(account):
         return result
 
 
+@dns_operations.serialized_worker
 def capture(account, selected_zones=None):
     """Retain native records and reject ownership/provider changes during reads.
 
@@ -208,6 +210,7 @@ def _record_state(records):
     return result
 
 
+@dns_operations.serialized_worker
 def apply_configuration(account, payload, save_previous, on_zone=None):
     """Apply local DNS after durable encrypted capture; coordinator holds locks.
 

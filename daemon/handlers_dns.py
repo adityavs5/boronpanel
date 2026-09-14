@@ -6,6 +6,8 @@ content.
 """
 from __future__ import annotations
 
+from daemon import dns_operations
+
 from sqlalchemy import select
 
 from shared.config import settings
@@ -100,6 +102,7 @@ def _zone_dict(zone: DnsZone) -> dict:
     }
 
 
+@dns_operations.serialized
 def create_zone(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     username = params.get("username")
@@ -156,6 +159,7 @@ def create_zone(params: dict) -> dict:
     return result
 
 
+@dns_operations.serialized
 def delete_zone(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     dnsprovider.delete_zone(domain_name)
@@ -199,6 +203,7 @@ def list_records(params: dict) -> dict:
     return result
 
 
+@dns_operations.serialized
 def set_record(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     subdomain = params.get("subdomain", "@") or "@"
@@ -220,6 +225,7 @@ def set_record(params: dict) -> dict:
     return {"zone": domain_name, "subdomain": subdomain, "type": rtype, "values": values, "ttl": ttl}
 
 
+@dns_operations.serialized
 def delete_record(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     subdomain = params.get("subdomain", "@") or "@"
@@ -228,6 +234,7 @@ def delete_record(params: dict) -> dict:
     return {"zone": domain_name, "subdomain": subdomain, "type": rtype, "status": "deleted"}
 
 
+@dns_operations.serialized
 def terminate_account_zones(account: Account) -> None:
     """TERMINATE_HOOKS entry: delete every DNS zone this account owns.
     Idempotent -- safe even if the account never had a zone."""

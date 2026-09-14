@@ -18,6 +18,8 @@ NS back.
 """
 from __future__ import annotations
 
+from daemon import dns_operations
+
 import json
 import logging
 import time
@@ -446,6 +448,7 @@ def _resync_cloudflare_to_powerdns(zone: str, cf_zone_id: str) -> int:
     return len(desired)
 
 
+@dns_operations.serialized
 def _activate(zone: str) -> None:
     """The pending->active transition: resync barrier FIRST (so routing
     only flips once Cloudflare's content matches PowerDNS's, including any
@@ -475,6 +478,7 @@ def _activate(zone: str) -> None:
     logger.info("zone '%s' is now active on Cloudflare", zone)
 
 
+@dns_operations.serialized
 def zone_enable(params: dict) -> dict:
     """cf.zone_enable: create the zone at Cloudflare, seed it with the
     zone's current PowerDNS records, store the row (pending), and return
@@ -545,6 +549,7 @@ def zone_enable(params: dict) -> dict:
     return {"zone": domain, "status": row.status, "name_servers": row.name_servers}
 
 
+@dns_operations.serialized
 def zone_status(params: dict) -> dict:
     """cf.zone_status: report (and, for pending zones, poll) activation.
     params.check_now additionally asks Cloudflare to re-check registrar
@@ -583,6 +588,7 @@ def zone_status(params: dict) -> dict:
     return result
 
 
+@dns_operations.serialized
 def zone_disable(params: dict) -> dict:
     """cf.zone_disable: revert to local DNS. Resync Cloudflare->PowerDNS
     (captures edits made while active), delete the CF zone, drop the row.
@@ -650,6 +656,7 @@ def purge_cache(params: dict) -> dict:
     return {"zone": domain, "status": "purged"}
 
 
+@dns_operations.serialized
 def enable_proxy(params: dict) -> dict:
     """cf.enable_proxy (feature 2): turn the orange cloud ON for every
     proxyable (A/AAAA/CNAME) record in an ACTIVE zone -- the DNS editor's
@@ -864,6 +871,7 @@ def reconcile_pending_zones() -> int:
     return activated
 
 
+@dns_operations.serialized
 def terminate_account_cloudflare(account: Account) -> None:
     """TERMINATE_HOOKS entry: delete this account's Cloudflare zones via
     the API + their rows. Idempotent and best-effort on the API side --

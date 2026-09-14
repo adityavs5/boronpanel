@@ -18,6 +18,8 @@ idempotent and retryable -- re-running a half-applied upsert converges.
 """
 from __future__ import annotations
 
+from daemon import dns_operations
+
 import contextlib
 import contextvars
 import time
@@ -169,6 +171,7 @@ def zone_exists(zone: str) -> bool:
     return get_zone_id(zone) is not None
 
 
+@dns_operations.serialized
 def create_zone(zone: str, account_id: str | None = None) -> dict:
     """POST /zones. Cloudflare assigns the zone its nameserver pair itself
     (unlike powerdns.create_zone, which takes ours as an argument) and the
@@ -188,6 +191,7 @@ def create_zone(zone: str, account_id: str | None = None) -> dict:
     }
 
 
+@dns_operations.serialized
 def delete_zone(zone: str, zone_id: str | None = None) -> None:
     zid = zone_id or get_zone_id(zone)
     if zid is None:
@@ -369,6 +373,7 @@ def _canonical_value(rtype: str, value: str) -> str:
 # --- record operations ------------------------------------------------------
 
 
+@dns_operations.serialized
 def upsert_record(
     zone: str,
     subdomain: str,
@@ -415,6 +420,7 @@ def upsert_record(
             _request("DELETE", f"/zones/{zid}/dns_records/{rec['id']}")
 
 
+@dns_operations.serialized
 def delete_record(zone: str, subdomain: str, rtype: str, zone_id: str | None = None) -> None:
     zid = _resolve_zone_id(zone, zone_id)
     name = _record_name(zone, subdomain)
