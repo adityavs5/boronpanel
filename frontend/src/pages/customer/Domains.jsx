@@ -39,9 +39,6 @@ function ParkedDomainsCard({ username, domains }) {
     enabled: !!username,
   })
 
-  useEffect(() => {
-    if (kind === 'subdomain' && !parent && data?.domains?.length) setParent(data.domains[0].domain)
-  }, [data?.domains, kind, parent])
   const invalidate = () => qc.invalidateQueries({ queryKey: ['parked-domains', username] })
 
   const addMut = useMutation({
@@ -145,6 +142,10 @@ export default function Domains({ subdomainsOnly = false }) {
     queryFn: () => get(`/api/v1/accounts/${username}/domains`),
     enabled: !!username,
   })
+
+  useEffect(() => {
+    if (kind === 'subdomain' && !parent && data?.domains?.length) setParent(data.domains[0].domain)
+  }, [data?.domains, kind, parent])
 
   const createMut = useMutation({
     mutationFn: (body) => post(`/api/v1/accounts/${username}/domains`, body),

@@ -25,7 +25,7 @@ for (const skin of ['evolution','paper-lantern']) {
     })
     await page.goto('/app/dashboard')
     await page.getByRole('textbox',{name:'Filter tools'}).fill('DNS zone edito')
-    await expect(page.locator('.tool-link').filter({hasText:'DNS'})).toBeVisible()
+    await expect(page.getByRole('link',{name:'DNS Management',exact:true})).toBeVisible()
     await page.getByRole('textbox',{name:'Filter tools'}).fill('softaculous')
     await page.locator('.tool-link').filter({hasText:'WordPress'}).click()
     await expect(page.getByRole('heading',{name:'WordPress Manager',exact:true})).toBeVisible()
