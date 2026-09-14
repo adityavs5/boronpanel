@@ -15,6 +15,64 @@ from daemon.procutil import run
 from shared.validation import ValidationError
 
 
+def initialize_maildir(domain, local_part, restore_id, token, *, uid=150, gid=150):
+    """Create missing mailbox directories while the restore owns its guard.
+
+    Account/domain authorization belongs to the coordinator. Existing directories
+    must already belong to vmail; their contents and permissions are retained.
+    No automatic deletion on error: a subsequent recovery can inspect the tree.
+    """
+    from daemon import snapshot_mail_guard as guard
+    from shared.config import settings
+    from shared.validation import validate_domain, validate_mailbox_local_part
+    domain, local_part = validate_domain(domain), validate_mailbox_local_part(local_part)
+    if os.geteuid() != 0 or any(type(value) is not int or value <= 0 for value in (uid, gid)):
+        raise ValidationError('Mailbox initialization requires the restore service and vmail identity')
+    base = Path(settings.mail_base)
+    if not base.is_absolute() or '..' in base.parts or base == Path('/'):
+        raise ValidationError('Invalid mail storage root')
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    created = []
+    def directory(parent, name):
+        fresh = False
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent)
+            fresh = True
+        except FileExistsError:
+            pass
+        child = os.open(name, flags, dir_fd=parent)
+        try:
+            if fresh:
+                os.fchown(child, uid, gid)
+                os.fchmod(child, 0o700)
+                os.fsync(child)
+                os.fsync(parent)
+                created.append(name)
+            info = os.fstat(child)
+            if info.st_uid != uid or info.st_gid != gid or info.st_mode & 0o022:
+                raise ValidationError('Existing mailbox directory has unexpected ownership or permissions')
+            return child
+        except BaseException:
+            os.close(child)
+            raise
+    with guard.owned_guards([dict(domain=domain, local_part=local_part, token=token)], restore_id):
+        fd = os.open('/', flags)
+        try:
+            for component in base.parts[1:]:
+                next_fd = os.open(component, flags, dir_fd=fd)
+                os.close(fd)
+                fd = next_fd
+            for component in (domain, local_part, 'Maildir'):
+                next_fd = directory(fd, component)
+                os.close(fd)
+                fd = next_fd
+            for component in ('cur', 'new', 'tmp'):
+                os.close(directory(fd, component))
+        finally:
+            os.close(fd)
+    return {'created_directories': len(created)}
+
+
 def prepare_maildir(source, destination, private_root):
     """Copy regular files/directories, retaining Dovecot metadata and message names.
 

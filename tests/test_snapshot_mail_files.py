@@ -8,6 +8,51 @@ from shared.validation import ValidationError
 from types import SimpleNamespace
 
 
+def test_missing_maildir_initialization_requires_owned_guard_and_retains_messages(tmp_path, monkeypatch):
+    from daemon import snapshot_mail_guard as guard
+    from daemon.snapshot_mail_files import initialize_maildir
+    from shared.config import settings
+    base = tmp_path / 'mail'
+    base.mkdir()
+    monkeypatch.setattr(settings, 'mail_base', str(base))
+    monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(tmp_path / 'guards'))
+    token = guard.block('example.test', 'inbox', 3)
+    with pytest.raises(ValidationError):
+        initialize_maildir('example.test', 'inbox', 4, token)
+    assert not list(base.iterdir())
+    assert initialize_maildir('example.test', 'inbox', 3, token)['created_directories'] == 6
+    home = base / 'example.test' / 'inbox' / 'Maildir'
+    message = home / 'cur' / 'retained:2,S'
+    message.write_bytes(b'current retained mail')
+    assert initialize_maildir('example.test', 'inbox', 3, token)['created_directories'] == 0
+    assert message.read_bytes() == b'current retained mail'
+    assert all(path.stat().st_uid == 150 and path.stat().st_mode & 0o777 == 0o700
+               for path in base.rglob('*') if path.is_dir())
+    assert (guard.Path(settings.mail_restore_guard_dir) / guard.marker_name('example.test', 'inbox')).exists()
+
+
+@pytest.mark.parametrize('bad', ['symlink', 'foreign-owner'])
+def test_maildir_initialization_refuses_redirected_or_foreign_storage(tmp_path, monkeypatch, bad):
+    from daemon import snapshot_mail_guard as guard
+    from daemon.snapshot_mail_files import initialize_maildir
+    from shared.config import settings
+    base = tmp_path / 'mail'
+    base.mkdir()
+    monkeypatch.setattr(settings, 'mail_base', str(base))
+    monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(tmp_path / 'guards'))
+    target = tmp_path / 'retained'
+    target.mkdir()
+    if bad == 'symlink':
+        (base / 'example.test').symlink_to(target, target_is_directory=True)
+    else:
+        (base / 'example.test').mkdir()
+    token = guard.block('example.test', 'inbox', 3)
+    with pytest.raises((OSError, ValidationError)):
+        initialize_maildir('example.test', 'inbox', 3, token)
+    assert not list(target.iterdir())
+    assert not (base / 'example.test' / 'inbox').exists()
+
+
 @pytest.fixture
 def staged(tmp_path):
     tmp_path.chmod(0o700)

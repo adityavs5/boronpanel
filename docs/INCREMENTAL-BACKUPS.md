@@ -935,3 +935,18 @@ recovery, but missing accounts or transferred domains are refused. Validation:
 31 staging/file tests passed, including mismatched restore IDs, changed receipt
 IDs, unconfirmed sibling paths and domain reassignment. The full customer restore
 coordinator and automatic recovery actions remain unfinished.
+
+Deleted-mailbox recovery now has guarded Maildir initialization. The restore must
+own the mailbox's durable lookup guard before `initialize_maildir` creates missing
+domain/home/Maildir/cur/new/tmp directories. Traversal uses directory descriptors
+and refuses symbolic links. Newly created directories receive vmail ownership,
+mode 0700 and file/directory fsyncs; existing directories must have the expected
+ownership and safe permissions and are otherwise retained unchanged. Existing
+messages are never removed. A failed initialization retains its partial tree and
+guard for inspection rather than attempting destructive cleanup.
+
+Validation: 40 Maildir/guard tests passed, including wrong restore ownership,
+idempotent initialization with a retained message, symlink refusal and unexpected
+directory ownership. This is still an internal recovery primitive: account/domain
+authorization and SQL recreation must be coordinated before customer submission
+is enabled.
