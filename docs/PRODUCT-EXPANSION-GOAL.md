@@ -1711,3 +1711,37 @@ PowerDNS, Dovecot and chrony are active. Deployed routing worker/journal and bui
 frontend index exactly match the checkout. No live routing restore was triggered
 by this catalog check. Actual QA-account routing restore/undo remains to be proven,
 followed by Cloudflare-native DNS recovery and full initial-goal/release audit.
+
+### Live email settings restore/undo and cleanup — 2026-09-14
+
+Verified the deployed workflow through authenticated HTTPS using isolated account
+pq0914020151 and its own primary domain. It previously had no mail domain or
+mailboxes. Provisioned its mail domain, created one randomly named QA mailbox,
+forwarder/catch-all and a future-dated automatic reply, then created manual
+mail-only policy 4 against the existing QA destination 3, with no notifications.
+The future date prevents the test reply from sending during this proof.
+
+Backup run 8 captured the baseline. After modifying forwarders, removing catch-all
+and changing the reply, live restore 12 recovered exact baseline rules and Sieve
+bytes. Undo 13 recovered the exact post-backup rules/script. Both operations were
+completed by the real daemon/systemd/Dovecot workflow and retained encrypted safety
+copies. Mailbox password/quota/active-state fingerprint stayed unchanged. Both
+records report routing_finalized and guards_released.
+
+Removed only the generated QA mailbox, reply and named test forwarders; restored
+the initially empty routing state and disabled policy 4. The newly provisioned QA
+mail domain remains for further testing. No live mail guards remain. API, daemon,
+Dovecot, OLS, PowerDNS and chrony are active after cleanup. Other customer domains
+and mailbox settings were not selected by either recovery.
+
+Proof script/log/state: /root/boron-setup/routing-recovery-live-proof.py,
+/root/boron-setup/routing-recovery-live-proof.log and
+/root/boron-setup/routing-recovery-live-proof.json. State is verified with
+initial_routing_restored, test_mailbox_removed and policy_disabled all true.
+Do not rerun this script against its existing state file; IDs are historical proof.
+
+Mail routing recovery now has deployed UI, backend, isolated interruption tests,
+real systemd tests and live account restore/undo evidence. Remaining initial work
+includes Cloudflare-native DNS recovery, the final broad backup/requirement audit,
+and GitHub/release/self-update verification. The subsequent product expansion is
+still queued after the initial goal; the overall goal remains active.
