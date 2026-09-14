@@ -24,6 +24,7 @@ from api.templates import templates
 from shared.config import settings
 
 api_router = APIRouter(prefix="/api/v1/admin/import/cpanel", tags=["cpanel-import"])
+accounts_api_router = APIRouter(prefix="/api/v1/admin/import/accounts", tags=["account-imports"])
 ui_router = APIRouter(prefix="/ui/admin/import/cpanel", tags=["ui:cpanel-import"])
 
 
@@ -51,11 +52,11 @@ def _spool_upload(file: UploadFile) -> str:
     return tmp_path
 
 
-def _trigger(identity: Identity, username: str, url: str | None, file: UploadFile | None) -> dict:
+def _trigger(identity: Identity, username: str, url: str | None, file: UploadFile | None, panel: str = "cpanel") -> dict:
     if file is not None and file.filename:
         tmp_path = _spool_upload(file)
         try:
-            return call_daemon("cpanel_import.trigger", identity, username=username, source="upload", source_ref=tmp_path)
+            return call_daemon("cpanel_import.trigger", identity, username=username, panel=panel, source="upload", source_ref=tmp_path)
         except Exception:
             # trigger_import validates before ever submitting the background
             # job -- a rejected request here (bad username, account already
@@ -66,7 +67,7 @@ def _trigger(identity: Identity, username: str, url: str | None, file: UploadFil
             Path(tmp_path).unlink(missing_ok=True)
             raise
     if url:
-        return call_daemon("cpanel_import.trigger", identity, username=username, source="url", source_ref=url)
+        return call_daemon("cpanel_import.trigger", identity, username=username, panel=panel, source="url", source_ref=url)
     raise HTTPException(status_code=400, detail="either a file upload or a url must be provided")
 
 
@@ -91,6 +92,30 @@ def get_import_job(job_id: int, username: str, identity: Identity = Depends(get_
 def list_import_jobs(username: str | None = None, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("cpanel_import.list", identity, username=username)
+
+
+@accounts_api_router.post("")
+def trigger_account_import(
+    username: str = Form(...),
+    panel: str = Form(...),
+    url: str | None = Form(None),
+    file: UploadFile | None = File(None),
+    identity: Identity = Depends(get_identity),
+):
+    require_admin(identity)
+    return _trigger(identity, username, url, file, panel=panel)
+
+
+@accounts_api_router.get("")
+def list_account_imports(username: str | None = None, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("cpanel_import.list", identity, username=username)
+
+
+@accounts_api_router.get("/{job_id}")
+def get_account_import(job_id: int, username: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("cpanel_import.get", identity, job_id=job_id, username=username)
 
 
 @ui_router.get("")

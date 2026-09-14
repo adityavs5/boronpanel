@@ -62,6 +62,9 @@ def test_openapi_schema_served_to_admin(isolated_db):
         assert "/api/v1/admin/openlitespeed" in paths
         assert "/api/v1/admin/ssl" in paths
         assert "/api/v1/admin/ip-management" in paths
+        assert "/api/v1/admin/import/accounts" in paths
+        assert "/api/v1/admin/import/boron" in paths
+        assert "/api/v1/admin/account-archives/{job_id}/download" in paths
         assert len(paths) > 150
     finally:
         _clear()

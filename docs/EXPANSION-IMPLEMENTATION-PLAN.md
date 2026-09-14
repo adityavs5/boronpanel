@@ -67,6 +67,19 @@ the IP/account flow passed in both themes at desktop and mobile widths.
 
 ## Batch E — portable accounts and imports
 
+Implementation status: complete on 2026-09-14, pending the grouped expansion
+release. Full account backups are now versioned Boron archives with a manifest,
+per-component sizes and SHA-256 hashes. Administrator downloads work for local
+and remote backup destinations; imports copy uploads into root-only staging,
+enforce compressed and expanded size limits, reject unsafe paths and links,
+verify every component, and reveal a recreated account credential once. The
+external migration pipeline now accepts cPanel and DirectAdmin user archives
+through one history and detail interface, retains best-effort per-item reports,
+and rewrites imported WordPress database credentials. Existing cPanel jobs are
+migrated additively. Focused backend/API coverage passed 116 tests, the
+production frontend build passed, and the complete migration flow passed in
+both themes at desktop and mobile widths.
+
 - Define a versioned universal Boron account archive with a manifest, checksums and explicit component inventory.
 - Add administrator export/restore jobs that reuse existing snapshot safety, tenant validation and rollback boundaries.
 - Extend the existing cPanel importer and add DirectAdmin archive ingestion into the same normalized import plan, preview and job history UI.

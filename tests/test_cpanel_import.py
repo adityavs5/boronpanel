@@ -41,6 +41,70 @@ def test_find_content_root_unknown_shape_falls_back_to_extract_dir(tmp_path):
     assert ci._find_content_root(tmp_path) == tmp_path
 
 
+def test_normalize_directadmin_user_backup(tmp_path):
+    source = tmp_path / "da-user"
+    (source / "backup").mkdir(parents=True)
+    (source / "backup" / "user.conf").write_text(
+        "username=olduser\ndomain=example.com\nemail=owner@example.com\n"
+    )
+    (source / "backup" / "domains.list").write_text("example.com\nshop.example.com\n")
+    primary = source / "domains" / "example.com" / "public_html"
+    addon = source / "domains" / "shop.example.com" / "public_html"
+    primary.mkdir(parents=True)
+    addon.mkdir(parents=True)
+    (primary / "index.php").write_text("primary")
+    (addon / "index.php").write_text("shop")
+    (source / "backup" / "olduser_store.sql").write_text("CREATE TABLE products (id INT);")
+    mailbox = source / "imap" / "example.com" / "sales" / "Maildir"
+    for folder in ("cur", "new", "tmp"):
+        (mailbox / folder).mkdir(parents=True)
+    (mailbox / "new" / "message").write_text("mail")
+    (source / "backup" / "cron.conf").write_text("0 3 * * * /usr/bin/php /home/olduser/task.php\n")
+
+    normalized = tmp_path / "normalized"
+    normalized.mkdir()
+    root = ci._normalize_directadmin_archive(source, normalized)
+    info = ci._parse_account_info(root)
+    domains = ci._parse_domains(root, info)
+
+    assert info["old_username"] == "olduser"
+    assert domains == [
+        {"domain": "example.com", "kind": "primary"},
+        {"domain": "shop.example.com", "kind": "addon"},
+    ]
+    assert (root / "homedir" / "public_html" / "index.php").read_text() == "primary"
+    assert (root / "homedir" / "domains" / "shop.example.com" / "public_html" / "index.php").read_text() == "shop"
+    assert [path.name for path in ci._parse_mysql_dumps(root)] == ["olduser_store.sql"]
+    assert ci._parse_mailboxes(root, ["example.com"]) == [("example.com", "sales")]
+    assert ci._parse_cron(root, "olduser") == [("0 3 * * *", "/usr/bin/php /home/olduser/task.php")]
+
+
+def test_directadmin_content_root_rejects_unknown_layout(tmp_path):
+    (tmp_path / "random").mkdir()
+    with pytest.raises(ci.CpanelImportError, match="DirectAdmin"):
+        ci._directadmin_content_root(tmp_path)
+
+
+def test_external_import_job_reports_panel_and_reveals_password_once(isolated_db):
+    with write_session() as session:
+        job = CpanelImportJob(
+            username="demo1",
+            panel="directadmin",
+            source="upload",
+            status="completed",
+            initial_password="temporary-secret",
+            results=[],
+        )
+        session.add(job)
+        session.flush()
+        job_id = job.id
+    first = ci.get_job({"job_id": job_id, "username": "demo1"})
+    second = ci.get_job({"job_id": job_id, "username": "demo1"})
+    assert first["panel"] == "directadmin"
+    assert first["initial_password"] == "temporary-secret"
+    assert "initial_password" not in second
+
+
 def test_load_yaml_lenient_real_yaml(tmp_path):
     path = tmp_path / "main.yaml"
     path.write_text("main_domain: example.com\naddon_domains:\n  shop.example.com: {}\n")

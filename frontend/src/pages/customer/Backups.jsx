@@ -1,7 +1,7 @@
 import { SnapshotHistory } from '@/components/backups/SnapshotHistory'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Archive, Plus, RotateCcw, History, FolderOpen } from 'lucide-react'
+import { Archive, Plus, RotateCcw, History, FolderOpen, Download } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatBytes, formatDate } from '@/lib/utils'
@@ -19,6 +19,7 @@ import {
   ConfirmDialog,
 } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
+import { useAuth } from '@/store/auth'
 
 const BACKUP_KINDS = [
   { value: 'full', label: 'Full account (files + databases + mail + DNS + config)' },
@@ -148,6 +149,7 @@ function BrowseDialog({ username, job, onOpenChange }) {
 
 export default function Backups() {
   const username = useAccountUsername()
+  const isAdmin = useAuth(state => state.role === 'admin')
   const qc = useQueryClient()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -214,6 +216,9 @@ export default function Backups() {
       render: (r) =>
         r.status === 'completed' ? (
           <div className="flex justify-end gap-2">
+            {isAdmin && r.kind === 'full' && <Button variant="ghost" size="sm" onClick={() => window.open(`/api/v1/admin/account-archives/${r.id}/download`, '_blank', 'noopener')}>
+              <Download className="h-4 w-4" /> Portable archive
+            </Button>}
             <Button variant="ghost" size="sm" onClick={() => setToBrowse(r)}>
               <FolderOpen className="h-4 w-4" /> Browse
             </Button>

@@ -89,6 +89,11 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     # see _migrate_wordpress_installs_uniqueness below for the accompanying
     # index change this column enables.
     "wordpress_installs": {"path": "VARCHAR(255) NOT NULL DEFAULT ''"},
+    # Unified external-account importer. Existing rows are cPanel jobs.
+    "cpanel_import_jobs": {
+        "panel": "VARCHAR(16) NOT NULL DEFAULT 'cpanel'",
+        "initial_password": "VARCHAR(128)",
+    },
 }
 
 

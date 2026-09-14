@@ -241,6 +241,10 @@ DNS steering: the user reports phpmyadmin.boron.sitecountry.com is corrected and
 asks to retry after propagation. Continue independent initial-phase work while
 periodically verifying DNS; do not repeatedly ask the user while they are away.
 
+DNS verification completed 2026-09-14: both authoritative Cloudflare
+nameservers and recursive resolution return `104.234.179.66`; the live HTTPS
+endpoint responds with the expected redirect to Boron's phpMyAdmin sign-on.
+
 
 ## Live deployment — panel access verified 2026-09-13
 

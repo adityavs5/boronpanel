@@ -25,11 +25,11 @@ const adminGroups = {
     ['Admin Tools', ['/updates', '/openlitespeed', '/malware', '/firewall', '/ip-management', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
     ['System Info & Files', ['/site-stats', '/audit-log', '/account-log', '/error-log', '/templates', '/maintenance-mode']],
     ['WordPress & Websites', ['/wordpress']],
-    ['Extra Features', ['/import/cpanel', '/imap-migrations', '/webhooks', '/notifications']],
+    ['Extra Features', ['/import/accounts', '/imap-migrations', '/webhooks', '/notifications']],
     ['Account & Preferences', ['/panel-settings', '/branding', '/appearance', '/security', '/api/docs']],
   ],
   'paper-lantern': [
-    ['Accounts', ['/backup-jobs', '/accounts', '/plans', '/ssl', '/import/cpanel']],
+    ['Accounts', ['/backup-jobs', '/accounts', '/plans', '/ssl', '/import/accounts']],
     ['Server & Databases', ['/health', '/services', '/db-monitor', '/slow-queries']],
     ['Domains & Network', ['/cloudflare', '/ip-management', '/maintenance-mode']],
     ['Email', ['/mail-queue', '/imap-migrations', '/notifications']],

@@ -94,7 +94,7 @@ export const adminNav = [
   { section: 'Integrations' },
   { label: 'Webhooks', to: '/webhooks', icon: Webhook },
   { label: 'Notifications', to: '/notifications', icon: BellRing },
-  { label: 'cPanel Import', to: '/import/cpanel', icon: DownloadCloud },
+  { label: 'Account Migrations', to: '/import/accounts', icon: DownloadCloud },
   // Server-rendered admin API docs (Swagger UI). external → real navigation.
   { label: 'API Docs', to: '/api/docs', icon: BookOpen, external: true },
 ]

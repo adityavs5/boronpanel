@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from daemon.database_operations import serialized_worker
 import gzip
+import hashlib
 import json
 import logging
 import os
@@ -59,10 +60,29 @@ _executor = ThreadPoolExecutor(max_workers=settings.backup_concurrency, thread_n
 BACKUP_KINDS = ("full", "file", "database", "mailbox")
 FREQUENCIES = ("daily", "weekly", "monthly")
 FREQUENCY_SECONDS = {"daily": 86400, "weekly": 7 * 86400, "monthly": 30 * 86400}
+PORTABLE_ARCHIVE_FORMAT = "boron-account-archive"
+PORTABLE_ARCHIVE_VERSION = 1
 
 
 class BackupError(Exception):
     pass
+
+
+def _safe_extract_tar(archive_path: str | Path, destination: str | Path) -> None:
+    """Extract a backup component with traversal and expansion limits."""
+    try:
+        with tarfile.open(archive_path) as archive:
+            total = 0
+            for member in archive.getmembers():
+                if member.isreg():
+                    total += member.size
+                    if total > settings.cpanel_import_max_extracted_bytes:
+                        raise BackupError(
+                            f"archive component expands beyond the {settings.cpanel_import_max_extracted_bytes} byte limit"
+                        )
+            archive.extractall(destination, filter="data")
+    except tarfile.TarError as exc:
+        raise BackupError(f"unsafe or unreadable archive component: {exc}") from exc
 
 
 # --- destinations ---------------------------------------------------------
@@ -424,6 +444,8 @@ def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
         dns_zone_row = session.scalar(select(DnsZone).where(DnsZone.account_id == account.id))
 
         manifest = {
+            "format": PORTABLE_ARCHIVE_FORMAT,
+            "format_version": PORTABLE_ARCHIVE_VERSION,
             "username": account.username,
             "backed_up_at": utcnow().isoformat(),
             "php_version": account.php_version,
@@ -457,8 +479,6 @@ def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
         except dnsprovider.DnsError:
             manifest["dns_zone"] = None
 
-    (staging_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
-
     _update_job(job_id, progress_message="backing up files (1/3)")
     home_dir = f"{settings.home_base}/{username}"
     if Path(home_dir).exists():
@@ -485,6 +505,23 @@ def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
                 )
                 if not result.ok:
                     raise BackupError(f"tar of mail domain '{domain}' failed: {result.stderr.strip()}")
+
+    # Component checksums make the artifact independently verifiable after it
+    # has crossed servers or storage providers. The manifest itself is not in
+    # this list (that would be self-referential).
+    components = []
+    for path in sorted(p for p in staging_dir.rglob("*") if p.is_file()):
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        components.append({
+            "path": path.relative_to(staging_dir).as_posix(),
+            "size_bytes": path.stat().st_size,
+            "sha256": digest.hexdigest(),
+        })
+    manifest["components"] = components
+    (staging_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     artifact = staging_dir.parent / f"{staging_dir.name}.tar"
     result = run(["tar", "cf", str(artifact), "-C", str(staging_dir.parent), staging_dir.name], timeout=1800)
@@ -555,7 +592,7 @@ def _run_backup_job(job_id: int) -> None:
         timestamp = utcnow().strftime("%Y%m%d-%H%M%S")
 
         if kind == "full":
-            artifact_name = f"{username}_{timestamp}_full.tar"
+            artifact_name = f"{username}_{timestamp}.boron.tar"
             local_artifact = _build_full_backup(username, staging_dir, job_id)
         elif kind == "file":
             artifact_name = f"{username}_{timestamp}_file_{_sanitize_ref(item_ref)}.tar.gz"
@@ -856,19 +893,25 @@ def _restore_database_dump(db_name: str, dump_path: Path) -> None:
 
 
 @serialized_worker
-def _restore_full(username: str, account_status: str, local_artifact: str, tmp_dir: str, restore_job_id: int) -> None:
-    _update_restore(restore_job_id, progress_message="extracting backup")
+def _restore_full(
+    username: str,
+    account_status: str,
+    local_artifact: str,
+    tmp_dir: str,
+    restore_job_id: int | None = None,
+    progress=None,
+) -> dict:
+    def report(message: str) -> None:
+        if progress is not None:
+            progress(message)
+        elif restore_job_id is not None:
+            _update_restore(restore_job_id, progress_message=message)
+
+    summary = {"initial_password": None, "mailboxes_requiring_password_reset": []}
+    report("extracting backup")
     extract_dir = Path(tmp_dir) / "extracted"
     extract_dir.mkdir()
-    with tarfile.open(local_artifact) as tf:
-        # filter="data" (Python 3.12+) rejects absolute paths, ".."
-        # traversal, and device/special files -- the standard-library
-        # defense for the same tar-slip class as the zip-slip fix in
-        # daemon/appinstaller.py/wordpress.py. This artifact is normally
-        # Boron's own backup output, but restore runs as root, so this
-        # is the same "no unchecked precondition" bar applied to a
-        # compromised remote destination or a future format bug.
-        tf.extractall(extract_dir, filter="data")
+    _safe_extract_tar(local_artifact, extract_dir)
 
     inner_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
     if len(inner_dirs) != 1:
@@ -891,8 +934,8 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
         # no-op, the Linux user was never actually recreated, and the
         # restore failed several steps later trying to chown files to a
         # uid that no longer existed.
-        _update_restore(restore_job_id, progress_message="recreating account")
-        handlers_account.reactivate_account(
+        report("recreating account")
+        recreated = handlers_account.reactivate_account(
             {
                 "username": username,
                 "php_version": manifest.get("php_version"),
@@ -904,8 +947,9 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
                 "pids_max": manifest.get("pids_max"),
             }
         )
+        summary["initial_password"] = recreated.get("initial_password")
 
-        _update_restore(restore_job_id, progress_message="recreating domains")
+        report("recreating domains")
         for d in manifest.get("domains", []):
             try:
                 handlers_domain.add_domain({"username": username, "domain": d["domain"], "kind": d["kind"]})
@@ -920,7 +964,7 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
                 # DocRoot is accessible), which for an already-existing Domain row only
                 # becomes true once home.tar.gz is extracted.
 
-        _update_restore(restore_job_id, progress_message="recreating databases")
+        report("recreating databases")
         for db in manifest.get("databases", []):
             try:
                 suffix = db["db_name"][len(username) + 1 :] if db["db_name"].startswith(f"{username}_") else db["db_name"]
@@ -928,7 +972,7 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
             except RuntimeError:
                 pass
 
-        _update_restore(restore_job_id, progress_message="recreating mail")
+        report("recreating mail")
         for domain in manifest.get("mail_domains", []):
             try:
                 handlers_mail.create_mail_domain({"username": username, "domain": domain})
@@ -956,15 +1000,13 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
             except RuntimeError:
                 pass
         if reset_mailboxes:
-            _update_restore(
-                restore_job_id,
-                progress_message=(
-                    f"recreated {len(reset_mailboxes)} mailbox(es) with new random passwords "
-                    f"(original passwords are never stored in backups) -- reset via mail.change_password"
-                ),
+            summary["mailboxes_requiring_password_reset"] = reset_mailboxes
+            report(
+                f"recreated {len(reset_mailboxes)} mailbox(es) with new random passwords "
+                f"(original passwords are never stored in backups) -- reset via mail.change_password"
             )
 
-        _update_restore(restore_job_id, progress_message="recreating cron jobs")
+        report("recreating cron jobs")
         for cj in manifest.get("cron_jobs", []):
             try:
                 handlers_cron.add_cron_job(
@@ -975,7 +1017,7 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
 
         dns_zone = manifest.get("dns_zone")
         if dns_zone:
-            _update_restore(restore_job_id, progress_message="recreating DNS zone")
+            report("recreating DNS zone")
             try:
                 handlers_dns.create_zone({"username": username, "domain": dns_zone["zone"]})
             except RuntimeError:
@@ -1001,12 +1043,10 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
                 except Exception:  # noqa: BLE001
                     pass
 
-    _update_restore(restore_job_id, progress_message="restoring files")
+    report("restoring files")
     home_tar = content_dir / "home.tar.gz"
     if home_tar.exists():
-        result = run(["tar", "xzf", str(home_tar), "-C", settings.home_base], timeout=1800)
-        if not result.ok:
-            raise BackupError(f"failed to restore home directory: {result.stderr.strip()}")
+        _safe_extract_tar(home_tar, settings.home_base)
         pw = _pwnam(username)
         run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", f"{settings.home_base}/{username}"], timeout=600)
 
@@ -1024,7 +1064,7 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
         # whether its Domain row was just newly created above or already
         # existed from before termination -- either way its OLS vhost is
         # currently missing.
-        _update_restore(restore_job_id, progress_message="restoring docroot permissions")
+        report("restoring docroot permissions")
         for d in manifest.get("domains", []):
             try:
                 handlers_domain.ensure_docroot(username, d["docroot"])
@@ -1041,22 +1081,21 @@ def _restore_full(username: str, account_status: str, local_artifact: str, tmp_d
         except Exception:  # noqa: BLE001
             logger.exception("failed to (re)provision vhosts for restored account '%s'", username)
 
-    _update_restore(restore_job_id, progress_message="restoring databases")
+    report("restoring databases")
     db_dir = content_dir / "databases"
     if db_dir.exists():
         for dump in db_dir.glob("*.sql.gz"):
             db_name = dump.name[: -len(".sql.gz")]
             _restore_database_dump(db_name, dump)
 
-    _update_restore(restore_job_id, progress_message="restoring mail")
+    report("restoring mail")
     mail_dir = content_dir / "mail"
     if mail_dir.exists():
         for tarball in mail_dir.glob("*.tar.gz"):
             domain = tarball.name[: -len(".tar.gz")]
-            result = run(["tar", "xzf", str(tarball), "-C", settings.mail_base], timeout=1800)
-            if not result.ok:
-                raise BackupError(f"failed to restore mail domain '{domain}': {result.stderr.strip()}")
+            _safe_extract_tar(tarball, settings.mail_base)
             run(["chown", "-R", "vmail:vmail", f"{settings.mail_base}/{domain}"], timeout=600)
+    return summary
 
 
 def _restore_file(username: str, item_ref: str, local_artifact: str, restore_job_id: int) -> None:

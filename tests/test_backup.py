@@ -247,6 +247,8 @@ def test_build_full_backup_creates_manifest_and_tar(isolated_db, fake_home, fake
         manifest_name = next(n for n in names if n.endswith("manifest.json"))
         manifest = json.loads(tf.extractfile(manifest_name).read())
     assert manifest["username"] == "demo1"
+    assert manifest["format"] == backup.PORTABLE_ARCHIVE_FORMAT
+    assert manifest["format_version"] == backup.PORTABLE_ARCHIVE_VERSION
     assert manifest["domains"][0]["domain"] == "demo1.example"
     assert manifest["databases"][0]["db_name"] == "demo1_shop"
     assert manifest["mail_domains"] == ["demo1.example"]
@@ -254,6 +256,10 @@ def test_build_full_backup_creates_manifest_and_tar(isolated_db, fake_home, fake
     assert any(n.endswith("home.tar.gz") for n in names)
     assert any(n.endswith("databases/demo1_shop.sql.gz") for n in names)
     assert any(n.endswith("mail/demo1.example.tar.gz") for n in names)
+    assert {c["path"] for c in manifest["components"]} == {
+        "home.tar.gz", "databases/demo1_shop.sql.gz", "mail/demo1.example.tar.gz"
+    }
+    assert all(len(c["sha256"]) == 64 and c["size_bytes"] > 0 for c in manifest["components"])
 
 
 def test_build_file_backup_rejects_path_traversal(isolated_db, fake_home, fake_staging):

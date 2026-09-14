@@ -1054,11 +1054,14 @@ class CpanelImportJob(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(16), index=True)
+    panel: Mapped[str] = mapped_column(String(16), default="cpanel")  # cpanel | directadmin
     source: Mapped[str] = mapped_column(String(8))  # upload | url
     source_ref: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
     progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
     results: Mapped[list] = mapped_column(JSON, default=list)  # [{item, status: ok|failed|skipped, detail}]
+    # Newly generated account credential, cleared immediately after one job-detail read.
+    initial_password: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -2068,3 +2071,22 @@ class ServerIpSettings(Base):
     # primary | random_shared | specific
     default_server_ip_id: Mapped[int | None] = mapped_column(ForeignKey("server_ips.id"), nullable=True)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class AccountArchiveImportJob(Base):
+    """Import of a portable, checksummed Boron account archive."""
+
+    __tablename__ = "account_archive_import_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(16), index=True)
+    source_ref: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    archive_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    components_verified: Mapped[int] = mapped_column(Integer, default=0)
+    # Shown once after a new Linux/panel account is recreated, then cleared.
+    initial_password: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

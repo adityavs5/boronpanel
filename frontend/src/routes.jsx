@@ -60,7 +60,7 @@ const Waf = lazy(() => import('@/pages/admin/Waf'))
 const SlowQueries = lazy(() => import('@/pages/admin/SlowQueries'))
 const Webhooks = lazy(() => import('@/pages/admin/Webhooks'))
 const NotificationSettings = lazy(() => import('@/pages/admin/NotificationSettings'))
-const CpanelImport = lazy(() => import('@/pages/admin/CpanelImport'))
+const AccountImports = lazy(() => import('@/pages/admin/CpanelImport'))
 const ApiTokens = lazy(() => import('@/pages/admin/ApiTokens'))
 const Cloudflare = lazy(() => import('@/pages/admin/Cloudflare'))
 const WordPressManager = lazy(() => import('@/pages/WordPressManager'))
@@ -170,7 +170,8 @@ export const router = createBrowserRouter(
         { path: 'slow-queries', element: admin(<SlowQueries />) },
         { path: 'webhooks', element: admin(<Webhooks />) },
         { path: 'notifications', element: admin(<NotificationSettings />) },
-        { path: 'import/cpanel', element: admin(<CpanelImport />) },
+        { path: 'import/accounts', element: admin(<AccountImports />) },
+        { path: 'import/cpanel', element: <Navigate to="/import/accounts" replace /> },
         { path: 'tokens', element: admin(<ApiTokens />) },
         { path: 'wordpress', element: <WordPressManager /> },
         { path: 'updates', element: admin(<Updates />) },

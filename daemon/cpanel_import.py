@@ -43,6 +43,7 @@ from __future__ import annotations
 
 from daemon.database_operations import serialized_worker
 import logging
+import gzip
 import os
 import pwd
 import re
@@ -62,7 +63,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, CpanelImportJob, Domain, utcnow
+from shared.models import Account, CpanelImportJob, Domain, PanelUser, utcnow
 from shared.validation import (
     ValidationError,
     generate_strong_password,
@@ -72,7 +73,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import audit, handlers_account, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, mariadb, ols, webhooks
+from daemon import audit, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, mariadb, ols, webhooks
 from daemon.backup import _write_mysql_defaults_file
 from daemon.procutil import run
 from daemon.wordpress import _php_str
@@ -95,6 +96,7 @@ def _job_to_dict(job: CpanelImportJob, *, include_source_ref: bool = False) -> d
     d = {
         "id": job.id,
         "username": job.username,
+        "panel": job.panel,
         "source": job.source,
         "status": job.status,
         "progress_message": job.progress_message,
@@ -150,6 +152,9 @@ class _Skip(Exception):
 
 def trigger_import(params: dict) -> dict:
     username = validate_username(params["username"])
+    panel = str(params.get("panel") or "cpanel").lower()
+    if panel not in ("cpanel", "directadmin"):
+        raise ValidationError("panel must be 'cpanel' or 'directadmin'")
     source = params.get("source", "upload")
     if source not in ("upload", "url"):
         raise ValidationError("source must be 'upload' or 'url'")
@@ -163,6 +168,8 @@ def trigger_import(params: dict) -> dict:
                 f"account '{username}' already exists -- cPanel import only creates a brand-new account, "
                 "it does not merge into an existing one"
             )
+        if session.scalar(select(PanelUser).where(PanelUser.username == username)) is not None:
+            raise CpanelImportError(f"panel login '{username}' already exists -- choose another account username")
         existing_active = session.scalar(
             select(CpanelImportJob).where(
                 CpanelImportJob.username == username, CpanelImportJob.status.in_(("pending", "running"))
@@ -171,13 +178,13 @@ def trigger_import(params: dict) -> dict:
         if existing_active is not None:
             raise CpanelImportError(f"an import for '{username}' is already in progress (job {existing_active.id})")
 
-        job = CpanelImportJob(username=username, source=source, source_ref=source_ref, status="pending", progress_message="queued")
+        job = CpanelImportJob(username=username, panel=panel, source=source, source_ref=source_ref, status="pending", progress_message="queued")
         session.add(job)
         session.flush()
         job_id = job.id
         result = _job_to_dict(job)
 
-    _executor.submit(_run_import_job, job_id, dict(params, source=source, source_ref=source_ref))
+    _executor.submit(_run_import_job, job_id, dict(params, panel=panel, source=source, source_ref=source_ref))
     return result
 
 
@@ -192,7 +199,11 @@ def get_job(params: dict) -> dict:
         job = session.get(CpanelImportJob, job_id)
         if job is None or job.username != username:
             raise CpanelImportError(f"cPanel import job {job_id} not found")
-        return _job_to_dict(job)
+        result = _job_to_dict(job)
+        if job.initial_password:
+            result["initial_password"] = job.initial_password
+            job.initial_password = None
+        return result
 
 
 def list_jobs(params: dict | None = None) -> dict:
@@ -840,6 +851,173 @@ def _parse_cron(root: Path, old_username: str | None) -> list[tuple[str, str]]:
     return jobs
 
 
+# --- DirectAdmin archive adapter ---------------------------------------------
+
+def _directadmin_content_root(extract_dir: Path) -> Path:
+    """Locate a DirectAdmin user-backup root, wrapped or unwrapped."""
+    markers = ("backup", "domains", "imap")
+    if any((extract_dir / marker).exists() for marker in markers):
+        return extract_dir
+    children = [path for path in extract_dir.iterdir() if path.is_dir()]
+    if len(children) == 1 and any((children[0] / marker).exists() for marker in markers):
+        return children[0]
+    raise CpanelImportError("archive does not contain a recognizable DirectAdmin user backup")
+
+
+def _directadmin_kv(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for raw in path.read_text(errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip().lower()] = value.strip()
+    return values
+
+
+def _copy_tree_contents(source: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    for item in source.iterdir():
+        target = destination / item.name
+        if item.is_dir():
+            shutil.copytree(item, target, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, target)
+
+
+def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path:
+    """Translate DirectAdmin's portable user archive into our import model.
+
+    The normalized directory is private staging data. It lets the mature
+    per-item importer below handle both panels consistently, including
+    database renaming, WordPress wp-config rewrites, permissions, DNS, SSL,
+    mailbox recreation, and the partial-success report.
+    """
+    source = _directadmin_content_root(extract_dir)
+    metadata = _directadmin_kv(source / "backup" / "user.conf")
+    old_username = metadata.get("username") or metadata.get("user")
+
+    listed_domains: list[str] = []
+    domains_list = source / "backup" / "domains.list"
+    if domains_list.is_file():
+        listed_domains.extend(line.strip() for line in domains_list.read_text(errors="replace").splitlines())
+    domains_dir = source / "domains"
+    if domains_dir.is_dir():
+        listed_domains.extend(path.name for path in domains_dir.iterdir() if path.is_dir())
+    valid_domains: list[str] = []
+    for candidate in [metadata.get("domain"), *listed_domains]:
+        try:
+            clean = validate_domain(candidate) if candidate else None
+        except ValidationError:
+            continue
+        if clean and clean not in valid_domains:
+            valid_domains.append(clean)
+    if not valid_domains:
+        raise CpanelImportError("DirectAdmin backup contains no valid domains")
+    primary = valid_domains[0]
+
+    homedir = destination / "homedir"
+    userdata = destination / "userdata"
+    homedir.mkdir(parents=True)
+    userdata.mkdir(parents=True)
+    (userdata / "main.yaml").write_text(yaml.safe_dump({
+        "main_domain": primary,
+        "addon_domains": {domain: {} for domain in valid_domains[1:]},
+    }))
+    (destination / f"{old_username or 'directadmin'}.yaml").write_text(yaml.safe_dump({
+        "USER": old_username or "directadmin",
+        "DOMAIN": primary,
+        "EMAIL": metadata.get("email", ""),
+    }))
+
+    for domain in valid_domains:
+        public_html = domains_dir / domain / "public_html"
+        if not public_html.is_dir():
+            continue
+        if domain == primary:
+            normalized_docroot = homedir / "public_html"
+            recorded_docroot = f"/home/{old_username or 'directadmin'}/public_html"
+        else:
+            normalized_docroot = homedir / "domains" / domain / "public_html"
+            recorded_docroot = f"/home/{old_username or 'directadmin'}/domains/{domain}/public_html"
+        _copy_tree_contents(public_html, normalized_docroot)
+        (userdata / f"{domain}.yaml").write_text(yaml.safe_dump({"documentroot": recorded_docroot}))
+
+    mysql_dir = destination / "mysql"
+    mysql_dir.mkdir()
+    for dump in sorted((source / "backup").glob("*.sql*")):
+        if dump.name.endswith(".sql"):
+            shutil.copy2(dump, mysql_dir / dump.name)
+        elif dump.name.endswith((".sql.gz", ".sql.tgz")):
+            target = mysql_dir / dump.name.removesuffix(".gz").removesuffix(".tgz")
+            try:
+                with gzip.open(dump, "rb") as compressed, target.open("wb") as output:
+                    shutil.copyfileobj(compressed, output)
+            except OSError as exc:
+                raise CpanelImportError(f"could not decompress DirectAdmin database dump {dump.name}: {exc}") from exc
+
+    dns_dir = destination / "dnszones"
+    dns_dir.mkdir()
+    for domain in valid_domains:
+        candidates = [
+            source / "backup" / f"{domain}.db",
+            source / "backup" / "dns" / f"{domain}.db",
+            source / "backup" / "domains" / f"{domain}.db",
+        ]
+        zone = next((path for path in candidates if path.is_file()), None)
+        if zone:
+            shutil.copy2(zone, dns_dir / f"{domain}.db")
+
+    ssl_certs = destination / "ssl" / "certs"
+    ssl_keys = destination / "ssl" / "keys"
+    ssl_certs.mkdir(parents=True)
+    ssl_keys.mkdir(parents=True)
+    for domain in valid_domains:
+        domain_base = domains_dir / domain
+        cert_candidates = [domain_base / "cert.pem", domain_base / "certificate.pem", source / "backup" / f"{domain}.cert"]
+        key_candidates = [domain_base / "key.pem", domain_base / "private.key", source / "backup" / f"{domain}.key"]
+        cert = next((path for path in cert_candidates if path.is_file()), None)
+        key = next((path for path in key_candidates if path.is_file()), None)
+        if cert and key:
+            shutil.copy2(cert, ssl_certs / f"{domain}.crt")
+            shutil.copy2(key, ssl_keys / f"{domain}.key")
+
+    imap = source / "imap"
+    if imap.is_dir():
+        for domain in valid_domains:
+            domain_source = imap / domain
+            if not domain_source.is_dir():
+                continue
+            for mailbox in domain_source.iterdir():
+                if not mailbox.is_dir():
+                    continue
+                maildir = mailbox / "Maildir" if (mailbox / "Maildir").is_dir() else mailbox
+                if any((maildir / folder).is_dir() for folder in ("cur", "new", "tmp")):
+                    _copy_tree_contents(maildir, homedir / "mail" / domain / mailbox.name)
+
+    cron_source = next((path for path in (
+        source / "backup" / "cron.conf",
+        source / "backup" / "crontab.conf",
+        source / "backup" / "cron",
+    ) if path.is_file()), None)
+    if cron_source:
+        cron_dir = destination / "cron"
+        cron_dir.mkdir()
+        shutil.copy2(cron_source, cron_dir / (old_username or "directadmin"))
+
+    ftp_source = next((path for path in (
+        source / "backup" / "ftp.passwd",
+        source / "backup" / "ftp.conf",
+    ) if path.is_file()), None)
+    if ftp_source:
+        ftp_target = homedir / "etc" / primary
+        ftp_target.mkdir(parents=True)
+        shutil.copy2(ftp_source, ftp_target / "passwd")
+    return destination
+
+
 # --- orchestration --------------------------------------------------------------
 
 
@@ -917,6 +1095,7 @@ def _add_cron_step(username: str, schedule: str, command: str) -> str:
 
 def _run_import_job(job_id: int, params: dict) -> None:
     username = params["username"]
+    panel = params.get("panel", "cpanel")
     source = params["source"]
     source_ref = params["source_ref"]
 
@@ -942,7 +1121,12 @@ def _run_import_job(job_id: int, params: dict) -> None:
             extract_dir = work_dir / "extracted"
             extract_dir.mkdir()
             _extract_archive(archive_path, extract_dir)
-            root = _find_content_root(extract_dir)
+            if panel == "directadmin":
+                normalized = work_dir / "normalized"
+                normalized.mkdir()
+                root = _normalize_directadmin_archive(extract_dir, normalized)
+            else:
+                root = _find_content_root(extract_dir)
             info = _parse_account_info(root)
         except Exception as exc:  # noqa: BLE001 - fatal: nothing else in this job is possible without a readable archive
             logger.exception("cpanel import job %d: failed to fetch/extract archive", job_id)
@@ -966,8 +1150,17 @@ def _run_import_job(job_id: int, params: dict) -> None:
         _update_job(job_id, progress_message="creating account")
         account_password = generate_strong_password()
         try:
-            handlers_account.create_account({"username": username, "password": account_password, "primary_domain": primary_domain})
-            audit.record_account_event("created", username, actor="system", role="system", detail="cPanel import")
+            created_account = handlers_account.create_account({"username": username, "password": account_password, "primary_domain": primary_domain})
+            handlers_auth.create_panel_user({
+                "username": username,
+                "password": account_password,
+                "role": "customer",
+                "account_id": created_account["id"],
+            })
+            audit.record_account_event(
+                "created", username, actor="system", role="system",
+                detail=f"{'DirectAdmin' if panel == 'directadmin' else 'cPanel'} import",
+            )
             _append_result(
                 job_id, "account", "ok",
                 f"created account '{username}'" + (f" (source domain hint: {info.get('main_domain')})" if info.get("main_domain") else ""),
@@ -1054,7 +1247,13 @@ def _run_import_job(job_id: int, params: dict) -> None:
             _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
             return
 
-        _update_job(job_id, status="completed", progress_message="completed", completed_at=utcnow())
+        _update_job(
+            job_id,
+            status="completed",
+            progress_message="completed",
+            initial_password=account_password,
+            completed_at=utcnow(),
+        )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
