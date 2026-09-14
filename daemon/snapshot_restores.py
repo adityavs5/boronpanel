@@ -233,9 +233,22 @@ def trigger(params):
     if account.status!='active':raise ValidationError('Reactivate the account before restoring its data')
     if params.get('confirmation')!=account.username:raise ValidationError('Type the account username to confirm this restore')
     kind=safety.selection['kind'] if safety else params.get('kind','files')
-    if kind not in ('files','databases'):raise ValidationError('Unsupported snapshot restore type')
+    if kind not in ('files','databases','mail'):raise ValidationError('Unsupported snapshot restore type')
     paths=[] if safety else _paths(params.get('paths',[]))
     databases=[]
+    mailboxes=[]
+    if kind=='mail':
+        if safety:
+            raise ValidationError('Previous mailbox-version recovery is not available yet; the safety copy is retained')
+        if params.get('mail_pause_acknowledged') is not True:
+            raise ValidationError('Confirm the brief mail-service interruption before restoring mailboxes')
+        from daemon.snapshot_mail_guard_config import verify
+        verify()
+        mailboxes=jobs._strings(params.get('mailboxes',[]),'mailbox selection',limit=1000)
+        options={item['address']:item for item in mailbox_options({'username':account.username,'run_id':source.id})['mailboxes']}
+        if not mailboxes or any(address not in options or not options[address]['available'] for address in mailboxes):
+            raise ValidationError('Selected mailbox is not available for this account and recovery point')
+        mailboxes=sorted(mailboxes)
     if kind=='databases':
         if safety:
             databases=_owned_databases(account,safety.summary.get('safety_databases',safety.selection.get('databases',[])))
@@ -252,6 +265,7 @@ def trigger(params):
                 raise ValidationError('A backup or restore is already in progress for this account')
         selection={'kind':kind,'paths':paths}
         if databases:selection['databases']=databases
+        if mailboxes:selection['mailboxes']=mailboxes
         if safety:selection['source_snapshot_id']=safety.safety_snapshot_id
         row=SnapshotRestore(run_id=source.id,account_id=account.id,selection=selection,status='pending')
         session.add(row);session.flush();result=_serialize(row)

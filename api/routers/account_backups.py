@@ -65,6 +65,8 @@ class SnapshotRestoreBody(BaseModel):
     kind: str = 'files'
     paths: list[str] = []
     databases: list[str] = []
+    mailboxes: list[str] = []
+    mail_pause_acknowledged: bool = False
 
 
 @api_router.post('/snapshots/runs/{run_id}/restore')

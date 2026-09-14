@@ -1,4 +1,5 @@
 import { SnapshotFileRestore, SnapshotDatabaseRestore, SnapshotRestoreHistory } from './SnapshotRestore'
+import { SnapshotMailRestore } from './SnapshotMailRestore'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Archive, ArrowUp, Folder, File, RefreshCw } from 'lucide-react'
@@ -33,6 +34,7 @@ function RunDialog({ run, username, onClose }) {
     </div>}
     <SnapshotFileRestore username={username} run={run} paths={restorePaths} onPathsChange={setRestorePaths}/>
     <SnapshotDatabaseRestore username={username} run={run}/>
+    <SnapshotMailRestore username={username} run={run}/>
     <SnapshotRestoreHistory username={username}/>
   </DialogBody><DialogFooter><Button variant="secondary" onClick={onClose}>Done</Button></DialogFooter></DialogContent></Dialog>
 }

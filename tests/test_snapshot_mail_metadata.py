@@ -297,6 +297,14 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
     safety_mail = storage.restore_to(repo, account.id, result['safety_snapshot_id'], str(work / 'workflow-safety'))
     old_messages = list(safety_mail.rglob('proof:2,S'))
     assert len(old_messages) == 1 and old_messages[0].read_bytes() == b'mail received after recovery point'
+    request = dict(username='alpha', run_id=run.id, confirmation='alpha', kind='mail',
+                   mailboxes=['inbox@alpha.example.test'])
+    with pytest.raises(ValidationError, match='interruption'):
+        restores.trigger(request)
+    with pytest.raises(ValidationError, match='not available'):
+        restores.trigger(dict(request, mail_pause_acknowledged=True, mailboxes=['foreign@bravo.example.test']))
+    queued = restores.trigger(dict(request, mail_pause_acknowledged=True))
+    assert queued['status'] == 'pending' and queued['selection']['mailboxes'] == request['mailboxes']
     with connection.cursor() as cursor:
         cursor.execute("DELETE u FROM mail_user u JOIN mail_domain d ON u.domain_id=d.id WHERE d.domain='alpha.example.test'")
     assert restores.mailbox_options({'username': 'alpha', 'run_id': run_id})['mailboxes'][0]['action'] == 'recreate'

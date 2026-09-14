@@ -1211,3 +1211,22 @@ dispatcher/rollback cases passed across the runs, including real systemd partial
 undo continuation, idempotent completion, guard release and original message
 preservation. Customer submission and broader recovery/deployment verification
 remain outstanding.
+
+Customer mailbox restore submission is now implemented in the development tree.
+The account-scoped API requires an explicit mail-interruption acknowledgement,
+typed account confirmation, a working production mail guard and a nonempty
+selection from the owned mailbox catalog. The form supports case-insensitive
+mailbox search, selection of visible results, unavailable ownership explanations
+and existing-versus-recreated mailbox labels. Both themes use their native form
+styles and require acknowledgement before enabling submission. Mail restore
+history identifies mailbox operations and retained previous-mail copies; user
+undo from those copies is not implemented and the API rejects that request.
+
+Validation: two backend integration/API cases passed, including foreign-account
+access rejection, acknowledgement validation and real isolated encrypted mailbox
+restore. Four browser cases passed across Evolution/Paper Lantern light/dark,
+covering selection, search, unavailable mailboxes, confirmation, exact queued
+payload and mobile overflow. The frontend production build passed; the mobile
+Paper Lantern dark screenshot was visually inspected. This is not deployed to the
+live panel. Recovery scheduling, previous-mail-copy undo and broader deployment
+verification remain outstanding.
