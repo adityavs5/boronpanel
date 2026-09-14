@@ -388,13 +388,34 @@ def unsuspend_account(params: dict) -> dict:
 
 
 def terminate_account(params: dict) -> dict:
-    username = validate_username(params["username"])
+    from daemon import snapshot_jobs as jobs
+    username = validate_username(params['username'])
     with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found")
+        account_id = account.id
+    try:
+        with jobs.lock(f'account-{account_id}', blocking=False):
+            return _terminate_account(params)
+    except BlockingIOError:
+        raise ValidationError('A backup or restore is using this account. Wait for it to finish before termination.') from None
+
+
+def _terminate_account(params: dict) -> dict:
+    from daemon import snapshot_jobs as jobs
+    from shared.models import BackupJob, RestoreJob, SnapshotRun, SnapshotRestore
+    username = validate_username(params["username"])
+    with jobs.lock('queue'), write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise RuntimeError(f"account '{username}' not found")
         if account.status == "terminated":
             return _account_to_dict(account)
+        for model in (BackupJob, RestoreJob, SnapshotRun, SnapshotRestore):
+            if session.scalar(select(model.id).where(model.account_id == account.id,
+                                                     model.status.in_(jobs.ACTIVE))):
+                raise ValidationError('A backup or restore is pending for this account. Complete its recovery before termination.')
         account.status = "terminating"
         session.flush()
         account_snapshot = _account_to_dict(account)

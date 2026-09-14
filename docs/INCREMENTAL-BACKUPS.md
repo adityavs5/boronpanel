@@ -1316,3 +1316,21 @@ supervision only for isolated Maildirs. Live deployment and broader lifecycle,
 retention/cleanup and initial-goal verification remain outstanding.
 Eight existing file/database browser restore-and-undo cases also passed across
 both themes and color modes after the shared confirmation-dialog change.
+
+Account termination now refuses to start while the account has a pending/running
+legacy backup, legacy restore, snapshot backup or snapshot restore. Interrupted
+mailbox recovery remains running and is therefore protected from destructive
+teardown. The account worker lock is acquired nonblocking before this check and
+held through termination, while the shared queue lock protects the short job
+check/status transition. No teardown hook, quota removal or Linux-user deletion
+runs when these checks refuse termination. Snapshot restore submission also
+rechecks current account status under the queue lock to reject a request whose
+account began terminating during preparation.
+
+Validation: 54 account-handler tests passed, including each of the four job types
+in pending/running state, unchanged account/resources when refused, successful
+termination after completion, and live account-lock contention. Two real isolated
+file-restore cases passed: normal restore/undo and a termination race between
+request preparation and queue insertion. Legacy backup/restore submission already
+uses the same queue lock around account lookup. Live deployment and retained-mail
+artifact lifecycle verification remain pending.

@@ -292,6 +292,9 @@ def trigger(params):
             databases=sorted(set(databases))
     if kind not in source.options['components']:raise ValidationError('This recovery point does not contain '+kind)
     with jobs.lock('queue'),write_session() as session:
+        current=session.get(Account,account.id)
+        if current is None or current.status!='active':
+            raise ValidationError('Reactivate the account before restoring its data')
         for model in (SnapshotRestore,SnapshotRun,BackupJob,RestoreJob):
             if session.scalar(select(model.id).where(model.account_id==account.id,model.status.in_(jobs.ACTIVE))):
                 raise ValidationError('A backup or restore is already in progress for this account')

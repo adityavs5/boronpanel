@@ -510,3 +510,48 @@ def test_reactivate_account_rejects_weak_password_before_creating_linux_user(iso
     with pytest.raises(ValidationError):
         ha.reactivate_account({"username": "demo1", "password": "weak"})
     assert not any(c[0] == "create_linux_user" for c in stub_sysops[calls_before:])
+
+
+@pytest.mark.parametrize('model_name', ['BackupJob', 'RestoreJob', 'SnapshotRun', 'SnapshotRestore'])
+@pytest.mark.parametrize('status', ['pending', 'running'])
+def test_termination_retains_resources_during_backup_recovery(isolated_db, stub_sysops, model_name, status):
+    from shared import models
+    ha.create_account({'username': 'demo1'})
+    with write_session() as session:
+        account = session.scalar(select(models.Account).where(models.Account.username == 'demo1'))
+        destination = models.BackupDestination(name='local', kind='local', local_path='/tmp/fixture')
+        snapshot_destination = models.SnapshotDestination(name='snapshots', kind='local', path='/tmp/fixture', namespace='fixture')
+        session.add_all([destination, snapshot_destination]); session.flush()
+        policy = models.SnapshotPolicy(name='test', destination_id=snapshot_destination.id)
+        backup = models.BackupJob(account_id=account.id, destination_id=destination.id, kind='full', status='completed')
+        session.add_all([policy, backup]); session.flush()
+        run = models.SnapshotRun(account_id=account.id, destination_id=snapshot_destination.id, policy_id=policy.id, status='completed')
+        session.add(run); session.flush()
+        restore = models.RestoreJob(account_id=account.id, backup_job_id=backup.id, kind='full', status='completed')
+        snapshot_restore = models.SnapshotRestore(account_id=account.id, run_id=run.id, selection={'kind':'mail'}, status='completed')
+        session.add_all([restore, snapshot_restore]); session.flush()
+        rows = {type(row).__name__: row for row in (backup, restore, run, snapshot_restore)}
+        target = rows[model_name]
+        target.status = status
+        ident = target.id
+    with pytest.raises(ValidationError, match='recovery before termination'):
+        ha.terminate_account({'username': 'demo1'})
+    assert ('delete_linux_user', 'demo1') not in stub_sysops
+    assert ('remove_quota', 'demo1') not in stub_sysops
+    with write_session() as session:
+        assert session.scalar(select(models.Account).where(models.Account.username == 'demo1')).status == 'active'
+        session.get(getattr(models, model_name), ident).status = 'completed'
+    assert ha.terminate_account({'username': 'demo1'})['status'] == 'terminated'
+
+
+def test_termination_waits_for_live_account_worker(isolated_db, stub_sysops):
+    from daemon import snapshot_jobs as jobs
+    from shared.models import Account
+    ha.create_account({'username': 'demo1'})
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == 'demo1'))
+    with jobs.lock(f'account-{account.id}'):
+        with pytest.raises(ValidationError, match='using this account'):
+            ha.terminate_account({'username': 'demo1'})
+    assert ('delete_linux_user', 'demo1') not in stub_sysops
+    assert ha.terminate_account({'username': 'demo1'})['status'] == 'terminated'

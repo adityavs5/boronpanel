@@ -209,3 +209,19 @@ def test_safety_retention_failure_keeps_metadata_and_retries_missing_snapshot(en
     assert restores.apply_safety_retention(repo, rows[0].account_id, dest['id'], policy['id'], 1) == 1
     assert jobs._row(SnapshotRestore, rows[0].id).safety_snapshot_id is None
     assert jobs._row(SnapshotRestore, rows[1].id).safety_snapshot_id
+
+
+def test_restore_queue_rechecks_account_after_request_preparation(environment, monkeypatch):
+    root, home, ident, _, _ = environment
+    original = restores._paths
+    def terminate_during_preparation(paths):
+        validated = original(paths)
+        with write_session() as session:
+            session.scalar(select(Account).where(Account.username == 'alpha')).status = 'terminating'
+        return validated
+    monkeypatch.setattr(restores, '_paths', terminate_during_preparation)
+    with pytest.raises(Exception, match='Reactivate the account'):
+        restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','paths':['site.txt']})
+    with write_session() as session:
+        assert not session.scalars(select(SnapshotRestore)).all()
+    assert (home/'site.txt').read_text() == 'original'
