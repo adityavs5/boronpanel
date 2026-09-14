@@ -2,23 +2,20 @@ import { adminNav, customerNav } from './nav'
 
 const customerGroups = {
   evolution: [
-    ['Account Manager', ['/domains', '/dns', '/ssl', '/databases', '/ftp', '/change-password']],
-    ['E-mail Manager', ['/email']],
-    ['WordPress & Websites', ['/wordpress', '/node-apps', '/python-apps']],
-    ['Advanced Features', [ '/php', '/redis', '/cron', '/git', '/ssh', '/devtools']],
-    ['System Info & Files', ['/files', '/backups', '/disk-usage', '/processes', '/logs', '/terminal']],
-    ['Account & Preferences', ['/security', '/appearance']],
+    ['Account Manager', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns']],
+    ['E-mail Manager', ['/email', '/email/settings', '/email/dns']],
+    ['WordPress', ['/wordpress']],
+    ['Backups', ['/backups']],
+    ['Applications & Advanced', ['/node-apps', '/python-apps', '/terminal', '/redis']],
+    ['Other Tools', ['/files', '/php', '/cron', '/git', '/ssh', '/disk-usage', '/logs', '/devtools', '/change-password', '/security', '/processes', '/appearance']],
   ],
   'paper-lantern': [
-    ['Files', ['/files', '/disk-usage', '/ftp', '/backups', '/git']],
-    ['Databases', ['/databases', '/redis']],
-    ['Domains', ['/domains', '/dns']],
-    ['Email', ['/email']],
-    ['Metrics', ['/logs', '/processes']],
-    ['Security', ['/ssl', '/ssh', '/security']],
-    ['Software', ['/wordpress', '/node-apps', '/python-apps', '/php', '/devtools']],
-    ['Advanced', ['/cron', '/terminal']],
-    ['Preferences', ['/change-password', '/appearance']],
+    ['Domains', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns']],
+    ['Email', ['/email', '/email/settings', '/email/dns']],
+    ['WordPress', ['/wordpress']],
+    ['Backups', ['/backups']],
+    ['Software', ['/node-apps', '/python-apps', '/terminal', '/redis']],
+    ['Advanced', ['/files', '/php', '/cron', '/git', '/ssh', '/disk-usage', '/logs', '/devtools', '/change-password', '/security', '/processes', '/appearance']],
   ],
 }
 const adminGroups = {
@@ -44,6 +41,7 @@ const adminGroups = {
 }
 const labels = {
   '/files': 'File Manager', '/email': 'Email Accounts', '/ftp': 'FTP Accounts',
+  '/email/settings': 'Email Settings', '/email/dns': 'Email DNS Records', '/subdomains': 'Subdomains',
   '/ssl': 'SSL Certificates', '/dns': 'DNS Management', '/php': 'PHP Settings',
   '/git': 'Git Version Control', '/apps': 'Applications', '/node-apps': 'Node.js App', '/python-apps': 'Python App', '/redis': 'Redis',
   '/accounts': 'Manage Accounts', '/health': 'Server Information', '/services': 'Service Monitor',

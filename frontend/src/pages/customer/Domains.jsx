@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Globe, Plus, Trash2, Settings, MoreHorizontal, Copy } from 'lucide-react'
@@ -38,6 +38,10 @@ function ParkedDomainsCard({ username, domains }) {
     queryFn: () => get(base),
     enabled: !!username,
   })
+
+  useEffect(() => {
+    if (kind === 'subdomain' && !parent && data?.domains?.length) setParent(data.domains[0].domain)
+  }, [data?.domains, kind, parent])
   const invalidate = () => qc.invalidateQueries({ queryKey: ['parked-domains', username] })
 
   const addMut = useMutation({
@@ -126,13 +130,13 @@ function ParkedDomainsCard({ username, domains }) {
   )
 }
 
-export default function Domains() {
+export default function Domains({ subdomainsOnly = false }) {
   const username = useAccountUsername()
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [createOpen, setCreateOpen] = useState(false)
   const [domain, setDomain] = useState('')
-  const [kind,setKind]=useState('addon')
+  const [kind,setKind]=useState(subdomainsOnly ? 'subdomain' : 'addon')
   const [parent,setParent]=useState('')
   const [toDelete, setToDelete] = useState(null)
 
@@ -227,17 +231,19 @@ export default function Domains() {
     },
   ]
 
+  const visibleDomains = subdomainsOnly ? (data?.domains || []).filter((item) => item.kind === 'subdomain') : data?.domains
+
   return (
     <div>
-      <PageHeader title="Domains" description="Domains, addon domains, and subdomains on your account." icon={Globe}>
+      <PageHeader title={subdomainsOnly ? 'Subdomains' : 'Domains'} description={subdomainsOnly ? 'Independent subdomain sites with their own public_html folders.' : 'Primary, addon, and parked domains on your account.'} icon={Globe}>
         <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="h-4 w-4" /> Add domain
+          <Plus className="h-4 w-4" /> {subdomainsOnly ? 'Add subdomain' : 'Add domain'}
         </Button>
       </PageHeader>
 
       <DataTable
         columns={columns}
-        data={data?.domains}
+        data={visibleDomains}
         loading={isLoading}
         error={error}
         onRetry={refetch}
@@ -247,18 +253,18 @@ export default function Domains() {
         initialSort={{ key: 'domain', dir: 'asc' }}
         getRowKey={(r) => r.id ?? r.domain}
         onRowClick={(r) => navigate(`/domains/${r.domain}`)}
-        emptyTitle="No domains yet"
-        emptyDescription="Add an addon domain or subdomain to start hosting more sites."
+        emptyTitle={subdomainsOnly ? 'No subdomains yet' : 'No domains yet'}
+        emptyDescription={subdomainsOnly ? 'Create a subdomain with its own site root and DNS address.' : 'Add a domain to start hosting another site.'}
         emptyIcon={Globe}
         emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Add domain</Button>}
       />
 
-      <ParkedDomainsCard username={username} domains={data?.domains} />
+      {!subdomainsOnly && <ParkedDomainsCard username={username} domains={data?.domains} />}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent size="sm">
           <DialogHeader>
-            <DialogTitle>Add domain</DialogTitle>
+            <DialogTitle>{subdomainsOnly ? 'Add subdomain' : 'Add domain'}</DialogTitle>
           </DialogHeader>
           <form
             onSubmit={(e) => {
@@ -267,7 +273,7 @@ export default function Domains() {
             }}
           >
             <DialogBody className="space-y-4">
-              <FormField label="Site type" htmlFor="domain-kind"><Select id="domain-kind" value={kind} onChange={e=>{setKind(e.target.value);setDomain('');setParent(data?.domains?.[0]?.domain||'')}}><option value="addon">Domain</option><option value="subdomain" disabled={!data?.domains?.length}>Subdomain</option></Select></FormField>
+              {!subdomainsOnly && <FormField label="Site type" htmlFor="domain-kind"><Select id="domain-kind" value={kind} onChange={e=>{setKind(e.target.value);setDomain('');setParent(data?.domains?.[0]?.domain||'')}}><option value="addon">Domain</option><option value="subdomain" disabled={!data?.domains?.length}>Subdomain</option></Select></FormField>}
               {kind==='subdomain'&&<FormField label="Parent domain" htmlFor="subdomain-parent"><Select id="subdomain-parent" value={parent} onChange={e=>setParent(e.target.value)}>{(data?.domains||[]).map(d=><option key={d.domain} value={d.domain}>{d.domain}</option>)}</Select></FormField>}
               <FormField label={kind==='subdomain'?'Subdomain name':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter a name such as blog or shop.':'Enter a complete domain name.'}>
                 <Input

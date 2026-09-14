@@ -111,9 +111,12 @@ export const router = createBrowserRouter(
         // Customer resource pages (scoped to the signed-in account).
         { path: 'dashboard', element: customer(<Dashboard />) },
         { path: 'domains', element: customer(<Domains />) },
+        { path: 'subdomains', element: customer(<Domains subdomainsOnly />) },
         { path: 'domains/:domain', element: customer(<DomainDetail />) },
         { path: 'php', element: customer(<Php />) },
         { path: 'email', element: customer(<Email />) },
+        { path: 'email/settings', element: customer(<Email defaultTab="forwarders" />) },
+        { path: 'email/dns', element: customer(<Dns emailOnly />) },
         { path: 'databases', element: customer(<Databases />) },
         { path: 'files', element: customer(<Files />) },
         { path: 'backups', element: customer(<Backups />) },

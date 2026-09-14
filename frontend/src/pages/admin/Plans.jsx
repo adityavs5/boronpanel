@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
+import { Select } from '@/components/ui/Select'
 import { Switch } from '@/components/ui/Toggle'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter,
@@ -19,6 +20,27 @@ const EMPTY_FORM = {
   bandwidth_limit_mb: '', database_limit: '', email_account_limit: '', subdomain_limit: '',
   ftp_account_limit: '', app_limit: '', redis_enabled: false,
 }
+
+export const PLAN_PRESETS = {
+  starter: {
+    label: 'Starter', description: 'Small brochure sites and light email use.',
+    values: { name: 'Starter', cpu_pct: 25, mem_mb: 512, io_mb: 25, pids_max: 50, quota_soft_mb: 2048, quota_hard_mb: 3072, bandwidth_limit_mb: 25600, database_limit: 2, email_account_limit: 5, subdomain_limit: 5, ftp_account_limit: 2, app_limit: 1, redis_enabled: false },
+  },
+  wordpress: {
+    label: 'WordPress', description: 'A practical default for managed WordPress sites.',
+    values: { name: 'WordPress', cpu_pct: 50, mem_mb: 1024, io_mb: 50, pids_max: 100, quota_soft_mb: 10240, quota_hard_mb: 12288, bandwidth_limit_mb: 102400, database_limit: 10, email_account_limit: 25, subdomain_limit: 10, ftp_account_limit: 5, app_limit: 3, redis_enabled: true },
+  },
+  business: {
+    label: 'Business', description: 'More sites, mailboxes and application capacity.',
+    values: { name: 'Business', cpu_pct: 75, mem_mb: 2048, io_mb: 100, pids_max: 200, quota_soft_mb: 25600, quota_hard_mb: 30720, bandwidth_limit_mb: 256000, database_limit: 25, email_account_limit: 100, subdomain_limit: 50, ftp_account_limit: 10, app_limit: 10, redis_enabled: true },
+  },
+  agency: {
+    label: 'Agency', description: 'High-capacity multi-site and application hosting.',
+    values: { name: 'Agency', cpu_pct: 100, mem_mb: 4096, io_mb: 200, pids_max: 300, quota_soft_mb: 51200, quota_hard_mb: 61440, bandwidth_limit_mb: 512000, database_limit: 50, email_account_limit: 250, subdomain_limit: 100, ftp_account_limit: 25, app_limit: 25, redis_enabled: true },
+  },
+}
+
+const presetForm = (id) => ({ ...EMPTY_FORM, ...(PLAN_PRESETS[id]?.values || {}) })
 
 const NUMERIC_FIELDS = ['cpu_pct', 'mem_mb', 'io_mb', 'pids_max', 'quota_soft_mb', 'quota_hard_mb']
 const OPTIONAL_LIMIT_FIELDS = [
@@ -42,9 +64,15 @@ function formFromPlan(plan) {
   return form
 }
 
-function PlanForm({ form, setForm }) {
+function PlanForm({ form, setForm, templateId, onTemplateChange }) {
   return (
     <div className="space-y-4">
+      {onTemplateChange && <FormField label="Starting template" hint={templateId === 'custom' ? 'Keep the current values and configure every limit.' : PLAN_PRESETS[templateId]?.description}>
+        <Select value={templateId} onChange={(event) => onTemplateChange(event.target.value)}>
+          {Object.entries(PLAN_PRESETS).map(([id, preset]) => <option key={id} value={id}>{preset.label}</option>)}
+          <option value="custom">Custom</option>
+        </Select>
+      </FormField>}
       <FormField label="Plan name" required>
         <Input autoFocus value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Basic" required />
       </FormField>
@@ -79,6 +107,7 @@ export default function Plans() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState(null) // plan object | null
   const [form, setForm] = useState(EMPTY_FORM)
+  const [templateId, setTemplateId] = useState('wordpress')
   const [toDelete, setToDelete] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -148,7 +177,7 @@ export default function Plans() {
         description="Named limit presets you can apply to any hosting account -- CPU, RAM, IO, disk, bandwidth, mailbox/database/subdomain/FTP/app caps, and Redis."
         icon={Layers}
       >
-        <Button onClick={() => { setForm(EMPTY_FORM); setCreateOpen(true) }}>
+        <Button onClick={() => { setTemplateId('wordpress'); setForm(presetForm('wordpress')); setCreateOpen(true) }}>
           <Plus className="h-4 w-4" /> New plan
         </Button>
       </PageHeader>
@@ -166,7 +195,7 @@ export default function Plans() {
         emptyTitle="No plans yet"
         emptyDescription="Create a named preset (Basic, Pro, Business…) to apply consistent limits when creating or updating accounts."
         emptyIcon={Layers}
-        emptyAction={<Button onClick={() => { setForm(EMPTY_FORM); setCreateOpen(true) }}><Plus className="h-4 w-4" /> New plan</Button>}
+        emptyAction={<Button onClick={() => { setTemplateId('wordpress'); setForm(presetForm('wordpress')); setCreateOpen(true) }}><Plus className="h-4 w-4" /> New plan</Button>}
       />
 
       {/* Create */}
@@ -174,10 +203,10 @@ export default function Plans() {
         <DialogContent size="lg">
           <DialogHeader>
             <DialogTitle>New plan</DialogTitle>
-            <DialogDescription>Define a named limit preset. It won't affect any existing account until applied.</DialogDescription>
+            <DialogDescription>Start with a ready-to-use package, then adjust any value before saving. It won't affect an account until applied.</DialogDescription>
           </DialogHeader>
           <form onSubmit={(e) => { e.preventDefault(); createMut.mutate(toBody(form)) }}>
-            <DialogBody><PlanForm form={form} setForm={setForm} /></DialogBody>
+            <DialogBody><PlanForm form={form} setForm={setForm} templateId={templateId} onTemplateChange={(id) => { setTemplateId(id); if (id !== 'custom') setForm(presetForm(id)) }} /></DialogBody>
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" loading={createMut.isPending} disabled={!form.name.trim()}>Create plan</Button>

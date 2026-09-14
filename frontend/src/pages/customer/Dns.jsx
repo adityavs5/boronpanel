@@ -18,7 +18,7 @@ import { EmptyState } from '@/components/ui/States'
 const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS']
 const linesToList = (text) => (text || '').split('\n').map((s) => s.trim()).filter(Boolean)
 
-export default function Dns() {
+export default function Dns({ emailOnly = false }) {
   const username = useAccountUsername()
   const qc = useQueryClient()
   const [domain, setDomain] = useState('')
@@ -58,7 +58,7 @@ export default function Dns() {
         ? r.records.map((x) => (typeof x === 'string' ? x : x.content))
         : []
     return { subdomain, type: r.type, ttl: r.ttl, values, _key: `${subdomain}|${r.type}` }
-  })
+  }).filter((row) => !emailOnly || row.type === 'MX' || (row.type === 'TXT' && (row.subdomain === '@' || row.subdomain === '_dmarc' || row.subdomain.includes('._domainkey'))) || ['mail', 'webmail', 'autodiscover', 'autoconfig'].includes(row.subdomain))
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['dns-records', domain] })
 
@@ -109,9 +109,9 @@ export default function Dns() {
 
   return (
     <div>
-      <PageHeader title="DNS" description="Manage the DNS zone records for your domains." icon={Network}>
+      <PageHeader title={emailOnly ? 'Email DNS Records' : 'DNS'} description={emailOnly ? 'Manage MX, SPF, DKIM, DMARC, webmail, and automatic-client records.' : 'Manage the DNS zone records for your domains.'} icon={Network}>
         <Button
-          onClick={() => setDialog({ mode: 'add', subdomain: '@', type: 'A', ttl: '3600', values: '' })}
+          onClick={() => setDialog({ mode: 'add', subdomain: '@', type: emailOnly ? 'MX' : 'A', ttl: '3600', values: '' })}
           disabled={!domain || unmanaged}
         >
           <Plus className="h-4 w-4" /> Add record
@@ -198,7 +198,7 @@ export default function Dns() {
                   <FormField label="Type">
                     <Select value={dialog.type} disabled={isEdit}
                       onChange={(e) => setDialog((d) => ({ ...d, type: e.target.value }))}>
-                      {DNS_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                      {(emailOnly ? ['MX', 'TXT', 'A', 'CNAME'] : DNS_TYPES).map((t) => <option key={t} value={t}>{t}</option>)}
                     </Select>
                   </FormField>
                 </div>

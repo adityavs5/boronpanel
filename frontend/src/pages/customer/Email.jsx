@@ -1004,11 +1004,11 @@ function ProgressBarInline({ value, max }) {
   )
 }
 
-export default function Email() {
+export default function Email({ defaultTab = 'mailboxes' }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const emailTabs = new Set(EMAIL_TABS.map(([value]) => value))
   const requestedTab = searchParams.get('tab')
-  const activeTab = emailTabs.has(requestedTab) ? requestedTab : 'mailboxes'
+  const activeTab = emailTabs.has(requestedTab) ? requestedTab : defaultTab
   const username = useAccountUsername()
   const [domain, setDomain] = useState('')
 
