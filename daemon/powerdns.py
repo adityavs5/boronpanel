@@ -130,3 +130,14 @@ def list_records(zone: str) -> list[dict]:
             }
         )
     return records
+
+
+def apply_rrset_changes(zone: str, rrsets: list[dict]) -> None:
+    """Apply a validated recovery change set in a single zone PATCH request."""
+    if not rrsets:
+        return
+    with _client() as client:
+        response = client.patch(f"/servers/{settings.powerdns_server_id}/zones/{_zone_id(zone)}",
+                                json={'rrsets': rrsets})
+    if response.status_code != 204:
+        raise PowerDnsError(response.status_code, response.text)

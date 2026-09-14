@@ -30,7 +30,7 @@ def _bindings(account):
         return result
 
 
-def capture(account):
+def capture(account, selected_zones=None):
     """Retain native records and reject ownership/provider changes during reads.
 
     This captures data only; it cannot change providers, delegation or records.
@@ -38,6 +38,12 @@ def capture(account):
     only as transport context and are never included in the returned payload.
     """
     bindings = _bindings(account)
+    if selected_zones is not None:
+        if (not isinstance(selected_zones, list) or any(not isinstance(name, str) for name in selected_zones)
+                or len(set(selected_zones)) != len(selected_zones)
+                or not set(selected_zones) <= {binding['zone'] for binding in bindings}):
+            raise ValidationError('Invalid DNS capture zone selection')
+        bindings = [binding for binding in bindings if binding['zone'] in selected_zones]
     zones = []
     for binding in bindings:
         name = binding['zone']
@@ -55,7 +61,10 @@ def capture(account):
             records = data['rrsets']
             provider = 'local'
         zones.append(dict(zone=name, provider=provider, binding=binding, records=deepcopy(records)))
-    if _bindings(account) != bindings:
+    after = _bindings(account)
+    if selected_zones is not None:
+        after = [binding for binding in after if binding['zone'] in selected_zones]
+    if after != bindings:
         raise ValidationError('DNS ownership or provider changed during backup; try again')
     return dict(format=1, account_id=account.id, username=account.username, zones=zones)
 
@@ -164,10 +173,10 @@ def validate_for_restore(account, payload, selected_zones=None):
                         or '\x00' in value['content']):
                     raise ValidationError('Invalid saved DNS record content or disabled flag')
                 try:
-                    dns.rdata.from_text('IN', rtype, value['content'], origin=origin, relativize=False)
+                    parsed = dns.rdata.from_text('IN', rtype, value['content'], origin=origin, relativize=False)
                 except Exception:
                     raise ValidationError('Saved DNS record content is not valid for its type') from None
-                normalized.append(dict(content=value['content'], disabled=value['disabled']))
+                normalized.append(dict(content=parsed.to_text(origin=origin, relativize=False), disabled=value['disabled']))
             comments = rrset.get('comments', [])
             if not isinstance(comments, list):
                 raise ValidationError('Invalid saved DNS comments')
@@ -184,3 +193,57 @@ def validate_for_restore(account, payload, selected_zones=None):
             raise ValidationError('Saved CNAME conflicts with other DNS records')
         zones.append(dict(zone=name, provider=provider, binding=deepcopy(actual), records=records))
     return dict(format=1, account_id=account.id, username=account.username, zones=zones)
+
+
+def _record_state(records):
+    """Compare DNS meaning, including disabled records, TTLs and comments."""
+    import dns.name
+    import dns.rdata
+    result = {}
+    for row in records:
+        values = sorted((dns.rdata.from_text('IN', row['type'], value['content'],
+                         relativize=False).to_digestable().hex(), value['disabled']) for value in row['records'])
+        comments = sorted((comment['content'], comment['account'], comment['modified_at']) for comment in row['comments'])
+        result[(dns.name.from_text(row['name']).canonicalize().to_text(), row['type'])] = (row['ttl'], values, comments)
+    return result
+
+
+def apply_configuration(account, payload, save_previous, on_zone=None):
+    """Apply local DNS after durable encrypted capture; coordinator holds locks.
+
+    No provider switch or authority-record replacement is performed. Failures
+    retain the complete previous copy for explicit undo, including partial
+    multi-zone restores. Caller must coordinate concurrent DNS provider edits.
+    """
+    selected = validate_for_restore(account, payload)
+    names = [zone['zone'] for zone in selected['zones']]
+    if not names:
+        raise ValidationError('Select at least one DNS zone to restore')
+    previous = validate_for_restore(account, capture(account, names))
+    save_previous(previous)
+    before = {zone['zone']: zone for zone in previous['zones']}
+    completed = []
+    for zone in selected['zones']:
+        name = zone['zone']
+        # Revalidate ownership/provider immediately before each write and verify
+        # no edits occurred while encrypting the previous configuration.
+        validate_for_restore(account, selected, [name])
+        current = validate_for_restore(account, capture(account, [name]))['zones'][0]
+        if _record_state(current['records']) != _record_state(before[name]['records']):
+            raise ValidationError('DNS records changed while preparing recovery. The previous copy is retained.')
+        wanted = {(row['name'].lower(), row['type']) for row in zone['records']}
+        changes = [dict(name=row['name'], type=row['type'], changetype='DELETE')
+                   for row in current['records'] if (row['name'].lower(), row['type']) not in wanted]
+        changes.extend(dict(**row, changetype='REPLACE') for row in zone['records'])
+        try:
+            powerdns.apply_rrset_changes(name, changes)
+            actual = validate_for_restore(account, capture(account, [name]))['zones'][0]
+            if _record_state(actual['records']) != _record_state(zone['records']):
+                raise ValidationError('Verification mismatch')
+        except Exception:
+            raise ValidationError('DNS recovery could not be confirmed. Some records may have changed; '
+                                  'the encrypted previous configuration is retained for undo.') from None
+        completed.append(name)
+        if on_zone:
+            on_zone(list(completed))
+    return completed

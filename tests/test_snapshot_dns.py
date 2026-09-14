@@ -174,3 +174,130 @@ def test_dns_recovery_rejects_apex_cname(local_recovery):
                                          records=[dict(content='target.test.',disabled=False)])
     with pytest.raises(ValidationError,match='apex'):
         snapshot_dns.validate_for_restore(account,payload)
+
+
+@pytest.fixture
+def mutable_dns(local_recovery, monkeypatch):
+    from copy import deepcopy
+    account,saved=local_recovery
+    current=deepcopy(saved['zones'][0]['records'])
+    calls=[]
+    monkeypatch.setattr(powerdns,'get_zone',lambda name:dict(name=name+'.',rrsets=deepcopy(current)))
+    def patch(name, changes):
+        calls.append(deepcopy(changes))
+        for change in changes:
+            current[:]=[row for row in current if (row['name'],row['type'])!=(change['name'],change['type'])]
+            if change['changetype']=='REPLACE':
+                current.append({key:deepcopy(value) for key,value in change.items() if key!='changetype'})
+    monkeypatch.setattr(powerdns,'apply_rrset_changes',patch)
+    return account,saved,current,calls
+
+
+def test_dns_apply_saves_before_mutation_deletes_new_records_and_undoes(mutable_dns):
+    from copy import deepcopy
+    account,saved,current,calls=mutable_dns
+    current[1]['records'][0]['content']='192.0.2.88'
+    current.append(dict(name='new.alpha.test.',type='A',ttl=60,records=[dict(content='192.0.2.99',disabled=False)]))
+    before=deepcopy(current)
+    copies=[]
+    def save(previous):
+        assert current==before and not calls
+        copies.append(previous)
+    assert snapshot_dns.apply_configuration(account,saved,save)==['alpha.test']
+    assert len(calls)==1
+    assert any(row['changetype']=='DELETE' and row['name']=='new.alpha.test.' for row in calls[0])
+    assert not any(row['type']=='NS' for row in calls[0])
+    assert next(row for row in current if row['type']=='NS')==before[0]
+    snapshot_dns.apply_configuration(account,copies[0],lambda previous:None)
+    actual=snapshot_dns.validate_for_restore(account,snapshot_dns.capture(account))
+    assert snapshot_dns._record_state(actual['zones'][0]['records'])==snapshot_dns._record_state(copies[0]['zones'][0]['records'])
+
+
+def test_dns_apply_does_not_write_when_safety_capture_fails(mutable_dns):
+    account,saved,current,calls=mutable_dns
+    def fail(previous):raise RuntimeError('backup unavailable')
+    with pytest.raises(RuntimeError,match='backup unavailable'):
+        snapshot_dns.apply_configuration(account,saved,fail)
+    assert not calls
+
+
+def test_dns_apply_rejects_record_edit_during_safety_capture(mutable_dns):
+    account,saved,current,calls=mutable_dns
+    def edit(previous):current[1]['ttl']=900
+    with pytest.raises(ValidationError,match='changed while preparing'):
+        snapshot_dns.apply_configuration(account,saved,edit)
+    assert not calls and current[1]['ttl']==900
+
+
+def test_dns_apply_reports_unconfirmed_provider_result_without_leaking_details(mutable_dns,monkeypatch):
+    account,saved,current,calls=mutable_dns
+    captured=[]
+    def fail(name,changes):raise RuntimeError('private provider detail')
+    monkeypatch.setattr(powerdns,'apply_rrset_changes',fail)
+    with pytest.raises(ValidationError,match='retained for undo') as error:
+        snapshot_dns.apply_configuration(account,saved,captured.append)
+    assert captured and 'private provider detail' not in str(error.value)
+
+
+def test_powerdns_recovery_uses_one_patch(monkeypatch):
+    import httpx
+    from shared.config import settings
+    changes=[dict(name='old.alpha.test.',type='A',changetype='DELETE'),
+             dict(name='new.alpha.test.',type='A',ttl=60,changetype='REPLACE',records=[dict(content='192.0.2.1',disabled=True)],comments=[])]
+    requests=[]
+    def transport(request):
+        import json
+        requests.append((request.method,request.url.path,json.loads(request.content)))
+        return httpx.Response(204)
+    monkeypatch.setattr(powerdns,'_client',lambda:httpx.Client(base_url='http://powerdns.test',transport=httpx.MockTransport(transport)))
+    powerdns.apply_rrset_changes('alpha.test',changes)
+    assert requests==[('PATCH',f'/servers/{settings.powerdns_server_id}/zones/alpha.test.',{'rrsets':changes})]
+
+
+def test_dns_worker_encrypts_previous_records_and_supports_undo(environment,monkeypatch):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from daemon import cron,snapshot_jobs as jobs,snapshot_configuration as config
+    from shared.models import SnapshotRun,SnapshotDestination
+    root,_=environment
+    with write_session() as session:
+        account=session.scalar(select(Account).where(Account.username=='alpha'))
+        session.add(DnsZone(account_id=account.id,zone='alpha.test'))
+    original=[dict(name='www.alpha.test.',type='A',ttl=600,records=[dict(content='192.0.2.1',disabled=True)],comments=[])]
+    live=deepcopy(original)
+    monkeypatch.setattr(powerdns,'get_zone',lambda name:dict(name=name+'.',rrsets=deepcopy(live)))
+    monkeypatch.setattr(cron,'_read_raw',lambda username:[])
+    dest=make_destination(root)
+    policy=jobs.save_policy(dict(name='DNS restore',destination_id=dest['id'],accounts=['alpha'],components=['config'],frequency='manual'))
+    ident=jobs.queue_policy({'id':policy['id']})['run_ids'][0];jobs.execute_run(ident)
+    run=jobs._row(SnapshotRun,ident);assert run.status=='completed',run.error
+    repo=jobs.repository(jobs._row(SnapshotDestination,dest['id']))
+    live[0]['records'][0]['content']='192.0.2.55'
+    before=deepcopy(live)
+    updates={}
+    def update(ident,**values):updates.update(values)
+    def patch(name,changes):
+        assert updates.get('safety_snapshot_id')
+        for change in changes:
+            live[:]=[row for row in live if (row['name'],row['type'])!=(change['name'],change['type'])]
+            if change['changetype']=='REPLACE':live.append({k:deepcopy(v) for k,v in change.items() if k!='changetype'})
+    monkeypatch.setattr(powerdns,'apply_rrset_changes',patch)
+    work=jobs.private_directory('restores','restore-991')
+    config.restore_dns(991,account,SimpleNamespace(selection={'dns_zones':['alpha.test']}),repo,run.snapshot_id,work,update)
+    assert updates['status']=='completed' and live==original
+    safety=updates['safety_snapshot_id']
+    assert config.load_dns(repo,account,safety,source_restore_id=991)['zones'][0]['records']==before
+    updates.clear()
+    config.restore_dns(992,account,SimpleNamespace(selection={'dns_zones':['alpha.test'],'source_restore_id':991}),repo,safety,
+                       jobs.private_directory('restores','restore-992'),update)
+    assert updates['status']=='completed' and live==before
+
+
+def test_dns_readback_detects_provider_success_without_expected_records(mutable_dns,monkeypatch):
+    account,saved,current,calls=mutable_dns
+    current[1]['records'][0]['content']='192.0.2.77'
+    monkeypatch.setattr(powerdns,'apply_rrset_changes',lambda name,changes:None)
+    copies=[]
+    with pytest.raises(ValidationError,match='could not be confirmed'):
+        snapshot_dns.apply_configuration(account,saved,copies.append)
+    assert copies and current[1]['records'][0]['content']=='192.0.2.77'

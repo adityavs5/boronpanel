@@ -110,3 +110,23 @@ def load_dns(repo, account, snapshot_id, *, source_restore_id=None, selected_zon
     if 'dns_configuration' not in payload:
         raise ValidationError('This recovery point has no complete DNS settings; create a new configuration backup')
     return snapshot_dns.validate_for_restore(account, payload['dns_configuration'], selected_zones)
+
+
+def restore_dns(ident, account, row, repo, snapshot_id, work, update):
+    from daemon import snapshot_dns
+    from shared.models import utcnow
+    selected = load_dns(repo, account, snapshot_id,
+                        source_restore_id=row.selection.get('source_restore_id'),
+                        selected_zones=row.selection.get('dns_zones'))
+
+    def save_previous(previous):
+        path = work/'config-recovery.json'
+        write_metadata(path, dict(format=1, account_id=account.id, username=account.username,
+                                  restore_id=ident, dns_configuration=previous))
+        result = storage.backup(repo, account.id, [str(path)])
+        update(ident, safety_snapshot_id=result['snapshot_id'], progress_message='Restoring DNS records')
+
+    completed = snapshot_dns.apply_configuration(account, selected, save_previous,
+        lambda names: update(ident, summary={'config_sections': ['dns'], 'dns_zones': names}))
+    update(ident, status='completed', summary={'config_sections': ['dns'], 'dns_zones': completed},
+           progress_message='DNS records restored', completed_at=utcnow())

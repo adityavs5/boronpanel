@@ -986,3 +986,27 @@ now loads its DNS payload through the shared configuration loader and validates
 that disabled records survive. Additional cases cover out-of-zone names, invalid
 addresses/meta-types/TTLs/disabled flags, duplicate selection, binding type changes,
 owned subset selection and apex CNAME rejection. This step is not deployed.
+
+### Local DNS recovery application worker — 2026-09-14
+
+Added local DNS application after an encrypted, persisted previous-state callback.
+The worker captures only selected zones, revalidates account/provider bindings
+before each write, and refuses to overwrite records changed during safety-copy
+preparation. It sends one PowerDNS PATCH per zone containing deleted and replaced
+customer rrsets while leaving SOA/apex NS/generated DNSSEC untouched. Readback
+compares canonical DNS values, disabled flags, TTLs and comments. Failures retain
+the previous copy and report that some records may have changed; completed-zone
+progress is recorded for multi-zone work.
+
+The configuration worker writes DNS safety metadata to the established private
+recovery path, encrypts it, persists its snapshot ID before application, and can
+load that copy for undo. This internal worker is not yet dispatched or exposed in
+the UI. DNS mutation/provider-transition coordination, Cloudflare restore,
+queue/API/UI integration, interruption audit and live verification remain.
+
+Validation: 22 DNS tests passed (42.71s); the additional real-restic worker
+restore/undo test passed (18.07s), verifying safety snapshot persistence before
+provider writes and encrypted previous-record loading. A separate readback-mismatch
+test passed (4.98s): provider success without matching records is not treated as
+completed recovery. Provider writes use an in-memory test backend or mocked HTTP
+transport; no live DNS record was changed and this step is not deployed.
