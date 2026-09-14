@@ -7,6 +7,7 @@ from daemon import mail, snapshot_mail_restore as restore, snapshot_mail_files a
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, MailDomain
+from shared.validation import ValidationError
 
 
 def test_batch_staging_retains_inventory_on_interruption(isolated_db, tmp_path, monkeypatch):
@@ -57,3 +58,27 @@ def test_batch_staging_retains_inventory_on_interruption(isolated_db, tmp_path, 
     with pytest.raises(FileExistsError):
         restore.stage(account, {'work': str(work), 'entries': entries}, 17)
     assert index.read_bytes() == before
+    observed = restore.inspect_staging(account, work, 17)
+    assert [entry['state'] for entry in observed['mailboxes']] == ['ready', 'not_started']
+    with pytest.raises(ValidationError, match='inventory'):
+        restore.inspect_staging(account, work, 18)
+    receipt = Path(first['receipt'])
+    saved_receipt = receipt.read_bytes()
+    changed = json.loads(saved_receipt)
+    changed['restore_id'] = 18
+    receipt.write_text(json.dumps(changed))
+    with pytest.raises(ValidationError, match='does not match'):
+        restore.inspect_staging(account, work, 17)
+    receipt.write_bytes(saved_receipt)
+    # A path with no receipt is never adopted just because its name matches.
+    unknown = Path(settings.mail_base) / second['domain'] / second['local_part'] / second['prepared']
+    unknown.mkdir()
+    assert restore.inspect_staging(account, work, 17)['mailboxes'][1]['state'] == 'unconfirmed'
+    with write_session() as session:
+        other = Account(username='bravo', status='active', uid=65533, gid=65533)
+        session.add(other); session.flush()
+        from sqlalchemy import select
+        domain = session.scalar(select(MailDomain).where(MailDomain.domain == 'alpha.example.test'))
+        domain.account_id = other.id
+    with pytest.raises(ValidationError, match='no longer owned'):
+        restore.inspect_staging(account, work, 17)

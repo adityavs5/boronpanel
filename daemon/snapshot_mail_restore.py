@@ -5,6 +5,9 @@ The coordinator must keep the account and repository locks throughout preparatio
 and recheck ownership before the later guarded exchange.
 """
 from pathlib import Path
+import json
+import os
+import stat
 import uuid
 
 from sqlalchemy import select
@@ -115,3 +118,64 @@ def stage(account, prepared, restore_id):
         stage_for_exchange(entry['source'], work, entry['domain'], entry['local_part'],
                            prepared=entry['prepared'], receipt=entry['receipt'], restore_id=restore_id)
     return {'index': str(index), 'entries': inventory}
+
+
+def inspect_staging(account, work, restore_id):
+    """Read interrupted placement state after the caller proves worker termination.
+
+    This does not authorize cleanup, retry or exchange. Caller holds the account
+    lock and must separately establish that no placement worker is still copying.
+    """
+    from daemon.snapshot_mail_journal import _path
+    from daemon.snapshot_mail_exchange import _prepared_name, _home
+    from daemon.snapshot_mail_files import inspect_placement
+    work = Path(work)
+    index = _path(work / 'placement-index.json')
+    fd = os.open(index, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 1024*1024:
+            raise ValidationError('Invalid mailbox placement inventory')
+        try:
+            payload = json.loads(handle.read(1024*1024+1))
+            if (type(restore_id) is not int or restore_id <= 0 or type(payload['format']) is not int
+                    or payload['format'] != 1 or type(payload['account_id']) is not int
+                    or payload['account_id'] != account.id or type(payload['restore_id']) is not int
+                    or payload['restore_id'] != restore_id):
+                raise ValueError()
+            entries = payload['entries']
+            if not isinstance(entries, list) or not 1 <= len(entries) <= 1000:
+                raise ValueError()
+            seen = set()
+            for position, entry in enumerate(entries):
+                address = (validate_domain(entry['domain']), validate_mailbox_local_part(entry['local_part']))
+                if address in seen or address != (entry['domain'], entry['local_part']):
+                    raise ValueError()
+                seen.add(address)
+                _prepared_name(entry['prepared'])
+                if entry['receipt'] != str(work / ('placement-' + str(position) + '.json')):
+                    raise ValueError()
+        except (KeyError, ValueError, TypeError, UnicodeError):
+            raise ValidationError('Invalid mailbox placement inventory') from None
+    with write_session() as session:
+        current = session.get(Account, account.id)
+        if current is None or current.username != account.username:
+            raise ValidationError('Restore account no longer exists')
+        owners = {row.domain: row.account_id for row in session.scalars(
+            select(MailDomain).where(MailDomain.domain.in_({domain for domain, _ in seen})))}
+    if any(owners.get(domain) != account.id for domain, _ in seen):
+        raise ValidationError('Selected mail domain is no longer owned by this account')
+    result = []
+    for entry in entries:
+        receipt = Path(entry['receipt'])
+        if receipt.exists() or receipt.is_symlink():
+            state = inspect_placement(receipt, work, expected=dict(entry, restore_id=restore_id))
+        else:
+            with _home(entry['domain'], entry['local_part']) as home:
+                try:
+                    os.stat(entry['prepared'], dir_fd=home, follow_symlinks=False)
+                    state = 'unconfirmed'
+                except FileNotFoundError:
+                    state = 'not_started'
+        result.append({'domain': entry['domain'], 'local_part': entry['local_part'], 'state': state})
+    return {'mailboxes': result}

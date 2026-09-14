@@ -230,7 +230,7 @@ def _placement_receipt(path, payload, *, create=False):
             temporary.unlink(missing_ok=True)
 
 
-def inspect_placement(receipt, private_root):
+def inspect_placement(receipt, private_root, *, expected=None):
     """Inspect a receipt without deleting/adopting files or deciding job status.
 
     The coordinator must confirm worker termination and account ownership before
@@ -264,6 +264,9 @@ def inspect_placement(receipt, private_root):
             domain, local_part = record['domain'], record['local_part']
         except (ValueError, TypeError, KeyError, UnicodeError):
             raise ValidationError('Invalid private mailbox placement receipt') from None
+    if expected is not None and any(record.get(key) != expected[key]
+                                    for key in ('restore_id', 'domain', 'local_part', 'prepared')):
+        raise ValidationError('Mailbox placement receipt does not match its restore inventory')
     with _home(domain, local_part) as home:
         parent = os.fstat(home)
         if record['home'] != [parent.st_dev, parent.st_ino]:

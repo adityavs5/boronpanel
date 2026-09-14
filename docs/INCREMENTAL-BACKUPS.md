@@ -921,3 +921,17 @@ an inventory entry without a receipt, both original live Maildirs remain unchang
 and a repeated batch cannot overwrite the recovery inventory. Missing-mailbox
 home provisioning, inventory recovery decisions and the final customer-facing
 coordinator remain outstanding.
+
+`inspect_staging` now reads bounded private placement inventories and binds them
+to the requested account/restore IDs. It checks current domain ownership before
+inspecting mail paths and binds each receipt to its inventory's mailbox, restore
+ID and generated sibling name. It reports ready/copying/exchanged/missing receipt
+states, not-started entries with neither receipt nor sibling, and unconfirmed
+siblings without receipts. It does not adopt or remove unconfirmed paths.
+
+The caller must hold the account lock and establish placement-worker termination
+before using these observations. Suspended accounts can still be inspected for
+recovery, but missing accounts or transferred domains are refused. Validation:
+31 staging/file tests passed, including mismatched restore IDs, changed receipt
+IDs, unconfirmed sibling paths and domain reassignment. The full customer restore
+coordinator and automatic recovery actions remain unfinished.
