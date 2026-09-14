@@ -55,6 +55,7 @@ function AppsPanel({ username, type }) {
   const [form, setForm] = useState(EMPTY_FORM)
   const [toDelete, setToDelete] = useState(null)
   const [logsApp, setLogsApp] = useState(null)
+  const [selectedId, setSelectedId] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey,
@@ -106,6 +107,7 @@ function AppsPanel({ username, type }) {
   })
 
   const label = isNode ? 'Node.js' : 'Python'
+  const selected = data?.apps?.find((app) => app.id === selectedId)
 
   const columns = [
     {
@@ -113,7 +115,7 @@ function AppsPanel({ username, type }) {
       header: 'Name',
       sortable: true,
       searchable: true,
-      render: (r) => <span className="font-medium text-foreground">{r.name}</span>,
+      render: (r) => <button type="button" className="font-medium text-accent hover:underline text-left" onClick={() => setSelectedId(r.id)} aria-label={`Manage application ${r.name}`}>{r.name}</button>,
     },
     {
       key: 'domain',
@@ -142,7 +144,8 @@ function AppsPanel({ username, type }) {
       align: 'right',
       searchable: false,
       render: (r) => (
-        <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+          <Button variant="outline" size="sm" onClick={() => setSelectedId(r.id)}>Manage</Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.name}`}>
@@ -150,13 +153,13 @@ function AppsPanel({ username, type }) {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
-              <DropdownMenuItem disabled={r.active} onSelect={() => actionMut.mutate({ app: r, action: 'start' })}>
+              <DropdownMenuItem disabled={r.active || actionMut.isPending} onSelect={() => actionMut.mutate({ app: r, action: 'start' })}>
                 <Play className="h-4 w-4" /> Start
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={!r.active} onSelect={() => actionMut.mutate({ app: r, action: 'stop' })}>
+              <DropdownMenuItem disabled={!r.active || actionMut.isPending} onSelect={() => actionMut.mutate({ app: r, action: 'stop' })}>
                 <Square className="h-4 w-4" /> Stop
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => actionMut.mutate({ app: r, action: 'restart' })}>
+              <DropdownMenuItem disabled={actionMut.isPending} onSelect={() => actionMut.mutate({ app: r, action: 'restart' })}>
                 <RotateCw className="h-4 w-4" /> Restart
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -197,6 +200,34 @@ function AppsPanel({ username, type }) {
           </Button>
         }
       />
+
+      <Dialog open={!!selected} onOpenChange={(open) => { if (!open) setSelectedId(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="break-all">Manage {selected?.name}</DialogTitle>
+            <DialogDescription>Control your {label} application and view its output.</DialogDescription>
+          </DialogHeader>
+          {selected && <DialogBody className="space-y-4">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-3 text-sm">
+              <dt className="text-muted-foreground">Status</dt><dd><StatusBadge status={selected.active ? 'running' : 'stopped'} /></dd>
+              <dt className="text-muted-foreground">Domain</dt><dd className="break-all">{selected.domain || '—'}</dd>
+              <dt className="text-muted-foreground">Port</dt><dd>{selected.port || '—'}</dd>
+              <dt className="text-muted-foreground">Entry point</dt><dd className="break-all font-mono">{selected.entry_point || '—'}</dd>
+            </dl>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={actionMut.isPending} onClick={() => actionMut.mutate({ app: selected, action: selected.active ? 'stop' : 'start' })}>
+                {selected.active ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                {selected.active ? 'Stop' : 'Start'}
+              </Button>
+              <Button variant="outline" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ app: selected, action: 'restart' })}><RotateCw className="h-4 w-4" />Restart</Button>
+              <Button variant="outline" onClick={() => { setLogsApp(selected); setSelectedId(null) }}><ScrollText className="h-4 w-4" />View logs</Button>
+            </div>
+          </DialogBody>}
+          <DialogFooter>
+            <Button variant="danger" disabled={actionMut.isPending} onClick={() => { setToDelete(selected); setSelectedId(null) }}><Trash2 className="h-4 w-4" />Delete app</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Create dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

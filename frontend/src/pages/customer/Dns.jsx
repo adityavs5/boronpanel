@@ -82,7 +82,7 @@ export default function Dns() {
   })
 
   const columns = [
-    { key: 'subdomain', header: 'Name', sortable: true, searchable: true, render: (r) => <span className="font-mono text-xs">{r.subdomain}</span> },
+    { key: 'subdomain', header: 'Name', sortable: true, searchable: true, render: (r) => <button type="button" className="font-mono text-accent hover:underline text-left" onClick={() => setDialog({ mode: 'edit', subdomain: r.subdomain, type: r.type, ttl: String(r.ttl), values: r.values.join('\n') })} aria-label={`Edit ${r.type} record ${r.subdomain}`}>{r.subdomain}</button> },
     { key: 'type', header: 'Type', sortable: true, render: (r) => <span className="font-mono text-xs">{r.type}</span> },
     { key: 'ttl', header: 'TTL', sortable: true, render: (r) => r.ttl },
     { key: 'values', header: 'Value(s)', render: (r) => <div className="whitespace-pre-line break-all font-mono text-xs">{r.values.join('\n')}</div> },

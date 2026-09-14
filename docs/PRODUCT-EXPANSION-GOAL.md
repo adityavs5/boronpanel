@@ -577,3 +577,30 @@ removed its temporary SSH key. Live script:
 `/root/boron-setup/customer-terminal-websocket-proof.py`. No existing passwords
 were changed, credential/key values were not printed, and no customer account
 configuration was altered. The terminal checklist item is now verified.
+
+## Direct resource management follow-up — 2026-09-14
+
+The comparable-list audit found remaining overflow-only actions in Node.js/Python
+applications, FTP, Git and cron. Application, FTP and repository names now open
+management dialogs, with a visible Manage button as an additional entry point.
+Application controls use refreshed query data so Start/Stop and status remain
+consistent after an operation; pending operations disable duplicate service
+actions. The dialogs expose existing actions and retain destructive confirmation.
+Cron labels and visible Edit buttons open the existing editor; DNS record names
+open their corresponding record editor.
+
+Domains already link to management pages, database and SSL names already open
+management views, and DNS has visible edit/delete controls. Mailboxes and SSH
+keys have visible removal controls, but mailbox management remains a candidate
+for further usability work. The direct-interactions checklist remains open until
+this final audit is complete.
+
+Production frontend build passed. Four resource-management browser scenarios
+passed (Evolution/Paper Lantern × light/dark), including keyboard activation,
+service status refresh, restart failure without losing controls, logs, deletion
+confirmation without DELETE requests, FTP password/path editors, Git deploy
+editor, cron/DNS name activation, and 390px management dialogs without horizontal
+overflow. These tests mock resource APIs; they do not claim live service mutation.
+Evolution light's mobile application dialog was also visually inspected.
+Existing database/SSL/DNS interior and Python/Node navigation regression coverage
+also passed: six scenarios on the final build, ten browser scenarios total.

@@ -34,6 +34,7 @@ export default function Git() {
   const [deployValue, setDeployValue] = useState('')
   const [logTarget, setLogTarget] = useState(null) // row
   const [toDelete, setToDelete] = useState(null)
+  const [selected, setSelected] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['git', username],
@@ -85,7 +86,7 @@ export default function Git() {
       header: 'Repository',
       sortable: true,
       searchable: true,
-      render: (r) => <span className="font-mono font-medium text-foreground">{r.name}</span>,
+      render: (r) => <button type="button" className="font-medium text-accent hover:underline text-left" onClick={() => setSelected(r)} aria-label={`Manage repository ${r.name}`}>{r.name}</button>,
     },
     {
       key: 'clone_url',
@@ -131,7 +132,8 @@ export default function Git() {
       align: 'right',
       searchable: false,
       render: (r) => (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={() => setSelected(r)}>Manage</Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.name}`}>
@@ -184,6 +186,29 @@ export default function Git() {
         emptyIcon={GitBranch}
         emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create repository</Button>}
       />
+
+      <Dialog open={!!selected} onOpenChange={(open) => { if (!open) setSelected(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="break-all">Manage {selected?.name}</DialogTitle>
+            <DialogDescription>Manage your repository using the controls below.</DialogDescription>
+          </DialogHeader>
+          {selected && <DialogBody className="space-y-4">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-3 text-sm">
+              <dt className="text-muted-foreground">Clone URL</dt><dd className="break-all font-mono">{cloneUrl(username, selected.name)}</dd>
+              <dt className="text-muted-foreground">Deploy directory</dt><dd className="break-all font-mono">{selected.deploy_target || 'Not configured'}</dd>
+            </dl>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => copyValue(cloneUrl(username, selected.name), 'Clone URL')}><Copy className="h-4 w-4" />Copy clone URL</Button>
+              <Button variant="outline" onClick={() => { setDeployValue(selected.deploy_target || ''); setDeployTarget(selected); setSelected(null) }}><Target className="h-4 w-4" />Set deploy target</Button>
+              <Button variant="outline" onClick={() => { setLogTarget(selected); setSelected(null) }}><ScrollText className="h-4 w-4" />View log</Button>
+            </div>
+          </DialogBody>}
+          <DialogFooter>
+            <Button variant="danger" onClick={() => { setToDelete(selected); setSelected(null) }}><Trash2 className="h-4 w-4" />Delete repository</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Create repository */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

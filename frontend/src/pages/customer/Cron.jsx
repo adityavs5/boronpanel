@@ -209,10 +209,7 @@ export default function Cron() {
       header: 'Label',
       sortable: true,
       searchable: true,
-      render: (r) =>
-        r.label
-          ? <span className="font-medium text-foreground">{r.label}</span>
-          : <span className="text-muted-foreground">Untitled</span>,
+      render: (r) => <button type="button" className="font-medium text-accent hover:underline text-left" onClick={() => openEdit(r)} aria-label={`Edit cron job ${r.label || r.command}`}>{r.label || 'Untitled'}</button>,
     },
     {
       key: 'schedule',
@@ -243,7 +240,8 @@ export default function Cron() {
       align: 'right',
       searchable: false,
       render: (r) => (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={() => openEdit(r)}>Edit</Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.label || 'cron job'}`}>
