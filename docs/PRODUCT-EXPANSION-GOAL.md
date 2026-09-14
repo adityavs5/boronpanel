@@ -15,7 +15,7 @@ The complete user objective remains active. A checked item requires implementati
 - [ ] Terminal: configurable BORON ASCII welcome from admin configuration, suppress default Ubuntu status/MOTD in admin terminal; preserve usable prompts and appropriate customer behavior.
 - [x] PHP: account default version inherited by new sites; per-site override dropdown; Lite/Moderate/Max limit presets and editable Custom selected by default.
 - [ ] Typography: improve font and dashboard icon-label sizing with local assets and no performance regression.
-- [ ] Security/time: admin/customer 2FA setup, recovery, reliable clock synchronization, drift/unsynchronized state detection and actionable diagnostics. Do not claim absolute immunity to host/network failure.
+- [x] Security/time: admin/customer 2FA setup, recovery, reliable clock synchronization, drift/unsynchronized state detection and actionable diagnostics. Do not claim absolute immunity to host/network failure.
 - [ ] Final build, targeted and broad regression checks, real workflows, deployment, and requirement-by-requirement completion audit.
 
 ## Initial evidence
@@ -509,3 +509,31 @@ Four targeted backend cases also passed: independent roots, rejecting an unowned
 subdomain parent, refusing another account's DNS zone without record mutation,
 and choosing the most specific managed zone. The domains/subdomains checklist
 item is now verified; remaining initial-goal requirements stay open.
+
+## Live 2FA and clock verification — 2026-09-14
+
+Both a QA customer panel identity and temporary QA administrators exercised the
+deployed HTTPS 2FA flow: pending enrollment with QR/manual seed, valid-code
+activation, eight recovery codes, password login stopping at the second-factor
+challenge without an authenticated session, invalid-code rejection, successful
+TOTP login, recovery-code login, rejection of recovery-code reuse, rejection of
+disabling with a wrong password, and successful password-confirmed disabling.
+Password-only login worked again after disabling. The main administrator identity
+was not modified. Temporary identities were disabled, their 2FA credentials
+cleared and all their sessions revoked; cleanup was independently checked.
+
+The combined live sequence hit the existing per-IP login limit (HTTP 429); the
+admin-only test honored Retry-After and then passed without changing rate limits.
+Live scripts: `/root/boron-setup/live-twofactor-proof.py` and
+`live-admin-twofactor-proof.py`. No live seeds, passwords or recovery codes were
+printed or committed.
+
+Twenty-five TOTP/clock backend tests passed, covering encrypted seed storage,
+single-use recovery and drift/stale/unsynchronized/invalid clock diagnostics. Four
+clock-health browser cases passed across both themes/color modes. Eight new
+2FA browser cases passed across both roles, themes and modes, covering enrollment,
+mobile layout, one-time recovery display and password-confirmed disabling; the
+Paper Lantern dark recovery screen was visually inspected with synthetic codes.
+Chrony remained active/enabled with normal synchronization, Restart=on-failure and
+a five-second restart delay. This satisfies the security/time checklist item
+without claiming immunity to future host or network failure.
