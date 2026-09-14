@@ -905,3 +905,31 @@ process loss after database commit, startup reconciliation success/failure, and
 successful encrypted undo after either outcome. Tests use real restic repositories
 and mocked runtime service calls. Live deployment and real OLS verification are
 still required; no customer PHP configuration was changed in this step.
+
+### PHP recovery deployment — 2026-09-14
+
+Deployed through commit 6295ae4 using the existing guarded deployment script.
+Preflight found no active WordPress or backup/restore jobs and verified the mail
+guard. Private code/config/database rollback copy:
+`/root/boron-setup/mail-recovery-before-20260914-042747`.
+Post-deployment HTTPS health, admin login, configuration RPC and backups page
+passed on port 2222. Listener/configuration bytes matched the pre-deploy copy.
+Deployment log: `/root/boron-setup/php-recovery-deploy.log`.
+
+Live QA evidence: `/root/boron-setup/php-recovery-live-proof.py`, private state
+`php-recovery-live-proof.json`, and log `php-recovery-live-proof.log` in the same
+directory. Isolated account pq0914020151 only. Manual configuration backup run 6,
+PHP restore 6, encrypted undo 7 and cleanup restore 8 all completed with safety
+snapshots. Changed the QA default PHP version and memory limit through HTTPS API;
+actual OLS responses confirmed the changed values, original values after restore,
+changed values after undo, and original values after cleanup. Complete captured
+PHP settings matched the expected state after each operation, preserving existing
+site overrides and administrator restrictions.
+
+Independent post-test verification confirmed original QA settings, removal of the
+random temporary PHP probe, all four completed jobs, active boron-api,
+boron-provisiond and lshttpd, deployed Python files matching the tested worktree,
+and the served Backups frontend bundle matching the production build byte-for-byte.
+No credentials were printed. Live process-crash injection was not performed;
+interrupted recovery remains covered by the real encrypted repository tests with
+mocked runtime calls. DNS and mail-routing restoration remain outstanding.
