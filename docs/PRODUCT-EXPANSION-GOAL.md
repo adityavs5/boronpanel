@@ -1765,3 +1765,26 @@ transport, and no repeat on timeout/429/500/503 or malformed responses. No exter
 DNS API was mutated. Cloudflare restore remains disabled and this new helper is
 not deployed. Native validation, batch planning/checkpoints, restore/undo/UI
 integration and final verification remain required. Overall goal stays active.
+
+### Native Cloudflare record validation — 2026-09-14
+
+Added an independent recovery record normalizer with no network writes. It checks
+zone containment, DNS content parsing, native TTL/proxy semantics, comments/tags,
+known settings and private routing. Saved IDs are discarded; requesting a current
+ID requires a valid 32-hex identifier. Read-only provider metadata is excluded.
+Locked/provider-managed records and unsupported fields/types fail explicitly for
+later dedicated handling. Initial types cover A/AAAA/CNAME/MX/NS/PTR/TXT/OPENPGPKEY
+and structured CAA/SRV. Cloudflare apex CNAME is permitted, self-CNAME rejected.
+Structured data and redundant textual content must agree. Caller account/provider
+binding validation and authority-record protection remain separate requirements.
+
+Validation: 52 tests passed across this validator and the one-attempt batch
+transport. Cases include native option retention, account-zone boundaries, bool
+versus integer validation, malformed records/settings/tags, inconsistent structured
+content, current-versus-saved IDs and proxied automatic TTL. No public DNS calls,
+record changes or deployment were performed. Cloudflare restore remains disabled.
+Remaining native work includes other structured types/legacy schema variants,
+provider-managed record handling and semantic collection/diff planning before
+batch execution, checkpoint/undo and availability integration.
+
+Schema reference: https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/
