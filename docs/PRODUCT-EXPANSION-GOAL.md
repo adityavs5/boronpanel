@@ -1876,3 +1876,31 @@ provider verification remain open; this is not completion of the full goal.
 References:
 - https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/
 - https://developers.cloudflare.com/dns/manage-dns-records/how-to/subdomains-outside-cloudflare/
+
+### Remaining Cloudflare formats and legacy text recovery — 2026-09-14
+
+Added CERT, LOC, NAPTR, SMIMEA, SSHFP and URI native schemas alongside the existing
+formats. Validation covers numeric bounds, finite LOC measurements/geographic
+limits, certificate base64 and fingerprint hex encodings, quoted NAPTR/URI values,
+and URI priority. LOC values normalize through their DNS representation. Added
+content-only recovery for all twelve structured formats using the DNS parser;
+redundant content must still agree with supplied native fields. Cloudflare target
+names without trailing dots are interpreted as absolute, fixing compatibility
+with provider-formatted SRV/SVCB and other target text. Parsed algorithm enums are
+converted to integers while externally supplied boolean/non-integer fields remain
+rejected. Provider-managed DNSKEY/authority handling is unchanged.
+
+Validation: 115 native/legacy/planner/executor/transport tests passed. The initial
+legacy run exposed four DS/CERT algorithm-enum conversion failures; those are fixed.
+The expanded real-restic queue test also passed (24.67s), including all twelve
+structured content-only examples in the snapshot, counts-only availability,
+actual encrypted restore/undo, scoped token use and complete final record-state
+comparison against a simulated Cloudflare provider. No external DNS writes or
+new deployment occurred. git diff --check passed.
+
+Record schema reference:
+https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/
+
+Next: deployment/release audit, available live-provider verification and the full
+initial requirement/GitHub/self-update audit. The separate expansion backlog is
+still queued after the initial goal. Goal remains active.

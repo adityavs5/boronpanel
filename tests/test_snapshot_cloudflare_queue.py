@@ -9,10 +9,13 @@ from shared.db import write_session
 from shared.models import Account, CloudflareZone, DnsZone, SnapshotRun, SnapshotRestore
 from tests.test_snapshot_jobs import environment, make_destination
 from tests.test_snapshot_cloudflare_recovery import provider, ZONE
+from tests.test_snapshot_cloudflare_legacy import EXAMPLES
 
 
 def test_real_encrypted_cloudflare_queue_restore_and_undo(environment,provider,monkeypatch):
     root,_=environment
+    provider['records'].extend({'id':f'{index+10:032x}','name':rtype.lower()+'.alpha.test','type':rtype,'ttl':300,'content':content}
+                              for index,(rtype,content) in enumerate(EXAMPLES))
     with write_session() as session:
         account=session.scalar(select(Account).where(Account.username=='alpha'))
         session.add(DnsZone(account_id=account.id,zone='alpha.test'))
@@ -32,7 +35,7 @@ def test_real_encrypted_cloudflare_queue_restore_and_undo(environment,provider,m
     provider['records'][0]['content']='192.0.2.99'
     modified=deepcopy(provider['records'])
     catalog=restores.configuration_options(dict(username='alpha',run_id=ident))
-    assert catalog['dns_zones']==[dict(zone='alpha.test',provider='cloudflare',available=True,record_count=1)]
+    assert catalog['dns_zones']==[dict(zone='alpha.test',provider='cloudflare',available=True,record_count=len(original))]
     assert '192.0.2' not in repr(catalog)
     request=restores.trigger(dict(username='alpha',run_id=ident,confirmation='alpha',kind='config',config_sections=['dns'],dns_zones=['alpha.test']))
     restores.execute(request['id']);row=jobs._row(SnapshotRestore,request['id'])
