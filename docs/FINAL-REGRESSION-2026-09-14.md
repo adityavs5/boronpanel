@@ -35,3 +35,11 @@ The revised complete backend suite passed: **2,655 passed, two skipped, seven wa
 The tested schema change was deployed successfully on September 14. Additive migration, trusted HTTPS, authenticated admin login and configuration RPC on port 2222 passed. The deployment preserved configuration and created rollback copy `/root/boron-setup/mail-recovery-before-20260914-092314`; log: `/root/boron-setup/schema-final-deploy.log`.
 
 Both authoritative Cloudflare nameservers returned the expected phpMyAdmin A record on the final recheck, and trusted HTTPS returned the expected sign-in redirect. The requested backup functionality is verified; see BACKUP-COMPLETION-AUDIT.md. GitHub publication and an actual panel self-update remain the final release gates.
+
+## Published release and self-update in progress
+
+The real `scripts/release.sh 1.2.0` pipeline passed all **2,657 tests with seven warnings and no skips** in 2,886.39 seconds, built the frontend, and verified the release archive and SHA256 checksum. It published commit `8a5388c`, tag `v1.2.0`, and both assets to GitHub. GPG signing was skipped because this server has no signing key. Release log: `/root/boron-setup/release-1.2.0.log`.
+
+The public release is https://github.com/adityavs5/boronpanel/releases/tag/v1.2.0; the reviewed feature and upgrade notes were attached. The authenticated panel check discovered 1.2.0 while running 1.1.3. Update job **6**, started at 10:22:02 UTC, is running the live installation's full preflight suite. This is not yet evidence of a successful version switch.
+
+Read-only pre-update checks passed service health, trusted HTTPS/admin login, clock synchronization, WordPress/backup API availability, unchanged shared ports, and idle operation queues. A private baseline records configuration and selected WordPress/backup inventory digests for post-update comparison: `/root/boron-setup/release-1.2.0-before.json`. The server has 32 GB free; restic, chrony, build-essential and libssl-dev are installed, and the mailbox guard verified successfully.
