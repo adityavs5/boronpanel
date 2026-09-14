@@ -694,6 +694,15 @@ def recover_restores():
                     from daemon.snapshot_php import reconcile_interrupted
                     reconcile_interrupted(current, _update)
                     continue
+                if current.status=='running' and current.selection.get('kind') == 'config' and current.selection.get('config_sections') == ['dns']:
+                    message = ('DNS restore was interrupted. Some selected zones may have changed; '
+                               'use the encrypted previous DNS records to undo this operation.'
+                               if current.safety_snapshot_id else
+                               'DNS restore was interrupted before its recovery copy was recorded. '
+                               'This job did not change DNS records.')
+                    _update(row.id, status='failed', progress_message='Interrupted DNS restore',
+                            error=message, completed_at=utcnow())
+                    continue
                 if current.status=='running':
                     _update(row.id,status='failed',progress_message='Interrupted',
                         error='Restore worker was interrupted. Some selected data may have been restored; the pre-restore snapshot is retained.',completed_at=utcnow())

@@ -1074,3 +1074,23 @@ All 16 browser tests passed (1.4m) against the production build with mocked APIs
 cron/PHP/DNS restore and undo across both themes and light/dark modes, exact DNS
 selection payloads, unavailable-zone disabling, confirmation resets, mobile
 horizontal overflow, and unavailable PHP/DNS sections retaining cron access.
+
+### Interrupted multi-zone DNS recovery — 2026-09-14
+
+Startup history now distinguishes DNS interruption before safety-copy persistence
+(no records changed by that job) from interruption after writes may have begun
+(the encrypted previous records remain available for undo). Startup does not replay
+DNS writes; provider records already represent the applied state, unlike PHP's
+separate database/runtime reconciliation requirement. Completed-zone summaries and
+original zone selection remain attached to the interrupted operation.
+
+Added two-zone process-loss tests before and after the second provider write,
+including complete encrypted undo, plus pre-safety interruption and active-account
+lock observation. These use actual restic snapshots with simulated provider writes;
+live interruption injection and deployment were not performed.
+
+All six queue/interruption tests passed (107.50s), including both multi-zone crash
+positions and successful undo after startup classification. The additional active
+account-lock test passed (8.11s), confirming startup leaves an ongoing worker's
+status and DNS records untouched. This change is not deployed; Cloudflare-native
+restore and live local DNS recovery verification remain pending.
