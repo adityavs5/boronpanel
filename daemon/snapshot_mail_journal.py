@@ -153,6 +153,36 @@ def prepare_rollback(path, destination, *, service='dovecot.service'):
                                          operation_id=uuid.uuid4().hex, undo=True, entries=entries))
 
 
+def continue_rollback(original_path, previous_path, destination, *, service='dovecot.service'):
+    """Persist remaining undo work after an interrupted, verified undo worker.
+
+    Caller holds the account lock. Link the prior undo to its original forward
+    journal before observing it; never treat another operation as this rollback.
+    Neither original nor previous journals are overwritten.
+    """
+    from daemon.snapshot_mail_service import inspect_switch, service_status
+    original, previous = read(original_path), read(previous_path)
+    if (original['undo'] or not previous['undo'] or previous['restore_id'] != original['restore_id']
+            or previous['operation_id'] == original['operation_id']):
+        raise ValidationError('Rollback journals do not describe the same forward restore')
+    source = {(entry['domain'], entry['local_part']): entry for entry in original['entries']}
+    if any(source.get((entry['domain'], entry['local_part'])) != entry for entry in previous['entries']):
+        raise ValidationError('Rollback entries do not match the original restore')
+    worker = inspect_switch(previous['operation_id'], service=service)
+    if worker['state'] == 'running':
+        raise ValidationError('Previous rollback worker is still running')
+    mail = service_status(service)
+    if mail.get('ActiveState') != 'active' or mail.get('SubState') != 'running' or mail.get('ControlPID') != '0':
+        raise ValidationError('Mail service has not resumed after rollback')
+    with guard.owned_guards(original['entries'], original['restore_id']):
+        states = inspect(original_path)
+        entries = [source[row['domain'], row['local_part']] for row in states if row['state'] == 'applied']
+        if not entries:
+            raise ValidationError('All original mailbox directories are already restored')
+        return create(destination, dict(format=1, restore_id=original['restore_id'],
+                                         operation_id=uuid.uuid4().hex, undo=True, entries=entries))
+
+
 def execute(path, *, service='dovecot.service'):
     payload = read(path)
     if service == 'dovecot.service':

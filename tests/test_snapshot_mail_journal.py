@@ -124,8 +124,8 @@ def test_existing_journal_is_not_overwritten(saved):
     assert path.read_bytes() == original
 
 
-@pytest.mark.parametrize('interrupted', [False, True])
-def test_real_supervised_journal_worker(saved, isolated_service, tmp_path, interrupted):
+@pytest.mark.parametrize('interrupted,undo_interrupted', [(False, False), (True, False), (False, True)])
+def test_real_supervised_journal_worker(saved, isolated_service, tmp_path, interrupted, undo_interrupted):
     from daemon import snapshot_mail_service as supervisor
     path, payload = saved
     service_name, operations = isolated_service
@@ -182,12 +182,44 @@ def test_real_supervised_journal_worker(saved, isolated_service, tmp_path, inter
         f'settings.mail_base = {settings.mail_base!r}\n'
         f'journal.execute({str(rollback)!r}, service={service_name!r})\n')
     operations.append(undo_payload['operation_id'])
+    clean_undo_code = undo_script.read_text()
+    if undo_interrupted:
+        injection = ('from daemon import snapshot_mail_exchange as exchange\n'
+                     'original = exchange.apply\n'
+                     'def interrupt(domain, local, plan, **kwargs):\n'
+                     ' if local == "two": raise SystemExit(92)\n'
+                     ' return original(domain, local, plan, **kwargs)\n'
+                     'exchange.apply = interrupt\n')
+        undo_script.write_text(clean_undo_code.replace('journal.execute(', injection + 'journal.execute('))
+        with pytest.raises(ValidationError, match='Mail switch failed'):
+            supervisor.supervised_command([str(repo / '.venv/bin/python'), str(undo_script)],
+                                         undo_payload['operation_id'], service=service_name)
+        assert [row['state'] for row in journal.inspect(path)] == ['ready', 'applied']
+        remaining = journal.continue_rollback(path, rollback, path.with_name('undo-remaining.json'), service=service_name)
+        next_payload = journal.read(remaining)
+        assert [entry['local_part'] for entry in next_payload['entries']] == ['two']
+        supervisor.retire_switch(undo_payload['operation_id'], service=service_name)
+        undo_script.write_text(clean_undo_code.replace(repr(str(rollback)), repr(str(remaining))))
+        rollback, undo_payload = remaining, next_payload
+        operations.append(undo_payload['operation_id'])
     supervisor.supervised_command([str(repo / '.venv/bin/python'), str(undo_script)],
                                  undo_payload['operation_id'], service=service_name)
     assert [row['state'] for row in journal.inspect(path)] == ['ready', 'ready']
     assert journal.recovery_state(rollback, service=service_name)['state'] == 'applied'
     with guard.owned_guards(payload['entries'], payload['restore_id']):
         pass
+
+
+def test_rollback_continuation_refuses_a_running_worker(saved, monkeypatch):
+    from daemon import snapshot_mail_service as supervisor
+    path, original = saved
+    previous = path.with_name('undo.json')
+    journal.create(previous, dict(original, operation_id='c'*32, undo=True))
+    monkeypatch.setattr(supervisor, 'inspect_switch', lambda *a, **kw: {'state': 'running'})
+    target = path.with_name('remaining.json')
+    with pytest.raises(ValidationError, match='still running'):
+        journal.continue_rollback(path, previous, target)
+    assert not target.exists()
 
 
 def test_launch_uses_persisted_operation_and_private_worker(saved, monkeypatch):

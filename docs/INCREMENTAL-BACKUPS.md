@@ -1181,3 +1181,16 @@ cannot race a live caller, remains refused after caller loss while its worker is
 still running, refuses another operation's terminal unit and supports the tested
 partial-batch rollback. Test supervisor locks are isolated from live storage.
 Automatic partial-switch job recovery and the customer interface remain pending.
+
+Rollback continuation now handles an interrupted undo worker. It verifies the
+previous undo's job/entries against the original forward journal, confirms the
+worker is terminal and mail resumed, then records a new undo journal containing
+only original entries whose directories remain exchanged. Already-reverted
+entries are omitted. Original and previous journals remain unchanged and all
+guards stay owned until final recovery validation.
+
+Validation: 18 journal tests passed. The real systemd fixture now interrupts an
+undo after the first of two mailboxes, retires that terminal worker, runs the
+generated one-mailbox continuation and verifies both original directory identities
+are restored. A running prior worker prevents continuation journal creation.
+Automatic job-level rollback orchestration and customer submission remain pending.
