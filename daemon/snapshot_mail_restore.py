@@ -18,6 +18,7 @@ from daemon.snapshot_mail_files import build_maildir
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, MailDomain
+from daemon.database_operations import serialized_worker
 from shared.validation import ValidationError, validate_domain, validate_mailbox_local_part
 
 
@@ -145,6 +146,59 @@ def acquire_guards(account, prepared, restore_id):
     for entry in entries:
         guard.block(entry['domain'], entry['local_part'], restore_id, token=entry['token'])
     return {'index': str(index), 'entries': entries}
+
+
+@serialized_worker
+def provision_mailboxes(account, prepared, acquired, restore_id):
+    """Initialize guarded mail storage and recreate only absent SQL mailboxes.
+
+    The durable provisioning intent survives SQL/cache failures. Existing users
+    keep their current credentials, quota and active status. Caller retains the
+    account lock; interrupted attempts require inspection rather than replay.
+    """
+    from daemon import snapshot_mail_guard as guard, snapshot_mail_metadata
+    from daemon.snapshot_mail_files import initialize_maildir, _placement_receipt
+    from daemon.snapshot_mail_journal import _path
+    from shared.models import MailUser
+    metadata = {}
+    for entry in prepared['entries']:
+        metadata.setdefault(entry['domain'], {'mailboxes': {}})['mailboxes'][entry['local_part']] = entry['metadata']
+    selected = selected_mailboxes(account, metadata, [entry['local_part'] + '@' + entry['domain']
+                                                     for entry in prepared['entries']])
+    tokens = {(entry['domain'], entry['local_part']): entry['token'] for entry in acquired['entries']}
+    if set(tokens) != {(entry['domain'], entry['local_part']) for entry in selected}:
+        raise ValidationError('Mailbox guard selection does not match preparation')
+    with guard.owned_guards(acquired['entries'], restore_id):
+        pass
+    receipt = _path(Path(prepared['work']) / 'provisioning.json')
+    record = dict(format=1, account_id=account.id, restore_id=restore_id, status='planned',
+                  mailboxes=[dict(domain=entry['domain'], local_part=entry['local_part'], action=entry['action'])
+                             for entry in selected])
+    _placement_receipt(receipt, record, create=True)
+    for entry in selected:
+        domain, local = entry['domain'], entry['local_part']
+        initialize_maildir(domain, local, restore_id, tokens[domain, local])
+        with guard.owned_guards(acquired['entries'], restore_id):
+            if entry['action'] == 'recreate':
+                snapshot_mail_metadata.recreate_mailbox(domain, entry['metadata'])
+            actual = next((row for row in mail.list_mailboxes(domain) if row['local_part'] == local), None)
+            if actual is None:
+                raise ValidationError('Mailbox provisioning did not produce a SQL mailbox')
+            with write_session() as session:
+                owned = session.scalar(select(MailDomain).where(MailDomain.domain == domain,
+                                                               MailDomain.account_id == account.id))
+                if owned is None:
+                    raise ValidationError('Mail domain ownership changed during provisioning')
+                cached = session.scalar(select(MailUser).where(MailUser.domain == domain, MailUser.local_part == local))
+                if cached is not None and cached.mail_domain_id != owned.id:
+                    raise ValidationError('Mailbox cache belongs to a different domain registration')
+                if cached is None:
+                    cached = MailUser(mail_domain_id=owned.id, domain=domain, local_part=local)
+                    session.add(cached)
+                cached.quota_mb = actual['quota_mb']
+    record['status'] = 'completed'
+    _placement_receipt(receipt, record)
+    return {'mailboxes': record['mailboxes']}
 
 
 def inspect_staging(account, work, restore_id):

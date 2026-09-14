@@ -95,6 +95,51 @@ def test_existing_mailbox_is_not_replaced(mail_database):
     assert mail.list_mailboxes('alpha.example.test')[0]['active'] == 0
 
 
+@pytest.mark.parametrize('missing', [False, True])
+def test_guarded_provisioning_recreates_missing_users_and_updates_cache(mail_database, isolated_db, monkeypatch, missing):
+    from daemon import snapshot_mail_restore as restore, snapshot_mail_guard as guard
+    from shared.models import MailUser
+    connection, work, password, hashed = mail_database
+    saved_mailbox = captured()['domains'][0]['mailboxes'][0]
+    private = work / 'private'
+    private.mkdir(mode=0o700)
+    preparation = private / 'prepared'
+    preparation.mkdir(mode=0o700)
+    base = work / 'mail'
+    base.mkdir()
+    monkeypatch.setattr(settings, 'snapshot_private_dir', str(private))
+    monkeypatch.setattr(settings, 'mail_base', str(base))
+    monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(work / 'guards'))
+    with write_session() as session:
+        account = Account(username='alpha', status='active', uid=65534, gid=65534)
+        session.add(account); session.flush()
+        session.add(MailDomain(account_id=account.id, domain='alpha.example.test'))
+    with connection.cursor() as cursor:
+        if missing:
+            cursor.execute("DELETE u FROM mail_user u JOIN mail_domain d ON u.domain_id=d.id WHERE d.domain='alpha.example.test'")
+        else:
+            cursor.execute("UPDATE mail_user u JOIN mail_domain d ON u.domain_id=d.id SET u.quota_mb=4096,u.active=0 WHERE d.domain='alpha.example.test'")
+    prepared = {'work': str(preparation), 'entries': [dict(domain='alpha.example.test', local_part='inbox', metadata=saved_mailbox)]}
+    acquired = restore.acquire_guards(account, prepared, 19)
+    result = restore.provision_mailboxes(account, prepared, acquired, 19)
+    assert result['mailboxes'][0]['action'] == ('recreate' if missing else 'existing')
+    expected_quota = 2048 if missing else 4096
+    actual = mail.list_mailboxes('alpha.example.test')[0]
+    assert actual['quota_mb'] == expected_quota and actual['active'] == (1 if missing else 0)
+    with write_session() as session:
+        cached = session.scalar(select(MailUser).where(MailUser.domain == 'alpha.example.test'))
+        assert cached.quota_mb == expected_quota
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT u.password FROM mail_user u JOIN mail_domain d ON u.domain_id=d.id WHERE d.domain='alpha.example.test'")
+        assert cursor.fetchone()[0] == hashed
+    assert (base / 'alpha.example.test/inbox/Maildir/cur').is_dir()
+    assert json.loads((preparation / 'provisioning.json').read_text())['status'] == 'completed'
+    with guard.owned_guards(acquired['entries'], 19):
+        pass
+    with pytest.raises(FileExistsError):
+        restore.provision_mailboxes(account, prepared, acquired, 19)
+
+
 @pytest.mark.parametrize('change', [{'local_part':'../../escape'},{'password_hash':'{PLAIN}secret'},{'password_hash':'{ARGON2ID}bad\nline'},{'quota_mb':0},{'quota_mb':True},{'active':'yes'}])
 def test_invalid_mailbox_metadata_is_rejected(change):
     entry = {'local_part':'inbox','password_hash':'{ARGON2ID}test-only-hash','quota_mb':1024,'active':True,**change}

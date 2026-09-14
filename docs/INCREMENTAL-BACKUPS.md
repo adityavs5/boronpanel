@@ -968,3 +968,19 @@ Validation: 43 guard/staging/journal/Dovecot tests passed, including failure bef
 publication, failure after publication with successful owned recovery, duplicate
 acquisition refusal and private batch-token persistence. Full coordinator
 finalization and startup recovery remain pending.
+
+`provision_mailboxes` now connects owned guard acquisition to Maildir creation,
+missing SQL-user reconstruction and the panel's MailUser cache. It rechecks the
+account selection, verifies the exact guard set and writes an exclusive private
+provisioning intent before changing storage or SQL. Existing SQL mailboxes retain
+their current password, quota and active status; missing ones use saved recovery
+metadata. Cache quota is read back from SQL, and current domain registration is
+checked before cache writes. Database operations use the background mutation lock.
+
+The provisioning record becomes completed only after all selected mailboxes and
+cache rows are ready. An interrupted or repeated attempt is not blindly replayed;
+its intent and guards remain for recovery. Two real isolated-MariaDB integration
+tests passed, proving both missing-user reconstruction and preservation of an
+existing disabled mailbox with a changed quota, plus cache synchronization,
+Maildir creation and retained guard ownership. Customer submission, interrupted
+provisioning reconciliation and restore finalization remain outstanding.
