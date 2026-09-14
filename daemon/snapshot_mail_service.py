@@ -75,6 +75,31 @@ def inspect_switch(operation_id, *, service='dovecot.service'):
 
 
 def supervised_command(command, operation_id, *, service='dovecot.service'):
+    from daemon.snapshot_jobs import lock
+    with lock('mail-supervisor-' + switch_unit(service), blocking=False):
+        return _supervised_command(command, operation_id, service=service)
+
+
+def retire_switch(operation_id, *, service='dovecot.service'):
+    """Retire only a terminal operation after its journal has been inspected.
+
+    Does not stop a worker or restart mail. Serialized with supervisor creation
+    so another panel restore cannot replace the observed unit during retirement.
+    """
+    from daemon.snapshot_jobs import lock
+    with lock('mail-supervisor-' + switch_unit(service), blocking=False):
+        state = inspect_switch(operation_id, service=service)
+        if state['state'] == 'running':
+            raise ValidationError('Mailbox switch is still running; cannot retire it')
+        if state['state'] == 'missing':
+            return {'retired': True}
+        result = run(['/usr/bin/systemctl', 'reset-failed', switch_unit(service)], timeout=10)
+        if not result.ok:
+            raise ValidationError('Could not retire the completed mailbox switch')
+        return {'retired': True}
+
+
+def _supervised_command(command, operation_id, *, service='dovecot.service'):
     """Run a trusted internal switch command independently of the panel process.
 
     Persist operation_id in the restore journal before calling. On observation

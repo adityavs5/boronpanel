@@ -8,10 +8,13 @@ import pytest
 
 from daemon import snapshot_mail_service as service
 from shared.validation import ValidationError
+from shared.config import settings
 
 
 @pytest.fixture
-def isolated_service(tmp_path):
+def isolated_service(tmp_path, monkeypatch):
+    if not Path(settings.snapshot_private_dir).is_relative_to(tmp_path):
+        monkeypatch.setattr(settings, 'snapshot_private_dir', str(tmp_path / 'service-private'))
     if os.geteuid() != 0 or not Path('/run/systemd/system').is_dir():
         pytest.skip('Root and running systemd required')
     name = 'boron-mail-test-' + uuid.uuid4().hex + '.service'
@@ -71,6 +74,8 @@ def test_systemd_resumes_service_after_success_or_worker_kill(isolated_service, 
         assert observed['result'] == 'signal'
         with pytest.raises(ValidationError, match='another operation'):
             service.inspect_switch(uuid.uuid4().hex, service=name)
+        with pytest.raises(ValidationError, match='another operation'):
+            service.retire_switch(uuid.uuid4().hex, service=name)
 
 
 def test_inactive_service_is_not_started_by_a_restore(isolated_service):
@@ -107,6 +112,8 @@ def test_switch_survives_loss_of_calling_panel_process(isolated_service, tmp_pat
     caller = tmp_path / 'caller.py'
     repo = Path(__file__).parents[1]
     caller.write_text(f'import sys\nsys.path.insert(0, {str(repo)!r})\n'
+                      'from shared.config import settings\n'
+                      f'settings.snapshot_private_dir = {settings.snapshot_private_dir!r}\n'
                       'from daemon.snapshot_mail_service import supervised_command\n'
                       f'supervised_command({command!r}, {operation!r}, service={name!r})\n')
     process = subprocess.Popen([str(repo / '.venv/bin/python'), str(caller)],
@@ -119,9 +126,13 @@ def test_switch_survives_loss_of_calling_panel_process(isolated_service, tmp_pat
             time.sleep(.05)
         service.require_stopped(name)
         assert service.inspect_switch(operation, service=name)['state'] == 'running'
+        with pytest.raises(BlockingIOError):
+            service.retire_switch(operation, service=name)
         process.kill()
         process.wait(timeout=5)
         assert service.inspect_switch(operation, service=name)['state'] == 'running'
+        with pytest.raises(ValidationError, match='still running'):
+            service.retire_switch(operation, service=name)
         finish.touch()
         deadline = time.monotonic() + 10
         while service.service_status(name)['ActiveState'] != 'active':

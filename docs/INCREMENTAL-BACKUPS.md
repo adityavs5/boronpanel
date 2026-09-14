@@ -1168,3 +1168,16 @@ remains absent, then verify automatic reconciliation, preserved password/disable
 status/quota, correct cache state and released guards. One test assertion was
 corrected to accept the driver's empty tuple result. Partial switches and the
 customer restore interface remain unfinished.
+
+Supervisor creation and completed-unit retirement now share a per-mail-service
+lock. `retire_switch` verifies the persisted operation identifier, refuses a
+running worker and only resets a terminal matching unit. It never stops a worker
+or restarts mail. This replaces the manual reset in the isolated partial-switch
+rollback test, allowing the undo worker to start through the production retirement
+helper after journal inspection.
+
+Validation: 28 real supervision/journal tests passed. They verify retirement
+cannot race a live caller, remains refused after caller loss while its worker is
+still running, refuses another operation's terminal unit and supports the tested
+partial-batch rollback. Test supervisor locks are isolated from live storage.
+Automatic partial-switch job recovery and the customer interface remain pending.

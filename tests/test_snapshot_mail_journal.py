@@ -171,9 +171,7 @@ def test_real_supervised_journal_worker(saved, isolated_service, tmp_path, inter
     # A failed transient unit deliberately remains until terminal-state
     # inspection. Retire only this disposable test unit before the undo worker.
     if interrupted:
-        import subprocess
-        subprocess.run(['/usr/bin/systemctl', 'reset-failed', supervisor.switch_unit(service_name)],
-                       capture_output=True, check=True, timeout=20)
+        assert supervisor.retire_switch(operation, service=service_name) == {'retired': True}
     undo_script = tmp_path / 'undo-worker.py'
     undo_script.write_text(
         f'import sys\nsys.path.insert(0, {str(repo)!r})\n'
