@@ -37,6 +37,8 @@ import re
 import shutil
 from pathlib import Path
 
+from daemon import account_mutation
+
 from sqlalchemy import select
 
 from shared.config import settings
@@ -202,6 +204,7 @@ def list_extensions(params: dict) -> dict:
         return _status(session, account)
 
 
+@account_mutation.locked
 def set_extensions(params: dict) -> dict:
     username = validate_username(params["username"])
     requested = params.get("enabled")
@@ -246,6 +249,7 @@ def set_extensions(params: dict) -> dict:
         return _status(session, account)
 
 
+@account_mutation.locked
 def reset_extensions(params: dict) -> dict:
     """Back to stock: drop the row (so the extProcessor loses its
     PHP_INI_SCAN_DIR line and the compiled-in mods-available applies) and

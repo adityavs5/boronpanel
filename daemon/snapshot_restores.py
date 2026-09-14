@@ -247,17 +247,29 @@ def database_options(params):
 
 def configuration_options(params):
     account, source = _owned_run(params['username'], params['run_id'])
+    result = {'cron_available': False, 'php_available': False}
     if 'config' not in source.options.get('components', []):
-        return {'cron_available': False, 'reason': 'This recovery point has no account configuration'}
-    from daemon.snapshot_configuration import load_cron
+        return {**result, 'reason': 'This recovery point has no account configuration'}
+    from daemon.snapshot_configuration import load_cron, load_php
     from daemon import cron
     try:
         with jobs.lock(f'repository-{source.destination_id}', blocking=False):
             repo = jobs.repository(jobs._row(SnapshotDestination, source.destination_id))
-            saved = load_cron(repo, account, source.snapshot_id)
+            for section, loader in (('cron', load_cron), ('php', load_php)):
+                try:
+                    saved = loader(repo, account, source.snapshot_id)
+                except ValidationError as exc:
+                    result[section + '_reason'] = str(exc)
+                    continue
+                result[section + '_available'] = True
+                if section == 'cron':
+                    result['managed_jobs'] = len(cron.parse_jobs(saved['lines']))
+                else:
+                    result['php_sites'] = len(saved['sites'])
+                    result['php_default_version'] = saved['default_version']
     except BlockingIOError:
         raise ValidationError('This destination is busy. Try again shortly.') from None
-    return {'cron_available': True, 'managed_jobs': len(cron.parse_jobs(saved['lines']))}
+    return result
 
 
 def trigger(params):
@@ -274,10 +286,13 @@ def trigger(params):
     mailboxes=[]
     if kind == 'config':
         sections = safety.selection.get('config_sections') if safety else params.get('config_sections')
-        if sections != ['cron']:
-            raise ValidationError('Select scheduled tasks to restore')
+        if sections not in (['cron'], ['php']):
+            raise ValidationError('Select scheduled tasks or PHP settings to restore')
         if not safety:
-            configuration_options({'username': account.username, 'run_id': source.id})
+            options = configuration_options({'username': account.username, 'run_id': source.id})
+            section = sections[0]
+            if not options.get(section + '_available'):
+                raise ValidationError(options.get(section + '_reason', options.get('reason', 'Configuration unavailable')))
     if kind=='mail':
         if params.get('mail_pause_acknowledged') is not True:
             raise ValidationError('Confirm the brief mail-service interruption before restoring mailboxes')
@@ -322,7 +337,7 @@ def trigger(params):
         selection={'kind':kind,'paths':paths}
         if databases:selection['databases']=databases
         if mailboxes:selection['mailboxes']=mailboxes
-        if kind=='config':selection['config_sections']=['cron']
+        if kind=='config':selection['config_sections']=list(sections)
         if safety:selection['source_snapshot_id']=safety.safety_snapshot_id
         if safety and kind in ('mail','config'):selection['source_restore_id']=safety.id
         row=SnapshotRestore(run_id=source.id,account_id=account.id,selection=selection,status='pending')
@@ -536,8 +551,12 @@ def execute(ident):
                 return
             work=jobs.private_directory('restores',f'restore-{ident}')
             if row.selection['kind'] == 'config':
-                from daemon.snapshot_configuration import restore_cron
-                restore_cron(ident, account, row, repo, snapshot_id, work, _update)
+                from daemon.snapshot_configuration import restore_cron, restore_php
+                sections = row.selection.get('config_sections')
+                if sections not in (['cron'], ['php']):
+                    raise ValidationError('Unsupported configuration recovery section')
+                worker = restore_php if sections == ['php'] else restore_cron
+                worker(ident, account, row, repo, snapshot_id, work, _update)
                 return
             if row.selection['kind']=='databases':
                 _restore_databases(ident,account,row,repo,snapshot_id,work)

@@ -842,3 +842,24 @@ Runtime calls in these tests are mocked; live OLS application is not yet verifie
 This worker is not yet exposed through restore dispatch or the interface and has
 not been deployed. Account mutation coordination, dispatch/API/UI integration,
 restart/failure recovery audit and live restore/undo verification remain required.
+
+### PHP recovery queue and edit coordination — 2026-09-14
+
+The restore queue now accepts PHP settings as a separate configuration section,
+validates availability, dispatches the PHP worker, and preserves section selection
+through undo/redo. Configuration previews report PHP and scheduled-task
+availability independently so an unsupported PHP setting does not hide a usable
+crontab recovery point. The default PHP version, per-site PHP version, limits and
+extension edit handlers now acquire the same nonblocking account lock used by
+backup/restore execution, with identity revalidation after acquisition.
+
+The interface still needs PHP restore controls and PHP-specific history/undo text.
+This code is not deployed. Domain/lifecycle mutation interactions and daemon
+restart behavior still require audit before live PHP recovery verification.
+
+Validation: 32 PHP capture/application/coordination tests passed (58.25s); seven
+real encrypted configuration tests passed (144.18s), including queue-level PHP
+restore/undo/redo with mocked OLS calls. The existing PHP/domain handler regression
+run passed 57 tests; one ACL fixture failed because the sandbox rejected chown to
+its test UID. Its authorized unsandboxed targeted rerun passed (2.27s). No live
+account settings were changed or code deployed.

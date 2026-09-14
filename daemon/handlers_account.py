@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
+from daemon import account_mutation
+
 from sqlalchemy import select
 
 from shared.config import settings
@@ -477,6 +479,7 @@ def _terminate_account(params: dict) -> dict:
         return _account_to_dict(account)
 
 
+@account_mutation.locked
 def set_php_version(params: dict) -> dict:
     """Phase 2 feature 1: switch one account's PHP version. Re-renders and
     reloads only that account's own vhconf.conf (+ the shared

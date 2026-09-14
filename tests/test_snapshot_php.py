@@ -212,3 +212,24 @@ def test_php_runtime_failure_reapplies_previous_database_settings(accounts, php_
     assert 'private runtime details' not in str(failure.value)
     assert snapshot_php.capture(alpha) == before
     assert attempts == ['8.4', '8.3']
+
+
+@pytest.mark.parametrize('module,name,extra', [
+    ('handlers_php_ini', 'set_php_ini', {'memory_limit': '512M'}),
+    ('handlers_php_ini', 'reset_php_ini', {}),
+    ('handlers_account', 'set_php_version', {'php_version': '8.4'}),
+    ('handlers_domain', 'set_domain_php_version', {'domain': 'alpha.test', 'php_version': '8.4'}),
+    ('phpext', 'set_extensions', {'enabled': []}),
+    ('phpext', 'reset_extensions', {}),
+])
+def test_php_edit_handlers_reject_active_account_restore(accounts, php_runtime, module, name, extra):
+    import importlib
+    from daemon import snapshot_jobs
+    alpha, _ = accounts
+    before = snapshot_php.capture(alpha)
+    handler = getattr(importlib.import_module('daemon.' + module), name)
+    with snapshot_jobs.lock(f'account-{alpha.id}'):
+        with pytest.raises(ValidationError, match='in progress'):
+            handler(dict(username='alpha', **extra))
+    assert snapshot_php.capture(alpha) == before
+    assert not php_runtime

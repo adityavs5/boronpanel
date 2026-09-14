@@ -9,6 +9,8 @@ content regardless of which domain/subdomain was actually requested.
 """
 from __future__ import annotations
 
+from daemon import account_mutation
+
 from sqlalchemy import select
 
 from shared.config import settings
@@ -221,6 +223,7 @@ def list_domains(params: dict) -> dict:
         return {"domains": [_domain_to_dict(d) for d in domains]}
 
 
+@account_mutation.locked
 def set_domain_php_version(params: dict) -> dict:
     """Phase 7a feature 6: per-domain PHP version override. `php_version`
     empty/None clears the override (back to inheriting Account.php_version)

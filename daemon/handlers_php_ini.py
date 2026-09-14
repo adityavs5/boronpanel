@@ -7,6 +7,8 @@ ever affected and no system-wide php.ini file is touched.
 """
 from __future__ import annotations
 
+from daemon import account_mutation
+
 from sqlalchemy import select
 
 from shared.config import settings
@@ -104,6 +106,7 @@ def get_php_ini(params: dict) -> dict:
         }
 
 
+@account_mutation.locked
 def set_php_ini(params: dict) -> dict:
     username = validate_username(params["username"])
 
@@ -205,6 +208,7 @@ def set_php_ini(params: dict) -> dict:
     }
 
 
+@account_mutation.locked
 def reset_php_ini(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:

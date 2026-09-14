@@ -145,3 +145,36 @@ def test_php_worker_encrypts_previous_settings_before_apply(configuration, monke
     previous = snapshot_configuration.load_php(repo, account, updates['safety_snapshot_id'], source_restore_id=991)
     assert previous == snapshot_php.validate_for_restore(account, before)
     assert events[0][0] == 'update' and events[1] == ('runtime', archived['default_version'])
+
+
+def test_queued_php_restore_undo_and_redo(configuration, monkeypatch):
+    from daemon import snapshot_php, ols, sysops
+    _, ident, _, _ = configuration
+    run = jobs._row(SnapshotRun, ident)
+    account = jobs._row(Account, run.account_id)
+    archived = snapshot_php.capture(account)
+    with write_session() as session:
+        session.get(Account, account.id).php_version = '8.2'
+    before = snapshot_php.capture(account)
+    monkeypatch.setattr(ols, 'refresh_vhost', lambda account: None)
+    monkeypatch.setattr(sysops, 'recycle_php_workers', lambda username: None)
+    options = restores.configuration_options(dict(username='alpha', run_id=ident))
+    assert options['php_available'] and options['cron_available']
+    assert options['php_default_version'] == archived['default_version']
+    request = restores.trigger(dict(username='alpha', run_id=ident, confirmation='alpha',
+                                    kind='config', config_sections=['php']))
+    restores.execute(request['id'])
+    row = jobs._row(SnapshotRestore, request['id'])
+    assert row.status == 'completed', row.error
+    assert row.selection['config_sections'] == ['php']
+    assert snapshot_php.capture(account) == archived
+    undo = restores.undo(dict(username='alpha', restore_id=row.id, confirmation='alpha'))
+    restores.execute(undo['id'])
+    undone = jobs._row(SnapshotRestore, undo['id'])
+    assert undone.status == 'completed', undone.error
+    assert snapshot_php.capture(account) == before
+    redo = restores.undo(dict(username='alpha', restore_id=undone.id, confirmation='alpha'))
+    restores.execute(redo['id'])
+    redone = jobs._row(SnapshotRestore, redo['id'])
+    assert redone.status == 'completed', redone.error
+    assert snapshot_php.capture(account) == archived
