@@ -14,7 +14,7 @@ The complete user objective remains active. A checked item requires implementati
 - [ ] Direct interactions: database and SSL names/actions first, then audit other comparable lists; accessible desktop/mobile management views.
 - [ ] Terminal: configurable BORON ASCII welcome from admin configuration, suppress default Ubuntu status/MOTD in admin terminal; preserve usable prompts and appropriate customer behavior.
 - [x] PHP: account default version inherited by new sites; per-site override dropdown; Lite/Moderate/Max limit presets and editable Custom selected by default.
-- [ ] Typography: improve font and dashboard icon-label sizing with local assets and no performance regression.
+- [x] Typography: improve font and dashboard icon-label sizing with local assets and no performance regression.
 - [x] Security/time: admin/customer 2FA setup, recovery, reliable clock synchronization, drift/unsynchronized state detection and actionable diagnostics. Do not claim absolute immunity to host/network failure.
 - [ ] Final build, targeted and broad regression checks, real workflows, deployment, and requirement-by-requirement completion audit.
 
@@ -537,3 +537,24 @@ Paper Lantern dark recovery screen was visually inspected with synthetic codes.
 Chrony remained active/enabled with normal synchronization, Restart=on-failure and
 a five-second restart delay. This satisfies the security/time checklist item
 without claiming immunity to future host or network failure.
+
+## Typography and asset performance — 2026-09-14
+
+Dashboard icon labels now render at 14px on desktop and 13px on mobile in both
+themes (previously Evolution was 12px/11px and Paper Lantern 13px/12px). Evolution
+uses the existing locally hosted Inter variable font; Paper Lantern retains its
+native Arial appearance and requires no webfont. No font payload was added by
+this change. Four browser checks across roles/themes confirmed computed sizes,
+no mobile horizontal overflow, no remote asset requests, one Evolution font
+within a 50KB budget and zero Paper Lantern webfonts. The Evolution mobile
+dashboard screenshot was visually inspected.
+
+Hashed Vite assets now receive public one-year immutable caching, while stable
+index/theme-init files revalidate. The HTTP integration test covers font/JS/CSS
+200 and ETag 304 responses, mutable entrypoints, unhashed files and missing assets.
+Production build passed. Revision 592ff0a was deployed with a private rollback
+copy at `/root/boron-setup/mail-recovery-before-20260914-022737`; panel health,
+admin login and configuration RPC passed on unchanged port 2222. Live HTTPS
+verified the 48,256-byte local Inter file, immutable headers, ETag 304 and no-cache
+entrypoints. This improves repeat-visit caching without adding font requests,
+external services or font bytes, and completes the typography checklist item.
