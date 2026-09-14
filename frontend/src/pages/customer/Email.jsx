@@ -38,11 +38,20 @@ const EMAIL_TABS = [
 // --- Mailboxes -----------------------------------------------------------
 
 function MailboxesTab({ domain }) {
+  const username = useAccountUsername()
   const qc = useQueryClient()
   const key = ['mailboxes', domain]
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({ local_part: '', password: '', quota_mb: 1024 })
   const [toDelete, setToDelete] = useState(null)
+  const [selected, setSelected] = useState(null)
+  const [password, setPassword] = useState('')
+  useEffect(() => { setSelected(null); setPassword('') }, [domain, username])
+  const passwordMut = useMutation({
+    mutationFn: () => patch(`/api/v1/accounts/${encodeURIComponent(username)}/email/${encodeURIComponent(selected.local_part)}/password`, {domain, password}),
+    onSuccess: () => { toast.success('Mailbox password updated'); setPassword('') },
+    onError: error => toast.error('Could not update password', error.message),
+  })
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: key,
@@ -77,7 +86,7 @@ function MailboxesTab({ domain }) {
       header: 'Mailbox',
       sortable: true,
       searchable: true,
-      render: (r) => <span className="font-medium text-foreground">{r.local_part}@{domain}</span>,
+      render: (r) => <button className="font-medium text-accent-600 dark:text-accent-300 hover:underline" onClick={() => setSelected(r)}>{r.local_part}@{domain}</button>,
     },
     {
       key: 'quota_mb',
@@ -96,9 +105,9 @@ function MailboxesTab({ domain }) {
       header: '',
       align: 'right',
       render: (r) => (
-        <Button variant="ghost" size="icon-sm" onClick={() => setToDelete(r.local_part)} aria-label="Delete mailbox">
+        <div className="flex items-center justify-end gap-2"><Button variant="secondary" size="sm" onClick={event => { event.stopPropagation(); setSelected(r) }}>Manage</Button><Button variant="ghost" size="icon-sm" onClick={event => { event.stopPropagation(); setToDelete(r.local_part) }} aria-label="Delete mailbox">
           <Trash2 className="h-4 w-4 text-danger" />
-        </Button>
+        </Button></div>
       ),
     },
   ]
@@ -115,6 +124,7 @@ function MailboxesTab({ domain }) {
       <DataTable
         columns={columns}
         data={data?.mailboxes}
+        onRowClick={setSelected}
         loading={isLoading}
         error={error}
         onRetry={refetch}
@@ -128,6 +138,16 @@ function MailboxesTab({ domain }) {
         emptyAction={<Button size="sm" onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create mailbox</Button>}
       />
 
+      <Dialog open={!!selected} onOpenChange={open => { if (!open && !passwordMut.isPending) { setSelected(null); setPassword('') } }}>
+        <DialogContent size="sm"><DialogHeader><DialogTitle>Manage mailbox</DialogTitle></DialogHeader>
+          <form onSubmit={event => { event.preventDefault(); if (password.length >= 10 && !passwordMut.isPending) passwordMut.mutate() }}>
+            <DialogBody className="space-y-4"><p className="break-all font-medium">{selected?.local_part}@{domain}</p>
+              <p className="text-sm text-muted-foreground">Quota: {formatMB(selected?.quota_mb)} · {selected?.active ? 'Active' : 'Inactive'}</p>
+              <FormField label="New mailbox password" required hint="Update your email clients after changing this password."><Input type="password" autoComplete="new-password" minLength={10} required value={password} disabled={passwordMut.isPending} onChange={event => setPassword(event.target.value)}/></FormField>
+            </DialogBody><DialogFooter><Button type="button" variant="secondary" disabled={passwordMut.isPending} onClick={() => { setSelected(null); setPassword('') }}>Done</Button><Button type="submit" loading={passwordMut.isPending} disabled={password.length < 10}>Update password</Button></DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent size="sm">
           <DialogHeader>

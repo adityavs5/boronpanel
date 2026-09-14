@@ -20,6 +20,7 @@ export default function SshKeys() {
   const [createOpen, setCreateOpen] = useState(false)
   const [keyText, setKeyText] = useState('')
   const [toDelete, setToDelete] = useState(null)
+  const [selected, setSelected] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['ssh-keys', username],
@@ -55,9 +56,7 @@ export default function SshKeys() {
       sortable: true,
       searchable: true,
       render: (r) => (
-        r.comment
-          ? <span className="font-medium text-foreground">{r.comment}</span>
-          : <span className="text-muted-foreground">—</span>
+        <button className="font-medium text-accent-600 dark:text-accent-300 hover:underline" onClick={() => setSelected(r)}>{r.comment || 'Unnamed SSH key'}</button>
       ),
     },
     {
@@ -90,12 +89,13 @@ export default function SshKeys() {
       align: 'right',
       searchable: false,
       render: (r) => (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={event => { event.stopPropagation(); setSelected(r) }}>Manage</Button>
           <Button
             variant="ghost"
             size="icon-sm"
             aria-label={`Remove SSH key ${r.comment || r.fingerprint}`}
-            onClick={() => setToDelete(r)}
+            onClick={event => { event.stopPropagation(); setToDelete(r) }}
           >
             <Trash2 className="h-4 w-4" />
           </Button>
@@ -119,6 +119,7 @@ export default function SshKeys() {
       <DataTable
         columns={columns}
         data={data?.keys}
+        onRowClick={setSelected}
         loading={isLoading}
         error={error}
         onRetry={refetch}
@@ -132,6 +133,14 @@ export default function SshKeys() {
         emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Add SSH key</Button>}
       />
 
+      <Dialog open={!!selected} onOpenChange={open => !open && setSelected(null)}>
+        <DialogContent size="md"><DialogHeader><DialogTitle>Manage SSH key</DialogTitle><DialogDescription>{selected?.comment || 'Unnamed SSH key'}</DialogDescription></DialogHeader>
+          <DialogBody className="space-y-4"><p className="text-sm">{selected?.type || 'SSH key'} · {selected?.bits ?? '—'} bits</p>
+            <FormField label="Key fingerprint"><Textarea readOnly rows={3} value={selected?.fingerprint || ''} className="font-mono text-xs"/></FormField>
+            <p className="text-sm text-muted-foreground">Removing this key revokes its SSH access. Other authorized keys remain available.</p>
+          </DialogBody><DialogFooter><Button variant="secondary" onClick={() => setSelected(null)}>Done</Button><Button variant="danger" onClick={() => { setToDelete(selected); setSelected(null) }}>Remove key</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
       {/* Add key */}
       <Dialog open={createOpen} onOpenChange={(v) => { setCreateOpen(v); if (!v) setKeyText('') }}>
         <DialogContent size="md">
