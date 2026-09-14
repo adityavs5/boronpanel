@@ -20,6 +20,14 @@ from shared.validation import ValidationError
 MAX_BUNDLE_BYTES = 24 * 1024 * 1024
 
 
+def _safety_name(kind):
+    if kind == 'restore':
+        return 'mail-routing-recovery.json'
+    if kind == 'rollback':
+        return 'mail-routing-rollback-safety.json'
+    raise ValidationError('Invalid mail-routing safety purpose')
+
+
 def _job_id(value):
     if type(value) is not int or value <= 0:
         raise ValidationError('Invalid mail-routing recovery job')
@@ -61,7 +69,7 @@ def prepare(account, desired):
 
 
 @serialized_worker
-def save_previous(repo, account, restore_id, bundle):
+def save_previous(repo, account, restore_id, bundle, *, kind='restore'):
     """Persist a fresh immutable safety source and encrypt it before activation.
 
     A failed/uncertain backup retains the private source. The coordinator records
@@ -69,14 +77,15 @@ def save_previous(repo, account, restore_id, bundle):
     Do not blindly repeat this function for the same job after interruption.
     """
     restore_id = _job_id(restore_id)
+    filename = _safety_name(kind)
     selected = _validate(account, bundle)
     payload = dict(format=1, account_id=account.id, username=account.username,
-                   restore_id=restore_id, **selected)
+                   restore_id=restore_id, safety_kind=kind, **selected)
     content = json.dumps(payload, sort_keys=True, ensure_ascii=True).encode('utf-8')
     if len(content) > MAX_BUNDLE_BYTES:
         raise ValidationError('Mail-routing safety bundle is too large')
     work = jobs.private_directory('restores', f'restore-{restore_id}')
-    path = work / 'mail-routing-recovery.json'
+    path = work / filename
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'wb') as handle:
         handle.write(content); handle.flush(); os.fsync(handle.fileno())
@@ -104,11 +113,12 @@ def _read(path):
             raise ValidationError('Invalid private mail-routing safety data') from None
 
 
-def load_previous(repo, account, snapshot_id, restore_id):
+def load_previous(repo, account, snapshot_id, restore_id, *, kind='restore'):
     """Read an account- and job-bound safety copy; never return it through RPC."""
     restore_id = _job_id(restore_id)
+    filename = _safety_name(kind)
     snapshot = storage.owned_snapshot(repo, account.id, snapshot_id)
-    source = Path(settings.snapshot_private_dir) / 'restores' / f'restore-{restore_id}' / 'mail-routing-recovery.json'
+    source = Path(settings.snapshot_private_dir) / 'restores' / f'restore-{restore_id}' / filename
     if snapshot.get('paths') != [str(source)]:
         raise ValidationError('Mail-routing safety paths do not match the source job')
     work = jobs.private_directory('mail-routing-metadata', uuid.uuid4().hex)
@@ -118,7 +128,7 @@ def load_previous(repo, account, snapshot_id, restore_id):
         if (not isinstance(payload, dict) or type(payload.get('format')) is not int or payload['format'] != 1
                 or type(payload.get('account_id')) is not int or payload['account_id'] != account.id
                 or payload.get('username') != account.username or type(payload.get('restore_id')) is not int
-                or payload['restore_id'] != restore_id):
+                or payload['restore_id'] != restore_id or payload.get('safety_kind', 'restore') != kind):
             raise ValidationError('Mail-routing safety belongs to another account or job')
         return _validate(account, dict(routing=payload.get('routing'), scripts=payload.get('scripts')))
     finally:

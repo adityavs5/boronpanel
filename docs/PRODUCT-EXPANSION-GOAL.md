@@ -1410,3 +1410,44 @@ after supervisor reuse. SQL and guard files were real isolated fixtures; supervi
 and mail-service status plus safety-loader prerequisites were mocked here (real
 encrypted safety loading is covered by the preceding storage/journal tests). No
 live mail service or production mailbox was changed.
+
+
+### Encrypted rollback of interrupted routing application — 2026-09-14
+
+Added an explicit reverse operation for a stopped, incompletely finalized routing
+restore. Preparation first confirms the original worker is no longer running and
+decrypts/matches the original safety target. Under the existing guard tokens it
+accepts only SQL state matching the original or intended transaction and script
+bytes individually matching original or desired content. Unrelated later changes
+are refused. Original target scripts are compiled before reverse authorization.
+
+The actual partial state receives a separate immutable encrypted rollback safety
+copy, with a purpose-bound filename and envelope. Its decrypted content is checked
+before writing a fresh rollback journal with a new supervised operation ID and
+unchanged job/guard ownership. The reverse journal uses the existing offline
+application and finalization pipeline. Both original and rollback safety copies
+remain available. Journal direction selects fixed allowed paths; purpose checks
+prevent loading a rollback snapshot as an original safety snapshot.
+
+Once a reverse journal exists, the original operation cannot execute or finalize.
+Recovery follows the reverse journal and reports rolled_back explicitly after
+completion. The rollback launcher retires only the observed terminal original
+supervisor operation before creating the next supervised worker. Original journal
+history is retained unchanged.
+
+Still required before release: queue/UI integration and undo controls, persistent
+protection of both safety snapshots in retention, direct mutation exclusion across
+worker phases, recovery handling if rollback itself is interrupted, and live
+supervised validation. Cloudflare-native DNS recovery and the final broad backup
+audit also remain open. These changes are not deployed.
+
+Validation: 13 rollback/finalization tests passed (180.31s). The real encrypted
+round-trip induces a lost SQL checkpoint, saves the partial state separately,
+reverses SQL and exact custom script content, finalizes guard release, preserves
+the original journal and both encrypted safety snapshots, rejects wrong-purpose
+snapshot loading, and reports rolled_back through original-job recovery. Other
+cases reject a running worker before decryption, protect unrelated script edits,
+and retain current state/guards on rollback encryption failure. Existing nine
+finalization/release recovery cases also passed. Fixtures used isolated MariaDB,
+temporary vmail/guards and real restic; supervisor and service-state calls were
+mocked. Live service supervision is still unverified for this routing workflow.
