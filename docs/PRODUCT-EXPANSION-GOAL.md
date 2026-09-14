@@ -1258,3 +1258,38 @@ reply compilation, disabled/removed replies, unaffected custom scripts and
 sanitized compiler failures. The last two runs reported pytest cleanup warnings
 for older privileged temporary fixtures; their test cases passed. No live script,
 mailbox or routing record was changed.
+
+
+### Guarded Sieve activation primitive — 2026-09-14
+
+Added internal script activation with account-bound private-document validation,
+strict bounded base64 decoding, exact desired/safety/guard selection matching,
+current mailbox authorization and owned durable mailbox guards. Every desired
+script is compiled and every current script/cache is preflighted before the first
+live write. Script state is checked again immediately before activation. File
+replacement uses exclusive temporary files, vmail ownership, mode 0600, fsync and
+atomic rename; stale compiled caches are removed. Lazy mailbox homes are created
+with vmail ownership and mode 0700 only when a script must be installed. Absent
+scripts remain distinct from empty scripts. Readback precedes the caller’s
+per-mailbox durable checkpoint callback.
+
+The primitive retains guards on success and failure. It does not claim batch
+atomicity or automatically replay after a partial/uncertain write. Its recovery
+coordinator must first persist encrypted SQL/script safety state and guard tokens,
+hold the account/SQL locks and quiesce delivery; a guard alone does not drain
+existing sessions. The coordinator must inspect and reconcile interrupted work,
+verify the complete result and record release intent before releasing guards.
+
+This internal code is not exposed or deployed. Durable routing/Sieve coordination,
+encrypted undo, queue/UI integration, live proof and Cloudflare-native DNS recovery
+remain open.
+
+Validation: 39 Sieve capture/preparation/activation tests passed (89.66s), using
+temporary mailbox/guard directories, actual vmail UID/GID 150, real guard tokens
+and the real Sieve compiler. New cases verify exact non-UTF8 custom-script undo,
+file ownership/modes and cache removal, lazy-home creation and undo to absence,
+whole-batch compile failure before writes, wrong guard rejection, stale safety
+state rejection, partial-batch recovery from observed actual state, failed-rename
+temporary cleanup, checkpoint failure with guards retained, unsafe compiled-cache
+rejection, and invalid account/encoding/duplicate/selection/guard documents. All
+existing Sieve capture/preparation tests also passed; no live mail was modified.
