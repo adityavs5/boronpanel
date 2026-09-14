@@ -1230,3 +1230,19 @@ payload and mobile overflow. The frontend production build passed; the mobile
 Paper Lantern dark screenshot was visually inspected. This is not deployed to the
 live panel. Recovery scheduling, previous-mail-copy undo and broader deployment
 verification remain outstanding.
+
+Mailbox restore failures with persisted preparation now schedule recovery in the
+running daemon instead of requiring a restart. A deduplicated five-second timer
+submits observation without occupying an executor worker while waiting. Recovery
+uses the same scheduling path for an observed live switch and for account or
+repository lock contention. It always re-reads job state under the existing locks;
+terminal jobs are inert and mailbox switches are not replayed. Unverifiable
+recovery records still remain pending for inspection rather than being blindly
+retried or discarded.
+
+Validation: seven mailbox dispatcher cases passed with service-user ownership
+available. New tests hold actual account/repository flock locks, exercise repeated
+observations and timer deduplication while busy, then release the lock and verify
+recovery terminates without another timer. Failure tests verify only interrupted
+jobs with persisted preparation schedule recovery. Existing-server update guard
+installation, previous-mail-copy undo and live mailbox validation remain pending.

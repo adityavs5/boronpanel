@@ -7,6 +7,8 @@ from shared.models import Account, SnapshotDestination, SnapshotPolicy, Snapshot
 
 @pytest.mark.parametrize('prepared', [False, True])
 def test_mail_failure_preserves_recovery_and_never_leaks_exception(isolated_db, tmp_path, monkeypatch, prepared):
+    scheduled = []
+    monkeypatch.setattr(restores, '_schedule_mail_recovery', scheduled.append)
     with write_session() as session:
         account = Account(username='alpha', status='active', uid=65534, gid=65534)
         destination = SnapshotDestination(name='test', kind='local', path=str(tmp_path / 'repo'), namespace='fixture')
@@ -32,6 +34,7 @@ def test_mail_failure_preserves_recovery_and_never_leaks_exception(isolated_db, 
         raise RuntimeError('private diagnostic must not reach customer')
     monkeypatch.setattr(mail_restore, 'run_restore', interrupted)
     restores.execute(ident)
+    assert scheduled == ([ident] if prepared else [])
     with write_session() as session:
         row = session.get(SnapshotRestore, ident)
         assert row.status == ('running' if prepared else 'failed')
@@ -81,3 +84,43 @@ def test_pre_switch_abort_releases_only_proven_preparation(isolated_db, tmp_path
         assert mail_restore.abort_pre_switch(account, work, 7)['guards_released'] == 0
         assert not list((tmp_path / 'guards').iterdir())
     assert retained.read_text() == 'retain prepared copy'
+
+
+@pytest.mark.parametrize('busy', ['account', 'repository'])
+def test_mail_recovery_retries_busy_lock_then_finishes(isolated_db, tmp_path, monkeypatch, busy):
+    with write_session() as session:
+        account = Account(username='alpha', status='active', uid=65534, gid=65534)
+        destination = SnapshotDestination(name='test', kind='local', path=str(tmp_path / 'repo'), namespace='fixture')
+        session.add_all([account, destination]); session.flush()
+        policy = SnapshotPolicy(name='mail', destination_id=destination.id)
+        session.add(policy); session.flush()
+        source = SnapshotRun(policy_id=policy.id, destination_id=destination.id, account_id=account.id,
+                             options={'components': ['mail']}, status='completed', snapshot_id='a'*64)
+        session.add(source); session.flush()
+        job = SnapshotRestore(run_id=source.id, account_id=account.id, status='running', selection={'kind': 'mail'})
+        session.add(job); session.flush()
+        ident = job.id
+        lock_name = f'account-{account.id}' if busy == 'account' else f'repository-{destination.id}'
+    callbacks = []
+    class Timer:
+        def __init__(self, delay, callback):
+            self.callback = callback
+        def start(self):
+            callbacks.append(self.callback)
+    monkeypatch.setattr(restores.threading, 'Timer', Timer)
+    monkeypatch.setattr(restores, '_mail_recovery_timers', {})
+    monkeypatch.setattr(jobs._executor, 'submit', lambda fn, *args: fn(*args))
+    with jobs.lock(lock_name):
+        restores.recover_mail_restore(ident)
+        restores.recover_mail_restore(ident)
+        assert len(callbacks) == 1
+        assert jobs._row(SnapshotRestore, ident).status == 'running'
+        callbacks.pop(0)()  # Still busy: schedule another observation, not a switch.
+        assert len(callbacks) == 1
+        assert jobs._row(SnapshotRestore, ident).status == 'running'
+    callbacks.pop(0)()
+    assert jobs._row(SnapshotRestore, ident).status == 'failed'
+    assert not callbacks
+    assert not restores._mail_recovery_timers
+    restores.recover_mail_restore(ident)  # Delayed duplicate after completion is inert.
+    assert not callbacks

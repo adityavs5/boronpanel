@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 import shutil
+import threading
 import uuid
 
 from sqlalchemy import select
@@ -15,6 +16,25 @@ from shared.models import Account, BackupJob, DatabaseGrant, MailDomain, Restore
 from shared.validation import ValidationError
 
 logger=logging.getLogger('borond.snapshot_restores')
+
+_mail_recovery_timers = {}
+_mail_recovery_timer_lock = threading.Lock()
+
+
+def _schedule_mail_recovery(ident):
+    """Keep one delayed observation per job, without occupying a pool worker."""
+    def enqueue():
+        with _mail_recovery_timer_lock:
+            _mail_recovery_timers.pop(ident, None)
+        jobs._executor.submit(recover_mail_restore, ident)
+
+    with _mail_recovery_timer_lock:
+        if ident in _mail_recovery_timers:
+            return
+        timer = threading.Timer(5, enqueue)
+        timer.daemon = True
+        _mail_recovery_timers[ident] = timer
+        timer.start()
 
 MAIL_PHASES = ('preparing', 'prepared', 'guarded', 'provisioned', 'staged', 'switching',
                'switched', 'safety_saved', 'completed')
@@ -463,6 +483,7 @@ def execute(ident):
     except Exception as exc:
         if row.selection.get('kind') == 'mail':
             from shared.models import SnapshotMailRecovery
+            needs_recovery = False
             with write_session() as session:
                 current = session.get(SnapshotRestore, ident)
                 checkpoint = session.get(SnapshotMailRecovery, ident)
@@ -474,6 +495,8 @@ def execute(ident):
                                      if needs_recovery else 'Mailbox preparation failed before live mail changes.')
                     current.completed_at = None if needs_recovery else utcnow()
             logger.warning('Mailbox restore %s requires failure inspection', ident)
+            if needs_recovery:
+                _schedule_mail_recovery(ident)
             return
         logger.exception('Snapshot restore %s failed',ident)
         _update(ident,status='failed',progress_message='Restore failed; review the error before retrying',error=str(exc)[-3000:],completed_at=utcnow())
@@ -516,10 +539,7 @@ def recover_mail_restore(ident):
             if inspect_switch(observed['operation_id'])['state'] == 'running':
                 _update(ident, progress_message='Waiting for mailbox switch to finish')
                 # Reobserve this exact operation; never launch another worker.
-                import threading
-                timer = threading.Timer(5, lambda: jobs._executor.submit(recover_mail_restore, ident))
-                timer.daemon = True
-                timer.start()
+                _schedule_mail_recovery(ident)
                 return
             account = jobs._row(Account, row.account_id)
             if rollback_path or any(entry['state'] == 'ready' for entry in journal.inspect(path)):
@@ -554,7 +574,8 @@ def recover_mail_restore(ident):
                 saved.journal = str(path)
                 saved.updated_at = utcnow()
     except BlockingIOError:
-        return  # A live account/repository owner still has the operation.
+        _schedule_mail_recovery(ident)
+        return  # Reobserve after the live account/repository owner releases it.
     except Exception:
         logger.warning('Mailbox restore %s still requires recovery inspection', ident)
         _update(ident, progress_message='Mailbox recovery pending',
