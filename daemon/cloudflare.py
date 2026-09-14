@@ -448,3 +448,13 @@ def list_records(zone: str, zone_id: str | None = None) -> list[dict]:
         if rec.get("proxied"):
             entry["proxied"] = True
     return list(rrsets.values())
+
+
+def export_record_documents(zone: str, zone_id: str | None = None) -> list[dict]:
+    """Private backup surface: retain per-record TTL/proxy/data/settings fields.
+
+    Unlike list_records this does not fold records into a UI rrset or rewrite
+    Auto TTL. These documents are recovery metadata, not customer RPC output.
+    """
+    zid = _resolve_zone_id(zone, zone_id)
+    return list(_paged(f"/zones/{zid}/dns_records"))

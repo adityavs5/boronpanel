@@ -304,15 +304,14 @@ def sources(account, options):
                 if root.is_symlink() or root.resolve()!=root.absolute():raise ValidationError('Mail storage contains an unsafe path')
                 paths.append(str(root))
     if 'config' in options['components']:
-        from daemon import cron, dnsprovider
-        from shared.models import DnsZone
+        from daemon import cron
         from daemon.snapshot_php import capture as capture_php
         manifest['php_configuration']=capture_php(account)
+        from daemon.snapshot_dns import capture as capture_dns, legacy_zones
+        manifest['dns_configuration']=capture_dns(account)
         manifest['cron_configuration']=cron.capture_configuration(account.username)
         manifest['cron_jobs']=cron.parse_jobs(manifest['cron_configuration']['lines'])
-        with write_session() as session:
-            zones=session.scalars(select(DnsZone).where(DnsZone.account_id==account.id)).all()
-        manifest['dns_zones']=[{'zone':z.zone,'records':dnsprovider.list_records(z.zone)} for z in zones]
+        manifest['dns_zones']=legacy_zones(manifest['dns_configuration'])
         (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
     return paths+[str(stage)]
 

@@ -933,3 +933,32 @@ and the served Backups frontend bundle matching the production build byte-for-by
 No credentials were printed. Live process-crash injection was not performed;
 interrupted recovery remains covered by the real encrypted repository tests with
 mocked runtime calls. DNS and mail-routing restoration remain outstanding.
+
+### Native DNS recovery metadata — 2026-09-14
+
+Audit found the existing config backup used the DNS editor's simplified records:
+PowerDNS disabled flags/comments were discarded and Cloudflare per-record proxy,
+automatic TTL and settings were collapsed. Added native DNS capture bound to
+account/zone/provider registration, with ownership/provider rechecks after reads.
+PowerDNS rrsets retain SOA, disabled flags and comments. Cloudflare capture retains
+individual record documents and uses the zone's registered token context without
+including credentials in backup metadata. The legacy manifest DNS view is derived
+from the same native capture, avoiding duplicate provider reads and inconsistent
+snapshots between the two representations.
+
+Provider references: https://doc.powerdns.com/authoritative/http-api/zone.html and
+https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/list/.
+This adds capture only. Native payload validation, record application, encrypted
+undo, provider/record mutation coordination, UI and live DNS recovery remain to be
+implemented and verified. Provider/delegation changes are not performed by capture.
+Cloudflare pagination is not a globally atomic external snapshot; ownership/provider
+rechecks detect control-plane changes, not arbitrary edits outside Boron.
+
+Validation: seven final DNS tests passed (18.30s), including native disabled-record
+preservation through a real encrypted restic backup, Cloudflare per-record fields
+and transport-token isolation, foreign registration rejection, ownership/provider
+change rejection, and legacy-view derivation. Two final API authorization/full
+configuration backup tests passed outside the sandbox (12.04s; existing Starlette
+warning). The earlier combined run was interrupted after 17 completed checks when
+its sandboxed TestClient stalled; the remaining two checks were the targeted
+unsandboxed run. No DNS records changed and this capture change is not deployed.
