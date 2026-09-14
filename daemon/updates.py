@@ -36,7 +36,8 @@ line to /var/log/boron/updates.log (audit.py's account-events pattern:
 best-effort, never fails the operation). Nothing secret is ever logged --
 step details are static messages, paths, versions and sizes.
 
-OLS and hosted sites are never touched; only the two panel units restart.
+OLS and hosted sites are never touched. Mail guard upgrades reload Dovecot;
+only the two panel units restart.
 """
 from __future__ import annotations
 
@@ -476,6 +477,7 @@ def _run_update_job(job_id: int, to_version: str) -> None:
 
         # (f) migrations from the NEW version against the live DB --------------
         _run_migrations(job_id, new_dir)
+        _install_mail_guard(job_id, new_dir)
 
         # (g..j) handoff: swap/restart/health/rollback happen in the detached
         # finalizer -- see module docstring for why. backup_dir already
@@ -771,6 +773,27 @@ def _run_migrations(job_id: int, new_dir: str) -> None:
     if proc.returncode != 0:
         _fail_step(job_id, "migrate", f"new version's migrations failed: {(proc.stderr or '')[-800:]}")
     _step(job_id, "migrate", "ok")
+
+
+def _install_mail_guard(job_id: int, new_dir: str) -> None:
+    """Activate the staged version's guard before switching panel code."""
+    if not Path(new_dir, 'daemon/snapshot_mail_guard_config.py').is_file():
+        return  # Older release without mailbox restoration.
+    _step(job_id, 'mail-guard', 'running', 'Preparing mailbox recovery guard')
+    checked = run(['/usr/bin/dpkg-query', '-W', '-f=${Status}\\n',
+                   'build-essential', 'libssl-dev'], timeout=30)
+    if checked.returncode or checked.stdout.splitlines() != ['install ok installed'] * 2:
+        installed = run(['/usr/bin/apt-get', '-y', 'install', 'build-essential', 'libssl-dev'], timeout=600)
+        if installed.returncode:
+            _fail_step(job_id, 'mail-guard', 'Could not install build-essential and libssl-dev for mailbox recovery')
+    result = run([os.path.join(new_dir, '.venv/bin/python'), '-m',
+                  'daemon.snapshot_mail_guard_config', '--reload', '--backup-dir',
+                  str(Path(settings.db_path).parent / 'mail-guard-config-backups')],
+                 cwd=new_dir, timeout=120)
+    if result.returncode:
+        # Dovecot configuration and process diagnostics can contain credentials.
+        _fail_step(job_id, 'mail-guard', 'Mailbox recovery guard activation failed; panel version was not switched')
+    _step(job_id, 'mail-guard', 'ok')
 
 
 def _admin_alert_target() -> tuple[str, str]:

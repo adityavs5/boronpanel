@@ -819,3 +819,55 @@ def test_job_duration_accepts_sqlite_and_finalizer_timestamps(aware_start, aware
         end = end.replace(tzinfo=dt.timezone.utc)
     job = UpdateJob(kind="update", status="completed", from_version="1.0.1", to_version="1.1.2", started_at=start, completed_at=end)
     assert updates._job_to_dict(job)["duration_seconds"] == 90
+
+
+@pytest.mark.parametrize('failure', [None, 'dependencies', 'activation'])
+def test_mail_guard_update_gates_version_switch(update_env, tmp_path, monkeypatch, failure):
+    from daemon.procutil import ProcResult
+    target = tmp_path / 'staged'
+    (target / 'daemon').mkdir(parents=True)
+    (target / 'daemon/snapshot_mail_guard_config.py').write_text('# staged guard')
+    job_id = _make_job()
+    commands = []
+    handoffs = []
+    for name in ('_preflight', '_build_venv', '_run_migrations'):
+        monkeypatch.setattr(updates, name, lambda *args: None)
+    monkeypatch.setattr(updates, '_backup', lambda *args: str(tmp_path / 'backup'))
+    monkeypatch.setattr(updates, '_download_and_verify', lambda *args: 'archive')
+    monkeypatch.setattr(updates, '_extract_staged', lambda *args: str(target))
+    monkeypatch.setattr(updates, '_handoff_to_finalizer', lambda *args: handoffs.append(args))
+    def run(args, **kwargs):
+        commands.append((args, kwargs))
+        rc = 0
+        if args[0] == '/usr/bin/dpkg-query': rc = 1
+        elif args[0] == '/usr/bin/apt-get': rc = int(failure == 'dependencies')
+        else: rc = int(failure == 'activation')
+        return ProcResult(args=args, returncode=rc, stdout='', stderr='private diagnostic')
+    monkeypatch.setattr(updates, 'run', run)
+    updates._run_update_job(job_id, '99.0.1')
+    assert bool(handoffs) == (failure is None)
+    if failure:
+        row = _get_job(job_id)
+        assert row['status'] == 'failed'
+        assert 'private diagnostic' not in row['error']
+    if failure != 'dependencies':
+        args, kwargs = commands[-1]
+        assert args[:4] == [str(target / '.venv/bin/python'), '-m', 'daemon.snapshot_mail_guard_config', '--reload']
+        assert kwargs['cwd'] == str(target)
+    else:
+        assert len(commands) == 2
+
+
+def test_mail_guard_update_skips_installed_dependencies(update_env, tmp_path, monkeypatch):
+    from daemon.procutil import ProcResult
+    target = tmp_path / 'staged'
+    (target / 'daemon').mkdir(parents=True)
+    (target / 'daemon/snapshot_mail_guard_config.py').touch()
+    commands = []
+    def run(args, **kwargs):
+        commands.append(args)
+        return ProcResult(args=args, returncode=0, stdout='install ok installed\ninstall ok installed\n', stderr='')
+    monkeypatch.setattr(updates, 'run', run)
+    updates._install_mail_guard(_make_job(), str(target))
+    assert len(commands) == 2
+    assert all(args[0] != '/usr/bin/apt-get' for args in commands)

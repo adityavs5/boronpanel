@@ -33,13 +33,20 @@ const STEP_LABELS = {
   extract: 'Validate + stage new version',
   venv: 'Build Python environment',
   migrate: 'Run database migrations',
+  'mail-guard': 'Prepare mailbox recovery',
   finalize: 'Swap, restart panel services, health check',
+}
+
+function stepsFor(job) {
+  if (job?.kind === 'rollback') return ['preflight', 'finalize']
+  return job?.steps?.some(step => step.step === 'mail-guard')
+    ? [...UPDATE_STEPS.slice(0, -1), 'mail-guard', 'finalize'] : UPDATE_STEPS
 }
 
 function StepList({ job }) {
   const byStep = {}
   for (const s of job?.steps || []) byStep[s.step] = s
-  const steps = job?.kind === 'rollback' ? ['preflight', 'finalize'] : UPDATE_STEPS
+  const steps = stepsFor(job)
   return (
     <ul className="space-y-1.5">
       {steps.map((name) => {
@@ -198,7 +205,7 @@ export default function Updates() {
   const last = status?.last_job
   const jobShown = active || null
   const okSteps = (jobShown?.steps || []).filter((s) => s.status === 'ok').length
-  const totalSteps = jobShown?.kind === 'rollback' ? 2 : UPDATE_STEPS.length
+  const totalSteps = stepsFor(jobShown).length
   const finalizing = jobShown?.status === 'finalizing'
 
   const historyColumns = [

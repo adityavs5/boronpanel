@@ -1246,3 +1246,28 @@ observations and timer deduplication while busy, then release the lock and verif
 recovery terminates without another timer. Failure tests verify only interrupted
 jobs with persisted preparation schedule recovery. Existing-server update guard
 installation, previous-mail-copy undo and live mailbox validation remain pending.
+
+The development updater now prepares the staged release's mailbox guard after
+schema migration and before finalizer handoff. It checks installed build packages,
+installs build-essential/libssl-dev when missing, and invokes the staged Python
+module with --reload and a private configuration backup directory. Activation
+requires running Dovecot before installation and after reload; the existing
+configuration installer restores original configuration on validation/reload or
+post-reload health failure. Failed dependencies or activation prevent panel
+version switching, with generic diagnostics that do not expose mail credentials.
+The update screen labels this step as Prepare mailbox recovery.
+
+This hook applies once the running updater includes it. Servers upgrading from an
+older updater require bootstrap activation as part of deployment; the new payload
+cannot retroactively add a step to the old running update process. The development
+server already has its guard installed separately. Guard binary replacement is
+atomic and keeps the same on-disk marker protocol; panel rollback retains the
+installed guard/configuration. Broader live mailbox restore and release/bootstrap
+verification remain outstanding.
+
+Validation for this update integration: 19 guard configuration tests and 66
+update/finalizer tests passed. These cover staged-module invocation, dependency
+failure preventing handoff, activation failure preventing handoff, suppression of
+private diagnostics, installed-package fast path and configuration rollback after
+failed post-reload health. Frontend production build passed. These checks use
+isolated fixtures; no live update or mail reload was performed in this change.

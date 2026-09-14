@@ -209,18 +209,28 @@ def verify(*, binary=GUARD_BINARY, config=None):
 
 
 def main():
-    """Fresh-install entry point; Dovecot is started by the installer afterwards."""
+    """Fresh installation or activation on an existing running mail server."""
     import argparse
     parser = argparse.ArgumentParser(description='Install the Dovecot mailbox restore guard')
     parser.add_argument('--backup-dir', required=True)
+    parser.add_argument('--reload', action='store_true')
     args = parser.parse_args()
     try:
+        def healthy():
+            from daemon.snapshot_mail_service import service_status
+            state = service_status('dovecot.service')
+            if state.get('ActiveState') != 'active' or state.get('SubState') != 'running':
+                raise ValidationError('Dovecot must be running during guard activation')
+        if args.reload:
+            healthy()
         install_binary()
-        install_configuration(args.backup_dir)
+        install_configuration(args.backup_dir, reload=args.reload,
+                              health_check=healthy if args.reload else None)
     except Exception:
         # Configuration can contain SQL credentials; never print exception data.
         parser.exit(1, 'Mailbox restore guard installation failed; inspect Dovecot configuration and build dependencies.\n')
-    print('Mailbox restore guard installed and configuration validated; Dovecot must load it on startup.')
+    print('Mailbox restore guard installed and configuration validated.' if args.reload else
+          'Mailbox restore guard installed and configuration validated; Dovecot must load it on startup.')
 
 
 if __name__ == '__main__':

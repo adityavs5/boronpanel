@@ -173,3 +173,30 @@ def test_failed_post_reload_health_check_rolls_back(configured, tmp_path, monkey
     assert len(reloads) == 2
     assert path.read_bytes() == before
     assert not path.with_name('boron-restore-guard.conf.ext').exists()
+
+
+@pytest.mark.parametrize('running', [True, False])
+def test_update_entrypoint_requires_running_mail_and_checks_after_reload(monkeypatch, tmp_path, running):
+    import sys
+    from daemon import snapshot_mail_service as service
+    calls = []
+    monkeypatch.setattr(sys, 'argv', ['guard', '--backup-dir', str(tmp_path), '--reload'])
+    def status(name):
+        calls.append('health')
+        return {'ActiveState': 'active' if running else 'inactive', 'SubState': 'running' if running else 'dead'}
+    monkeypatch.setattr(service, 'service_status', status)
+    monkeypatch.setattr(config, 'install_binary', lambda: calls.append('binary'))
+    def install(path, **kwargs):
+        assert path == str(tmp_path)
+        assert kwargs['reload'] is True
+        calls.append('configuration')
+        kwargs['health_check']()
+    monkeypatch.setattr(config, 'install_configuration', install)
+    if running:
+        config.main()
+        assert calls == ['health', 'binary', 'configuration', 'health']
+    else:
+        with pytest.raises(SystemExit) as error:
+            config.main()
+        assert error.value.code == 1
+        assert calls == ['health']
