@@ -61,6 +61,31 @@ def test_local_incremental_filter_and_verified_restore(repo,tmp_path):
     exercise_repository(repo,tmp_path)
 
 
+def test_thousand_mailbox_paths_fit_safety_backup_and_use_one_listing(repo, tmp_path, monkeypatch):
+    source = tmp_path / 'mail'
+    source.mkdir()
+    paths = []
+    for index in range(1000):
+        mailbox = source / str(index)
+        mailbox.mkdir()
+        (mailbox / 'message').write_text(str(index))
+        paths.append(str(mailbox))
+    manifest = source / 'mail-safety.json'
+    manifest.write_text('{}')
+    storage.initialize(repo)
+    result = storage.backup(repo, 1, paths + [str(manifest)], recovery_operation='a'*32)
+    commands = []
+    execute = storage._execute
+    def recorded(repository, args, **kwargs):
+        commands.append(args)
+        return execute(repository, args, **kwargs)
+    monkeypatch.setattr(storage, '_execute', recorded)
+    data = storage.restore_to(repo, 1, result['snapshot_id'], str(tmp_path / 'large-restore'), selected_paths=paths)
+    assert sum(args[0] == 'ls' for args in commands) == 1
+    for index, path in enumerate(paths):
+        assert (data / path.lstrip('/') / 'message').read_text() == str(index)
+
+
 def test_rejects_unsafe_credentials_and_ssh_inputs(repo,tmp_path):
     Path(repo.password_file).chmod(0o644)
     with pytest.raises(Exception,match='private regular files'):repo.arguments()

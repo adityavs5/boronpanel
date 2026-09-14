@@ -1118,3 +1118,19 @@ now simulates loss of the final database completion update after guard release,
 then proves reconciliation returns both job and checkpoint to completed, clears
 the interruption error and never invokes another mailbox switch. Earlier failed
 preparation remains protected when processed by the startup dispatcher.
+
+Large mailbox selections now fit the storage layer: operation-tagged mail safety
+backups allow 1,001 paths (1,000 mailboxes plus manifest), and selected restore
+allows 1,000 paths. Ordinary backups retain their existing 200-path bound.
+`entries_many` validates ownership once and lists multiple directories in one
+restic call. Selected-path restore and mailbox preparation use this batching,
+avoiding one archive listing per selected mailbox while retaining exact path
+existence and snapshot-containment checks.
+
+Validation: all 10 storage tests passed, including a real 1,000-directory safety
+backup and selected restore verifying all message contents and exactly one path
+listing, plus existing local/SSH regression cases. The assembled mailbox workflow
+also passed with batched preparation, persistent dispatcher checkpoints and
+interrupted-finalization recovery. This verifies storage scale; it is not yet a
+1,000-mailbox live Dovecot switch test. Customer submission and remaining recovery
+cases are still unfinished.

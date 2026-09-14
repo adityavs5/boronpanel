@@ -66,9 +66,10 @@ def prepare(account, repo, snapshot_id, addresses):
              for entry in entries]
     # Missing trees may reflect a backup filter rather than an empty mailbox.
     # Never turn that absence into an instruction to erase existing messages.
+    nodes = storage.entries_many(repo, account.id, snapshot_id, [str(path.parent) for path in paths])
+    directories = {node.get('path') for node in nodes if node.get('type') == 'dir'}
     for path in paths:
-        nodes = storage.entries(repo, account.id, snapshot_id, str(path))
-        if not any(node.get('path') == str(path) and node.get('type') == 'dir' for node in nodes):
+        if str(path) not in directories:
             raise ValidationError('Selected mailbox has no Maildir in this recovery point')
     work = jobs.private_directory('mail-preparation', uuid.uuid4().hex)
     try:

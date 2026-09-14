@@ -145,8 +145,9 @@ def _filters(patterns):
 
 def backup(repository, account_id, paths, *, policy_id=None, excludes=(), full_scan=False, exclude_mail_staging=False,
            recovery_operation=None):
-    if not paths or len(paths)>200:
-        raise ValidationError('Select between 1 and 200 backup paths')
+    limit = 1001 if recovery_operation is not None else 200
+    if not paths or len(paths)>limit:
+        raise ValidationError(f'Select between 1 and {limit} backup paths')
     source_paths = [str(_absolute(p)) for p in paths]
     args = ['backup','--host','boron','--tag',repository.owner_tag(account_id)]
     if recovery_operation is not None:
@@ -190,23 +191,31 @@ def owned_snapshot(repository, account_id, snapshot_id):
 
 
 def entries(repository, account_id, snapshot_id, directory='/'):
+    return entries_many(repository, account_id, snapshot_id, [directory])
+
+
+def entries_many(repository, account_id, snapshot_id, directories):
+    if not directories or len(directories) > 1000:
+        raise ValidationError('Select between 1 and 1000 snapshot directories')
     owned_snapshot(repository,account_id,snapshot_id)
-    if directory != '/': _absolute(directory)
-    rows = _execute(repository,['ls',snapshot_id,directory],timeout=120)
+    paths = sorted({'/' if str(directory) == '/' else str(_absolute(directory)) for directory in directories})
+    rows = _execute(repository,['ls',snapshot_id,*paths],timeout=120)
     return [r for r in rows if isinstance(r,dict) and r.get('struct_type')=='node']
 
 
 def restore_to(repository, account_id, snapshot_id, directory, *, selected_paths=()):
     snapshot = owned_snapshot(repository,account_id,snapshot_id)
     includes = []
-    if len(selected_paths)>200:
-        raise ValidationError('Select at most 200 paths to restore')
-    for value in selected_paths:
-        selected = _absolute(value)
+    if len(selected_paths)>1000:
+        raise ValidationError('Select at most 1000 paths to restore')
+    selected_values = [_absolute(value) for value in selected_paths]
+    for selected in selected_values:
         if not any(selected == Path(root) or selected.is_relative_to(Path(root)) for root in snapshot.get('paths',[])):
             raise ValidationError('Restore path is outside this snapshot')
-        siblings = entries(repository,account_id,snapshot_id,str(selected.parent))
-        if not any(r.get('path')==str(selected) for r in siblings):
+    found = {node.get('path') for node in entries_many(repository, account_id, snapshot_id,
+             [str(selected.parent) for selected in selected_values])} if selected_values else set()
+    for selected in selected_values:
+        if str(selected) not in found:
             raise ValidationError('Restore path was not found in this snapshot')
         includes += ['--include',_literal_pattern(selected)]
     target = _absolute(directory)
