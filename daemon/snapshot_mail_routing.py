@@ -130,3 +130,70 @@ def read_routing(path, account, selected_domains=None):
     except (OSError, ValueError, UnicodeError):
         raise ValidationError('Could not read private mail-routing metadata') from None
     return validate_for_restore(account, payload, selected_domains)
+
+
+def _domain_bindings(account):
+    from sqlalchemy import text
+    with write_session() as session:
+        connection = session.connection()
+        if connection.dialect.name == 'sqlite' and not connection.connection.driver_connection.in_transaction:
+            session.execute(text('BEGIN'))
+        current = session.get(Account, account.id)
+        if current is None or current.username != account.username or current.status != 'active':
+            raise ValidationError('Account is no longer available for mail-routing capture')
+        return [(row.id, row.domain) for row in session.scalars(select(MailDomain).where(
+            MailDomain.account_id == account.id).order_by(MailDomain.domain)).all()]
+
+
+def capture(account, selected_domains=None):
+    """Capture routing in one repeatable-read SQL transaction, without passwords.
+
+    Caller must coordinate mail/domain mutations and encrypt this private payload
+    before applying recovery. Ownership is checked again after provider reads.
+    """
+    bindings = _domain_bindings(account)
+    if selected_domains is not None:
+        if (not isinstance(selected_domains, list) or any(not isinstance(name, str) for name in selected_domains)
+                or len(set(selected_domains)) != len(selected_domains)
+                or not set(selected_domains) <= {name for _, name in bindings}):
+            raise ValidationError('Invalid mail-routing capture selection')
+        bindings = [(ident, name) for ident, name in bindings if name in selected_domains]
+    domains = []
+    if bindings:
+        connection = mail._connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+            connection.begin()
+            with connection.cursor() as cursor:
+                for _, domain in bindings:
+                    cursor.execute('SELECT id FROM mail_domain WHERE domain=%s', (domain,))
+                    registered = cursor.fetchone()
+                    if registered is None:
+                        raise ValidationError('A selected mail domain is not provisioned')
+                    ident = registered['id']
+                    cursor.execute('SELECT source_local_part,destination,active FROM mail_forward WHERE domain_id=%s ORDER BY source_local_part,destination', (ident,))
+                    forwards = cursor.fetchall()
+                    cursor.execute('SELECT destination,active FROM mail_catchall WHERE domain_id=%s', (ident,))
+                    catchall = cursor.fetchone()
+                    cursor.execute('SELECT u.local_part,a.subject,a.body,a.start_date,a.end_date,a.active FROM mail_autoresponder a JOIN mail_user u ON a.mail_user_id=u.id WHERE u.domain_id=%s ORDER BY u.local_part', (ident,))
+                    responders = cursor.fetchall()
+                    for rule in [*forwards, *responders, *([catchall] if catchall else [])]:
+                        rule['active'] = _active(rule['active'])
+                    for responder in responders:
+                        for key in ('start_date', 'end_date'):
+                            if responder[key] is not None:
+                                responder[key] = responder[key].isoformat()
+                    domains.append(dict(domain=domain, forwards=list(forwards), catchall=catchall, autoresponders=list(responders)))
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+    after = _domain_bindings(account)
+    if selected_domains is not None:
+        after = [(ident, name) for ident, name in after if name in selected_domains]
+    if after != bindings:
+        raise ValidationError('Mail-domain ownership changed during routing capture')
+    return dict(format=1, username=account.username, domains=domains)

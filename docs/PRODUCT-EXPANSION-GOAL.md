@@ -1141,3 +1141,24 @@ invalid addresses/status/content/dates, missing responder mailbox, domain/identi
 isolation, subset selection and incomplete metadata. The private reader test also
 passed (2.89s), covering credential exclusion and unsafe permissions/symlinks/JSON.
 Mail lookups were mocked. This code is not deployed and no live mail settings changed.
+
+### Consistent current mail-routing capture — 2026-09-14
+
+Added current-state capture for routing safety copies. It selects only currently
+owned mail domains, reads forwarders/catch-all/automatic replies in one MariaDB
+repeatable-read transaction, normalizes status/date fields, and rechecks domain
+registration ownership afterward. It never selects mailbox passwords or quotas.
+An empty selected subset performs no mail SQL query; foreign selection is rejected
+before opening the provider connection. The coordinator still needs to serialize
+mail mutations and encrypt this payload before recovery writes.
+
+Validation: the existing 13 routing/reader tests passed (19.73s). Three isolated
+MariaDB tests passed (15.82s), including rule preservation, credential exclusion,
+SQL query-field inspection, foreign selection rejection and a concurrent catch-all
+edit: the first capture retained the original consistent view and the next capture
+saw the new value. The fixture used a temporary database/socket with networking
+disabled; no production mail database or messages were touched.
+The additional real-SQL ownership-transfer test passed (23.39s), confirming that
+capture rejects a domain transferred between its ownership lookup and provider
+read. This code is not deployed. Routing SQL/Sieve application, encrypted undo and
+queue/UI integration remain incomplete, alongside Cloudflare-native DNS recovery.
