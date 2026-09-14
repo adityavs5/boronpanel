@@ -1333,3 +1333,47 @@ safety is rejected before storage. Forwarding-only safety round-trips with empty
 script sets and preserves unrelated custom scripts. Fixtures used private MariaDB
 sockets with networking disabled and temporary restic repositories; no live mail
 state was modified.
+
+
+### Durable routing journal and offline worker — 2026-09-14
+
+Added an account/job/path-bound private routing journal. Creation decrypts and
+compares the encrypted safety copy before publishing a journal containing planned
+guard tokens, previous/desired rules and scripts, and a unique supervised operation
+identifier. Guard acquisition persists intent before publication and can resume
+using only those same tokens after lost acknowledgement. It never adopts another
+job’s guard.
+
+The offline worker requires complete mail-service shutdown, checks actual prior
+SQL/script state, persists intent before SQL replacement, checkpoints SQL commit
+and each verified script activation, and verifies the combined result. Any phase
+past initial guarding rejects blind execution replay. Inspection compares actual
+SQL and scripts with both desired and prior state, regardless of stale checkpoint
+claims. Guards remain owned on completion or failure; this is not panel-job
+finalization.
+
+The launcher uses the existing systemd supervisor and only a fixed internal Python
+module, bound account ID and private journal path. SQL coordination is released
+before launching the independent worker; the offline worker rejects lock
+contention promptly instead of waiting with Dovecot stopped. Recovery checks the
+same supervised operation before inspecting state and returns waiting while that
+worker is confirmed running. The command-line worker prints only a generic failure
+message, keeping private script content and guard tokens out of service logs.
+
+Remaining integration includes recovery decisions/rollback after partial writes,
+durable release intent/finalization, UI/queue and encrypted undo wiring, and live
+supervised validation. Direct mail mutations between worker phases also require
+an explicit audit when connecting this to active restore jobs. No routing code
+from this development sequence has been deployed. Cloudflare-native DNS recovery
+and the final broad backup audit remain open.
+
+Validation: seven journal tests passed (74.97s), plus three supervisor-integration
+tests passed (31.29s). Real isolated MariaDB, temporary vmail scripts/guard files
+and a real encrypted safety-copy test verify SQL/Sieve execution, retained guards,
+readback, replay rejection, lost SQL checkpoint classification, resumable guard
+publication, changed-state rejection, account/path isolation and encrypted-source
+matching. Integration tests verify fixed launcher arguments, release of the SQL
+lock before child launch, prompt offline lock-contention rejection, and no state
+inspection while the supervisor reports the worker running. Service shutdown and
+supervisor execution were mocked; no live service was stopped. These results do
+not establish live systemd orchestration or complete rollback/finalization.
