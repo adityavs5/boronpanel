@@ -8,6 +8,7 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
       localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'customer', username: 'alpha' }, version: 0 }))
     }, { skin, theme })
     let request = null
+    let undoRequest = null
     await page.route('**/api/**', async route => {
       const path = new URL(route.request().url()).pathname
       let data = {}
@@ -20,7 +21,8 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
         { address: 'foreign@example.test', available: false, reason: 'This domain belongs to another account.' },
       ] }
       else if (path.endsWith('/runs/1/restore')) { request = route.request().postDataJSON(); data = { id: 2, status: 'pending' } }
-      else if (path.endsWith('/snapshots/restores')) data = { restores: [] }
+      else if (path.endsWith('/restores/2/undo')) { undoRequest = route.request().postDataJSON(); data = { id: 3, status: 'pending' } }
+      else if (path.endsWith('/snapshots/restores')) data = { restores: request ? [{ id: 2, status: 'completed', selection: { kind: 'mail' }, safety_snapshot_id: 'b'.repeat(64), progress_message: 'Selected mailboxes restored' }] : [] }
       else if (path.endsWith('/backups')) data = { jobs: [] }
       else if (path.endsWith('/restores/list')) data = { restore_jobs: [] }
       await route.fulfill({ json: data })
@@ -46,6 +48,19 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
     await submit.click()
     await expect(form).not.toBeVisible()
     expect(request).toEqual({ kind: 'mail', mailboxes: ['inbox@example.test', 'deleted@example.test'], confirmation: 'alpha', mail_pause_acknowledged: true })
+    await page.getByRole('button', { name: 'Recover previous mail', exact: true }).click()
+    const confirm = page.getByRole('dialog', { name: 'Recover previous mail?', exact: true })
+    await confirm.getByRole('textbox').fill('alpha')
+    await expect(confirm.getByRole('button', { name: 'Recover previous mail', exact: true })).toBeDisabled()
+    await confirm.getByRole('checkbox', { name: /I understand/ }).check()
+    await confirm.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await page.getByRole('button', { name: 'Recover previous mail', exact: true }).click()
+    await expect(confirm.getByRole('checkbox', { name: /I understand/ })).not.toBeChecked()
+    await confirm.getByRole('textbox').fill('alpha')
+    await confirm.getByRole('checkbox', { name: /I understand/ }).check()
+    await confirm.getByRole('button', { name: 'Recover previous mail', exact: true }).click()
+    await expect(confirm).not.toBeVisible()
+    expect(undoRequest).toEqual({ confirmation: 'alpha', mail_pause_acknowledged: true })
     expect(errors).toEqual([])
   })
 }

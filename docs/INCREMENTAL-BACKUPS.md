@@ -1288,3 +1288,31 @@ transferred-domain rejection and staging cleanup, alongside its existing safety
 receipt/finalization assertions. This provides archive mapping for the pending
 previous-version workflow; customer mailbox undo remains unavailable until its
 preparation, execution and interface are completed and tested.
+
+Previous mailbox-version recovery is now connected in the development API,
+worker and both themes. Preparation validates the encrypted safety inventory,
+checks current mailbox/domain ownership, restores its archived sibling trees and
+rebuilds them using offline Dovecot. It then uses the same guarded provisioning,
+staging, durable switch, safety backup and finalization workflow as a normal
+mail restore. The queued job records the source safety snapshot and original
+restore ID. Undo itself gets another encrypted safety copy and can be reversed.
+
+Safety inventories do not contain mailbox credentials. Recovery therefore
+requires those SQL mailboxes to still exist and preserves current passwords,
+quotas and status. Missing mailboxes are refused during selection and again at
+provisioning, before storage initialization, rather than inventing credentials.
+The history action explains this limitation and requires typed account
+confirmation plus an explicit brief-mail-interruption checkbox; cancellation
+clears both confirmation inputs. API acknowledgement is independently required.
+
+Validation: encrypted safety preparation passed with original-message readback
+and unchanged live messages; the isolated SQL/restic/offline-Dovecot integration
+passed a restore, undo and undo-of-undo sequence with final message contents and
+released guards verified. The account API check passed, and four browser cases
+passed across Evolution/Paper Lantern light/dark, including acknowledgement
+reset on cancellation and exact undo payload. Frontend production build passed.
+Real mail-service supervision is covered separately; this workflow run substitutes
+supervision only for isolated Maildirs. Live deployment and broader lifecycle,
+retention/cleanup and initial-goal verification remain outstanding.
+Eight existing file/database browser restore-and-undo cases also passed across
+both themes and color modes after the shared confirmation-dialog change.

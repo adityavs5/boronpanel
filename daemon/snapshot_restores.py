@@ -258,16 +258,28 @@ def trigger(params):
     databases=[]
     mailboxes=[]
     if kind=='mail':
-        if safety:
-            raise ValidationError('Previous mailbox-version recovery is not available yet; the safety copy is retained')
         if params.get('mail_pause_acknowledged') is not True:
             raise ValidationError('Confirm the brief mail-service interruption before restoring mailboxes')
         from daemon.snapshot_mail_guard_config import verify
         verify()
-        mailboxes=jobs._strings(params.get('mailboxes',[]),'mailbox selection',limit=1000)
-        options={item['address']:item for item in mailbox_options({'username':account.username,'run_id':source.id})['mailboxes']}
-        if not mailboxes or any(address not in options or not options[address]['available'] for address in mailboxes):
-            raise ValidationError('Selected mailbox is not available for this account and recovery point')
+        if safety:
+            from daemon.snapshot_mail_restore import safety_inventory, selected_mailboxes
+            try:
+                with jobs.lock(f'repository-{source.destination_id}', blocking=False):
+                    repo=jobs.repository(jobs._row(SnapshotDestination,source.destination_id))
+                    inventory=safety_inventory(account,repo,safety.safety_snapshot_id,safety.id)
+            except BlockingIOError:
+                raise ValidationError('This destination is busy. Try again shortly.') from None
+            metadata={}
+            for item in inventory:
+                metadata.setdefault(item['domain'],{'mailboxes':{}})['mailboxes'][item['local_part']]=None
+            mailboxes=[item['local_part']+'@'+item['domain'] for item in inventory]
+            selected_mailboxes(account,metadata,mailboxes)
+        else:
+            mailboxes=jobs._strings(params.get('mailboxes',[]),'mailbox selection',limit=1000)
+            options={item['address']:item for item in mailbox_options({'username':account.username,'run_id':source.id})['mailboxes']}
+            if not mailboxes or any(address not in options or not options[address]['available'] for address in mailboxes):
+                raise ValidationError('Selected mailbox is not available for this account and recovery point')
         mailboxes=sorted(mailboxes)
     if kind=='databases':
         if safety:
@@ -287,6 +299,7 @@ def trigger(params):
         if databases:selection['databases']=databases
         if mailboxes:selection['mailboxes']=mailboxes
         if safety:selection['source_snapshot_id']=safety.safety_snapshot_id
+        if safety and kind=='mail':selection['source_restore_id']=safety.id
         row=SnapshotRestore(run_id=source.id,account_id=account.id,selection=selection,status='pending')
         session.add(row);session.flush();result=_serialize(row)
     jobs._executor.submit(execute,row.id)
@@ -298,7 +311,8 @@ def undo(params):
     row=jobs._row(SnapshotRestore,params['restore_id'])
     if row.account_id!=account.id or not row.safety_snapshot_id:
         raise ValidationError('Pre-restore recovery point not found for this account')
-    return trigger({'username':account.username,'run_id':row.run_id,'confirmation':params.get('confirmation'),'_safety':row.id})
+    return trigger({'username':account.username,'run_id':row.run_id,'confirmation':params.get('confirmation'),
+                    'mail_pause_acknowledged':params.get('mail_pause_acknowledged'),'_safety':row.id})
 
 
 def _update(ident,**values):
@@ -459,7 +473,8 @@ def execute(ident):
                 if 'mail' not in source.options.get('components', []):
                     raise ValidationError('This recovery point does not contain mail')
                 run_restore(account, repo, snapshot_id, row.selection.get('mailboxes', []), ident,
-                            lambda phase, data: _mail_checkpoint(ident, phase, data))
+                            lambda phase, data: _mail_checkpoint(ident, phase, data),
+                            **({'source_restore_id': row.selection['source_restore_id']} if row.selection.get('source_snapshot_id') else {}))
                 return
             work=jobs.private_directory('restores',f'restore-{ident}')
             if row.selection['kind']=='databases':

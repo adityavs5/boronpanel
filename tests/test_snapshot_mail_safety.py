@@ -61,6 +61,20 @@ def test_displaced_mail_is_encrypted_and_guards_remain(isolated_db, saved, repo,
     with write_session() as session:
         session.query(MailDomain).filter_by(domain='example.test').one().account_id = account.id
     assert not list((Path(settings.snapshot_private_dir) / 'mail-safety-inventory').iterdir())
+    from daemon import mail
+    monkeypatch.setattr(mail, 'list_mailboxes', lambda domain: [{'local_part': 'one'}, {'local_part': 'two'}])
+    previous = restore.prepare_safety(account, repo, result['snapshot_id'], 1)
+    for entry in previous['entries']:
+        assert entry['action'] == 'existing'
+        assert entry['metadata'] is None
+        messages = list((Path(entry['prepared']) / 'cur').iterdir()) + list((Path(entry['prepared']) / 'new').iterdir())
+        assert len(messages) == 1
+        assert b'original mail before restore' in messages[0].read_bytes()
+        live = Path(settings.mail_base) / entry['domain'] / entry['local_part'] / 'Maildir'
+        assert (live / 'cur/restored:2,S').read_bytes() == b'restored mail'
+    monkeypatch.setattr(mail, 'list_mailboxes', lambda domain: [])
+    with pytest.raises(ValidationError, match='mailbox to still exist'):
+        restore.prepare_safety(account, repo, result['snapshot_id'], 1)
     with guard.owned_guards(payload['entries'], 1):
         pass
     with pytest.raises(FileExistsError):

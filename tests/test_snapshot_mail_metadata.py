@@ -297,6 +297,30 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
     safety_mail = storage.restore_to(repo, account.id, result['safety_snapshot_id'], str(work / 'workflow-safety'))
     old_messages = list(safety_mail.rglob('proof:2,S'))
     assert len(old_messages) == 1 and old_messages[0].read_bytes() == b'mail received after recovery point'
+    undo_request = dict(username='alpha', restore_id=29, confirmation='alpha')
+    with pytest.raises(ValidationError, match='interruption'):
+        restores.undo(undo_request)
+    reversal = restores.undo(dict(undo_request, mail_pause_acknowledged=True))
+    assert reversal['selection']['source_restore_id'] == 29
+    assert reversal['selection']['source_snapshot_id'] == result['safety_snapshot_id']
+    monkeypatch.setattr(journal, 'launch', lambda path: journal.execute(path))
+    restores.execute(reversal['id'])
+    with write_session() as session:
+        reversed_job = session.get(SnapshotRestore, reversal['id'])
+        assert reversed_job.status == 'completed', reversed_job.error
+        assert reversed_job.safety_snapshot_id != result['safety_snapshot_id']
+    previous_messages = list(message.parent.iterdir())
+    assert len(previous_messages) == 1
+    assert b'mail received after recovery point' in previous_messages[0].read_bytes()
+    assert not list(Path(settings.mail_restore_guard_dir).iterdir())
+    # Undo itself has a safety copy and can be reversed through the same worker.
+    redo = restores.undo(dict(username='alpha', restore_id=reversal['id'], confirmation='alpha', mail_pause_acknowledged=True))
+    restores.execute(redo['id'])
+    with write_session() as session:
+        assert session.get(SnapshotRestore, redo['id']).status == 'completed'
+    restored_messages = list(message.parent.iterdir())
+    assert len(restored_messages) == 1 and restored_messages[0].read_bytes() == content
+    assert not list(Path(settings.mail_restore_guard_dir).iterdir())
     request = dict(username='alpha', run_id=run.id, confirmation='alpha', kind='mail',
                    mailboxes=['inbox@alpha.example.test'])
     with pytest.raises(ValidationError, match='interruption'):

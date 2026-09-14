@@ -47,6 +47,9 @@ def selected_mailboxes(account, metadata, addresses):
             raise ValidationError('Selected mailbox is missing from recovery metadata')
     current_mailboxes = {domain: {entry['local_part'] for entry in mail.list_mailboxes(domain)}
                          for domain in sorted({domain for domain, _ in selected})}
+    for domain, local in selected:
+        if metadata[domain]['mailboxes'][local] is None and local not in current_mailboxes[domain]:
+            raise ValidationError('Previous-mail recovery requires the mailbox to still exist; saved credentials are unavailable')
     return [dict(domain=domain, local_part=local,
                  action='existing' if local in current_mailboxes[domain] else 'recreate',
                  metadata=metadata[domain]['mailboxes'][local]) for domain, local in sorted(selected)]
@@ -65,6 +68,29 @@ def prepare(account, repo, snapshot_id, addresses):
     entries = selected_mailboxes(account, metadata, addresses)
     paths = [Path(settings.mail_base) / entry['domain'] / entry['local_part'] / 'Maildir'
              for entry in entries]
+    return _prepare_trees(account, repo, snapshot_id, entries, paths)
+
+
+def prepare_safety(account, repo, snapshot_id, source_restore_id):
+    """Rebuild previous messages while preserving existing mailbox settings.
+
+    Safety inventories contain message paths, not credentials. Missing SQL
+    mailboxes cannot be reconstructed from these inventories.
+    """
+    inventory = safety_inventory(account, repo, snapshot_id, source_restore_id)
+    metadata = {}
+    paths = {}
+    for entry in inventory:
+        domain, local = entry['domain'], entry['local_part']
+        metadata.setdefault(domain, {'mailboxes': {}})['mailboxes'][local] = None
+        paths[domain, local] = Path(entry['path'])
+    entries = selected_mailboxes(account, metadata, [entry['local_part'] + '@' + entry['domain'] for entry in inventory])
+    return _prepare_trees(account, repo, snapshot_id, entries,
+                          [paths[entry['domain'], entry['local_part']] for entry in entries])
+
+
+def _prepare_trees(account, repo, snapshot_id, entries, paths):
+    """Rebuild validated source trees without touching live mail or SQL."""
     # Missing trees may reflect a backup filter rather than an empty mailbox.
     # Never turn that absence into an instruction to erase existing messages.
     nodes = storage.entries_many(repo, account.id, snapshot_id, [str(path.parent) for path in paths])
@@ -494,7 +520,7 @@ def finalize(account, repo, path, restore_id, *, service='dovecot.service'):
     return {'safety_snapshot_id': receipt['snapshot_id'], 'mailboxes': len(payload['entries']), 'guards_released': True}
 
 
-def run_restore(account, repo, snapshot_id, addresses, restore_id, checkpoint):
+def run_restore(account, repo, snapshot_id, addresses, restore_id, checkpoint, *, source_restore_id=None):
     """Execute one new mailbox restore with durable caller-owned checkpoints.
 
     Caller holds account/repository locks and persists each callback before it
@@ -508,7 +534,8 @@ def run_restore(account, repo, snapshot_id, addresses, restore_id, checkpoint):
         raise ValidationError('Mailbox restore requires a job and durable checkpoints')
     verify()
     checkpoint('preparing', {})
-    prepared = prepare(account, repo, snapshot_id, addresses)
+    prepared = (prepare_safety(account, repo, snapshot_id, source_restore_id) if source_restore_id is not None
+                else prepare(account, repo, snapshot_id, addresses))
     work = prepared['work']
     # Persist the work reference before guards or live storage can be changed.
     checkpoint('prepared', {'work': work})

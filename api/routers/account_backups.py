@@ -84,7 +84,8 @@ def snapshot_restore_history(username: str, identity: Identity = Depends(get_ide
 @api_router.post('/snapshots/restores/{restore_id}/undo')
 def undo_snapshot_restore(username: str, restore_id: int, body: SnapshotRestoreBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon('snapshot.restore.undo', identity, username=username, restore_id=restore_id, confirmation=body.confirmation)
+    return call_daemon('snapshot.restore.undo', identity, username=username, restore_id=restore_id,
+                       confirmation=body.confirmation, mail_pause_acknowledged=body.mail_pause_acknowledged)
 
 
 @api_router.get("/{job_id}")

@@ -65,10 +65,12 @@ export function ConfirmDialog({
   loading = false,
   onConfirm,
   confirmationText,
+  acknowledgementLabel,
 }) {
   const [typed, setTyped] = useState('')
-  useEffect(() => { if (!open) setTyped('') }, [open])
-  const confirmed = !confirmationText || typed === confirmationText
+  const [acknowledged, setAcknowledged] = useState(false)
+  useEffect(() => { if (!open) { setTyped(''); setAcknowledged(false) } }, [open])
+  const confirmed = (!confirmationText || typed === confirmationText) && (!acknowledgementLabel || acknowledged)
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="sm">
@@ -76,6 +78,7 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
+        {acknowledgementLabel && <DialogBody><label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1 h-4 w-4 accent-accent" checked={acknowledged} disabled={loading} onChange={event => setAcknowledged(event.target.checked)}/><span>{acknowledgementLabel}</span></label></DialogBody>}
         {confirmationText && (
           <DialogBody>
             <FormField label={<>Type <span className="font-mono font-semibold">{confirmationText}</span> to confirm</>}>

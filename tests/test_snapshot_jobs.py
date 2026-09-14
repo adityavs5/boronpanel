@@ -166,6 +166,10 @@ def test_snapshot_api_authorization_and_customer_scope(environment,monkeypatch):
         assert response.status_code==200
         assert calls[-1][1]['mailboxes']==['inbox@example.test']
         assert calls[-1][1]['mail_pause_acknowledged'] is True
+        response=client.post('/api/v1/accounts/alpha/backups/snapshots/restores/1/undo',json={
+            'confirmation':'alpha','mail_pause_acknowledged':True})
+        assert response.status_code==200
+        assert calls[-1]==('snapshot.restore.undo',{'username':'alpha','restore_id':1,'confirmation':'alpha','mail_pause_acknowledged':True})
         assert client.post('/api/v1/accounts/bravo/backups/snapshots/runs/1/restore',json={
             'confirmation':'bravo','kind':'mail','mailboxes':['inbox@example.test'],'mail_pause_acknowledged':True}).status_code==403
         assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs/1/databases').status_code==200
