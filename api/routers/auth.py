@@ -114,8 +114,8 @@ def whoami(identity: Identity = Depends(get_identity)):
     """Current-session identity for the SPA. For customers, `username` is the
     hosting-account username (what the account-scoped API paths use), not the
     panel login name; admins have no bound account."""
-    if identity.role == "admin":
-        return {"role": "admin", "username": identity.username, "account_username": None, "impersonating": False}
+    if identity.role in ("admin", "reseller"):
+        return {"role": identity.role, "username": identity.username, "account_username": None, "impersonating": False}
     account_username = _customer_account_username(identity.account_id)
     # Phase 8 feature 1: surface impersonation so the SPA can show a persistent
     # "Return to admin" banner even across a hard refresh (the flag is derived

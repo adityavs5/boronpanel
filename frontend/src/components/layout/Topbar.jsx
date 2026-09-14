@@ -113,6 +113,8 @@ export function Topbar() {
   const { role, username, logout } = useAuth()
   const navigate = useNavigate()
   const isAdmin = role === 'admin'
+  const isReseller = role === 'reseller'
+  const home = isAdmin ? '/overview' : isReseller ? '/reseller' : '/dashboard'
   const { panelName, logoUrl } = useBranding()
 
   async function handleLogout() {
@@ -123,7 +125,7 @@ export function Topbar() {
   return (
     <header className="panel-topbar">
       <div className="flex items-center gap-3 min-w-0">
-        <Link to={isAdmin ? '/overview' : '/dashboard'} className="panel-brand" aria-label={`${panelName} home`}>
+        <Link to={home} className="panel-brand" aria-label={`${panelName} home`}>
           {logoUrl ? <img src={logoUrl} alt="" /> : <span className="brand-symbol">{panelName.charAt(0).toUpperCase()}</span>}
           <span>{panelName}<small>web control panel</small></span>
         </Link>
@@ -131,7 +133,7 @@ export function Topbar() {
 
       <div className="flex items-center gap-2">
         <SearchTrigger />
-        <span className="access-level"><span>Access Level</span><strong>{isAdmin ? 'Admin' : 'User'}</strong></span>
+        <span className="access-level"><span>Access Level</span><strong>{isAdmin ? 'Admin' : isReseller ? 'Reseller' : 'User'}</strong></span>
         <ThemeSelector />
 
 
@@ -185,9 +187,10 @@ export function Topbar() {
 }
 
 export function PageNavigation() {
-  const isAdmin = useAuth((s) => s.role === 'admin')
+  const role = useAuth((s) => s.role)
+  const isAdmin = role === 'admin'
   return <div className="page-navigation">
-    <Link to={isAdmin ? '/overview' : '/dashboard'} className="home-link"><Home size={15} /> Home</Link>
+    <Link to={isAdmin ? '/overview' : role === 'reseller' ? '/reseller' : '/dashboard'} className="home-link"><Home size={15} /> Home</Link>
     <Breadcrumb />
     <div className="ml-auto">{isAdmin && <AccountSwitcher />}</div>
   </div>

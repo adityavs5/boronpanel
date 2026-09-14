@@ -21,6 +21,13 @@ class WelcomeEmailBody(BaseModel):
     body: str | None = None
 
 
+class SuspensionDesignBody(BaseModel):
+    template_key: str
+    accent_color: str
+    heading: str
+    message: str
+
+
 @api_router.get("/suspended-page")
 def get_suspended_page(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -31,6 +38,18 @@ def get_suspended_page(identity: Identity = Depends(get_identity)):
 def set_suspended_page(body: SuspendedPageBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("templates.suspended_page.set", identity, content=body.content)
+
+
+@api_router.get("/suspension-designs")
+def get_suspension_designs(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("templates.suspension_designs.get", identity)
+
+
+@api_router.put("/suspension-designs")
+def apply_suspension_design(body: SuspensionDesignBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("templates.suspension_designs.apply", identity, **body.model_dump())
 
 
 @api_router.get("/welcome-email")

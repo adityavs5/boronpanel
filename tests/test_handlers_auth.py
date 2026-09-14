@@ -11,6 +11,12 @@ def test_create_panel_user_admin(isolated_db):
     assert result["account_id"] is None
 
 
+def test_create_panel_user_reseller_does_not_require_account(isolated_db):
+    result = hauth.create_panel_user({"username": "seller", "password": "SuperSecret123!", "role": "reseller"})
+    assert result["role"] == "reseller"
+    assert result["account_id"] is None
+
+
 def test_create_panel_user_customer_requires_account_id(isolated_db):
     with pytest.raises(ValidationError):
         hauth.create_panel_user({"username": "cust1", "password": "SuperSecret123!", "role": "customer"})

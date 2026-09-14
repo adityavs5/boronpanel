@@ -20,7 +20,7 @@ const customerGroups = {
 }
 const adminGroups = {
   evolution: [
-    ['Account Manager', ['/backup-jobs', '/accounts', '/plans', '/ssl', '/bandwidth', '/change-password']],
+    ['Account Manager', ['/backup-jobs', '/accounts', '/resellers', '/plans', '/ssl', '/bandwidth', '/change-password']],
     ['Server Manager', ['/health', '/services', '/db-monitor', '/slow-queries', '/mail-queue', '/cloudflare']],
     ['Admin Tools', ['/updates', '/openlitespeed', '/malware', '/firewall', '/ip-management', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
     ['System Info & Files', ['/site-stats', '/audit-log', '/account-log', '/error-log', '/templates', '/maintenance-mode']],
@@ -29,7 +29,7 @@ const adminGroups = {
     ['Account & Preferences', ['/panel-settings', '/branding', '/appearance', '/security', '/api/docs']],
   ],
   'paper-lantern': [
-    ['Accounts', ['/backup-jobs', '/accounts', '/plans', '/ssl', '/import/accounts']],
+    ['Accounts', ['/backup-jobs', '/accounts', '/resellers', '/plans', '/ssl', '/import/accounts']],
     ['Server & Databases', ['/health', '/services', '/db-monitor', '/slow-queries']],
     ['Domains & Network', ['/cloudflare', '/ip-management', '/maintenance-mode']],
     ['Email', ['/mail-queue', '/imap-migrations', '/notifications']],
@@ -45,6 +45,7 @@ const labels = {
   '/ssl': 'SSL Certificates', '/dns': 'DNS Management', '/php': 'PHP Settings',
   '/git': 'Git Version Control', '/apps': 'Applications', '/node-apps': 'Node.js App', '/python-apps': 'Python App', '/redis': 'Redis',
   '/accounts': 'Manage Accounts', '/health': 'Server Information', '/services': 'Service Monitor',
+  '/resellers': 'Reseller Management',
   '/updates': 'Panel Updates', '/appearance': 'Change Style',
 }
 const tones = ['sky', 'green', 'amber', 'violet', 'rose', 'teal']

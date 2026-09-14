@@ -9,8 +9,8 @@ import * as apiAuth from '@/lib/api'
 export const useAuth = create(
   persist(
     (set, get) => ({
-      role: null, // 'admin' | 'customer' | null
-      username: null, // customer's own account username; admins have their login name
+      role: null, // 'admin' | 'reseller' | 'customer' | null
+      username: null, // customer account username, or the admin/reseller login name
       pending2fa: null, // { pendingToken } while awaiting a TOTP code
       impersonating: false, // Phase 8 f1: admin is acting as a customer
       impersonator: null, // the admin's username while impersonating

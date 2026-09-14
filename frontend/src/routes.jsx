@@ -73,10 +73,11 @@ const DbMonitor = lazy(() => import('@/pages/admin/DbMonitor'))
 const MaintenanceOverview = lazy(() => import('@/pages/admin/Maintenance'))
 const SiteStats = lazy(() => import('@/pages/admin/SiteStats'))
 const ImapMigrations = lazy(() => import('@/pages/admin/ImapMigrations'))
+const Resellers = lazy(() => import('@/pages/Resellers'))
 
 function IndexRedirect() {
   const role = useAuth.getState().role
-  return <Navigate to={role === 'admin' ? '/overview' : '/dashboard'} replace />
+  return <Navigate to={role === 'admin' ? '/overview' : role === 'reseller' ? '/reseller' : '/dashboard'} replace />
 }
 
 function admin(el) {
@@ -85,6 +86,10 @@ function admin(el) {
 
 function customer(el) {
   return <ProtectedRoute customerOnly>{el}</ProtectedRoute>
+}
+
+function reseller(el) {
+  return <ProtectedRoute resellerOnly>{el}</ProtectedRoute>
 }
 
 // A crash inside one page renders an inline error while the shell (sidebar,
@@ -109,6 +114,7 @@ export const router = createBrowserRouter(
         { index: true, element: <IndexRedirect /> },
 
         { path: 'overview', element: admin(<Dashboard />) },
+        { path: 'reseller', element: reseller(<Resellers />) },
         { path: 'appearance', element: <Appearance /> },
 
         // Customer resource pages (scoped to the signed-in account).
@@ -148,6 +154,7 @@ export const router = createBrowserRouter(
         { path: 'accounts', element: admin(<Accounts />) },
         { path: 'accounts/:username', element: admin(<AccountDetail />) },
         { path: 'plans', element: admin(<Plans />) },
+        { path: 'resellers', element: admin(<Resellers />) },
         { path: 'panel-settings', element: admin(<PanelSettings />) },
         { path: 'branding', element: admin(<Branding />) },
         { path: 'templates', element: admin(<Templates />) },

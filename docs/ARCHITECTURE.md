@@ -407,10 +407,11 @@ whatever config was live before the failed change.
 
 ## 9. Auth, RBAC, REST API, audit
 
-- **Two roles**: `admin` (full access, manages all accounts) and `customer`
-  (scoped to exactly one account — their own). Same login form, same session
-  mechanism; role + account-scope resolved server-side from the
-  authenticated identity, never trusted from client input.
+- **Three roles**: `admin` (full access), `reseller` (only explicitly owned
+  accounts), and `customer` (scoped to exactly one account — their own). The
+  same login form and session mechanism serve all three; role and scope are
+  resolved server-side from the authenticated identity and stored ownership,
+  never trusted from client input.
 - **Browser sessions**: signed, `httpOnly`, `Secure` cookies (Starlette
   `SessionMiddleware` with a server-held secret from `/etc/boron/secrets.env`),
   backed by a `sessions` table so sessions can be revoked server-side
@@ -419,10 +420,9 @@ whatever config was live before the failed change.
 - **REST API auth (machine-to-machine, the "integration surface for a
   billing system" requirement)**: bearer tokens, format `fh_<role>_<32
   random bytes, base62>`, stored hashed (SHA-256) — never the raw token —
-  with an admin-facing issue/revoke UI. Tokens carry the same role/account
-  scope model as sessions (an admin-issued token can be scoped to a single
-  account, e.g. for a billing system that should only ever touch the
-  accounts it created).
+  with an admin-facing issue/revoke UI. Tokens are either administrator or
+  single-customer scoped; reseller access is currently interactive-session
+  only.
 - **Every provisioning endpoint requires authentication, uniformly across
   HTTP verbs** — a direct, deliberate countermeasure to CyberPanel's
   CVE-2024-51567 root cause (RESEARCH.md §5: their input-sanitizing
@@ -510,17 +510,15 @@ assumes per-vhost module-level control over ModSecurity on OpenLiteSpeed
 specifically should re-read this section first — it's a real constraint
 of the web server, not a Boron design choice.
 
-## 11. What's explicitly NOT built (confirming OUT OF SCOPE adherence)
+## 11. Explicit scope boundaries
 
-No multi-server/WHM-style management, no reseller/package billing logic, no
-built-in webmail (Roundcube is link-out only, not bundled/built), no
-backup/restore beyond a stub endpoint that records intent and returns
-`501 Not Implemented` with a clear message, no cron UI, no plugin
-marketplace, no payment/invoicing logic, no cPanel/Plesk migration tooling,
-no mobile app, and — checked explicitly against RESEARCH.md §1 — no feature
-anywhere in this design depends on a commercially-licensed LSWS capability.
-If a build phase finds itself reaching for one of these, that's a stop-and-
-flag condition per the project goal, not a judgment call to make silently.
+Boron remains a single-server panel. It does not include multi-server/WHM
+orchestration, reseller billing, bundled webmail, a plugin marketplace,
+payment/invoicing, a mobile app, or features that require a commercially
+licensed LSWS capability. Reseller account management, portable backup/restore,
+cron management, and cPanel/DirectAdmin imports were added by later expansion
+batches; their current boundaries are documented in
+`EXPANSION-IMPLEMENTATION-PLAN.md` and the corresponding checkpoint files.
 
 ## 12. Testing strategy
 

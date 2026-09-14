@@ -275,14 +275,14 @@ class SpamGlobalSettings(Base):
 
 
 class PanelUser(Base):
-    """Human login identity -- admin or customer."""
+    """Human login identity -- administrator, reseller, or customer."""
 
     __tablename__ = "panel_users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(256))
-    role: Mapped[str] = mapped_column(String(16))  # admin | customer
+    role: Mapped[str] = mapped_column(String(16))  # admin | reseller | customer
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     disabled: Mapped[bool] = mapped_column(default=False)
@@ -2090,3 +2090,61 @@ class AccountArchiveImportJob(Base):
     error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ResellerPlan(Base):
+    """Administrator-defined limits and account defaults for resellers."""
+
+    __tablename__ = "reseller_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    max_accounts: Mapped[int] = mapped_column(Integer, default=10)
+    max_total_disk_mb: Mapped[int] = mapped_column(Integer, default=102400)
+    account_quota_soft_mb: Mapped[int] = mapped_column(Integer, default=4096)
+    account_quota_hard_mb: Mapped[int] = mapped_column(Integer, default=5120)
+    account_cpu_pct: Mapped[int] = mapped_column(Integer, default=50)
+    account_mem_mb: Mapped[int] = mapped_column(Integer, default=1024)
+    account_io_mb: Mapped[int] = mapped_column(Integer, default=50)
+    account_pids_max: Mapped[int] = mapped_column(Integer, default=100)
+    php_version: Mapped[str] = mapped_column(String(8), default="8.3")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ResellerProfile(Base):
+    """A reseller login plus its assigned plan and operating status."""
+
+    __tablename__ = "reseller_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    panel_user_id: Mapped[int] = mapped_column(ForeignKey("panel_users.id"), unique=True, index=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("reseller_plans.id"), index=True)
+    company: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ResellerAccount(Base):
+    """Exclusive ownership of a hosting account by one reseller."""
+
+    __tablename__ = "reseller_accounts"
+    __table_args__ = (UniqueConstraint("account_id", name="uq_reseller_account_account"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reseller_id: Mapped[int] = mapped_column(ForeignKey("reseller_profiles.id"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SuspensionPageSettings(Base):
+    """Selected built-in suspension design and safely escaped copy."""
+
+    __tablename__ = "suspension_page_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    template_key: Mapped[str] = mapped_column(String(32), default="clean")
+    accent_color: Mapped[str] = mapped_column(String(7), default="#2563eb")
+    heading: Mapped[str] = mapped_column(String(160), default="Account suspended")
+    message: Mapped[str] = mapped_column(String(500), default="Please contact your hosting provider for assistance.")
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

@@ -6,7 +6,7 @@ import { cn } from '@/lib/cn'
 import { get } from '@/lib/api'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
-import { customerNav, adminNav } from '@/config/nav'
+import { customerNav, adminNav, resellerNav } from '@/config/nav'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { ProgressBar } from '@/components/ui/Progress'
 import { useBranding } from '@/hooks/useBranding'
@@ -113,8 +113,9 @@ function HealthMiniWidget({ collapsed }) {
 export function Sidebar() {
   const collapsed = useUI((s) => s.sidebarCollapsed)
   const toggle = useUI((s) => s.toggleSidebar)
-  const isAdmin = useAuth((s) => s.role === 'admin')
-  const nav = isAdmin ? adminNav : customerNav
+  const role = useAuth((s) => s.role)
+  const isAdmin = role === 'admin'
+  const nav = isAdmin ? adminNav : role === 'reseller' ? resellerNav : customerNav
   const [closedSections, setClosedSections] = useState(() => new Set(isAdmin
     ? ['Hosting Management', 'Panel Configuration', 'Mail & Network', 'Security & Logs', 'Integrations']
     : ['Advanced']))
@@ -153,7 +154,7 @@ export function Sidebar() {
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold leading-tight text-white">{panelName}</div>
             <div className="text-[11px] leading-tight text-sidebar-muted">
-              {isAdmin ? 'Admin' : 'Customer'}
+              {isAdmin ? 'Admin' : role === 'reseller' ? 'Reseller' : 'Customer'}
             </div>
           </div>
         )}

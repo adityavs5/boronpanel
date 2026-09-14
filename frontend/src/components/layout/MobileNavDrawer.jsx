@@ -7,14 +7,15 @@ import { cn } from '@/lib/cn'
 import { get } from '@/lib/api'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
-import { customerNav, adminNav } from '@/config/nav'
+import { customerNav, adminNav, resellerNav } from '@/config/nav'
 import { useBranding } from '@/hooks/useBranding'
 import { Input } from '@/components/ui/Input'
 
 export function MobileNavDrawer() {
   const open = useUI((s) => s.mobileNavOpen)
   const setOpen = useUI((s) => s.setMobileNavOpen)
-  const isAdmin = useAuth((s) => s.role === 'admin')
+  const role = useAuth((s) => s.role)
+  const isAdmin = role === 'admin'
   const navigate = useNavigate()
   const { username: currentAccount } = useParams()
   const [accountQuery, setAccountQuery] = useState('')
@@ -25,7 +26,7 @@ export function MobileNavDrawer() {
     retry: false,
   })
   const { panelName, logoUrl } = useBranding()
-  const nav = isAdmin ? adminNav : customerNav
+  const nav = isAdmin ? adminNav : role === 'reseller' ? resellerNav : customerNav
   const accounts = Array.isArray(accountsQuery.data) ? accountsQuery.data : []
   const matchingAccounts = (accountQuery.trim()
     ? accounts.filter((account) => account.username.toLowerCase().includes(accountQuery.trim().toLowerCase()))
@@ -56,7 +57,7 @@ export function MobileNavDrawer() {
             )}
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-semibold">{panelName}</div>
-              <div className="text-xs text-sidebar-muted">{isAdmin ? 'Administration' : 'Hosting account'}</div>
+              <div className="text-xs text-sidebar-muted">{isAdmin ? 'Administration' : role === 'reseller' ? 'Reseller panel' : 'Hosting account'}</div>
             </div>
             <DialogPrimitive.Close className="rounded-btn p-2 text-sidebar-muted hover:bg-sidebar-hover hover:text-white" aria-label="Close navigation">
               <X className="h-5 w-5" />

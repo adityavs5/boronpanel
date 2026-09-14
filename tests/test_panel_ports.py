@@ -85,6 +85,17 @@ def test_existing_authentication_enforces_listener_role(monkeypatch,mode):
     assert error.value.status_code==403
 
 
+def test_reseller_uses_admin_listener(monkeypatch):
+    monkeypatch.setattr(settings,'api_bind_port',2222);monkeypatch.setattr(settings,'api_customer_port',3333)
+    identity=Identity(panel_user_id=1,username='seller',role='reseller',account_id=None,auth_method='session')
+    admin_request=Request({'type':'http','server':('127.0.0.1',2222),'client':('127.0.0.1',1000),'headers':[]})
+    enforce_listener_role(identity,admin_request)
+    customer_request=Request({'type':'http','server':('127.0.0.1',3333),'client':('127.0.0.1',1000),'headers':[]})
+    with pytest.raises(Exception) as error:
+        enforce_listener_role(identity,customer_request)
+    assert error.value.status_code==403
+
+
 def test_customer_listener_is_firewall_protected(monkeypatch):
     from daemon.firewall import protected_ports
     monkeypatch.setattr(settings,'api_customer_port',3333)

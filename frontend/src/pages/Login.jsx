@@ -25,10 +25,10 @@ export default function Login() {
     if (error) errorRef.current?.focus()
   }, [error])
 
-  if (role) return <Navigate to={location.state?.from || (role === 'admin' ? '/overview' : '/dashboard')} replace />
+  if (role) return <Navigate to={location.state?.from || landing(role)} replace />
 
   function landing(r) {
-    return r === 'admin' ? '/overview' : '/dashboard'
+    return r === 'admin' ? '/overview' : r === 'reseller' ? '/reseller' : '/dashboard'
   }
 
   async function submitCredentials(e) {

@@ -7,7 +7,7 @@ from shared.validation import ValidationError
 
 
 @pytest.fixture()
-def suspended_page_root(tmp_path, monkeypatch):
+def suspended_page_root(tmp_path, monkeypatch, isolated_db):
     root = tmp_path / "_suspended"
     root.mkdir()
     (root / "index.html").write_text("<html>original suspended page</html>")
@@ -79,12 +79,50 @@ def test_set_suspended_page_sets_world_readable_mode(suspended_page_root, backup
     assert mode & stat.S_IROTH  # OLS's "nobody" worker must be able to read it
 
 
-def test_set_suspended_page_creates_root_if_missing(tmp_path, backup_dir, monkeypatch):
+def test_set_suspended_page_creates_root_if_missing(tmp_path, backup_dir, monkeypatch, isolated_db):
     root = tmp_path / "brand-new-root"
     monkeypatch.setattr(site_templates.settings, "suspended_page_root", str(root))
     result = site_templates.set_suspended_page({"content": "<html>x</html>"})
     assert result["status"] == "saved"
     assert (root / "index.html").exists()
+
+
+def test_suspension_design_catalog_has_four_safe_previews(suspended_page_root, backup_dir):
+    result = site_templates.get_suspension_designs({})
+    assert {item["key"] for item in result["templates"]} == {"clean", "gradient", "classic", "minimal"}
+    assert all("<script" not in item["html"].lower() for item in result["templates"])
+
+
+def test_apply_suspension_design_escapes_copy_and_persists_selection(suspended_page_root, backup_dir):
+    result = site_templates.apply_suspension_design({
+        "template_key": "gradient",
+        "accent_color": "#AABBCC",
+        "heading": "Account <script>alert(1)</script>",
+        "message": "Contact <img src=x onerror=alert(2)> support.",
+    })
+    content = (suspended_page_root / "index.html").read_text()
+    assert result["template_key"] == "gradient"
+    assert "<script>" not in content and "<img" not in content
+    assert "&lt;script&gt;" in content and "&lt;img" in content
+    fetched = site_templates.get_suspension_designs({})
+    assert fetched["current"]["heading"].startswith("Account <script>")
+
+
+def test_apply_suspension_design_rejects_invalid_color(suspended_page_root, backup_dir):
+    with pytest.raises(ValidationError, match="six-digit hex"):
+        site_templates.apply_suspension_design({
+            "template_key": "clean", "accent_color": "red",
+            "heading": "Suspended", "message": "Contact support.",
+        })
+
+
+def test_custom_html_marks_design_custom(suspended_page_root, backup_dir):
+    site_templates.apply_suspension_design({
+        "template_key": "minimal", "accent_color": "#123456",
+        "heading": "Suspended", "message": "Contact support.",
+    })
+    site_templates.set_suspended_page({"content": "<html>custom</html>"})
+    assert site_templates.get_suspension_designs({})["current"]["template_key"] == "custom"
 
 
 # --- welcome email template ---------------------------------------------------

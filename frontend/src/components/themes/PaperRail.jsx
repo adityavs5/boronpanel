@@ -6,10 +6,11 @@ import { Tooltip } from '@/components/ui/Tooltip'
 
 export function PaperRail() {
   const isAdmin = useAuth((s) => s.role === 'admin')
+  const isReseller = useAuth((s) => s.role === 'reseller')
   const setPaletteOpen = useUI((s) => s.setPaletteOpen)
   const items = [
-    { to: isAdmin ? '/overview' : '/dashboard', label: 'All tools', icon: Grid3X3 },
-    { to: isAdmin ? '/accounts' : '/files', label: isAdmin ? 'Accounts' : 'File Manager', icon: isAdmin ? Users : FolderOpen },
+    { to: isAdmin ? '/overview' : isReseller ? '/reseller' : '/dashboard', label: 'All tools', icon: Grid3X3 },
+    ...(isReseller ? [] : [{ to: isAdmin ? '/accounts' : '/files', label: isAdmin ? 'Accounts' : 'File Manager', icon: isAdmin ? Users : FolderOpen }]),
     { to: '/appearance', label: 'Appearance', icon: Palette },
   ]
   return <nav className="paper-rail" aria-label="Quick navigation">

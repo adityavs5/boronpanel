@@ -23,6 +23,6 @@ export default function Appearance() {
     </div>
     <section className="appearance-mode"><div><h2>Color mode</h2><p>Keep it light or switch to a darker workspace.</p></div><div role="group" aria-label="Color mode">{[{ id: 'light', label: 'Light', icon: Sun }, { id: 'dark', label: 'Dark', icon: Moon }].map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-pressed={theme === id} onClick={() => setTheme(id)}><Icon size={17} />{label}{theme === id && <Check size={14} />}</button>)}</div></section>
     <div className="appearance-note"><Monitor size={17} /><p>Your choice is saved in this browser and applies immediately. Your account, tools, and data stay the same.</p></div>
-    <Link to={role === 'admin' ? '/overview' : '/dashboard'} className="appearance-return">Back to dashboard <ArrowRight size={16} /></Link>
+    <Link to={role === 'admin' ? '/overview' : role === 'reseller' ? '/reseller' : '/dashboard'} className="appearance-return">Back to dashboard <ArrowRight size={16} /></Link>
   </div>
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { FileText, Save, RotateCcw, Ban } from 'lucide-react'
+import { FileText, Save, RotateCcw, Ban, Palette, Check } from 'lucide-react'
 import { get, put, del } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/Card'
@@ -13,6 +13,35 @@ import { ErrorState } from '@/components/ui/States'
 // QA round 2, item 10: admin-editable suspension page + welcome email
 // template. Both are server-wide (not per-account/per-domain) -- distinct
 // from the per-domain custom error pages (Firewall-adjacent Security tab).
+
+function SuspensionDesignCard() {
+  const qc = useQueryClient()
+  const [form, setForm] = useState({ template_key: 'clean', accent_color: '#2563eb', heading: 'Account suspended', message: 'Please contact your hosting provider for assistance.' })
+  const [dirty, setDirty] = useState(false)
+  const designs = useQuery({ queryKey: ['suspension-designs'], queryFn: () => get('/api/v1/admin/templates/suspension-designs') })
+  useEffect(() => {
+    if (designs.data?.current && !dirty) setForm(designs.data.current)
+  }, [designs.data]) // eslint-disable-line react-hooks/exhaustive-deps
+  const save = useMutation({
+    mutationFn: () => put('/api/v1/admin/templates/suspension-designs', form),
+    onSuccess: () => { toast.success('Suspension design applied'); setDirty(false); qc.invalidateQueries({ queryKey: ['suspension-designs'] }); qc.invalidateQueries({ queryKey: ['suspended-page-template'] }) },
+    onError: error => toast.error('Could not apply design', error.message),
+  })
+  if (designs.isLoading) return <CenteredSpinner />
+  if (designs.error) return <ErrorState error={designs.error} onRetry={designs.refetch} />
+  const set = (key, value) => { setForm(previous => ({ ...previous, [key]: value })); setDirty(true) }
+  return <Card>
+    <CardHeader><CardTitle className="flex items-center gap-2"><Palette className="h-4 w-4" />Ready-made suspension designs</CardTitle><CardDescription>Choose a responsive page, customize its message and brand color, then apply it to every suspended website.</CardDescription></CardHeader>
+    <CardContent className="space-y-5">
+      <div className="grid gap-4 sm:grid-cols-2">{(designs.data?.templates || []).map(template => <button type="button" key={template.key} onClick={() => set('template_key', template.key)} className={`overflow-hidden rounded-panel border text-left transition ${form.template_key === template.key ? 'border-accent ring-2 ring-ring/30' : 'border-border hover:border-accent/50'}`}>
+        <iframe title={`${template.name} preview`} srcDoc={template.html} sandbox="" tabIndex="-1" className="pointer-events-none h-40 w-full border-0 bg-white" />
+        <span className="flex items-start justify-between gap-3 p-3"><span><strong className="block text-sm">{template.name}</strong><span className="mt-1 block text-xs text-muted-foreground">{template.description}</span></span>{form.template_key === template.key && <Check className="h-4 w-4 shrink-0 text-accent" />}</span>
+      </button>)}</div>
+      <div className="grid gap-4 sm:grid-cols-2"><FormField label="Heading" htmlFor="suspension-heading"><Input id="suspension-heading" maxLength={160} value={form.heading} onChange={event => set('heading', event.target.value)} /></FormField><FormField label="Brand color" htmlFor="suspension-color"><div className="flex gap-2"><Input id="suspension-color" type="color" value={form.accent_color} onChange={event => set('accent_color', event.target.value)} className="w-16 p-1" /><Input aria-label="Brand color hex value" pattern="#[0-9a-fA-F]{6}" value={form.accent_color} onChange={event => set('accent_color', event.target.value)} /></div></FormField></div>
+      <FormField label="Message" htmlFor="suspension-message"><Textarea id="suspension-message" maxLength={500} rows={3} value={form.message} onChange={event => set('message', event.target.value)} /></FormField>
+    </CardContent><CardFooter><Button onClick={() => save.mutate()} loading={save.isPending} disabled={!dirty || !form.heading.trim() || !form.message.trim()}><Save className="h-4 w-4" />Apply design</Button></CardFooter>
+  </Card>
+}
 
 function SuspendedPageCard() {
   const qc = useQueryClient()
@@ -149,6 +178,7 @@ export default function Templates() {
     <div>
       <PageHeader title="Templates" description="Suspension page and welcome email, applied on suspend and account creation." icon={FileText} />
       <div className="max-w-3xl space-y-6">
+        <SuspensionDesignCard />
         <SuspendedPageCard />
         <WelcomeEmailCard />
       </div>

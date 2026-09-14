@@ -86,6 +86,16 @@ both themes at desktop and mobile widths.
 
 ## Batch F — resellers and suspension pages
 
+Implementation status: complete on 2026-09-14, pending the grouped expansion
+release. Reseller identities use the administrator listener and have their own
+role-specific panel. Plans cap account count and allocated disk while supplying
+per-account PHP, disk, CPU, memory, I/O and process defaults. Ownership is
+stored explicitly and rechecked by both the API authorization helpers and the
+privileged daemon before lifecycle actions. Plan edits and reassignments cannot
+drop below current usage. Four responsive suspension designs can be previewed,
+branded and applied from the admin interface; all editable copy is HTML-escaped,
+and the raw HTML editor remains available for advanced customization.
+
 - Add reseller identities, plans, account ownership, quotas and a restricted reseller panel. Enforce scope in API and daemon layers rather than relying on hidden UI controls.
 - Add built-in responsive HTML suspension templates, preview, selection and safe customization. Render the selected template for suspended accounts without exposing account files.
 

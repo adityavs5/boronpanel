@@ -6,7 +6,7 @@ import { cn } from '@/lib/cn'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
 import { searchEntries } from '@/config/search'
-import { customerNav, adminNav } from '@/config/nav'
+import { customerNav, adminNav, resellerNav } from '@/config/nav'
 
 // Flattens the role-aware nav into palette entries, keeping section names.
 function buildEntries(nav) {
@@ -25,7 +25,7 @@ export function CommandPalette() {
   const setOpen = useUI((s) => s.setPaletteOpen)
   const theme = useUI((s) => s.theme)
   const toggleTheme = useUI((s) => s.toggleTheme)
-  const isAdmin = useAuth((s) => s.role === 'admin')
+  const role = useAuth((s) => s.role)
   const logout = useAuth((s) => s.logout)
   const navigate = useNavigate()
 
@@ -34,7 +34,7 @@ export function CommandPalette() {
   const listRef = useRef(null)
 
   const entries = useMemo(() => {
-    const pages = buildEntries(isAdmin ? adminNav : customerNav)
+    const pages = buildEntries(role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav)
     const actions = [
       {
         type: 'action', section: 'Actions', label: theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
@@ -44,7 +44,7 @@ export function CommandPalette() {
       { type: 'action', section: 'Actions', label: 'Log out', icon: LogOut, run: async () => { await logout(); navigate('/login') } },
     ]
     return [...pages, ...actions]
-  }, [isAdmin, theme, toggleTheme, logout, navigate])
+  }, [role, theme, toggleTheme, logout, navigate])
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()

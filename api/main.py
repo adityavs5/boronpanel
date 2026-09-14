@@ -28,7 +28,7 @@ from shared.models import IpWhitelistEntry
 
 from api import logsetup, ratelimit
 from api.security import Identity, get_identity, require_admin
-from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, malware, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
+from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, malware, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
 
 
 @asynccontextmanager
@@ -58,15 +58,16 @@ API that both the React panel and any external integration (e.g. a billing
 system) drive -- every panel action is one of these calls.
 
 **Authentication.** Two mechanisms, same role model (`admin` /
-`customer`):
+`reseller` / `customer`):
 * **Session cookie** (`fh_session`) -- how the browser panel authenticates,
   issued by `POST /login`.
 * **Bearer token** (`Authorization: Bearer fh_<role>_<...>`) -- for
   machine-to-machine use; issue/revoke under **API Tokens**. A token can be
   scoped to a single account.
 
-Admins reach every account; a customer identity is scoped to exactly one
-account, enforced server-side by username (never a client-supplied id).
+Admins reach every account. Resellers reach only the accounts they created,
+and a customer identity is scoped to exactly one account. Both boundaries are
+enforced server-side from stored ownership (never a client-supplied id).
 
 **These docs require an admin session** -- open them while signed in to the
 panel as an admin in the same browser.
@@ -383,6 +384,8 @@ app.include_router(ipmanager.router)
 app.include_router(cpanel_import.accounts_api_router)
 app.include_router(portable_archive.import_router)
 app.include_router(portable_archive.export_router)
+app.include_router(resellers.admin_router)
+app.include_router(resellers.panel_router)
 
 
 @app.get("/")

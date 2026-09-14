@@ -4,7 +4,7 @@ import {
   Cog, Inbox, Flame, ShieldAlert, ScrollText, ShieldHalf, Gauge, ListChecks,
   Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
   History, FileCode2, Cloud, Layers, Palette, AlertOctagon, BookOpen, ArrowUpCircle,
-  DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban, FileText,
+  DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban, FileText, Store,
 } from 'lucide-react'
 
 // Customer nav — resource pages scoped to the signed-in account. Paths are
@@ -54,6 +54,7 @@ export const adminNav = [
   { label: 'Dashboard', to: '/overview', icon: LayoutDashboard },
   { label: 'WordPress Installations', to: '/wordpress', icon: Globe },
   { label: 'Accounts', to: '/accounts', icon: Users },
+  { label: 'Resellers', to: '/resellers', icon: Store },
   { label: 'Server Health', to: '/health', icon: Activity },
   { label: 'Services', to: '/services', icon: Cog },
   { label: 'OpenLiteSpeed', to: '/openlitespeed', icon: Server },
@@ -97,6 +98,15 @@ export const adminNav = [
   { label: 'Account Migrations', to: '/import/accounts', icon: DownloadCloud },
   // Server-rendered admin API docs (Swagger UI). external → real navigation.
   { label: 'API Docs', to: '/api/docs', icon: BookOpen, external: true },
+]
+
+export const resellerNav = [
+  { section: 'Reseller' },
+  { label: 'Accounts Overview', to: '/reseller', icon: LayoutDashboard },
+  { section: 'Preferences' },
+  { label: 'Change Password', to: '/change-password', icon: KeyRound },
+  { label: '2FA & Security', to: '/security', icon: ShieldCheck },
+  { label: 'Appearance', to: '/appearance', icon: Palette },
 ]
 
 export const navIcons = { Cpu, Server, DownloadCloud }

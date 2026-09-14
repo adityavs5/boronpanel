@@ -22,7 +22,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import panel_jobs, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import panel_jobs, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("borond")
@@ -66,6 +66,18 @@ OP_TABLE = {
     "portable.import.get": portable_archive.get_job,
     "portable.import.list": portable_archive.list_jobs,
     "portable.export.prepare": portable_archive.prepare_download,
+    "reseller.plan.create": resellers.create_plan,
+    "reseller.plan.update": resellers.update_plan,
+    "reseller.plan.list": resellers.list_plans,
+    "reseller.plan.delete": resellers.delete_plan,
+    "reseller.create": resellers.create_reseller,
+    "reseller.list": resellers.list_resellers,
+    "reseller.update": resellers.update_reseller,
+    "reseller.dashboard": resellers.dashboard,
+    "reseller.account.create": resellers.create_account,
+    "reseller.account.lifecycle": resellers.lifecycle,
+    "templates.suspension_designs.get": site_templates.get_suspension_designs,
+    "templates.suspension_designs.apply": site_templates.apply_suspension_design,
     "cron.list": handlers_cron.list_cron_jobs,
     "cron.add": handlers_cron.add_cron_job,
     "cron.update": handlers_cron.update_cron_job,

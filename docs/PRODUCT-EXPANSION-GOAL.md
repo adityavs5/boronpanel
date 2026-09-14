@@ -232,6 +232,12 @@ phase boundary.
     account ownership and permissions.
 12. Provide prebuilt HTML account suspension templates.
 
+Expansion implementation status on 2026-09-14: items 1 through 12 are
+implemented in batches A through F and are awaiting the grouped release gate,
+full-suite validation and panel self-update. See
+`EXPANSION-IMPLEMENTATION-PLAN.md` and the batch checkpoint documents for the
+implemented boundaries and evidence.
+
 Every item requires implementation and appropriate behavioral/UI/live validation,
 not merely the existence of a menu or stub. Existing related features should be
 inspected and extended. Original backup/restore, phpMyAdmin, access, PHP, clock/2FA

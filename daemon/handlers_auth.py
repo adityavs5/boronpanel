@@ -57,8 +57,8 @@ def create_panel_user(params: dict) -> dict:
     role = params.get("role", "customer")
     account_id = params.get("account_id")
 
-    if role not in ("admin", "customer"):
-        raise ValidationError("role must be 'admin' or 'customer'")
+    if role not in ("admin", "customer", "reseller"):
+        raise ValidationError("role must be 'admin', 'reseller', or 'customer'")
     if role == "customer" and account_id is None:
         raise ValidationError("customer panel users must have an account_id")
     password = validate_password_strength(password)

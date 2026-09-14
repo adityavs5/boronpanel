@@ -1,6 +1,6 @@
 """Auth/RBAC for boron-api.
 
-ARCHITECTURE.md SS9: two roles (admin/customer), the same auth dependency
+ARCHITECTURE.md SS9: role-aware access control, with the same auth dependency
 applied uniformly across every router regardless of HTTP verb -- a direct,
 deliberate countermeasure to CyberPanel's CVE-2024-51567 (their input
 sanitizer only checked POST, so PUT bypassed it). Session cookies are
@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import read_session
-from shared.models import Account, ApiToken, Domain, ImpersonationSession, PanelUser, Session
+from shared.models import Account, ApiToken, Domain, ImpersonationSession, PanelUser, ResellerAccount, ResellerProfile, Session
 from shared.validation import ValidationError, validate_domain
 
 COOKIE_NAME = "fh_session"
@@ -66,7 +66,7 @@ def unsign_session_id(cookie_value: str) -> str | None:
 class Identity:
     panel_user_id: int
     username: str
-    role: str  # admin | customer
+    role: str  # admin | reseller | customer
     account_id: int | None
     auth_method: str  # session | token
     # Phase 8 feature 1: set only while an admin is impersonating a customer.
@@ -147,7 +147,7 @@ def enforce_listener_role(identity,connection):
     server=connection.scope.get('server')
     port=server[1] if server else None
     role='admin' if identity.impersonator else identity.role
-    expected=admin if role=='admin' else customer
+    expected=admin if role in ('admin', 'reseller') else customer
     if port!=expected:
         raise HTTPException(status_code=403,detail=f'Use the {role} panel on port {expected}.')
 
@@ -190,12 +190,36 @@ def require_admin(identity: Identity) -> None:
         raise HTTPException(status_code=403, detail="admin role required")
 
 
+def require_reseller(identity: Identity) -> None:
+    if identity.role != "reseller":
+        raise HTTPException(status_code=403, detail="reseller role required")
+
+
+def _reseller_owns_account(db, identity: Identity, account_id: int) -> bool:
+    profile_id = db.scalar(select(ResellerProfile.id).where(
+        ResellerProfile.panel_user_id == identity.panel_user_id,
+        ResellerProfile.status == "active",
+    ))
+    if profile_id is None:
+        return False
+    return db.scalar(select(ResellerAccount.id).where(
+        ResellerAccount.reseller_id == profile_id,
+        ResellerAccount.account_id == account_id,
+    )) is not None
+
+
 def require_account_access(identity: Identity, username: str) -> None:
     """Admins can touch any account. Customers can only touch the single
     account their panel login is scoped to -- resolved by username, not by
     trusting an account_id the client could otherwise supply directly."""
     if identity.role == "admin":
         return
+    if identity.role == "reseller":
+        with read_session() as db:
+            account_id = db.scalar(select(Account.id).where(Account.username == username))
+            if account_id is not None and _reseller_owns_account(db, identity, account_id):
+                return
+        raise HTTPException(status_code=403, detail="not authorized for this account")
     if identity.account_id is None:
         raise HTTPException(status_code=403, detail="not scoped to any account")
     with read_session() as db:
@@ -210,6 +234,16 @@ def require_domain_access(identity: Identity, domain: str) -> None:
     the domain's account, not just any account."""
     if identity.role == "admin":
         return
+    if identity.role == "reseller":
+        try:
+            normalized_domain = validate_domain(domain)
+        except ValidationError as exc:
+            raise HTTPException(status_code=403, detail="not authorized for this domain") from exc
+        with read_session() as db:
+            account_id = db.scalar(select(Domain.account_id).where(Domain.domain == normalized_domain))
+            if account_id is not None and _reseller_owns_account(db, identity, account_id):
+                return
+        raise HTTPException(status_code=403, detail="not authorized for this domain")
     if identity.account_id is None:
         raise HTTPException(status_code=403, detail="not scoped to any account")
     try:
