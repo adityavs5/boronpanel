@@ -84,3 +84,33 @@ def test_cron_edit_is_blocked_while_account_restore_holds_lock(configuration):
         with pytest.raises(ValidationError,match='in progress'):
             handlers_cron.set_cron_mailto(dict(username='alpha',mailto='changed@example.test'))
     assert 'changed' not in state['alpha']
+
+
+def test_php_metadata_decrypts_owned_snapshot_and_bound_safety_copy(configuration):
+    from daemon import snapshot_configuration, snapshot_php
+    from daemon.snapshot_db_metadata import write_metadata
+    root, ident, dest, _ = configuration
+    run = jobs._row(SnapshotRun, ident)
+    account = jobs._row(Account, run.account_id)
+    repo = jobs.repository(jobs._row(SnapshotDestination, dest['id']))
+    expected = snapshot_php.validate_for_restore(account, snapshot_php.capture(account))
+    assert snapshot_configuration.load_php(repo, account, run.snapshot_id) == expected
+    with write_session() as session:
+        foreign = session.scalar(select(Account).where(Account.username == 'bravo'))
+    with pytest.raises(ValidationError):
+        snapshot_configuration.load_php(repo, foreign, run.snapshot_id)
+    work = jobs.private_directory('restores', 'restore-987')
+    path = work/'config-recovery.json'
+    payload = dict(format=1, account_id=account.id, username=account.username,
+                   restore_id=987, php_configuration=snapshot_php.capture(account))
+    write_metadata(path, payload)
+    safety = storage.backup(repo, account.id, [str(path)])['snapshot_id']
+    assert snapshot_configuration.load_php(repo, account, safety, source_restore_id=987) == expected
+    with pytest.raises(ValidationError, match='paths'):
+        snapshot_configuration.load_php(repo, account, safety, source_restore_id=988)
+    del payload['php_configuration']
+    path.unlink()  # Replace only this test's create-once staging fixture.
+    write_metadata(path, payload)
+    older = storage.backup(repo, account.id, [str(path)])['snapshot_id']
+    with pytest.raises(ValidationError, match='no complete PHP'):
+        snapshot_configuration.load_php(repo, account, older, source_restore_id=987)

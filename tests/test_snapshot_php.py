@@ -94,3 +94,54 @@ def test_capture_uses_one_database_view_during_concurrent_setting_change(account
     updated=snapshot_php.capture(alpha)
     assert updated['default_version']=='8.5'
     assert updated['extra_directives']=={'max_input_vars':'6000'}
+
+
+def test_recovery_validation_preserves_settings_but_excludes_admin_policy(accounts, monkeypatch):
+    from daemon import phpext
+    monkeypatch.setattr(phpext,'inventory',lambda:{'curl':{},'mysqli':{}})
+    alpha,_=accounts
+    saved=snapshot_php.capture(alpha)
+    validated=snapshot_php.validate_for_restore(alpha,saved)
+    assert 'administrator_function_policy' not in validated
+    assert validated['ini_override']['memory_limit']=='384M'
+    assert validated['extra_directives']=={'max_input_vars':'5000'}
+    assert validated['sites'][0]['version_override'] is None
+    assert validated['enabled_extensions']==['curl','mysqli']
+    assert snapshot_php.capture(alpha)==saved
+
+
+@pytest.mark.parametrize('field,value',[
+    ('username','bravo'),('account_id',True),('format',True),
+    ('default_version','99.0'),('default_version',None),('sites',[{'domain':'bravo.test','version_override':'8.3'}]),
+    ('sites',[{'domain':'deleted.test','version_override':None}]),
+    ('extra_directives',{'extension':'/tmp/evil.so'}),
+    ('extra_directives',{'allow_url_fopen':'unrecognized'}),
+    ('extra_directives',{'allow_url_fopen':1}),
+    ('extra_directives',{'max_file_uploads':True}),
+    ('extra_directives',{'max_file_uploads':20.5}),
+    ('extra_directives',{'max_file_uploads':[]}),
+    ('extra_directives',{'date.timezone':{}}),
+    ('enabled_extensions',['missing-extension']),
+])
+def test_recovery_rejects_foreign_or_unsupported_settings(accounts, monkeypatch, field, value):
+    from daemon import phpext
+    monkeypatch.setattr(phpext,'inventory',lambda:{'curl':{},'mysqli':{}})
+    alpha,_=accounts
+    saved=snapshot_php.capture(alpha)
+    invalid={**saved,field:value}
+    with pytest.raises(ValidationError):
+        snapshot_php.validate_for_restore(alpha,invalid)
+    assert snapshot_php.capture(alpha)==saved
+
+
+def test_recovery_rejects_invalid_limits_and_dependencies(accounts, monkeypatch):
+    from daemon import phpext
+    monkeypatch.setattr(phpext,'inventory',lambda:{'curl':{},'mysqli':{}})
+    monkeypatch.setattr(phpext,'EXTENSION_DEPS',{'mysqli':('mysqlnd',)})
+    alpha,_=accounts
+    saved=snapshot_php.capture(alpha)
+    with pytest.raises(ValidationError,match='dependency'):
+        snapshot_php.validate_for_restore(alpha,saved)
+    saved['ini_override']['post_max_size']='1M'
+    with pytest.raises(ValidationError,match='post_max_size'):
+        snapshot_php.validate_for_restore(alpha,saved)

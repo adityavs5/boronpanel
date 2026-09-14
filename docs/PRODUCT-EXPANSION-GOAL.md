@@ -801,3 +801,21 @@ backup run 5. Its encrypted manifest was restored privately and the complete PHP
 payload matched the live QA account's current settings across all three sites.
 No PHP runtime settings were changed. Private proof script/state:
 /root/boron-setup/php-configuration-backup-proof.py and its JSON sibling.
+
+### PHP recovery metadata validation — 2026-09-14
+
+Added account-bound normalization for saved PHP defaults, site overrides, limits,
+extra directives and extension dependencies. Administrator function restrictions
+are excluded from the customer recovery result. Missing/transferred saved sites
+and unavailable PHP versions/extensions are rejected before any mutation.
+The configuration metadata reader now shares its encrypted snapshot ownership,
+private-path and recovery-job checks between scheduled tasks and PHP settings.
+This is preparation for PHP recovery, not a shipped PHP restore action: worker
+application, runtime reconciliation, undo and both-theme UI remain outstanding.
+
+Validation: 22 PHP capture/validation tests and four existing encrypted scheduled
+configuration tests passed. The new encrypted PHP metadata test initially failed
+because its fixture attempted to overwrite create-once metadata; after fixing
+only that fixture, its targeted rerun passed (24.78s). It verifies normal backup
+loading, foreign-account rejection, recovery-copy job/path binding and the older
+metadata error. No production PHP setting or deployment was changed in this step.

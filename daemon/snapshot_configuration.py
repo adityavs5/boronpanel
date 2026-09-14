@@ -12,7 +12,7 @@ from shared.config import settings
 from shared.validation import ValidationError
 
 
-def load_cron(repo, account, snapshot_id, *, source_restore_id=None):
+def _load_metadata(repo, account, snapshot_id, *, source_restore_id=None):
     """Decrypt only owned metadata; never return raw configuration through RPC."""
     snapshot = storage.owned_snapshot(repo, account.id, snapshot_id)
     if source_restore_id is None:
@@ -46,11 +46,25 @@ def load_cron(repo, account, snapshot_id, *, source_restore_id=None):
             raise ValidationError('Configuration recovery belongs to another restore')
         if source_restore_id is None and 'config' not in payload.get('components', []):
             raise ValidationError('Snapshot does not contain account configuration')
-        if 'cron_configuration' not in payload:
-            raise ValidationError('This older recovery point has no complete crontab; create a new configuration backup')
-        return cron.validate_configuration(account.username, payload['cron_configuration'])
+        return payload
     finally:
         shutil.rmtree(work)
+
+
+
+def load_cron(repo, account, snapshot_id, *, source_restore_id=None):
+    payload = _load_metadata(repo, account, snapshot_id, source_restore_id=source_restore_id)
+    if 'cron_configuration' not in payload:
+        raise ValidationError('This older recovery point has no complete crontab; create a new configuration backup')
+    return cron.validate_configuration(account.username, payload['cron_configuration'])
+
+
+def load_php(repo, account, snapshot_id, *, source_restore_id=None):
+    from daemon import snapshot_php
+    payload = _load_metadata(repo, account, snapshot_id, source_restore_id=source_restore_id)
+    if 'php_configuration' not in payload:
+        raise ValidationError('This recovery point has no complete PHP settings; create a new configuration backup')
+    return snapshot_php.validate_for_restore(account, payload['php_configuration'])
 
 
 def restore_cron(ident, account, row, repo, snapshot_id, work, update):
