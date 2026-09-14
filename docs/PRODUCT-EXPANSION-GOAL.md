@@ -1694,3 +1694,20 @@ cleanup belongs to the fixture. Production Dovecot and hosting data were untouch
 This proves real systemd supervision with isolated data; actual panel deployment
 and live account/API routing recovery verification are the next steps. Remaining
 Cloudflare recovery and full-goal/release audits are unchanged.
+
+### Routing recovery deployment and live catalog — 2026-09-14
+
+Deployed runtime commit fd4c4bc using the existing protected deployment script.
+Idle WordPress/backup-job checks and mail guard verification passed. Private
+rollback copy: /root/boron-setup/mail-recovery-before-20260914-064619.
+Log: /root/boron-setup/routing-recovery-deploy.log. The script stopped only panel
+API/daemon, retained configuration bytes, applied additive schema initialization,
+restarted services and verified HTTPS/admin login/configuration RPC on port 2222.
+
+Read-only live proof /root/boron-setup/routing-recovery-deploy-proof.json confirms
+that retained wpdevqa mail snapshot run 3 exposes one available routing domain
+through authenticated HTTPS and returns only catalog fields. API, daemon, OLS,
+PowerDNS, Dovecot and chrony are active. Deployed routing worker/journal and built
+frontend index exactly match the checkout. No live routing restore was triggered
+by this catalog check. Actual QA-account routing restore/undo remains to be proven,
+followed by Cloudflare-native DNS recovery and full initial-goal/release audit.
