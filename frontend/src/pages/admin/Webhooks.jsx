@@ -107,7 +107,7 @@ export default function Webhooks() {
             ))}
           </div>
         ) : (
-          <span className="text-muted-foreground">All events</span>
+          <span className="text-muted-foreground">No events selected</span>
         ),
     },
     {
@@ -249,7 +249,7 @@ export default function Webhooks() {
                   placeholder="Optional"
                 />
               </FormField>
-              <FormField label="Events" hint="Select which events to deliver. None selected means all events.">
+              <FormField label="Events" hint="Select at least one event to deliver.">
                 <div className="space-y-2 rounded-btn border border-border p-3">
                   {WEBHOOK_EVENTS.map((ev) => (
                     <label key={ev} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
@@ -265,7 +265,7 @@ export default function Webhooks() {
             </DialogBody>
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
-              <Button type="submit" loading={createMut.isPending}>Add webhook</Button>
+              <Button type="submit" loading={createMut.isPending} disabled={!form.events.length}>Add webhook</Button>
             </DialogFooter>
           </form>
         </DialogContent>

@@ -681,3 +681,29 @@ original displaced-message hashes. Proof script:
 The successful-mail staging/displaced lifecycle is now verified in production;
 failed/interrupted recovery evidence remains protected. The broader backup
 requirements and final initial-goal audit remain open.
+
+## SSH jobs and notification audit — 2026-09-14
+
+The new end-to-end SSH job test creates a destination through normal key generation,
+installs its returned public key in an isolated loopback SSH server, initializes
+with a pinned host key, executes a reusable job with account/path/exclusion
+filters, verifies unchanged-file deduplication, restores selected content through
+the account restore worker and verifies its safety snapshot. Actual loopback SMTP
+and signed HTTP receivers verify completion and failure notifications, subscription
+validation, account recipient preferences and duplicate-worker suppression. The
+webhook public-IP gate is replaced only for the exact test receiver; production
+SSRF protection is unchanged. No external notifications were sent.
+
+The failure test found that backup.failed was emitted but absent from the allowed
+webhook catalog. Added it to backend validation/dispatch and frontend selection.
+The frontend event choices now also include the already-supported DNS activation
+event. Corrected the misleading empty-selection hint and disabled submission until
+an event is selected, matching backend validation.
+
+Final evidence: 30 SSH-job/webhook backend checks passed; two shared SSH storage
+regressions (real restoration and unknown host-key rejection) passed. Four browser
+checks passed across both themes and modes for failure-event selection, request
+payload and empty-selection validation; production frontend build passed.
+
+Current backup capability/gap audit: BACKUP-COMPLETION-AUDIT.md. Account
+configuration and captured mail routing restore actions remain unfinished.

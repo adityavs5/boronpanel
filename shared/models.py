@@ -1169,6 +1169,7 @@ WEBHOOK_EVENT_TYPES = (
     "account.suspended",
     "account.terminated",
     "backup.completed",
+    "backup.failed",
     "ssl.expiring",
     "usage.limit.reached",
     "dns.zone_activated",

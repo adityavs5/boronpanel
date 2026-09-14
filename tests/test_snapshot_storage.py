@@ -111,7 +111,7 @@ def test_ssh_arguments_pin_host_and_disable_ambient_credentials(repo,tmp_path):
 
 
 @pytest.fixture
-def ssh_repo(repo,tmp_path):
+def ssh_environment(repo,tmp_path):
     import signal
     import socket
     import subprocess
@@ -151,14 +151,20 @@ Subsystem sftp internal-sftp
                 with socket.create_connection(('127.0.0.1',port),timeout=.1):break
             except OSError:time.sleep(.05)
         else:pytest.fail('Isolated SSH server did not start')
-        yield replace(repo,kind='ssh',ssh_host='127.0.0.1',ssh_port=port,ssh_user='root',
+        spec = replace(repo,kind='ssh',ssh_host='127.0.0.1',ssh_port=port,ssh_user='root',
             ssh_key_file=str(tmp_path/'client_key'),ssh_known_hosts_file=str(known))
+        yield spec, authorized
     finally:
         if process.poll() is None:
             os.killpg(process.pid,signal.SIGTERM)
             process.wait(timeout=10)
         logfile.close()
         auth_directory.cleanup()
+
+
+@pytest.fixture
+def ssh_repo(ssh_environment):
+    return ssh_environment[0]
 
 
 def test_ssh_incremental_filter_and_verified_restore(ssh_repo,tmp_path):
