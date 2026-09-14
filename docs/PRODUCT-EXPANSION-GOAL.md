@@ -434,3 +434,22 @@ work, not a deployed customer mail-restore feature: Maildir application, cache a
 ownership coordination, UI, previous-message recovery, mail configuration resources
 and live end-to-end verification are still required. All other unchecked initial
 requirements and the queued second phase remain active.
+
+## Live verification — terminal and clock, 2026-09-14
+
+The authenticated admin WebSocket at the public HTTPS panel endpoint was tested
+against the existing wpdevqa account. It emitted the configured BORON banner,
+showed an interactive prompt without Ubuntu MOTD/status/last-login text, and ran
+a command with the QA account UID. Closing the WebSocket removed its temporary
+SSH authorized key. The separate quiet SSH helper check also passed. Verification
+script: `/root/boron-setup/terminal-websocket-proof.py` on this development server;
+credentials and SSH key material were not included in output.
+
+Panel API/provisioning, OLS, Dovecot and chrony were active during the check.
+`chronyc tracking` reported normal synchronization with Cloudflare, approximately
+0.000276 seconds slow system offset and 0.00107 seconds root dispersion. This is
+current health evidence, not proof against future host/network clock failures or
+a substitute for the outstanding admin/customer 2FA workflow checks.
+Read-only live deployment preflight also found zero active WordPress operations,
+legacy BackupJob/RestoreJob records, or SnapshotRun/SnapshotRestore records at
+this checkpoint. Recheck immediately before any later service deployment.
