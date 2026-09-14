@@ -459,11 +459,77 @@ def run_restore(account, repo, snapshot_id, addresses, restore_id, checkpoint):
     return result
 
 
+@serialized_worker
+def reconcile_provisioning(account, work, restore_id):
+    """Resolve uncertain SQL/cache completion without recreating/resetting users."""
+    from daemon import snapshot_mail_guard as guard, snapshot_mail_journal as journal
+    from daemon.snapshot_mail_files import initialize_maildir, _placement_receipt
+    from shared.models import MailUser
+    if type(restore_id) is not int or restore_id <= 0:
+        raise ValidationError('Invalid mailbox recovery job')
+    work = journal._path(Path(work) / 'checkpoint').parent
+    if (work / 'switch.json').exists() or (work / 'switch.json').is_symlink():
+        raise ValidationError('A persisted switch requires journal recovery')
+    record = _private_document(work / 'provisioning.json')
+    guards = _private_document(work / 'guard-index.json')
+    try:
+        for document in (record, guards):
+            if (type(document['format']) is not int or document['format'] != 1
+                    or type(document['account_id']) is not int or document['account_id'] != account.id
+                    or type(document['restore_id']) is not int or document['restore_id'] != restore_id):
+                raise ValueError()
+        if record['status'] != 'planned' or not 1 <= len(record['mailboxes']) <= 1000:
+            raise ValueError()
+        addresses = [(validate_domain(entry['domain']), validate_mailbox_local_part(entry['local_part']))
+                     for entry in record['mailboxes']]
+        if len(set(addresses)) != len(addresses):
+            raise ValueError()
+        tokens = {(entry['domain'], entry['local_part']): entry['token'] for entry in guards['entries']}
+        if set(addresses) != set(tokens) or len(tokens) != len(guards['entries']):
+            raise ValueError()
+    except (TypeError, ValueError, KeyError):
+        raise ValidationError('Invalid mailbox provisioning recovery records') from None
+    with write_session() as session:
+        current = session.get(Account, account.id)
+        domains = {domain for domain, _ in addresses}
+        owners = {row.domain: row.id for row in session.scalars(select(MailDomain).where(
+            MailDomain.domain.in_(domains), MailDomain.account_id == account.id))}
+        if current is None or current.username != account.username or set(owners) != domains:
+            raise ValidationError('Mailbox provisioning recovery ownership changed')
+    with guard.owned_guards(guards['entries'], restore_id):
+        pass
+    actual = {domain: {entry['local_part']: entry for entry in mail.list_mailboxes(domain)} for domain in domains}
+    present = []
+    for domain, local in addresses:
+        mailbox = actual[domain].get(local)
+        if mailbox is not None:
+            initialize_maildir(domain, local, restore_id, tokens[domain, local])
+            present.append(local + '@' + domain)
+        with guard.owned_guards(guards['entries'], restore_id), write_session() as session:
+            owned = session.get(MailDomain, owners[domain])
+            if owned is None or owned.account_id != account.id or owned.domain != domain:
+                raise ValidationError('Mailbox provisioning recovery ownership changed')
+            cached = session.scalar(select(MailUser).where(MailUser.domain == domain, MailUser.local_part == local))
+            if cached is not None and cached.mail_domain_id != owned.id:
+                raise ValidationError('Mailbox cache registration changed')
+            if mailbox is None:
+                if cached is not None:
+                    session.delete(cached)
+            else:
+                if cached is None:
+                    cached = MailUser(mail_domain_id=owned.id, domain=domain, local_part=local)
+                    session.add(cached)
+                cached.quota_mb = mailbox['quota_mb']
+    record.update(status='reconciled', present=present)
+    _placement_receipt(work / 'provisioning.json', record)
+    return {'present': len(present), 'absent': len(addresses) - len(present)}
+
+
 def abort_pre_switch(account, work, restore_id):
     """Release preparation guards only when durable records rule out a switch.
 
-    Caller proves worker termination and holds the account lock. Partial SQL
-    provisioning is deliberately refused. Staged copies are retained untouched.
+    Caller proves worker termination and holds the account lock. Uncertain SQL
+    provisioning is reconciled first. Staged copies are retained untouched.
     """
     from daemon import snapshot_mail_guard as guard, snapshot_mail_journal as journal
     from daemon.snapshot_mail_files import _placement_receipt
@@ -507,8 +573,11 @@ def abort_pre_switch(account, work, restore_id):
     provision = work / 'provisioning.json'
     if provision.exists() or provision.is_symlink():
         record = _private_document(provision)
+        if record.get('status') == 'planned':
+            reconcile_provisioning(account, work, restore_id)
+            record = _private_document(provision)
         if (record.get('account_id') != account.id or record.get('restore_id') != restore_id
-                or record.get('status') != 'completed'):
+                or record.get('status') not in ('completed', 'reconciled')):
             raise ValidationError('Interrupted mailbox provisioning requires reconciliation')
     intent = work / 'abort-intent.json'
     expected = dict(format=1, account_id=account.id, restore_id=restore_id, reason='before-switch')

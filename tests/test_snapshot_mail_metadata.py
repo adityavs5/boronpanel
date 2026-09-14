@@ -138,6 +138,31 @@ def test_guarded_provisioning_recreates_missing_users_and_updates_cache(mail_dat
         pass
     with pytest.raises(FileExistsError):
         restore.provision_mailboxes(account, prepared, acquired, 19)
+    intent = preparation / 'provisioning.json'
+    pending = json.loads(intent.read_text())
+    pending['status'] = 'planned'
+    intent.write_text(json.dumps(pending))
+    if missing:
+        # Unknown completion must not recreate a SQL user that is still absent.
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE u FROM mail_user u JOIN mail_domain d ON u.domain_id=d.id WHERE d.domain='alpha.example.test'")
+    else:
+        # The SQL write survived, but its cache commit did not.
+        with write_session() as session:
+            session.delete(session.scalar(select(MailUser).where(MailUser.domain == 'alpha.example.test')))
+    assert restore.abort_pre_switch(account, preparation, 19)['guards_released'] == 1
+    assert json.loads(intent.read_text())['status'] == 'reconciled'
+    with write_session() as session:
+        cached = session.scalar(select(MailUser).where(MailUser.domain == 'alpha.example.test'))
+        assert (cached is None) if missing else cached.quota_mb == 4096
+    if missing:
+        assert not mail.list_mailboxes('alpha.example.test')
+    else:
+        actual = mail.list_mailboxes('alpha.example.test')[0]
+        assert actual['quota_mb'] == 4096 and actual['active'] == 0
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT u.password FROM mail_user u JOIN mail_domain d ON u.domain_id=d.id WHERE d.domain='alpha.example.test'")
+            assert cursor.fetchone()[0] == hashed
 
 
 @pytest.mark.parametrize('change', [{'local_part':'../../escape'},{'password_hash':'{PLAIN}secret'},{'password_hash':'{ARGON2ID}bad\nline'},{'quota_mb':0},{'quota_mb':True},{'active':'yes'}])

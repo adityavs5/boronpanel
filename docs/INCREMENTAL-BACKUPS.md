@@ -1148,3 +1148,23 @@ partial SQL provisioning or any persisted switch; those still need their own
 reconciliation. Fifteen dispatcher/guard tests passed, covering absent/completed
 provisioning, retained planned provisioning, idempotent owned release, preserved
 staging and startup handling before/after preparation.
+
+Pre-switch abort now reconciles planned SQL provisioning records first. Under the
+database mutation lock, it binds the provisioning and guard inventories to the
+account/job, verifies current domain ownership and all guard tokens, then reads
+actual SQL mailbox state. Existing SQL users retain their credentials/quota/status
+and receive validated Maildirs plus repaired cache rows. Absent SQL users remain
+absent and only their stale owned cache entries are removed. A durable reconciled
+record permits the subsequent pre-switch guard release.
+
+Malformed records, ownership changes and unsafe existing storage still retain
+recovery protection. No messages or SQL users are deleted by reconciliation; no
+missing SQL user is recreated speculatively. This supersedes the earlier blanket
+refusal of every planned provisioning record.
+
+Validation: seven focused dispatcher/provisioning cases passed across the runs.
+The real isolated-SQL tests simulate a lost cache commit and a SQL user that
+remains absent, then verify automatic reconciliation, preserved password/disabled
+status/quota, correct cache state and released guards. One test assertion was
+corrected to accept the driver's empty tuple result. Partial switches and the
+customer restore interface remain unfinished.

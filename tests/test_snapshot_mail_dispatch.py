@@ -73,7 +73,7 @@ def test_pre_switch_abort_releases_only_proven_preparation(isolated_db, tmp_path
         record.write_text(json.dumps(dict(format=1, account_id=account.id, restore_id=7, status=provisioning)))
         record.chmod(0o600)
     if provisioning == 'planned':
-        with pytest.raises(ValidationError, match='requires reconciliation'):
+        with pytest.raises(ValidationError, match='recovery records'):
             mail_restore.abort_pre_switch(account, work, 7)
         assert len(list((tmp_path / 'guards').iterdir())) == 1
     else:
