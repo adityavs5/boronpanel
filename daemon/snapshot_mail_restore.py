@@ -288,3 +288,44 @@ def create_switch(account, work, acquired, restore_id):
                    for entry in inventory['entries']]
         return journal.create(work / 'switch.json', dict(format=1, restore_id=restore_id,
                               operation_id=uuid.uuid4().hex, undo=False, entries=entries))
+
+
+def backup_displaced(account, repo, path, restore_id, *, service='dovecot.service'):
+    """Encrypt displaced mail before the coordinator releases any restore guard.
+
+    Caller holds account/repository locks. This retains both on-disk trees and
+    guards on success and failure; job finalization owns their later lifecycle.
+    """
+    from daemon import snapshot_mail_journal as journal, snapshot_mail_guard as guard
+    from daemon.snapshot_mail_files import _placement_receipt
+    payload = journal.read(path)
+    if type(restore_id) is not int or payload['restore_id'] != restore_id or payload['undo']:
+        raise ValidationError('Invalid forward restore journal for mail safety backup')
+    with write_session() as session:
+        current = session.get(Account, account.id)
+        if current is None or current.username != account.username:
+            raise ValidationError('Restore account no longer exists')
+        domains = {entry['domain'] for entry in payload['entries']}
+        owners = {row.domain: row.account_id for row in session.scalars(
+            select(MailDomain).where(MailDomain.domain.in_(domains)))}
+    if any(owners.get(domain) != account.id for domain in domains):
+        raise ValidationError('Mail safety backup selection is not owned by this account')
+    state = journal.recovery_state(path, service=service)
+    if state['state'] != 'applied':
+        raise ValidationError('Mailbox switch must finish and mail must resume before safety backup')
+    work = Path(path).parent
+    manifest = journal._path(work / 'mail-safety.json')
+    receipt = journal._path(work / 'mail-safety-result.json')
+    entries = [dict(domain=entry['domain'], local_part=entry['local_part'],
+                    path=str(Path(settings.mail_base) / entry['domain'] / entry['local_part'] / entry['plan']['prepared']))
+               for entry in payload['entries']]
+    _placement_receipt(manifest, dict(format=1, account_id=account.id, restore_id=restore_id,
+                                      operation_id=payload['operation_id'], mailboxes=entries), create=True)
+    with guard.owned_guards(payload['entries'], restore_id):
+        if any(entry['state'] != 'applied' for entry in journal.inspect(path)):
+            raise ValidationError('Mailbox directories changed before safety backup')
+        result = storage.backup(repo, account.id, [entry['path'] for entry in entries] + [str(manifest)])
+        storage.owned_snapshot(repo, account.id, result['snapshot_id'])
+        _placement_receipt(receipt, dict(format=1, account_id=account.id, restore_id=restore_id,
+                                         snapshot_id=result['snapshot_id']), create=True)
+    return {'snapshot_id': result['snapshot_id'], 'mailboxes': entries}

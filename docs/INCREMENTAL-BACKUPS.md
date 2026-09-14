@@ -997,3 +997,18 @@ staged batch, completion of its remaining isolated copy, journal creation with
 both directory states still ready, duplicate-journal refusal and the existing
 real supervised exchange/rollback tests. Customer submission and post-switch
 safety backup/finalization remain outstanding.
+
+Post-switch displaced-mail backup is now connected through `backup_displaced`.
+It verifies account/domain ownership, forward-job identity, terminal applied
+directory state and resumed mail service before archiving. It retains guard
+ownership while encrypting the displaced trees and a private mailbox/path mapping
+in the account's restic repository. A private result receipt records the returned,
+ownership-verified snapshot ID. Both live/displaced trees and guards remain intact;
+this function neither finalizes the restore nor removes staging.
+
+The exclusive safety manifest prevents blind repetition after an interrupted
+backup; reconciliation of a repository commit without its result receipt remains
+to be implemented. A real isolated-restic integration test passed after correcting
+fixture setup order. It proves the recovery point contains the original messages,
+the live temporary Maildirs retain restored messages, the mapping excludes guard
+tokens, premature backup is refused and guards remain owned after success.
