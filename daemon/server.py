@@ -22,7 +22,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import panel_jobs, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, procmanager, pythonapps, redisacct, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import panel_jobs, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, procmanager, pythonapps, redisacct, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 
 logger = logging.getLogger("borond")
@@ -55,6 +55,13 @@ OP_TABLE = {
     "account.set_php_version": handlers_account.set_php_version,
     "account.set_limits": handlers_account.set_limits,
     "account.reactivate": handlers_account.reactivate_account,
+    "ipmanager.list": ipmanager.list_state,
+    "ipmanager.import": ipmanager.import_addresses,
+    "ipmanager.update": ipmanager.update_ip,
+    "ipmanager.delete": ipmanager.delete_ip,
+    "ipmanager.policy.set": ipmanager.set_policy,
+    "ipmanager.assign": ipmanager.assign_account,
+    "ipmanager.assign_new": ipmanager.assign_for_new_account,
     "cron.list": handlers_cron.list_cron_jobs,
     "cron.add": handlers_cron.add_cron_job,
     "cron.update": handlers_cron.update_cron_job,
@@ -534,6 +541,7 @@ REPORTING_OPS = {
     # live system state -- same isolation reasoning as disktree/usage
     # above, just for the admin surface instead of the customer one.
     "health.get", "health.history",
+    "ipmanager.list",
     # Run A feature 5: history is dashboard-polled; check shells out 7x
     # systemctl -- same isolation reasoning as health/services below.
     "monitoring.history", "monitoring.check",
@@ -638,6 +646,7 @@ handlers_account.LIMITS_HOOKS.append(
     lambda account: cgroups.apply_limits(account.username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
 )
 handlers_account.TERMINATE_HOOKS.append(lambda account: cgroups.remove_slice(account.username))
+handlers_account.TERMINATE_HOOKS.append(lambda account: ipmanager.release_account(account))
 # Phase 6b: new accounts (and reactivated ones, same CREATE_HOOKS list) get
 # namespace isolation by default; termination tears down the per-uid
 # lsnsctl gate + any persisted /var/lsns/<uid> state. No suspend/unsuspend

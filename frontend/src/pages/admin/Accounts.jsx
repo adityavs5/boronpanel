@@ -104,7 +104,7 @@ export default function Accounts() {
   const [open, setOpen] = useState(false)
   const [createStep, setCreateStep] = useState(1)
   const [createdAccount, setCreatedAccount] = useState(null)
-  const [form, setForm] = useState({ username: '', primary_domain: '', plan_id: '', email: '', password: '' })
+  const [form, setForm] = useState({ username: '', primary_domain: '', plan_id: '', email: '', password: '', ip_selection: 'automatic', server_ip_id: '' })
   const [selected, setSelected] = useState(() => new Set())
   const listQuery = searchParams.get('q') || ''
   const listPage = Math.max(1, Number.parseInt(searchParams.get('page') || '1', 10) || 1)
@@ -138,6 +138,11 @@ export default function Accounts() {
     queryFn: () => get('/api/v1/admin/plans'),
   })
   const plans = plansData?.plans || []
+  const { data: ipData } = useQuery({
+    queryKey: ['ip-management'],
+    queryFn: () => get('/api/v1/admin/ip-management'),
+  })
+  const availableIps = (ipData?.ips || []).filter((entry) => entry.active && entry.present_on_host)
 
   const toggle = (username) => setSelected((prev) => {
     const next = new Set(prev)
@@ -165,7 +170,7 @@ export default function Accounts() {
       qc.invalidateQueries({ queryKey: ['accounts'] })
       setOpen(false)
       setCreateStep(1)
-      setForm({ username: '', primary_domain: '', plan_id: '', email: '', password: '' })
+      setForm({ username: '', primary_domain: '', plan_id: '', email: '', password: '', ip_selection: 'automatic', server_ip_id: '' })
       setCreatedAccount(acc)
     },
     onError: (e) => toast.error('Could not create account', e.message),
@@ -261,6 +266,7 @@ export default function Accounts() {
     { key: 'username', header: 'Username', sortable: true, searchable: true, render: (r) => <span className="font-medium text-foreground">{r.username}</span> },
     { key: 'status', header: 'Status', sortable: true, render: (r) => <StatusBadge status={r.status} /> },
     { key: 'primary_domain', header: 'Primary domain', searchable: true, render: (r) => r.primary_domain || <span className="text-muted-foreground">—</span> },
+    { key: 'server_ip', header: 'Server IP', searchable: true, render: (r) => <span className="font-mono text-xs">{r.server_ip || '—'}</span> },
     { key: 'created_at', header: 'Created', sortable: true, render: (r) => (r.created_at ? formatDate(r.created_at) : '—') },
   ]
 
@@ -362,6 +368,8 @@ export default function Accounts() {
                 plan_id: form.plan_id ? Number(form.plan_id) : undefined,
                 email: form.email.trim() || undefined,
                 password: form.password || undefined,
+                ip_selection: form.ip_selection,
+                server_ip_id: form.ip_selection === 'specific' ? Number(form.server_ip_id) : undefined,
               })
             }}
           >
@@ -414,6 +422,20 @@ export default function Accounts() {
                   {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </Select>
               </FormField>
+              <FormField label="IP assignment" hint="Automatic follows the server-wide policy in IP Management.">
+                <Select value={form.ip_selection} onChange={(e) => setForm((f) => ({ ...f, ip_selection: e.target.value }))}>
+                  <option value="automatic">Automatic (server policy)</option>
+                  <option value="primary">Primary server IP</option>
+                  <option value="random">Random shared IP</option>
+                  <option value="specific">Choose a specific IP</option>
+                </Select>
+              </FormField>
+              {form.ip_selection === 'specific' && <FormField label="Server IP" required>
+                <Select required value={form.server_ip_id} onChange={(e) => setForm((f) => ({ ...f, server_ip_id: e.target.value }))}>
+                  <option value="">Choose an IP…</option>
+                  {availableIps.map((entry) => <option key={entry.id} value={entry.id}>{entry.address} — {entry.allocation_mode}{entry.label ? ` · ${entry.label}` : ''}</option>)}
+                </Select>
+              </FormField>}
             </DialogBody>
             ) : (
               <DialogBody className="space-y-4">
@@ -425,6 +447,7 @@ export default function Accounts() {
                     ['Contact email', form.email.trim() || 'Add later'],
                     ['Password', form.password ? 'Use the password entered' : 'Generate a strong password'],
                     ['Plan', plans.find((plan) => String(plan.id) === String(form.plan_id))?.name || 'Default limits'],
+                    ['Server IP', form.ip_selection === 'specific' ? (availableIps.find((entry) => String(entry.id) === String(form.server_ip_id))?.address || 'Choose an IP') : ({ automatic: 'Automatic server policy', primary: 'Primary server IP', random: 'Random shared IP' }[form.ip_selection])],
                   ].map(([label, value]) => (
                     <div key={label} className="grid grid-cols-[7rem_1fr] gap-3 px-3 py-2.5">
                       <dt className="text-muted-foreground">{label}</dt>
@@ -465,6 +488,7 @@ export default function Accounts() {
                 <div className="mt-1 text-muted-foreground">{createdAccount.plan_apply_error} Save the credentials, then review the account plan and limits.</div>
               </div>
             )}
+            {createdAccount?.ip_assignment_error && <div className="rounded-card border border-warning/40 bg-warning/10 p-3 text-sm text-foreground" role="alert"><div className="font-medium">The account exists, but its IP assignment needs attention.</div><div className="mt-1 text-muted-foreground">{createdAccount.ip_assignment_error} Save the credentials, then assign an IP from IP Management.</div></div>}
             <div className="space-y-3 rounded-card border border-border p-3">
               {[
                 ['Username', createdAccount?.username],

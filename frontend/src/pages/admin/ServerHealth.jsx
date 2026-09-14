@@ -304,7 +304,7 @@ export default function ServerHealth() {
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Gauge icon={Cpu} label="CPU" pct={h.cpu_pct} detail={`${h.cpu_count} cores`} />
-          <Gauge icon={MemoryStick} label="Memory" pct={h.mem_pct} detail={`${formatBytes(h.mem_used)} / ${formatBytes(h.mem_total)}`} />
+          <Gauge icon={MemoryStick} label="Memory" pct={h.mem_pct} detail={`${formatBytes(h.mem_used)} / ${formatBytes(h.mem_total)}${h.swap_total ? ` · swap ${formatBytes(h.swap_used)} / ${formatBytes(h.swap_total)}` : ''}`} />
           <Gauge icon={HardDrive} label="Disk (/)" pct={rootDisk?.pct} detail={rootDisk ? `${formatBytes(rootDisk.used)} / ${formatBytes(rootDisk.total)}` : ''} />
           <Card>
             <CardContent className="py-5">
@@ -324,7 +324,7 @@ export default function ServerHealth() {
       )}
 
       {/* Disks table */}
-      {h?.disks?.length > 1 && (
+      {h?.disks?.length > 0 && (
         <Card className="mt-6">
           <CardHeader><CardTitle>Filesystems</CardTitle></CardHeader>
           <CardContent className="space-y-4">
@@ -340,6 +340,8 @@ export default function ServerHealth() {
           </CardContent>
         </Card>
       )}
+
+      {h?.network_interfaces?.length > 0 && <Card className="mt-6"><CardHeader><CardTitle>Network interfaces</CardTitle><CardDescription>Traffic counters since the server started.</CardDescription></CardHeader><CardContent className="divide-y divide-border rounded-panel border border-border">{h.network_interfaces.map((item) => <div key={item.interface} className="grid grid-cols-[1fr_auto_auto] items-center gap-4 px-4 py-3 text-sm"><span className="font-mono font-medium">{item.interface}</span><span className="text-muted-foreground">RX <strong className="font-medium text-foreground">{formatBytes(item.rx_bytes)}</strong></span><span className="text-muted-foreground">TX <strong className="font-medium text-foreground">{formatBytes(item.tx_bytes)}</strong></span></div>)}</CardContent></Card>}
 
       <MonitoringCard />
 

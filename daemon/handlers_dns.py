@@ -136,11 +136,19 @@ def create_zone(params: dict) -> dict:
     ns_records = [f"ns1.{domain_name}.", f"ns2.{domain_name}."]
     dnsprovider.create_zone(domain_name, ns_records)
 
+    # Nameserver glue always points at the server's primary address. The
+    # website apex follows this account's assigned shared/dedicated address.
+    # A local import avoids an ipmanager -> DNS import cycle.
+    from daemon import ipmanager
+
     ip = settings.server_public_ip
+    site_ip = ipmanager.address_for_account(account.id)
     if ip:
         dnsprovider.upsert_record(domain_name, "ns1", "A", [ip])
         dnsprovider.upsert_record(domain_name, "ns2", "A", [ip])
-        dnsprovider.upsert_record(domain_name, "@", "A", [ip])
+    if site_ip:
+        rtype = "AAAA" if ":" in site_ip else "A"
+        dnsprovider.upsert_record(domain_name, "@", rtype, [site_ip])
         dnsprovider.upsert_record(domain_name, "www", "CNAME", [f"{domain_name}."])
 
     with write_session() as session:

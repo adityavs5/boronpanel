@@ -109,14 +109,18 @@ def add_domain(params: dict) -> dict:
         parent_zone = _find_parent_zone(domain_name)
         dns_label = _subdomain_label(domain_name, parent_zone) if parent_zone else None
         ensure_docroot(username, docroot, domain_name)
-        if parent_zone and settings.server_public_ip:
-            dnsprovider.upsert_record(parent_zone, dns_label, "A", [settings.server_public_ip])
+        from daemon import ipmanager
+
+        site_ip = ipmanager.address_for_account(account_snapshot.id)
+        if parent_zone and site_ip:
+            record_type = "AAAA" if ":" in site_ip else "A"
+            dnsprovider.upsert_record(parent_zone, dns_label, record_type, [site_ip])
             dns_record_created = True
         ols.provision_vhost(account_snapshot)
     except Exception:
         if dns_record_created:
             try:
-                dnsprovider.delete_record(parent_zone, dns_label, "A")
+                dnsprovider.delete_record(parent_zone, dns_label, record_type)
             except dnsprovider.DnsError:
                 pass  # best-effort; the DB-row compensation below is authoritative
         with write_session() as session:
@@ -189,10 +193,13 @@ def remove_domain(params: dict) -> dict:
 
     if parent_zone:
         label = _subdomain_label(domain_name, parent_zone)
-        try:
-            dnsprovider.delete_record(parent_zone, label, "A")
-        except dnsprovider.DnsError:
-            pass  # already gone or zone unreachable -- vhost removal below is what actually matters
+        # Remove either family: older domains used A only; newer accounts may
+        # have been assigned an IPv6 address.
+        for record_type in ("A", "AAAA"):
+            try:
+                dnsprovider.delete_record(parent_zone, label, record_type)
+            except dnsprovider.DnsError:
+                pass  # already gone or zone unreachable -- vhost removal is authoritative
 
     handlers_redirect.delete_redirects_for_domain(domain_name)
     lscache.delete_settings_for_domain(domain_name)

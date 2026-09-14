@@ -2022,3 +2022,49 @@ class PanelConfigJob(Base):
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ServerIp(Base):
+    """An address already configured on this host and available to hosting accounts.
+
+    Boron deliberately inventories host addresses instead of writing network
+    configuration: a bad netplan change can disconnect the only route to the
+    server. Providers/operators attach addresses first, then import them here.
+    ``allocation_mode`` controls tenancy, while assignments below record the
+    address each account's managed DNS should use.
+    """
+
+    __tablename__ = "server_ips"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    address: Mapped[str] = mapped_column(String(45), unique=True, index=True)
+    family: Mapped[str] = mapped_column(String(4))  # ipv4 | ipv6
+    interface: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prefix_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    allocation_mode: Mapped[str] = mapped_column(String(16), default="shared")  # shared | dedicated
+    label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ServerIpAssignment(Base):
+    __tablename__ = "server_ip_assignments"
+    __table_args__ = (UniqueConstraint("account_id", name="uq_server_ip_assignment_account"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    server_ip_id: Mapped[int] = mapped_column(ForeignKey("server_ips.id"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    assigned_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ServerIpSettings(Base):
+    """Singleton new-account allocation policy (id=1)."""
+
+    __tablename__ = "server_ip_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    allocation_policy: Mapped[str] = mapped_column(String(24), default="primary")
+    # primary | random_shared | specific
+    default_server_ip_id: Mapped[int | None] = mapped_column(ForeignKey("server_ips.id"), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

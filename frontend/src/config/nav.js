@@ -77,6 +77,7 @@ export const adminNav = [
   { label: 'Mail Queue', to: '/mail-queue', icon: Inbox },
   { label: 'IMAP Migrations', to: '/imap-migrations', icon: ArrowRightLeft },
   { label: 'Firewall', to: '/firewall', icon: Flame },
+  { label: 'IP Management', to: '/ip-management', icon: Network },
   { label: 'IP Bans', to: '/ip-bans', icon: Ban },
   { label: 'Fail2ban', to: '/fail2ban', icon: ShieldAlert },
   { label: 'IP Whitelist', to: '/ip-whitelist', icon: LockKeyhole },

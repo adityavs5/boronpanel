@@ -23,6 +23,7 @@ const synonyms = {
   '/ssh': 'ssh keys secure shell', '/devtools': 'developer composer wpcli tools',
   '/malware': 'malware virus scanner scan wordpress hack compromise webshell clamav quarantine restore security files scripts',
   '/openlitespeed': 'openlitespeed ols web server webadmin 7080 connections timeout gzip brotli quic http3 password reload',
+  '/ip-management': 'server ip address addresses multiple dedicated shared allocation pool network interface new account default random',
 }
 export function normalize(text) { return String(text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() }
 function distance(a, b) {

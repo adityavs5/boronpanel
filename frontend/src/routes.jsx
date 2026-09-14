@@ -49,6 +49,7 @@ const BandwidthRanking = lazy(() => import('@/pages/admin/BandwidthRanking'))
 const MailQueue = lazy(() => import('@/pages/admin/MailQueue'))
 const Firewall = lazy(() => import('@/pages/admin/Firewall'))
 const OpenLiteSpeed = lazy(() => import('@/pages/admin/OpenLiteSpeed'))
+const IpManagement = lazy(() => import('@/pages/admin/IpManagement'))
 const IpBans = lazy(() => import('@/pages/admin/IpBans'))
 const Fail2ban = lazy(() => import('@/pages/admin/Fail2ban'))
 const IpWhitelist = lazy(() => import('@/pages/admin/IpWhitelist'))
@@ -157,6 +158,7 @@ export const router = createBrowserRouter(
         { path: 'mail-queue', element: admin(<MailQueue />) },
         { path: 'firewall', element: admin(<Firewall />) },
         { path: 'openlitespeed', element: admin(<OpenLiteSpeed />) },
+        { path: 'ip-management', element: admin(<IpManagement />) },
         { path: 'ip-bans', element: admin(<IpBans />) },
         { path: 'fail2ban', element: admin(<Fail2ban />) },
         { path: 'ip-whitelist', element: admin(<IpWhitelist />) },

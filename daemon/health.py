@@ -56,7 +56,9 @@ def get_live(params: dict | None = None) -> dict:
     cpu_pct = psutil.cpu_percent(interval=0.3)
     load1, load5, load15 = psutil.getloadavg()
     mem = psutil.virtual_memory()
+    swap = psutil.swap_memory()
     net = psutil.net_io_counters()
+    per_nic = psutil.net_io_counters(pernic=True)
     uptime_seconds = int(time.time() - psutil.boot_time())
     return {
         "clock": clock_health.get_status(),
@@ -68,9 +70,17 @@ def get_live(params: dict | None = None) -> dict:
         "mem_total": mem.total,
         "mem_used": mem.used,
         "mem_pct": mem.percent,
+        "swap_total": swap.total,
+        "swap_used": swap.used,
+        "swap_pct": swap.percent,
         "disks": _disk_usage(),
         "net_rx_bytes": net.bytes_recv,
         "net_tx_bytes": net.bytes_sent,
+        "network_interfaces": [
+            {"interface": name, "rx_bytes": counters.bytes_recv, "tx_bytes": counters.bytes_sent}
+            for name, counters in sorted(per_nic.items())
+            if name != "lo"
+        ],
         "uptime_seconds": uptime_seconds,
     }
 

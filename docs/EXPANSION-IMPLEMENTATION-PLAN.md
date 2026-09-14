@@ -49,6 +49,17 @@ workflow at desktop and mobile widths.
 
 ## Batch D — addresses and server resources
 
+Implementation status: complete on 2026-09-14, pending the grouped expansion
+release. Boron inventories only addresses that the host or installer already
+exposes, so IP allocation cannot rewrite netplan or disconnect the server.
+Shared and dedicated pools, primary/random/specific new-account policies,
+per-account overrides, managed-zone DNS updates, and termination cleanup are
+implemented. The existing Server Health dashboard is now the unified resource
+surface: it shows every filesystem, RAM and swap, load, total and per-interface
+network traffic, uptime, and 24-hour CPU/memory/throughput history. Focused
+backend/API checks passed 73 tests, the production frontend build passed, and
+the IP/account flow passed in both themes at desktop and mobile widths.
+
 - Discover configured server addresses and persist shared/dedicated/default/allocation policy metadata.
 - Assign dedicated addresses to accounts, support one or more shared addresses, random shared allocation and a selected default for new accounts.
 - Feed selected addresses into domain DNS and OLS listeners without changing unrelated host networking.

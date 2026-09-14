@@ -10,8 +10,10 @@ def test_get_live_returns_expected_shape():
     assert isinstance(live["cpu_pct"], float)
     assert live["cpu_count"] >= 1
     assert live["mem_total"] > 0
+    assert live["swap_total"] >= 0
     assert isinstance(live["disks"], list)
     assert live["net_rx_bytes"] >= 0
+    assert isinstance(live["network_interfaces"], list)
     assert live["uptime_seconds"] > 0
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import RedirectResponse
@@ -10,7 +11,7 @@ from starlette.requests import Request
 
 from shared.config import settings
 from shared.db import read_session
-from shared.models import Account
+from shared.models import Account, ServerIp, ServerIpAssignment
 
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_account_access, require_admin
@@ -31,6 +32,10 @@ class CreateAccountBody(BaseModel):
     email: str | None = None  # QA round 2, item 15: admin-supplied contact email, stored as the account's notification prefs email
     # Run A feature 1: optional plan to apply immediately after creation.
     plan_id: int | None = None
+    # automatic follows the server policy; primary/random/specific let an
+    # operator override it for this one account.
+    ip_selection: Literal["automatic", "primary", "random", "specific"] = "automatic"
+    server_ip_id: int | None = None
 
 
 @api_router.post("")
@@ -38,6 +43,8 @@ def create_account(body: CreateAccountBody, identity: Identity = Depends(get_ide
     require_admin(identity)
     fields = body.model_dump(exclude_none=True)
     plan_id = fields.pop("plan_id", None)
+    ip_selection = fields.pop("ip_selection", "automatic")
+    server_ip_id = fields.pop("server_ip_id", None)
     result = call_daemon("account.create", identity, **fields)
     if plan_id is not None:
         # The account exists at this point even if plan application fails --
@@ -57,6 +64,16 @@ def create_account(body: CreateAccountBody, identity: Identity = Depends(get_ide
         except Exception as exc:
             logger.exception("plan application failed after creating account %s", result["username"])
             result["plan_apply_error"] = str(exc)
+    try:
+        allocation = call_daemon(
+            "ipmanager.assign_new", identity,
+            username=result["username"], selection=ip_selection,
+            **({"server_ip_id": server_ip_id} if server_ip_id is not None else {}),
+        )
+        result["server_ip"] = allocation
+    except Exception as exc:
+        logger.exception("IP allocation failed after creating account %s", result["username"])
+        result["ip_assignment_error"] = str(exc)
     return result
 
 
@@ -69,12 +86,20 @@ def list_accounts(identity: Identity = Depends(get_identity)):
         accounts = db.scalars(
             select(Account).where(Account.status != "terminated").order_by(Account.username)
         ).all()
+        assignments = {
+            account_id: address
+            for account_id, address in db.execute(
+                select(ServerIpAssignment.account_id, ServerIp.address)
+                .join(ServerIp, ServerIp.id == ServerIpAssignment.server_ip_id)
+            )
+        }
         return [
             {
                 "id": a.id,
                 "username": a.username,
                 "status": a.status,
                 "primary_domain": a.primary_domain,
+                "server_ip": assignments.get(a.id) or settings.server_public_ip or None,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             }
             for a in accounts
