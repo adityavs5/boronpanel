@@ -1094,3 +1094,25 @@ positions and successful undo after startup classification. The additional activ
 account-lock test passed (8.11s), confirming startup leaves an ongoing worker's
 status and DNS records untouched. This change is not deployed; Cloudflare-native
 restore and live local DNS recovery verification remain pending.
+
+### Local DNS recovery deployed and verified live — 2026-09-14
+
+Deployed through f1db8d9 using idle-job/mail-guard checks and private rollback copy
+`/root/boron-setup/mail-recovery-before-20260914-050206`. Deployment log:
+`/root/boron-setup/dns-recovery-deploy.log`. Authenticated HTTPS health/configuration
+checks passed on port 2222 and listener configuration bytes were preserved.
+
+Live proof: `/root/boron-setup/dns-recovery-live-proof.py`, `.json` and `.log`.
+Only isolated local zone pq0914020151.boron.sitecountry.com was exercised. Manual
+backup run 7 captured its original native records; a uniquely named TXT record was
+then created through the HTTPS API and confirmed in an authoritative DNS answer.
+Restore 9 removed that post-backup record and matched the complete normalized
+original zone. Undo 10 restored the TXT record and previous zone. Cleanup restore
+11 returned the zone to its original records and preserved nameservers. All restore
+jobs retained encrypted safety copies. No public Cloudflare zone was changed.
+
+Independent verification reconfirmed the original zone, authoritative absence of
+the test TXT record, completed backup/restore/undo/cleanup jobs, active API/daemon,
+OLS and PowerDNS services, and deployed Python/frontend artifacts matching the
+worktree/build. Cloudflare-native recovery and mail-routing recovery remain open;
+this successful local-provider proof does not establish either capability.
