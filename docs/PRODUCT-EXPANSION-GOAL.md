@@ -1451,3 +1451,37 @@ and retain current state/guards on rollback encryption failure. Existing nine
 finalization/release recovery cases also passed. Fixtures used isolated MariaDB,
 temporary vmail/guards and real restic; supervisor and service-state calls were
 mocked. Live service supervision is still unverified for this routing workflow.
+
+
+### Paired routing safety retention — 2026-09-14
+
+Added immutable per-purpose routing safety checkpoints on running mail_routing
+restore jobs. The original copy must be recorded first and remains the primary
+undo snapshot; rollback safety is retained separately in the persisted job summary.
+A repeated identical checkpoint is allowed, but replacing either purpose’s existing
+snapshot is rejected.
+
+Retention now collects every registered primary/original/rollback reference.
+Routing jobs must be completed and explicitly routing_finalized before their
+copies become eligible. Retention keeps the newest eligible jobs as groups,
+protects all copies of unresolved jobs and snapshots used by queued recovery, and
+expires only unprotected older references. Repository failure preserves metadata;
+a retry can reconcile copies already deleted before a lost acknowledgement.
+Invalid routing reference metadata blocks cleanup for inspection. Existing mail
+restores still require displaced-data cleanup before becoming eligible.
+
+The pending routing queue worker must call record_routing_safety after each
+successful encrypted copy and before live changes, and set routing_finalized only
+after durable journal finalization. This retention support is not a claim that the
+routing worker/UI integration is complete. Interrupted rollback handling, direct
+mutation coordination across phases and live supervision remain open, alongside
+Cloudflare-native DNS recovery and the final broad audit. Not deployed.
+
+Validation: eight paired-retention/checkpoint tests passed (18.47s), covering
+completed-pair expiry, running/failed/unfinalized protection, queued use of a
+secondary copy, immutable purpose recording, invalid-reference rejection, and
+repository deletion followed by lost acknowledgement and metadata reconciliation.
+Two existing real encrypted file-recovery retention regressions passed (53.08s),
+and the mailbox displaced-cleanup retention regression passed (4.26s). New routing
+selection tests mocked repository listing/deletion; existing file tests exercised
+real restic repositories. No production snapshot or live account was changed.

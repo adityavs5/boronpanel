@@ -2,6 +2,7 @@
 from daemon.database_operations import serialized_worker
 import json
 import logging
+import re
 from pathlib import Path
 import shutil
 import threading
@@ -360,6 +361,42 @@ def _update(ident,**values):
         for key,value in values.items():setattr(row,key,value)
 
 
+
+def _routing_safety_references(row):
+    values = row.summary.get('routing_safety_snapshots', {})
+    if (not isinstance(values, dict) or not set(values) <= {'restore', 'rollback'}
+            or any(not isinstance(value, str) or not re.fullmatch(r'[a-f0-9]{64}', value)
+                   for value in values.values())):
+        raise ValidationError('Invalid routing safety references; retention requires inspection')
+    return values
+
+
+def _safety_references(row):
+    return set(_routing_safety_references(row).values()) | ({row.safety_snapshot_id} if row.safety_snapshot_id else set())
+
+
+def record_routing_safety(ident, snapshot_id, *, purpose='restore'):
+    """Durably register each encrypted copy before the coordinator mutates mail."""
+    if (purpose not in ('restore', 'rollback') or not isinstance(snapshot_id, str)
+            or not re.fullmatch(r'[a-f0-9]{64}', snapshot_id)):
+        raise ValidationError('Invalid mail-routing safety checkpoint')
+    with write_session() as session:
+        row = session.get(SnapshotRestore, storage._positive(ident))
+        if row is None or row.selection.get('kind') != 'mail_routing' or row.status != 'running':
+            raise ValidationError('Routing safety requires an active routing restore job')
+        references = dict(_routing_safety_references(row))
+        if purpose in references and references[purpose] != snapshot_id:
+            raise ValidationError('Routing safety checkpoint cannot replace an existing copy')
+        if purpose == 'restore':
+            if row.safety_snapshot_id and row.safety_snapshot_id != snapshot_id:
+                raise ValidationError('Original routing safety checkpoint changed')
+            row.safety_snapshot_id = snapshot_id
+        elif 'restore' not in references:
+            raise ValidationError('Record original routing safety before rollback safety')
+        references[purpose] = snapshot_id
+        row.summary = {**row.summary, 'routing_safety_snapshots': references}
+
+
 def apply_safety_retention(repo, account_id, destination_id, policy_id, keep):
     """Called under the account/repository locks after a successful backup.
 
@@ -375,15 +412,16 @@ def apply_safety_retention(repo, account_id, destination_id, policy_id, keep):
                 SnapshotRestore.account_id == account_id,
                 SnapshotRun.destination_id == destination_id).order_by(SnapshotRestore.id.desc())).all()
     eligible = [row for row, policy in pairs if policy == policy_id
-                and row.status == 'completed' and row.safety_snapshot_id
-                and (row.selection.get('kind') != 'mail' or row.summary.get('displaced_cleaned') is True)]
+                and row.status == 'completed' and _safety_references(row)
+                and (row.selection.get('kind') != 'mail' or row.summary.get('displaced_cleaned') is True)
+                and (row.selection.get('kind') != 'mail_routing' or row.summary.get('routing_finalized') is True)]
     candidates = eligible[keep:]
     candidate_ids = {row.id for row in candidates}
-    protected = {row.safety_snapshot_id for row, _ in pairs
-                 if row.id not in candidate_ids and row.safety_snapshot_id}
+    protected = {snapshot for row, _ in pairs if row.id not in candidate_ids
+                 for snapshot in _safety_references(row)}
     protected.update(row.selection.get('source_snapshot_id') for row, _ in pairs
                      if row.status in jobs.ACTIVE)
-    obsolete = sorted({row.safety_snapshot_id for row in candidates} - protected)
+    obsolete = sorted({snapshot for row in candidates for snapshot in _safety_references(row)} - protected)
     if not obsolete:
         return 0
     # A failed repository operation leaves the recovery metadata available.
@@ -392,11 +430,16 @@ def apply_safety_retention(repo, account_id, destination_id, policy_id, keep):
     if remaining:
         storage.forget(repo, account_id, remaining, prune=True)
     with write_session() as session:
-        for row in session.scalars(select(SnapshotRestore).where(
-                SnapshotRestore.id.in_(candidate_ids),
-                SnapshotRestore.safety_snapshot_id.in_(obsolete))).all():
-            row.safety_snapshot_id = None
-            row.summary = {**row.summary, 'safety_snapshot_expired': True}
+        for row in session.scalars(select(SnapshotRestore).where(SnapshotRestore.id.in_(candidate_ids))).all():
+            summary = dict(row.summary)
+            if row.safety_snapshot_id in obsolete:
+                row.safety_snapshot_id = None
+                summary['safety_snapshot_expired'] = True
+            references = _routing_safety_references(row)
+            remaining_references = {purpose: value for purpose, value in references.items() if value not in obsolete}
+            if remaining_references != references:
+                summary.update(routing_safety_snapshots=remaining_references, routing_safety_expired=True)
+            row.summary = summary
     return len(obsolete)
 
 
