@@ -99,10 +99,10 @@ def legacy_zones(configuration):
 
 
 def validate_for_restore(account, payload, selected_zones=None):
-    """Validate selected local zones; never use saved provider IDs as authority.
+    """Validate selected native zones; never use saved provider IDs as authority.
 
     Server-managed SOA, apex nameservers and DNSSEC records are excluded from
-    customer recovery. Cloudflare application requires its own native validator.
+    customer recovery. Cloudflare uses its own native record validator.
     """
     import dns.name
     import dns.rdata
@@ -134,8 +134,14 @@ def validate_for_restore(account, payload, selected_zones=None):
         provider = 'cloudflare' if actual['cloudflare_status'] == 'active' else 'local'
         if zone.get('provider') != provider:
             raise ValidationError('DNS recovery provider does not match the current zone')
-        if provider != 'local':
-            raise ValidationError('Cloudflare DNS recovery is not available yet')
+        if provider == 'cloudflare':
+            from daemon import snapshot_cloudflare_recovery
+            import re
+            if not isinstance(actual['cloudflare_zone_id'], str) or not re.fullmatch(r'[a-fA-F0-9]{32}', actual['cloudflare_zone_id']):
+                raise ValidationError('Current Cloudflare zone registration is invalid')
+            records = snapshot_cloudflare_recovery.validate(name, zone.get('records'))
+            zones.append(dict(zone=name, provider=provider, binding=deepcopy(actual), records=records))
+            continue
         raw = zone.get('records')
         if not isinstance(raw, list) or len(raw) > 100000:
             raise ValidationError('Invalid DNS recovery record collection')
@@ -211,8 +217,8 @@ def _record_state(records):
 
 
 @dns_operations.serialized_worker
-def apply_configuration(account, payload, save_previous, on_zone=None):
-    """Apply local DNS after durable encrypted capture; coordinator holds locks.
+def apply_configuration(account, payload, save_previous, on_zone=None, on_batch=None):
+    """Apply native DNS after durable encrypted capture; coordinator holds locks.
 
     No provider switch or authority-record replacement is performed. Failures
     retain the complete previous copy for explicit undo, including partial
@@ -228,6 +234,16 @@ def apply_configuration(account, payload, save_previous, on_zone=None):
     completed = []
     for zone in selected['zones']:
         name = zone['zone']
+        if zone['provider'] == 'cloudflare':
+            from daemon import snapshot_cloudflare_recovery
+            binding = zone['binding']
+            with cloudflare.use_token(cloudflare_accounts.token_for_id(binding['cloudflare_account_id'])):
+                snapshot_cloudflare_recovery.apply(name, binding['cloudflare_zone_id'], zone['records'], before[name]['records'],
+                    lambda: validate_for_restore(account, selected, [name]),
+                    (lambda done, total: on_batch(name, done, total)) if on_batch else None)
+            completed.append(name)
+            if on_zone: on_zone(list(completed))
+            continue
         # Revalidate ownership/provider immediately before each write and verify
         # no edits occurred while encrypting the previous configuration.
         validate_for_restore(account, selected, [name])

@@ -19,7 +19,7 @@ and [Batch API](https://developers.cloudflare.com/api/resources/dns/subresources
 1. One-attempt transport: do not reuse the general retrying client for batch
    mutations. A timeout or server error can follow a committed request. Keep
    current state ambiguous until reread; retain the encrypted previous copy.
-   Implemented in `cloudflare.apply_record_batch`; no restore integration yet.
+   Implemented in `cloudflare.apply_record_batch` and connected to the development restore worker.
 2. Native record validation: preserve per-record Auto TTL, proxy status, comments,
    tags, supported settings, private routing, priority and structured data. Check
    names remain inside the selected zone and content matches its DNS type. Handle
@@ -48,6 +48,8 @@ and [Batch API](https://developers.cloudflare.com/api/resources/dns/subresources
    proof must use an explicitly isolated connected QA zone if one is available;
    never use customer or panel DNS merely to demonstrate a write.
 
-Current status: transport work is in progress; Cloudflare restore remains disabled
-until the remaining gates are implemented and verified. No public DNS changes
-were made during this work.
+Current status: common native records, protected record partitioning, current-ID
+batch execution and encrypted restore/undo are connected in development. Integration
+and local DNS regression tests pass. Broader native schema coverage, UI/release
+verification and suitable live provider proof remain; these changes are not yet
+deployed. No public DNS changes were made during this work.

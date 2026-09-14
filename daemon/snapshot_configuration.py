@@ -127,7 +127,9 @@ def restore_dns(ident, account, row, repo, snapshot_id, work, update):
         update(ident, safety_snapshot_id=result['snapshot_id'], progress_message='Restoring DNS records')
 
     completed = snapshot_dns.apply_configuration(account, selected, save_previous,
-        lambda names: update(ident, summary={'config_sections': ['dns'], 'dns_zones': names}))
+        lambda names: update(ident, summary={'config_sections': ['dns'], 'dns_zones': names}),
+        lambda name, done, total: update(ident, summary={'config_sections': ['dns'], 'dns_batch': {'zone': name, 'completed': done, 'total': total}},
+                                        progress_message=f'Verified DNS batch {done} of {total}'))
     update(ident, status='completed', summary={'config_sections': ['dns'], 'dns_zones': completed},
            progress_message='DNS records restored', completed_at=utcnow())
 

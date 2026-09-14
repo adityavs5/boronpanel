@@ -1815,3 +1815,36 @@ IPv6 values and invalid collection rejection. git diff --check passed. No public
 DNS writes or deployment occurred. Cloudflare restore stays disabled pending
 protected records/additional native schema support and execution/undo integration;
 full goal and subsequent expansion remain active.
+
+### Cloudflare execution and encrypted restore/undo integration — 2026-09-14
+
+Connected native Cloudflare validation/application to snapshot DNS configuration
+recovery and its existing encrypted previous-configuration/undo path. The catalog
+now marks supported Cloudflare zones available in development. Provider bindings
+and scoped token context come from the current account registration; saved IDs
+are never mutation authority. The whole previous configuration is encrypted before
+any selected zone is changed. Batch progress is persisted through the restore
+worker's update callback.
+
+The new executor partitions and retains authority/provider-managed records,
+rejects overlaps with managed owners, and reads current records again before each
+batch. It checks both complete values and ID-to-value associations plus protected
+records. Each batch is sent once; even an error/timeout is followed by observation,
+and execution continues only if the complete expected result is confirmed. Unknown
+or uncommitted results stop with previous configuration retained for explicit undo.
+Newly created IDs come from provider rereads. Final verification compares the
+complete desired writable state. No automatic mutation replay was introduced.
+
+Validation: 101 integration/regression tests passed in 248.57s, including real
+restic-encrypted Cloudflare backup/restore/undo against a simulated provider,
+counts-only catalog, scoped token use, protected records, committed timeout without
+replay, failed pre-commit write, 405-record multi-batch changes, changed record ID
+associations, provider ownership callback rejection, native/planner/transport
+checks and existing local PowerDNS restore/undo regressions. Eight executor tests
+also passed after adding later-batch failure coverage: only the first verified
+batch is checkpointed and the second failure stops further requests. No production
+DNS record was changed and this code is not deployed.
+
+Remaining: additional native schema/legacy variants, broader UI/release and
+suitable live-provider verification, followed by the full initial requirement
+and GitHub/self-update audit. The separate expansion backlog is preserved.
