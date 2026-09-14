@@ -43,6 +43,24 @@ def test_displaced_mail_is_encrypted_and_guards_remain(isolated_db, saved, repo,
     assert json.loads(manifest.read_text())['account_id'] == account.id
     assert all(entry['token'] not in manifest.read_text() for entry in payload['entries'])
     assert json.loads(path.with_name('mail-safety-result.json').read_text())['snapshot_id'] == result['snapshot_id']
+    assert restore.safety_inventory(account, repo, result['snapshot_id'], 1) == result['mailboxes']
+    with pytest.raises(ValidationError, match='does not match this job'):
+        restore.safety_inventory(account, repo, result['snapshot_id'], 2)
+    # Read the encrypted inventory, not the retained local journal/manifest.
+    original_manifest = path.with_name('mail-safety.json').read_bytes()
+    path.with_name('mail-safety.json').write_text('{}')
+    assert restore.safety_inventory(account, repo, result['snapshot_id'], 1) == result['mailboxes']
+    path.with_name('mail-safety.json').write_bytes(original_manifest)
+    with write_session() as session:
+        foreign = Account(username='foreign', status='active', uid=65533, gid=65533)
+        session.add(foreign); session.flush()
+        domain = session.query(MailDomain).filter_by(domain='example.test').one()
+        domain.account_id = foreign.id
+    with pytest.raises(ValidationError, match='no longer owned'):
+        restore.safety_inventory(account, repo, result['snapshot_id'], 1)
+    with write_session() as session:
+        session.query(MailDomain).filter_by(domain='example.test').one().account_id = account.id
+    assert not list((Path(settings.snapshot_private_dir) / 'mail-safety-inventory').iterdir())
     with guard.owned_guards(payload['entries'], 1):
         pass
     with pytest.raises(FileExistsError):

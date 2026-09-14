@@ -1271,3 +1271,20 @@ failure preventing handoff, activation failure preventing handoff, suppression o
 private diagnostics, installed-package fast path and configuration rollback after
 failed post-reload health. Frontend production build passed. These checks use
 isolated fixtures; no live update or mail reload was performed in this change.
+
+Previous-mail recovery now has an encrypted inventory reader in development.
+It reads the mapping from the owned safety snapshot rather than trusting retained
+local files, binds account/job/operation tag, rejects duplicate mailbox mappings,
+requires each archived sibling path to match its mailbox and requires the exact
+snapshot path set. Current account activity and every mail domain owner are
+rechecked before returning archive members. Temporary decrypted inventory is
+removed on success and failure. Original archive ancestor permissions are allowed
+inside the root-private staging enclosure; symlinks and nonprivate inventory files
+are refused.
+
+Validation: the real encrypted safety-backup integration passed with inventory
+readback, wrong restore-job rejection, local-manifest tamper independence,
+transferred-domain rejection and staging cleanup, alongside its existing safety
+receipt/finalization assertions. This provides archive mapping for the pending
+previous-version workflow; customer mailbox undo remains unavailable until its
+preparation, execution and interface are completed and tested.

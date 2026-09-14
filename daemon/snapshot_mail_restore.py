@@ -9,6 +9,7 @@ import json
 import os
 import stat
 import secrets
+import re
 import uuid
 
 from sqlalchemy import select
@@ -84,6 +85,75 @@ def prepare(account, repo, snapshot_id, addresses):
         import shutil
         shutil.rmtree(work)
         raise
+
+
+def safety_inventory(account, repo, snapshot_id, source_restore_id):
+    """Read the encrypted previous-mail mapping, never infer it from live files.
+
+    Caller holds account/repository locks. Returned paths are archive members,
+    not permission to read or modify their corresponding live paths.
+    """
+    import shutil
+    from daemon.snapshot_mail_exchange import _prepared_name
+    snapshot = storage.owned_snapshot(repo, account.id, snapshot_id)
+    paths = snapshot.get('paths', [])
+    manifests = [p for p in paths if isinstance(p, str) and Path(p).name == 'mail-safety.json']
+    if type(source_restore_id) is not int or source_restore_id <= 0 or len(manifests) != 1:
+        raise ValidationError('Invalid previous-mail recovery point')
+    work = jobs.private_directory('mail-safety-inventory', uuid.uuid4().hex)
+    try:
+        data = storage.restore_to(repo, account.id, snapshot_id, str(work / 'data'), selected_paths=manifests)
+        archived = data / manifests[0].lstrip('/')
+        # Restic restores original ancestor modes (for example /tmp is 1777).
+        # The enclosing work directory is root-only; reject links and validate
+        # the document itself without requiring every archived ancestor be 0700.
+        if archived.resolve() != archived or not archived.is_relative_to(data):
+            raise ValidationError('Invalid previous-mail inventory path')
+        fd = os.open(archived, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 1024*1024:
+                raise ValidationError('Invalid previous-mail inventory document')
+            try:
+                record = json.loads(handle.read(1024*1024+1))
+            except (ValueError, UnicodeError):
+                raise ValidationError('Invalid previous-mail inventory document') from None
+        if (not isinstance(record, dict) or type(record.get('format')) is not int or record['format'] != 1
+                or type(record.get('account_id')) is not int or record['account_id'] != account.id
+                or type(record.get('restore_id')) is not int or record['restore_id'] != source_restore_id
+                or not isinstance(record.get('operation_id'), str)
+                or not re.fullmatch(r'[a-f0-9]{32}', record['operation_id'])
+                or 'mail-safety:' + record['operation_id'] not in snapshot.get('tags', [])):
+            raise ValidationError('Previous-mail recovery inventory does not match this job')
+        entries = record.get('mailboxes')
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 1000:
+            raise ValidationError('Invalid previous-mail mailbox selection')
+        seen = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) != {'domain', 'local_part', 'path'}:
+                raise ValidationError('Invalid previous-mail mailbox entry')
+            domain = validate_domain(entry['domain'])
+            local = validate_mailbox_local_part(entry['local_part'])
+            if (domain, local) in seen or not isinstance(entry['path'], str):
+                raise ValidationError('Invalid previous-mail mailbox entry')
+            seen.add((domain, local))
+            path = Path(entry['path'])
+            _prepared_name(path.name)
+            if entry['path'] != str(Path(settings.mail_base) / domain / local / path.name):
+                raise ValidationError('Previous-mail archive path does not match its mailbox')
+        if set(paths) != {manifests[0], *(entry['path'] for entry in entries)} or len(paths) != len(entries) + 1:
+            raise ValidationError('Previous-mail archive selection does not match its inventory')
+        with write_session() as session:
+            current = session.get(Account, account.id)
+            owners = {row.domain: row.account_id for row in session.scalars(
+                select(MailDomain).where(MailDomain.domain.in_({domain for domain, _ in seen})))}
+            if current is None or current.username != account.username or current.status != 'active':
+                raise ValidationError('Account is no longer active')
+            if any(owners.get(domain) != account.id for domain, _ in seen):
+                raise ValidationError('Previous-mail domain is no longer owned by this account')
+        return entries
+    finally:
+        shutil.rmtree(work)
 
 
 def stage(account, prepared, restore_id):
