@@ -295,9 +295,9 @@ def sources(account, options):
         manifest['databases']=[{'name':db.db_name,'user':db.db_user} for db in current_databases]
         (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
     if 'mail' in options['components']:
-        from daemon.snapshot_mail_metadata import capture as capture_mail
-        from daemon.snapshot_db_metadata import write_metadata
-        write_metadata(stage/'mail-recovery.json', capture_mail(account.username, mail_domains))
+        mail_domains = _mail_sources(account, stage)
+        manifest['mail_domains'] = [domain.domain for domain in mail_domains]
+        (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
         for domain in mail_domains:
             root=Path(settings.mail_base)/domain.domain
             if root.exists():
@@ -314,6 +314,21 @@ def sources(account, options):
         manifest['dns_zones']=legacy_zones(manifest['dns_configuration'])
         (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
     return paths+[str(stage)]
+
+
+@serialized_worker
+def _mail_sources(account, stage):
+    # Read registrations only after excluding mail provisioning/deletion; keep
+    # the same lock through the provider capture and private metadata write.
+    from daemon.snapshot_mail_metadata import capture
+    from daemon.snapshot_db_metadata import write_metadata
+    with write_session() as session:
+        current = session.get(Account, account.id)
+        if current is None or current.username != account.username or current.status != 'active':
+            raise ValidationError('Account is no longer available for mail backup')
+        domains = session.scalars(select(MailDomain).where(MailDomain.account_id == account.id)).all()
+    write_metadata(stage/'mail-recovery.json', capture(account.username, domains))
+    return domains
 
 
 @serialized_worker

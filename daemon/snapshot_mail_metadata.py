@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import stat
 from daemon import mail
+from daemon.database_operations import serialized_worker
 from shared.validation import ValidationError, validate_domain, validate_mailbox_local_part, validate_username
 
 
@@ -61,6 +62,7 @@ def read_mailboxes(path, username):
             raise ValidationError('Invalid private mail recovery metadata') from None
 
 
+@serialized_worker
 def capture(username, domains):
     """Caller supplies only current MailDomain registrations owned by this account.
 
@@ -109,6 +111,7 @@ def capture(username, domains):
     return {'format':1, 'username':username, 'domains':result}
 
 
+@serialized_worker
 def recreate_mailbox(domain, entry):
     """Recreate a missing SQL mailbox only; coordinator must verify domain ownership.
 

@@ -25,6 +25,7 @@ from shared.config import settings
 from shared.validation import ValidationError, validate_domain, validate_mailbox_local_part
 
 from daemon.procutil import run
+from daemon.database_operations import serialized
 
 # A low *system* uid/gid (SYS_UID_MAX on this distro is 999), matching
 # convention for service accounts (mysql/postfix/dovecot are all in this
@@ -83,6 +84,7 @@ def domain_exists(domain: str) -> bool:
         conn.close()
 
 
+@serialized
 def create_mail_domain(domain: str) -> int:
     validate_domain(domain)
     conn = _connect()
@@ -100,6 +102,7 @@ def create_mail_domain(domain: str) -> int:
     return domain_id
 
 
+@serialized
 def delete_mail_domain(domain: str) -> None:
     conn = _connect()
     try:
@@ -112,6 +115,7 @@ def delete_mail_domain(domain: str) -> None:
     run(["rm", "-rf", "--", domain_dir], check=False)
 
 
+@serialized
 def set_domain_active(domain: str, active: bool) -> bool:
     """Phase 8 feature 6: toggle whether Postfix accepts mail for this domain.
     Postfix's virtual_mailbox_domains map queries `mail_domain WHERE active=1`
@@ -141,6 +145,7 @@ def _domain_id(domain: str) -> int:
         conn.close()
 
 
+@serialized
 def create_mailbox(domain: str, local_part: str, password: str, quota_mb: int = 1024) -> dict:
     validate_domain(domain)
     validate_mailbox_local_part(local_part)
@@ -161,6 +166,7 @@ def create_mailbox(domain: str, local_part: str, password: str, quota_mb: int = 
     return {"id": mailbox_id, "domain": domain, "local_part": local_part, "email": f"{local_part}@{domain}", "quota_mb": quota_mb}
 
 
+@serialized
 def delete_mailbox(domain: str, local_part: str) -> None:
     validate_domain(domain)
     validate_mailbox_local_part(local_part)
@@ -191,6 +197,7 @@ def list_mailboxes(domain: str) -> list[dict]:
         conn.close()
 
 
+@serialized
 def change_mailbox_password(domain: str, local_part: str, new_password: str) -> None:
     validate_domain(domain)
     validate_mailbox_local_part(local_part)
@@ -248,6 +255,7 @@ def _mail_user_id(domain_id: int, local_part: str) -> int:
 # and also keep a copy" model, which was not requested.
 
 
+@serialized
 def create_forward(domain: str, local_part: str, destination: str) -> dict:
     validate_domain(domain)
     validate_mailbox_local_part(local_part)
@@ -265,6 +273,7 @@ def create_forward(domain: str, local_part: str, destination: str) -> dict:
     return {"id": forward_id, "domain": domain, "local_part": local_part, "destination": destination}
 
 
+@serialized
 def delete_forward(domain: str, local_part: str, destination: str) -> None:
     validate_domain(domain)
     domain_id = _domain_id(domain)
@@ -295,6 +304,7 @@ def list_forwards(domain: str) -> list[dict]:
         conn.close()
 
 
+@serialized
 def delete_all_forwards_for_domain(domain: str) -> None:
     """TERMINATE_HOOKS-adjacent cleanup: boron_mail's own FK already
     ON DELETE CASCADEs mail_forward when mail_domain is deleted, but this
@@ -313,6 +323,7 @@ def delete_all_forwards_for_domain(domain: str) -> None:
 # --- Catch-all (Phase 3 feature 4) ------------------------------------
 
 
+@serialized
 def set_catchall(domain: str, destination: str) -> dict:
     validate_domain(domain)
     domain_id = _domain_id(domain)
@@ -341,6 +352,7 @@ def get_catchall(domain: str) -> dict | None:
         conn.close()
 
 
+@serialized
 def delete_catchall(domain: str) -> None:
     validate_domain(domain)
     domain_id = _domain_id(domain)
@@ -362,6 +374,7 @@ def delete_catchall(domain: str) -> None:
 # real mailbox it applies to.
 
 
+@serialized
 def set_autoresponder(domain: str, local_part: str, subject: str, body: str, start_date: str | None, end_date: str | None) -> dict:
     validate_domain(domain)
     validate_mailbox_local_part(local_part)
@@ -398,6 +411,7 @@ def get_autoresponder(domain: str, local_part: str) -> dict | None:
         conn.close()
 
 
+@serialized
 def delete_autoresponder(domain: str, local_part: str) -> None:
     validate_domain(domain)
     domain_id = _domain_id(domain)

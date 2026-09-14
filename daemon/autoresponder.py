@@ -30,6 +30,7 @@ from shared.config import settings
 
 from daemon.mail import VMAIL_GID, VMAIL_UID, VMAIL_BASE
 from daemon.procutil import run
+from daemon.database_operations import serialized
 
 SIEVEC_BIN = "/usr/bin/sievec"
 SIEVE_FILENAME = ".dovecot.sieve"
@@ -121,6 +122,7 @@ def _validate_sieve_content(content: str) -> None:
         tmp_path.with_suffix(".svbin").unlink(missing_ok=True)
 
 
+@serialized
 def apply_autoresponder(domain: str, local_part: str, subject: str, body: str, start_date: str | None, end_date: str | None) -> None:
     content = render_sieve_script(subject, body, start_date, end_date, mailbox_address=f"{local_part}@{domain}")
     _validate_sieve_content(content)
@@ -153,6 +155,7 @@ def apply_autoresponder(domain: str, local_part: str, subject: str, body: str, s
     target.with_suffix(".svbin").unlink(missing_ok=True)
 
 
+@serialized
 def remove_autoresponder(domain: str, local_part: str) -> None:
     target = _sieve_path(domain, local_part)
     target.unlink(missing_ok=True)

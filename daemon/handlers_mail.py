@@ -23,6 +23,7 @@ from shared.validation import (
 )
 
 from daemon import autoresponder, dkim, mail, spamfilter
+from daemon.database_operations import serialized
 
 # Bounds for a single mailbox's quota. 100 GB is a generous shared-hosting
 # ceiling that still rejects an accidental/absurd value or an overflow, and the
@@ -31,6 +32,7 @@ MAILBOX_QUOTA_MIN_MB = 1
 MAILBOX_QUOTA_MAX_MB = 100 * 1024
 
 
+@serialized
 def create_mail_domain(params: dict) -> dict:
     username = params.get("username")
     domain_name = validate_domain(params["domain"])
@@ -73,6 +75,7 @@ def create_mail_domain(params: dict) -> dict:
     return result
 
 
+@serialized
 def _delete_mail_domain_cache(domain_name: str) -> None:
     """boron_mail's own schema cascades mail_user on mail_domain delete
     (ON DELETE CASCADE), but the SQLite cache mirror has no such cascade --
@@ -94,6 +97,7 @@ def _delete_mail_domain_cache(domain_name: str) -> None:
         session.delete(row)
 
 
+@serialized
 def delete_mail_domain(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     mail.delete_mail_domain(domain_name)
@@ -110,6 +114,7 @@ def delete_mail_domain(params: dict) -> dict:
 _mail_provision_lock = threading.RLock()
 
 
+@serialized
 def ensure_mail_domain(domain_name: str) -> None:
     """Provision mail lazily for an existing active hosting domain."""
     with _mail_provision_lock:
@@ -130,6 +135,7 @@ def ensure_mail_domain(domain_name: str) -> None:
             create_mail_domain({'username': username, 'domain': domain_name})
 
 
+@serialized
 def create_mailbox(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
@@ -166,6 +172,7 @@ def create_mailbox(params: dict) -> dict:
     return result
 
 
+@serialized
 def delete_mailbox(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
@@ -189,6 +196,7 @@ def list_mailboxes(params: dict) -> dict:
     return {"domain": domain_name, "mailboxes": mail.list_mailboxes(domain_name)}
 
 
+@serialized
 def change_mailbox_password(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
@@ -197,6 +205,7 @@ def change_mailbox_password(params: dict) -> dict:
     return {"domain": domain_name, "local_part": local_part, "status": "password_changed"}
 
 
+@serialized
 def terminate_account_mail(account: Account) -> None:
     """TERMINATE_HOOKS entry: delete every mail domain (and therefore every
     mailbox in it, via ON DELETE CASCADE in boron_mail itself) this
@@ -218,6 +227,7 @@ def terminate_account_mail(account: Account) -> None:
 # --- Forwarders (Phase 3 feature 4) -----------------------------------
 
 
+@serialized
 def create_forward(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
@@ -225,6 +235,7 @@ def create_forward(params: dict) -> dict:
     return mail.create_forward(domain_name, local_part, destination)
 
 
+@serialized
 def delete_forward(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
@@ -241,6 +252,7 @@ def list_forwards(params: dict) -> dict:
 # --- Catch-all (Phase 3 feature 4) ------------------------------------
 
 
+@serialized
 def set_catchall(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     destination = validate_email_address(params["destination"])
@@ -253,6 +265,7 @@ def get_catchall(params: dict) -> dict:
     return {"domain": domain_name, "catchall": catchall}
 
 
+@serialized
 def delete_catchall(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     mail.delete_catchall(domain_name)
@@ -265,6 +278,7 @@ MAX_AUTORESPONDER_SUBJECT_LEN = 255
 MAX_AUTORESPONDER_BODY_LEN = 10_000
 
 
+@serialized
 def set_autoresponder(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
@@ -293,6 +307,7 @@ def get_autoresponder(params: dict) -> dict:
     return {"domain": domain_name, "local_part": local_part, "autoresponder": current}
 
 
+@serialized
 def delete_autoresponder(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])

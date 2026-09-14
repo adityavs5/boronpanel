@@ -16,6 +16,9 @@ def _isolate_request_logs(tmp_path_factory, monkeypatch):
 
     d = tmp_path_factory.mktemp("fhlogs")
     monkeypatch.setattr(settings, "log_dir", str(d))
+    # SQL/mail helper decorators also acquire private cross-process locks.
+    # Even tests without a control-plane database must never use live locks.
+    monkeypatch.setattr(settings, "snapshot_private_dir", str(d / "snapshot-private"))
     logsetup.reset()
     yield
     logsetup.reset()

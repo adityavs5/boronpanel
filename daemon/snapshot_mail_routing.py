@@ -5,6 +5,7 @@ from shared.models import Account, MailDomain
 from shared.validation import (ValidationError, validate_domain, validate_mailbox_local_part,
                                validate_email_address, validate_iso_date)
 from daemon import mail
+from daemon.database_operations import serialized_worker
 
 
 def _active(value):
@@ -145,11 +146,13 @@ def _domain_bindings(account):
             MailDomain.account_id == account.id).order_by(MailDomain.domain)).all()]
 
 
+@serialized_worker
 def capture(account, selected_domains=None):
     """Capture routing in one repeatable-read SQL transaction, without passwords.
 
-    Caller must coordinate mail/domain mutations and encrypt this private payload
-    before applying recovery. Ownership is checked again after provider reads.
+    This capture holds the shared SQL mutation lock. A recovery coordinator must
+    retain that lock through capture, encryption and application. Ownership is
+    checked again after provider reads.
     """
     bindings = _domain_bindings(account)
     if selected_domains is not None:
@@ -199,10 +202,11 @@ def capture(account, selected_domains=None):
     return dict(format=1, username=account.username, domains=domains)
 
 
+@serialized_worker
 def _replace_sql(account, payload):
     """Replace selected routing rows atomically; internal coordinator primitive.
 
-    Caller must hold account/mail mutation locks, save encrypted previous state,
+    Caller must hold account/SQL mutation locks, save encrypted previous state,
     and coordinate Sieve installation before exposing this as a restore action.
     This function does not change mailbox records or install Sieve scripts.
     """

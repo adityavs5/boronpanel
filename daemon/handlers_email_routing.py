@@ -26,6 +26,7 @@ from shared.models import Account, Domain, EmailRouting
 from shared.validation import ValidationError, validate_domain, validate_username
 
 from daemon import mail
+from daemon.database_operations import serialized
 from daemon.procutil import run
 
 logger = logging.getLogger("borond.email_routing")
@@ -56,6 +57,7 @@ def get_routing(params: dict) -> dict:
     return {"domain": domain_name, "mode": mode}
 
 
+@serialized
 def set_routing(params: dict) -> dict:
     username = validate_username(params["username"])
     domain_name = validate_domain(params["domain"])

@@ -1183,3 +1183,43 @@ and live validation remain outstanding, as does Cloudflare-native DNS recovery.
 
 The requested phpMyAdmin retry also succeeded: DNS resolved to 104.234.179.66 and
 verified HTTPS returned a 302 redirect to /boron_signon.php at 05:19 UTC.
+
+
+### Mail mutation and backup capture coordination — 2026-09-14
+
+Direct mail-domain/mailbox mutations, forwarding/catch-all/automatic-reply edits,
+Sieve application/removal, and local/remote email routing mode changes now use
+Boron’s existing cross-process SQL mutation lock. Handler scope covers SQL plus
+cache/filesystem changes; lower-level mutation helpers also guard direct callers.
+Nested helpers are reentrant. Interactive competing writes fail before side
+effects; background metadata capture and routing replacement wait for the lock.
+This shares the established lock ordering with mailbox provisioning and account
+imports instead of introducing a second independent mail lock.
+
+The mail backup source coordinator now acquires the lock before loading current
+account/mail-domain registrations and retains it through provider capture and
+private metadata writing. The manifest and selected mail roots use that refreshed
+registration list. Tests isolate the private lock directory even when no test
+control-plane database is required.
+
+Mail-routing recovery is still not exposed or deployed. The future coordinator
+must hold account and SQL locks across its safety capture, encrypted backup and
+SQL/Sieve application. Sieve recovery, encrypted undo, queue/UI and live proof
+remain outstanding, alongside Cloudflare-native DNS recovery.
+
+Next Sieve recovery work must preserve the actual previous active script (including
+an existing custom script or absence), rather than assuming SQL responder records
+can reconstruct it. Validate/compile all desired scripts before live writes, reject
+unsafe mailbox/script paths, retain encrypted prior script state for undo and
+interruption recovery, and coordinate activation with the selected routing SQL.
+
+Validation: 115 mail/coordination regressions passed (257.41s): competing mutation
+rejection before side effects, nested helper reentrancy, waiting capture workers,
+cross-process SQL locking, routine mail provisioning/forwarding/catch-all/replies,
+local/remote routing, real Sieve compilation, routing validation/private reads,
+real isolated SQL rollback and capture, and encrypted mail metadata/message backup
+and restoration. Another 14 source/job tests passed (65.14s), including ownership
+transfer while the source worker waits, private metadata permissions, and existing
+backup job/API scope behavior. A pre-existing Starlette TestClient deprecation
+warning was reported. All SQL fixtures used temporary sockets with networking
+disabled; no live mail configuration or production database was modified.
