@@ -339,6 +339,24 @@ def test_get_ssl_dashboard_reports_valid_cert_and_auto_renew(isolated_db, stub_s
     assert entry["issuer"] == "CN=Test CA"
 
 
+def test_admin_ssl_dashboard_lists_every_account_without_impersonation(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    from daemon.procutil import ProcResult
+
+    monkeypatch.setattr(fssl.settings, "webmail_hostname", "")
+    monkeypatch.setattr(fssl.settings, "pma_hostname", "")
+    monkeypatch.setattr(fssl, "_cert_file_details", lambda domain: None)
+    monkeypatch.setattr(fssl, "run", lambda args, timeout=10: ProcResult(args=args, returncode=0, stdout="active\n", stderr=""))
+    for username, domain in (("alpha", "alpha.example"), ("bravo", "bravo.example")):
+        ha.create_account({"username": username})
+        hd.add_domain({"username": username, "domain": domain, "kind": "primary"})
+    result = fssl.get_admin_ssl_dashboard({})
+    assert result["certbot_timer_active"] is True
+    assert {(row["username"], row["domain"]) for row in result["domains"]} == {
+        ("alpha", "alpha.example"), ("bravo", "bravo.example"),
+    }
+    assert all(row["cert_status"] == "missing" for row in result["domains"])
+
+
 # --- Phase 7a feature 5: wildcard SSL via DNS-01 ---------------------------
 
 
@@ -537,3 +555,9 @@ def test_phpmyadmin_uses_its_own_webroot(monkeypatch):
     monkeypatch.setattr(settings,'pma_docroot','/srv/phpmyadmin')
     assert fssl._challenge_plan('pma.example.com') == ('http-01',['--webroot','-w','/srv/phpmyadmin'])
     assert fssl.DEPLOY_HOOK_SCRIPT == '/opt/boron/scripts/ssl_deploy_hook.py'
+
+
+def test_phpmyadmin_certificate_status_is_treated_as_system_hostname(tmp_path, monkeypatch):
+    monkeypatch.setattr(fssl.settings, 'pma_hostname', 'pma.example.com')
+    monkeypatch.setattr(fssl, 'letsencrypt_cert_paths', lambda domain: (str(tmp_path / 'key'), str(tmp_path / 'cert')))
+    assert fssl.certificate_status({'domain': 'pma.example.com'})['ssl_status'] == 'none'

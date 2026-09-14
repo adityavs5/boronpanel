@@ -30,6 +30,19 @@ handoff; both temporary test files were removed afterward.
 
 ## Batch C — firewall, OLS and administrator certificates
 
+Implementation status: complete on 2026-09-14, pending the grouped expansion
+release. UFW bypass entries use tagged, first-position full-access rules; a live
+add/show/delete cycle with reserved TEST-NET address `192.0.2.254` succeeded and
+left the original active rules restored. OpenLiteSpeed tuning is persisted in
+the control-plane database and applied through the existing validate/reload/
+verify/rollback transaction. WebAdmin reset uses the installed official
+`admpass.sh`; existing one-way hashes are reported as unrecoverable while a new
+root-private generated credential can be revealed to an authenticated admin.
+The server's installed OLS 1.9.2 configuration check passes. The shared SSL page
+now gives admins a fleet inventory and direct normal/wildcard issuance. Focused
+backend/API checks passed 158 tests and both themes passed the combined admin UI
+workflow at desktop and mobile widths.
+
 - Extend the existing UFW manager with full-access bypass IP/CIDR entries that survive rule refreshes and cannot silently remove protected SSH/panel access.
 - Add an editable OLS administration surface for validated configuration changes and a credential reset flow. Existing one-way hashes will never be presented as recoverable passwords; only a newly reset credential may be revealed once.
 - Add a global administrator certificate inventory and issuance/renewal actions using the existing ownership-safe certificate engine.

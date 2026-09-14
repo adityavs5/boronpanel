@@ -12,14 +12,20 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 from pathlib import Path
+import re
+import secrets
+import stat
+import string
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings, WildcardDomain
+from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, OlsServerSettings, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings, WildcardDomain, utcnow
+from shared.validation import ValidationError
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
@@ -45,6 +51,38 @@ RESOURCE_DEFAULTS = {
     "proc_soft_limit": 50,
     "proc_hard_limit": 75,
 }
+
+OLS_SETTINGS_DEFAULTS = {
+    "max_connections": 10000,
+    "max_ssl_connections": 10000,
+    "connection_timeout": 300,
+    "keep_alive_timeout": 5,
+    "max_keep_alive_requests": 10000,
+    "gzip_level": 6,
+    "brotli_level": 6,
+    "gzip_enabled": True,
+    "brotli_enabled": True,
+    "quic_enabled": True,
+    "log_level": "WARN",
+    "log_keep_days": 30,
+}
+OLS_CREDENTIAL_PATH = Path("/var/lib/boron/ols-admin-credential.json")
+OLS_PASSWORD_SCRIPT = Path("/usr/local/lsws/admin/misc/admpass.sh")
+_OLS_USERNAME_RE = re.compile(r"\A[A-Za-z0-9._-]{1,32}\Z")
+
+
+def _ols_settings() -> dict:
+    with write_session() as session:
+        return _ols_settings_from_session(session)
+
+
+def _ols_settings_from_session(session) -> dict:
+    if session is None:
+        return dict(OLS_SETTINGS_DEFAULTS)
+    row = session.get(OlsServerSettings, 1)
+    if row is None:
+        return dict(OLS_SETTINGS_DEFAULTS)
+    return {key: getattr(row, key) for key in OLS_SETTINGS_DEFAULTS}
 
 
 def _php_app_name(username: str, php_version: str) -> str:
@@ -525,6 +563,7 @@ def render_httpd_config(
     account_procs: list[dict],
     waf: dict | None = None,
     cloudflare_ranges: list[str] | None = None,
+    ols_settings: dict | None = None,
 ) -> str:
     template = _env.get_template("httpd_config.conf.j2")
     return template.render(
@@ -546,6 +585,7 @@ def render_httpd_config(
         pma_hostname=settings.pma_hostname,
         pma_docroot=settings.pma_docroot,
         pma_lsphp_path=_lsphp_path(settings.default_php_version),
+        ols_settings=ols_settings or dict(OLS_SETTINGS_DEFAULTS),
         **(waf or _WAF_DISABLED_CONTEXT),
         **RESOURCE_DEFAULTS,
     )
@@ -578,8 +618,9 @@ def bootstrap_webmail() -> None:
         domain_vhosts, account_procs = _all_active_vhosts(session)
         ssl_key_file, ssl_cert_file = _webmail_ssl_paths(session)
         waf = waf_template_context(session)
+        ols_settings = _ols_settings_from_session(session)
 
-    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf)
+    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings)
     webmail_content = render_webmail_vhost_conf(ssl_key_file, ssl_cert_file)
 
     writer = ConfigWriterMulti(
@@ -641,8 +682,9 @@ def bootstrap_pma() -> None:
         domain_vhosts, account_procs = _all_active_vhosts(session)
         ssl_key_file, ssl_cert_file = _pma_ssl_paths(session)
         waf = waf_template_context(session)
+        ols_settings = _ols_settings_from_session(session)
 
-    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf)
+    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings)
     pma_content = render_pma_vhost_conf(ssl_key_file, ssl_cert_file)
 
     targets = {"main": HTTPD_CONFIG_PATH, "pma": _pma_vhost_conf_path()}
@@ -752,6 +794,7 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
         }
         maintenance_by_domain = {domain["domain"]: _maintenance_for_domain(session, domain["domain"]) for domain in domains}
         waf = waf_template_context(session)
+        ols_settings = _ols_settings_from_session(session)
 
     error_pages_by_domain = {
         domain["domain"]: _error_pages_for_domain(
@@ -761,7 +804,7 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
     }
 
     targets = {"main": HTTPD_CONFIG_PATH}
-    content = {"main": render_httpd_config(domain_vhosts, account_procs, waf=waf)}
+    content = {"main": render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings)}
     for domain in domains:
         vhost_name = _vhost_name(domain["domain"])
         ssl_key_file, ssl_cert_file = _ssl_paths_for_domain(domain)
@@ -872,7 +915,8 @@ def terminate_vhost(account: Account) -> None:
 def _apply_main_only(domain_vhosts: list[dict], account_procs: list[dict], context: str) -> None:
     with write_session() as session:
         waf = waf_template_context(session)
-    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf)
+        ols_settings = _ols_settings_from_session(session)
+    httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings)
     writer = ConfigWriterMulti(
         targets={"main": HTTPD_CONFIG_PATH},
         validate=_validate_multi,
@@ -940,3 +984,156 @@ def bootstrap_baseline() -> None:
     with write_session() as session:
         domain_vhosts, account_procs = _all_active_vhosts(session)
     _apply_main_only(domain_vhosts, account_procs, context="bootstrap_baseline")
+
+
+# --- Expansion: administrator OpenLiteSpeed controls -----------------------
+
+def _bounded_setting(name: str, value, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise ValidationError(f"{name} must be a number")
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{name} must be a number") from None
+    if not minimum <= number <= maximum:
+        raise ValidationError(f"{name} must be between {minimum} and {maximum}")
+    return number
+
+
+def _validate_admin_settings(params: dict) -> dict:
+    current = _ols_settings()
+    values = {
+        "max_connections": _bounded_setting("max_connections", params.get("max_connections", current["max_connections"]), 100, 1000000),
+        "max_ssl_connections": _bounded_setting("max_ssl_connections", params.get("max_ssl_connections", current["max_ssl_connections"]), 100, 1000000),
+        "connection_timeout": _bounded_setting("connection_timeout", params.get("connection_timeout", current["connection_timeout"]), 10, 3600),
+        "keep_alive_timeout": _bounded_setting("keep_alive_timeout", params.get("keep_alive_timeout", current["keep_alive_timeout"]), 1, 120),
+        "max_keep_alive_requests": _bounded_setting("max_keep_alive_requests", params.get("max_keep_alive_requests", current["max_keep_alive_requests"]), 100, 100000),
+        "gzip_level": _bounded_setting("gzip_level", params.get("gzip_level", current["gzip_level"]), 1, 9),
+        "brotli_level": _bounded_setting("brotli_level", params.get("brotli_level", current["brotli_level"]), 1, 11),
+        "log_keep_days": _bounded_setting("log_keep_days", params.get("log_keep_days", current["log_keep_days"]), 1, 365),
+    }
+    log_level = str(params.get("log_level", current["log_level"])).upper()
+    if log_level not in {"DEBUG", "INFO", "NOTICE", "WARN", "ERROR"}:
+        raise ValidationError("log_level must be DEBUG, INFO, NOTICE, WARN, or ERROR")
+    values["log_level"] = log_level
+    for name in ("gzip_enabled", "brotli_enabled", "quic_enabled"):
+        value = params.get(name, current[name])
+        if not isinstance(value, bool):
+            raise ValidationError(f"{name} must be true or false")
+        values[name] = value
+    return values
+
+
+def credential_status(params: dict) -> dict:
+    available = False
+    username = "admin"
+    reset_at = None
+    try:
+        info = OLS_CREDENTIAL_PATH.stat()
+        if info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o600:
+            data = json.loads(OLS_CREDENTIAL_PATH.read_text())
+            available = bool(data.get("password"))
+            username = str(data.get("username") or "admin")
+            reset_at = data.get("reset_at")
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"username": username, "password_available": available, "reset_at": reset_at}
+
+
+def admin_status(params: dict) -> dict:
+    service = run(["systemctl", "is-active", "lsws"], timeout=10)
+    version = run([f"{OLS_SERVER_BASE}/bin/lshttpd", "-v"], timeout=10)
+    config_check = run([f"{OLS_SERVER_BASE}/bin/openlitespeed", "-t"], timeout=30)
+    with write_session() as session:
+        accounts = session.scalar(select(func.count()).select_from(Account)) or 0
+        domains = session.scalar(select(func.count()).select_from(Domain)) or 0
+    return {
+        "active": service.stdout.strip() == "active",
+        "version": (version.stdout or version.stderr).strip()[:200],
+        "config_valid": config_check.ok,
+        "config_message": (config_check.stderr or config_check.stdout).strip()[-500:],
+        "settings": _ols_settings(),
+        "credential": credential_status({}),
+        "webadmin_port": 7080,
+        "accounts": accounts,
+        "domains": domains,
+    }
+
+
+def update_admin_settings(params: dict) -> dict:
+    previous = _ols_settings()
+    values = _validate_admin_settings(params)
+    with write_session() as session:
+        row = session.get(OlsServerSettings, 1)
+        if row is None:
+            row = OlsServerSettings(id=1)
+            session.add(row)
+        for key, value in values.items():
+            setattr(row, key, value)
+    try:
+        refresh_main_config()
+    except Exception:
+        with write_session() as session:
+            row = session.get(OlsServerSettings, 1)
+            if row is None:
+                row = OlsServerSettings(id=1)
+                session.add(row)
+            for key, value in previous.items():
+                setattr(row, key, value)
+        raise
+    return admin_status({})
+
+
+def graceful_reload(params: dict) -> dict:
+    if not bool(params.get("confirm")):
+        raise ValidationError("OpenLiteSpeed reload requires confirm=true")
+    check = run([f"{OLS_SERVER_BASE}/bin/openlitespeed", "-t"], timeout=30)
+    if not check.ok:
+        raise RuntimeError(f"OpenLiteSpeed configuration is invalid: {(check.stderr or check.stdout).strip()}")
+    result = run(["systemctl", "reload", "lsws"], timeout=30)
+    if not result.ok:
+        raise RuntimeError(f"OpenLiteSpeed reload failed: {(result.stderr or result.stdout).strip()}")
+    return admin_status({})
+
+
+def _write_credential(username: str, password: str) -> str:
+    OLS_CREDENTIAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = OLS_CREDENTIAL_PATH.with_name(f".{OLS_CREDENTIAL_PATH.name}.{os.getpid()}.{secrets.token_hex(6)}")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    reset_at = utcnow().isoformat()
+    try:
+        payload = json.dumps({"username": username, "password": password, "reset_at": reset_at}).encode()
+        view = memoryview(payload)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fchmod(fd, 0o600)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temporary, OLS_CREDENTIAL_PATH)
+    return reset_at
+
+
+def reset_admin_password(params: dict) -> dict:
+    username = str(params.get("username") or "admin").strip()
+    if not _OLS_USERNAME_RE.fullmatch(username):
+        raise ValidationError("WebAdmin username must be 1-32 letters, digits, dots, underscores, or hyphens")
+    if not OLS_PASSWORD_SCRIPT.is_file():
+        raise RuntimeError("OpenLiteSpeed password reset script is unavailable")
+    alphabet = string.ascii_letters + string.digits + "!@#%+_-"
+    password = "".join(secrets.choice(alphabet) for _ in range(28))
+    result = run([str(OLS_PASSWORD_SCRIPT)], input_text=f"{username}\n{password}\n{password}\n", timeout=30)
+    if not result.ok:
+        raise RuntimeError(f"OpenLiteSpeed password reset failed: {(result.stderr or result.stdout).strip()}")
+    reset_at = _write_credential(username, password)
+    return {"username": username, "password": password, "reset_at": reset_at}
+
+
+def reveal_admin_password(params: dict) -> dict:
+    if not bool(params.get("confirm")):
+        raise ValidationError("password reveal requires confirm=true")
+    status = credential_status({})
+    if not status["password_available"]:
+        raise ValidationError("the existing WebAdmin password is not recoverable; reset it first")
+    data = json.loads(OLS_CREDENTIAL_PATH.read_text())
+    return {"username": data["username"], "password": data["password"], "reset_at": data["reset_at"]}

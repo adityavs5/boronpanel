@@ -35,6 +35,10 @@ _SCOPED_RULE_RE = re.compile(
     r"\Aufw (?P<action>allow|deny) from (?P<from>\S+) to any port (?P<port>\d+)"
     r"(?:\s+proto\s+(?P<proto>tcp|udp))?(?:\s+comment\s+'(?P<comment>.*)')?\Z"
 )
+_BYPASS_RULE_RE = re.compile(
+    r"\Aufw allow from (?P<from>\S+)(?:\s+comment\s+'(?P<comment>.*)')?\Z"
+)
+BYPASS_COMMENT = "boron-full-access-bypass"
 
 
 def _ssh_port() -> int:
@@ -114,6 +118,28 @@ def _rule_id(action: str, port: int, protocol: str, from_addr: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def _bypass_id(address: str) -> str:
+    return hashlib.sha256(f"bypass|{address}".encode()).hexdigest()[:16]
+
+
+def _parse_bypass_rules(text: str) -> list[dict]:
+    entries = []
+    for line in text.splitlines():
+        match = _BYPASS_RULE_RE.match(line.strip())
+        if not match:
+            continue
+        comment = match.group("comment") or ""
+        if comment != BYPASS_COMMENT and not comment.startswith(BYPASS_COMMENT + "-"):
+            continue
+        address = validate_ip_or_cidr(match.group("from"))
+        entries.append({
+            "bypass_id": _bypass_id(address),
+            "address": address,
+            "label": comment[len(BYPASS_COMMENT):].lstrip("-"),
+        })
+    return entries
+
+
 def _parse_added_rules(text: str) -> list[dict]:
     rules = []
     for line in text.splitlines():
@@ -150,7 +176,44 @@ def list_rules(params: dict) -> dict:
     rules = _parse_added_rules(result.stdout)
     status = run(["ufw", "status"], timeout=15)
     active = status.stdout.strip().startswith("Status: active")
-    return {"rules": rules, "active": active}
+    return {"rules": rules, "bypass": _parse_bypass_rules(result.stdout), "active": active}
+
+
+def list_bypass(params: dict) -> dict:
+    result = run(["ufw", "show", "added"], timeout=15)
+    return {"bypass": _parse_bypass_rules(result.stdout)}
+
+
+def add_bypass(params: dict) -> dict:
+    address = validate_ip_or_cidr(params["address"])
+    if address in ("0.0.0.0/0", "::/0"):
+        raise ValidationError("a global network cannot bypass the firewall; enter a specific trusted IP or CIDR")
+    label = _validate_comment(params.get("label"))
+    comment = BYPASS_COMMENT + (f"-{label}" if label else "")
+    current = _parse_bypass_rules(run(["ufw", "show", "added"], timeout=15).stdout)
+    if any(item["address"] == address for item in current):
+        raise ValidationError(f"'{address}' already has full-access bypass")
+    args = ["ufw", "insert", "1", "allow", "from", address, "comment", comment]
+    result = run(args, timeout=20)
+    if not result.ok:
+        raise RuntimeError(f"ufw bypass add failed: {result.stderr.strip() or result.stdout.strip()}")
+    return {"bypass_id": _bypass_id(address), "address": address, "label": label}
+
+
+def delete_bypass(params: dict) -> dict:
+    bypass_id = str(params["bypass_id"])
+    current = _parse_bypass_rules(run(["ufw", "show", "added"], timeout=15).stdout)
+    target = next((item for item in current if item["bypass_id"] == bypass_id), None)
+    if target is None:
+        raise ValidationError(f"no bypass entry with id '{bypass_id}' found")
+    comment = BYPASS_COMMENT + (f"-{target['label']}" if target["label"] else "")
+    result = run(
+        ["ufw", "--force", "delete", "allow", "from", target["address"], "comment", comment],
+        timeout=20,
+    )
+    if not result.ok:
+        raise RuntimeError(f"ufw bypass delete failed: {result.stderr.strip() or result.stdout.strip()}")
+    return {"bypass_id": bypass_id, "status": "deleted"}
 
 
 def add_rule(params: dict) -> dict:

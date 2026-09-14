@@ -26,6 +26,11 @@ class ConfirmBody(BaseModel):
     confirm: bool = False
 
 
+class BypassBody(BaseModel):
+    address: str
+    label: str = ""
+
+
 @api_router.get("/rules")
 def list_rules(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -42,6 +47,24 @@ def add_rule(body: AddRuleBody, identity: Identity = Depends(get_identity)):
 def delete_rule(rule_id: str, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("firewall.delete", identity, rule_id=rule_id)
+
+
+@api_router.get("/bypass")
+def list_bypass(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("firewall.bypass.list", identity)
+
+
+@api_router.post("/bypass")
+def add_bypass(body: BypassBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("firewall.bypass.add", identity, **body.model_dump())
+
+
+@api_router.delete("/bypass/{bypass_id}")
+def delete_bypass(bypass_id: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("firewall.bypass.delete", identity, bypass_id=bypass_id)
 
 
 @api_router.get("/status")

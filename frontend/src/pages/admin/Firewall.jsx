@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Flame, Plus, Trash2, ShieldCheck, ShieldOff } from 'lucide-react'
+import { Flame, Plus, Trash2, ShieldCheck, ShieldOff, Network } from 'lucide-react'
 import { get, post, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import {
@@ -23,6 +24,9 @@ export default function Firewall() {
   const [form, setForm] = useState(EMPTY_FORM)
   const [toggleAction, setToggleAction] = useState(null) // 'enable' | 'disable' | null
   const [deleteRule, setDeleteRule] = useState(null)
+  const [bypassOpen, setBypassOpen] = useState(false)
+  const [bypassForm, setBypassForm] = useState({ address: '', label: '' })
+  const [deleteBypass, setDeleteBypass] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['firewall-rules', username],
@@ -61,6 +65,27 @@ export default function Firewall() {
       setDeleteRule(null)
     },
     onError: (e) => toast.error('Could not delete rule', e.message),
+  })
+
+  const addBypassMut = useMutation({
+    mutationFn: (body) => post('/api/v1/firewall/bypass', body),
+    onSuccess: () => {
+      toast.success('Full-access IP added')
+      invalidate()
+      setBypassOpen(false)
+      setBypassForm({ address: '', label: '' })
+    },
+    onError: (e) => toast.error('Could not add bypass IP', e.message),
+  })
+
+  const deleteBypassMut = useMutation({
+    mutationFn: (id) => del(`/api/v1/firewall/bypass/${id}`),
+    onSuccess: () => {
+      toast.success('Full-access IP removed')
+      invalidate()
+      setDeleteBypass(null)
+    },
+    onError: (e) => toast.error('Could not remove bypass IP', e.message),
   })
 
   const columns = [
@@ -138,6 +163,21 @@ export default function Firewall() {
         emptyAction={<Button onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" /> Add rule</Button>}
       />
 
+      <Card className="mt-6">
+        <CardHeader className="flex-row items-start justify-between gap-4">
+          <div><CardTitle>Full-access IPs</CardTitle><CardDescription>Trusted IPs and CIDRs in this list can reach every server port. Boron inserts these rules before port blocks.</CardDescription></div>
+          <Button variant="outline" onClick={() => setBypassOpen(true)}><Network className="h-4 w-4" /> Add trusted IP</Button>
+        </CardHeader>
+        <CardContent>
+          {(data?.bypass || []).length ? <div className="divide-y divide-border rounded-panel border border-border">
+            {data.bypass.map((entry) => <div key={entry.bypass_id} className="flex flex-wrap items-center justify-between gap-3 p-4">
+              <div><div className="font-mono text-sm font-medium">{entry.address}</div><div className="text-xs text-muted-foreground">{entry.label || 'Trusted administrator address'}</div></div>
+              <Button variant="danger" size="sm" onClick={() => setDeleteBypass(entry)}><Trash2 className="h-4 w-4" /> Remove</Button>
+            </div>)}
+          </div> : <div className="rounded-panel border border-dashed border-border p-6 text-center text-sm text-muted-foreground">No full-access IPs configured.</div>}
+        </CardContent>
+      </Card>
+
       {/* Add rule dialog */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent size="sm">
@@ -207,6 +247,19 @@ export default function Firewall() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={bypassOpen} onOpenChange={setBypassOpen}>
+        <DialogContent size="sm"><DialogHeader><DialogTitle>Add full-access IP</DialogTitle></DialogHeader>
+          <form onSubmit={(event) => { event.preventDefault(); addBypassMut.mutate({ address: bypassForm.address.trim(), label: bypassForm.label.trim() }) }}>
+            <DialogBody className="space-y-4">
+              <p className="text-sm text-muted-foreground">Use this for a trusted office, VPN, or recovery address that must remain reachable even when a port is blocked.</p>
+              <FormField label="IP address or CIDR" required><Input required autoFocus value={bypassForm.address} onChange={(event) => setBypassForm((value) => ({ ...value, address: event.target.value }))} placeholder="203.0.113.10" /></FormField>
+              <FormField label="Label" hint="Letters, numbers, spaces, dots, underscores, and hyphens."><Input value={bypassForm.label} onChange={(event) => setBypassForm((value) => ({ ...value, label: event.target.value }))} placeholder="Office VPN" /></FormField>
+            </DialogBody>
+            <DialogFooter><Button type="button" variant="secondary" onClick={() => setBypassOpen(false)}>Cancel</Button><Button type="submit" loading={addBypassMut.isPending}>Add trusted IP</Button></DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       {/* Enable / disable confirmation */}
       <ConfirmDialog
         open={!!toggleAction}
@@ -222,6 +275,7 @@ export default function Firewall() {
         loading={toggleMut.isPending}
         onConfirm={() => toggleMut.mutate(toggleAction)}
       />
+      <ConfirmDialog open={!!deleteBypass} onOpenChange={(open) => !open && setDeleteBypass(null)} title="Remove full-access IP?" description={`Traffic from ${deleteBypass?.address || 'this address'} will follow the normal firewall rules again.`} confirmLabel="Remove trusted IP" variant="danger" loading={deleteBypassMut.isPending} onConfirm={() => deleteBypassMut.mutate(deleteBypass.bypass_id)} />
 
       {/* Delete rule confirmation */}
       <ConfirmDialog

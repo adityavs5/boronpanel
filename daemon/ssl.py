@@ -227,7 +227,7 @@ def issue_wildcard_certificate(params: dict) -> dict:
 
 def certificate_status(params: dict) -> dict:
     domain = validate_domain(params["domain"])
-    if domain == settings.webmail_hostname:
+    if domain in {settings.webmail_hostname, settings.pma_hostname}:
         key, cert = letsencrypt_cert_paths(domain)
         exists = Path(key).exists() and Path(cert).exists()
         return {"domain": domain, "ssl_status": "active" if exists else "none"}
@@ -342,6 +342,42 @@ def get_ssl_dashboard(params: dict) -> dict:
         )
 
     return {"username": username, "certbot_timer_active": timer_active, "domains": entries}
+
+
+def get_admin_ssl_dashboard(params: dict) -> dict:
+    """Fleet certificate inventory for the administrator SSL workspace."""
+    with write_session() as session:
+        rows = session.execute(
+            select(Domain.domain, Domain.ssl_status, Domain.ssl_is_wildcard, Account.username, Account.status)
+            .join(Account, Account.id == Domain.account_id)
+            .order_by(Account.username, Domain.domain)
+        ).all()
+    domain_data = [
+        {"domain": domain, "ssl_status": ssl_status, "is_wildcard": wildcard,
+         "username": username, "account_status": account_status, "system": False}
+        for domain, ssl_status, wildcard, username, account_status in rows
+    ]
+    hosted = {item["domain"] for item in domain_data}
+    for hostname, label in ((settings.webmail_hostname, "Webmail"), (settings.pma_hostname, "phpMyAdmin")):
+        if hostname and hostname not in hosted:
+            status = certificate_status({"domain": hostname})["ssl_status"]
+            domain_data.append({
+                "domain": hostname, "ssl_status": status, "is_wildcard": False,
+                "username": label, "account_status": "system", "system": True,
+            })
+    timer_active = run(["systemctl", "is-active", "certbot.timer"], timeout=10).stdout.strip() == "active"
+    entries = []
+    for item in domain_data:
+        details = _cert_file_details(item["domain"])
+        entries.append({
+            **item,
+            "cert_status": details["cert_status"] if details else "missing",
+            "expiry_date": details["expiry_date"] if details else None,
+            "days_remaining": details["days_remaining"] if details else None,
+            "issuer": details["issuer"] if details else None,
+            "auto_renew": bool(details) and timer_active and _auto_renew_enabled(item["domain"]),
+        })
+    return {"certbot_timer_active": timer_active, "domains": entries}
 
 
 # --- SSL expiry notifications (Phase 7b feature 3) --------------------------

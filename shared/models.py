@@ -790,6 +790,27 @@ class WafSettings(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class OlsServerSettings(Base):
+    """Editable OpenLiteSpeed server values kept in Boron's source of truth."""
+
+    __tablename__ = "ols_server_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    max_connections: Mapped[int] = mapped_column(Integer, default=10000)
+    max_ssl_connections: Mapped[int] = mapped_column(Integer, default=10000)
+    connection_timeout: Mapped[int] = mapped_column(Integer, default=300)
+    keep_alive_timeout: Mapped[int] = mapped_column(Integer, default=5)
+    max_keep_alive_requests: Mapped[int] = mapped_column(Integer, default=10000)
+    gzip_level: Mapped[int] = mapped_column(Integer, default=6)
+    brotli_level: Mapped[int] = mapped_column(Integer, default=6)
+    gzip_enabled: Mapped[bool] = mapped_column(default=True)
+    brotli_enabled: Mapped[bool] = mapped_column(default=True)
+    quic_enabled: Mapped[bool] = mapped_column(default=True)
+    log_level: Mapped[str] = mapped_column(String(16), default="WARN")
+    log_keep_days: Mapped[int] = mapped_column(Integer, default=30)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class WafDomainOverride(Base):
     """A domain that opted OUT of the (server-wide) WAF engine, rendered as
     a `ctl:ruleEngine=Off` SecRule scoped to that domain's Host header

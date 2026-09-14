@@ -56,11 +56,13 @@ export const adminNav = [
   { label: 'Accounts', to: '/accounts', icon: Users },
   { label: 'Server Health', to: '/health', icon: Activity },
   { label: 'Services', to: '/services', icon: Cog },
+  { label: 'OpenLiteSpeed', to: '/openlitespeed', icon: Server },
   // Sidebar shows an accent dot on this item while an update is available.
   { label: 'Updates', to: '/updates', icon: ArrowUpCircle },
   { section: 'Hosting Management' },
   { label: 'Backup Manager', to: '/backup-jobs', icon: Archive },
   { label: 'Plans', to: '/plans', icon: Layers },
+  { label: 'SSL Certificates', to: '/ssl', icon: ShieldCheck },
   { label: 'Bandwidth', to: '/bandwidth', icon: Gauge },
   { label: 'Site Statistics', to: '/site-stats', icon: BarChart3 },
   { label: 'Maintenance Mode', to: '/maintenance-mode', icon: Construction },

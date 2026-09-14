@@ -20,16 +20,16 @@ const customerGroups = {
 }
 const adminGroups = {
   evolution: [
-    ['Account Manager', ['/backup-jobs', '/accounts', '/plans', '/bandwidth', '/change-password']],
+    ['Account Manager', ['/backup-jobs', '/accounts', '/plans', '/ssl', '/bandwidth', '/change-password']],
     ['Server Manager', ['/health', '/services', '/db-monitor', '/slow-queries', '/mail-queue', '/cloudflare']],
-    ['Admin Tools', ['/updates', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
+    ['Admin Tools', ['/updates', '/openlitespeed', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
     ['System Info & Files', ['/site-stats', '/audit-log', '/account-log', '/error-log', '/templates', '/maintenance-mode']],
     ['WordPress & Websites', ['/wordpress']],
     ['Extra Features', ['/import/cpanel', '/imap-migrations', '/webhooks', '/notifications']],
     ['Account & Preferences', ['/panel-settings', '/branding', '/appearance', '/security', '/api/docs']],
   ],
   'paper-lantern': [
-    ['Accounts', ['/backup-jobs', '/accounts', '/plans', '/import/cpanel']],
+    ['Accounts', ['/backup-jobs', '/accounts', '/plans', '/ssl', '/import/cpanel']],
     ['Server & Databases', ['/health', '/services', '/db-monitor', '/slow-queries']],
     ['Domains & Network', ['/cloudflare', '/maintenance-mode']],
     ['Email', ['/mail-queue', '/imap-migrations', '/notifications']],

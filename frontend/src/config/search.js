@@ -12,7 +12,7 @@ const synonyms = {
   '/email/settings': 'email settings mail forwarder forwarding catch all spam filter autoresponder routing smtp imap migration',
   '/databases': 'database mysql mariadb sql phpmyadmin db users',
   '/files': 'file manager upload download folders permissions documents',
-  '/ssl': 'ssl tls https certificate lets encrypt security',
+  '/ssl': 'ssl tls https certificate lets encrypt certbot renew wildcard domain security',
   '/backup-jobs': 'backup restore recovery snapshots jetbackup incremental schedules jobs destinations ssh retention',
   '/backups': 'backup restore recovery snapshots archive',
   '/php': 'php version extensions settings configuration ini memory upload limit',
@@ -22,6 +22,7 @@ const synonyms = {
   '/logs': 'logs errors access debug troubleshooting', '/disk-usage': 'disk storage space quota usage',
   '/ssh': 'ssh keys secure shell', '/devtools': 'developer composer wpcli tools',
   '/malware': 'malware virus scanner scan wordpress hack compromise webshell clamav quarantine restore security files scripts',
+  '/openlitespeed': 'openlitespeed ols web server webadmin 7080 connections timeout gzip brotli quic http3 password reload',
 }
 export function normalize(text) { return String(text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() }
 function distance(a, b) {

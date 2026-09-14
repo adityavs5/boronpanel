@@ -148,6 +148,7 @@ OP_TABLE = {
     "ssl.issue_wildcard": ssl.issue_wildcard_certificate,
     "ssl.status": ssl.certificate_status,
     "ssl.dashboard": ssl.get_ssl_dashboard,
+    "ssl.admin.dashboard": ssl.get_admin_ssl_dashboard,
     # File manager: FileBrowser Quantum (the custom file.* ops that used to live
     # here were retired 2026-07-09 after FB Quantum was verified live end-to-end;
     # daemon/filemanager.py now only provides the shared path-jail helpers that
@@ -275,6 +276,9 @@ OP_TABLE = {
     "firewall.list": firewall.list_rules,
     "firewall.add": firewall.add_rule,
     "firewall.delete": firewall.delete_rule,
+    "firewall.bypass.list": firewall.list_bypass,
+    "firewall.bypass.add": firewall.add_bypass,
+    "firewall.bypass.delete": firewall.delete_bypass,
     "firewall.status": firewall.get_status,
     "firewall.enable": firewall.enable_firewall,
     "firewall.disable": firewall.disable_firewall,
@@ -288,6 +292,11 @@ OP_TABLE = {
     "malware.finding.quarantine": malware.quarantine,
     "malware.finding.restore": malware.restore,
     "malware.finding.ignore": malware.ignore,
+    "ols.admin.status": ols.admin_status,
+    "ols.admin.settings.update": ols.update_admin_settings,
+    "ols.admin.reload": ols.graceful_reload,
+    "ols.admin.password.reset": ols.reset_admin_password,
+    "ols.admin.password.reveal": ols.reveal_admin_password,
     # QA round 2, item 14: permanent server-wide IP/CIDR bans (daemon/ipban.py) --
     # distinct from firewall.* above (port-scoped rules) and from
     # ipwhitelist.* below (panel-login allowlist).
@@ -536,8 +545,9 @@ REPORTING_OPS = {
     "update.check", "update.status", "update.history", "update.log",
     "services.status", "services.list",
     "mailqueue.list",
-    "firewall.list",
-    "malware.engine.status", "malware.scan.list", "malware.scan.get", "malware.finding.list",
+    "firewall.list", "firewall.bypass.list",
+    "malware.engine.status", "malware.scan.list", "malware.scan.get", "malware.finding.list", "ols.admin.status",
+    "ssl.admin.dashboard",
     "fail2ban.list_jails", "fail2ban.get_jail", "fail2ban.recent_events",
     "waf.status", "waf.blocked_requests",
     "slowquery.list", "slowquery.status",

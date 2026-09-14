@@ -48,6 +48,7 @@ const Services = lazy(() => import('@/pages/admin/Services'))
 const BandwidthRanking = lazy(() => import('@/pages/admin/BandwidthRanking'))
 const MailQueue = lazy(() => import('@/pages/admin/MailQueue'))
 const Firewall = lazy(() => import('@/pages/admin/Firewall'))
+const OpenLiteSpeed = lazy(() => import('@/pages/admin/OpenLiteSpeed'))
 const IpBans = lazy(() => import('@/pages/admin/IpBans'))
 const Fail2ban = lazy(() => import('@/pages/admin/Fail2ban'))
 const IpWhitelist = lazy(() => import('@/pages/admin/IpWhitelist'))
@@ -127,7 +128,7 @@ export const router = createBrowserRouter(
         { path: 'python-apps', element: customer(<Apps type="python" />) },
         { path: 'redis', element: customer(<Redis />) },
         { path: 'dns', element: customer(<Dns />) },
-        { path: 'ssl', element: customer(<Ssl />) },
+        { path: 'ssl', element: <ProtectedRoute><Ssl /></ProtectedRoute> },
         { path: 'cron', element: customer(<Cron />) },
         { path: 'ftp', element: customer(<Ftp />) },
         { path: 'git', element: customer(<Git />) },
@@ -155,6 +156,7 @@ export const router = createBrowserRouter(
         { path: 'bandwidth', element: admin(<BandwidthRanking />) },
         { path: 'mail-queue', element: admin(<MailQueue />) },
         { path: 'firewall', element: admin(<Firewall />) },
+        { path: 'openlitespeed', element: admin(<OpenLiteSpeed />) },
         { path: 'ip-bans', element: admin(<IpBans />) },
         { path: 'fail2ban', element: admin(<Fail2ban />) },
         { path: 'ip-whitelist', element: admin(<IpWhitelist />) },

@@ -9,6 +9,7 @@ SHOW_ADDED_SAMPLE = """Added user rules (see 'ufw status' for running firewall):
 ufw allow 22/tcp
 ufw allow from 203.0.113.5 to any port 8443 proto tcp comment 'admin-office'
 ufw deny 9999/udp comment 'blocked-scanner'
+ufw allow from 198.51.100.42 comment 'boron-full-access-bypass-office'
 """
 
 SHOW_ADDED_EMPTY = "Added user rules (see 'ufw status' for running firewall):\n(None)\n"
@@ -44,6 +45,47 @@ def test_parse_added_rules_plain_and_scoped_and_deny():
     deny = next(r for r in rules if r["port"] == 9999)
     assert deny["action"] == "deny"
     assert deny["protocol"] == "udp"
+
+
+def test_parse_full_access_bypass_is_separate_from_port_rules():
+    assert len(firewall._parse_added_rules(SHOW_ADDED_SAMPLE)) == 3
+    assert firewall._parse_bypass_rules(SHOW_ADDED_SAMPLE) == [{
+        "bypass_id": firewall._bypass_id("198.51.100.42"),
+        "address": "198.51.100.42",
+        "label": "office",
+    }]
+
+
+def test_add_and_delete_full_access_bypass(monkeypatch):
+    added = "Added user rules (see 'ufw status' for running firewall):\nufw allow from 198.51.100.42 comment 'boron-full-access-bypass-office'\n"
+    calls = []
+
+    def fake_run(args, timeout=20):
+        calls.append(args)
+        output = added if args[:3] == ["ufw", "show", "added"] and len(calls) > 2 else SHOW_ADDED_EMPTY
+        return ProcResult(args=args, returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr(firewall, "run", fake_run)
+    result = firewall.add_bypass({"address": "198.51.100.42", "label": "office"})
+    assert result["address"] == "198.51.100.42"
+    assert ["ufw", "insert", "1", "allow", "from", "198.51.100.42", "comment", "boron-full-access-bypass-office"] in calls
+    firewall.delete_bypass({"bypass_id": result["bypass_id"]})
+    assert ["ufw", "--force", "delete", "allow", "from", "198.51.100.42", "comment", "boron-full-access-bypass-office"] in calls
+
+
+def test_bypass_rejects_global_network_and_duplicate(monkeypatch):
+    with pytest.raises(ValidationError, match="global network"):
+        firewall.add_bypass({"address": "0.0.0.0/0"})
+    monkeypatch.setattr(
+        firewall, "run",
+        lambda args, timeout=20: ProcResult(
+            args=args, returncode=0,
+            stdout="Added user rules (see 'ufw status' for running firewall):\nufw allow from 198.51.100.42 comment 'boron-full-access-bypass'\n",
+            stderr="",
+        ),
+    )
+    with pytest.raises(ValidationError, match="already has"):
+        firewall.add_bypass({"address": "198.51.100.42"})
 
 
 def test_parse_added_rules_empty():

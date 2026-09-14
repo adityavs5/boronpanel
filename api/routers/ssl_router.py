@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from starlette.requests import Request
 
 from api.rpc import call_daemon
-from api.security import Identity, get_identity, require_account_access, require_domain_access
+from api.security import Identity, get_identity, require_account_access, require_admin, require_domain_access
 from api.templates import templates
 
 api_router = APIRouter(prefix="/api/v1/ssl", tags=["ssl"])
@@ -17,6 +17,7 @@ ui_router = APIRouter(prefix="/ui/accounts/{username}/ssl", tags=["ui:ssl"])
 # alongside the existing domain-scoped routes above (kept as-is, still
 # used elsewhere) rather than replacing them.
 account_api_router = APIRouter(prefix="/api/v1/accounts/{username}", tags=["ssl"])
+admin_router = APIRouter(prefix="/api/v1/admin/ssl", tags=["ssl-admin"])
 
 
 class IssueCertBody(BaseModel):
@@ -56,6 +57,24 @@ def issue_or_renew_certificate(username: str, domain: str, body: DomainIssueCert
 def issue_wildcard_certificate(username: str, domain: str, body: DomainIssueCertBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     require_domain_access(identity, domain)
+    return call_daemon("ssl.issue_wildcard", identity, domain=domain, force=body.force)
+
+
+@admin_router.get("")
+def admin_ssl_dashboard(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("ssl.admin.dashboard", identity)
+
+
+@admin_router.post("/domains/{domain}/issue")
+def admin_issue_certificate(domain: str, body: DomainIssueCertBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("ssl.issue", identity, domain=domain, force=body.force)
+
+
+@admin_router.post("/domains/{domain}/wildcard")
+def admin_issue_wildcard_certificate(domain: str, body: DomainIssueCertBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
     return call_daemon("ssl.issue_wildcard", identity, domain=domain, force=body.force)
 
 

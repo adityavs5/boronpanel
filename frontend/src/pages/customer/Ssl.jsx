@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useAuth } from '@/store/auth'
 import { formatDateShort } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
@@ -19,40 +20,42 @@ import { toast } from '@/components/ui/Toast'
 
 export default function Ssl() {
   const username = useAccountUsername()
+  const admin = useAuth((state) => state.role === 'admin')
   const qc = useQueryClient()
   // confirm = { action: 'issue' | 'wildcard', row }
   const [confirm, setConfirm] = useState(null)
   const [selected, setSelected] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['ssl', username],
-    queryFn: () => get(`/api/v1/accounts/${username}/ssl`),
-    enabled: !!username,
+    queryKey: ['ssl', admin ? 'all' : username],
+    queryFn: () => get(admin ? '/api/v1/admin/ssl' : `/api/v1/accounts/${username}/ssl`),
+    enabled: admin || !!username,
   })
 
   const timerActive = data?.certbot_timer_active
 
   const issueMut = useMutation({
-    mutationFn: (r) => post(`/api/v1/accounts/${username}/domains/${r.domain}/ssl/issue`, { force: false }),
+    mutationFn: (r) => post(admin ? `/api/v1/admin/ssl/domains/${r.domain}/issue` : `/api/v1/accounts/${username}/domains/${r.domain}/ssl/issue`, { force: false }),
     onSuccess: (_res, r) => {
       toast.success('Certificate requested', `SSL issuance started for ${r.domain}.`)
-      qc.invalidateQueries({ queryKey: ['ssl', username] })
+      qc.invalidateQueries({ queryKey: ['ssl'] })
       setConfirm(null)
     },
     onError: (e) => toast.error('Could not issue certificate', e.message),
   })
 
   const wildcardMut = useMutation({
-    mutationFn: (r) => post(`/api/v1/accounts/${username}/domains/${r.domain}/ssl/wildcard`, { force: false }),
+    mutationFn: (r) => post(admin ? `/api/v1/admin/ssl/domains/${r.domain}/wildcard` : `/api/v1/accounts/${username}/domains/${r.domain}/ssl/wildcard`, { force: false }),
     onSuccess: (_res, r) => {
       toast.success('Wildcard certificate requested', `Wildcard SSL issuance started for *.${r.domain}.`)
-      qc.invalidateQueries({ queryKey: ['ssl', username] })
+      qc.invalidateQueries({ queryKey: ['ssl'] })
       setConfirm(null)
     },
     onError: (e) => toast.error('Could not issue wildcard certificate', e.message),
   })
 
   const columns = [
+    ...(admin ? [{ key: 'username', header: 'Account', sortable: true, searchable: true, render: (r) => <div><div className="font-medium">{r.username}</div>{r.account_status !== 'system' && <div className="text-xs capitalize text-muted-foreground">{r.account_status}</div>}</div> }] : []),
     {
       key: 'domain',
       header: 'Domain',
@@ -119,9 +122,9 @@ export default function Ssl() {
                 <DropdownMenuItem onSelect={() => setConfirm({ action: 'issue', row: r })}>
                   <RefreshCw className="h-4 w-4" /> {hasCert ? 'Renew now' : 'Issue certificate'}
                 </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setConfirm({ action: 'wildcard', row: r })}>
+                {!r.system && <DropdownMenuItem onSelect={() => setConfirm({ action: 'wildcard', row: r })}>
                   <Asterisk className="h-4 w-4" /> {r.is_wildcard ? 'Renew wildcard' : 'Issue wildcard'}
-                </DropdownMenuItem>
+                </DropdownMenuItem>}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -136,7 +139,7 @@ export default function Ssl() {
 
   return (
     <div>
-      <PageHeader title="SSL/TLS" description="Manage Let's Encrypt certificates for your domains." icon={ShieldCheck}>
+      <PageHeader title={admin ? 'SSL Certificates' : 'SSL/TLS'} description={admin ? "Issue and renew Let's Encrypt certificates across every hosted account." : "Manage Let's Encrypt certificates for your domains."} icon={ShieldCheck}>
         {timerActive === undefined ? null : timerActive ? (
           <Badge variant="success">
             <ShieldCheck className="h-3.5 w-3.5" /> Auto-renew on
@@ -173,7 +176,7 @@ export default function Ssl() {
       <Dialog open={!!selected} onOpenChange={open => !open && setSelected(null)}>
         <DialogContent size="lg"><DialogHeader><DialogTitle>SSL for {selected?.domain}</DialogTitle><DialogDescription>View certificate details and keep this site protected.</DialogDescription></DialogHeader>
           <DialogBody className="space-y-5"><dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm"><dt className="text-muted-foreground">Status</dt><dd><StatusBadge status={selected?.cert_status}/></dd><dt className="text-muted-foreground">Issuer</dt><dd>{selected?.issuer || 'No certificate issued'}</dd><dt className="text-muted-foreground">Expires</dt><dd>{selected?.expiry_date ? formatDateShort(selected.expiry_date) : '—'}</dd><dt className="text-muted-foreground">Automatic renewal</dt><dd>{timerActive ? 'Enabled' : 'Not active'}</dd></dl>
-          <div className="flex flex-wrap gap-3"><Button onClick={() => {setConfirm({action:'issue',row:selected});setSelected(null)}}><RefreshCw className="h-4 w-4"/> {selected?.cert_status && !['missing','none'].includes(selected.cert_status) ? 'Renew certificate' : 'Issue certificate'}</Button><Button variant="outline" onClick={() => {setConfirm({action:'wildcard',row:selected});setSelected(null)}}><Asterisk className="h-4 w-4"/> Wildcard certificate</Button></div></DialogBody>
+          <div className="flex flex-wrap gap-3"><Button onClick={() => {setConfirm({action:'issue',row:selected});setSelected(null)}}><RefreshCw className="h-4 w-4"/> {selected?.cert_status && !['missing','none'].includes(selected.cert_status) ? 'Renew certificate' : 'Issue certificate'}</Button>{!selected?.system && <Button variant="outline" onClick={() => {setConfirm({action:'wildcard',row:selected});setSelected(null)}}><Asterisk className="h-4 w-4"/> Wildcard certificate</Button>}</div></DialogBody>
           <DialogFooter><Button variant="secondary" onClick={() => setSelected(null)}>Done</Button></DialogFooter></DialogContent>
       </Dialog>
 
