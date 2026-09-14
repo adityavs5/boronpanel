@@ -158,6 +158,10 @@ def test_snapshot_api_authorization_and_customer_scope(environment,monkeypatch):
         response=client.post('/api/v1/accounts/alpha/backups/snapshots/runs/1/restore',json={'confirmation':'alpha','kind':'config','config_sections':['cron']})
         assert response.status_code==200
         assert calls[-1][1]['config_sections']==['cron']
+        response=client.post('/api/v1/accounts/alpha/backups/snapshots/runs/1/restore',json={'confirmation':'alpha','kind':'config','config_sections':['dns'],'dns_zones':['alpha.test']})
+        assert response.status_code==200
+        assert calls[-1][1]['dns_zones']==['alpha.test']
+        assert calls[-1][1]['config_sections']==['dns']
 
         response=client.post('/api/v1/accounts/alpha/backups/snapshots/runs/1/restore',json={'confirmation':'alpha','paths':['site.txt'],'_safety':999})
         assert response.status_code==200

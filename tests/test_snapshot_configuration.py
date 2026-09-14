@@ -56,7 +56,7 @@ def test_configuration_scope_and_selection_rejected(configuration):
     with pytest.raises(ValidationError,match='not found'):
         restores.configuration_options(dict(username='bravo',run_id=ident))
     with pytest.raises(ValidationError,match='scheduled tasks'):
-        restores.trigger(dict(username='alpha',run_id=ident,confirmation='alpha',kind='config',config_sections=['dns']))
+        restores.trigger(dict(username='alpha',run_id=ident,confirmation='alpha',kind='config',config_sections=['unsupported']))
     with pytest.raises(ValidationError,match='username'):
         restores.trigger(dict(username='alpha',run_id=ident,confirmation='wrong',kind='config',config_sections=['cron']))
     assert state==original

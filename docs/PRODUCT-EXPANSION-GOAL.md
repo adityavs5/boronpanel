@@ -1035,3 +1035,23 @@ cross-process exclusion, thread waiting, release after exceptions and reentrancy
 Three selected Cloudflare pool deletion/migration tests also passed (8.38s;
 14 unrelated tests deselected). Changes are committed for further integration,
 not deployed; current live DNS and provider state remain unchanged.
+
+### DNS recovery queue and combined configuration preview — 2026-09-14
+
+The configuration preview now decrypts the private manifest once for cron, PHP
+and DNS, rather than repeating the archive read per section. DNS preview lists
+available/unavailable saved zones with reasons and record counts without exposing
+record contents. Restore requests require a nonempty, distinct selection of
+available zones; the saved selection is retained through undo/redo. Added DNS zone
+selection to the API body and connected the DNS worker to configuration dispatch.
+
+This remains development-only: the interface/history/undo labels still need DNS
+support, and Cloudflare-native restore remains outstanding. No deployment or live
+DNS mutation was performed in this step.
+
+Validation: three real encrypted DNS queue tests passed (67.03s), covering one-read
+catalog summaries, restore/undo/redo, preserved zone selection and invalid/foreign
+selection rejection. Nine existing encrypted PHP/cron configuration tests passed
+(152.37s). The API account-authorization/forwarding test passed (10.07s, existing
+Starlette warning) with authorized local TestClient transport. DNS backend writes
+in tests are simulated; this does not establish live provider recovery completion.

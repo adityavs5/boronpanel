@@ -130,3 +130,45 @@ def restore_dns(ident, account, row, repo, snapshot_id, work, update):
         lambda names: update(ident, summary={'config_sections': ['dns'], 'dns_zones': names}))
     update(ident, status='completed', summary={'config_sections': ['dns'], 'dns_zones': completed},
            progress_message='DNS records restored', completed_at=utcnow())
+
+
+def configuration_catalog(repo, account, snapshot_id):
+    """One decryption for all configuration previews; expose counts, not values."""
+    from daemon import snapshot_php, snapshot_dns
+    payload = _load_metadata(repo, account, snapshot_id)
+    result = {'cron_available': False, 'php_available': False, 'dns_available': False, 'dns_zones': []}
+    for section, key, validator in (
+        ('cron', 'cron_configuration', lambda data: cron.validate_configuration(account.username, data)),
+        ('php', 'php_configuration', lambda data: snapshot_php.validate_for_restore(account, data)),
+    ):
+        if key not in payload:
+            result[section + '_reason'] = 'This recovery point has no complete saved settings for this section'
+            continue
+        try:
+            saved = validator(payload[key])
+        except ValidationError as exc:
+            result[section + '_reason'] = str(exc)
+            continue
+        result[section + '_available'] = True
+        if section == 'cron':
+            result['managed_jobs'] = len(cron.parse_jobs(saved['lines']))
+        else:
+            result.update(php_sites=len(saved['sites']), php_default_version=saved['default_version'])
+    dns = payload.get('dns_configuration')
+    try:
+        snapshot_dns.validate_for_restore(account, dns, [])
+    except ValidationError as exc:
+        result['dns_reason'] = str(exc) if dns is not None else 'This recovery point has no complete DNS settings'
+        return result
+    for zone in dns['zones']:
+        item = dict(zone=zone['zone'], provider=zone.get('provider'), available=False)
+        try:
+            normalized = snapshot_dns.validate_for_restore(account, dns, [zone['zone']])
+            item.update(available=True, record_count=len(normalized['zones'][0]['records']))
+        except ValidationError as exc:
+            item['reason'] = str(exc)
+        result['dns_zones'].append(item)
+    result['dns_available'] = any(zone['available'] for zone in result['dns_zones'])
+    if not result['dns_available']:
+        result['dns_reason'] = 'No DNS zones in this recovery point are currently available for restore'
+    return result
