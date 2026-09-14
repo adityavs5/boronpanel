@@ -50,7 +50,7 @@ OpenLiteSpeed and LSAPI for web traffic, MariaDB for hosted databases,
 PowerDNS for zones, Postfix/Dovecot for mail, Pure-FTPd for file transfer, and
 FastAPI + React for the panel experience.
 
-The current release is **1.0.1**. The panel is intentionally opinionated:
+The latest published version is listed on [GitHub Releases](https://github.com/adityavs5/boronpanel/releases/latest). The panel is intentionally opinionated:
 one server, clear privilege boundaries, per-account Linux users, generated
 configuration with validation and rollback, and secrets kept outside the
 application tree.
