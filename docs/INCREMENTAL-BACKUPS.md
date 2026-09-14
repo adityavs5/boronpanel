@@ -984,3 +984,16 @@ tests passed, proving both missing-user reconstruction and preservation of an
 existing disabled mailbox with a changed quota, plus cache synchronization,
 Maildir creation and retained guard ownership. Customer submission, interrupted
 provisioning reconciliation and restore finalization remain outstanding.
+
+`create_switch` now connects account-verified placement inventory and the exact
+owned guard set to a private executable switch journal. Every placement must be
+ready before journal creation; the journal records current/replacement directory
+identities and a fresh operation ID. Creation is exclusive, so a repeated call
+cannot replace an operation's recovery record. This step does not exchange mail;
+the supervised worker still stops Dovecot and revalidates directory identities.
+
+Validation: 17 staging/journal tests passed, including refusal of a partially
+staged batch, completion of its remaining isolated copy, journal creation with
+both directory states still ready, duplicate-journal refusal and the existing
+real supervised exchange/rollback tests. Customer submission and post-switch
+safety backup/finalization remain outstanding.

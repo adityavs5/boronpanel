@@ -70,6 +70,9 @@ def test_batch_staging_retains_inventory_on_interruption(isolated_db, tmp_path, 
     assert index.read_bytes() == before
     observed = restore.inspect_staging(account, work, 17)
     assert [entry['state'] for entry in observed['mailboxes']] == ['ready', 'not_started']
+    with pytest.raises(ValidationError, match='must be ready'):
+        restore.create_switch(account, work, acquired, 17)
+    assert not (work / 'switch.json').exists()
     with pytest.raises(ValidationError, match='inventory'):
         restore.inspect_staging(account, work, 18)
     receipt = Path(first['receipt'])
@@ -84,6 +87,15 @@ def test_batch_staging_retains_inventory_on_interruption(isolated_db, tmp_path, 
     unknown = Path(settings.mail_base) / second['domain'] / second['local_part'] / second['prepared']
     unknown.mkdir()
     assert restore.inspect_staging(account, work, 17)['mailboxes'][1]['state'] == 'unconfirmed'
+    unknown.rmdir()
+    original(second['source'], work, second['domain'], second['local_part'],
+             prepared=second['prepared'], receipt=second['receipt'], restore_id=17)
+    from daemon import snapshot_mail_journal as journal
+    switch = restore.create_switch(account, work, acquired, 17)
+    assert journal.read(switch)['restore_id'] == 17
+    assert [entry['state'] for entry in journal.inspect(switch)] == ['ready', 'ready']
+    with pytest.raises(FileExistsError):
+        restore.create_switch(account, work, acquired, 17)
     with write_session() as session:
         other = Account(username='bravo', status='active', uid=65533, gid=65533)
         session.add(other); session.flush()

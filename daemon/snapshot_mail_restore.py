@@ -260,3 +260,31 @@ def inspect_staging(account, work, restore_id):
                     state = 'not_started'
         result.append({'domain': entry['domain'], 'local_part': entry['local_part'], 'state': state})
     return {'mailboxes': result}
+
+
+def create_switch(account, work, acquired, restore_id):
+    """Bind verified staging and guard ownership into the executable journal.
+
+    Caller holds the account lock. This only records identities; the supervised
+    worker must stop Dovecot and validate them again before exchanging anything.
+    """
+    from daemon import snapshot_mail_guard as guard, snapshot_mail_journal as journal
+    from daemon import snapshot_mail_exchange as exchange
+    work = Path(work)
+    observed = inspect_staging(account, work, restore_id)
+    if any(entry['state'] != 'ready' for entry in observed['mailboxes']):
+        raise ValidationError('All selected mailbox copies must be ready before switching')
+    # inspect_staging has already validated the bounded, private inventory and
+    # current ownership. The account lock keeps this work directory single-writer.
+    inventory = json.loads(journal._path(work / 'placement-index.json').read_text())
+    tokens = {(entry['domain'], entry['local_part']): entry['token'] for entry in acquired['entries']}
+    addresses = {(entry['domain'], entry['local_part']) for entry in inventory['entries']}
+    if set(tokens) != addresses or len(acquired['entries']) != len(addresses):
+        raise ValidationError('Mailbox guards do not match the staged selection')
+    with guard.owned_guards(acquired['entries'], restore_id):
+        entries = [dict(domain=entry['domain'], local_part=entry['local_part'],
+                        token=tokens[entry['domain'], entry['local_part']],
+                        plan=exchange.plan(entry['domain'], entry['local_part'], entry['prepared']))
+                   for entry in inventory['entries']]
+        return journal.create(work / 'switch.json', dict(format=1, restore_id=restore_id,
+                              operation_id=uuid.uuid4().hex, undo=False, entries=entries))
