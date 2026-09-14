@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
+from api.static_assets import PanelStaticFiles
 from sqlalchemy import select
 
 from shared.config import require_secure_session_secret, settings
@@ -103,7 +103,7 @@ app = FastAPI(
 )
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/static", PanelStaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # Phase 5 feature 9: IP whitelist for panel login. Runs before every

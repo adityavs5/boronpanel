@@ -81,7 +81,7 @@ button, a, input, select { -webkit-tap-highlight-color: transparent; }
 .tool-link { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; min-height: 115px; padding: 15px 7px 12px; background: rgb(var(--card)); border: 1px solid rgb(var(--border)); border-radius: 4px; text-decoration: none; transition: border-color .15s, background .15s; }
 .tool-link:hover { border-color: rgb(var(--accent-300)); background: rgb(var(--accent-50)); }
 .dark .tool-link:hover { background: rgb(var(--muted)); }
-.tool-label { text-align: center; font-size: 12px; line-height: 1.35; color: rgb(var(--fg)); max-width: 120px; }
+.tool-label { text-align: center; font-size: 14px; line-height: 1.35; color: rgb(var(--fg)); max-width: 120px; }
 .tool-icon { --icon-color: #1686b4; --icon-fill: #e0f2f9; position: relative; display: flex; justify-content: center; align-items: center; height: 43px; width: 46px; flex-shrink: 0; color: var(--icon-color); }
 .tool-icon > svg { height: 36px; width: 36px; fill: var(--icon-fill); }
 .icon-detail { position: absolute; right: 1px; bottom: 2px; height: 11px; width: 11px; border-radius: 50%; background: var(--icon-color); border: 2px solid rgb(var(--card)); }
@@ -147,7 +147,7 @@ button, a, input, select { -webkit-tap-highlight-color: transparent; }
 [data-skin='paper-lantern'] .group-count { display: none; }
 [data-skin='paper-lantern'] .tool-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 13px 9px; gap: 3px 8px; }
 [data-skin='paper-lantern'] .tool-link { flex-direction: row; justify-content: flex-start; min-height: 69px; gap: 13px; padding: 9px; border: 0; border-radius: 2px; }
-[data-skin='paper-lantern'] .tool-label { text-align: left; color: rgb(var(--link)); max-width: none; font-size: 13px; }
+[data-skin='paper-lantern'] .tool-label { text-align: left; color: rgb(var(--link)); max-width: none; font-size: 14px; }
 [data-skin='paper-lantern'] .tool-icon { border-radius: 8px; background: var(--icon-fill); width: 43px; height: 43px; }
 [data-skin='paper-lantern'] .tool-icon > svg { width: 29px; height: 29px; fill: none; stroke-width: 2; }
 [data-skin='paper-lantern'] .icon-detail { height: 9px; width: 9px; right: -2px; bottom: -2px; }
@@ -248,11 +248,11 @@ button, a, input, select { -webkit-tap-highlight-color: transparent; }
   .dashboard-role { display: none; }
   .tool-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
   .tool-link { min-height: 110px; padding: 12px 6px; }
-  .tool-label { font-size: 11px; }
+  .tool-label { font-size: 13px; }
   .tool-group-heading { font-size: 13px; }
   [data-skin='paper-lantern'] .tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 8px 5px; gap: 2px; }
   [data-skin='paper-lantern'] .tool-link { gap: 8px; min-height: 70px; padding: 8px 5px; }
-  [data-skin='paper-lantern'] .tool-label { font-size: 12px; }
+  [data-skin='paper-lantern'] .tool-label { font-size: 13px; }
   [data-skin='paper-lantern'] .tool-icon { width: 33px; height: 35px; }
   [data-skin='paper-lantern'] .tool-icon > svg { height: 25px; width: 25px; }
   .appearance-page h1 { font-size: 26px; }
