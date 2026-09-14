@@ -464,3 +464,46 @@ def export_record_documents(zone: str, zone_id: str | None = None) -> list[dict]
     """
     zid = _resolve_zone_id(zone, zone_id)
     return list(_paged(f"/zones/{zid}/dns_records"))
+
+
+def apply_record_batch(zone: str, operations: dict, *, zone_id: str) -> dict:
+    """Submit one recovery batch once; ambiguous outcomes require a fresh read.
+
+    The recovery coordinator validates record content, current IDs and zone
+    ownership and saves encrypted previous state before calling. Unlike _request,
+    this must not retry POSTs: an edge error can follow a committed transaction.
+    The conservative 200-operation limit works on every Cloudflare zone plan.
+    """
+    from copy import deepcopy
+    import re
+    if not isinstance(zone_id, str) or not re.fullmatch(r'[a-fA-F0-9]{32}', zone_id):
+        raise CloudflareError(400, 'A bound Cloudflare zone identifier is required')
+    if not isinstance(operations, dict) or not operations or not set(operations) <= {'deletes', 'patches', 'puts', 'posts'}:
+        raise CloudflareError(400, 'Invalid DNS recovery batch')
+    count = 0
+    for kind, records in operations.items():
+        if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+            raise CloudflareError(400, 'Invalid DNS recovery batch records')
+        count += len(records)
+        for record in records:
+            if kind != 'posts' and (not isinstance(record.get('id'), str) or not re.fullmatch(r'[a-fA-F0-9]{32}', record['id'])):
+                raise CloudflareError(400, 'Invalid current DNS record identifier')
+            if kind == 'posts' and 'id' in record:
+                raise CloudflareError(400, 'New DNS records must not reuse saved identifiers')
+    if not 1 <= count <= 200:
+        raise CloudflareError(400, 'DNS recovery batches must contain between 1 and 200 operations')
+    body = deepcopy(operations)
+    with _client() as client:
+        try:
+            response = client.post(f'/zones/{zone_id}/dns_records/batch', json=body)
+        except httpx.TransportError:
+            raise CloudflareError(502, 'DNS batch outcome is unknown; inspect current records before any retry') from None
+    if response.status_code >= 400:
+        raise CloudflareError(response.status_code, 'DNS batch was not confirmed; inspect current records before any retry')
+    try:
+        result = response.json()
+    except ValueError:
+        raise CloudflareError(502, 'DNS batch response was invalid; inspect current records before any retry') from None
+    if not isinstance(result, dict) or result.get('success') is not True or not isinstance(result.get('result'), dict):
+        raise CloudflareError(502, 'DNS batch was not confirmed; inspect current records before any retry')
+    return result['result']

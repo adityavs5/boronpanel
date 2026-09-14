@@ -1745,3 +1745,23 @@ real systemd tests and live account restore/undo evidence. Remaining initial wor
 includes Cloudflare-native DNS recovery, the final broad backup/requirement audit,
 and GitHub/release/self-update verification. The subsequent product expansion is
 still queued after the initial goal; the overall goal remains active.
+
+### Cloudflare recovery batch transport — 2026-09-14
+
+Reviewed current Cloudflare batch documentation and recorded provider constraints
+and implementation gates in docs/CLOUDFLARE-RECOVERY-PLAN.md. Added a dedicated
+one-attempt batch transport instead of reusing the general retrying request
+helper. It requires a bound 32-hex zone ID, validates operation collections/current
+record IDs, forbids saved IDs on new records, and caps batches at 200 operations.
+It retains native fields and scoped token context. Timeouts, rate-limit/server
+errors and malformed success envelopes require inspection rather than automatic
+POST retry. This helper is internal; native validation and current-ID planning
+remain the recovery coordinator's responsibility.
+
+Validation: 50 tests passed in 61.41s, covering new transport behavior and the
+existing Cloudflare client. New fixtures verify one request, bound token/path,
+Auto TTL/proxy/settings/comment/tag retention, invalid batch rejection before
+transport, and no repeat on timeout/429/500/503 or malformed responses. No external
+DNS API was mutated. Cloudflare restore remains disabled and this new helper is
+not deployed. Native validation, batch planning/checkpoints, restore/undo/UI
+integration and final verification remain required. Overall goal stays active.
