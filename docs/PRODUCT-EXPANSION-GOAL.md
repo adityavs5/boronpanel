@@ -604,3 +604,11 @@ overflow. These tests mock resource APIs; they do not claim live service mutatio
 Evolution light's mobile application dialog was also visually inspected.
 Existing database/SSL/DNS interior and Python/Node navigation regression coverage
 also passed: six scenarios on the final build, ten browser scenarios total.
+
+Revision `eb581cd` deployed successfully to the live development panel. Preflight
+found no active WordPress or backup operations and verified the mail guard.
+Private rollback copy: `/root/boron-setup/mail-recovery-before-20260914-024812`.
+Post-deployment HTTPS health, admin login and configuration RPC on port 2222
+passed; configuration remained unchanged. All five changed page bundles fetched
+through public HTTPS matched the tested build byte-for-byte with immutable cache
+headers. Deployment log: `/root/boron-setup/direct-management-deploy.log`.
