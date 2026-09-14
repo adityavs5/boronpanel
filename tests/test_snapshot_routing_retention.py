@@ -99,3 +99,11 @@ def test_recording_safety_is_immutable_and_requires_original_first(retention):
     row = jobs._row(SnapshotRestore, ident)
     assert row.safety_snapshot_id == 'a' * 64
     assert row.summary['routing_safety_snapshots'] == {'restore': 'a' * 64, 'rollback': 'b' * 64}
+
+
+def test_verified_rollback_can_expire_after_newer_recovery_points(retention):
+    create, apply, _, removed = retention
+    old = create(status='failed', finalized=True); create('c', 'd')
+    with write_session() as session:
+        row = session.get(SnapshotRestore, old); row.summary = {**row.summary, 'rolled_back': True}
+    assert apply() == 2 and removed == ['a' * 64, 'b' * 64]

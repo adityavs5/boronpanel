@@ -168,3 +168,23 @@ def catalog(repo, account, snapshot_id):
                            forwarders=len(selected['forwards']), catchall=selected['catchall'] is not None,
                            autoresponders=len(selected['autoresponders'])))
     return {'domains': sorted(result, key=lambda entry: entry['domain'])}
+
+
+@serialized_worker
+def prepare_undo(account, saved):
+    """Restore exact saved scripts and remove panel replies added afterward."""
+    saved = _validate(account, saved)
+    plan = prepare(account, saved['routing'])
+    target = sieve._documents(account, plan['desired_scripts'], allow_empty=True)
+    target.update(sieve._documents(account, saved['scripts'], allow_empty=True))
+    document = dict(format=1, account_id=account.id, username=account.username, scripts=[
+        dict(domain=domain, local_part=local, script_base64=base64.b64encode(content).decode('ascii') if content is not None else None)
+        for (domain, local), content in sorted(target.items())])
+    for content in target.values():
+        if content is not None: sieve._compile_bytes(content)
+    addresses = [local + '@' + domain for domain, local in target]
+    previous = sieve.capture(account, addresses) if addresses else dict(format=1, account_id=account.id, username=account.username, scripts=[])
+    plan['desired_scripts'] = document
+    plan['previous']['scripts'] = previous
+    _validate(account, plan['previous'])
+    return plan

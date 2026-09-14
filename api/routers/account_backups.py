@@ -78,6 +78,7 @@ class SnapshotRestoreBody(BaseModel):
     paths: list[str] = []
     databases: list[str] = []
     mailboxes: list[str] = []
+    mail_domains: list[str] = []
     config_sections: list[str] = []
     dns_zones: list[str] = []
     mail_pause_acknowledged: bool = False

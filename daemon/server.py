@@ -509,6 +509,7 @@ OP_TABLE = {
 REPORTING_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reporting")
 REPORTING_OPS = {
     "snapshot.destination.initialize", "snapshot.run.browse", "snapshot.restore.databases", "snapshot.restore.mailboxes", "snapshot.restore.configuration", "snapshot.restore.mail_routing",
+    "snapshot.restore.trigger", "snapshot.restore.undo",  # Preflight may decrypt recovery metadata.
     "disktree.get", "disktree.top_files", "usage.get",
     # Phase 5: admin-only polling/dashboard ops that shell out or sample
     # live system state -- same isolation reasoning as disktree/usage

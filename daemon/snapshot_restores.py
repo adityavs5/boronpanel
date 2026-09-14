@@ -281,11 +281,12 @@ def trigger(params):
     if account.status!='active':raise ValidationError('Reactivate the account before restoring its data')
     if params.get('confirmation')!=account.username:raise ValidationError('Type the account username to confirm this restore')
     kind=safety.selection['kind'] if safety else params.get('kind','files')
-    if kind not in ('files','databases','mail','config'):raise ValidationError('Unsupported snapshot restore type')
+    if kind not in ('files','databases','mail','config','mail_routing'):raise ValidationError('Unsupported snapshot restore type')
     paths=[] if safety else _paths(params.get('paths',[]))
     databases=[]
     mailboxes=[]
     dns_zones=[]
+    mail_domains=[]
     if kind == 'config':
         sections = safety.selection.get('config_sections') if safety else params.get('config_sections')
         if sections not in (['cron'], ['php'], ['dns']):
@@ -305,6 +306,30 @@ def trigger(params):
                 if not set(dns_zones) <= available:
                     raise ValidationError('A selected DNS zone is unavailable for this account and recovery point')
             dns_zones = sorted(dns_zones)
+    if kind == 'mail_routing':
+        if params.get('mail_pause_acknowledged') is not True:
+            raise ValidationError('Confirm the brief mail-service interruption before restoring mail routing')
+        from daemon.snapshot_mail_guard_config import verify
+        verify()
+        mail_domains = safety.selection.get('mail_domains') if safety else params.get('mail_domains')
+        if (not isinstance(mail_domains, list) or not mail_domains or any(not isinstance(name, str) for name in mail_domains)
+                or len(set(mail_domains)) != len(mail_domains)):
+            raise ValidationError('Select at least one distinct mail domain to restore')
+        if safety:
+            from daemon.snapshot_mail_routing_recovery import load_previous
+            try:
+                with jobs.lock(f'repository-{source.destination_id}', blocking=False):
+                    repo = jobs.repository(jobs._row(SnapshotDestination, source.destination_id))
+                    saved = load_previous(repo, account, safety.safety_snapshot_id, safety.id)
+            except BlockingIOError:
+                raise ValidationError('This destination is busy. Try again shortly.') from None
+            available = {entry['domain'] for entry in saved['routing']['domains']}
+        else:
+            options = routing_options({'username': account.username, 'run_id': source.id})
+            available = {entry['domain'] for entry in options['domains'] if entry['available']}
+        if not set(mail_domains) <= available:
+            raise ValidationError('Selected mail domain is unavailable for this account and recovery point')
+        mail_domains = sorted(mail_domains)
     if kind=='mail':
         if params.get('mail_pause_acknowledged') is not True:
             raise ValidationError('Confirm the brief mail-service interruption before restoring mailboxes')
@@ -338,7 +363,8 @@ def trigger(params):
             if not databases or any(name not in options or not options[name]['available'] for name in databases):
                 raise ValidationError('Database not found for this account or unavailable for reconstruction')
             databases=sorted(set(databases))
-    if kind not in source.options['components']:raise ValidationError('This recovery point does not contain '+kind)
+    component = 'mail' if kind == 'mail_routing' else kind
+    if component not in source.options['components']:raise ValidationError('This recovery point does not contain '+component)
     with jobs.lock('queue'),write_session() as session:
         current=session.get(Account,account.id)
         if current is None or current.status!='active':
@@ -346,13 +372,16 @@ def trigger(params):
         for model in (SnapshotRestore,SnapshotRun,BackupJob,RestoreJob):
             if session.scalar(select(model.id).where(model.account_id==account.id,model.status.in_(jobs.ACTIVE))):
                 raise ValidationError('A backup or restore is already in progress for this account')
+        from daemon.mail_mutation import require_accounts_available
+        require_accounts_available(session, {account.id})
         selection={'kind':kind,'paths':paths}
         if databases:selection['databases']=databases
         if mailboxes:selection['mailboxes']=mailboxes
         if dns_zones:selection['dns_zones']=dns_zones
+        if mail_domains:selection['mail_domains']=mail_domains
         if kind=='config':selection['config_sections']=list(sections)
         if safety:selection['source_snapshot_id']=safety.safety_snapshot_id
-        if safety and kind in ('mail','config'):selection['source_restore_id']=safety.id
+        if safety and kind in ('mail','config','mail_routing'):selection['source_restore_id']=safety.id
         row=SnapshotRestore(run_id=source.id,account_id=account.id,selection=selection,status='pending')
         session.add(row);session.flush();result=_serialize(row)
     jobs._executor.submit(execute,row.id)
@@ -425,7 +454,9 @@ def apply_safety_retention(repo, account_id, destination_id, policy_id, keep):
                 SnapshotRestore.account_id == account_id,
                 SnapshotRun.destination_id == destination_id).order_by(SnapshotRestore.id.desc())).all()
     eligible = [row for row, policy in pairs if policy == policy_id
-                and row.status == 'completed' and _safety_references(row)
+                and (row.status == 'completed' or (row.status == 'failed' and row.selection.get('kind') == 'mail_routing'
+                     and row.summary.get('rolled_back') is True and row.summary.get('routing_finalized') is True))
+                and _safety_references(row)
                 and (row.selection.get('kind') != 'mail' or row.summary.get('displaced_cleaned') is True)
                 and (row.selection.get('kind') != 'mail_routing' or row.summary.get('routing_finalized') is True)]
     candidates = eligible[keep:]
@@ -594,6 +625,12 @@ def execute(ident):
             repo=jobs.repository(jobs._row(SnapshotDestination,source.destination_id))
             snapshot_id=row.selection.get('source_snapshot_id') or source.snapshot_id
             snapshot=storage.owned_snapshot(repo,account.id,snapshot_id)
+            if row.selection['kind'] == 'mail_routing':
+                from daemon.snapshot_routing_worker import run as restore_routing
+                if 'mail' not in source.options.get('components', []):
+                    raise ValidationError('This recovery point does not contain mail routing')
+                restore_routing(ident, account, row, repo, snapshot_id)
+                return
             if row.selection['kind']=='mail':
                 from daemon.snapshot_mail_restore import run_restore
                 if 'mail' not in source.options.get('components', []):
@@ -632,6 +669,10 @@ def execute(ident):
             summary=json.loads(result.stdout)
             _update(ident,status='completed',progress_message='Selected files restored; unrelated files retained',summary=summary,completed_at=utcnow())
     except Exception as exc:
+        if row.selection.get('kind') == 'mail_routing':
+            from daemon.snapshot_routing_worker import failed
+            failed(ident)
+            return
         if row.selection.get('kind') == 'mail':
             from shared.models import SnapshotMailRecovery
             needs_recovery = False
@@ -740,6 +781,10 @@ def recover_restores():
         rows=session.scalars(select(SnapshotRestore).where(SnapshotRestore.status.in_(jobs.ACTIVE))).all()
     for row in rows:
         if row.status=='pending':jobs._executor.submit(execute,row.id);continue
+        if row.selection.get('kind') == 'mail_routing':
+            from daemon.snapshot_routing_worker import recover
+            jobs._executor.submit(recover, row.id)
+            continue
         if row.selection.get('kind') == 'mail':
             jobs._executor.submit(recover_mail_restore, row.id)
             continue

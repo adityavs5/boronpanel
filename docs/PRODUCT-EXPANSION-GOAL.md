@@ -1558,3 +1558,56 @@ unchanged owned routing loading. The account API test confirms the new route cal
 the intended daemon operation and denies another account before making any RPC.
 One existing Starlette TestClient deprecation warning was reported. No live account,
 mail service, production repository or routing rule was changed.
+
+
+### Queued mail-routing restore, undo and supervised recovery — 2026-09-14
+
+Connected mail_routing restore requests to domain availability validation,
+username confirmation, explicit mail-pause acknowledgement and mail-component
+checks. Undo validates its bound safety copy and inherits the original selection.
+Queue insertion rechecks account status, competing jobs and unresolved persisted
+routing recovery. The API accepts mail_domains. Restore/undo preflight RPCs use
+the separate reporting pool because validation can decrypt metadata.
+
+The queue worker captures/compiles selected routing, encrypts and registers the
+original safety copy, creates the bound journal and guard tokens, then releases
+SQL coordination before invoking the supervised worker. Successful finalization
+persists routing_finalized and retains registered safety references. Private
+journals are retained instead of being removed by generic file-restore cleanup.
+Undo merges exact saved scripts with removal of panel replies added afterward and
+captures its own previous state before applying.
+
+Startup and exception recovery inspect the same journal/supervisor operation.
+Confirmed-running workers are reobserved through one delayed callback per job.
+Failures before guard acquisition close safely; interrupted original application
+can prepare, register, apply and finalize its encrypted rollback. A successful
+rollback reports the requested restore as failed-but-recovered, with rolled_back,
+routing_finalized and released guards, while preserving both safety IDs. Such
+resolved rollback pairs may later expire under policy; unresolved failures remain
+protected. Unknown/partial rollback outcomes retain recovery data and fail for
+inspection rather than replaying mutations.
+
+Still required: recovery continuation when rollback itself is interrupted,
+frontend routing restore/undo controls and history, final integration audits and
+live systemd supervision/proof before deployment. Cloudflare-native DNS recovery
+and the remaining initial-goal final audit remain open. No new routing workflow
+code is deployed yet.
+
+Validation: the initial queue run had three passes and one assertion failure
+(124.11s); automatic rollback similarly reached its final assertions before a
+field-name error (82.54s). Both tests incorrectly used raw SQL source_local_part
+instead of public list_forwards local_part. After correcting the tests, queued
+restore/exact-script undo plus API authorization passed (2 tests, 95.11s), automatic
+partial-failure rollback passed (74.52s), and supervisor observer-timeout recovery
+passed (53.86s) without a second launch. Together with the initial three passes,
+all six queue scenarios and the API check are verified. Nine paired-retention
+checks passed (37.15s), including expiry of a finalized rollback. The API test
+reported the existing Starlette TestClient deprecation warning.
+
+Queue tests use real isolated MariaDB, real restic encryption and temporary
+vmail-owned files/guards; supervisor execution/service status are mocked, with the
+real internal journal worker invoked by the fixture. They verify persisted safety
+IDs before mutation, pending-job edit exclusion, selection/account rejection,
+pre-guard failure closure, startup recovery dispatch, retained private journals,
+exact custom-script undo, both registered rollback safety copies, and final mail
+edit availability. No production account, service or repository was changed.

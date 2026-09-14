@@ -177,6 +177,11 @@ def test_snapshot_api_authorization_and_customer_scope(environment,monkeypatch):
         assert response.status_code==200
         assert calls[-1][1]['mailboxes']==['inbox@example.test']
         assert calls[-1][1]['mail_pause_acknowledged'] is True
+        response=client.post('/api/v1/accounts/alpha/backups/snapshots/runs/1/restore',json={
+            'confirmation':'alpha','kind':'mail_routing','mail_domains':['alpha.example.test'],'mail_pause_acknowledged':True})
+        assert response.status_code==200
+        assert calls[-1][1]['mail_domains']==['alpha.example.test']
+        assert calls[-1][1]['kind']=='mail_routing'
         response=client.post('/api/v1/accounts/alpha/backups/snapshots/restores/1/undo',json={
             'confirmation':'alpha','mail_pause_acknowledged':True})
         assert response.status_code==200
