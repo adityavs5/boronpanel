@@ -145,3 +145,70 @@ def test_recovery_rejects_invalid_limits_and_dependencies(accounts, monkeypatch)
     saved['ini_override']['post_max_size']='1M'
     with pytest.raises(ValidationError,match='post_max_size'):
         snapshot_php.validate_for_restore(alpha,saved)
+
+
+@pytest.fixture
+def php_runtime(monkeypatch):
+    from daemon import ols, phpext, sysops
+    calls = []
+    monkeypatch.setattr(phpext, 'inventory', lambda: {'curl': {}, 'mysqli': {}})
+    monkeypatch.setattr(phpext, '_materialize', lambda username: calls.append(('extensions', username)))
+    monkeypatch.setattr(ols, 'refresh_vhost', lambda account: calls.append(('vhost', account.php_version)))
+    monkeypatch.setattr(sysops, 'recycle_php_workers', lambda username: calls.append(('recycle', username)))
+    return calls
+
+
+def test_apply_php_captures_previous_before_changes_and_preserves_admin_policy(accounts, php_runtime):
+    alpha, bravo = accounts
+    before = snapshot_php.capture(alpha)
+    foreign = snapshot_php.capture(bravo)
+    selected = {**before, 'default_version': '8.4', 'ini_override': None,
+                'extra_directives': {}, 'enabled_extensions': [],
+                'sites': [{'domain': 'alpha.test', 'version_override': '8.2'},
+                          {'domain': 'app.alpha.test', 'version_override': None}],
+                'administrator_function_policy': []}
+    saved = []
+    def save_previous(payload):
+        assert snapshot_php.capture(alpha) == before
+        assert not php_runtime
+        saved.append(payload)
+    snapshot_php.apply_configuration(alpha, selected, save_previous)
+    after = snapshot_php.capture(alpha)
+    assert after['default_version'] == '8.4'
+    assert after['sites'] == selected['sites']
+    assert after['ini_override'] is None and after['extra_directives'] == {}
+    assert after['enabled_extensions'] == []
+    assert after['administrator_function_policy'] == before['administrator_function_policy']
+    assert snapshot_php.capture(bravo) == foreign
+    assert php_runtime == [('extensions', 'alpha'), ('vhost', '8.4'), ('recycle', 'alpha')]
+    snapshot_php.apply_configuration(alpha, saved[0], lambda previous: None)
+    assert snapshot_php.capture(alpha) == before
+
+
+def test_php_safety_failure_never_changes_settings(accounts, php_runtime):
+    alpha, _ = accounts
+    before = snapshot_php.capture(alpha)
+    def fail(payload):
+        raise RuntimeError('backup unavailable')
+    with pytest.raises(RuntimeError, match='backup unavailable'):
+        snapshot_php.apply_configuration(alpha, {**before, 'default_version': '8.4'}, fail)
+    assert snapshot_php.capture(alpha) == before and not php_runtime
+
+
+@pytest.mark.parametrize('rollback_fails', [False, True])
+def test_php_runtime_failure_reapplies_previous_database_settings(accounts, php_runtime, monkeypatch, rollback_fails):
+    from daemon import ols
+    alpha, _ = accounts
+    before = snapshot_php.capture(alpha)
+    attempts = []
+    def refresh(account):
+        attempts.append(account.php_version)
+        if len(attempts) == 1 or rollback_fails:
+            raise RuntimeError('private runtime details')
+    monkeypatch.setattr(ols, 'refresh_vhost', refresh)
+    expected = 'could not be confirmed' if rollback_fails else 'were reapplied'
+    with pytest.raises(ValidationError, match=expected) as failure:
+        snapshot_php.apply_configuration(alpha, {**before, 'default_version': '8.4'}, lambda previous: None)
+    assert 'private runtime details' not in str(failure.value)
+    assert snapshot_php.capture(alpha) == before
+    assert attempts == ['8.4', '8.3']

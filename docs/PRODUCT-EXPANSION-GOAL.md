@@ -819,3 +819,26 @@ because its fixture attempted to overwrite create-once metadata; after fixing
 only that fixture, its targeted rerun passed (24.78s). It verifies normal backup
 loading, foreign-account rejection, recovery-copy job/path binding and the older
 metadata error. No production PHP setting or deployment was changed in this step.
+
+### PHP restore application and safety worker — 2026-09-14
+
+Added transactional replacement of customer PHP defaults, owned-site overrides,
+legacy limits, extra directives and extension selections. Administrator function
+restrictions are preserved. The new PHP configuration worker encrypts the prior
+settings and persists its safety snapshot ID before applying changes. Extension
+scan directories are prepared before vhost refresh and PHP worker recycling.
+Runtime errors trigger reapplication of the previous database settings and
+runtime; a separate error reports when runtime rollback cannot be confirmed.
+Unused extension scan directories are retained when switching to defaults rather
+than deleting runtime files during recovery.
+
+Evidence: all 26 PHP capture/validation/application tests passed (46.08s), including
+safety-capture failure with no mutation, restore/reapply round trip, account and
+administrator-policy isolation, and runtime failure/rollback failure. One actual
+restic-backed PHP worker test passed (15.99s), verifying the encrypted previous
+settings can be loaded and their snapshot ID is saved before runtime application.
+Runtime calls in these tests are mocked; live OLS application is not yet verified.
+
+This worker is not yet exposed through restore dispatch or the interface and has
+not been deployed. Account mutation coordination, dispatch/API/UI integration,
+restart/failure recovery audit and live restore/undo verification remain required.

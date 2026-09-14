@@ -114,3 +114,34 @@ def test_php_metadata_decrypts_owned_snapshot_and_bound_safety_copy(configuratio
     older = storage.backup(repo, account.id, [str(path)])['snapshot_id']
     with pytest.raises(ValidationError, match='no complete PHP'):
         snapshot_configuration.load_php(repo, account, older, source_restore_id=987)
+
+
+def test_php_worker_encrypts_previous_settings_before_apply(configuration, monkeypatch):
+    from types import SimpleNamespace
+    from daemon import snapshot_configuration, snapshot_php, ols, sysops
+    root, ident, dest, _ = configuration
+    run = jobs._row(SnapshotRun, ident)
+    account = jobs._row(Account, run.account_id)
+    repo = jobs.repository(jobs._row(SnapshotDestination, dest['id']))
+    archived = snapshot_php.capture(account)
+    with write_session() as session:
+        session.get(Account, account.id).php_version = '8.2'
+    before = snapshot_php.capture(account)
+    events = []
+    updates = {}
+    def update(restore_id, **values):
+        updates.update(values)
+        events.append(('update', dict(values)))
+    def refresh(current):
+        assert updates.get('safety_snapshot_id')
+        events.append(('runtime', current.php_version))
+    monkeypatch.setattr(ols, 'refresh_vhost', refresh)
+    monkeypatch.setattr(sysops, 'recycle_php_workers', lambda username: None)
+    work = jobs.private_directory('restores', 'restore-991')
+    snapshot_configuration.restore_php(991, account, SimpleNamespace(selection={}), repo,
+                                       run.snapshot_id, work, update)
+    assert snapshot_php.capture(account) == archived
+    assert updates['status'] == 'completed' and updates['summary']['config_sections'] == ['php']
+    previous = snapshot_configuration.load_php(repo, account, updates['safety_snapshot_id'], source_restore_id=991)
+    assert previous == snapshot_php.validate_for_restore(account, before)
+    assert events[0][0] == 'update' and events[1] == ('runtime', archived['default_version'])

@@ -120,3 +120,64 @@ def validate_for_restore(account, payload):
     return dict(format=1, account_id=account.id, username=account.username, default_version=version,
                 sites=normalized_sites, ini_override=ini, extra_directives=normalized_extras,
                 enabled_extensions=extensions)
+
+
+def _replace_settings(account, payload):
+    """Replace customer PHP rows in one transaction; caller holds account lock."""
+    from sqlalchemy import delete
+    with write_session() as session:
+        current = session.get(Account, account.id)
+        if current is None or current.username != account.username or current.status != 'active':
+            raise ValidationError('Account is no longer available for PHP recovery')
+        domains = {row.domain: row for row in session.scalars(
+            select(Domain).where(Domain.account_id == account.id)).all()}
+        if any(site['domain'] not in domains for site in payload['sites']):
+            raise ValidationError('A saved PHP site is no longer owned by this account')
+        current.php_version = payload['default_version']
+        for site in payload['sites']:
+            domains[site['domain']].php_version = site['version_override']
+        for model in (PhpIniOverride, PhpIniDirective, PhpExtensionSet):
+            session.execute(delete(model).where(model.account_id == account.id))
+        if payload['ini_override'] is not None:
+            session.add(PhpIniOverride(account_id=account.id, **payload['ini_override']))
+        for name, value in payload['extra_directives'].items():
+            session.add(PhpIniDirective(account_id=account.id, name=name, value=value))
+        if payload['enabled_extensions'] is not None:
+            session.add(PhpExtensionSet(account_id=account.id, enabled=payload['enabled_extensions']))
+        # PhpFunctionOverride is administrator policy and is never changed.
+
+
+def _refresh_runtime(account, payload):
+    from daemon import ols, phpext, sysops
+    if payload['enabled_extensions'] is not None:
+        phpext._materialize(account.username)
+    with write_session() as session:
+        current = session.get(Account, account.id)
+    ols.refresh_vhost(current)
+    sysops.recycle_php_workers(account.username)
+    # Keep unused scan directories when reverting to defaults. The refreshed
+    # vhost no longer references them; a later explicit selection rebuilds them.
+    # Avoid deleting runtime files during recovery or before a possible rollback.
+
+
+def apply_configuration(account, payload, save_previous):
+    """Apply PHP settings with encrypted safety capture and runtime rollback.
+
+    The restore coordinator must hold account and repository locks. Its
+    save_previous callback must encrypt the supplied payload and persist the
+    recovery snapshot ID before returning. No settings change if it fails.
+    """
+    selected = validate_for_restore(account, payload)
+    previous = validate_for_restore(account, capture(account))
+    save_previous(previous)
+    try:
+        _replace_settings(account, selected)
+        _refresh_runtime(account, selected)
+    except Exception:
+        try:
+            _replace_settings(account, previous)
+            _refresh_runtime(account, previous)
+        except Exception:
+            raise ValidationError('PHP recovery failed and runtime rollback could not be confirmed. '
+                                  'Use the encrypted previous configuration to recover.') from None
+        raise ValidationError('PHP recovery failed; the previous settings were reapplied.') from None

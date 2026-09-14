@@ -83,3 +83,22 @@ def restore_cron(ident, account, row, repo, snapshot_id, work, update):
     from shared.models import utcnow
     update(ident, status='completed', summary={'config_sections': ['cron']},
            progress_message='Scheduled tasks restored', completed_at=utcnow())
+
+
+def restore_php(ident, account, row, repo, snapshot_id, work, update):
+    """PHP worker entry point, invoked under account and repository locks."""
+    from daemon import snapshot_php
+    from shared.models import utcnow
+    selected = load_php(repo, account, snapshot_id,
+                        source_restore_id=row.selection.get('source_restore_id'))
+
+    def save_previous(previous):
+        path = work/'config-recovery.json'
+        write_metadata(path, dict(format=1, account_id=account.id, username=account.username,
+                                  restore_id=ident, php_configuration=previous))
+        result = storage.backup(repo, account.id, [str(path)])
+        update(ident, safety_snapshot_id=result['snapshot_id'], progress_message='Restoring PHP settings')
+
+    snapshot_php.apply_configuration(account, selected, save_previous)
+    update(ident, status='completed', summary={'config_sections': ['php']},
+           progress_message='PHP settings restored', completed_at=utcnow())
