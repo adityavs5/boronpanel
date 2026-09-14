@@ -306,7 +306,8 @@ def sources(account, options):
     if 'config' in options['components']:
         from daemon import cron, dnsprovider
         from shared.models import DnsZone
-        manifest['cron_jobs']=cron.list_jobs(account.username)
+        manifest['cron_configuration']=cron.capture_configuration(account.username)
+        manifest['cron_jobs']=cron.parse_jobs(manifest['cron_configuration']['lines'])
         with write_session() as session:
             zones=session.scalars(select(DnsZone).where(DnsZone.account_id==account.id)).all()
         manifest['dns_zones']=[{'zone':z.zone,'records':dnsprovider.list_records(z.zone)} for z in zones]

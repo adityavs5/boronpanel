@@ -713,3 +713,26 @@ Revision `700be88` deployed successfully. Private rollback copy:
 and configuration checks passed. The live backend event catalog and both public
 HTTPS bundles (shared event list and webhook form) matched the tested source/build.
 Existing webhook subscriptions were retained; no live webhook was created or sent.
+
+## Complete cron configuration capture — 2026-09-14
+
+Configuration backups previously stored only parsed panel cron jobs, losing
+manual entries, environment lines and MAILTO semantics. New snapshots include an
+account-bound, versioned raw cron_configuration payload from a single crontab
+read; the displayed managed-job metadata is derived from those same lines.
+Managed @hourly-style schedules now parse correctly instead of disappearing.
+
+Added bounded configuration validation and a single-write restore primitive using
+crontab -u for the bound account. It preserves complete tables, rejects foreign
+account payloads and line-injection/oversized data before mutation, and lets the
+crontab utility validate syntax before installing. The future configuration
+restore coordinator must authorize the account and encrypt current settings
+before calling it; no public restore endpoint invokes this primitive yet.
+
+66 cron/backup-job checks passed, including an actual encrypted config snapshot
+with manual entries, empty MAILTO and an @hourly managed job. On disposable QA
+account pq0914020151, a real crontab round trip preserved the complete configuration,
+invalid cron syntax left the current schedule intact, and the original table was
+restored in cleanup. Private evidence: /root/boron-setup/cron-configuration-proof.py
+and cron-configuration-before.json. No customer crontab was changed.
+Configuration/DNS/PHP and mail-routing restore integration remain open.

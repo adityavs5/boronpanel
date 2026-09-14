@@ -22,7 +22,7 @@ import uuid
 
 from croniter import croniter
 
-from shared.validation import validate_cron_mailto
+from shared.validation import validate_cron_mailto, validate_username
 
 from daemon.procutil import run
 
@@ -178,8 +178,7 @@ def set_mailto(username: str, mailto: str) -> str:
     return mailto
 
 
-def list_jobs(username: str) -> list[dict]:
-    lines = _read_raw(username)
+def parse_jobs(lines: list[str]) -> list[dict]:
     jobs = []
     i = 0
     while i < len(lines):
@@ -187,15 +186,52 @@ def list_jobs(username: str) -> list[dict]:
         if m and i + 1 < len(lines):
             job_id, label = m.group(1), m.group(2) or ""
             job_line = lines[i + 1]
-            parts = job_line.split(None, 5)
-            if len(parts) == 6:
-                schedule = " ".join(parts[:5])
-                command = parts[5]
+            parts = job_line.split(None, 1 if job_line.lstrip().startswith("@") else 5)
+            if len(parts) == (2 if job_line.lstrip().startswith("@") else 6):
+                schedule = " ".join(parts[:-1])
+                command = parts[-1]
                 jobs.append({"id": job_id, "label": label, "schedule": schedule, "command": command, "description": describe_schedule(schedule)})
             i += 2
         else:
             i += 1
     return jobs
+
+
+def list_jobs(username: str) -> list[dict]:
+    return parse_jobs(_read_raw(username))
+
+
+def validate_configuration(username: str, payload: dict) -> dict:
+    """Validate an account-bound raw crontab without executing any commands."""
+    username = validate_username(username)
+    if (not isinstance(payload, dict) or type(payload.get('format')) is not int
+            or payload['format'] != 1 or payload.get('username') != username):
+        raise CronError('Cron recovery configuration belongs to a different account or format')
+    lines = payload.get('lines')
+    if (not isinstance(lines, list) or len(lines) > 10000
+            or any(not isinstance(line, str) or len(line) > 65536
+                   or any(char in line for char in ('\0', '\r', '\n')) for line in lines)
+            or sum(len(line.encode('utf-8')) + 1 for line in lines) > 1024 * 1024):
+        raise CronError('Invalid or oversized cron recovery configuration')
+    return dict(format=1, username=username, lines=list(lines))
+
+
+def capture_configuration(username: str) -> dict:
+    """One read captures manual jobs, environment, MAILTO and panel markers."""
+    username = validate_username(username)
+    return validate_configuration(username, dict(format=1, username=username, lines=_read_raw(username)))
+
+
+def restore_configuration(username: str, payload: dict) -> None:
+    """Install the saved table once, always for its bound account.
+
+    The backup coordinator must authorize the account, exclude concurrent panel
+    mutations and persist the current configuration in an encrypted safety copy
+    before calling this operation. The crontab utility validates syntax before
+    installing the complete table; no saved command is executed by this worker.
+    """
+    saved = validate_configuration(username, payload)
+    _write_raw(saved['username'], saved['lines'])
 
 
 def add_job(username: str, schedule: str, command: str, label: str = "") -> dict:

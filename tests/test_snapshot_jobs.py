@@ -185,3 +185,33 @@ def test_snapshot_api_authorization_and_customer_scope(environment,monkeypatch):
         response=client.post('/api/v1/backups/snapshots/destinations/1/recovery-key')
         assert response.status_code==200
         assert response.headers['cache-control']=='no-store'
+
+
+def test_configuration_snapshot_preserves_complete_crontab(environment, monkeypatch):
+    import json
+    from daemon import cron
+    root, _ = environment
+    raw = ['SHELL=/bin/bash', 'MAILTO=""', '# manually managed task',
+           '0 2 * * * /bin/true', '# boron:id=aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa label=hourly',
+           '@hourly /usr/bin/php /home/alpha/hourly.php']
+    reads = []
+    def read(username):
+        reads.append(username)
+        return list(raw)
+    monkeypatch.setattr(cron, '_read_raw', read)
+    dest = make_destination(root)
+    policy = jobs.save_policy(dict(name='Account configuration', destination_id=dest['id'],
+                                    accounts=['alpha'], components=['config'], frequency='manual'))
+    ident = jobs.queue_policy({'id': policy['id']})['run_ids'][0]
+    jobs.execute_run(ident)
+    row = jobs._row(SnapshotRun, ident)
+    assert row.status == 'completed', row.error
+    assert reads == ['alpha']
+    repository = jobs.repository(jobs._row(SnapshotDestination, dest['id']))
+    restored = storage.restore_to(repository, row.account_id, row.snapshot_id, str(root/'configuration-proof'))
+    manifests = list(restored.rglob('manifest.json'))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    assert manifest['cron_configuration'] == {'format': 1, 'username': 'alpha', 'lines': raw}
+    assert manifest['cron_jobs'][0]['schedule'] == '@hourly'
+    assert manifest['cron_jobs'][0]['command'] == '/usr/bin/php /home/alpha/hourly.php'

@@ -284,3 +284,40 @@ class TestDescribeSchedule:
         assert cron.describe_schedule("@weekly") == "Once a week, at midnight on Sunday"
         assert cron.describe_schedule("@monthly") == "Once a month, at midnight on the 1st"
         assert cron.describe_schedule("@yearly") == "Once a year, at midnight on January 1st"
+
+
+def test_configuration_round_trip_preserves_manual_entries_and_environment(fake_crontab):
+    original = 'SHELL=/bin/bash\nPATH=/usr/bin:/bin\nMAILTO=""\n# manual task\n@daily /bin/true\n'
+    fake_crontab['demo1'] = original
+    job = cron.add_job('demo1', '@hourly', '/usr/bin/php /home/demo1/cron.php', 'hourly')
+    assert cron.list_jobs('demo1')[0]['schedule'] == '@hourly'
+    saved = cron.capture_configuration('demo1')
+    before = fake_crontab['demo1']
+    fake_crontab['demo1'] = '0 0 * * * /bin/false\n'
+    fake_crontab['demo2'] = 'MAILTO=other@example.test\n'
+    cron.restore_configuration('demo1', saved)
+    assert fake_crontab['demo1'] == before
+    assert cron.list_jobs('demo1')[0]['id'] == job['id']
+    assert fake_crontab['demo2'] == 'MAILTO=other@example.test\n'
+
+
+@pytest.mark.parametrize('change', [
+    {'username': 'demo2'}, {'format': True}, {'format': 2}, {'lines': ['x\nsecond line']},
+    {'lines': ['x\rsecond line']}, {'lines': ['x\0']}, {'lines': 'not a list'},
+    {'lines': [None]}, {'lines': ['x'*65537]}, {'lines': ['']*10001},
+])
+def test_invalid_cron_recovery_never_changes_current_table(fake_crontab, change):
+    fake_crontab['demo1'] = '0 0 * * * /bin/true\n'
+    saved = dict(format=1, username='demo1', lines=[])
+    saved.update(change)
+    with pytest.raises(cron.CronError):
+        cron.restore_configuration('demo1', saved)
+    assert fake_crontab['demo1'] == '0 0 * * * /bin/true\n'
+
+
+def test_empty_cron_recovery_clears_only_the_bound_table(fake_crontab):
+    fake_crontab['demo1'] = '0 0 * * * /bin/true\n'
+    fake_crontab['demo2'] = '0 0 * * * /bin/false\n'
+    cron.restore_configuration('demo1', dict(format=1, username='demo1', lines=[]))
+    assert fake_crontab['demo1'] == ''
+    assert fake_crontab['demo2'] == '0 0 * * * /bin/false\n'
