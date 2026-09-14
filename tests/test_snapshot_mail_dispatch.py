@@ -43,6 +43,41 @@ def test_mail_failure_preserves_recovery_and_never_leaks_exception(isolated_db, 
     monkeypatch.setattr(jobs._executor, 'submit', lambda function, *args: function(*args))
     restores.recover_restores()
     with write_session() as session:
-        assert session.get(SnapshotRestore, ident).status == ('running' if prepared else 'failed')
+        assert session.get(SnapshotRestore, ident).status == 'failed'
     if prepared:
         assert (work / 'retained').is_file()
+
+
+@pytest.mark.parametrize('provisioning', [None, 'planned', 'completed'])
+def test_pre_switch_abort_releases_only_proven_preparation(isolated_db, tmp_path, monkeypatch, provisioning):
+    import json
+    from daemon import snapshot_mail_guard as guard
+    from shared.models import MailDomain
+    from shared.config import settings
+    from shared.validation import ValidationError
+    monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(tmp_path / 'guards'))
+    work = jobs.private_directory('mail-preparation', 'abort-test')
+    with write_session() as session:
+        account = Account(username='alpha', status='active', uid=65534, gid=65534)
+        session.add(account); session.flush()
+        session.add(MailDomain(account_id=account.id, domain='example.test'))
+    token = guard.block('example.test', 'inbox', 7)
+    index = work / 'guard-index.json'
+    index.write_text(json.dumps(dict(format=1, account_id=account.id, restore_id=7,
+                                    entries=[dict(domain='example.test', local_part='inbox', token=token)])))
+    index.chmod(0o600)
+    retained = work / 'retained-mail'
+    retained.write_text('retain prepared copy')
+    if provisioning:
+        record = work / 'provisioning.json'
+        record.write_text(json.dumps(dict(format=1, account_id=account.id, restore_id=7, status=provisioning)))
+        record.chmod(0o600)
+    if provisioning == 'planned':
+        with pytest.raises(ValidationError, match='requires reconciliation'):
+            mail_restore.abort_pre_switch(account, work, 7)
+        assert len(list((tmp_path / 'guards').iterdir())) == 1
+    else:
+        assert mail_restore.abort_pre_switch(account, work, 7)['guards_released'] == 1
+        assert mail_restore.abort_pre_switch(account, work, 7)['guards_released'] == 0
+        assert not list((tmp_path / 'guards').iterdir())
+    assert retained.read_text() == 'retain prepared copy'

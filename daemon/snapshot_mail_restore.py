@@ -457,3 +457,65 @@ def run_restore(account, repo, snapshot_id, addresses, restore_id, checkpoint):
     result = finalize(account, repo, path, restore_id)
     checkpoint('completed', {'work': work, 'journal': str(path), **result})
     return result
+
+
+def abort_pre_switch(account, work, restore_id):
+    """Release preparation guards only when durable records rule out a switch.
+
+    Caller proves worker termination and holds the account lock. Partial SQL
+    provisioning is deliberately refused. Staged copies are retained untouched.
+    """
+    from daemon import snapshot_mail_guard as guard, snapshot_mail_journal as journal
+    from daemon.snapshot_mail_files import _placement_receipt
+    import re
+    work = journal._path(Path(work) / 'checkpoint').parent
+    if type(restore_id) is not int or restore_id <= 0:
+        raise ValidationError('Invalid mailbox recovery job')
+    switch = work / 'switch.json'
+    if switch.exists() or switch.is_symlink():
+        raise ValidationError('A persisted switch requires journal recovery')
+    guards = work / 'guard-index.json'
+    if not guards.exists() and not guards.is_symlink():
+        # Every live preparation operation follows guard-index publication.
+        if any((work / name).exists() or (work / name).is_symlink()
+               for name in ('provisioning.json', 'placement-index.json')):
+            raise ValidationError('Mailbox preparation records are inconsistent')
+        return {'aborted': True, 'guards_released': 0}
+    payload = _private_document(guards)
+    try:
+        if (type(payload['format']) is not int or payload['format'] != 1
+                or type(payload['account_id']) is not int or payload['account_id'] != account.id
+                or type(payload['restore_id']) is not int or payload['restore_id'] != restore_id):
+            raise ValueError()
+        entries = payload['entries']
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 1000:
+            raise ValueError()
+        seen = set()
+        for entry in entries:
+            address = (validate_domain(entry['domain']), validate_mailbox_local_part(entry['local_part']))
+            if address in seen or not re.fullmatch(r'[a-f0-9]{64}', entry['token']):
+                raise ValueError()
+            seen.add(address)
+    except (KeyError, TypeError, ValueError):
+        raise ValidationError('Invalid mailbox guard recovery inventory') from None
+    with write_session() as session:
+        current = session.get(Account, account.id)
+        owners = {row.domain: row.account_id for row in session.scalars(
+            select(MailDomain).where(MailDomain.domain.in_({domain for domain, _ in seen})))}
+        if current is None or current.username != account.username or any(owners.get(domain) != account.id for domain, _ in seen):
+            raise ValidationError('Mailbox preparation ownership changed')
+    provision = work / 'provisioning.json'
+    if provision.exists() or provision.is_symlink():
+        record = _private_document(provision)
+        if (record.get('account_id') != account.id or record.get('restore_id') != restore_id
+                or record.get('status') != 'completed'):
+            raise ValidationError('Interrupted mailbox provisioning requires reconciliation')
+    intent = work / 'abort-intent.json'
+    expected = dict(format=1, account_id=account.id, restore_id=restore_id, reason='before-switch')
+    if intent.exists() or intent.is_symlink():
+        if _private_document(intent) != expected:
+            raise ValidationError('Mailbox abort intent changed')
+    else:
+        _placement_receipt(intent, expected, create=True)
+    result = guard.release_batch(entries, restore_id)
+    return {'aborted': True, 'guards_released': result['released']}

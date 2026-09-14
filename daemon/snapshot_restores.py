@@ -488,7 +488,12 @@ def recover_mail_restore(ident):
                 return
             path = journal._path(Path(checkpoint.work) / 'switch.json')
             if not path.exists():
-                raise ValidationError('Mailbox preparation requires recovery inspection')
+                account = jobs._row(Account, row.account_id)
+                mail_restore.abort_pre_switch(account, checkpoint.work, ident)
+                _update(ident, status='failed', progress_message='Mailbox restore interrupted before switching',
+                        error='No mailbox switch was applied. Preparation guards were released; staged copies are retained.',
+                        completed_at=utcnow())
+                return
             payload = journal.read(path)
             if payload['restore_id'] != ident:
                 raise ValidationError('Mailbox recovery journal does not match its job')

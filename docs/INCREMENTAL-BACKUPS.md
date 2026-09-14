@@ -1134,3 +1134,17 @@ also passed with batched preparation, persistent dispatcher checkpoints and
 interrupted-finalization recovery. This verifies storage scale; it is not yet a
 1,000-mailbox live Dovecot switch test. Customer submission and remaining recovery
 cases are still unfinished.
+
+Startup can now terminate proven pre-switch interruptions. `abort_pre_switch`
+requires the absence of a switch journal, validates private guard inventory and
+current domain ownership, and refuses a provisioning record still marked planned.
+With no guard inventory, inconsistent later preparation records are refused.
+Otherwise a durable abort intent precedes owned batch guard release, allowing
+re-entry after partial release. Staged copies and private evidence are retained.
+
+The job becomes failed/interrupted before switching rather than remaining active
+forever, restoring availability for subsequent operations. This does not apply to
+partial SQL provisioning or any persisted switch; those still need their own
+reconciliation. Fifteen dispatcher/guard tests passed, covering absent/completed
+provisioning, retained planned provisioning, idempotent owned release, preserved
+staging and startup handling before/after preparation.
