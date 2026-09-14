@@ -2,6 +2,9 @@ import { test, expect } from '@playwright/test'
 
 for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
   test(`${skin} ${theme}: direct app, FTP and Git management`, async ({ page }, info) => {
+    // This scenario visits eight desktop/mobile pages and exercises service
+    // actions; its total budget must cover all of those independent checks.
+    test.setTimeout(120_000)
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
     await page.addInitScript(({ skin, theme }) => {
