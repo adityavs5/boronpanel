@@ -12,7 +12,7 @@ The complete user objective remains active. A checked item requires implementati
 - [x] Panel SSL: issue and serve a valid certificate for the requested panel hostname, with renewal.
 - [x] Panel ports: default shared admin/customer port 2222; admin configuration supports changing both ports, preserving access and enforcing intended role behavior.
 - [ ] Direct interactions: database and SSL names/actions first, then audit other comparable lists; accessible desktop/mobile management views.
-- [ ] Terminal: configurable BORON ASCII welcome from admin configuration, suppress default Ubuntu status/MOTD in admin terminal; preserve usable prompts and appropriate customer behavior.
+- [x] Terminal: configurable BORON ASCII welcome from admin configuration, suppress default Ubuntu status/MOTD in admin terminal; preserve usable prompts and appropriate customer behavior.
 - [x] PHP: account default version inherited by new sites; per-site override dropdown; Lite/Moderate/Max limit presets and editable Custom selected by default.
 - [x] Typography: improve font and dashboard icon-label sizing with local assets and no performance regression.
 - [x] Security/time: admin/customer 2FA setup, recovery, reliable clock synchronization, drift/unsynchronized state detection and actionable diagnostics. Do not claim absolute immunity to host/network failure.
@@ -558,3 +558,22 @@ admin login and configuration RPC passed on unchanged port 2222. Live HTTPS
 verified the 48,256-byte local Inter file, immutable headers, ETag 304 and no-cache
 entrypoints. This improves repeat-visit caching without adding font requests,
 external services or font bytes, and completes the typography checklist item.
+
+## Terminal customization and customer isolation — 2026-09-14
+
+The deployed admin branding API temporarily saved a multiline QA banner containing
+literal shell-like text. A new authenticated admin WebSocket emitted the exact
+configured text, retained a quiet interactive prompt without Ubuntu status/MOTD,
+and executed a command as the selected QA hosting UID. The original banner was
+restored and checked through the API in the test's cleanup path. Four theme/mode
+browser cases passed for the editor, preview, save, reset-to-BORON and mobile
+layout. Live script: `/root/boron-setup/live-terminal-branding-proof.py`.
+
+The existing wpdevqa customer then authenticated with its own panel credentials.
+Its own terminal accepted commands as its hosting UID, did not receive the
+admin-only banner, and a WebSocket request for the separate PHP QA account was
+rejected with HTTP 403 before terminal access. Closing each successful connection
+removed its temporary SSH key. Live script:
+`/root/boron-setup/customer-terminal-websocket-proof.py`. No existing passwords
+were changed, credential/key values were not printed, and no customer account
+configuration was altered. The terminal checklist item is now verified.
