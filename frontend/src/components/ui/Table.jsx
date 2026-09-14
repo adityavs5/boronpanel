@@ -132,6 +132,10 @@ export function DataTable({
 
   function activateRow(event, row) {
     if (!onRowClick) return
+    // Let nested controls handle their own clicks and keyboard activation.
+    // In particular, Space/Enter on an action must not open the row as well.
+    if (event.target !== event.currentTarget &&
+        (event.type === 'keydown' || event.target.closest('button, a, input, select, textarea, [role="button"], [role="menuitem"]'))) return
     if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return
     if (event.type === 'keydown') event.preventDefault()
     onRowClick(row)
