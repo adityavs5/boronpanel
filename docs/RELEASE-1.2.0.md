@@ -1,5 +1,7 @@
 # BoronPanel 1.2.0
 
+> Update notice: the built-in updater can stop safely before switching versions when Dovecot reports its normal transient reload state during mailbox-guard activation. The live installation remains on its previous version. This is corrected in the 1.2.1 patch release; administrators using the panel updater should select 1.2.1 instead.
+
 WordPress management now supports discovering sites uploaded or migrated outside the installer, refreshing registered installations, removing a panel record while retaining the site, and permanently removing the selected installation's files and database after confirmation. Installation and clone workflows support HTTP/HTTPS and www/non-www addresses.
 
 The backup manager adds reusable scheduled jobs, encrypted incremental recovery points, account and path filters, local and SSH destinations with pinned host keys, retention, and selected email/webhook notifications. Customers can browse recovery points and restore files, databases, mailbox messages, PHP settings, scheduled tasks, DNS and email-routing settings. Restore operations retain encrypted previous-state recovery copies; failed or active recovery operations protect their required copies from retention cleanup. Whole-account portable migration is a separate planned feature.
