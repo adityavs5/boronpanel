@@ -16,7 +16,7 @@ The complete user objective remains active. A checked item requires implementati
 - [x] PHP: account default version inherited by new sites; per-site override dropdown; Lite/Moderate/Max limit presets and editable Custom selected by default.
 - [x] Typography: improve font and dashboard icon-label sizing with local assets and no performance regression.
 - [x] Security/time: admin/customer 2FA setup, recovery, reliable clock synchronization, drift/unsynchronized state detection and actionable diagnostics. Do not claim absolute immunity to host/network failure.
-- [ ] Final build, targeted and broad regression checks, real workflows, deployment, and requirement-by-requirement completion audit.
+- [x] Final build, targeted and broad regression checks, real workflows, deployment, and requirement-by-requirement completion audit. Release 1.2.1 passed 2,659 tests, public-asset verification and the actual protected 1.1.3-to-1.2.1 self-update; the preservation audit passed.
 
 ## Initial evidence
 
