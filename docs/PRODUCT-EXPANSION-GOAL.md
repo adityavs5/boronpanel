@@ -1611,3 +1611,32 @@ IDs before mutation, pending-job edit exclusion, selection/account rejection,
 pre-guard failure closure, startup recovery dispatch, retained private journals,
 exact custom-script undo, both registered rollback safety copies, and final mail
 edit availability. No production account, service or repository was changed.
+
+### Email settings recovery interface — 2026-09-14
+
+Added lazy-loaded domain selection for saved forwarders, catch-all settings and
+automatic replies. The picker shows counts and per-domain unavailability, supports
+case-insensitive filtering and selecting visible available domains, and requires
+account-name confirmation plus an explicit server mail-pause acknowledgement.
+It sends mail_routing with mail_domains to the queued restore API. Recovery-point
+component labels now describe email messages and settings.
+
+Restore history labels routing operations as Email settings and supplies the
+matching undo description and pause acknowledgement. Only finalized successful
+routing restores offer undo. Failed automatic rollbacks explain that previous
+settings were recovered; unresolved routing failures retain recovery data and
+request administrator inspection instead of suggesting an unsafe repeat action.
+
+Validation: production frontend build passed (46.81s), git diff --check passed.
+Four existing file restore/undo browser cases passed. Four new routing browser
+cases passed after correcting selectors to target visible mobile elements (the
+responsive table renders both desktop and mobile markup). New cases cover both
+skins in light/dark modes, lazy catalog loading, unavailable domains, case-insensitive
+selection, mandatory acknowledgement, exact restore/undo request payloads,
+failed-versus-recovered history and mobile overflow. Browser APIs are fixtures;
+these checks do not replace backend/live supervision verification. Inspected the
+Evolution mobile recovery dialog screenshot. No production deployment performed.
+
+Remaining: interrupted rollback continuation, live supervised mail-routing proof,
+Cloudflare-native DNS recovery, full initial requirement/release audit, followed
+by the separately queued product expansion. Goal remains active.
