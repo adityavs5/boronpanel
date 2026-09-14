@@ -1162,3 +1162,24 @@ The additional real-SQL ownership-transfer test passed (23.39s), confirming that
 capture rejects a domain transferred between its ownership lookup and provider
 read. This code is not deployed. Routing SQL/Sieve application, encrypted undo and
 queue/UI integration remain incomplete, alongside Cloudflare-native DNS recovery.
+
+### Transactional mail-routing SQL replacement — 2026-09-14
+
+Added an internal SQL replacement primitive for selected owned mail domains. It
+resolves and locks every selected domain and responder mailbox before writes,
+rechecks account/domain bindings, and replaces forwarders, catch-all and automatic
+reply records in one transaction. Errors roll back all changes. Mailbox password,
+quota and activation records are untouched. This primitive is not exposed as a
+restore action: the coordinator must first provide mutation locking, encrypted
+previous state, and coordinated Sieve script recovery.
+
+Validation: 13 routing/reader tests passed (22.01s), and all six isolated real
+MariaDB tests passed (22.56s). New cases verify replacement and round-trip recovery,
+unchanged mailbox credentials and unrelated accounts, and rollback after forwarder
+deletion when the next table operation fails. The database fixture used a private
+temporary socket with networking disabled. No production mail settings changed;
+this code is not deployed. Sieve recovery, encrypted undo, queue/UI integration,
+and live validation remain outstanding, as does Cloudflare-native DNS recovery.
+
+The requested phpMyAdmin retry also succeeded: DNS resolved to 104.234.179.66 and
+verified HTTPS returned a 302 redirect to /boron_signon.php at 05:19 UTC.

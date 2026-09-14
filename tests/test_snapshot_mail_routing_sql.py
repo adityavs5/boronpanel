@@ -82,3 +82,52 @@ def test_routing_capture_rejects_ownership_transfer_during_provider_read(routing
     monkeypatch.setattr(mail,'_connect',transfer_then_connect)
     with pytest.raises(ValidationError,match='ownership changed'):
         routing.capture(account)
+
+
+def test_routing_sql_replacement_round_trip_preserves_mailbox_credentials(routing_account,mail_database):
+    from copy import deepcopy
+    account,foreign=routing_account
+    connection,_,_,_=mail_database
+    original=routing.capture(account)
+    unrelated=routing.capture(foreign)
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT id,password,quota_mb,active FROM mail_user ORDER BY id')
+        mailbox_before=cursor.fetchall()
+    desired=deepcopy(original)
+    domain=desired['domains'][0]
+    domain['forwards']=[dict(source_local_part='help',destination='inbox@alpha.example.test',active=True)]
+    domain['catchall']=None
+    domain['autoresponders'][0].update(subject='Changed reply',body='Restored body',active=True,start_date=None,end_date=None)
+    assert routing._replace_sql(account,desired)==['alpha.example.test']
+    assert routing.capture(account)==desired and routing.capture(foreign)==unrelated
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT id,password,quota_mb,active FROM mail_user ORDER BY id')
+        assert cursor.fetchall()==mailbox_before
+    routing._replace_sql(account,original)
+    assert routing.capture(account)==original
+
+
+def test_routing_sql_failure_rolls_back_prior_table_changes(routing_account,monkeypatch):
+    from copy import deepcopy
+    account,_=routing_account
+    original=routing.capture(account)
+    desired=deepcopy(original)
+    desired['domains'][0]['forwards']=[]
+    connect=mail._connect
+    class Cursor:
+        def __init__(self,cursor):self.cursor=cursor
+        def __enter__(self):self.cursor.__enter__();return self
+        def __exit__(self,*args):return self.cursor.__exit__(*args)
+        def __getattr__(self,name):return getattr(self.cursor,name)
+        def execute(self,query,*args):
+            if query.startswith('DELETE FROM mail_catchall'):
+                raise RuntimeError('simulated failure after forwarder deletion')
+            return self.cursor.execute(query,*args)
+    class Connection:
+        def __init__(self):self.connection=connect()
+        def __getattr__(self,name):return getattr(self.connection,name)
+        def cursor(self):return Cursor(self.connection.cursor())
+    monkeypatch.setattr(mail,'_connect',Connection)
+    with pytest.raises(RuntimeError,match='simulated failure'):
+        routing._replace_sql(account,desired)
+    assert routing.capture(account)==original

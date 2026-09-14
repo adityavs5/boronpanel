@@ -197,3 +197,55 @@ def capture(account, selected_domains=None):
     if after != bindings:
         raise ValidationError('Mail-domain ownership changed during routing capture')
     return dict(format=1, username=account.username, domains=domains)
+
+
+def _replace_sql(account, payload):
+    """Replace selected routing rows atomically; internal coordinator primitive.
+
+    Caller must hold account/mail mutation locks, save encrypted previous state,
+    and coordinate Sieve installation before exposing this as a restore action.
+    This function does not change mailbox records or install Sieve scripts.
+    """
+    selected = validate_for_restore(account, payload)
+    if not selected['domains']:
+        raise ValidationError('Select at least one mail domain for routing recovery')
+    bindings = _domain_bindings(account)
+    connection = mail._connect()
+    try:
+        connection.begin()
+        with connection.cursor() as cursor:
+            resolved = []
+            for entry in selected['domains']:
+                cursor.execute('SELECT id FROM mail_domain WHERE domain=%s FOR UPDATE', (entry['domain'],))
+                row = cursor.fetchone()
+                if row is None:
+                    raise ValidationError('A selected mail domain is no longer provisioned')
+                domain_id = row['id']
+                cursor.execute('SELECT id,local_part FROM mail_user WHERE domain_id=%s FOR UPDATE', (domain_id,))
+                users = {user['local_part']: user['id'] for user in cursor.fetchall()}
+                if any(responder['local_part'] not in users for responder in entry['autoresponders']):
+                    raise ValidationError('A required automatic-reply mailbox no longer exists')
+                resolved.append((entry, domain_id, users))
+            if _domain_bindings(account) != bindings:
+                raise ValidationError('Mail-domain ownership changed before routing replacement')
+            for entry, domain_id, users in resolved:
+                cursor.execute('DELETE FROM mail_forward WHERE domain_id=%s', (domain_id,))
+                for forward in entry['forwards']:
+                    cursor.execute('INSERT INTO mail_forward (domain_id,source_local_part,destination,active) VALUES (%s,%s,%s,%s)',
+                                   (domain_id, forward['source_local_part'], forward['destination'], int(forward['active'])))
+                cursor.execute('DELETE FROM mail_catchall WHERE domain_id=%s', (domain_id,))
+                if entry['catchall'] is not None:
+                    cursor.execute('INSERT INTO mail_catchall (domain_id,destination,active) VALUES (%s,%s,%s)',
+                                   (domain_id, entry['catchall']['destination'], int(entry['catchall']['active'])))
+                cursor.execute('DELETE a FROM mail_autoresponder a JOIN mail_user u ON a.mail_user_id=u.id WHERE u.domain_id=%s', (domain_id,))
+                for responder in entry['autoresponders']:
+                    cursor.execute('INSERT INTO mail_autoresponder (mail_user_id,subject,body,start_date,end_date,active) VALUES (%s,%s,%s,%s,%s,%s)',
+                                   (users[responder['local_part']], responder['subject'], responder['body'],
+                                    responder['start_date'], responder['end_date'], int(responder['active'])))
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    return [entry['domain'] for entry in selected['domains']]
