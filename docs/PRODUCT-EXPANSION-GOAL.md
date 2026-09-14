@@ -1116,3 +1116,28 @@ the test TXT record, completed backup/restore/undo/cleanup jobs, active API/daem
 OLS and PowerDNS services, and deployed Python/frontend artifacts matching the
 worktree/build. Cloudflare-native recovery and mail-routing recovery remain open;
 this successful local-provider proof does not establish either capability.
+
+### Mail-routing recovery validation — 2026-09-14
+
+Added a separate mail-routing validator for the existing encrypted mail metadata.
+It verifies account identity/current mail-domain ownership, supports domain subsets,
+normalizes SQL 0/1 rule status, validates forwarder/catch-all destinations, and
+requires automatic-reply mailboxes to exist. Automatic reply subject/body bounds,
+header control characters, complete dates and date ordering are checked. Duplicate
+rules and incomplete metadata are rejected. The result excludes mailbox passwords,
+quotas and domain activation state so routing recovery cannot overwrite them.
+
+Added a private file reader with regular-file, owner, permission, size and symlink
+checks. The future coordinator must verify snapshot ownership before decrypting
+and passing its fixed metadata path to this reader. No mail delivery, routing SQL
+or Sieve script is modified by this validation step.
+
+Mail-routing capture/application coordination, SQL/Sieve recovery, encrypted undo,
+queue/UI and live validation remain outstanding. Cloudflare-native DNS recovery
+also remains open; work on mail routing does not remove that requirement.
+
+Validation: 12 routing tests passed (21.40s), covering credential exclusion,
+invalid addresses/status/content/dates, missing responder mailbox, domain/identity
+isolation, subset selection and incomplete metadata. The private reader test also
+passed (2.89s), covering credential exclusion and unsafe permissions/symlinks/JSON.
+Mail lookups were mocked. This code is not deployed and no live mail settings changed.
