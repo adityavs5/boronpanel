@@ -3,7 +3,7 @@
 The complete user objective remains active. A checked item requires implementation and verification, including live-server evidence where relevant. No item is complete solely because its code exists.
 
 - [x] WordPress: explicit scan/import and refresh; soft deletion of records with suppression until manual rediscovery; hard deletion of selected installation files and owned database with confirmation and tenant isolation.
-- [ ] Backups: usable admin and customer backup system, reusable jobs, incremental snapshots, inclusion/exclusion filters, notification channels, SSH destinations, retention and restores. Verify restore contents and unchanged-file deduplication, not merely successful commands.
+- [x] Backups: usable admin and customer backup system, reusable jobs, incremental snapshots, inclusion/exclusion filters, notification channels, SSH destinations, retention and restores. Verify restore contents and unchanged-file deduplication, not merely successful commands.
 - [x] Domains/subdomains: independent site roots/public_html, DNS records, consistent creation workflow and ownership.
 - [x] Mail: fix missing mail-domain provisioning and verify mailbox creation.
 - [x] WordPress URLs: functional http/https and www/non-www installation selection, login and clone compatibility.

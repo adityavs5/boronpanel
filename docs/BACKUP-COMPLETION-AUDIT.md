@@ -1,22 +1,23 @@
 # Backup completion audit — 2026-09-14
 
-The backup requirement remains open. This is the current capability audit;
-chronological notes in PRODUCT-EXPANSION-GOAL.md include superseded limitations.
+The requested backup system is implemented and verified. The release and live self-update checks remain separate final gates. Chronological entries in PRODUCT-EXPANSION-GOAL.md contain superseded implementation gaps.
 
-| Requirement | Current implementation and evidence | Remaining work |
-| --- | --- | --- |
-| Reusable jobs, schedules and account selection | snapshot_jobs persists destinations, policies and frozen per-account runs; scheduler queues due policies. Job tests cover schedule deduplication and frozen options. | Final admin/customer workflow audit. |
-| Incremental and full scans | Real restic tests compare unchanged-file reuse and restored bytes. Full mode rereads files while retaining chunk deduplication. | No storage implementation gap identified. |
-| Include/exclude filters | Account exclusions, included home-relative paths and filename patterns are applied by the job worker; source escapes fail. | End-to-end SSH job test now covers actual filtered archive contents. |
-| SSH destinations | Dedicated generated client key, pinned server host key, SFTP storage, isolated connection options. Real SSH tests cover restoration and host-key rejection. | Final shared-fixture regression result is recorded in the product checkpoint. |
-| Notification channels | Selected email and signed webhook channels use account preferences/settings. | End-to-end loopback transport test covers success/failure and duplicate suppression; no external messages are sent. |
-| File restoration | Account-scoped selected file/directory restores, unprivileged application worker and encrypted pre-restore safety copy. | Included in SSH job workflow proof. |
-| Database restoration | Actual SQL export/import, encrypted credential metadata, existing/deleted database handling, previous-version recovery and ownership isolation. | Final broad regression. |
-| Mailbox restoration | Existing/deleted mailbox handling, guarded atomic switch, encrypted previous-message recovery, restart recovery, undo, and completed-work cleanup. | Final broad regression. |
-| Retention | Policy snapshots and pre-restore copies, active/failed recovery protection, shared repository ownership. Pending displaced cleanup protects its encrypted copy. | Final UI/history audit. |
-| Account configuration recovery | The config component captures complete PHP versions/limits/extensions, separate administrator function policy, the complete crontab and owned DNS zones in manifest.json. | **Partially complete:** scheduled-task restore/undo is wired into the worker and snapshot dialog and verified live. PHP restore/undo is deployed in the worker and both-theme UI; interruption/locking tests passed and live QA restored PHP version and memory limit with encrypted undo and original-state cleanup. Local PowerDNS restore/undo is deployed and verified through authoritative live QA responses, with original-zone cleanup. Cloudflare-native restore/undo is deployed in runtime c983bc2, including native structured records and legacy textual snapshots. Validator/planner/executor/transport checks (115) and the expanded encrypted queue test passed with a simulated provider. No Cloudflare account is connected, so live provider mutation remains unverified. |
-| Mail routing recovery | Development code captures owned forwarding/catch-all/autoresponder rules and exact Sieve scripts, stores encrypted safety copies, queues guarded restore/undo, blocks competing mail edits, and handles automatic rollback. Domain selection and restore history are implemented in both themes; eight browser checks passed. Interrupted rollback continuation passed isolated SQL/Sieve and queue restart regressions. | Deployed after real systemd tests with isolated data. Authenticated live catalog and QA-account restore/undo passed (run 8, restore 12, undo 13), with exact rules/script recovery, credential/quota preservation and fixture cleanup. Final recovery integration audit remains before release. Mailbox-message recovery and routing recovery are separate user actions. |
+| Requirement | Implementation and verification |
+| --- | --- |
+| Jobs and scheduling | Persistent destinations, policies, account selection/exclusions and frozen run options; scheduler deduplication tests and both-theme admin/customer workflows passed. |
+| Incremental and full scans | Real restic repositories verify unchanged-file reuse, restored bytes and full rereads with chunk deduplication. |
+| Filters | Account exclusions, home-relative include paths and filename patterns; real SSH workflow verifies filtered archive contents and source-escape rejection. |
+| SSH storage | Dedicated client credentials, pinned host key, SFTP and isolated SSH options; real isolated SSH backup/restore and wrong-key rejection passed. |
+| Notifications | Selected email and signed webhook channels; loopback transport tests cover success, failure and duplicate suppression. No external test messages were sent. |
+| File restore | Selected paths and all captured account files, tenant isolation, unprivileged application worker and encrypted previous-state copy; restored contents and retained unrelated files verified. |
+| Database restore | Actual MariaDB export/import, existing/deleted databases, encrypted credential recovery, previous-state recovery and ownership isolation; integration suite passed. |
+| Mailbox restore | Existing/deleted mailboxes, atomic message replacement, encrypted previous-message recovery, restart recovery, undo and cleanup; real IMAP QA and integration tests passed. |
+| Retention | Per-policy recovery points and previous-state copies; active/failed recovery and pending displaced cleanup protect required data. Retention, UI/history and shared-repository isolation tests passed. |
+| Account settings | PHP versions/limits/extensions, cron and owned DNS restore/undo are wired into the worker and both themes. Live QA verified PHP, cron and authoritative local DNS, then restored the original state. Administrator-only PHP function policy remains separately protected. |
+| Email routing | Forwarders, catch-all, autoresponders and exact Sieve scripts; guarded restore/undo, blocked competing edits, automatic rollback and interrupted rollback continuation. Live QA run 8 / restore 12 / undo 13 verified exact recovery and preserved credentials/quota; fixture cleanup passed. |
 
-Cloudflare DNS and mail routing recovery are implemented and deployed. Final integration regressions and the live-provider verification limitation must be assessed before calling this a complete backup product. The separate queued portable whole-account
-backup/import expansion is still subsequent work; it is not substituted for these
-current recovery gaps.
+The complete backend run passed 2,655 tests with two ShellCheck checks skipped because their conditions were collected before installation. Both static checks subsequently passed separately. All 114 browser tests passed. Logs and live evidence are indexed in FINAL-REGRESSION-2026-09-14.md.
+
+Cloudflare-native DNS recovery is implemented and tested with native/legacy record formats and encrypted queue execution using a simulated provider. No Cloudflare account is connected on this server, so live provider mutation is unverified. This does not substitute for the real local/SSH storage and local-DNS recovery evidence, and no live Cloudflare write is claimed.
+
+Portable whole-account backup/migration and cPanel/DirectAdmin import remain in the explicitly subsequent expansion scope.

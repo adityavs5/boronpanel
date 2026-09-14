@@ -1,6 +1,6 @@
 # Initial-goal regression checkpoint
 
-The initial goal remains active; the queued expansion follows its completion.
+The initial goal remains active; the queued expansion follows its completion. Earlier entries below are chronological checkpoints, superseded by the final verification result.
 
 - Deployed mailbox and SSH-key management controls as `1e5a8dc`; authenticated deployment checks passed. See RECOVERY-DEPLOYMENT-2026-09-14.md.
 - Thirty browser checks passed against that build: backup job configuration, destinations and recovery information, notification preferences, customer history, file/database/mailbox/email-routing restore and undo, and DNS/database/SSL management. Coverage includes both themes and light/dark layouts. Log: `/tmp/boron-backup-final-ui-tests.log`.
@@ -27,3 +27,11 @@ An isolated schema-creation timing check measured 14.006 seconds with separate i
 The earlier full backend run was deliberately interrupted after this validated implementation change; its partial result is not a full-suite pass. A new complete run must verify the revised schema implementation before deployment or release. The live panel still uses the prior verified revision.
 
 The revised complete suite is running in `/tmp/boron-full-schema-final-tests.log`. Ubuntu's ShellCheck package was installed, and both previously skipped static checks now pass: release (`/tmp/boron-release-shellcheck-tests.log`, one test in 2.00 seconds) and installer (`/tmp/boron-installer-shellcheck-tests.log`, one test in 3.02 seconds). Their skip conditions were collected before package installation, so the ongoing full run still reports them as skipped. The complete suite remains the outstanding regression gate.
+
+## Final regression and deployment result
+
+The revised complete backend suite passed: **2,655 passed, two skipped, seven warnings in 2,914.53 seconds** (`/tmp/boron-full-schema-final-tests.log`). Both skips were ShellCheck checks collected before installation; the installer and release checks passed separately afterward as recorded above. All **114 browser checks** passed against the production build. No test failure remains from these final runs.
+
+The tested schema change was deployed successfully on September 14. Additive migration, trusted HTTPS, authenticated admin login and configuration RPC on port 2222 passed. The deployment preserved configuration and created rollback copy `/root/boron-setup/mail-recovery-before-20260914-092314`; log: `/root/boron-setup/schema-final-deploy.log`.
+
+Both authoritative Cloudflare nameservers returned the expected phpMyAdmin A record on the final recheck, and trusted HTTPS returned the expected sign-in redirect. The requested backup functionality is verified; see BACKUP-COMPLETION-AUDIT.md. GitHub publication and an actual panel self-update remain the final release gates.
