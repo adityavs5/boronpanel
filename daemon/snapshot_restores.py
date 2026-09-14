@@ -456,6 +456,23 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
         shutil.rmtree(dumps,ignore_errors=True)
 
 
+def _cleanup_mail_preparation(ident):
+    # Cleanup failures must not turn a successfully restored mailbox into a
+    # failed restore or hide recovery evidence. Startup retries unfinished work.
+    try:
+        from daemon.snapshot_mail_cleanup import cleanup_preparation
+        cleanup_preparation(ident)
+    except Exception:
+        logger.warning('Mailbox restore %s retains preparation copies for cleanup retry', ident)
+
+
+def retry_mail_preparation_cleanup(ident):
+    row = jobs._row(SnapshotRestore, ident)
+    source = jobs._row(SnapshotRun, row.run_id)
+    with jobs.lock(f'account-{row.account_id}'), jobs.lock(f'repository-{source.destination_id}'):
+        _cleanup_mail_preparation(ident)
+
+
 def execute(ident):
     row=jobs._row(SnapshotRestore,ident)
     source=jobs._row(SnapshotRun,row.run_id)
@@ -478,6 +495,7 @@ def execute(ident):
                 run_restore(account, repo, snapshot_id, row.selection.get('mailboxes', []), ident,
                             lambda phase, data: _mail_checkpoint(ident, phase, data),
                             **({'source_restore_id': row.selection['source_restore_id']} if row.selection.get('source_snapshot_id') else {}))
+                _cleanup_mail_preparation(ident)
                 return
             work=jobs.private_directory('restores',f'restore-{ident}')
             if row.selection['kind']=='databases':
@@ -591,6 +609,7 @@ def recover_mail_restore(ident):
                 saved.phase = 'completed'
                 saved.journal = str(path)
                 saved.updated_at = utcnow()
+            _cleanup_mail_preparation(ident)
     except BlockingIOError:
         _schedule_mail_recovery(ident)
         return  # Reobserve after the live account/repository owner releases it.
@@ -615,3 +634,12 @@ def recover_restores():
                     _update(row.id,status='failed',progress_message='Interrupted',
                         error='Restore worker was interrupted. Some selected data may have been restored; the pre-restore snapshot is retained.',completed_at=utcnow())
         except BlockingIOError:continue
+
+    # A crash after completion can leave redundant decrypted staging trees.
+    # Keep this separate from interrupted-restore recovery and its guard logic.
+    with write_session() as session:
+        completed = session.scalars(select(SnapshotRestore).where(
+            SnapshotRestore.status == 'completed')).all()
+    for row in completed:
+        if row.selection.get('kind') == 'mail' and not row.summary.get('preparation_cleaned'):
+            jobs._executor.submit(retry_mail_preparation_cleanup, row.id)

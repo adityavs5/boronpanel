@@ -612,3 +612,27 @@ Post-deployment HTTPS health, admin login and configuration RPC on port 2222
 passed; configuration remained unchanged. All five changed page bundles fetched
 through public HTTPS matched the tested build byte-for-byte with immutable cache
 headers. Deployment log: `/root/boron-setup/direct-management-deploy.log`.
+
+## Mail preparation lifecycle — 2026-09-14
+
+Completed mailbox restores now remove redundant decrypted extraction data and
+offline rebuilt preparation trees after durable completion. Cleanup requires a
+completed mail job and matching completed checkpoint, switch journal, safety
+receipt and release intent. It removes only fixed data/ready-N directories using
+descriptor-based symlink-resistant deletion inside root-private storage.
+Interrupted/failed jobs remain untouched. Partial cleanup can resume, and startup
+queues completed jobs whose preparation cleanup has not finished. Cleanup errors
+retain a completed restore's successful state and its recovery evidence.
+
+Live Maildirs, displaced sibling copies, encrypted recovery points and private
+journals are deliberately outside this cleanup phase. Displaced-copy lifecycle
+and the wider backup completion audit remain outstanding.
+
+Ten dedicated cleanup checks cover completion gating, partial deletion/retry,
+symlink escape prevention, receipt binding, preserved journals, failure state,
+and startup retry. Combined cleanup/dispatch/metadata/staging regression:
+30 passed in 154.42 seconds. A real encrypted-mail workflow assertion was then
+added to require cleaned preparation after restore and undo.
+The strengthened real SQL/restic/offline-Dovecot workflow passed separately
+(88.72 seconds): preparation was removed after restore and undo; journal-based
+finalization recovery and undo-of-undo still produced the expected messages.

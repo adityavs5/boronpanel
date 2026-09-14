@@ -269,6 +269,11 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
         assert finished.status == 'completed', finished.error
         result = dict(finished.summary, safety_snapshot_id=finished.safety_snapshot_id)
     assert result['guards_released'] and result['mailboxes'] == 1
+    assert result['preparation_cleaned'] is True
+    staging_work = Path(checkpoints[1][1]['work'])
+    assert not (staging_work / 'data').exists()
+    assert not (staging_work / 'ready-0').exists()
+    assert (staging_work / 'switch.json').exists()
     assert [p for p, state in checkpoints] == ['preparing', 'prepared', 'guarded', 'provisioned', 'staged',
                                                'switching', 'switched', 'safety_saved', 'completed']
     assert hashed not in repr(checkpoints) and password not in repr(checkpoints)
@@ -308,6 +313,7 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
     with write_session() as session:
         reversed_job = session.get(SnapshotRestore, reversal['id'])
         assert reversed_job.status == 'completed', reversed_job.error
+        assert reversed_job.summary['preparation_cleaned'] is True
         assert reversed_job.safety_snapshot_id != result['safety_snapshot_id']
     previous_messages = list(message.parent.iterdir())
     assert len(previous_messages) == 1
