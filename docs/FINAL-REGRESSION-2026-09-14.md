@@ -9,3 +9,11 @@ The initial goal remains active; the queued expansion follows its completion.
 - The isolated backend integration suite for jobs, encrypted storage, file/database recovery, SSH workflows and routing retention passed all 66 tests in 978.85 seconds. Its only warning is a Starlette TestClient dependency deprecation. Log: `/tmp/boron-backup-final-core-tests.log`.
 
 The table fix passed its resource regression and was deployed as 389367f. HTTPS, authenticated admin configuration on port 2222 and backup-page health passed. Rollback copy: `/root/boron-setup/mail-recovery-before-20260914-080045`; log: `/root/boron-setup/table-keyboard-deploy.log`. Broader recovery regressions, full requirement audit and GitHub/release/self-update verification remain outstanding. GitHub authentication was verified as adityavs5; the latest published release is v1.1.3 with its tarball and SHA256 assets. Cloudflare recovery has no live provider mutation evidence because no provider account is connected.
+
+## Release checks and fresh live health
+
+Update versioning, finalizer success/rollback, update API and archive-release tests completed with 89 passes and one skip in 259.56 seconds (`/tmp/boron-update-final-tests.log`). The skipped optional check requires ShellCheck, which is absent. Full repository regression is now running with skip reasons enabled in `/tmp/boron-full-final-tests.log`; it is not yet a passing result.
+
+Fresh authenticated HTTPS checks confirmed both configured panel ports are 2222, the backup page and 2FA status endpoint respond successfully, and the deployed table source matches the tested checkout. API, provisioner, OpenLiteSpeed, PowerDNS, Dovecot and chrony are active; the clock is synchronized. Read-only proof: `/root/boron-setup/final-health-20260914.json`.
+
+The saved live DNS, PHP, cron and mail-routing proofs were inspected again: all record restoration of their original QA state; the routing proof also records test-mailbox removal and disabling its temporary policy. No existing installation or hosting configuration was changed in this verification pass.
