@@ -143,11 +143,16 @@ def _filters(patterns):
         yield pattern
 
 
-def backup(repository, account_id, paths, *, policy_id=None, excludes=(), full_scan=False, exclude_mail_staging=False):
+def backup(repository, account_id, paths, *, policy_id=None, excludes=(), full_scan=False, exclude_mail_staging=False,
+           recovery_operation=None):
     if not paths or len(paths)>200:
         raise ValidationError('Select between 1 and 200 backup paths')
     source_paths = [str(_absolute(p)) for p in paths]
     args = ['backup','--host','boron','--tag',repository.owner_tag(account_id)]
+    if recovery_operation is not None:
+        if not isinstance(recovery_operation, str) or not re.fullmatch(r'[a-f0-9]{32}', recovery_operation):
+            raise ValidationError('Invalid backup recovery operation')
+        args += ['--tag', 'mail-safety:' + recovery_operation]
     if full_scan: args += ['--force']
     if policy_id is not None: args += ['--tag',f'policy:{_positive(policy_id)}']
     for pattern in _filters(excludes): args += ['--exclude',pattern]

@@ -290,7 +290,7 @@ def create_switch(account, work, acquired, restore_id):
                               operation_id=uuid.uuid4().hex, undo=False, entries=entries))
 
 
-def backup_displaced(account, repo, path, restore_id, *, service='dovecot.service'):
+def backup_displaced(account, repo, path, restore_id, *, service='dovecot.service', recover=False):
     """Encrypt displaced mail before the coordinator releases any restore guard.
 
     Caller holds account/repository locks. This retains both on-disk trees and
@@ -319,13 +319,46 @@ def backup_displaced(account, repo, path, restore_id, *, service='dovecot.servic
     entries = [dict(domain=entry['domain'], local_part=entry['local_part'],
                     path=str(Path(settings.mail_base) / entry['domain'] / entry['local_part'] / entry['plan']['prepared']))
                for entry in payload['entries']]
-    _placement_receipt(manifest, dict(format=1, account_id=account.id, restore_id=restore_id,
-                                      operation_id=payload['operation_id'], mailboxes=entries), create=True)
+    expected_manifest = dict(format=1, account_id=account.id, restore_id=restore_id,
+                             operation_id=payload['operation_id'], mailboxes=entries)
+    paths = [entry['path'] for entry in entries] + [str(manifest)]
+    if recover:
+        if _private_document(manifest) != expected_manifest:
+            raise ValidationError('Mail safety inventory does not match the restore')
+        matches = [row for row in storage.snapshots(repo, account.id)
+                   if 'mail-safety:' + payload['operation_id'] in row.get('tags', [])]
+        if len(matches) != 1 or set(matches[0].get('paths', [])) != set(paths):
+            raise ValidationError('Mail safety backup is absent or ambiguous; retain recovery state')
+        result = {'snapshot_id': matches[0]['id']}
+        storage.owned_snapshot(repo, account.id, result['snapshot_id'])
+        expected_receipt = dict(format=1, account_id=account.id, restore_id=restore_id,
+                                snapshot_id=result['snapshot_id'])
+        if receipt.exists() or receipt.is_symlink():
+            if _private_document(receipt) != expected_receipt:
+                raise ValidationError('Mail safety result does not match the repository')
+        else:
+            _placement_receipt(receipt, expected_receipt, create=True)
+        return {'snapshot_id': result['snapshot_id'], 'mailboxes': entries}
+    _placement_receipt(manifest, expected_manifest, create=True)
     with guard.owned_guards(payload['entries'], restore_id):
         if any(entry['state'] != 'applied' for entry in journal.inspect(path)):
             raise ValidationError('Mailbox directories changed before safety backup')
-        result = storage.backup(repo, account.id, [entry['path'] for entry in entries] + [str(manifest)])
+        result = storage.backup(repo, account.id, paths, recovery_operation=payload['operation_id'])
         storage.owned_snapshot(repo, account.id, result['snapshot_id'])
         _placement_receipt(receipt, dict(format=1, account_id=account.id, restore_id=restore_id,
                                          snapshot_id=result['snapshot_id']), create=True)
     return {'snapshot_id': result['snapshot_id'], 'mailboxes': entries}
+
+
+def _private_document(path):
+    """Read a bounded, root-only recovery record without following links."""
+    from daemon.snapshot_mail_journal import _path
+    fd = os.open(_path(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 1024*1024:
+            raise ValidationError('Invalid private mail recovery document')
+        try:
+            return json.loads(handle.read(1024*1024+1))
+        except (ValueError, UnicodeError):
+            raise ValidationError('Invalid private mail recovery document') from None

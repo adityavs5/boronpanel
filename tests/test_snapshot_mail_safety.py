@@ -47,3 +47,16 @@ def test_displaced_mail_is_encrypted_and_guards_remain(isolated_db, saved, repo,
         pass
     with pytest.raises(FileExistsError):
         restore.backup_displaced(account, repo, path, 1)
+    # The repository commit survives a caller dying before its local receipt.
+    path.with_name('mail-safety-result.json').unlink()
+    recovered = restore.backup_displaced(account, repo, path, 1, recover=True)
+    assert recovered['snapshot_id'] == result['snapshot_id']
+    assert len(storage.snapshots(repo, account.id)) == 1
+    assert restore.backup_displaced(account, repo, path, 1, recover=True) == recovered
+    with guard.owned_guards(payload['entries'], 1):
+        pass
+    # An operation must identify exactly one archive; never choose arbitrarily.
+    storage.backup(repo, account.id, [entry['path'] for entry in result['mailboxes']] + [str(path.with_name('mail-safety.json'))],
+                   recovery_operation=payload['operation_id'])
+    with pytest.raises(ValidationError, match='ambiguous'):
+        restore.backup_displaced(account, repo, path, 1, recover=True)

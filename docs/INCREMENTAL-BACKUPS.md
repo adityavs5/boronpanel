@@ -1012,3 +1012,18 @@ to be implemented. A real isolated-restic integration test passed after correcti
 fixture setup order. It proves the recovery point contains the original messages,
 the live temporary Maildirs retain restored messages, the mapping excludes guard
 tokens, premature backup is refused and guards remain owned after success.
+
+Safety snapshots now carry a validated `mail-safety:<operation-id>` tag alongside
+the account ownership tag. `backup_displaced(..., recover=True)` verifies the
+private intent against the original switch, then requires exactly one owned
+snapshot with that operation tag and the expected archived path set. It can
+recreate a missing local result receipt without repeating the backup. An existing
+receipt must agree with the repository. Missing or ambiguous archives are refused;
+all guards and trees remain retained. The caller must establish backup-worker
+termination and hold the account/repository locks before reconciliation.
+
+Validation: all 10 safety/storage tests passed, including simulated loss of the
+local safety receipt, idempotent reconciliation, duplicate-operation refusal,
+local and SSH incremental restore, host-key enforcement, encryption-key rejection
+and account-isolated retention. The mailbox job's finalization and startup
+recovery wiring remain unfinished.
