@@ -645,3 +645,27 @@ The private before/after hash verifier confirmed unchanged live messages,
 displaced messages and recovery journals for both jobs. Proof script and private
 manifest: `/root/boron-setup/mail-preparation-cleanup-proof.py` and its JSON sibling.
 No live mailbox or displaced sibling was removed. Backup completion remains open.
+
+## Displaced mailbox lifecycle — 2026-09-14
+
+Completed mailbox restores now verify their encrypted safety inventory, restore
+the displaced mailbox paths with restic verification, and compare directory/file
+content digests before local disposal. The recorded former-Maildir inode is moved
+with RENAME_NOREPLACE into a root-private quarantine beside the mailbox, so this
+also works when mail and backup staging are on separate filesystems. Identity and
+content are checked again after the move; active Maildir is never selected.
+
+Private receipts distinguish ready/deleting/deleted phases. Retries inspect the
+existing quarantine rather than replaying moves, and resume partial deletion.
+Changed contents, changed directory identities, replaced quarantine roots and
+links are retained for inspection. Empty quarantine removal is also resumable.
+Startup retries unfinished cleanup. Recovery-point retention protects completed
+mail restores until displaced cleanup succeeds, then applies normal policy.
+
+Regression evidence: 37 cleanup/dispatch/metadata scenarios passed, including the
+real encrypted restore, interrupted-finalization recovery, undo and undo-of-undo
+with successful displaced cleanup. Nine dedicated filesystem scenarios passed
+after adding the last empty-container crash case. A separate SQL retention test
+proved that pending cleanup protects its snapshot and successful cleanup restores
+normal eligibility. Sandbox-only test cleanup warnings concern old root-owned
+pytest temporary directories; no assertions failed.

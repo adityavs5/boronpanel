@@ -339,7 +339,8 @@ def apply_safety_retention(repo, account_id, destination_id, policy_id, keep):
                 SnapshotRestore.account_id == account_id,
                 SnapshotRun.destination_id == destination_id).order_by(SnapshotRestore.id.desc())).all()
     eligible = [row for row, policy in pairs if policy == policy_id
-                and row.status == 'completed' and row.safety_snapshot_id]
+                and row.status == 'completed' and row.safety_snapshot_id
+                and (row.selection.get('kind') != 'mail' or row.summary.get('displaced_cleaned') is True)]
     candidates = eligible[keep:]
     candidate_ids = {row.id for row in candidates}
     protected = {row.safety_snapshot_id for row, _ in pairs
@@ -466,11 +467,24 @@ def _cleanup_mail_preparation(ident):
         logger.warning('Mailbox restore %s retains preparation copies for cleanup retry', ident)
 
 
+def _cleanup_mail_displaced(ident, repo=None):
+    try:
+        from daemon.snapshot_mail_cleanup import cleanup_displaced
+        if repo is None:
+            row = jobs._row(SnapshotRestore, ident)
+            source = jobs._row(SnapshotRun, row.run_id)
+            repo = jobs.repository(jobs._row(SnapshotDestination, source.destination_id))
+        cleanup_displaced(ident, repo)
+    except Exception:
+        logger.warning('Mailbox restore %s retains displaced copies for cleanup retry', ident)
+
+
 def retry_mail_preparation_cleanup(ident):
     row = jobs._row(SnapshotRestore, ident)
     source = jobs._row(SnapshotRun, row.run_id)
     with jobs.lock(f'account-{row.account_id}'), jobs.lock(f'repository-{source.destination_id}'):
         _cleanup_mail_preparation(ident)
+        _cleanup_mail_displaced(ident)
 
 
 def execute(ident):
@@ -496,6 +510,7 @@ def execute(ident):
                             lambda phase, data: _mail_checkpoint(ident, phase, data),
                             **({'source_restore_id': row.selection['source_restore_id']} if row.selection.get('source_snapshot_id') else {}))
                 _cleanup_mail_preparation(ident)
+                _cleanup_mail_displaced(ident, repo)
                 return
             work=jobs.private_directory('restores',f'restore-{ident}')
             if row.selection['kind']=='databases':
@@ -610,6 +625,7 @@ def recover_mail_restore(ident):
                 saved.journal = str(path)
                 saved.updated_at = utcnow()
             _cleanup_mail_preparation(ident)
+            _cleanup_mail_displaced(ident, repo)
     except BlockingIOError:
         _schedule_mail_recovery(ident)
         return  # Reobserve after the live account/repository owner releases it.
@@ -641,5 +657,5 @@ def recover_restores():
         completed = session.scalars(select(SnapshotRestore).where(
             SnapshotRestore.status == 'completed')).all()
     for row in completed:
-        if row.selection.get('kind') == 'mail' and not row.summary.get('preparation_cleaned'):
+        if row.selection.get('kind') == 'mail' and (not row.summary.get('preparation_cleaned') or not row.summary.get('displaced_cleaned')):
             jobs._executor.submit(retry_mail_preparation_cleanup, row.id)

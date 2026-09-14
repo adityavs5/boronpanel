@@ -263,6 +263,9 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
     monkeypatch.setattr(restores, '_mail_checkpoint', checkpoint)
     with write_session() as session:
         session.get(SnapshotRestore, 29).status = 'pending'
+    original_displaced_cleanup = restores._cleanup_mail_displaced
+    # Model loss of the completion acknowledgement before displaced cleanup.
+    monkeypatch.setattr(restores, '_cleanup_mail_displaced', lambda *args: None)
     restores.execute(29)
     with write_session() as session:
         finished = session.get(SnapshotRestore, 29)
@@ -291,10 +294,12 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
         saved_job.error = 'interrupted acknowledgement'
         saved_checkpoint.phase = 'safety_saved'
     monkeypatch.setattr(journal, 'launch', lambda *a: pytest.fail('Recovery must never replay the switch'))
+    monkeypatch.setattr(restores, '_cleanup_mail_displaced', original_displaced_cleanup)
     restores.recover_mail_restore(29)
     with write_session() as session:
         recovered_job = session.get(SnapshotRestore, 29)
         assert recovered_job.status == 'completed' and recovered_job.error is None
+        assert recovered_job.summary['displaced_cleaned'] is True
         assert session.get(SnapshotMailRecovery, 29).phase == 'completed'
     live_messages = list(message.parent.iterdir())
     assert len(live_messages) == 1 and live_messages[0].read_bytes() == content
@@ -314,6 +319,7 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
         reversed_job = session.get(SnapshotRestore, reversal['id'])
         assert reversed_job.status == 'completed', reversed_job.error
         assert reversed_job.summary['preparation_cleaned'] is True
+        assert reversed_job.summary['displaced_cleaned'] is True
         assert reversed_job.safety_snapshot_id != result['safety_snapshot_id']
     previous_messages = list(message.parent.iterdir())
     assert len(previous_messages) == 1

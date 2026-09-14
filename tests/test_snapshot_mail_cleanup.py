@@ -139,6 +139,11 @@ def test_cleanup_failure_does_not_reclassify_completed_restore(completed, monkey
 def test_startup_retries_completed_preparation_only(completed, monkeypatch):
     from daemon import snapshot_restores as restores
     ident, work = completed
+    def complete_displaced(ident):
+        with write_session() as session:
+            row = session.get(SnapshotRestore, ident)
+            row.summary = {**row.summary, 'displaced_cleaned': True}
+    monkeypatch.setattr(restores, '_cleanup_mail_displaced', complete_displaced)
     queued = []
     monkeypatch.setattr(restores.jobs._executor, 'submit', lambda fn, *args: queued.append((fn, args)))
     restores.recover_restores()
@@ -148,3 +153,30 @@ def test_startup_retries_completed_preparation_only(completed, monkeypatch):
     queued.clear()
     restores.recover_restores()
     assert queued == []
+
+
+def test_retention_protects_mail_until_displaced_cleanup_finishes(completed, monkeypatch):
+    from daemon import snapshot_restores as restores
+    ident, work = completed
+    with write_session() as session:
+        first = session.get(SnapshotRestore, ident)
+        run = session.get(SnapshotRun, first.run_id)
+        account_id, destination_id, policy_id = first.account_id, run.destination_id, run.policy_id
+        second = SnapshotRestore(account_id=account_id, run_id=run.id, status='completed',
+                                 selection={'kind': 'mail'}, safety_snapshot_id='b'*64,
+                                 summary={'displaced_cleaned': True})
+        latest = SnapshotRestore(account_id=account_id, run_id=run.id, status='completed',
+                                 selection={'kind': 'files'}, safety_snapshot_id='c'*64)
+        session.add_all([second, latest])
+    forgotten = []
+    monkeypatch.setattr(restores.storage, 'snapshots', lambda *args: [{'id': v*64} for v in 'abc'])
+    monkeypatch.setattr(restores.storage, 'forget', lambda repo, account, ids, **kw: forgotten.extend(ids))
+    assert restores.apply_safety_retention({}, account_id, destination_id, policy_id, 1) == 1
+    assert forgotten == ['b'*64]
+    with write_session() as session:
+        first = session.get(SnapshotRestore, ident)
+        assert first.safety_snapshot_id == 'a'*64
+        first.summary = {**first.summary, 'displaced_cleaned': True}
+    forgotten.clear()
+    assert restores.apply_safety_retention({}, account_id, destination_id, policy_id, 1) == 1
+    assert forgotten == ['a'*64]
