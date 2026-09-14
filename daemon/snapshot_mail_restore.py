@@ -588,3 +588,87 @@ def abort_pre_switch(account, work, restore_id):
         _placement_receipt(intent, expected, create=True)
     result = guard.release_batch(entries, restore_id)
     return {'aborted': True, 'guards_released': result['released']}
+
+
+def rollback_journal(path):
+    """Resolve the current undo pointer, proving linkage to the forward journal."""
+    from daemon import snapshot_mail_journal as journal
+    import re
+    original = journal.read(path)
+    pointer = Path(path).parent / 'rollback-current.json'
+    if not pointer.exists() and not pointer.is_symlink():
+        return None
+    record = _private_document(pointer)
+    try:
+        if (record['format'] != 1 or record['restore_id'] != original['restore_id']
+                or record['original_operation'] != original['operation_id']
+                or not re.fullmatch(r'rollback-[a-f0-9]{32}\.json', record['name'])):
+            raise ValueError()
+        current = journal._path(pointer.parent / record['name'])
+        undo = journal.read(current)
+        source = {(entry['domain'], entry['local_part']): entry for entry in original['entries']}
+        if (original['undo'] or not undo['undo'] or undo['restore_id'] != original['restore_id']
+                or undo['operation_id'] == original['operation_id']
+                or any(source.get((entry['domain'], entry['local_part'])) != entry for entry in undo['entries'])):
+            raise ValueError()
+    except (KeyError, TypeError, ValueError):
+        raise ValidationError('Invalid mailbox rollback pointer') from None
+    return current
+
+
+def rollback_restore(account, path, restore_id, *, service='dovecot.service'):
+    """Recover a failed switch/undo, keeping every attempt's journal intact."""
+    from daemon import snapshot_mail_journal as journal, snapshot_mail_guard as guard
+    from daemon import snapshot_mail_service as supervisor
+    from daemon.snapshot_mail_files import _placement_receipt
+    if service == 'dovecot.service':
+        from daemon.snapshot_mail_guard_config import verify
+        verify()
+    original = journal.read(path)
+    if type(restore_id) is not int or original['restore_id'] != restore_id or original['undo']:
+        raise ValidationError('Invalid mailbox rollback job')
+    with write_session() as session:
+        current = session.get(Account, account.id)
+        domains = {entry['domain'] for entry in original['entries']}
+        owners = {row.domain: row.account_id for row in session.scalars(select(MailDomain).where(MailDomain.domain.in_(domains)))}
+        if current is None or current.username != account.username or any(owners.get(domain) != account.id for domain in domains):
+            raise ValidationError('Mailbox rollback ownership changed')
+    previous = rollback_journal(path)
+    active = journal.read(previous) if previous else original
+    if supervisor.inspect_switch(active['operation_id'], service=service)['state'] == 'running':
+        raise ValidationError('Mailbox rollback worker is still running')
+    mail_state = supervisor.service_status(service)
+    if mail_state.get('ActiveState') != 'active' or mail_state.get('SubState') != 'running' or mail_state.get('ControlPID') != '0':
+        raise ValidationError('Mail service has not resumed')
+    if any(entry['state'] == 'applied' for entry in journal.inspect(path)):
+        target = Path(path).with_name('rollback-' + uuid.uuid4().hex + '.json')
+        if previous:
+            journal.continue_rollback(path, previous, target, service=service)
+        else:
+            journal.prepare_rollback(path, target, service=service)
+        # Retire before pointer publication: a crash in this gap leaves only an
+        # unlaunched journal, while the old pointer still names a terminal worker.
+        supervisor.retire_switch(active['operation_id'], service=service)
+        pointer = Path(path).with_name('rollback-current.json')
+        _placement_receipt(pointer, dict(format=1, restore_id=restore_id,
+                           original_operation=original['operation_id'], name=target.name), create=not pointer.exists())
+        journal.launch(target)
+        active = journal.read(target)
+    if supervisor.inspect_switch(active['operation_id'], service=service)['state'] == 'running':
+        raise ValidationError('Mailbox rollback worker is still running')
+    if any(entry['state'] != 'ready' for entry in journal.inspect(path)):
+        raise ValidationError('Mailbox rollback has not restored every original directory')
+    mail_state = supervisor.service_status(service)
+    if mail_state.get('ActiveState') != 'active' or mail_state.get('SubState') != 'running' or mail_state.get('ControlPID') != '0':
+        raise ValidationError('Mail service has not resumed after rollback')
+    supervisor.retire_switch(active['operation_id'], service=service)
+    intent = Path(path).with_name('rollback-release.json')
+    expected = dict(format=1, account_id=account.id, restore_id=restore_id, operation_id=original['operation_id'])
+    if intent.exists() or intent.is_symlink():
+        if _private_document(intent) != expected:
+            raise ValidationError('Mailbox rollback release intent changed')
+    else:
+        with guard.owned_guards(original['entries'], restore_id):
+            _placement_receipt(intent, expected, create=True)
+    guard.release_batch(original['entries'], restore_id)
+    return {'rolled_back': True, 'mailboxes': len(original['entries'])}

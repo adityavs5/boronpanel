@@ -497,7 +497,9 @@ def recover_mail_restore(ident):
             payload = journal.read(path)
             if payload['restore_id'] != ident:
                 raise ValidationError('Mailbox recovery journal does not match its job')
-            if inspect_switch(payload['operation_id'])['state'] == 'running':
+            rollback_path = mail_restore.rollback_journal(path)
+            observed = journal.read(rollback_path) if rollback_path else payload
+            if inspect_switch(observed['operation_id'])['state'] == 'running':
                 _update(ident, progress_message='Waiting for mailbox switch to finish')
                 # Reobserve this exact operation; never launch another worker.
                 import threading
@@ -506,6 +508,12 @@ def recover_mail_restore(ident):
                 timer.start()
                 return
             account = jobs._row(Account, row.account_id)
+            if rollback_path or any(entry['state'] == 'ready' for entry in journal.inspect(path)):
+                result = mail_restore.rollback_restore(account, path, ident)
+                _update(ident, status='failed', summary=result, progress_message='Interrupted restore rolled back',
+                        error='The restore was interrupted. Original mailbox directories are restored; prepared copies are retained.',
+                        completed_at=utcnow())
+                return
             repo = jobs.repository(jobs._row(SnapshotDestination, source.destination_id))
             work = Path(checkpoint.work)
             if not (work / 'release-intent.json').exists():

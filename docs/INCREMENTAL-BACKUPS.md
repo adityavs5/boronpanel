@@ -1194,3 +1194,20 @@ undo after the first of two mailboxes, retires that terminal worker, runs the
 generated one-mailbox continuation and verifies both original directory identities
 are restored. A running prior worker prevents continuation journal creation.
 Automatic job-level rollback orchestration and customer submission remain pending.
+
+Job recovery now orchestrates rollback for partially applied switches. A private
+pointer identifies the latest undo journal and validates its linkage to the
+original forward journal. Recovery observes that exact worker, creates a fresh
+remaining-work journal when necessary, retires the prior terminal unit, persists
+the new pointer and launches the supervised undo. Completed original directory
+identities and resumed mail service are required before a durable rollback-release
+intent permits owned guard removal. The job is then failed with an explicit
+rolled-back result; prepared copies and all attempt journals remain retained.
+
+Rollback re-entry also handles interruption after one undo and failed workers that
+never exchanged a mailbox. The terminal supervisor is retired even in the latter
+case so future jobs are not blocked by its retained failed unit. Eight distinct
+dispatcher/rollback cases passed across the runs, including real systemd partial
+undo continuation, idempotent completion, guard release and original message
+preservation. Customer submission and broader recovery/deployment verification
+remain outstanding.
