@@ -120,6 +120,34 @@ def test_queued_partial_failure_rolls_back_and_records_both_safety_copies(queue,
     mail.delete_catchall('alpha.example.test')  # Finalized rollback releases ordinary mail edits.
 
 
+def test_startup_continues_rollback_interrupted_after_sql_commit(queue, monkeypatch):
+    account, _, _, run, script, _ = queue
+    mail.create_forward('alpha.example.test', 'before', 'before@example.test')
+    original_script = script.read_bytes()
+    requested = restores.trigger(request(account, run))
+    write = journal._write
+    class ProcessStopped(BaseException): pass
+    def interrupt(path, payload, **kwargs):
+        if payload['phase'] == 'sql_applied':
+            if payload.get('direction') == 'rollback': raise ProcessStopped()
+            raise OSError('original checkpoint interrupted')
+        return write(path, payload, **kwargs)
+    monkeypatch.setattr(journal, '_write', interrupt)
+    with pytest.raises(ProcessStopped): restores.execute(requested['id'])
+    interrupted = jobs._row(SnapshotRestore, requested['id'])
+    assert interrupted.status == 'running'
+    safety = deepcopy(interrupted.summary['routing_safety_snapshots'])
+    monkeypatch.setattr(journal, '_write', write)
+    worker.recover(requested['id'])
+    recovered = jobs._row(SnapshotRestore, requested['id'])
+    assert recovered.status == 'failed' and recovered.summary['rolled_back']
+    assert recovered.summary['routing_finalized'] and recovered.summary['guards_released']
+    assert recovered.summary['routing_safety_snapshots'] == safety
+    assert script.read_bytes() == original_script
+    assert any(item['local_part'] == 'before' for item in mail.list_forwards('alpha.example.test'))
+    mail.delete_catchall('alpha.example.test')
+
+
 def test_supervisor_observation_timeout_waits_then_finalizes_same_job(queue, monkeypatch):
     account, _, _, run, _, _ = queue
     scheduled = []; monkeypatch.setattr(worker, 'schedule', scheduled.append)

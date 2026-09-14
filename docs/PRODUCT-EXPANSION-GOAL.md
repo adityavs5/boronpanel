@@ -1640,3 +1640,39 @@ Evolution mobile recovery dialog screenshot. No production deployment performed.
 Remaining: interrupted rollback continuation, live supervised mail-routing proof,
 Cloudflare-native DNS recovery, full initial requirement/release audit, followed
 by the separately queued product expansion. Goal remains active.
+
+### Interrupted mail-routing rollback continuation — 2026-09-14
+
+Added continuation for a rollback interrupted before its SQL checkpoint, between
+SQL and script activation, or after script activation before verification. The
+coordinator first observes the existing worker and waits while it is running;
+only an exited/missing worker permits continuation. It decrypts and compares the
+same rollback safety copy, validates owned guard tokens, and accepts only SQL
+matching either saved endpoint and individual scripts matching either endpoint.
+Unrelated changes fail closed. The offline worker repeats these checks with the
+mail service stopped and SQL coordination held, applies against the actual script
+bytes, checkpoints again, and finalizes through the existing guard-release path.
+Safety IDs and encrypted previous data remain unchanged.
+
+The launcher retires only the observed operation unit. A prepared-but-unlaunched
+reverse journal may recognize its bound original operation's terminal unit; a
+partial reverse journal cannot fall back to that original identity. Queued startup
+recovery now dispatches partial/prelaunch rollback to this continuation instead
+of immediately requiring inspection. Repeated application failures still retain
+recovery state and guards for inspection; no blind retry loop was added.
+
+Validation: initial rollback/journal regression passed 17 tests in 311.47s.
+After adding final worker identity handling, the full rollback suite plus queued
+process-interruption recovery passed 10 tests in 298.52s. The queue test interrupts
+both original and reverse SQL checkpoints, then verifies startup continuation,
+failed-but-recovered status, unchanged paired safety IDs, exact original custom
+script bytes, restored rules and ordinary mail-edit availability. Additional cases
+cover still-running-worker waiting, same-operation retirement/relaunch, unrelated
+script rejection, original journal replay rejection and guard ownership. Tests
+use isolated MariaDB, restic and temporary vmail files. Supervision/service status
+are mocked; no production mail service or account was changed. git diff --check
+passed. This change is not deployed.
+
+Remaining initial work: real supervised routing proof and deployment, final
+recovery integration/audit, Cloudflare-native DNS recovery, full requirement and
+release/self-update audit. The queued expansion remains after the initial goal.

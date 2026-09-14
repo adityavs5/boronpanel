@@ -1,7 +1,8 @@
 """Private durable checkpoints for supervised SQL/Sieve routing application.
 
-The coordinator owns account/repository locks and service supervision. This
-worker never releases guards, retries a mutation, or marks a panel job complete.
+The coordinator owns account/repository locks and service supervision. The offline
+worker retains guards and leaves job completion to the coordinator. Interrupted
+rollback can continue only after checking the saved endpoints and worker exit.
 """
 import json
 import os
@@ -23,6 +24,7 @@ from shared.validation import ValidationError
 PHASES = {'prepared', 'guarding', 'guarded', 'applying_sql', 'sql_applied', 'applying_scripts',
           'verified', 'release_intent', 'completed'}
 MAX_BYTES = 64 * 1024 * 1024
+ROLLBACK_RESUMABLE = {'applying_sql', 'sql_applied', 'applying_scripts'}
 
 
 def _scripts(account, payload):
@@ -161,18 +163,38 @@ def inspect(account, path):
         return dict(phase=payload['phase'], **_observed(account, payload))
 
 
+def _rollback_observation(account, payload):
+    """Accept only the two saved endpoints, including per-script mixtures."""
+    actual = routing.capture(account, [row['domain'] for row in payload['desired_routing']['domains']])
+    if _rules(actual) not in (_rules(payload['previous']['routing']), _rules(payload['desired_routing'])):
+        raise ValidationError('Routing has unrelated changes; rollback requires inspection')
+    addresses = [entry['local_part'] + '@' + entry['domain'] for entry in payload['guards']]
+    scripts = sieve.capture(account, addresses) if addresses else dict(
+        format=1, account_id=account.id, username=account.username, scripts=[])
+    previous, desired = _scripts(account, payload['previous']['scripts']), _scripts(account, payload['desired_scripts'])
+    if any(content not in (previous[key], desired[key]) for key, content in _scripts(account, scripts).items()):
+        raise ValidationError('Scripts have unrelated changes; rollback requires inspection')
+    return actual, scripts
+
+
 @serialized
 def execute(account, path, *, service='dovecot.service'):
-    """Fresh offline application only; a partial journal cannot be replayed."""
+    """Apply offline; only explicit rollback can continue from verified endpoints."""
     payload = read(account, path)
     _not_superseded(path, payload)
-    if payload['phase'] != 'guarded':
+    resuming = payload.get('direction') == 'rollback' and payload['phase'] in ROLLBACK_RESUMABLE
+    if payload['phase'] != 'guarded' and not resuming:
         raise ValidationError('Mail-routing operation requires inspection, not replay')
     require_stopped(service)
     with guard.owned_guards(payload['guards'], payload['restore_id']):
-        observed = _observed(account, payload)
-        if not observed['sql_matches_previous'] or not observed['scripts_match_previous']:
-            raise ValidationError('Mail-routing state changed after safety capture')
+        expected_scripts = payload['previous']['scripts']
+        if resuming:
+            _, expected_scripts = _rollback_observation(account, payload)
+            payload['completed_scripts'] = []
+        else:
+            observed = _observed(account, payload)
+            if not observed['sql_matches_previous'] or not observed['scripts_match_previous']:
+                raise ValidationError('Mail-routing state changed after safety capture')
         payload['phase'] = 'applying_sql'; _write(path, payload)
         routing._replace_sql(account, payload['desired_routing'])
         payload['phase'] = 'sql_applied'; _write(path, payload)
@@ -181,7 +203,7 @@ def execute(account, path, *, service='dovecot.service'):
         payload['completed_scripts'].append(address)
         _write(path, payload)
     if payload['guards']:
-        sieve._apply(account, payload['desired_scripts'], payload['previous']['scripts'],
+        sieve._apply(account, payload['desired_scripts'], expected_scripts,
                      payload['restore_id'], payload['guards'], checkpoint)
     observed = _observed(account, payload)
     if not observed['sql_matches_desired'] or not observed['scripts_match_desired']:
@@ -195,9 +217,13 @@ def execute(account, path, *, service='dovecot.service'):
 def _ready_for_launch(account, path):
     payload = read(account, path)
     _not_superseded(path, payload)
-    if payload['phase'] != 'guarded':
+    resuming = payload.get('direction') == 'rollback' and payload['phase'] in ROLLBACK_RESUMABLE
+    if payload['phase'] != 'guarded' and not resuming:
         raise ValidationError('Mail-routing operation requires inspection, not replay')
     with guard.owned_guards(payload['guards'], payload['restore_id']):
+        if resuming:
+            _rollback_observation(account, payload)
+            return payload
         observed = _observed(account, payload)
         if not observed['sql_matches_previous'] or not observed['scripts_match_previous']:
             raise ValidationError('Mail-routing state changed before supervised application')
@@ -218,9 +244,38 @@ def launch(account, path):
     payload = _ready_for_launch(account, path)
     if payload.get('direction') == 'rollback':
         from daemon.snapshot_mail_service import retire_switch
-        retire_switch(payload['source_operation_id'])
+        worker, owner = _rollback_worker(payload)
+        if worker['state'] == 'running':
+            raise ValidationError('Rollback worker is still running; wait before continuation')
+        retire_switch(owner)
     return supervised_command([sys.executable, '-m', 'daemon.snapshot_mail_routing_journal',
                                str(account.id), str(_path(path))], payload['operation_id'])
+
+
+def _rollback_worker(payload, *, service='dovecot.service'):
+    from daemon.snapshot_mail_service import inspect_switch
+    try:
+        return inspect_switch(payload['operation_id'], service=service), payload['operation_id']
+    except ValidationError:
+        # A crash between preparing the reverse journal and launching its worker
+        # can leave the original terminal unit. Accept only its bound identity.
+        if payload['phase'] != 'guarded':
+            raise
+        return inspect_switch(payload['source_operation_id'], service=service), payload['source_operation_id']
+
+
+def resume_rollback(repo, account, path, *, service='dovecot.service'):
+    """Recheck encrypted safety and the exited worker before continuing rollback."""
+    payload = read(account, path)
+    if payload.get('direction') != 'rollback' or payload['phase'] not in ROLLBACK_RESUMABLE | {'guarded'}:
+        raise ValidationError('This journal is not an interrupted rollback')
+    if _rollback_worker(payload, service=service)[0]['state'] == 'running':
+        return {'state': 'waiting'}
+    saved = recovery.load_previous(repo, account, payload['safety_snapshot_id'], payload['restore_id'], kind='rollback')
+    if saved != payload['previous']:
+        raise ValidationError('Encrypted rollback safety does not match this operation')
+    launch(account, path)
+    return finalize(repo, account, path, service=service)
 
 
 def recovery_state(account, path, *, service='dovecot.service'):
@@ -233,7 +288,8 @@ def recovery_state(account, path, *, service='dovecot.service'):
     if payload['phase'] == 'completed':
         return {'state': 'completed', 'guards_released': True, 'safety_snapshot_id': payload['safety_snapshot_id'],
                 'rolled_back': payload.get('direction') == 'rollback'}
-    worker = inspect_switch(payload['operation_id'], service=service)
+    worker = (_rollback_worker(payload, service=service)[0] if payload.get('direction') == 'rollback'
+              else inspect_switch(payload['operation_id'], service=service))
     if worker['state'] == 'running':
         return {'state': 'waiting', 'worker': worker}
     if payload['phase'] == 'release_intent':

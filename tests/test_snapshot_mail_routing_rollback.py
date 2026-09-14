@@ -84,3 +84,82 @@ def test_failed_rollback_safety_encryption_keeps_current_state_and_guards(operat
     assert routing.capture(account) == current_rules and script.read_bytes() == current_script
     assert not path.with_name('mail-routing-rollback-operation.json').exists()
     with guard.owned_guards(journal.read(account, path)['guards'], 91): pass
+
+
+@pytest.mark.parametrize('lost_phase', ['applying_sql', 'sql_applied', 'verified'])
+def test_interrupted_reverse_operation_resumes_with_same_safety(prepared, tmp_path, monkeypatch, lost_phase):
+    account, _, plan, script = prepared
+    monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(tmp_path / 'guards'))
+    monkeypatch.setattr(journal, 'require_stopped', lambda service: None)
+    monkeypatch.setattr(service, 'inspect_switch', lambda *a, **k: {'state': 'terminal'})
+    monkeypatch.setattr(service, 'service_status', lambda *a, **k: {'ActiveState': 'active', 'SubState': 'running'})
+    repo = repository(tmp_path)
+    saved = recovery.save_previous(repo, account, 102, plan['previous'])
+    original = journal.create(repo, account, 102, plan, saved['snapshot_id'])
+    journal.acquire_guards(account, original)
+    journal.execute(account, original)
+    reverse = journal.prepare_rollback(repo, account, original)
+    before = journal.read(account, reverse)
+    write = journal._write
+    def interrupted(path, payload, **kwargs):
+        if payload['phase'] == lost_phase: raise OSError('interrupted reverse checkpoint')
+        return write(path, payload, **kwargs)
+    monkeypatch.setattr(journal, '_write', interrupted)
+    with pytest.raises(OSError): journal.execute(account, reverse)
+    monkeypatch.setattr(journal, '_write', write)
+    # Running worker means observe, with no decrypt, retirement or second launch.
+    monkeypatch.setattr(service, 'inspect_switch', lambda *a, **k: {'state': 'running'})
+    assert journal.resume_rollback(repo, account, reverse) == {'state': 'waiting'}
+    monkeypatch.setattr(service, 'inspect_switch', lambda *a, **k: {'state': 'terminal'})
+    from daemon import snapshot_mail_guard_config
+    monkeypatch.setattr(snapshot_mail_guard_config, 'verify', lambda: None)
+    retired, launched = [], []
+    monkeypatch.setattr(service, 'retire_switch', lambda ident: retired.append(ident))
+    def supervised(command, ident):
+        launched.append(ident)
+        journal.execute(account, command[-1])
+    monkeypatch.setattr(service, 'supervised_command', supervised)
+    result = journal.resume_rollback(repo, account, reverse)
+    assert result['rolled_back'] and result['guards_released']
+    assert retired == launched == [before['operation_id']]
+    assert routing.capture(account) == plan['previous']['routing']
+    assert script.read_bytes() == b'# custom previous script\r\nkeep;\r\n'
+    after = journal.read(account, reverse)
+    assert after['safety_snapshot_id'] == before['safety_snapshot_id']
+    assert after['previous'] == before['previous']
+    assert after['phase'] == 'completed'
+
+
+def test_reverse_continuation_rejects_unrelated_script_changes(operation, monkeypatch):
+    from copy import deepcopy
+    account, _, plan, script, original = operation
+    journal.acquire_guards(account, original)
+    journal.execute(account, original)
+    monkeypatch.setattr(service, 'inspect_switch', lambda *a, **k: {'state': 'terminal'})
+    monkeypatch.setattr(recovery, 'save_previous', lambda *a, **k: {'snapshot_id': 'b' * 64})
+    current = {'routing': routing.capture(account), 'scripts': journal.sieve.capture(account, ['inbox@alpha.example.test'])}
+    monkeypatch.setattr(recovery, 'load_previous', lambda *a, **k: deepcopy(current if k.get('kind') == 'rollback' else plan['previous']))
+    reverse = journal.prepare_rollback(None, account, original)
+    payload = journal.read(account, reverse); payload['phase'] = 'applying_scripts'; journal._write(reverse, payload)
+    script.write_bytes(b'# later edit\nkeep;\n')
+    rules = routing.capture(account)
+    with pytest.raises(ValidationError, match='unrelated changes'):
+        journal.execute(account, reverse)
+    assert routing.capture(account) == rules
+    assert script.read_bytes() == b'# later edit\nkeep;\n'
+    with guard.owned_guards(payload['guards'], 91): pass
+
+
+def test_prelaunch_reverse_recognizes_only_its_bound_original_unit(monkeypatch):
+    payload = {'phase': 'guarded', 'operation_id': 'a' * 32, 'source_operation_id': 'b' * 32}
+    calls = []
+    def inspect(ident, **kwargs):
+        calls.append(ident)
+        if ident != payload['source_operation_id']: raise ValidationError('unit belongs to another operation')
+        return {'state': 'terminal'}
+    monkeypatch.setattr(service, 'inspect_switch', inspect)
+    assert journal._rollback_worker(payload) == ({'state': 'terminal'}, 'b' * 32)
+    assert calls == ['a' * 32, 'b' * 32]
+    payload['phase'] = 'applying_sql'; calls.clear()
+    with pytest.raises(ValidationError): journal._rollback_worker(payload)
+    assert calls == ['a' * 32]

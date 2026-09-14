@@ -111,7 +111,7 @@ def recover(ident):
             if state['state'] in ('completed', 'finalizing') or state.get('phase') == 'verified':
                 _finish(ident, journal.finalize(repo, account, path)); return
             if path != original:
-                raise ValidationError('Interrupted rollback requires further recovery inspection')
+                _finish(ident, journal.resume_rollback(repo, account, path)); return
             reverse = journal.prepare_rollback(repo, account, original)
             reverse_payload = journal.read(account, reverse)
             record_routing_safety(ident, reverse_payload['safety_snapshot_id'], purpose='rollback')
