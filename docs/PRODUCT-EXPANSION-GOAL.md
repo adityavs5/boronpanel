@@ -736,3 +736,9 @@ invalid cron syntax left the current schedule intact, and the original table was
 restored in cleanup. Private evidence: /root/boron-setup/cron-configuration-proof.py
 and cron-configuration-before.json. No customer crontab was changed.
 Configuration/DNS/PHP and mail-routing restore integration remain open.
+
+Revision cea90ce deployed successfully; rollback copy:
+/root/boron-setup/mail-recovery-before-20260914-033351. HTTPS, admin login and
+configuration checks passed. Live cron/snapshot source files matched the tested
+revision, and a post-deployment read confirmed the original QA crontab remained
+intact. Only the disposable QA account was exercised; other accounts were untouched.
