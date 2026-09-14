@@ -1099,3 +1099,22 @@ failure after persisted preparation with recovery artifacts retained across the
 startup sweep, and a completed encrypted mailbox restore through `execute` with
 real job checkpoints and safety snapshot state. The integration still substitutes
 supervision for its temporary tree; separate systemd suites cover that boundary.
+
+Startup now dispatches mailbox-specific reconciliation. `recover_mail_restore`
+locks the account/repository, binds its private journal to the restore ID and
+observes the original switch unit. A running unit is reobserved after five seconds
+without launching another switch. Once terminal, recovery preserves or reconciles
+the displaced-mail safety snapshot and runs verified finalization. An existing
+release intent supports partial/already-completed guard release. Completion and
+checkpoint state are committed together, clearing the interruption error.
+
+Jobs interrupted before any persisted work reference are failed before activation.
+Earlier incomplete preparation, partial switches, missing/ambiguous safety state
+and other unverified conditions retain active recovery protection. Those paths
+still need further reconciliation; customer mail restore submission is disabled.
+
+Validation: three dispatcher/integration cases passed. The assembled restore test
+now simulates loss of the final database completion update after guard release,
+then proves reconciliation returns both job and checkpoint to completed, clears
+the interruption error and never invokes another mailbox switch. Earlier failed
+preparation remains protected when processed by the startup dispatcher.

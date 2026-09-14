@@ -468,19 +468,84 @@ def execute(ident):
             shutil.rmtree(work,ignore_errors=True)
 
 
+def recover_mail_restore(ident):
+    """Reconcile an interrupted mailbox job without replaying its switch."""
+    from shared.models import SnapshotMailRecovery
+    from daemon import snapshot_mail_restore as mail_restore, snapshot_mail_journal as journal
+    from daemon.snapshot_mail_service import inspect_switch
+    row = jobs._row(SnapshotRestore, ident)
+    source = jobs._row(SnapshotRun, row.run_id)
+    try:
+        with jobs.lock(f'account-{row.account_id}', blocking=False), jobs.lock(f'repository-{source.destination_id}', blocking=False):
+            with write_session() as session:
+                row = session.get(SnapshotRestore, ident)
+                checkpoint = session.get(SnapshotMailRecovery, ident)
+                if row.status != 'running' or row.selection.get('kind') != 'mail':
+                    return
+            if checkpoint is None or checkpoint.work is None:
+                _update(ident, status='failed', progress_message='Mailbox restore interrupted before activation',
+                        error='Preparation was interrupted before live mailbox changes.', completed_at=utcnow())
+                return
+            path = journal._path(Path(checkpoint.work) / 'switch.json')
+            if not path.exists():
+                raise ValidationError('Mailbox preparation requires recovery inspection')
+            payload = journal.read(path)
+            if payload['restore_id'] != ident:
+                raise ValidationError('Mailbox recovery journal does not match its job')
+            if inspect_switch(payload['operation_id'])['state'] == 'running':
+                _update(ident, progress_message='Waiting for mailbox switch to finish')
+                # Reobserve this exact operation; never launch another worker.
+                import threading
+                timer = threading.Timer(5, lambda: jobs._executor.submit(recover_mail_restore, ident))
+                timer.daemon = True
+                timer.start()
+                return
+            account = jobs._row(Account, row.account_id)
+            repo = jobs.repository(jobs._row(SnapshotDestination, source.destination_id))
+            work = Path(checkpoint.work)
+            if not (work / 'release-intent.json').exists():
+                safety = mail_restore.backup_displaced(account, repo, path, ident,
+                                                       recover=(work / 'mail-safety.json').exists())
+                if row.safety_snapshot_id and row.safety_snapshot_id != safety['snapshot_id']:
+                    raise ValidationError('Mailbox recovery safety snapshot changed')
+                _update(ident, safety_snapshot_id=safety['snapshot_id'], progress_message='Finalizing recovered mailbox restore')
+            result = mail_restore.finalize(account, repo, path, ident)
+            with write_session() as session:
+                current = session.get(SnapshotRestore, ident)
+                saved = session.get(SnapshotMailRecovery, ident)
+                if current.status != 'running' or saved.work != checkpoint.work:
+                    raise ValidationError('Mailbox recovery job changed during finalization')
+                if current.safety_snapshot_id and current.safety_snapshot_id != result['safety_snapshot_id']:
+                    raise ValidationError('Mailbox recovery safety snapshot changed')
+                current.safety_snapshot_id = result['safety_snapshot_id']
+                current.status = 'completed'
+                current.summary = {'mailboxes': result['mailboxes'], 'guards_released': True}
+                current.progress_message = 'Selected mailboxes restored; interrupted finalization recovered'
+                current.error = None
+                current.completed_at = utcnow()
+                saved.phase = 'completed'
+                saved.journal = str(path)
+                saved.updated_at = utcnow()
+    except BlockingIOError:
+        return  # A live account/repository owner still has the operation.
+    except Exception:
+        logger.warning('Mailbox restore %s still requires recovery inspection', ident)
+        _update(ident, progress_message='Mailbox recovery pending',
+                error='Recovery could not yet verify a complete mailbox restore. Guards and recovery records are retained.')
+
+
 def recover_restores():
     with write_session() as session:
         rows=session.scalars(select(SnapshotRestore).where(SnapshotRestore.status.in_(jobs.ACTIVE))).all()
     for row in rows:
         if row.status=='pending':jobs._executor.submit(execute,row.id);continue
+        if row.selection.get('kind') == 'mail':
+            jobs._executor.submit(recover_mail_restore, row.id)
+            continue
         try:
             with jobs.lock(f'account-{row.account_id}',blocking=False):
                 current=jobs._row(SnapshotRestore,row.id)
                 if current.status=='running':
-                    if current.selection.get('kind') == 'mail':
-                        _update(row.id, progress_message='Mailbox recovery pending',
-                                error='Interrupted mailbox restore retained for recovery inspection; another restore has not been started.')
-                        continue
                     _update(row.id,status='failed',progress_message='Interrupted',
                         error='Restore worker was interrupted. Some selected data may have been restored; the pre-restore snapshot is retained.',completed_at=utcnow())
         except BlockingIOError:continue

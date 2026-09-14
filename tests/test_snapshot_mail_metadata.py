@@ -254,6 +254,18 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
         assert saved_checkpoint.phase == 'completed'
         assert saved_checkpoint.work == checkpoints[1][1]['work']
         assert saved_checkpoint.work not in repr(restores._serialize(saved_job))
+        # Simulate a lost final job-state commit after guard release. The saved
+        # release intent and safety receipt must finish recovery without replay.
+        saved_job.status = 'running'
+        saved_job.completed_at = None
+        saved_job.error = 'interrupted acknowledgement'
+        saved_checkpoint.phase = 'safety_saved'
+    monkeypatch.setattr(journal, 'launch', lambda *a: pytest.fail('Recovery must never replay the switch'))
+    restores.recover_mail_restore(29)
+    with write_session() as session:
+        recovered_job = session.get(SnapshotRestore, 29)
+        assert recovered_job.status == 'completed' and recovered_job.error is None
+        assert session.get(SnapshotMailRecovery, 29).phase == 'completed'
     live_messages = list(message.parent.iterdir())
     assert len(live_messages) == 1 and live_messages[0].read_bytes() == content
     assert not list(Path(settings.mail_restore_guard_dir).iterdir())

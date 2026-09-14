@@ -40,6 +40,7 @@ def test_mail_failure_preserves_recovery_and_never_leaks_exception(isolated_db, 
             assert session.get(SnapshotMailRecovery, ident).work == str(work)
             assert (work / 'retained').is_file()
             assert row.completed_at is None
+    monkeypatch.setattr(jobs._executor, 'submit', lambda function, *args: function(*args))
     restores.recover_restores()
     with write_session() as session:
         assert session.get(SnapshotRestore, ident).status == ('running' if prepared else 'failed')
