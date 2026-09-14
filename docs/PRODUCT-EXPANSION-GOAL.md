@@ -742,3 +742,24 @@ Revision cea90ce deployed successfully; rollback copy:
 configuration checks passed. Live cron/snapshot source files matched the tested
 revision, and a post-deployment read confirmed the original QA crontab remained
 intact. Only the disposable QA account was exercised; other accounts were untouched.
+
+## Scheduled-task restore integration — 2026-09-14
+
+Configuration recovery now exposes scheduled-task restore in snapshot details for
+both themes. Customers explicitly confirm their account username before replacing
+the complete crontab. The worker loads account-bound encrypted metadata, saves the
+current table in a new encrypted safety snapshot, persists that recovery point,
+then performs one crontab installation. Restore history exposes previous-schedule
+recovery; undo also saves a recovery copy and can itself be undone.
+
+The configuration catalog returns availability/counts without exposing raw cron
+environment values. Older backups lacking complete crontab data are rejected with
+an explanation. Account and repository ownership checks apply before decryption;
+API scope checks prevent foreign-account access. Cron mutation handlers now share
+the account backup/restore lock, preventing panel edits during recovery.
+
+Validation: 57 cron/configuration tests passed, including real encrypted restore,
+undo and undo-of-undo with isolated crontab transport; 13 cron handler/API checks
+passed; eight browser scenarios passed across both themes/modes for scheduled-task
+and database recovery. Frontend build passed. DNS/PHP configuration and mail-routing
+recovery are still outstanding; this does not mark the broader backup goal complete.

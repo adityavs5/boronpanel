@@ -1,3 +1,4 @@
+import { SnapshotConfigurationRestore } from './SnapshotConfigurationRestore'
 import { SnapshotFileRestore, SnapshotDatabaseRestore, SnapshotRestoreHistory } from './SnapshotRestore'
 import { SnapshotMailRestore } from './SnapshotMailRestore'
 import { useState } from 'react'
@@ -35,6 +36,7 @@ function RunDialog({ run, username, onClose }) {
     <SnapshotFileRestore username={username} run={run} paths={restorePaths} onPathsChange={setRestorePaths}/>
     <SnapshotDatabaseRestore username={username} run={run}/>
     <SnapshotMailRestore username={username} run={run}/>
+    <SnapshotConfigurationRestore username={username} run={run}/>
     <SnapshotRestoreHistory username={username}/>
   </DialogBody><DialogFooter><Button variant="secondary" onClick={onClose}>Done</Button></DialogFooter></DialogContent></Dialog>
 }

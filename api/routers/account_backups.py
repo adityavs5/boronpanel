@@ -60,12 +60,19 @@ def snapshot_mailboxes(username: str, run_id: int, identity: Identity = Depends(
     return call_daemon('snapshot.restore.mailboxes', identity, username=username, run_id=run_id)
 
 
+@api_router.get('/snapshots/runs/{run_id}/configuration')
+def snapshot_configuration(username: str, run_id: int, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon('snapshot.restore.configuration', identity, username=username, run_id=run_id)
+
+
 class SnapshotRestoreBody(BaseModel):
     confirmation: str
     kind: str = 'files'
     paths: list[str] = []
     databases: list[str] = []
     mailboxes: list[str] = []
+    config_sections: list[str] = []
     mail_pause_acknowledged: bool = False
 
 

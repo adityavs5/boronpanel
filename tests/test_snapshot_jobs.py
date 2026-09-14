@@ -152,6 +152,13 @@ def test_snapshot_api_authorization_and_customer_scope(environment,monkeypatch):
         assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs').status_code==200
         assert calls[-1]==('snapshot.run.list',{'username':'alpha'})
         assert client.get('/api/v1/accounts/bravo/backups/snapshots/runs').status_code==403
+        assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs/1/configuration').status_code==200
+        assert calls[-1]==('snapshot.restore.configuration',{'username':'alpha','run_id':1})
+        assert client.get('/api/v1/accounts/bravo/backups/snapshots/runs/1/configuration').status_code==403
+        response=client.post('/api/v1/accounts/alpha/backups/snapshots/runs/1/restore',json={'confirmation':'alpha','kind':'config','config_sections':['cron']})
+        assert response.status_code==200
+        assert calls[-1][1]['config_sections']==['cron']
+
         response=client.post('/api/v1/accounts/alpha/backups/snapshots/runs/1/restore',json={'confirmation':'alpha','paths':['site.txt'],'_safety':999})
         assert response.status_code==200
         assert calls[-1][0]=='snapshot.restore.trigger'

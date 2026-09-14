@@ -1,6 +1,7 @@
 """Cron job CRUD RPC handlers (Phase 2 feature 2)."""
 from __future__ import annotations
 
+from functools import wraps
 from sqlalchemy import select
 
 from shared.db import write_session
@@ -20,12 +21,28 @@ def _get_active_account(username: str) -> Account:
         return account
 
 
+def _mutation(function):
+    @wraps(function)
+    def wrapped(params):
+        username = validate_username(params['username'])
+        account = _get_active_account(username)
+        from daemon.snapshot_jobs import lock
+        from shared.validation import ValidationError
+        try:
+            with lock(f'account-{account.id}', blocking=False):
+                return function(params)
+        except BlockingIOError:
+            raise ValidationError('An account backup or restore is in progress. Try again shortly.') from None
+    return wrapped
+
+
 def list_cron_jobs(params: dict) -> dict:
     username = validate_username(params["username"])
     _get_active_account(username)
     return {"jobs": cron.list_jobs(username)}
 
 
+@_mutation
 def add_cron_job(params: dict) -> dict:
     username = validate_username(params["username"])
     _get_active_account(username)
@@ -37,6 +54,7 @@ def add_cron_job(params: dict) -> dict:
     )
 
 
+@_mutation
 def update_cron_job(params: dict) -> dict:
     username = validate_username(params["username"])
     _get_active_account(username)
@@ -49,6 +67,7 @@ def update_cron_job(params: dict) -> dict:
     )
 
 
+@_mutation
 def delete_cron_job(params: dict) -> dict:
     username = validate_username(params["username"])
     _get_active_account(username)
@@ -62,6 +81,7 @@ def get_cron_mailto(params: dict) -> dict:
     return {"mailto": cron.get_mailto(username)}
 
 
+@_mutation
 def set_cron_mailto(params: dict) -> dict:
     username = validate_username(params["username"])
     _get_active_account(username)

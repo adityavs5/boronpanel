@@ -30,6 +30,7 @@ logger = logging.getLogger("borond")
 OP_TABLE = {
     "panel.config.status": panel_jobs.status,
     "panel.config.start": panel_jobs.start,
+    "snapshot.restore.configuration": snapshot_restores.configuration_options,
     "snapshot.restore.databases": snapshot_restores.database_options,
     "snapshot.restore.mailboxes": snapshot_restores.mailbox_options,
     "snapshot.restore.trigger": snapshot_restores.trigger,
@@ -506,7 +507,7 @@ OP_TABLE = {
 # so a burst of usage polling can never starve the rest of the daemon.
 REPORTING_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reporting")
 REPORTING_OPS = {
-    "snapshot.destination.initialize", "snapshot.run.browse", "snapshot.restore.databases", "snapshot.restore.mailboxes",
+    "snapshot.destination.initialize", "snapshot.run.browse", "snapshot.restore.databases", "snapshot.restore.mailboxes", "snapshot.restore.configuration",
     "disktree.get", "disktree.top_files", "usage.get",
     # Phase 5: admin-only polling/dashboard ops that shell out or sample
     # live system state -- same isolation reasoning as disktree/usage
