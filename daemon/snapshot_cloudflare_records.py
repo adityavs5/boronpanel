@@ -9,7 +9,7 @@ from daemon import cloudflare
 from shared.validation import ValidationError
 
 SCALAR_TYPES = {'A', 'AAAA', 'CNAME', 'MX', 'NS', 'PTR', 'TXT', 'OPENPGPKEY'}
-STRUCTURED_TYPES = {'CAA', 'SRV'}
+STRUCTURED_TYPES = {'CAA', 'SRV', 'HTTPS', 'SVCB', 'TLSA', 'DS'}
 READ_ONLY = {'id', 'zone_id', 'zone_name', 'proxiable', 'locked', 'created_on',
              'modified_on', 'comment_modified_on', 'tags_modified_on', 'meta'}
 WRITABLE = {'name', 'type', 'ttl', 'content', 'priority', 'proxied', 'comment',
@@ -34,6 +34,17 @@ def _name(value):
         return dns.name.from_text(value, origin=dns.name.root).canonicalize()
     except Exception:
         raise ValidationError('Invalid saved Cloudflare record name') from None
+
+
+def _structured_text(rtype, data):
+    if rtype in {'HTTPS', 'SVCB'}:
+        target = data['target'].rstrip('.') + '.'
+        return f"{data['priority']} {target} {data['value']}"
+    if rtype == 'TLSA':
+        return f"{data['usage']} {data['selector']} {data['matching_type']} {data['certificate']}"
+    if rtype == 'DS':
+        return f"{data['key_tag']} {data['algorithm']} {data['digest_type']} {data['digest']}"
+    return cloudflare._from_cf_record({'type': rtype, 'data': data})
 
 
 def normalize(zone, raw, *, require_id=False):
@@ -82,7 +93,12 @@ def normalize(zone, raw, *, require_id=False):
                 raise ValidationError('Saved CNAME points to itself')
     else:
         data = raw.get('data')
-        fields = {'flags', 'tag', 'value'} if rtype == 'CAA' else {'priority', 'weight', 'port', 'target'}
+        fields = {
+            'CAA': {'flags', 'tag', 'value'}, 'SRV': {'priority', 'weight', 'port', 'target'},
+            'HTTPS': {'priority', 'target', 'value'}, 'SVCB': {'priority', 'target', 'value'},
+            'TLSA': {'usage', 'selector', 'matching_type', 'certificate'},
+            'DS': {'key_tag', 'algorithm', 'digest_type', 'digest'},
+        }[rtype]
         if not isinstance(data, dict) or set(data) != fields:
             raise ValidationError('Incomplete or unsupported structured Cloudflare record')
         data = deepcopy(data)
@@ -90,16 +106,32 @@ def normalize(zone, raw, *, require_id=False):
             _integer(data['flags'], 'CAA flags', 255)
             _string(data['tag'], 'CAA tag', 255)
             _string(data['value'], 'CAA value', empty=True)
-        else:
+        elif rtype == 'SRV':
             for key in ('priority', 'weight', 'port'): _integer(data[key], 'SRV ' + key)
             data['target'] = _name(data['target']).to_text().rstrip('.') or '.'
+        elif rtype in {'HTTPS', 'SVCB'}:
+            _integer(data['priority'], rtype + ' priority')
+            data['target'] = _name(data['target']).to_text().rstrip('.') or '.'
+            _string(data['value'], rtype + ' parameters', empty=True)
+        else:
+            integers = ('usage', 'selector', 'matching_type') if rtype == 'TLSA' else ('key_tag', 'algorithm', 'digest_type')
+            for key in integers: _integer(data[key], rtype + ' ' + key, 65535 if key == 'key_tag' else 255)
+            field = 'certificate' if rtype == 'TLSA' else 'digest'
+            value = _string(data[field], rtype + ' ' + field)
+            if not re.fullmatch(r'(?:[a-fA-F0-9]{2})+', value):
+                raise ValidationError('Invalid saved Cloudflare hexadecimal record data')
+            data[field] = value.lower()
         result['data'] = data
     # The API returns redundant content for structured records. Validate against
     # the structured fields, which are the writable authority for those types.
     try:
-        parsed = dns.rdata.from_text('IN', rtype, cloudflare._from_cf_record(result), origin=origin, relativize=False)
+        text = _structured_text(rtype, result['data']) if rtype in STRUCTURED_TYPES else cloudflare._from_cf_record(result)
+        parsed = dns.rdata.from_text('IN', rtype, text, origin=origin, relativize=False)
         if rtype in {'A', 'AAAA'}:
             result['content'] = parsed.address
+        if rtype in {'HTTPS', 'SVCB'}:
+            parts = parsed.to_text(origin=origin, relativize=False).split(None, 2)
+            result['data']['value'] = parts[2] if len(parts) > 2 else ''
         if rtype in STRUCTURED_TYPES and raw.get('content') is not None:
             redundant = dns.rdata.from_text('IN', rtype, _string(raw['content'], 'record content'), origin=origin, relativize=False)
             if parsed != redundant:

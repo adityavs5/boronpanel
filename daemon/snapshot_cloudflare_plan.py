@@ -34,7 +34,7 @@ def collection(zone, records, *, current=False):
         # never multiple CNAMEs or a CNAME alongside explicit address records.
         if len(cnames) > 1 or (cnames and any(row['type'] in ('A', 'AAAA') for row in group)):
             raise ValidationError('Conflicting saved Cloudflare CNAME records')
-        if any(row['type'] == 'NS' for row in group) and any(row['type'] != 'NS' for row in group):
+        if any(row['type'] == 'NS' for row in group) and any(row['type'] not in {'NS', 'DS'} for row in group):
             raise ValidationError('Cloudflare nameserver records conflict with other records')
     return rows
 

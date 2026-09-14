@@ -1848,3 +1848,31 @@ DNS record was changed and this code is not deployed.
 Remaining: additional native schema/legacy variants, broader UI/release and
 suitable live-provider verification, followed by the full initial requirement
 and GitHub/self-update audit. The separate expansion backlog is preserved.
+
+### Structured DNS records and Cloudflare recovery UI — 2026-09-14
+
+Added native HTTPS/SVCB/TLSA/DS validation and canonical text comparison. HTTPS/SVCB
+parameters normalize through the DNS parser, so equivalent parameter ordering
+does not cause false recovery differences. TLSA/DS integer and hexadecimal fields
+are bounded and preserve native data. The first schema run found SVCB targets
+were parsed relative to the zone after stripping the trailing dot; fixed the
+renderer to use absolute target names. Cloudflare's current delegation docs also
+confirm NS and DS coexistence for secure child delegation, now explicitly allowed
+by the planner and tested.
+
+The configuration recovery picker labels Cloudflare records separately from local
+record sets and explains propagation delay. Submission now checks that every
+selected zone remains available in the current catalog. Existing confirmation,
+selection reset and undo behavior are retained.
+
+Validation: final native/planner/executor/transport run passed 80 tests in 4.89s.
+Production frontend build passed in 45.80s. Eighteen browser checks passed in 3.0m:
+local and Cloudflare DNS restore/undo in both skins/light-dark modes, mobile
+interaction/overflow, unavailable zones and existing PHP/cron recovery controls.
+Browser API calls are fixtures. git diff --check passed. No public DNS changes or
+new deployment were performed. Remaining native schema variants and release/live
+provider verification remain open; this is not completion of the full goal.
+
+References:
+- https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/
+- https://developers.cloudflare.com/dns/manage-dns-records/how-to/subdomains-outside-cloudflare/

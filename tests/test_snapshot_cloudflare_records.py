@@ -74,3 +74,32 @@ def test_conflicting_structured_content_is_rejected():
     raw={'name':'alpha.test','type':'CAA','ttl':300,'content':'0 issue "different.example"',
          'data':{'flags':0,'tag':'issue','value':'ca.example'}}
     with pytest.raises(ValidationError,match='invalid for its DNS type'): normalize('alpha.test',raw)
+
+
+@pytest.mark.parametrize('rtype,data,content', [
+    ('HTTPS',{'priority':1,'target':'.','value':'alpn="h2,h3" port=443'},'1 . alpn="h2,h3" port=443'),
+    ('SVCB',{'priority':0,'target':'target.example.','value':''},'0 target.example.'),
+    ('TLSA',{'usage':3,'selector':1,'matching_type':1,'certificate':'AB'*32},'3 1 1 '+'AB'*32),
+    ('DS',{'key_tag':12345,'algorithm':13,'digest_type':2,'digest':'AB'*32},'12345 13 2 '+'AB'*32),
+])
+def test_additional_structured_types_round_trip(rtype,data,content):
+    raw={'name':'_service.alpha.test','type':rtype,'ttl':300,'data':data,'content':content}
+    result=normalize('alpha.test',raw)
+    assert result['type']==rtype and 'content' not in result
+    assert normalize('alpha.test',result)==result
+
+
+def test_https_parameter_order_has_one_canonical_representation():
+    raw={'name':'alpha.test','type':'HTTPS','ttl':300,'data':{'priority':1,'target':'.','value':'port=443 alpn="h2"'}}
+    other=deepcopy(raw);other['data']['value']='alpn="h2" port=443'
+    assert normalize('alpha.test',raw)==normalize('alpha.test',other)
+
+
+@pytest.mark.parametrize('rtype,data', [
+    ('TLSA',{'usage':True,'selector':1,'matching_type':1,'certificate':'ab'}),
+    ('TLSA',{'usage':3,'selector':1,'matching_type':1,'certificate':'zz'}),
+    ('DS',{'key_tag':65536,'algorithm':13,'digest_type':2,'digest':'ab'*32}),
+    ('HTTPS',{'priority':1,'target':'.','value':'port=not-a-port'}),
+])
+def test_invalid_additional_structured_data(rtype,data):
+    with pytest.raises(ValidationError): normalize('alpha.test',{'name':'alpha.test','type':rtype,'ttl':300,'data':data})

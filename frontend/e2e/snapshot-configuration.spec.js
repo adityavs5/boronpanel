@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
-for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','dark']) for (const section of ['cron', 'php', 'dns']) {
+for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','dark']) for (const section of ['cron', 'php', 'dns']) for (const provider of section === 'dns' ? ['local', 'cloudflare'] : ['local']) {
   const label = section === 'dns' ? 'DNS records' : section === 'php' ? 'PHP settings' : 'scheduled tasks'
-  test(`${skin} ${theme}: ${label} restore and undo`, async ({ page }) => {
+  test(`${skin} ${theme}: ${provider} ${label} restore and undo`, async ({ page }) => {
     await page.addInitScript(({skin,theme}) => {
       localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme},version:0}))
       localStorage.setItem('boron.auth',JSON.stringify({state:{role:'customer',username:'alpha'},version:0}))
@@ -13,7 +13,7 @@ for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','
       if(path.endsWith('/whoami'))data={role:'customer',username:'alpha'}
       else if(path.endsWith('/onboarding'))data={completed:true}
       else if(path.endsWith('/snapshots/runs'))data={runs:[{id:1,status:'completed',snapshot_id:'a'.repeat(64),options:{components:['config']},summary:{},started_at:'2026-09-14T00:00:00Z'}]}
-      else if(path.endsWith('/configuration'))data={cron_available:true,managed_jobs:1,php_available:true,php_sites:2,php_default_version:'8.3',dns_available:true,dns_zones:[{zone:'alpha.test',available:true,record_count:2},{zone:'deleted.test',available:false,reason:'Zone no longer owned'}]}
+      else if(path.endsWith('/configuration'))data={cron_available:true,managed_jobs:1,php_available:true,php_sites:2,php_default_version:'8.3',dns_available:true,dns_zones:[{zone:'alpha.test',provider,available:true,record_count:2},{zone:'deleted.test',available:false,reason:'Zone no longer owned'}]}
       else if(path.endsWith('/runs/1/restore')){
         restored=route.request().postDataJSON()
         history=[{id:10,status:'completed',selection:{kind:'config',config_sections:[section],...(section==='dns'?{dns_zones:['alpha.test']}:{})},safety_snapshot_id:'b'.repeat(64),progress_message:'Scheduled tasks restored',started_at:'2026-09-14T00:00:00Z'}]
@@ -38,6 +38,8 @@ for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','
     await expect(form.getByRole('button', {name: `Restore ${label} now`})).toBeDisabled()
     await form.getByRole('textbox', {name: 'Confirm account username', exact: true}).fill('alpha')
     if (section === 'dns') {
+      if (provider === 'cloudflare') await expect(form.getByText('Cloudflare · 2 records', {exact:true})).toBeVisible()
+      await expect(form.getByText(/DNS changes may take time to propagate/)).toBeVisible()
       await expect(form.getByRole('checkbox', {name: /deleted.test/})).toBeDisabled()
       await form.getByRole('checkbox', {name: /alpha.test/}).check()
       await expect(form.getByRole('button', {name: `Restore ${label} now`})).toBeDisabled()

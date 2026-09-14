@@ -22,6 +22,13 @@ def test_equivalent_ipv6_spellings_do_not_create_changes():
     assert plan('alpha.test',current,desired)['batches']==[]
 
 
+def test_secure_child_delegation_allows_ns_and_ds_at_same_name():
+    records=[{'name':'child.alpha.test','type':'NS','ttl':300,'content':'ns.external.test'},
+             {'name':'child.alpha.test','type':'DS','ttl':300,'data':{'key_tag':12345,'algorithm':13,'digest_type':2,'digest':'ab'*32}}]
+    result=plan('alpha.test',[],records)
+    assert result['creates']==2
+
+
 def test_changes_only_target_current_ids_and_preserve_native_options():
     current=[record(1),record(2,'192.0.2.2')]
     desired=[record(999,'192.0.2.3',proxied=False,comment='new',tags=['owner:qa'])]
