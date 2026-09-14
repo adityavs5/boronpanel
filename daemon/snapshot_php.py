@@ -181,3 +181,29 @@ def apply_configuration(account, payload, save_previous):
             raise ValidationError('PHP recovery failed and runtime rollback could not be confirmed. '
                                   'Use the encrypted previous configuration to recover.') from None
         raise ValidationError('PHP recovery failed; the previous settings were reapplied.') from None
+
+
+def reconcile_interrupted(row, update):
+    """Rebuild runtime from committed settings without replaying a restore.
+
+    Called during startup while holding the account lock. Database replacement
+    is transactional; a lost process can leave old runtime with new DB settings.
+    The encrypted pre-restore copy stays available for an explicit undo.
+    """
+    from shared.models import utcnow
+    message = 'PHP restore was interrupted before settings were changed.'
+    if row.safety_snapshot_id:
+        try:
+            with write_session() as session:
+                account = session.get(Account, row.account_id)
+            if account is None:
+                raise ValidationError('Account no longer exists')
+            current = validate_for_restore(account, capture(account))
+            _refresh_runtime(account, current)
+            message = ('PHP restore was interrupted. Runtime now matches the committed settings; '
+                       'use the encrypted previous configuration to undo this restore.')
+        except Exception:
+            message = ('PHP restore was interrupted and runtime reconciliation could not be confirmed. '
+                       'The encrypted previous configuration is retained for recovery.')
+    update(row.id, status='failed', progress_message='Interrupted PHP restore',
+           error=message, completed_at=utcnow())

@@ -233,3 +233,21 @@ def test_php_edit_handlers_reject_active_account_restore(accounts, php_runtime, 
             handler(dict(username='alpha', **extra))
     assert snapshot_php.capture(alpha) == before
     assert not php_runtime
+
+
+@pytest.mark.parametrize('module,name,extra', [
+    ('handlers_domain', 'add_domain', {'domain': 'new.alpha.test'}),
+    ('handlers_domain', 'remove_domain', {'domain': 'app.alpha.test'}),
+    ('handlers_account', 'suspend_account', {}),
+    ('handlers_account', 'unsuspend_account', {}),
+    ('handlers_account', 'reactivate_account', {}),
+])
+def test_domain_and_lifecycle_edits_cannot_race_php_restore(accounts, module, name, extra):
+    import importlib
+    from daemon import snapshot_jobs
+    alpha, _ = accounts
+    before = snapshot_php.capture(alpha)
+    with snapshot_jobs.lock(f'account-{alpha.id}'):
+        with pytest.raises(ValidationError, match='in progress'):
+            getattr(importlib.import_module('daemon.' + module), name)(dict(username='alpha', **extra))
+    assert snapshot_php.capture(alpha) == before

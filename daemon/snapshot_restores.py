@@ -691,6 +691,10 @@ def recover_restores():
         try:
             with jobs.lock(f'account-{row.account_id}',blocking=False):
                 current=jobs._row(SnapshotRestore,row.id)
+                if current.status=='running' and current.selection.get('kind') == 'config' and current.selection.get('config_sections') == ['php']:
+                    from daemon.snapshot_php import reconcile_interrupted
+                    reconcile_interrupted(current, _update)
+                    continue
                 if current.status=='running':
                     _update(row.id,status='failed',progress_message='Interrupted',
                         error='Restore worker was interrupted. Some selected data may have been restored; the pre-restore snapshot is retained.',completed_at=utcnow())

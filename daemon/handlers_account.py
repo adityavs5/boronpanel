@@ -217,6 +217,7 @@ def create_account(params: dict) -> dict:
     return result
 
 
+@account_mutation.locked
 def reactivate_account(params: dict) -> dict:
     """Recreates a terminated account's Linux user + cgroup slice and
     flips its existing DB row back to active, instead of inserting a new
@@ -345,6 +346,7 @@ def list_accounts(params: dict) -> dict:
         return {"accounts": [_account_to_dict(a) for a in accounts]}
 
 
+@account_mutation.locked
 def suspend_account(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:
@@ -368,6 +370,7 @@ def suspend_account(params: dict) -> dict:
         return _account_to_dict(account)
 
 
+@account_mutation.locked
 def unsuspend_account(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:

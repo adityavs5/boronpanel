@@ -178,3 +178,42 @@ def test_queued_php_restore_undo_and_redo(configuration, monkeypatch):
     redone = jobs._row(SnapshotRestore, redo['id'])
     assert redone.status == 'completed', redone.error
     assert snapshot_php.capture(account) == archived
+
+
+@pytest.mark.parametrize('reconciliation_fails', [False, True])
+def test_interrupted_php_restore_reconciles_committed_settings_and_retains_undo(configuration, monkeypatch, reconciliation_fails):
+    from daemon import snapshot_php, ols, sysops
+    _, ident, _, _ = configuration
+    run = jobs._row(SnapshotRun, ident)
+    account = jobs._row(Account, run.account_id)
+    archived = snapshot_php.capture(account)
+    with write_session() as session:
+        session.get(Account, account.id).php_version = '8.2'
+    before = snapshot_php.capture(account)
+    def crash(account):
+        raise SystemExit('simulated process loss after database commit')
+    monkeypatch.setattr(ols, 'refresh_vhost', crash)
+    request = restores.trigger(dict(username='alpha', run_id=ident, confirmation='alpha', kind='config', config_sections=['php']))
+    with pytest.raises(SystemExit):
+        restores.execute(request['id'])
+    interrupted = jobs._row(SnapshotRestore, request['id'])
+    assert interrupted.status == 'running' and interrupted.safety_snapshot_id
+    assert snapshot_php.capture(account) == archived
+    calls = []
+    def reconcile(current):
+        calls.append(current.php_version)
+        if reconciliation_fails:
+            raise RuntimeError('private failure details')
+    monkeypatch.setattr(ols, 'refresh_vhost', reconcile)
+    monkeypatch.setattr(sysops, 'recycle_php_workers', lambda username: None)
+    restores.recover_restores()
+    failed = jobs._row(SnapshotRestore, interrupted.id)
+    assert failed.status == 'failed' and failed.safety_snapshot_id == interrupted.safety_snapshot_id
+    assert calls == [archived['default_version']]
+    assert ('could not be confirmed' in failed.error) == reconciliation_fails
+    assert 'private failure details' not in failed.error
+    monkeypatch.setattr(ols, 'refresh_vhost', lambda current: None)
+    undo = restores.undo(dict(username='alpha', restore_id=failed.id, confirmation='alpha'))
+    restores.execute(undo['id'])
+    assert jobs._row(SnapshotRestore, undo['id']).status == 'completed'
+    assert snapshot_php.capture(account) == before

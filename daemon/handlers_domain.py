@@ -49,6 +49,7 @@ _find_parent_zone = find_managed_zone
 _subdomain_label = label_within_zone
 
 
+@account_mutation.locked
 def add_domain(params: dict) -> dict:
     username = validate_username(params["username"])
     domain_name = validate_domain(params["domain"])
@@ -131,6 +132,7 @@ def add_domain(params: dict) -> dict:
     return domain_dict
 
 
+@account_mutation.locked
 def remove_domain(params: dict) -> dict:
     """Subdomain/addon delete (Phase 2 feature 4). Deliberately refuses to
     remove an account's primary domain -- that's not "delete a domain", an

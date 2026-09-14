@@ -882,3 +882,26 @@ establish live recovery completion.
 Two additional browser tests passed (15.3s), one per theme, verifying an unavailable
 PHP recovery point displays its account/site reason, exposes no PHP submit action,
 leaves cron recovery available, and sends no mutation requests while inspecting.
+
+### Interrupted PHP runtime reconciliation — 2026-09-14
+
+Startup now handles interrupted PHP restores separately: after acquiring the
+account lock, it rebuilds runtime from the committed (transactional) database
+settings and marks the interrupted operation failed with an explicit recovery
+message. It never replays the restore or discards the encrypted previous copy.
+If runtime reconciliation fails, history says it could not be confirmed and
+retains the same undo snapshot. An interruption before the safety snapshot was
+persisted is identified as occurring before PHP settings changed.
+
+Domain add/remove and account suspend/unsuspend/reactivate handlers now use the
+same account mutation lock, supplementing the PHP edit and termination guards.
+
+Affected lifecycle/domain/staging/legacy full-restore regression: 71 selected tests
+passed (150.34s; 88 unrelated tests deselected), using authorized disposable
+filesystem ownership fixtures. This includes existing domain creation/removal,
+account suspension/reactivation, staging compensation, and full-restore paths.
+PHP/configuration regression: all 46 tests passed (289.18s), including simulated
+process loss after database commit, startup reconciliation success/failure, and
+successful encrypted undo after either outcome. Tests use real restic repositories
+and mocked runtime service calls. Live deployment and real OLS verification are
+still required; no customer PHP configuration was changed in this step.
