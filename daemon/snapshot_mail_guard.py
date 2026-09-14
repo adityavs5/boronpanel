@@ -14,6 +14,7 @@ from pathlib import Path
 import secrets
 import stat
 import grp
+import re
 
 from shared.config import settings
 from shared.validation import ValidationError, validate_domain, validate_mailbox_local_part
@@ -55,23 +56,33 @@ def _directory():
         os.close(fd)
 
 
-def block(domain, local_part, restore_id):
+def block(domain, local_part, restore_id, *, token=None):
     if type(restore_id) is not int or restore_id <= 0:
         raise ValidationError('Invalid mail restore job')
     name = marker_name(domain, local_part)
-    token = secrets.token_hex(32)
+    token = secrets.token_hex(32) if token is None else token
+    if not isinstance(token, str) or not re.fullmatch(r'[a-f0-9]{64}', token):
+        raise ValidationError('Invalid mail restore guard ownership token')
     with _directory() as directory:
+        temporary = '.pending-' + secrets.token_hex(16)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
         try:
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                         0o600, dir_fd=directory)
-        except FileExistsError:
-            raise ValidationError('Mailbox is already protected by a restore job') from None
-        # An interrupted write leaves a blocking marker for explicit recovery.
-        with os.fdopen(fd, 'w') as handle:
-            json.dump({'format': 1, 'restore_id': restore_id, 'token': token}, handle)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.fsync(directory)
+            with os.fdopen(fd, 'w') as handle:
+                json.dump({'format': 1, 'restore_id': restore_id, 'token': token}, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            # Publish complete ownership data atomically without overwriting a
+            # competing guard. The coordinator can persist token before this.
+            try:
+                os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory,
+                        follow_symlinks=False)
+            except FileExistsError:
+                raise ValidationError('Mailbox is already protected by a restore job') from None
+            os.fsync(directory)
+        finally:
+            os.unlink(temporary, dir_fd=directory)
+            os.fsync(directory)
     return token
 
 

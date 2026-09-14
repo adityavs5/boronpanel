@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import os
 import stat
+import secrets
 import uuid
 
 from sqlalchemy import select
@@ -118,6 +119,32 @@ def stage(account, prepared, restore_id):
         stage_for_exchange(entry['source'], work, entry['domain'], entry['local_part'],
                            prepared=entry['prepared'], receipt=entry['receipt'], restore_id=restore_id)
     return {'index': str(index), 'entries': inventory}
+
+
+def acquire_guards(account, prepared, restore_id):
+    """Persist recovery ownership before publishing any mailbox lookup guard.
+
+    Keep the private work directory after every failure: some guards may already
+    be active. The inventory permits recovery to verify precisely those tokens.
+    """
+    from daemon import snapshot_mail_guard as guard
+    from daemon.snapshot_mail_files import _placement_receipt
+    from daemon.snapshot_mail_journal import _path
+    if type(restore_id) is not int or restore_id <= 0:
+        raise ValidationError('Invalid mailbox restore identifier')
+    index = _path(Path(prepared['work']) / 'guard-index.json')
+    metadata = {}
+    for entry in prepared['entries']:
+        metadata.setdefault(entry['domain'], {'mailboxes': {}})['mailboxes'][entry['local_part']] = entry['metadata']
+    selected = selected_mailboxes(account, metadata, [entry['local_part'] + '@' + entry['domain']
+                                                     for entry in prepared['entries']])
+    entries = [dict(domain=entry['domain'], local_part=entry['local_part'], token=secrets.token_hex(32))
+               for entry in selected]
+    _placement_receipt(index, dict(format=1, account_id=account.id, restore_id=restore_id,
+                                   entries=entries), create=True)
+    for entry in entries:
+        guard.block(entry['domain'], entry['local_part'], restore_id, token=entry['token'])
+    return {'index': str(index), 'entries': entries}
 
 
 def inspect_staging(account, work, restore_id):

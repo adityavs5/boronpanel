@@ -17,6 +17,7 @@ def test_batch_staging_retains_inventory_on_interruption(isolated_db, tmp_path, 
     work.mkdir(mode=0o700)
     monkeypatch.setattr(settings, 'snapshot_private_dir', str(private))
     monkeypatch.setattr(settings, 'mail_base', str(tmp_path / 'mail'))
+    monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(tmp_path / 'guards'))
     with write_session() as session:
         account = Account(username='alpha', status='active', uid=65534, gid=65534)
         session.add(account); session.flush()
@@ -34,6 +35,15 @@ def test_batch_staging_retains_inventory_on_interruption(isolated_db, tmp_path, 
         entries.append({'domain': 'alpha.example.test', 'local_part': local,
                         'metadata': {'local_part': local}, 'prepared': str(source)})
     monkeypatch.setattr(mail, 'list_mailboxes', lambda domain: [{'local_part': 'one'}, {'local_part': 'two'}])
+    from daemon import snapshot_mail_guard as guard
+    acquired = restore.acquire_guards(account, {'work': str(work), 'entries': entries}, 17)
+    persisted = json.loads(Path(acquired['index']).read_text())
+    assert persisted['entries'] == acquired['entries']
+    assert Path(acquired['index']).stat().st_mode & 0o777 == 0o600
+    with guard.owned_guards(persisted['entries'], 17):
+        pass
+    with pytest.raises(FileExistsError):
+        restore.acquire_guards(account, {'work': str(work), 'entries': entries}, 17)
     original = files.stage_for_exchange
     def interrupted(source, root, domain, local, **kwargs):
         if local == 'two':

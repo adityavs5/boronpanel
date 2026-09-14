@@ -950,3 +950,21 @@ idempotent initialization with a retained message, symlink refusal and unexpecte
 directory ownership. This is still an internal recovery primitive: account/domain
 authorization and SQL recreation must be coordinated before customer submission
 is enabled.
+
+Restore guard acquisition now persists a private account/job-bound token inventory
+before activating any mailbox block. Exclusive inventory creation prevents a
+retry from replacing the ownership tokens of an interrupted batch. Failures leave
+that inventory available for subsequent recovery; acquired guards are not blindly
+released.
+
+Guard publication now writes and fsyncs complete ownership data in a temporary
+file, then hard-links it atomically to the final marker name without overwriting
+an existing guard. A failed write cannot publish partial JSON. A failure after
+publication leaves a complete marker matching the pre-persisted token. This
+supersedes the earlier direct-write behavior for newly acquired guards; existing
+corrupt markers still require explicit recovery.
+
+Validation: 43 guard/staging/journal/Dovecot tests passed, including failure before
+publication, failure after publication with successful owned recovery, duplicate
+acquisition refusal and private batch-token persistence. Full coordinator
+finalization and startup recovery remain pending.

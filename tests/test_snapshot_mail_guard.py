@@ -61,3 +61,26 @@ def test_unsafe_directory_rejected(directory):
     with pytest.raises(ValidationError):
         guard.block('example.test', 'inbox', 1)
     assert list(directory.iterdir()) == []
+
+
+def test_failed_write_never_publishes_partial_ownership(directory, monkeypatch):
+    def fail(payload, handle):
+        handle.write('{partial')
+        raise OSError('interrupted write')
+    monkeypatch.setattr(guard.json, 'dump', fail)
+    with pytest.raises(OSError):
+        guard.block('example.test', 'inbox', 1, token='a' * 64)
+    assert list(directory.iterdir()) == []
+
+
+def test_failure_after_publication_retains_complete_persisted_token(directory, monkeypatch):
+    original = guard.os.link
+    def publish_then_fail(*args, **kwargs):
+        original(*args, **kwargs)
+        raise OSError('lost acknowledgement')
+    monkeypatch.setattr(guard.os, 'link', publish_then_fail)
+    with pytest.raises(OSError):
+        guard.block('example.test', 'inbox', 1, token='a' * 64)
+    assert len(list(directory.iterdir())) == 1
+    guard.release('example.test', 'inbox', 1, 'a' * 64)
+    assert list(directory.iterdir()) == []
