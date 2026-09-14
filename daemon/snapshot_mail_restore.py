@@ -421,3 +421,38 @@ def finalize(account, repo, path, restore_id, *, service='dovecot.service'):
             _placement_receipt(journal._path(intent), expected, create=True)
     guard.release_batch(payload['entries'], restore_id)
     return {'safety_snapshot_id': receipt['snapshot_id'], 'mailboxes': len(payload['entries']), 'guards_released': True}
+
+
+def run_restore(account, repo, snapshot_id, addresses, restore_id, checkpoint):
+    """Execute one new mailbox restore with durable caller-owned checkpoints.
+
+    Caller holds account/repository locks and persists each callback before it
+    returns. This is not a retry entry point. Any exception retains all recovery
+    records, guards and displaced data; recovery must inspect the existing work.
+    Checkpoints contain no passwords or ownership tokens.
+    """
+    from daemon.snapshot_mail_guard_config import verify
+    from daemon import snapshot_mail_journal as journal
+    if type(restore_id) is not int or restore_id <= 0 or not callable(checkpoint):
+        raise ValidationError('Mailbox restore requires a job and durable checkpoints')
+    verify()
+    checkpoint('preparing', {})
+    prepared = prepare(account, repo, snapshot_id, addresses)
+    work = prepared['work']
+    # Persist the work reference before guards or live storage can be changed.
+    checkpoint('prepared', {'work': work})
+    acquired = acquire_guards(account, prepared, restore_id)
+    checkpoint('guarded', {'work': work})
+    provision_mailboxes(account, prepared, acquired, restore_id)
+    checkpoint('provisioned', {'work': work})
+    stage(account, prepared, restore_id)
+    checkpoint('staged', {'work': work})
+    path = create_switch(account, work, acquired, restore_id)
+    checkpoint('switching', {'work': work, 'journal': str(path)})
+    journal.launch(path)
+    checkpoint('switched', {'work': work, 'journal': str(path)})
+    safety = backup_displaced(account, repo, path, restore_id)
+    checkpoint('safety_saved', {'work': work, 'journal': str(path), 'safety_snapshot_id': safety['snapshot_id']})
+    result = finalize(account, repo, path, restore_id)
+    checkpoint('completed', {'work': work, 'journal': str(path), **result})
+    return result

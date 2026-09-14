@@ -206,6 +206,37 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
         assert entry['metadata']['password_hash'] == hashed
     finally:
         shutil.rmtree(prepared['work'])
+    # Exercise the assembled workflow with real SQL/restic/offline Dovecot and
+    # temporary Maildirs. Supervision is replaced only for this isolated tree;
+    # real systemd shutdown/restart is covered by the journal/service suites.
+    from daemon import snapshot_mail_journal as journal, snapshot_mail_service as supervisor
+    from daemon import snapshot_mail_guard_config as guard_config
+    import os
+    monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(work / 'workflow-guards'))
+    monkeypatch.setattr(guard_config, 'verify', lambda: {'guard': 'ready'})
+    monkeypatch.setattr(journal, 'require_stopped', lambda *args: None)
+    monkeypatch.setattr(journal, 'launch', lambda path: journal.execute(path))
+    monkeypatch.setattr(supervisor, 'inspect_switch', lambda *a, **kw: {'state': 'missing'})
+    monkeypatch.setattr(supervisor, 'service_status', lambda *a: {
+        'LoadState': 'loaded', 'ActiveState': 'active', 'SubState': 'running', 'ControlPID': '0'})
+    for directory in (message.parents[3], message.parents[2], message.parents[1],
+                      *[message.parents[1] / name for name in ('cur', 'new', 'tmp')]):
+        os.chown(directory, 150, 150)
+        directory.chmod(0o700)
+    message.write_bytes(b'mail received after recovery point')
+    checkpoints = []
+    result = restore_mail.run_restore(account, repo, run.snapshot_id, ['inbox@alpha.example.test'], 29,
+                                     lambda phase, state: checkpoints.append((phase, state)))
+    assert result['guards_released'] and result['mailboxes'] == 1
+    assert [p for p, state in checkpoints] == ['preparing', 'prepared', 'guarded', 'provisioned', 'staged',
+                                               'switching', 'switched', 'safety_saved', 'completed']
+    assert hashed not in repr(checkpoints) and password not in repr(checkpoints)
+    live_messages = list(message.parent.iterdir())
+    assert len(live_messages) == 1 and live_messages[0].read_bytes() == content
+    assert not list(Path(settings.mail_restore_guard_dir).iterdir())
+    safety_mail = storage.restore_to(repo, account.id, result['safety_snapshot_id'], str(work / 'workflow-safety'))
+    old_messages = list(safety_mail.rglob('proof:2,S'))
+    assert len(old_messages) == 1 and old_messages[0].read_bytes() == b'mail received after recovery point'
     with connection.cursor() as cursor:
         cursor.execute("DELETE u FROM mail_user u JOIN mail_domain d ON u.domain_id=d.id WHERE d.domain='alpha.example.test'")
     assert restores.mailbox_options({'username': 'alpha', 'run_id': run_id})['mailboxes'][0]['action'] == 'recreate'

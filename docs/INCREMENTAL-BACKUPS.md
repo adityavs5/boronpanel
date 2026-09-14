@@ -1048,3 +1048,21 @@ all remaining owned guards are released and checks idempotent re-entry. A separa
 test proves a later mismatched owner prevents removal of an earlier valid guard.
 Customer submission, job-state integration and full startup recovery remain
 unfinished.
+
+`run_restore` now assembles a new mailbox restore through encrypted preparation,
+owned guard acquisition, missing-user/storage provisioning, staged copying,
+exclusive journal creation, supervised switching, displaced-mail safety backup and
+verified finalization. It requires a checkpoint callback, supplied by the job
+coordinator, before guards/live changes and at each later phase. Checkpoints carry
+work/journal references and safety snapshot IDs, never credentials or tokens.
+The entry point deliberately does not replay failed work or delete its recovery
+records. Job-state persistence and startup reconciliation still need wiring before
+customer restore submission is enabled.
+
+The assembled-workflow integration test passed after correcting fixture Maildir
+subfolder ownership. It uses real isolated SQL, encrypted restic storage and
+offline Dovecot rebuilding; only systemd supervision is substituted for its
+temporary mail tree (the separate journal/service suites exercise real systemd).
+It proves backed-up messages replace current messages, newer mail remains
+recoverable from the safety snapshot, checkpoint payloads contain no credentials,
+and all owned guards are released at completion.
