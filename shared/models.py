@@ -1929,6 +1929,16 @@ class SnapshotRestore(Base):
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SnapshotMailRecovery(Base):
+    """Internal mailbox-workflow checkpoints; never part of restore API output."""
+    __tablename__ = 'snapshot_mail_recovery'
+    restore_id: Mapped[int] = mapped_column(ForeignKey('snapshot_restores.id'), primary_key=True)
+    phase: Mapped[str] = mapped_column(String(32))
+    work: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    journal: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class PanelConfigJob(Base):
     __tablename__ = 'panel_config_jobs'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

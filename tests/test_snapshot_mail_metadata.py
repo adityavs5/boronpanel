@@ -225,12 +225,28 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
         directory.chmod(0o700)
     message.write_bytes(b'mail received after recovery point')
     checkpoints = []
+    from shared.models import SnapshotRestore, SnapshotMailRecovery
+    with write_session() as session:
+        session.add(SnapshotRestore(id=29, run_id=run.id, account_id=account.id,
+                                    selection={'kind': 'mail'}, status='running'))
+    with pytest.raises(ValidationError, match='out of sequence'):
+        restores._mail_checkpoint(29, 'completed', {})
+    def checkpoint(phase, state):
+        restores._mail_checkpoint(29, phase, state)
+        checkpoints.append((phase, state))
     result = restore_mail.run_restore(account, repo, run.snapshot_id, ['inbox@alpha.example.test'], 29,
-                                     lambda phase, state: checkpoints.append((phase, state)))
+                                     checkpoint)
     assert result['guards_released'] and result['mailboxes'] == 1
     assert [p for p, state in checkpoints] == ['preparing', 'prepared', 'guarded', 'provisioned', 'staged',
                                                'switching', 'switched', 'safety_saved', 'completed']
     assert hashed not in repr(checkpoints) and password not in repr(checkpoints)
+    with write_session() as session:
+        saved_job = session.get(SnapshotRestore, 29)
+        saved_checkpoint = session.get(SnapshotMailRecovery, 29)
+        assert saved_job.status == 'completed' and saved_job.safety_snapshot_id == result['safety_snapshot_id']
+        assert saved_checkpoint.phase == 'completed'
+        assert saved_checkpoint.work == checkpoints[1][1]['work']
+        assert saved_checkpoint.work not in repr(restores._serialize(saved_job))
     live_messages = list(message.parent.iterdir())
     assert len(live_messages) == 1 and live_messages[0].read_bytes() == content
     assert not list(Path(settings.mail_restore_guard_dir).iterdir())

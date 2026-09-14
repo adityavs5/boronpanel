@@ -16,6 +16,60 @@ from shared.validation import ValidationError
 
 logger=logging.getLogger('borond.snapshot_restores')
 
+MAIL_PHASES = ('preparing', 'prepared', 'guarded', 'provisioned', 'staged', 'switching',
+               'switched', 'safety_saved', 'completed')
+
+
+def _mail_checkpoint(ident, phase, data):
+    from shared.models import SnapshotMailRecovery
+    from daemon.snapshot_mail_journal import _path
+    import re
+    if phase not in MAIL_PHASES or not isinstance(data, dict) or set(data) - {
+            'work', 'journal', 'safety_snapshot_id', 'mailboxes', 'guards_released'}:
+        raise ValidationError('Invalid mailbox restore checkpoint')
+    with write_session() as session:
+        job = session.get(SnapshotRestore, ident)
+        if job is None or job.selection.get('kind') != 'mail' or job.status != 'running':
+            raise ValidationError('Mailbox restore job is not running')
+        checkpoint = session.get(SnapshotMailRecovery, ident)
+        expected = 'preparing' if checkpoint is None else MAIL_PHASES[MAIL_PHASES.index(checkpoint.phase) + 1]
+        if phase != expected:
+            raise ValidationError('Mailbox restore checkpoint is out of sequence')
+        if checkpoint is None:
+            checkpoint = SnapshotMailRecovery(restore_id=ident, phase=phase)
+            session.add(checkpoint)
+        if phase != 'preparing':
+            work = str(Path(data['work']))
+            _path(Path(work) / 'checkpoint')
+            if checkpoint.work is not None and checkpoint.work != work:
+                raise ValidationError('Mailbox recovery work directory changed')
+            checkpoint.work = work
+        if 'journal' in data:
+            journal = str(_path(Path(data['journal'])))
+            if journal != str(Path(checkpoint.work) / 'switch.json') or (checkpoint.journal and checkpoint.journal != journal):
+                raise ValidationError('Mailbox switch journal changed')
+            checkpoint.journal = journal
+        if 'safety_snapshot_id' in data:
+            value = data['safety_snapshot_id']
+            if not isinstance(value, str) or not re.fullmatch(r'[a-f0-9]{64}', value):
+                raise ValidationError('Invalid mailbox safety snapshot')
+            if job.safety_snapshot_id and job.safety_snapshot_id != value:
+                raise ValidationError('Mailbox safety snapshot changed')
+            job.safety_snapshot_id = value
+        if phase == 'completed':
+            if not job.safety_snapshot_id or data.get('guards_released') is not True or type(data.get('mailboxes')) is not int or data['mailboxes'] <= 0:
+                raise ValidationError('Mailbox restore lacks completion evidence')
+            job.status = 'completed'
+            job.summary = {'mailboxes': data['mailboxes'], 'guards_released': True}
+            job.completed_at = utcnow()
+        checkpoint.phase = phase
+        checkpoint.updated_at = utcnow()
+        job.progress_message = {'preparing': 'Preparing selected mailboxes', 'prepared': 'Mailbox copies prepared',
+            'guarded': 'Protecting selected mailboxes', 'provisioned': 'Mailbox accounts ready',
+            'staged': 'Mailbox copies ready to switch', 'switching': 'Switching selected mailboxes',
+            'switched': 'Saving previous mailbox contents', 'safety_saved': 'Finalizing mailbox restore',
+            'completed': 'Selected mailboxes restored'}[phase]
+
 
 def _serialize(row):
     return dict(id=row.id,run_id=row.run_id,account_id=row.account_id,selection=row.selection,status=row.status,

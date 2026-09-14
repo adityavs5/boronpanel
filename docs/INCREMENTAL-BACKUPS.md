@@ -1066,3 +1066,17 @@ temporary mail tree (the separate journal/service suites exercise real systemd).
 It proves backed-up messages replace current messages, newer mail remains
 recoverable from the safety snapshot, checkpoint payloads contain no credentials,
 and all owned guards are released at completion.
+
+Mailbox workflow checkpoints now have a dedicated `SnapshotMailRecovery` table,
+created additively by normal schema initialization. `_mail_checkpoint` persists
+strictly ordered phases, fixed private work/journal references and the safety
+snapshot ID alongside the existing restore job. It rejects out-of-order phase
+changes, changed recovery paths/snapshots and completion without explicit guard
+release evidence. Successful completion updates the job's public mailbox-count
+summary; internal path references are not part of its serializer.
+
+The assembled restore integration passed with real SQLite checkpoints replacing
+the earlier in-memory callback. It verifies rejection of premature completion,
+completed job/safety state through a fresh session, persisted recovery references
+and their absence from the public restore response. Dispatcher submission and
+startup recovery still need wiring before customer mailbox restore is enabled.
