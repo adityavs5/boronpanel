@@ -1788,3 +1788,30 @@ provider-managed record handling and semantic collection/diff planning before
 batch execution, checkpoint/undo and availability integration.
 
 Schema reference: https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/
+
+### Cloudflare current-record recovery planning — 2026-09-14
+
+Added a pure planner that validates complete writable record collections, matches
+unchanged native records without saved-ID authority, and produces current-ID PUTs,
+DELETEs and ID-free POSTs. Same-value records are matched before other updates so
+TTL/comment/proxy changes do not unnecessarily swap addresses. Matching uses
+indexed queues rather than quadratic scans. Equivalent IPv6 spellings normalize
+to the same address; disabled optional settings and read-only IDs do not create
+false differences. Counts preserve duplicate records for verification.
+
+Plans are deterministic and split at 200 operations. All deletions precede
+updates/creates across batch boundaries, including large address-set-to-CNAME
+transitions. Duplicate current IDs, foreign record names, CNAME/address conflicts,
+NS coexistence and managed records fail before a plan is returned. The caller must
+still partition protected/provider-managed records, validate ownership, encrypt
+previous state, recheck current state and checkpoint/verify each submitted batch.
+No new planner path is exposed to users yet.
+
+Validation: 62 tests passed in 1.36s across planner, native validator and batch
+transport. New cases cover unchanged/current-versus-saved IDs, native metadata,
+same-address matching, a 405-record replacement across three batches, simulated
+application yielding the desired state, duplicate count comparison, equivalent
+IPv6 values and invalid collection rejection. git diff --check passed. No public
+DNS writes or deployment occurred. Cloudflare restore stays disabled pending
+protected records/additional native schema support and execution/undo integration;
+full goal and subsequent expansion remain active.

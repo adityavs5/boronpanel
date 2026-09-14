@@ -98,6 +98,8 @@ def normalize(zone, raw, *, require_id=False):
     # the structured fields, which are the writable authority for those types.
     try:
         parsed = dns.rdata.from_text('IN', rtype, cloudflare._from_cf_record(result), origin=origin, relativize=False)
+        if rtype in {'A', 'AAAA'}:
+            result['content'] = parsed.address
         if rtype in STRUCTURED_TYPES and raw.get('content') is not None:
             redundant = dns.rdata.from_text('IN', rtype, _string(raw['content'], 'record content'), origin=origin, relativize=False)
             if parsed != redundant:
