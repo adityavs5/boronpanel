@@ -1293,3 +1293,43 @@ state rejection, partial-batch recovery from observed actual state, failed-renam
 temporary cleanup, checkpoint failure with guards retained, unsafe compiled-cache
 rejection, and invalid account/encoding/duplicate/selection/guard documents. All
 existing Sieve capture/preparation tests also passed; no live mail was modified.
+
+
+### Combined encrypted routing/script recovery bundles — 2026-09-14
+
+Added snapshot_mail_routing_recovery to prepare a selected routing change and
+capture its prior SQL rules plus exact affected Sieve scripts under the shared
+SQL lock. Prior routing responders must have matching script safety entries;
+extra affected scripts must belong to the selected owned domains. Credential and
+unknown script fields are discarded. Forwarding-only operations can carry an
+explicit empty script set without broadening script activation’s nonempty guard
+requirement.
+
+Safety sources bind account ID, username and restore job, use a fixed private
+filename, exclusive creation, mode 0600 and file/directory fsync, and are encrypted
+with restic before returning the snapshot identifier. Failed or uncertain storage
+operations retain the private source; repeating creation cannot overwrite it.
+The coordinator must durably record the snapshot identifier before live changes.
+
+Safety loading checks encrypted snapshot account ownership and exact job-bound
+source paths before decrypting, validates private file type/owner/permissions/size
+and envelope identity, revalidates current routing/script ownership, and removes
+its temporary decrypted tree. A separate loader reads routing from existing mail
+backup metadata while excluding mailbox credentials. These are internal helpers;
+no API exposes private rules or script content.
+
+Not deployed: durable guarded SQL/Sieve orchestration, supervision/interruption
+recovery, encrypted undo queue/UI integration and live proof remain necessary.
+Cloudflare-native DNS recovery also remains outstanding.
+
+Validation: five real SQL/restic tests passed (61.78s), plus the forwarding-only
+case passed (28.62s). The combined safety copy decrypts exactly after deleting its
+private source, rejects overwrite of an existing job source, retains 0600 mode,
+excludes fixture mailbox passwords/hashes, and cleans temporary decrypted files.
+Foreign-account and wrong-job requests fail before decryption. Existing mail
+backup routing loads without exposing credentials. Simulated encryption failure
+retains the private source and leaves SQL/scripts unchanged. Incomplete responder
+safety is rejected before storage. Forwarding-only safety round-trips with empty
+script sets and preserves unrelated custom scripts. Fixtures used private MariaDB
+sockets with networking disabled and temporary restic repositories; no live mail
+state was modified.

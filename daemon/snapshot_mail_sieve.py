@@ -193,12 +193,12 @@ def prepare_changes(account, desired_routing, current_routing):
     return dict(format=1, account_id=account.id, username=account.username, scripts=scripts)
 
 
-def _documents(account, payload):
+def _documents(account, payload, *, allow_empty=False):
     """Validate private script data before decoding or opening live files."""
     if (not isinstance(payload, dict) or type(payload.get('format')) is not int or payload['format'] != 1
             or type(payload.get('account_id')) is not int or payload['account_id'] != account.id
             or payload.get('username') != account.username or not isinstance(payload.get('scripts'), list)
-            or not 1 <= len(payload['scripts']) <= 1000):
+            or not (0 if allow_empty else 1) <= len(payload['scripts']) <= 1000):
         raise ValidationError('Invalid private automatic-reply recovery document')
     result = {}
     size = 0
@@ -224,7 +224,8 @@ def _documents(account, payload):
             if size > MAX_TOTAL_BYTES:
                 raise ValidationError('Selected automatic-reply scripts exceed the recovery limit')
         result[key] = content
-    _selection(account, [local + '@' + domain for domain, local in result])
+    if result:
+        _selection(account, [local + '@' + domain for domain, local in result])
     return result
 
 
