@@ -1223,3 +1223,38 @@ transfer while the source worker waits, private metadata permissions, and existi
 backup job/API scope behavior. A pre-existing Starlette TestClient deprecation
 warning was reported. All SQL fixtures used temporary sockets with networking
 disabled; no live mail configuration or production database was modified.
+
+
+### Exact Sieve safety capture and reply preparation — 2026-09-14
+
+Added snapshot_mail_sieve for automatic-reply recovery. Current scripts are
+captured as exact bytes (including custom scripts and non-UTF8 comments), with
+explicit absence distinguished from an empty script. Current account/domain and
+mailbox ownership is checked before storage access and again afterward. Traversal
+uses directory descriptors with no-follow opens; unsafe owners/permissions,
+symlinks, hard links, special files, oversized content and scripts replaced or
+modified during capture are rejected. Missing lazy mailbox homes are recorded as
+script absence without creating directories. Derived compiled caches are left
+untouched. The result must remain private and be encrypted by the coordinator.
+
+Preparation validates matching selected routing domains, covers the union of
+saved/current panel responders, compiles enabled restored replies with the real
+Sieve compiler, and represents disabled/removed replies as script absence. Custom
+scripts outside the affected panel responder set are left alone. Compiler errors
+are sanitized. Preparation does not activate scripts or change SQL. The shared
+SQL lock covers these operations; a future coordinator must retain it through
+safety capture, encryption and activation, together with the account lock.
+
+Still required: guarded script activation and failure/interruption handling,
+encrypted SQL/script undo, queue/UI integration and live proof. This development
+code is not deployed. Cloudflare-native DNS recovery remains open as well.
+
+Validation: the initial 19 capture tests passed (31.15s). The expanded capture and
+real-compiler preparation suite passed all 24 tests (40.96s), plus the invalid
+Unicode encoding test passed (4.95s). Cases cover exact custom bytes and explicit
+absence, no lazy-home creation, unsafe storage variants, invalid/foreign mailbox
+selection, ownership transfer, concurrent script replacement, size limits, enabled
+reply compilation, disabled/removed replies, unaffected custom scripts and
+sanitized compiler failures. The last two runs reported pytest cleanup warnings
+for older privileged temporary fixtures; their test cases passed. No live script,
+mailbox or routing record was changed.
