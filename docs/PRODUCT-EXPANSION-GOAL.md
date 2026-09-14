@@ -863,3 +863,22 @@ restore/undo/redo with mocked OLS calls. The existing PHP/domain handler regress
 run passed 57 tests; one ACL fixture failed because the sandbox rejected chown to
 its test UID. Its authorized unsandboxed targeted rerun passed (2.27s). No live
 account settings were changed or code deployed.
+
+### PHP recovery interface — 2026-09-14
+
+Both themes now offer separate scheduled-task and PHP settings restore actions.
+PHP preview shows the saved default version and site count, explains website
+impact and administrator-policy preservation, and requires the account username.
+Switching sections clears confirmation; pending restore blocks section changes.
+Unavailable sections show their own reason. Restore history and undo confirmation
+now identify PHP settings rather than incorrectly labeling all config recovery as
+scheduled tasks.
+
+Production build passed. Eight mocked-API browser tests passed (39.3s) across
+Evolution/Paper Lantern and light/dark, covering PHP and scheduled-task restore,
+section switching, exact payloads, typed undo confirmation and mobile overflow.
+Deployment and live PHP runtime restore/undo remain pending; this UI does not
+establish live recovery completion.
+Two additional browser tests passed (15.3s), one per theme, verifying an unavailable
+PHP recovery point displays its account/site reason, exposes no PHP submit action,
+leaves cron recovery available, and sends no mutation requests while inspecting.
