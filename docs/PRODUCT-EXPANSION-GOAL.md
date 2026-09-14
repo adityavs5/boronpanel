@@ -636,3 +636,12 @@ added to require cleaned preparation after restore and undo.
 The strengthened real SQL/restic/offline-Dovecot workflow passed separately
 (88.72 seconds): preparation was removed after restore and undo; journal-based
 finalization recovery and undo-of-undo still produced the expected messages.
+
+Revision `8e21875` deployed successfully. Rollback copy:
+`/root/boron-setup/mail-recovery-before-20260914-025851`. HTTPS health, admin login
+and configuration checks passed with unchanged listener configuration. Startup
+cleaned the redundant staging areas for completed QA mail restores 2 and 3.
+The private before/after hash verifier confirmed unchanged live messages,
+displaced messages and recovery journals for both jobs. Proof script and private
+manifest: `/root/boron-setup/mail-preparation-cleanup-proof.py` and its JSON sibling.
+No live mailbox or displaced sibling was removed. Backup completion remains open.
