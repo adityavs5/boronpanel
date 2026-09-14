@@ -669,3 +669,15 @@ after adding the last empty-container crash case. A separate SQL retention test
 proved that pending cleanup protects its snapshot and successful cleanup restores
 normal eligibility. Sandbox-only test cleanup warnings concern old root-owned
 pytest temporary directories; no assertions failed.
+
+Revision `e0ff402` deployed successfully; rollback copy:
+`/root/boron-setup/mail-recovery-before-20260914-030928`. Panel HTTPS, admin login
+and configuration checks passed. Startup completed displaced cleanup for QA
+restores 2 and 3. The live proof confirmed both displaced directories and empty
+quarantine containers were gone, active message hashes and original journal
+hashes were unchanged, and both retained encrypted recovery points restored the
+original displaced-message hashes. Proof script:
+`/root/boron-setup/mail-displaced-cleanup-proof.py`.
+The successful-mail staging/displaced lifecycle is now verified in production;
+failed/interrupted recovery evidence remains protected. The broader backup
+requirements and final initial-goal audit remain open.
