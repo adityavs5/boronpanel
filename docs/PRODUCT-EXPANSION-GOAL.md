@@ -4,7 +4,7 @@ The complete user objective remains active. A checked item requires implementati
 
 - [x] WordPress: explicit scan/import and refresh; soft deletion of records with suppression until manual rediscovery; hard deletion of selected installation files and owned database with confirmation and tenant isolation.
 - [ ] Backups: usable admin and customer backup system, reusable jobs, incremental snapshots, inclusion/exclusion filters, notification channels, SSH destinations, retention and restores. Verify restore contents and unchanged-file deduplication, not merely successful commands.
-- [ ] Domains/subdomains: independent site roots/public_html, DNS records, consistent creation workflow and ownership.
+- [x] Domains/subdomains: independent site roots/public_html, DNS records, consistent creation workflow and ownership.
 - [x] Mail: fix missing mail-domain provisioning and verify mailbox creation.
 - [x] WordPress URLs: functional http/https and www/non-www installation selection, login and clone compatibility.
 - [x] Applications: separate Python App and Node.js App navigation and user workflows.
@@ -486,3 +486,26 @@ Live proof scripts and private QA inventory are in
 `live-php-controls.json`. The latter contains generated QA credentials and is
 root-only; no credential values are included in this repository or test output.
 The remaining unchecked product requirements and queued expansion are unchanged.
+
+## Live subdomain verification — 2026-09-14
+
+Using the isolated PHP QA account, a managed local DNS zone was created for its
+parent domain and `blog` was added through the deployed domain API with kind
+`subdomain`. The resulting root was exactly
+`/home/<qa-user>/blog.<parent>/public_html`, owned by that account. Identically
+named temporary files in the parent and subdomain roots served different expected
+content through the actual OLS virtual hosts. The local authoritative DNS answer
+contained the automatically created A record pointing to 104.234.179.66.
+Temporary probes were removed and the QA site/zone retained. This verifies local
+managed DNS; Cloudflare and public DNS delegation were not changed or claimed.
+The creation form explicitly explains that automatic records require a managed
+zone, so external-DNS users know they must configure their provider.
+
+Four browser cases passed for the parent dropdown, subdomain name preview, request
+payload and mobile overflow across both themes/color modes. The Evolution light
+mobile screenshot was inspected and its fields/actions were readable. Live proof
+script: `/root/boron-setup/live-subdomain-proof.py`.
+Four targeted backend cases also passed: independent roots, rejecting an unowned
+subdomain parent, refusing another account's DNS zone without record mutation,
+and choosing the most specific managed zone. The domains/subdomains checklist
+item is now verified; remaining initial-goal requirements stay open.
