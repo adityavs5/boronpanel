@@ -159,6 +159,20 @@ def test_create_account_enforces_count_limit(isolated_db):
         resellers.create_account({"reseller_username": "reseller1", "username": "secondone"})
 
 
+def test_create_account_compensates_when_panel_login_fails(isolated_db, monkeypatch):
+    plan = make_plan()
+    make_profile(plan["id"])
+    terminated = []
+    monkeypatch.setattr(resellers.handlers_account, "create_account", lambda params: {"id": 77, "username": params["username"], "status": "active"})
+    monkeypatch.setattr(resellers.handlers_auth, "create_panel_user", lambda params: (_ for _ in ()).throw(RuntimeError("login write failed")))
+    monkeypatch.setattr(resellers.handlers_account, "terminate_account", lambda params: terminated.append(params["username"]))
+    with pytest.raises(RuntimeError, match="login write failed"):
+        resellers.create_account({
+            "reseller_username": "reseller1", "username": "rollbackme", "password": "StrongPass123!"
+        })
+    assert terminated == ["rollbackme"]
+
+
 def test_lifecycle_rechecks_ownership_before_handler(isolated_db, monkeypatch):
     plan = make_plan()
     make_profile(plan["id"])

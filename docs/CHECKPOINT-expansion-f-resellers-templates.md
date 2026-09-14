@@ -41,8 +41,9 @@ and has not yet been deployed to the live panel.
 ## Validation
 
 - The focused reseller, template, authentication and listener-role suite passes
-  all 64 tests. It covers limits, plan downgrade/reassignment rejection,
-  ownership, role boundaries, one-time credentials and output sanitization.
+  all 65 tests. It covers limits, plan downgrade/reassignment rejection,
+  ownership, role boundaries, failed-provision compensation, one-time
+  credentials and output sanitization.
 - The production frontend build passes.
 - All four focused Playwright flows pass: administrator and reseller behavior
   in both Evolution and Paper Lantern at desktop and phone widths.

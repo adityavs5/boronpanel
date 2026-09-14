@@ -1,6 +1,7 @@
 """Reseller plans, identities, quotas, and ownership-scoped account actions."""
 from __future__ import annotations
 
+import logging
 import threading
 
 from sqlalchemy import func, select
@@ -12,7 +13,8 @@ from shared.validation import ValidationError, generate_strong_password, validat
 
 from daemon import audit, handlers_account, handlers_auth
 
-_quota_lock = threading.Lock()
+logger = logging.getLogger("borond.resellers")
+_state_lock = threading.RLock()
 
 
 class ResellerError(Exception):
@@ -59,7 +61,7 @@ def _validate_plan(params: dict, current: ResellerPlan | None = None) -> dict:
 
 def create_plan(params: dict) -> dict:
     fields = _validate_plan(params)
-    with write_session() as session:
+    with _state_lock, write_session() as session:
         if session.scalar(select(ResellerPlan.id).where(ResellerPlan.name == fields["name"])) is not None:
             raise ResellerError(f"reseller plan '{fields['name']}' already exists")
         row = ResellerPlan(**fields)
@@ -91,7 +93,7 @@ def _require_capacity(session, profile: ResellerProfile, plan: ResellerPlan) -> 
 
 def update_plan(params: dict) -> dict:
     plan_id = int(params["plan_id"])
-    with write_session() as session:
+    with _state_lock, write_session() as session:
         row = session.get(ResellerPlan, plan_id)
         if row is None:
             raise ResellerError(f"reseller plan {plan_id} not found")
@@ -118,7 +120,7 @@ def list_plans(params: dict | None = None) -> dict:
 
 def delete_plan(params: dict) -> dict:
     plan_id = int(params["plan_id"])
-    with write_session() as session:
+    with _state_lock, write_session() as session:
         row = session.get(ResellerPlan, plan_id)
         if row is None:
             raise ResellerError(f"reseller plan {plan_id} not found")
@@ -156,22 +158,23 @@ def create_reseller(params: dict) -> dict:
     if company and len(company) > 160:
         raise ValidationError("company must be at most 160 characters")
     plan_id = int(params["plan_id"])
-    with write_session() as session:
-        if session.get(ResellerPlan, plan_id) is None:
-            raise ResellerError(f"reseller plan {plan_id} not found")
-    user = handlers_auth.create_panel_user({"username": username, "password": password, "role": "reseller"})
-    try:
+    with _state_lock:
         with write_session() as session:
-            profile = ResellerProfile(panel_user_id=user["id"], plan_id=plan_id, company=company, status="active")
-            session.add(profile)
-            session.flush()
-            result = _profile_dict(session, profile)
-    except Exception:
-        with write_session() as session:
-            orphan = session.get(PanelUser, user["id"])
-            if orphan is not None:
-                session.delete(orphan)
-        raise
+            if session.get(ResellerPlan, plan_id) is None:
+                raise ResellerError(f"reseller plan {plan_id} not found")
+        user = handlers_auth.create_panel_user({"username": username, "password": password, "role": "reseller"})
+        try:
+            with write_session() as session:
+                profile = ResellerProfile(panel_user_id=user["id"], plan_id=plan_id, company=company, status="active")
+                session.add(profile)
+                session.flush()
+                result = _profile_dict(session, profile)
+        except Exception:
+            with write_session() as session:
+                orphan = session.get(PanelUser, user["id"])
+                if orphan is not None:
+                    session.delete(orphan)
+            raise
     result["initial_password"] = password
     return result
 
@@ -184,7 +187,7 @@ def list_resellers(params: dict | None = None) -> dict:
 
 def update_reseller(params: dict) -> dict:
     profile_id = int(params["reseller_id"])
-    with write_session() as session:
+    with _state_lock, write_session() as session:
         profile = session.get(ResellerProfile, profile_id)
         if profile is None:
             raise ResellerError(f"reseller {profile_id} not found")
@@ -253,7 +256,7 @@ def create_account(params: dict) -> dict:
     username = validate_username(params["username"])
     primary_domain = validate_domain(params["primary_domain"]) if params.get("primary_domain") else None
     password = params.get("password") or generate_strong_password()
-    with _quota_lock:
+    with _state_lock:
         with write_session() as session:
             profile = _profile_for_username(session, reseller_username)
             plan = session.get(ResellerPlan, profile.plan_id)
@@ -280,9 +283,16 @@ def create_account(params: dict) -> dict:
             "io_mb": plan_values["account_io_mb"],
             "pids_max": plan_values["account_pids_max"],
         })
-        handlers_auth.create_panel_user({"username": username, "password": password, "role": "customer", "account_id": account["id"]})
-        with write_session() as session:
-            session.add(ResellerAccount(reseller_id=profile_id, account_id=account["id"]))
+        try:
+            handlers_auth.create_panel_user({"username": username, "password": password, "role": "customer", "account_id": account["id"]})
+            with write_session() as session:
+                session.add(ResellerAccount(reseller_id=profile_id, account_id=account["id"]))
+        except Exception:
+            try:
+                handlers_account.terminate_account({"username": username})
+            except Exception:  # noqa: BLE001 - preserve the provisioning error
+                logger.exception("failed to compensate reseller account creation for %s", username)
+            raise
     audit.record_account_event("created", username, actor=reseller_username, role="reseller", detail="reseller account")
     return {**account, "initial_password": password}
 
@@ -298,9 +308,10 @@ def lifecycle(params: dict) -> dict:
     }
     if action not in handlers:
         raise ValidationError("action must be suspend, unsuspend, or terminate")
-    with write_session() as session:
-        _owned_account(session, reseller_username, username)
-    result = handlers[action]({"username": username})
+    with _state_lock:
+        with write_session() as session:
+            _owned_account(session, reseller_username, username)
+        result = handlers[action]({"username": username})
     audit.record_account_event(
         {"suspend": "suspended", "unsuspend": "unsuspended", "terminate": "terminated"}[action],
         username, actor=reseller_username, role="reseller", detail="reseller action",
