@@ -1080,3 +1080,22 @@ the earlier in-memory callback. It verifies rejection of premature completion,
 completed job/safety state through a fresh session, persisted recovery references
 and their absence from the public restore response. Dispatcher submission and
 startup recovery still need wiring before customer mailbox restore is enabled.
+
+The snapshot background dispatcher now routes internal `kind=mail` jobs through
+the assembled workflow and durable checkpoint callback. It validates the source
+includes mail before entering that workflow. Failures after a persisted work
+reference retain the job as running/recovery-pending, preserving account-level
+conflict protection and private artifacts. Failures before that point become
+failed. Mail failure responses/logging use generic diagnostics rather than
+printing potentially credential-bearing exceptions.
+
+The generic startup restore sweep now leaves interrupted mailbox jobs active for
+mail-specific recovery instead of marking them terminal and allowing conflicting
+work. Automatic phase-specific reconciliation and customer trigger support remain
+unfinished; this dispatcher route is not yet exposed by the restore API.
+
+Validation: three dispatcher/integration cases passed: failure before preparation,
+failure after persisted preparation with recovery artifacts retained across the
+startup sweep, and a completed encrypted mailbox restore through `execute` with
+real job checkpoints and safety snapshot state. The integration still substitutes
+supervision for its temporary tree; separate systemd suites cover that boundary.

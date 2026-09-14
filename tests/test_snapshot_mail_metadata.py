@@ -228,14 +228,21 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
     from shared.models import SnapshotRestore, SnapshotMailRecovery
     with write_session() as session:
         session.add(SnapshotRestore(id=29, run_id=run.id, account_id=account.id,
-                                    selection={'kind': 'mail'}, status='running'))
+                                    selection={'kind': 'mail', 'mailboxes': ['inbox@alpha.example.test']}, status='running'))
     with pytest.raises(ValidationError, match='out of sequence'):
         restores._mail_checkpoint(29, 'completed', {})
-    def checkpoint(phase, state):
-        restores._mail_checkpoint(29, phase, state)
+    original_checkpoint = restores._mail_checkpoint
+    def checkpoint(ident, phase, state):
+        original_checkpoint(ident, phase, state)
         checkpoints.append((phase, state))
-    result = restore_mail.run_restore(account, repo, run.snapshot_id, ['inbox@alpha.example.test'], 29,
-                                     checkpoint)
+    monkeypatch.setattr(restores, '_mail_checkpoint', checkpoint)
+    with write_session() as session:
+        session.get(SnapshotRestore, 29).status = 'pending'
+    restores.execute(29)
+    with write_session() as session:
+        finished = session.get(SnapshotRestore, 29)
+        assert finished.status == 'completed', finished.error
+        result = dict(finished.summary, safety_snapshot_id=finished.safety_snapshot_id)
     assert result['guards_released'] and result['mailboxes'] == 1
     assert [p for p, state in checkpoints] == ['preparing', 'prepared', 'guarded', 'provisioned', 'staged',
                                                'switching', 'switched', 'safety_saved', 'completed']

@@ -420,6 +420,13 @@ def execute(ident):
             repo=jobs.repository(jobs._row(SnapshotDestination,source.destination_id))
             snapshot_id=row.selection.get('source_snapshot_id') or source.snapshot_id
             snapshot=storage.owned_snapshot(repo,account.id,snapshot_id)
+            if row.selection['kind']=='mail':
+                from daemon.snapshot_mail_restore import run_restore
+                if 'mail' not in source.options.get('components', []):
+                    raise ValidationError('This recovery point does not contain mail')
+                run_restore(account, repo, snapshot_id, row.selection.get('mailboxes', []), ident,
+                            lambda phase, data: _mail_checkpoint(ident, phase, data))
+                return
             work=jobs.private_directory('restores',f'restore-{ident}')
             if row.selection['kind']=='databases':
                 _restore_databases(ident,account,row,repo,snapshot_id,work)
@@ -440,6 +447,20 @@ def execute(ident):
             summary=json.loads(result.stdout)
             _update(ident,status='completed',progress_message='Selected files restored; unrelated files retained',summary=summary,completed_at=utcnow())
     except Exception as exc:
+        if row.selection.get('kind') == 'mail':
+            from shared.models import SnapshotMailRecovery
+            with write_session() as session:
+                current = session.get(SnapshotRestore, ident)
+                checkpoint = session.get(SnapshotMailRecovery, ident)
+                if current.status != 'completed':
+                    needs_recovery = checkpoint is not None and checkpoint.work is not None
+                    current.status = 'running' if needs_recovery else 'failed'
+                    current.progress_message = 'Mailbox recovery pending' if needs_recovery else 'Mailbox restore failed before activation'
+                    current.error = ('Mailbox restore was interrupted. Recovery records and guards are retained for inspection.'
+                                     if needs_recovery else 'Mailbox preparation failed before live mail changes.')
+                    current.completed_at = None if needs_recovery else utcnow()
+            logger.warning('Mailbox restore %s requires failure inspection', ident)
+            return
         logger.exception('Snapshot restore %s failed',ident)
         _update(ident,status='failed',progress_message='Restore failed; review the error before retrying',error=str(exc)[-3000:],completed_at=utcnow())
     finally:
@@ -456,6 +477,10 @@ def recover_restores():
             with jobs.lock(f'account-{row.account_id}',blocking=False):
                 current=jobs._row(SnapshotRestore,row.id)
                 if current.status=='running':
+                    if current.selection.get('kind') == 'mail':
+                        _update(row.id, progress_message='Mailbox recovery pending',
+                                error='Interrupted mailbox restore retained for recovery inspection; another restore has not been started.')
+                        continue
                     _update(row.id,status='failed',progress_message='Interrupted',
                         error='Restore worker was interrupted. Some selected data may have been restored; the pre-restore snapshot is retained.',completed_at=utcnow())
         except BlockingIOError:continue
