@@ -3,6 +3,7 @@
 import argparse
 import datetime as dt
 import grp
+import pwd
 import os
 from pathlib import Path
 import re
@@ -18,6 +19,7 @@ from cryptography.hazmat.primitives import serialization
 
 LINEAGE_ROOT=Path('/etc/letsencrypt/live')
 TLS_DIRECTORY=Path('/etc/boron/ssl/api')
+OLS_ADMIN_DIRECTORY=Path('/usr/local/lsws/admin/conf')
 CONFIG_PATH=Path('/etc/boron/boron.toml')
 
 def validate_pair(hostname,certificate,key):
@@ -33,12 +35,12 @@ def validate_pair(hostname,certificate,key):
     if public_bytes(cert.public_key())!=public_bytes(private.public_key()):raise ValueError('Certificate and private key do not match')
 
 
-def _replace(path,content,gid):
+def _replace(path,content,uid,gid,mode=0o640):
     fd,temporary=tempfile.mkstemp(prefix='.panel-tls-',dir=path.parent)
     try:
         with os.fdopen(fd,'wb') as handle:
             handle.write(content);handle.flush();os.fsync(handle.fileno())
-            os.fchown(handle.fileno(),0,gid);os.fchmod(handle.fileno(),0o640)
+            os.fchown(handle.fileno(),uid,gid);os.fchmod(handle.fileno(),mode)
         os.replace(temporary,path)
     finally:Path(temporary).unlink(missing_ok=True)
 
@@ -46,7 +48,7 @@ def _replace(path,content,gid):
 def _wait_for_certificate(hostname,certificate):
     with CONFIG_PATH.open('rb') as handle:config=tomllib.load(handle)
     admin=int(config.get('api_bind_port',2222))
-    pending={admin,int(config.get('api_customer_port') or admin)}
+    pending={admin,int(config.get('api_customer_port') or admin),7080}
     expected=x509.load_pem_x509_certificate(certificate).public_bytes(serialization.Encoding.DER)
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname=False;context.verify_mode=ssl.CERT_NONE
@@ -72,16 +74,24 @@ def deploy(hostname,lineage):
     validate_pair(hostname,certificate,key)
     destination=TLS_DIRECTORY
     gid=grp.getgrnam('boron-api').gr_gid
+    lsadm=pwd.getpwnam('lsadm')
     certpath=destination/'panel.crt';keypath=destination/'panel.key'
+    olscert=OLS_ADMIN_DIRECTORY/'webadmin.crt';olskey=OLS_ADMIN_DIRECTORY/'webadmin.key'
     oldcert=certpath.read_bytes();oldkey=keypath.read_bytes()
+    oldolscert=olscert.read_bytes();oldolskey=olskey.read_bytes()
     try:
-        _replace(keypath,key,gid);_replace(certpath,certificate,gid)
+        _replace(keypath,key,0,gid);_replace(certpath,certificate,0,gid)
+        _replace(olskey,key,lsadm.pw_uid,lsadm.pw_gid,0o400);_replace(olscert,certificate,lsadm.pw_uid,lsadm.pw_gid,0o400)
         subprocess.run(['systemctl','restart','boron-api.service'],check=True,timeout=45)
+        subprocess.run(['systemctl','restart','lshttpd.service'],check=True,timeout=45)
         subprocess.run(['systemctl','is-active','--quiet','boron-api.service'],check=True,timeout=10)
+        subprocess.run(['systemctl','is-active','--quiet','lshttpd.service'],check=True,timeout=10)
         _wait_for_certificate(hostname,certificate)
     except Exception:
-        _replace(keypath,oldkey,gid);_replace(certpath,oldcert,gid)
+        _replace(keypath,oldkey,0,gid);_replace(certpath,oldcert,0,gid)
+        _replace(olskey,oldolskey,lsadm.pw_uid,lsadm.pw_gid,0o400);_replace(olscert,oldolscert,lsadm.pw_uid,lsadm.pw_gid,0o400)
         subprocess.run(['systemctl','restart','boron-api.service'],check=False,timeout=45)
+        subprocess.run(['systemctl','restart','lshttpd.service'],check=False,timeout=45)
         raise
 
 

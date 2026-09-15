@@ -24,14 +24,17 @@ import { toast } from '@/components/ui/Toast'
 function BulkActionBar({ selected, clearSelection }) {
   const qc = useQueryClient()
   const [action, setAction] = useState('suspend')
-  const [limits, setLimits] = useState({ cpu_pct: '', mem_mb: '', io_mb: '', pids_max: '' })
+  const [limits, setLimits] = useState({ cpu_cores: '', mem_mb: '', io_mb: '', pids_max: '' })
   const [notify, setNotify] = useState({ subject: '', body: '' })
   const [jobId, setJobId] = useState(null)
 
   const triggerMut = useMutation({
     mutationFn: () => {
       const action_params = {}
-      if (action === 'update_limits') for (const k of ['cpu_pct', 'mem_mb', 'io_mb', 'pids_max']) if (limits[k] !== '') action_params[k] = Number(limits[k])
+      if (action === 'update_limits') {
+        if (limits.cpu_cores !== '') action_params.cpu_pct = Math.round(Number(limits.cpu_cores) * 100)
+        for (const k of ['mem_mb', 'io_mb', 'pids_max']) if (limits[k] !== '') action_params[k] = Number(limits[k])
+      }
       if (action === 'notify') { action_params.subject = notify.subject.trim(); action_params.body = notify.body.trim() }
       return post('/api/v1/admin/accounts/bulk-action', { action, usernames: [...selected], action_params })
     },
@@ -66,9 +69,9 @@ function BulkActionBar({ selected, clearSelection }) {
 
       {action === 'update_limits' && (
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {['cpu_pct', 'mem_mb', 'io_mb', 'pids_max'].map((k) => (
-            <FormField key={k} label={k}>
-              <Input type="number" placeholder="unchanged" value={limits[k]} onChange={(e) => setLimits((l) => ({ ...l, [k]: e.target.value }))} />
+          {['cpu_cores', 'mem_mb', 'io_mb', 'pids_max'].map((k) => (
+            <FormField key={k} label={{cpu_cores:'CPU cores',mem_mb:'Memory (MB)',io_mb:'Disk I/O (MB/s)',pids_max:'Processes'}[k]}>
+              <Input type="number" step={k === 'cpu_cores' ? '0.25' : '1'} placeholder="unchanged" value={limits[k]} onChange={(e) => setLimits((l) => ({ ...l, [k]: e.target.value }))} />
             </FormField>
           ))}
         </div>

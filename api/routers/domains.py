@@ -14,6 +14,9 @@ ui_router = APIRouter(prefix="/ui/accounts/{username}/domains", tags=["ui:domain
 class AddDomainBody(BaseModel):
     domain: str
     kind: str = "addon"
+    parent_domain: str | None = None
+    document_root_mode: str = "default"
+    document_root: str | None = None
 
 
 class SetDomainPhpVersionBody(BaseModel):
@@ -53,10 +56,15 @@ def ui_add_domain(
     username: str,
     domain: str = Form(...),
     kind: str = Form("addon"),
+    parent_domain: str = Form(""),
+    document_root_mode: str = Form("default"),
+    document_root: str = Form(""),
     identity: Identity = Depends(get_identity),
 ):
     require_account_access(identity, username)
-    call_daemon("domain.add", identity, username=username, domain=domain, kind=kind)
+    call_daemon("domain.add", identity, username=username, domain=domain, kind=kind,
+                parent_domain=parent_domain or None, document_root_mode=document_root_mode,
+                document_root=document_root or None)
     return RedirectResponse(f"/ui/accounts/{username}", status_code=303)
 
 

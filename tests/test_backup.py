@@ -309,6 +309,24 @@ def test_build_database_backup_calls_dump(isolated_db, fake_staging, stub_dump_d
     assert stub_dump_database == ["demo1_shop"]
 
 
+def test_build_all_databases_backup_has_manifest_and_owned_dumps(isolated_db, fake_staging, stub_dump_database):
+    with write_session() as session:
+        account = make_account(session)
+        session.add_all([
+            DatabaseGrant(account_id=account.id, db_name="demo1_blog", db_user="demo1_blog"),
+            DatabaseGrant(account_id=account.id, db_name="demo1_shop", db_user="demo1_shop"),
+        ])
+        account_id = account.id
+    staging_dir = fake_staging / "job-7"
+    staging_dir.mkdir()
+
+    artifact = backup._build_databases_backup(account_id, staging_dir, job_id=7)
+
+    with tarfile.open(artifact) as tf:
+        assert {"manifest.json", "databases/demo1_blog.sql.gz", "databases/demo1_shop.sql.gz"} <= set(tf.getnames())
+    assert set(stub_dump_database) == {"demo1_blog", "demo1_shop"}
+
+
 # --- running backup jobs end to end (synchronous, no thread pool) -----------------
 
 
@@ -500,6 +518,19 @@ def test_trigger_backup_requires_item_ref_for_granular_kinds(isolated_db, tmp_pa
     dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(tmp_path / "d1")})
     with pytest.raises(Exception):
         backup.trigger_backup({"username": "demo1", "kind": "database", "destination_id": dest["id"]})
+
+
+def test_trigger_all_databases_backup_needs_no_manual_name(isolated_db, tmp_path, stub_executor):
+    with write_session() as session:
+        account = make_account(session)
+        session.add(DatabaseGrant(account_id=account.id, db_name="demo1_app", db_user="demo1_app"))
+    dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(tmp_path / "d1")})
+
+    result = backup.trigger_backup({"username": "demo1", "kind": "databases", "destination_id": dest["id"]})
+
+    assert result["kind"] == "databases"
+    assert result["item_ref"] is None
+    assert len(stub_executor) == 1
 
 
 def test_trigger_backup_unknown_account_raises(isolated_db, stub_executor):

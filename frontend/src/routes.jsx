@@ -42,6 +42,7 @@ const MalwareScanner = lazy(() => import('@/pages/MalwareScanner'))
 const Accounts = lazy(() => import('@/pages/admin/Accounts'))
 const AccountDetail = lazy(() => import('@/pages/admin/AccountDetail'))
 const Plans = lazy(() => import('@/pages/admin/Plans'))
+const PlanEditor = lazy(() => import('@/pages/admin/PlanEditor'))
 const Branding = lazy(() => import('@/pages/admin/Branding'))
 const Templates = lazy(() => import('@/pages/admin/Templates'))
 const ServerHealth = lazy(() => import('@/pages/admin/ServerHealth'))
@@ -133,6 +134,8 @@ export const router = createBrowserRouter(
         { path: 'php', element: customer(<Php />) },
         { path: 'email', element: customer(<Email />) },
         { path: 'email/settings', element: customer(<Email defaultTab="forwarders" />) },
+        { path: 'email/spam', element: customer(<Email defaultTab="spam" />) },
+        { path: 'email/migration', element: customer(<Email defaultTab="imap-migrate" />) },
         { path: 'email/dns', element: customer(<Dns emailOnly />) },
         { path: 'databases', element: customer(<Databases />) },
         { path: 'files', element: customer(<Files />) },
@@ -162,6 +165,8 @@ export const router = createBrowserRouter(
         { path: 'accounts', element: admin(<Accounts />) },
         { path: 'accounts/:username', element: admin(<AccountDetail />) },
         { path: 'plans', element: admin(<Plans />) },
+        { path: 'plans/new', element: admin(<PlanEditor />) },
+        { path: 'plans/:planId/edit', element: admin(<PlanEditor />) },
         { path: 'resellers', element: admin(<Resellers />) },
         { path: 'panel-settings', element: admin(<PanelSettings />) },
         { path: 'branding', element: admin(<Branding />) },

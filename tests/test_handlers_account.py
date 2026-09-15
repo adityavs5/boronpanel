@@ -325,8 +325,9 @@ def test_create_account_uses_default_limits(isolated_db, stub_sysops):
 
 
 def test_create_account_accepts_custom_limits(isolated_db, stub_sysops):
-    result = ha.create_account({"username": "demo1", "cpu_pct": 50, "mem_mb": 1024, "io_mb": 100, "pids_max": 100})
-    assert result["cpu_pct"] == 50
+    result = ha.create_account({"username": "demo1", "cpu_pct": 200, "mem_mb": 1024, "io_mb": 100, "pids_max": 100})
+    assert result["cpu_pct"] == 200
+    assert result["cpu_cores"] == 2
     assert result["mem_mb"] == 1024
     assert result["io_mb"] == 100
     assert result["pids_max"] == 100
@@ -406,7 +407,7 @@ def test_set_limits_partial_update_keeps_other_fields(isolated_db, stub_sysops):
 def test_set_limits_rejects_invalid_values(isolated_db, stub_sysops):
     ha.create_account({"username": "demo1"})
     with pytest.raises(ValidationError):
-        ha.set_limits({"username": "demo1", "cpu_pct": 200})
+        ha.set_limits({"username": "demo1", "cpu_pct": 25601})
 
 
 def test_set_limits_rejects_unknown_account(isolated_db, stub_sysops):

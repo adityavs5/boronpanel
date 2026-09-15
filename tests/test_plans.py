@@ -89,7 +89,7 @@ def test_create_plan_rejects_duplicate_name(isolated_db):
 
 def test_create_plan_rejects_invalid_cpu_pct(isolated_db):
     bad = dict(BASIC)
-    bad["cpu_pct"] = 200
+    bad["cpu_pct"] = 25601
     with pytest.raises(Exception):
         plans.create_plan(bad)
 

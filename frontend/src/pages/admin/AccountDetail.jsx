@@ -125,7 +125,7 @@ function PhpAndLimits({ username, account }) {
   const qc = useQueryClient()
   const [phpVersion, setPhpVersion] = useState(account.php_version)
   const [limits, setLimits] = useState({
-    cpu_pct: account.cpu_pct, mem_mb: account.mem_mb, io_mb: account.io_mb, pids_max: account.pids_max,
+    cpu_cores: account.cpu_cores ?? account.cpu_pct / 100, mem_mb: account.mem_mb, io_mb: account.io_mb, pids_max: account.pids_max,
   })
   const invalidate = () => qc.invalidateQueries({ queryKey: ['account', username] })
 
@@ -136,7 +136,7 @@ function PhpAndLimits({ username, account }) {
   })
   const limitsMut = useMutation({
     mutationFn: () => patch(`/api/v1/accounts/${username}/limits`, {
-      cpu_pct: Number(limits.cpu_pct), mem_mb: Number(limits.mem_mb), io_mb: Number(limits.io_mb), pids_max: Number(limits.pids_max),
+      cpu_pct: Math.round(Number(limits.cpu_cores) * 100), mem_mb: Number(limits.mem_mb), io_mb: Number(limits.io_mb), pids_max: Number(limits.pids_max),
     }),
     onSuccess: () => { toast.success('Limits updated'); invalidate() },
     onError: (e) => toast.error('Failed', e.message),
@@ -160,7 +160,7 @@ function PhpAndLimits({ username, account }) {
         <CardHeader><CardTitle>Resource limits</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <FormField label="CPU %"><Input type="number" min="1" max="100" value={limits.cpu_pct} onChange={(e) => setLimits((l) => ({ ...l, cpu_pct: e.target.value }))} /></FormField>
+            <FormField label="CPU cores"><Input type="number" min="0.01" max="256" step="0.25" value={limits.cpu_cores} onChange={(e) => setLimits((l) => ({ ...l, cpu_cores: e.target.value }))} /></FormField>
             <FormField label="Memory (MB)"><Input type="number" min="64" value={limits.mem_mb} onChange={(e) => setLimits((l) => ({ ...l, mem_mb: e.target.value }))} /></FormField>
             <FormField label="Disk IO (MB/s)"><Input type="number" min="1" value={limits.io_mb} onChange={(e) => setLimits((l) => ({ ...l, io_mb: e.target.value }))} /></FormField>
             <FormField label="Max processes"><Input type="number" min="10" value={limits.pids_max} onChange={(e) => setLimits((l) => ({ ...l, pids_max: e.target.value }))} /></FormField>

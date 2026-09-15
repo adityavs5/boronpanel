@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import fs from 'node:fs'
 import vm from 'node:vm'
 const skins = ['evolution', 'paper-lantern']
-const nameOf = (skin) => skin === 'evolution' ? 'Evolution' : 'Paper Lantern'
+const nameOf = (skin) => skin === 'evolution' ? 'Evo' : 'Paper'
 
 async function setup(page, role = 'admin', skin = 'evolution', mode = 'light') {
   await page.addInitScript(({ role, skin, mode }) => {
@@ -21,7 +21,7 @@ async function setup(page, role = 'admin', skin = 'evolution', mode = 'light') {
     else if (pathname === '/api/v1/accounts') data = [{ username: 'hostingdemo', primary_domain: 'example.com', status: 'active', php_version: '8.3' }]
     else if (pathname.endsWith('/plans')) data = []
     else if (pathname.endsWith('/onboarding')) data = { completed: true }
-    else if (pathname.endsWith('/usage')) data = { current: { disk_total_bytes: 123456789, disk_home_bytes: 100000000, disk_db_bytes: 13456789, disk_mail_bytes: 10000000 }, quota_hard_mb: 5120, bandwidth_month_to_date_bytes: 987654321 }
+    else if (pathname.endsWith('/usage')) data = { current: { disk_total_bytes: 123456789, disk_home_bytes: 100000000, disk_db_bytes: 13456789, disk_mail_bytes: 10000000, inode_count: 4300 }, quota_hard_mb: 5120, bandwidth_month_to_date_bytes: 987654321, resources: { sampled_at: '2026-09-15T12:00:00Z', cpu_usage_usec: 5000000, cpu_limit_cores: 2, memory_current_bytes: 268435456, memory_limit_bytes: 1073741824, io_limit_bytes_per_second: 52428800, read_bytes: 1000, write_bytes: 2000, read_ops: 4, write_ops: 8, domain_count: 2, subdomain_count: 3, subdomain_limit: 10, database_count: 4, database_limit: 10, email_account_count: 8, email_account_limit: 25, ftp_account_count: 2, ftp_account_limit: 5, bandwidth_limit_bytes: 107374182400 } }
     else if (pathname.endsWith('/domains')) data = { domains: [{ domain: 'example.com', is_primary: true }] }
     else if (pathname.endsWith('/alerts')) data = { active: [] }
     else if (pathname === '/api/v1/accounts/hostingdemo') data = { username: 'hostingdemo', primary_domain: 'example.com', status: 'active', php_version: '8.3', quota_hard_mb: 5120 }
@@ -46,6 +46,11 @@ for (const role of ['admin', 'customer']) {
       await expect(page.getByRole('heading', { name: role === 'admin' ? 'Admin Dashboard' : 'Hosting Dashboard', exact: true })).toBeVisible()
       await expect(page.locator('.tool-link').first()).toBeVisible()
       await expect(page.locator('.query-notice')).toHaveCount(0)
+      if (role === 'customer') {
+        await expect(page.locator('.usage-row').filter({ hasText: 'Memory' })).toContainText('256.0 MB')
+        await expect(page.locator('.usage-row').filter({ hasText: 'Subdomains' })).toContainText('3 / 10')
+        await expect(page.locator('.usage-row').filter({ hasText: 'Email Accounts' })).toContainText('8 / 25')
+      }
       await noOverflow(page)
       const links = await page.locator('.tool-link').evaluateAll((items) => items.map((item) => item.getAttribute('href')))
       expect(links).toContain('/app/appearance')

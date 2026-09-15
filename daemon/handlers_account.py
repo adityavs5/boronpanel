@@ -61,6 +61,7 @@ def _account_to_dict(account: Account) -> dict:
         "quota_soft_mb": account.quota_soft_mb,
         "quota_hard_mb": account.quota_hard_mb,
         "cpu_pct": account.cpu_pct,
+        "cpu_cores": account.cpu_pct / 100,
         "mem_mb": account.mem_mb,
         "io_mb": account.io_mb,
         "pids_max": account.pids_max,
@@ -73,8 +74,12 @@ def _account_to_dict(account: Account) -> dict:
 
 
 def _validate_limits(cpu_pct: int, mem_mb: int, io_mb: int, pids_max: int) -> None:
-    if not (1 <= cpu_pct <= 100):
-        raise ValidationError("cpu_pct must be between 1 and 100")
+    # systemd defines 100% as one complete CPU core and permits values over
+    # 100%. Boron's storage remains percentage-based for upgrade/backup
+    # compatibility, while the API/UI expose the easier-to-understand core
+    # value (cpu_pct / 100).
+    if not (1 <= cpu_pct <= 25600):
+        raise ValidationError("cpu limit must be between 0.01 and 256 cores")
     if not (64 <= mem_mb <= 65536):
         raise ValidationError("mem_mb must be between 64 and 65536")
     if not (1 <= io_mb <= 10000):

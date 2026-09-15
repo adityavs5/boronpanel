@@ -32,7 +32,9 @@ def _bounded(value, name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 def _plan_dict(row: ResellerPlan) -> dict:
-    return {column.name: getattr(row, column.name) for column in row.__table__.columns}
+    result = {column.name: getattr(row, column.name) for column in row.__table__.columns}
+    result["account_cpu_cores"] = row.account_cpu_pct / 100
+    return result
 
 
 def _validate_plan(params: dict, current: ResellerPlan | None = None) -> dict:
@@ -46,7 +48,7 @@ def _validate_plan(params: dict, current: ResellerPlan | None = None) -> dict:
         "max_total_disk_mb": _bounded(get("max_total_disk_mb", 102400), "max_total_disk_mb", 102400, 1, 100_000_000),
         "account_quota_soft_mb": _bounded(get("account_quota_soft_mb", 4096), "account_quota_soft_mb", 4096, 1, 10_000_000),
         "account_quota_hard_mb": _bounded(get("account_quota_hard_mb", 5120), "account_quota_hard_mb", 5120, 1, 10_000_000),
-        "account_cpu_pct": _bounded(get("account_cpu_pct", 50), "account_cpu_pct", 50, 1, 100),
+        "account_cpu_pct": _bounded(get("account_cpu_pct", 50), "account_cpu_pct", 50, 1, 25600),
         "account_mem_mb": _bounded(get("account_mem_mb", 1024), "account_mem_mb", 1024, 64, 65536),
         "account_io_mb": _bounded(get("account_io_mb", 50), "account_io_mb", 50, 1, 10000),
         "account_pids_max": _bounded(get("account_pids_max", 100), "account_pids_max", 100, 10, 10000),

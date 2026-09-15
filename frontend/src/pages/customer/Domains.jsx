@@ -135,6 +135,8 @@ export default function Domains({ subdomainsOnly = false }) {
   const [domain, setDomain] = useState('')
   const [kind,setKind]=useState(subdomainsOnly ? 'subdomain' : 'addon')
   const [parent,setParent]=useState('')
+  const [docrootMode,setDocrootMode]=useState('default')
+  const [customDocroot,setCustomDocroot]=useState('')
   const [toDelete, setToDelete] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -144,16 +146,18 @@ export default function Domains({ subdomainsOnly = false }) {
   })
 
   useEffect(() => {
-    if (kind === 'subdomain' && !parent && data?.domains?.length) setParent(data.domains[0].domain)
+    const parents = (data?.domains || []).filter(item => item.kind !== 'subdomain')
+    if (kind === 'subdomain' && !parent && parents.length) setParent(parents[0].domain)
   }, [data?.domains, kind, parent])
 
   const createMut = useMutation({
     mutationFn: (body) => post(`/api/v1/accounts/${username}/domains`, body),
     onSuccess: (d) => {
-      toast.success('Domain added', `${d?.domain || domain} was added to your account.`)
+      toast.success(kind === 'subdomain' ? 'Subdomain added' : 'Domain added', `${d?.domain || domain} was added to your account.`)
       qc.invalidateQueries({ queryKey: ['domains', username] })
       setCreateOpen(false)
       setDomain('')
+      setCustomDocroot('')
     },
     onError: (e) => toast.error('Could not add domain', e.message),
   })
@@ -236,7 +240,7 @@ export default function Domains({ subdomainsOnly = false }) {
 
   return (
     <div>
-      <PageHeader title={subdomainsOnly ? 'Subdomains' : 'Domains'} description={subdomainsOnly ? 'Independent subdomain sites with their own public_html folders.' : 'Primary, addon, and parked domains on your account.'} icon={Globe}>
+      <PageHeader title={subdomainsOnly ? 'Subdomains' : 'Domains'} description={subdomainsOnly ? 'Create subdomains under a domain you own and choose where their files live.' : 'Primary, addon, and parked domains on your account.'} icon={Globe}>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" /> {subdomainsOnly ? 'Add subdomain' : 'Add domain'}
         </Button>
@@ -257,7 +261,7 @@ export default function Domains({ subdomainsOnly = false }) {
         emptyTitle={subdomainsOnly ? 'No subdomains yet' : 'No domains yet'}
         emptyDescription={subdomainsOnly ? 'Create a subdomain with its own site root and DNS address.' : 'Add a domain to start hosting another site.'}
         emptyIcon={Globe}
-        emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Add domain</Button>}
+        emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> {subdomainsOnly ? 'Add subdomain' : 'Add domain'}</Button>}
       />
 
       {!subdomainsOnly && <ParkedDomainsCard username={username} domains={data?.domains} />}
@@ -270,12 +274,12 @@ export default function Domains({ subdomainsOnly = false }) {
           <form
             onSubmit={(e) => {
               e.preventDefault()
-              createMut.mutate({ domain: kind==='subdomain'?`${domain.trim()}.${parent}`:domain.trim(), kind })
+              createMut.mutate({ domain: kind==='subdomain'?`${domain.trim()}.${parent}`:domain.trim(), kind, parent_domain: kind === 'subdomain' ? parent : undefined, document_root_mode: kind === 'subdomain' ? docrootMode : 'default', document_root: kind === 'subdomain' && docrootMode === 'custom' ? customDocroot.trim() : undefined })
             }}
           >
             <DialogBody className="space-y-4">
               {!subdomainsOnly && <FormField label="Site type" htmlFor="domain-kind"><Select id="domain-kind" value={kind} onChange={e=>{setKind(e.target.value);setDomain('');setParent(data?.domains?.[0]?.domain||'')}}><option value="addon">Domain</option><option value="subdomain" disabled={!data?.domains?.length}>Subdomain</option></Select></FormField>}
-              {kind==='subdomain'&&<FormField label="Parent domain" htmlFor="subdomain-parent"><Select id="subdomain-parent" value={parent} onChange={e=>setParent(e.target.value)}>{(data?.domains||[]).map(d=><option key={d.domain} value={d.domain}>{d.domain}</option>)}</Select></FormField>}
+              {kind==='subdomain'&&<FormField label="Parent domain" htmlFor="subdomain-parent"><Select id="subdomain-parent" value={parent} onChange={e=>setParent(e.target.value)}>{(data?.domains||[]).filter(d=>d.kind!=='subdomain').map(d=><option key={d.domain} value={d.domain}>{d.domain}</option>)}</Select></FormField>}
               <FormField label={kind==='subdomain'?'Subdomain name':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter a name such as blog or shop.':'Enter a complete domain name.'}>
                 <Input
                   id="new-domain-name"
@@ -286,12 +290,14 @@ export default function Domains({ subdomainsOnly = false }) {
                   required
                 />
               </FormField>
-              <p className="text-sm text-muted-foreground">Each site gets its own public_html folder. A DNS address record is added automatically when its zone is managed here.</p>
+              {kind==='subdomain'&&<FormField label="Document root" htmlFor="subdomain-docroot" hint="A separate folder is recommended for an independent site."><Select id="subdomain-docroot" value={docrootMode} onChange={e=>setDocrootMode(e.target.value)}><option value="default">Separate website folder</option><option value="parent">Parent domain’s document root</option><option value="custom">Choose an account folder</option></Select></FormField>}
+              {kind==='subdomain'&&docrootMode==='custom'&&<FormField label="Account-relative folder" htmlFor="subdomain-custom-docroot" hint={`Stored inside /home/${username}.`} required><Input id="subdomain-custom-docroot" value={customDocroot} onChange={e=>setCustomDocroot(e.target.value)} placeholder="sites/blog/public_html" required /></FormField>}
+              <p className="text-sm text-muted-foreground">A DNS address record is added automatically through the parent zone’s configured DNS provider, including Cloudflare.</p>
               {domain.trim()&&<p className="break-all text-sm font-medium">{kind==='subdomain'?`${domain.trim()}.${parent}`:domain.trim()}</p>}
             </DialogBody>
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
-              <Button type="submit" loading={createMut.isPending} disabled={!domain.trim()}>Add domain</Button>
+              <Button type="submit" loading={createMut.isPending} disabled={!domain.trim() || (kind === 'subdomain' && !parent)}>{kind === 'subdomain' ? 'Add subdomain' : 'Add domain'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>

@@ -27,8 +27,8 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
   await page.setViewportSize({width:390,height:844})
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
   await page.screenshot({path:info.outputPath(`${skin}-${mode}-subdomain.png`),fullPage:true})
-  await dialog.getByRole('button',{name:'Add domain',exact:true}).click()
+  await dialog.getByRole('button',{name:'Add subdomain',exact:true}).click()
   await expect(dialog).not.toBeVisible()
-  expect(request).toEqual({domain:'blog.example.com',kind:'subdomain'})
+  expect(request).toEqual({domain:'blog.example.com',kind:'subdomain',parent_domain:'example.com',document_root_mode:'default'})
  })
 }

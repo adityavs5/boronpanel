@@ -25,6 +25,7 @@ const BACKUP_KINDS = [
   { value: 'full', label: 'Full account (files + databases + mail + DNS + config)' },
   { value: 'file', label: 'Single file / directory' },
   { value: 'database', label: 'Single database' },
+  { value: 'databases', label: 'All databases' },
   { value: 'mailbox', label: 'Single mailbox' },
 ]
 
@@ -99,9 +100,9 @@ function BrowseDialog({ username, job, onOpenChange }) {
             <CenteredSpinner />
           ) : error ? (
             <ErrorState error={error} onRetry={refetch} title="Could not read backup" />
-          ) : data?.kind === 'full' && manifest ? (
+          ) : ['full', 'databases'].includes(data?.kind) && manifest ? (
             <>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {data.kind === 'full' && <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <Stat label="Backed up" value={formatDate(manifest.backed_up_at)} />
                 <Stat label="PHP version" value={manifest.php_version || '—'} />
                 <Stat label="Domains" value={manifest.domains?.length ?? 0} />
@@ -110,11 +111,10 @@ function BrowseDialog({ username, job, onOpenChange }) {
                 <Stat label="Mailboxes" value={manifest.mail_users?.length ?? 0} />
                 <Stat label="Cron jobs" value={manifest.cron_jobs?.length ?? 0} />
                 <Stat label="DNS zone" value={manifest.dns_zone?.zone || 'none'} />
-              </div>
+              </div>}
 
-              <BadgeList label="Domains" items={(manifest.domains || []).map((d) => d.domain)} />
-              <BadgeList label="Databases" items={(manifest.databases || []).map((d) => d.db_name)} />
-              <BadgeList label="Mailboxes" items={(manifest.mail_users || []).map((u) => `${u.local_part}@${u.domain}`)} />
+              {data.kind === 'full' && <><BadgeList label="Domains" items={(manifest.domains || []).map((d) => d.domain)} /><BadgeList label="Databases" items={(manifest.databases || []).map((d) => d.db_name)} /><BadgeList label="Mailboxes" items={(manifest.mail_users || []).map((u) => `${u.local_part}@${u.domain}`)} /></>}
+              {data.kind === 'databases' && <BadgeList label="Databases" items={manifest.databases || []} />}
 
               <div>
                 <div className="mb-2 text-sm font-medium text-foreground">
@@ -171,6 +171,12 @@ export default function Backups() {
     refetchInterval: (query) => (isActive(query.state.data?.restore_jobs || []) ? 5000 : false),
   })
 
+  const databases = useQuery({
+    queryKey: ['databases', username],
+    queryFn: () => get(`/api/v1/accounts/${username}/databases`),
+    enabled: !!username && createOpen,
+  })
+
   const createMut = useMutation({
     mutationFn: (body) => post(`/api/v1/accounts/${username}/backups`, body),
     onSuccess: () => {
@@ -193,7 +199,7 @@ export default function Backups() {
     onError: (e) => toast.error('Could not start restore', e.message),
   })
 
-  const needsItemRef = form.kind !== 'full'
+  const needsItemRef = !['full', 'databases'].includes(form.kind)
 
   const backupColumns = [
     { key: 'kind', header: 'Kind', sortable: true, searchable: true, render: (r) => <KindCell row={r} /> },
@@ -309,7 +315,15 @@ export default function Backups() {
                   ))}
                 </Select>
               </FormField>
-              {needsItemRef && (
+              {form.kind === 'database' && (
+                <FormField label="Database" required hint="Only databases owned by this account are available.">
+                  <Select autoFocus value={form.item_ref} onChange={(e) => setForm((f) => ({ ...f, item_ref: e.target.value }))} required>
+                    <option value="">Choose a database…</option>
+                    {(databases.data?.databases || []).map((database) => <option key={database.db_name} value={database.db_name}>{database.db_name}</option>)}
+                  </Select>
+                </FormField>
+              )}
+              {needsItemRef && form.kind !== 'database' && (
                 <FormField
                   label="Item reference"
                   required
@@ -330,7 +344,7 @@ export default function Backups() {
               <Button
                 type="submit"
                 loading={createMut.isPending}
-                disabled={needsItemRef && !form.item_ref.trim()}
+                disabled={(needsItemRef && !form.item_ref.trim()) || (form.kind === 'databases' && !(databases.data?.databases || []).length)}
               >
                 Back up now
               </Button>

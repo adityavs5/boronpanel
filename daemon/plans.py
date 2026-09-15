@@ -55,6 +55,7 @@ def _plan_to_dict(plan: Plan) -> dict:
         "id": plan.id,
         "name": plan.name,
         "cpu_pct": plan.cpu_pct,
+        "cpu_cores": plan.cpu_pct / 100,
         "mem_mb": plan.mem_mb,
         "io_mb": plan.io_mb,
         "pids_max": plan.pids_max,

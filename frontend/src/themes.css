@@ -16,11 +16,11 @@
   --link: 0 111 153;
 }
 html[data-skin='paper-lantern'] {
-  --font-ui: 'Open Sans'; --radius-card: 2px; --radius-btn: 2px;
+  --font-ui: 'Segoe UI', Roboto, Arial, sans-serif; --radius-card: 2px; --radius-btn: 2px;
   --bg: 246 247 248; --fg: 51 51 51; --border: 218 222 225;
   --muted-fg: 100 108 115; --ring: 47 117 163;
   --chrome-bg: 41 57 71; --chrome-fg: 255 255 255;
-  --group-header: 49 66 80; --group-fg: 255 255 255;
+  --group-header: 239 242 244; --group-fg: 54 67 78;
   --link: 37 105 164;
   --accent: 46 109 154; --accent-fg: 255 255 255;
   --accent-50: 240 247 251; --accent-100: 222 237 246;
@@ -292,7 +292,7 @@ button, a, input, select { -webkit-tap-highlight-color: transparent; }
 /* 1.4 traditional control-panel pass. The interior vocabulary follows
    Evolution's flat section rows and Paper Lantern's framed modules. */
 body{font-size:16px;line-height:1.55}
-.panel-content{max-width:1480px;padding:30px 34px 44px}
+.panel-content{max-width:none;margin:0;padding:30px clamp(20px,2.2vw,42px) 44px}
 .panel-topbar{height:72px}
 .panel-brand{height:54px;min-width:178px;overflow:hidden}
 .boron-brand-logo{position:relative;display:block;width:178px;height:52px;overflow:hidden;flex:none}
@@ -345,19 +345,43 @@ body{font-size:16px;line-height:1.55}
 [data-skin=evolution] .tool-label{font-size:14px;font-weight:600}
 
 /* Paper Lantern: dark module titles, square forms and traditional tables. */
-[data-skin=paper-lantern] .panel-content{max-width:1380px}
+[data-skin=paper-lantern] .panel-content{max-width:none;font-size:16px}
 [data-skin=paper-lantern] .panel-page-heading{background:rgb(var(--surface));border:1px solid rgb(var(--border));border-top:4px solid #dc7d37;padding:17px 19px;margin-bottom:20px}
 [data-skin=paper-lantern] .panel-page-heading>div:first-child>div:first-child{background:#edf4f8!important;color:rgb(var(--link))!important}
 [data-skin=paper-lantern] .panel-card{border-radius:0}
 [data-skin=paper-lantern] .panel-card-header{border-left:0;background:rgb(var(--group-header));padding:13px 17px}
 [data-skin=paper-lantern] .panel-card-header h3{font-size:14px;font-weight:600;text-transform:none;letter-spacing:0}
-[data-skin=paper-lantern] .panel-card-description{color:rgb(219 229 236)}
+[data-skin=paper-lantern] .panel-card-description{color:rgb(var(--muted-fg))}
 [data-skin=paper-lantern] .dashboard-search-field{height:48px;border-radius:1px;box-shadow:none}
 [data-skin=paper-lantern] .dashboard-search-field input{height:46px}
 [data-skin=paper-lantern] .dashboard-search-results{border-top-color:#dc7d37}
 [data-skin=paper-lantern] .tool-label{font-size:15px}
 [data-skin=paper-lantern] .tool-group-heading{font-size:13px;font-weight:600}
 [data-skin=paper-lantern] .panel-content th{background:#eef1f3;color:#4b5963}
+
+/* Wide hosting dashboards use the canvas instead of leaving a centered
+   gutter. The statistics rail is large enough for readable live metrics. */
+.dashboard-columns{grid-template-columns:minmax(620px,3fr) minmax(330px,1fr);gap:clamp(22px,2vw,38px)}
+.dashboard-stats{padding-left:clamp(18px,1.6vw,30px)}
+.stats-heading{font-size:18px;font-weight:600;letter-spacing:0}
+.info-row dt,.usage-row>div:first-child{font-size:13px}
+.info-row dd,.usage-row strong{font-size:14px}
+.usage-row small,.stats-link,.stats-quick-links a{font-size:12px}
+.usage-row{padding:14px 15px}
+[data-skin=paper-lantern] .dashboard-columns{grid-template-columns:minmax(620px,3fr) minmax(340px,1fr);gap:24px}
+[data-skin=paper-lantern] .stats-heading{font-size:14px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;background:rgb(var(--group-header));color:rgb(var(--group-fg));border-bottom:1px solid rgb(var(--border))}
+[data-skin=paper-lantern] .info-row dt,[data-skin=paper-lantern] .usage-row>div:first-child>span{font-size:13px}
+[data-skin=paper-lantern] .info-row dd,[data-skin=paper-lantern] .usage-row strong{font-size:14px}
+[data-skin=paper-lantern] .tool-group-heading{background:rgb(var(--group-header));color:rgb(var(--group-fg));border-bottom:1px solid rgb(var(--border));font-size:14px;text-transform:none;padding:11px 15px}
+[data-skin=paper-lantern] .tool-link{min-height:74px;padding:10px 12px}
+[data-skin=paper-lantern] .tool-link:hover{background:#f3f7fa;border-left:3px solid rgb(var(--accent))}
+.dark[data-skin=paper-lantern] .tool-link:hover{background:rgb(var(--muted))}
+
+.plan-editor{display:grid;gap:20px}.plan-editor>.panel-page-heading{margin-bottom:0}.plan-editor-section{margin:0}.plan-editor-section>.panel-card-header{min-height:68px}.plan-editor-section>.px-6{padding:22px}.plan-switch{display:flex;min-height:76px;align-items:center;justify-content:space-between;gap:18px;border:1px solid rgb(var(--border));padding:13px 15px}.plan-switch span{display:block}.plan-switch strong{display:block;font-size:15px}.plan-switch small{display:block;color:rgb(var(--muted-fg));font-size:13px;margin-top:3px}.plan-editor-actions{display:flex;justify-content:flex-end;gap:10px;padding:8px 0 20px}
+.php-layout{display:grid;gap:22px}.php-version-grid{display:grid;grid-template-columns:minmax(280px,.75fr) minmax(460px,1.4fr);gap:22px;align-items:start}.php-version-grid>.panel-card{height:100%}
+
+@media(min-width:1600px){[data-skin=evolution] .tool-grid{grid-template-columns:repeat(auto-fill,minmax(132px,1fr))}[data-skin=paper-lantern] .tool-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:1050px){.dashboard-columns,[data-skin=paper-lantern] .dashboard-columns{grid-template-columns:minmax(0,1fr)}.dashboard-stats{border-left:0;padding-left:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}.stats-panel{margin-bottom:0}.php-version-grid{grid-template-columns:1fr}}
 
 /* Dark variants retain each theme's module hierarchy instead of generic
    charcoal cards floating on a black app canvas. */

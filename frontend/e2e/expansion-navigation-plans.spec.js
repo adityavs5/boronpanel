@@ -29,8 +29,8 @@ async function session(page, role, skin) {
 
 const expectedCustomerOrder = [
   '/app/domains', '/app/subdomains', '/app/ftp', '/app/ssl', '/app/databases', '/app/dns',
-  '/app/email', '/app/email/settings', '/app/email/dns', '/app/wordpress', '/app/backups',
-  '/app/node-apps', '/app/python-apps', '/app/terminal', '/app/redis',
+  '/app/email', '/app/email/settings', '/app/email/dns', '/app/email/spam', '/app/email/migration',
+  '/app/wordpress', '/app/node-apps', '/app/python-apps', '/app/redis', '/app/backups',
 ]
 
 for (const skin of ['evolution', 'paper-lantern']) {
@@ -68,20 +68,19 @@ for (const skin of ['evolution', 'paper-lantern']) {
   })
 }
 
-test('plan creation offers four editable templates and Custom', async ({ page }) => {
+test('plan creation is a full page with four editable templates', async ({ page }) => {
   await session(page, 'admin', 'evolution')
-  await page.goto('/app/plans')
-  await page.getByRole('button', { name: 'New plan' }).first().click()
+  await page.goto('/app/plans/new')
   const template = page.getByLabel('Starting template')
-  await expect(template.locator('option')).toHaveCount(5)
+  await expect(template.locator('option')).toHaveCount(4)
   await expect(template).toHaveValue('wordpress')
   await expect(page.getByLabel('Memory (MB)')).toHaveValue('1024')
-  await expect(page.getByText('Accounts on this plan get per-account Redis enabled.')).toBeVisible()
+  await expect(page.getByText('Compute resources', { exact: true })).toBeVisible()
+  await expect(page.getByText('Storage and traffic', { exact: true })).toBeVisible()
+  await expect(page.getByText(/Provision an isolated Redis instance/)).toBeVisible()
 
   await template.selectOption('starter')
   await expect(page.getByLabel('Plan name')).toHaveValue('Starter')
-  await expect(page.getByLabel('Disk hard quota (MB)')).toHaveValue('3072')
-  await template.selectOption('custom')
   await expect(page.getByLabel('Disk hard quota (MB)')).toHaveValue('3072')
 
   await page.setViewportSize({ width: 390, height: 844 })

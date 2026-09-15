@@ -15,12 +15,22 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 logger = logging.getLogger("borond.configtx")
+
+
+def _inherit_metadata(temporary: Path, target: Path) -> None:
+    """Atomic replacement must retain deliberate service ownership/mode."""
+    if not target.exists():
+        return
+    current = target.stat()
+    os.chown(temporary, current.st_uid, current.st_gid)
+    temporary.chmod(stat.S_IMODE(current.st_mode))
 
 
 @dataclass
@@ -71,6 +81,7 @@ class ConfigWriter:
         self.target_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.target_path.with_suffix(self.target_path.suffix + f".tmp.{os.getpid()}")
         tmp_path.write_text(new_content)
+        _inherit_metadata(tmp_path, self.target_path)
 
         # 1. validate
         try:
@@ -169,6 +180,7 @@ class ConfigWriterMulti:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = target_path.with_suffix(target_path.suffix + f".tmp.{os.getpid()}")
             tmp_path.write_text(contents[name])
+            _inherit_metadata(tmp_path, target_path)
             tmp_paths[name] = tmp_path
 
         try:

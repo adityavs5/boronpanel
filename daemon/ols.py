@@ -1047,6 +1047,8 @@ def admin_status(params: dict) -> dict:
     service = run(["systemctl", "is-active", "lsws"], timeout=10)
     version = run([f"{OLS_SERVER_BASE}/bin/lshttpd", "-v"], timeout=10)
     config_check = run([f"{OLS_SERVER_BASE}/bin/openlitespeed", "-t"], timeout=30)
+    admin_cert = Path(f"{OLS_SERVER_BASE}/admin/conf/webadmin.crt")
+    tls_check = run(["openssl", "x509", "-in", str(admin_cert), "-noout", "-checkhost", settings.panel_hostname], timeout=10) if admin_cert.exists() else None
     with write_session() as session:
         accounts = session.scalar(select(func.count()).select_from(Account)) or 0
         domains = session.scalar(select(func.count()).select_from(Domain)) or 0
@@ -1058,6 +1060,8 @@ def admin_status(params: dict) -> dict:
         "settings": _ols_settings(),
         "credential": credential_status({}),
         "webadmin_port": 7080,
+        "webadmin_tls_valid": bool(tls_check and tls_check.ok),
+        "webadmin_tls_hostname": settings.panel_hostname,
         "accounts": accounts,
         "domains": domains,
     }

@@ -19,11 +19,11 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, BandwidthDaily, BandwidthDailyDomain, DatabaseGrant, Domain, MailDomain, UsageSnapshot, utcnow
+from shared.models import Account, AccountResourceLimits, BandwidthDaily, BandwidthDailyDomain, DatabaseGrant, Domain, FtpAccount, MailDomain, MailUser, UsageSnapshot, utcnow
 
 from daemon import mariadb, ols
 from daemon.procutil import run
@@ -31,6 +31,7 @@ from daemon.procutil import run
 SNAPSHOT_MAX_AGE_SECONDS = 15 * 60
 BANDWIDTH_HISTORY_DAYS = 90
 SNAPSHOT_HISTORY_DAYS = 30
+CGROUP_ROOT = Path("/sys/fs/cgroup/boron.slice")
 
 
 def _as_aware_utc(value: dt.datetime) -> dt.datetime:
@@ -198,6 +199,71 @@ def _snapshot_to_dict(snap: UsageSnapshot) -> dict:
     }
 
 
+def _integer_file(path: Path) -> int | None:
+    try:
+        value = path.read_text().strip()
+        return int(value) if value and value != "max" else None
+    except (OSError, ValueError):
+        return None
+
+
+def _cgroup_counters(username: str) -> dict:
+    """Cheap cumulative counters for a dashboard client to turn into rates."""
+    root = CGROUP_ROOT / f"boron-{username}.slice"
+    cpu_usage_usec = None
+    try:
+        cpu = dict(line.split(None, 1) for line in (root / "cpu.stat").read_text().splitlines() if " " in line)
+        cpu_usage_usec = int(cpu.get("usage_usec", 0))
+    except (OSError, ValueError):
+        pass
+    totals = {"read_bytes": 0, "write_bytes": 0, "read_ops": 0, "write_ops": 0}
+    try:
+        for line in (root / "io.stat").read_text().splitlines():
+            values = dict(token.split("=", 1) for token in line.split()[1:] if "=" in token)
+            totals["read_bytes"] += int(values.get("rbytes", 0))
+            totals["write_bytes"] += int(values.get("wbytes", 0))
+            totals["read_ops"] += int(values.get("rios", 0))
+            totals["write_ops"] += int(values.get("wios", 0))
+    except (OSError, ValueError):
+        totals = {key: None for key in totals}
+    return {
+        "sampled_at": utcnow().isoformat(),
+        "cpu_usage_usec": cpu_usage_usec,
+        "memory_current_bytes": _integer_file(root / "memory.current"),
+        "pids_current": _integer_file(root / "pids.current"),
+        **totals,
+    }
+
+
+def _resource_summary(account: Account) -> dict:
+    with write_session() as session:
+        limits = session.scalar(select(AccountResourceLimits).where(AccountResourceLimits.account_id == account.id))
+        database_count = session.scalar(select(func.count()).select_from(DatabaseGrant).where(DatabaseGrant.account_id == account.id)) or 0
+        domain_count = session.scalar(select(func.count()).select_from(Domain).where(Domain.account_id == account.id, Domain.kind != "subdomain")) or 0
+        subdomain_count = session.scalar(select(func.count()).select_from(Domain).where(Domain.account_id == account.id, Domain.kind == "subdomain")) or 0
+        ftp_count = session.scalar(select(func.count()).select_from(FtpAccount).where(FtpAccount.account_id == account.id)) or 0
+        mail_domain_ids = list(session.scalars(select(MailDomain.id).where(MailDomain.account_id == account.id)).all())
+        email_count = session.scalar(select(func.count()).select_from(MailUser).where(MailUser.mail_domain_id.in_(mail_domain_ids))) if mail_domain_ids else 0
+    counters = _cgroup_counters(account.username)
+    return {
+        **counters,
+        "cpu_limit_cores": account.cpu_pct / 100,
+        "memory_limit_bytes": account.mem_mb * 1024 * 1024,
+        "io_limit_bytes_per_second": account.io_mb * 1024 * 1024,
+        "process_limit": account.pids_max,
+        "domain_count": domain_count,
+        "subdomain_count": subdomain_count,
+        "database_count": database_count,
+        "email_account_count": email_count or 0,
+        "ftp_account_count": ftp_count,
+        "bandwidth_limit_bytes": limits.bandwidth_limit_mb * 1024 * 1024 if limits and limits.bandwidth_limit_mb else None,
+        "database_limit": limits.database_limit if limits else None,
+        "email_account_limit": limits.email_account_limit if limits else None,
+        "subdomain_limit": limits.subdomain_limit if limits else None,
+        "ftp_account_limit": limits.ftp_account_limit if limits else None,
+    }
+
+
 def refresh_snapshot(account: Account) -> dict:
     live = compute_live_usage(account)
     refresh_bandwidth(account)
@@ -236,6 +302,7 @@ def get_usage(account: Account, force_refresh: bool = False) -> dict:
 
     return {
         "current": current,
+        "resources": _resource_summary(account),
         "quota_soft_mb": account.quota_soft_mb,
         "quota_hard_mb": account.quota_hard_mb,
         "history": [_snapshot_to_dict(s) for s in history],

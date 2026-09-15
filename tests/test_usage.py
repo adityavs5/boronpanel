@@ -65,6 +65,24 @@ def test_process_count_counts_real_output(monkeypatch):
     assert usage._process_count("demo1") == 2
 
 
+def test_cgroup_counters_read_cpu_memory_and_io(monkeypatch, tmp_path):
+    root = tmp_path / "boron-demo1.slice"
+    root.mkdir()
+    (root / "cpu.stat").write_text("usage_usec 2500000\nuser_usec 2000000\n")
+    (root / "memory.current").write_text("1048576\n")
+    (root / "pids.current").write_text("4\n")
+    (root / "io.stat").write_text("8:0 rbytes=100 wbytes=200 rios=3 wios=4\n8:1 rbytes=10 wbytes=20 rios=1 wios=2\n")
+    monkeypatch.setattr(usage, "CGROUP_ROOT", tmp_path)
+
+    result = usage._cgroup_counters("demo1")
+
+    assert result["cpu_usage_usec"] == 2500000
+    assert result["memory_current_bytes"] == 1048576
+    assert result["pids_current"] == 4
+    assert (result["read_bytes"], result["write_bytes"]) == (110, 220)
+    assert (result["read_ops"], result["write_ops"]) == (4, 6)
+
+
 def test_parse_access_log_sums_bytes_by_date(tmp_path):
     log = tmp_path / "demo1-access.log"
     log.write_text(

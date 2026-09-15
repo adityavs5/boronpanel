@@ -478,6 +478,7 @@ def _run_update_job(job_id: int, to_version: str) -> None:
         # (f) migrations from the NEW version against the live DB --------------
         _run_migrations(job_id, new_dir)
         _install_mail_guard(job_id, new_dir)
+        _install_ols_webadmin_integration(job_id, new_dir)
 
         # (g..j) handoff: swap/restart/health/rollback happen in the detached
         # finalizer -- see module docstring for why. backup_dir already
@@ -815,6 +816,17 @@ def _install_mail_guard(job_id: int, new_dir: str) -> None:
         # Dovecot configuration and process diagnostics can contain credentials.
         _fail_step(job_id, 'mail-guard', 'Mailbox recovery guard activation failed; panel version was not switched')
     _step(job_id, 'mail-guard', 'ok')
+
+
+def _install_ols_webadmin_integration(job_id: int, new_dir: str) -> None:
+    script = Path(new_dir, 'scripts/reconcile_ols_webadmin.py')
+    if not script.is_file():
+        return
+    _step(job_id, 'ols-webadmin', 'running', 'Applying HTTPS, permissions, and firewall policy')
+    result = run(['/usr/bin/python3', str(script)], timeout=120)
+    if result.returncode:
+        _fail_step(job_id, 'ols-webadmin', 'OpenLiteSpeed WebAdmin integration failed')
+    _step(job_id, 'ols-webadmin', 'ok')
 
 
 def _admin_alert_target() -> tuple[str, str]:

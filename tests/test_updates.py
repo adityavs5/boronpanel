@@ -887,3 +887,35 @@ def test_mail_guard_update_skips_installed_dependencies(update_env, tmp_path, mo
     updates._install_mail_guard(_make_job(), str(target))
     assert len(commands) == 2
     assert all(args[0] != '/usr/bin/apt-get' for args in commands)
+
+
+def test_update_runs_staged_ols_webadmin_reconciliation(update_env, tmp_path, monkeypatch):
+    from daemon.procutil import ProcResult
+    target = tmp_path / 'staged'
+    script = target / 'scripts/reconcile_ols_webadmin.py'
+    script.parent.mkdir(parents=True)
+    script.write_text('# staged reconciliation')
+    commands = []
+    monkeypatch.setattr(updates, 'run', lambda args, **kwargs: (commands.append((args, kwargs)) or ProcResult(args=args, returncode=0, stdout='', stderr='')))
+
+    updates._install_ols_webadmin_integration(_make_job(), str(target))
+
+    assert commands == [(['/usr/bin/python3', str(script)], {'timeout': 120})]
+
+
+def test_update_blocks_version_switch_when_ols_reconciliation_fails(update_env, tmp_path, monkeypatch):
+    from daemon.procutil import ProcResult
+    target = tmp_path / 'staged'
+    script = target / 'scripts/reconcile_ols_webadmin.py'
+    script.parent.mkdir(parents=True)
+    script.touch()
+    monkeypatch.setattr(updates, 'run', lambda args, **kwargs: ProcResult(args=args, returncode=1, stdout='', stderr='private diagnostic'))
+    job_id = _make_job()
+
+    with pytest.raises(updates._StepFailed):
+        updates._install_ols_webadmin_integration(job_id, str(target))
+
+    row = _get_job(job_id)
+    assert row['status'] == 'failed'
+    assert 'OpenLiteSpeed WebAdmin integration failed' in row['error']
+    assert 'private diagnostic' not in row['error']

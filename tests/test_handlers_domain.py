@@ -338,6 +338,36 @@ def test_subdomain_requires_owned_parent(isolated_db,stub_sysops,stub_filesystem
         hd.add_domain({'username':'demo1','domain':'blog.foreign.example','kind':'subdomain'})
 
 
+def test_subdomain_uses_selected_parent_and_custom_docroot(isolated_db, stub_sysops, stub_filesystem, stub_ols, monkeypatch, tmp_path):
+    monkeypatch.setattr(hd.settings, 'home_base', str(tmp_path))
+    ha.create_account({'username': 'demo1'})
+    parent = hd.add_domain({'username': 'demo1', 'domain': 'demo1.example', 'kind': 'primary'})
+
+    shared = hd.add_domain({
+        'username': 'demo1', 'domain': 'cdn.demo1.example', 'kind': 'subdomain',
+        'parent_domain': 'demo1.example', 'document_root_mode': 'parent',
+    })
+    custom = hd.add_domain({
+        'username': 'demo1', 'domain': 'blog.demo1.example', 'kind': 'subdomain',
+        'parent_domain': 'demo1.example', 'document_root_mode': 'custom',
+        'document_root': 'sites/blog/public_html',
+    })
+
+    assert shared['docroot'] == parent['docroot']
+    assert custom['docroot'] == str(tmp_path / 'demo1/sites/blog/public_html')
+
+
+def test_subdomain_rejects_hostname_outside_selected_parent(isolated_db, stub_sysops, stub_filesystem, stub_ols):
+    ha.create_account({'username': 'demo1'})
+    hd.add_domain({'username': 'demo1', 'domain': 'one.example', 'kind': 'primary'})
+    hd.add_domain({'username': 'demo1', 'domain': 'two.example', 'kind': 'addon'})
+    with pytest.raises(Exception, match='selected parent'):
+        hd.add_domain({
+            'username': 'demo1', 'domain': 'blog.two.example', 'kind': 'subdomain',
+            'parent_domain': 'one.example',
+        })
+
+
 def test_most_specific_dns_zone_is_selected(isolated_db,stub_sysops):
     ha.create_account({'username':'demo1'})
     _add_zone_owned_by('demo1','example.com')

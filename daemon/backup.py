@@ -57,7 +57,7 @@ logger = logging.getLogger("borond.backup")
 
 _executor = ThreadPoolExecutor(max_workers=settings.backup_concurrency, thread_name_prefix="backup")
 
-BACKUP_KINDS = ("full", "file", "database", "mailbox")
+BACKUP_KINDS = ("full", "file", "database", "databases", "mailbox")
 FREQUENCIES = ("daily", "weekly", "monthly")
 FREQUENCY_SECONDS = {"daily": 86400, "weekly": 7 * 86400, "monthly": 30 * 86400}
 PORTABLE_ARCHIVE_FORMAT = "boron-account-archive"
@@ -275,7 +275,7 @@ def _trigger_backup_locked(params: dict) -> dict:
     if kind not in BACKUP_KINDS:
         raise ValidationError(f"kind must be one of {BACKUP_KINDS}")
     item_ref = params.get("item_ref")
-    if kind != "full" and not item_ref:
+    if kind not in ("full", "databases") and not item_ref:
         raise ValidationError(f"item_ref is required for kind '{kind}'")
     trigger_source = params.get("trigger", "manual")
 
@@ -283,6 +283,12 @@ def _trigger_backup_locked(params: dict) -> dict:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise BackupError(f"account '{username}' not found")
+
+        owned_databases = set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id == account.id)).all())
+        if kind == "database" and item_ref not in owned_databases:
+            raise BackupError("choose a database owned by this account")
+        if kind == "databases" and not owned_databases:
+            raise BackupError("this account has no databases to back up")
 
         for model in (SnapshotRun, SnapshotRestore, RestoreJob):
             if session.scalar(select(model.id).where(model.account_id == account.id, model.status.in_(("pending", "running")))):
@@ -554,6 +560,24 @@ def _build_database_backup(item_ref: str, staging_dir: Path, job_id: int) -> Pat
     return artifact
 
 
+def _build_databases_backup(account_id: int, staging_dir: Path, job_id: int) -> Path:
+    with write_session() as session:
+        names = list(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id == account_id)).all())
+    if not names:
+        raise BackupError("this account has no databases to back up")
+    content = staging_dir / "databases"
+    content.mkdir(parents=True, exist_ok=True)
+    for index, name in enumerate(names, start=1):
+        _update_job(job_id, progress_message=f"dumping database {index} of {len(names)}: {name}")
+        _dump_database(name, content / f"{name}.sql.gz")
+    (staging_dir / "manifest.json").write_text(json.dumps({"kind": "databases", "databases": names}, indent=2) + "\n")
+    artifact = staging_dir.parent / f"{staging_dir.name}-databases.tar"
+    result = run(["tar", "cf", str(artifact), "-C", str(staging_dir), "manifest.json", "databases"], timeout=1800)
+    if not result.ok:
+        raise BackupError(f"database archive assembly failed: {result.stderr.strip()}")
+    return artifact
+
+
 def _build_mailbox_backup(item_ref: str, staging_dir: Path, job_id: int) -> Path:
     if "@" not in item_ref:
         raise BackupError("item_ref for a mailbox backup must be 'local_part@domain'")
@@ -600,6 +624,9 @@ def _run_backup_job(job_id: int) -> None:
         elif kind == "database":
             artifact_name = f"{username}_{timestamp}_db_{_sanitize_ref(item_ref)}.sql.gz"
             local_artifact = _build_database_backup(item_ref, staging_dir, job_id)
+        elif kind == "databases":
+            artifact_name = f"{username}_{timestamp}_all_databases.tar"
+            local_artifact = _build_databases_backup(account_snapshot.id, staging_dir, job_id)
         elif kind == "mailbox":
             artifact_name = f"{username}_{timestamp}_mailbox_{_sanitize_ref(item_ref)}.tar.gz"
             local_artifact = _build_mailbox_backup(item_ref, staging_dir, job_id)
@@ -744,7 +771,7 @@ def browse_backup(params: dict) -> dict:
         artifact_path = job.artifact_path
         dest_kind = destination.kind
 
-    if kind != "full":
+    if kind not in ("full", "databases"):
         return {"kind": kind, "item_ref": item_ref}
 
     with tempfile.TemporaryDirectory(dir=settings.backup_staging_dir) as tmp:
@@ -753,9 +780,9 @@ def browse_backup(params: dict) -> dict:
             members = tf.getnames()
             manifest_member = next((m for m in members if m.endswith("manifest.json")), None)
             if manifest_member is None:
-                raise BackupError("backup artifact has no manifest.json -- corrupt or not a full backup")
+                raise BackupError("backup artifact has no manifest.json -- corrupt backup")
             manifest = json.loads(tf.extractfile(manifest_member).read())
-        return {"kind": "full", "manifest": manifest, "contents": members}
+        return {"kind": kind, "manifest": manifest, "contents": members}
 
 
 # --- restore -------------------------------------------------------------------
@@ -804,7 +831,7 @@ def _trigger_restore_locked(params: dict) -> dict:
             raise ValidationError(f"kind must be one of {BACKUP_KINDS}")
         if backup_job.kind != "full" and effective_kind != backup_job.kind:
             raise BackupError("a non-full backup artifact can only restore its own kind")
-        if backup_job.kind != "full" and not item_ref:
+        if backup_job.kind not in ("full", "databases") and not item_ref:
             item_ref = backup_job.item_ref
 
         # Same guard trigger_backup applies (F9): a restore rewrites the
@@ -1115,6 +1142,24 @@ def _restore_database(item_ref: str, local_artifact: str, restore_job_id: int) -
     _restore_database_dump(item_ref, Path(local_artifact))
 
 
+def _restore_databases(username: str, local_artifact: str, tmp_dir: str, restore_job_id: int) -> None:
+    account_id = _resolve_account_id(username)
+    with write_session() as session:
+        owned = set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id == account_id)).all())
+    extract_dir = Path(tmp_dir) / "database-set"
+    extract_dir.mkdir()
+    _safe_extract_tar(local_artifact, extract_dir)
+    dumps = sorted((extract_dir / "databases").glob("*.sql.gz"))
+    if not dumps:
+        raise BackupError("database archive contains no database dumps")
+    for index, dump in enumerate(dumps, start=1):
+        name = dump.name[:-len('.sql.gz')]
+        if name not in owned:
+            raise BackupError(f"database '{name}' is not owned by this account")
+        _update_restore(restore_job_id, progress_message=f"restoring database {index} of {len(dumps)}: {name}")
+        _restore_database_dump(name, dump)
+
+
 def _restore_mailbox(item_ref: str, local_artifact: str, restore_job_id: int) -> None:
     if "@" not in item_ref:
         raise BackupError("item_ref for a mailbox restore must be 'local_part@domain'")
@@ -1153,6 +1198,8 @@ def _run_restore_job(restore_job_id: int) -> None:
             _restore_file(username, item_ref, local_artifact, restore_job_id)
         elif kind == "database":
             _restore_database(item_ref, local_artifact, restore_job_id)
+        elif kind == "databases":
+            _restore_databases(username, local_artifact, tmp_dir, restore_job_id)
         elif kind == "mailbox":
             _restore_mailbox(item_ref, local_artifact, restore_job_id)
         else:

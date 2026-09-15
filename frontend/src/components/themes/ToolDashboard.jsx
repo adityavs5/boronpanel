@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, Plus, Minus, ArrowUpRight, Server, AlertTriangle, RefreshCw, ExternalLink } from 'lucide-react'
@@ -71,12 +71,27 @@ export default function ToolDashboard() {
   const health = useQuery({ queryKey: ['health'], queryFn: () => get('/api/v1/health'), enabled: isAdmin, refetchInterval: 30_000, ...options })
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: () => get('/api/v1/accounts'), enabled: isAdmin, ...options })
   const account = useQuery({ queryKey: ['account', username], queryFn: () => get(`/api/v1/accounts/${username}`), enabled: !isAdmin && !!username, ...options })
-  const usage = useQuery({ queryKey: ['usage', username], queryFn: () => get(`/api/v1/accounts/${username}/usage`), enabled: !isAdmin && !!username, ...options })
-  const domains = useQuery({ queryKey: ['domains', username], queryFn: () => get(`/api/v1/accounts/${username}/domains`), enabled: !isAdmin && !!username, ...options })
+  const usage = useQuery({ queryKey: ['usage', username], queryFn: () => get(`/api/v1/accounts/${username}/usage`), enabled: !isAdmin && !!username, refetchInterval: 5000, ...options })
   const alerts = useQuery({ queryKey: ['alerts', username], queryFn: () => get(`/api/v1/accounts/${username}/alerts`), enabled: !isAdmin && !!username, ...options })
   const disk = health.data?.disks?.find((d) => d.mount === '/') || health.data?.disks?.[0]
   const acc = account.data
   const u = usage.data
+  const counters = u?.resources
+  const previousCounters = useRef(null)
+  const [rates, setRates] = useState({})
+  useEffect(() => {
+    if (!counters?.sampled_at) return
+    const previous = previousCounters.current
+    if (previous) {
+      const seconds = (Date.parse(counters.sampled_at) - Date.parse(previous.sampled_at)) / 1000
+      if (seconds > 0) setRates({
+        cpuCores: counters.cpu_usage_usec != null && previous.cpu_usage_usec != null ? Math.max(0, counters.cpu_usage_usec - previous.cpu_usage_usec) / (seconds * 1_000_000) : null,
+        ioBytes: [counters.read_bytes, counters.write_bytes, previous.read_bytes, previous.write_bytes].every(value => value != null) ? Math.max(0, counters.read_bytes + counters.write_bytes - previous.read_bytes - previous.write_bytes) / seconds : null,
+        iops: [counters.read_ops, counters.write_ops, previous.read_ops, previous.write_ops].every(value => value != null) ? Math.max(0, counters.read_ops + counters.write_ops - previous.read_ops - previous.write_ops) / seconds : null,
+      })
+    }
+    previousCounters.current = counters
+  }, [counters?.sampled_at, counters?.cpu_usage_usec, counters?.read_bytes, counters?.write_bytes, counters?.read_ops, counters?.write_ops])
   const diskUsed = u?.current?.disk_total_bytes
   const diskQuota = u?.quota_hard_mb ?? acc?.quota_hard_mb
   return <div className="tools-dashboard">
@@ -102,11 +117,21 @@ export default function ToolDashboard() {
             <QueryNotice query={accounts} label="Accounts" />
             {accounts.isSuccess && <><UsageRow label="Hosting Accounts" value={Array.isArray(accounts.data) ? accounts.data.length : '—'} /><UsageRow label="Active Accounts" value={Array.isArray(accounts.data) ? accounts.data.filter((a) => a.status === 'active').length : '—'} /></>}
           </> : <><QueryNotice query={usage} label="Usage statistics" />{usage.isSuccess && <>
+            <UsageRow label="CPU" value={rates.cpuCores != null ? `${rates.cpuCores.toFixed(2)} cores` : 'Collecting…'} pct={rates.cpuCores != null && counters?.cpu_limit_cores ? rates.cpuCores / counters.cpu_limit_cores * 100 : undefined} detail={counters?.cpu_limit_cores ? `${counters.cpu_limit_cores} cores allocated` : undefined} />
+            <UsageRow label="Memory" value={counters?.memory_current_bytes != null ? formatBytes(counters.memory_current_bytes) : '—'} pct={counters?.memory_current_bytes != null && counters?.memory_limit_bytes ? counters.memory_current_bytes / counters.memory_limit_bytes * 100 : undefined} detail={counters?.memory_limit_bytes ? `of ${formatBytes(counters.memory_limit_bytes)}` : undefined} />
+            <UsageRow label="Disk I/O" value={rates.ioBytes != null ? `${formatBytes(rates.ioBytes)}/s` : 'Collecting…'} detail={counters?.io_limit_bytes_per_second ? `${formatBytes(counters.io_limit_bytes_per_second)}/s limit` : undefined} />
+            <UsageRow label="IOPS" value={rates.iops != null ? `${Math.round(rates.iops)} ops/s` : 'Collecting…'} />
             <UsageRow label="Disk Space" value={diskUsed != null ? formatBytes(diskUsed) : '—'} pct={diskQuota > 0 && diskUsed != null ? diskUsed / (diskQuota * 1024 * 1024) * 100 : undefined} detail={diskQuota > 0 ? `of ${formatMB(diskQuota)}` : diskQuota === 0 ? 'No disk limit' : undefined} />
-            <UsageRow label="Bandwidth" value={u?.bandwidth_month_to_date_bytes != null ? formatBytes(u.bandwidth_month_to_date_bytes) : '—'} detail="This month" />
+            <UsageRow label="Bandwidth" value={u?.bandwidth_month_to_date_bytes != null ? formatBytes(u.bandwidth_month_to_date_bytes) : '—'} pct={counters?.bandwidth_limit_bytes ? u.bandwidth_month_to_date_bytes / counters.bandwidth_limit_bytes * 100 : undefined} detail={counters?.bandwidth_limit_bytes ? `of ${formatBytes(counters.bandwidth_limit_bytes)} this month` : 'This month · unlimited'} />
+            <UsageRow label="Inodes" value={u?.current?.inode_count?.toLocaleString?.() ?? '—'} />
             <UsageRow label="Database Disk Usage" value={u?.current?.disk_db_bytes != null ? formatBytes(u.current.disk_db_bytes) : '—'} />
             <UsageRow label="Mail Disk Usage" value={u?.current?.disk_mail_bytes != null ? formatBytes(u.current.disk_mail_bytes) : '—'} />
-          </>}<QueryNotice query={domains} label="Domains" />{domains.isSuccess && <UsageRow label="Domains" value={domains.data?.domains?.length ?? '—'} />}</>}
+            <UsageRow label="Domains" value={counters?.domain_count ?? '—'} />
+            <UsageRow label="Subdomains" value={counters?.subdomain_count != null ? `${counters.subdomain_count} / ${counters.subdomain_limit ?? '∞'}` : '—'} pct={counters?.subdomain_limit ? counters.subdomain_count / counters.subdomain_limit * 100 : undefined} />
+            <UsageRow label="Email Accounts" value={counters?.email_account_count != null ? `${counters.email_account_count} / ${counters.email_account_limit ?? '∞'}` : '—'} pct={counters?.email_account_limit ? counters.email_account_count / counters.email_account_limit * 100 : undefined} />
+            <UsageRow label="Databases" value={counters?.database_count != null ? `${counters.database_count} / ${counters.database_limit ?? '∞'}` : '—'} pct={counters?.database_limit ? counters.database_count / counters.database_limit * 100 : undefined} />
+            <UsageRow label="FTP Accounts" value={counters?.ftp_account_count != null ? `${counters.ftp_account_count} / ${counters.ftp_account_limit ?? '∞'}` : '—'} pct={counters?.ftp_account_limit ? counters.ftp_account_count / counters.ftp_account_limit * 100 : undefined} />
+          </>}</>}
         </StatsPanel>
         <StatsPanel title="Quick Links">
           <div className="stats-quick-links"><Link to={isAdmin ? '/accounts' : '/files'}>{isAdmin ? 'Manage accounts' : 'Open file manager'}<ArrowUpRight size={14} /></Link><Link to="/security">Secure your account<ArrowUpRight size={14} /></Link><Link to="/appearance">Customize your workspace<ArrowUpRight size={14} /></Link>{supportUrl && <a href={supportUrl} target="_blank" rel="noopener noreferrer">Contact support<ExternalLink size={14} /></a>}{!supportUrl && supportEmail && <a href={`mailto:${supportEmail}`}>Contact support<ExternalLink size={14} /></a>}</div>

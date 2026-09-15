@@ -70,9 +70,8 @@ export default function Php() {
         description="PHP version, runtime settings, and extensions for this account."
         icon={FileCode2}
       />
-      <div className="space-y-6">
-        <VersionCard username={username} />
-        <SiteVersionsCard username={username} />
+      <div className="php-layout">
+        <div className="php-version-grid"><VersionCard username={username} /><SiteVersionsCard username={username} /></div>
         <SettingsCard username={username} />
         <ExtensionsCard username={username} />
       </div>

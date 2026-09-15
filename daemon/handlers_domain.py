@@ -9,6 +9,8 @@ content regardless of which domain/subdomain was actually requested.
 """
 from __future__ import annotations
 
+from pathlib import Path, PurePosixPath
+
 from daemon import account_mutation
 
 from sqlalchemy import select
@@ -16,7 +18,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, DnsZone
-from shared.validation import ValidationError, validate_domain, validate_php_version, validate_username
+from shared.validation import ValidationError, validate_domain, validate_php_version, validate_protected_dir_relative_path, validate_username
 
 from daemon import dnsprovider, handlers_redirect, lscache, ols, sysops
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
@@ -70,9 +72,24 @@ def add_domain(params: dict) -> dict:
         if existing is not None:
             raise RuntimeError(f"domain '{domain_name}' is already in use")
 
-        owned_domains=session.scalars(select(Domain.domain).where(Domain.account_id==account.id)).all()
-        if kind=='subdomain' and not any(domain_name.endswith('.'+parent) for parent in owned_domains):
-            raise ValidationError('Choose a parent domain owned by this account')
+        owned_rows=session.scalars(select(Domain).where(Domain.account_id==account.id)).all()
+        owned_domains=[row.domain for row in owned_rows]
+        parent_row = None
+        if kind == 'subdomain':
+            supplied_parent = params.get('parent_domain')
+            if supplied_parent:
+                parent_name = validate_domain(supplied_parent)
+            else:
+                # Older API clients submitted only the full hostname. Keep
+                # that path compatible while the new UI always sends the
+                # user's explicit parent selection.
+                matches = [name for name in owned_domains if domain_name.endswith('.' + name)]
+                parent_name = max(matches, key=len) if matches else ''
+            parent_row = next((row for row in owned_rows if row.domain == parent_name), None)
+            if parent_row is None:
+                raise ValidationError('Choose a parent domain owned by this account')
+            if not domain_name.endswith('.' + parent_name):
+                raise ValidationError('Subdomain must belong to the selected parent domain')
         matching_zones=[zone for zone in session.scalars(select(DnsZone)).all()
             if domain_name==zone.zone or domain_name.endswith('.'+zone.zone)]
         matching_zones.sort(key=lambda zone:len(zone.zone),reverse=True)
@@ -80,11 +97,29 @@ def add_domain(params: dict) -> dict:
             raise ValidationError('The matching DNS zone belongs to another account')
 
         is_primary = kind == "primary"
-        docroot = (
-            f"{settings.home_base}/{username}/public_html"
-            if is_primary
-            else f"{settings.home_base}/{username}/{domain_name}/public_html"
-        )
+        docroot_mode = str(params.get('document_root_mode') or 'default')
+        if docroot_mode not in ('default', 'parent', 'custom'):
+            raise ValidationError('document_root_mode must be default, parent, or custom')
+        if kind != 'subdomain' and docroot_mode != 'default':
+            raise ValidationError('custom document roots are available when creating subdomains')
+        if is_primary:
+            docroot = f"{settings.home_base}/{username}/public_html"
+        elif docroot_mode == 'parent':
+            docroot = parent_row.docroot
+        elif docroot_mode == 'custom':
+            relative = validate_protected_dir_relative_path(params.get('document_root') or '')
+            parts = PurePosixPath(relative).parts
+            if '..' in parts:
+                raise ValidationError('document root must stay inside the account home directory')
+            home = Path(settings.home_base) / username
+            candidate = (home / relative).resolve(strict=False)
+            try:
+                candidate.relative_to(home.resolve(strict=False))
+            except ValueError:
+                raise ValidationError('document root must stay inside the account home directory') from None
+            docroot = str(candidate)
+        else:
+            docroot = f"{settings.home_base}/{username}/{domain_name}/public_html"
         previous_primary_domain = account.primary_domain
         domain = Domain(account_id=account.id, domain=domain_name, kind=kind, docroot=docroot)
         session.add(domain)

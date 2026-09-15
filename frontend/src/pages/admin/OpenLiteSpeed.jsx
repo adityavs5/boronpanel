@@ -45,11 +45,12 @@ export default function OpenLiteSpeed() {
       <Button variant="secondary" loading={reloadMut.isPending} onClick={() => reloadMut.mutate()}><RefreshCw className="h-4 w-4" /> Graceful reload</Button>
     </PageHeader>
 
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
       <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Service</div><Badge className="mt-2" variant={data.active ? 'success' : 'danger'}>{data.active ? 'Running' : 'Stopped'}</Badge></CardContent></Card>
       <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Configuration</div><Badge className="mt-2" variant={data.config_valid ? 'success' : 'danger'}>{data.config_valid ? 'Valid' : 'Invalid'}</Badge></CardContent></Card>
       <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Hosted accounts</div><div className="mt-1 text-2xl font-semibold">{data.accounts}</div></CardContent></Card>
       <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Virtual hosts</div><div className="mt-1 text-2xl font-semibold">{data.domains}</div></CardContent></Card>
+      <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">WebAdmin HTTPS</div><Badge className="mt-2" variant={data.webadmin_tls_valid ? 'success' : 'warning'}>{data.webadmin_tls_valid ? 'Trusted certificate' : 'Certificate needs attention'}</Badge><div className="mt-2 truncate text-xs text-muted-foreground" title={data.webadmin_tls_hostname}>{data.webadmin_tls_hostname}:7080</div></CardContent></Card>
     </div>
 
     <Card><CardHeader><CardTitle><Gauge className="h-5 w-5" /> Server settings</CardTitle><CardDescription>Changes are stored in Boron, rendered into the managed OLS configuration, validated, reloaded, and rolled back if verification fails.</CardDescription></CardHeader><CardContent className="space-y-5">

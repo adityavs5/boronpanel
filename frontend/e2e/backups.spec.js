@@ -72,7 +72,7 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
 
 for(const skin of ['evolution','paper-lantern']) {
  test(`${skin}: customer snapshot history preserves archive backups`,async({page},info)=>{
-  let archiveRequest=null
+  const archiveRequests=[]
   const errors=[];page.on('pageerror',e=>errors.push(e.message))
   await page.addInitScript(skin=>{
    localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme:'light'},version:0}))
@@ -83,7 +83,8 @@ for(const skin of ['evolution','paper-lantern']) {
    if(p.endsWith('/whoami'))data={role:'customer',username:'alpha'}
    else if(p.endsWith('/onboarding'))data={completed:true}
    else if(p.endsWith('/snapshots/runs'))data={runs:[{id:1,username:'alpha',status:'completed',snapshot_id:'a'.repeat(64),started_at:'2026-09-13T12:00:00Z',progress_message:'Snapshot ready',summary:{data_added:4096},options:{components:['files']}}]}
-   else if(p.endsWith('/backups')&&route.request().method()==='POST'){archiveRequest=route.request().postDataJSON();data={id:91,status:'pending'}}
+   else if(p.endsWith('/databases'))data={databases:[{db_name:'alpha_blog'},{db_name:'alpha_shop'}]}
+   else if(p.endsWith('/backups')&&route.request().method()==='POST'){archiveRequests.push(route.request().postDataJSON());data={id:91,status:'pending'}}
    else if(p.endsWith('/backups'))data={jobs:[]}
    else if(p.endsWith('/restores/list'))data={restore_jobs:[]}
    else if(p.endsWith('/browse'))data={entries:[{name:'site.txt',path:'/home/alpha/site.txt',type:'file',size:100}]}
@@ -100,7 +101,19 @@ for(const skin of ['evolution','paper-lantern']) {
   await page.getByRole('button',{name:'Create backup',exact:true}).first().click()
   await page.getByRole('dialog').getByRole('button',{name:'Back up now',exact:true}).click()
   await expect(page.getByRole('dialog')).not.toBeVisible()
-  expect(archiveRequest.kind).toBe('full')
+  expect(archiveRequests[0].kind).toBe('full')
+  await page.getByRole('button',{name:'Create backup',exact:true}).first().click()
+  const create=page.getByRole('dialog')
+  await create.getByLabel('What to back up').selectOption('database')
+  await expect(create.getByLabel('Database')).toHaveValue('')
+  await expect(create.getByLabel('Database').locator('option')).toHaveCount(3)
+  await create.getByLabel('Database').selectOption('alpha_shop')
+  await create.getByRole('button',{name:'Back up now',exact:true}).click()
+  expect(archiveRequests[1]).toEqual({kind:'database',item_ref:'alpha_shop'})
+  await page.getByRole('button',{name:'Create backup',exact:true}).first().click()
+  await page.getByRole('dialog').getByLabel('What to back up').selectOption('databases')
+  await page.getByRole('dialog').getByRole('button',{name:'Back up now',exact:true}).click()
+  expect(archiveRequests[2]).toEqual({kind:'databases'})
   await page.setViewportSize({width:390,height:844})
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
   expect(errors).toEqual([])

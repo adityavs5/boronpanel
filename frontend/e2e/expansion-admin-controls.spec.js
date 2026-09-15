@@ -26,7 +26,7 @@ async function session(page, skin) {
     if (path.endsWith('/whoami')) data = { role: 'admin', username: 'admin' }
     else if (path.endsWith('/branding')) data = { panel_name: 'Boron' }
     else if (path.endsWith('/version')) data = { version: '1.2.1' }
-    else if (path === '/api/v1/admin/openlitespeed') data = { active: true, config_valid: true, settings, credential: { username: 'admin', password_available: false }, accounts: 3, domains: 7, version: 'OpenLiteSpeed 1.8', webadmin_port: 7080 }
+    else if (path === '/api/v1/admin/openlitespeed') data = { active: true, config_valid: true, settings, credential: { username: 'admin', password_available: false }, accounts: 3, domains: 7, version: 'OpenLiteSpeed 1.8', webadmin_port: 7080, webadmin_tls_valid: true, webadmin_tls_hostname: 'panel.example.test' }
     else if (path === '/api/v1/firewall/rules') data = { active: true, rules: [{ rule_id: 'one', action: 'allow', port: 2222, protocol: 'tcp', from: 'any', comment: 'boron-panel', protected: true }], bypass: [{ bypass_id: 'trusted', address: '198.51.100.42', label: 'Office VPN' }] }
     else if (path === '/api/v1/admin/ssl') data = { certbot_timer_active: true, domains: [{ username: 'hostingdemo', account_status: 'active', domain: 'example.test', cert_status: 'missing', ssl_status: 'none', is_wildcard: false, system: false }] }
     await route.fulfill({ json: data })
@@ -49,6 +49,7 @@ for (const skin of ['evolution', 'paper-lantern']) {
     await expect.poll(() => writes.some((item) => item.path.endsWith('/firewall/bypass'))).toBe(true)
 
     await page.goto('/app/openlitespeed')
+    await expect(page.getByText('Trusted certificate', { exact: true })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'OpenLiteSpeed' })).toBeVisible()
     await expect(page.getByText('Reset once to make a password available.')).toBeVisible()
     await page.getByLabel('Performance profile').selectOption('high')

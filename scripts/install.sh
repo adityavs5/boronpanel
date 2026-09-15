@@ -830,6 +830,16 @@ setup_ssl_bootstrap() {
         run chmod 600 "${CONF_DIR}/ssl/api/panel.key"
         ok "panel cert generated"
     fi
+    # WebAdmin runs as lsadm. Give it deliberate control of the main OLS
+    # configuration, and seed its HTTPS listener with the same hostname
+    # certificate as Boron's panel. ConfigWriter preserves this metadata on
+    # every later atomic render.
+    if [[ -f /usr/local/lsws/conf/httpd_config.conf ]]; then
+        run chown lsadm:lsadm /usr/local/lsws/conf/httpd_config.conf
+        run chmod 0640 /usr/local/lsws/conf/httpd_config.conf
+    fi
+    run install -o lsadm -g lsadm -m 0400 "${CONF_DIR}/ssl/api/panel.key" /usr/local/lsws/admin/conf/webadmin.key
+    run install -o lsadm -g lsadm -m 0400 "${CONF_DIR}/ssl/api/panel.crt" /usr/local/lsws/admin/conf/webadmin.crt
     write_file /var/www/_suspended/index.html 644 <<'EOF'
 <!DOCTYPE html><html><head><title>Account Suspended</title></head>
 <body style="font-family: sans-serif; text-align: center; padding-top: 10%;">
@@ -1126,7 +1136,7 @@ setup_firewall() {
     # provider-specific default policy.
     run ufw allow 22/tcp
     local p
-    for p in 21 25 53 80 110 143 443 587 993 995 2222; do
+    for p in 21 25 53 80 110 143 443 587 993 995 2222 7080; do
         run ufw allow "${p}/tcp"
     done
     run ufw allow 53/udp
