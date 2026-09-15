@@ -784,17 +784,33 @@ def test_staged_venv_is_readable_under_daemon_umask(update_env, monkeypatch, tmp
     assert outside.stat().st_mode & 0o777 == 0o700
 
 
-def test_preflight_tests_use_separate_service(monkeypatch):
+def test_preflight_focused_tests_use_separate_service(monkeypatch):
     calls = []
     result = object()
+    monkeypatch.setattr(settings, "update_preflight_full_tests", False)
     monkeypatch.setattr(updates, "run", lambda argv, **kw: (calls.append((argv, kw)), result)[1])
     assert updates._pytest_run("/opt/boron/.venv/bin/python", "/opt/boron") is result
     argv, kwargs = calls[0]
     assert argv[:5] == ["systemd-run", "--quiet", "--wait", "--pipe", "--collect"]
     assert "--scope" not in argv  # scopes inherit the caller's seccomp filter
     assert "--property=WorkingDirectory=/opt/boron" in argv
+    assert "--property=RuntimeMaxSec=600" in argv
+    assert "tests/test_updates.py" in argv
+    assert "tests/test_update_finalizer.py" in argv
+    assert "tests/test_snapshot_mail_guard_config.py" in argv
+    assert kwargs["timeout"] == 660
+
+
+def test_preflight_full_test_compatibility_mode(monkeypatch):
+    calls = []
+    result = object()
+    monkeypatch.setattr(settings, "update_preflight_full_tests", True)
+    monkeypatch.setattr(updates, "run", lambda argv, **kw: (calls.append((argv, kw)), result)[1])
+    assert updates._pytest_run("/opt/boron/.venv/bin/python", "/opt/boron") is result
+    argv, kwargs = calls[0]
     assert "--property=RuntimeMaxSec=3600" in argv
-    assert kwargs["timeout"] > 3600
+    assert not any(arg.startswith("tests/") for arg in argv)
+    assert kwargs["timeout"] == 3660
 
 
 def test_preflight_refuses_insufficient_disk_space(update_env, monkeypatch):

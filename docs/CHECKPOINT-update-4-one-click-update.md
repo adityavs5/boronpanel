@@ -21,9 +21,11 @@ it cannot depend on the new venv or any forgehost import.
 ## Step-by-step (goal 4a–k → implementation)
 
 - a **Pre-flight**: live dir exists; ≥2GB free on /opt and the DB volume;
-  `update_preflight_tests` (default on) runs the LIVE install's own pytest
-  suite (tests/ ship in the tarball for exactly this) — non-zero exit
-  aborts with the output tail in the step log.
+  `update_preflight_tests` (default on) runs the LIVE install's focused
+  update/recovery safety suite — non-zero exit aborts with the output tail in
+  the step log. Every release has already passed the complete suite against
+  the code being installed. Set `update_preflight_full_tests = true` in
+  `boron.toml` only when the legacy full live-suite gate is desired.
 - b **Backup** to `/var/backups/forgehost/pre-update-{ver}-{ts}/` (0700):
   panel DB via sqlite3's online-backup API (consistent under WAL with
   live writers, unlike `cp`), plus `/etc/forgehost` copytree.

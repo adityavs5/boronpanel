@@ -96,6 +96,13 @@ validates every tarball member against path traversal, stages into
 `/opt/boron-X.Y.Z/`, and atomically swaps the `/opt/boron`
 symlink. See the update-system checkpoints in `docs/` for the full design.
 
+The updater first runs a focused safety suite against the live install. This
+checks update/download rules, transaction boundaries, RPC, finalizer rollback,
+and mailbox recovery in about two minutes. It does not repeat the full suite
+because the release command has already run that suite against the new code.
+Set `update_preflight_full_tests = true` in `boron.toml` to restore the legacy
+full live preflight.
+
 ## Troubleshooting
 
 - **"gh is not authenticated"** — `gh auth login`, or export

@@ -338,10 +338,14 @@ class Settings:
     update_versions_root: str = "/opt"
     update_live_dir: str = "/opt/boron"
     update_keep_old_days: int = 3  # rollback window; older version dirs pruned
-    # Pre-flight "abort if test suite failing" (goal 4a). Runs the LIVE
-    # install's own pytest suite before touching anything -- slow (~13min)
-    # but explicitly required; disable only via boron.toml.
+    # Pre-flight "abort if safety tests are failing" (goal 4a). The default
+    # focused suite checks the update transaction and recovery boundaries in
+    # roughly two minutes. Releases have already passed the complete suite,
+    # so repeating all ~55 minutes against the OLD live tree adds delay without
+    # validating the downloaded release. Operators can retain the legacy full
+    # live-suite gate by setting update_preflight_full_tests = true.
     update_preflight_tests: bool = True
+    update_preflight_full_tests: bool = False
     update_preflight_min_free_mb: int = 2048
 
     secrets: dict[str, str] = field(default_factory=dict)

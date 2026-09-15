@@ -519,7 +519,9 @@ def _preflight(job_id: int) -> None:
                        f"only {free_mb}MB free on {mount} (need {settings.update_preflight_min_free_mb}MB)")
 
     if settings.update_preflight_tests:
-        _step(job_id, "preflight", "running", "running the live install's test suite (this takes several minutes)")
+        suite_name = "full" if settings.update_preflight_full_tests else "focused safety"
+        _step(job_id, "preflight", "running",
+              f"running the live install's {suite_name} test suite")
         pytest_bin = os.path.join(live, ".venv", "bin", "python")
         if not os.path.exists(pytest_bin):
             _fail_step(job_id, "preflight", f"no venv python at {pytest_bin}")
@@ -527,25 +529,44 @@ def _preflight(job_id: int) -> None:
         if proc.returncode != 0:
             tail = (proc.stdout or "").strip().splitlines()[-15:]
             _fail_step(job_id, "preflight",
-                       "live test suite failing -- update aborted. Tail: " + " | ".join(tail))
+                       f"live {suite_name} test suite failing -- update aborted. Tail: "
+                       + " | ".join(tail))
     _step(job_id, "preflight", "ok")
 
 
 def _pytest_run(python_bin: str, live_dir: str):
-    """Isolated so tests can monkeypatch it. Runs the LIVE tree's own suite
-    (goal 4a) -- the same discipline as a manual run on this box: conftest's
-    autouse isolation keeps tests away from production log/db state."""
+    """Run the live tree's focused update checks, or its full legacy suite.
+
+    Every downloadable release has already passed the complete suite in
+    scripts/release.sh. The live preflight therefore defaults to the tests
+    that protect the update transaction, rollback, DB/config transactions,
+    RPC boundary, and mailbox recovery guard. This catches a damaged runtime
+    or install without spending nearly an hour retesting the old release.
+    """
     # Tests exercise setgid directory semantics and must not inherit the
     # daemon's RestrictSUIDSGID seccomp filter. A transient service provides
     # the same execution context as a manual release check without relaxing
     # the long-running daemon. RuntimeMaxSec also kills orphaned test workers.
-    return run(
-        ["systemd-run", "--quiet", "--wait", "--pipe", "--collect",
-         f"--property=WorkingDirectory={live_dir}",
-         "--property=RuntimeMaxSec=3600",
-         python_bin, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider"],
-        cwd=live_dir, timeout=3660.0,
-    )
+    full = settings.update_preflight_full_tests
+    runtime_seconds = 3600 if full else 600
+    argv = [
+        "systemd-run", "--quiet", "--wait", "--pipe", "--collect",
+        f"--property=WorkingDirectory={live_dir}",
+        f"--property=RuntimeMaxSec={runtime_seconds}",
+        python_bin, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider",
+    ]
+    if not full:
+        argv.extend([
+            "tests/test_update_version.py",
+            "tests/test_update_api.py",
+            "tests/test_updates.py",
+            "tests/test_update_finalizer.py",
+            "tests/test_db_schema_transaction.py",
+            "tests/test_configtx.py",
+            "tests/test_rpc.py",
+            "tests/test_snapshot_mail_guard_config.py",
+        ])
+    return run(argv, cwd=live_dir, timeout=float(runtime_seconds + 60))
 
 
 def _backup(job_id: int, to_version: str) -> str:

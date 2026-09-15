@@ -273,7 +273,12 @@ npm ci
 npm run build
 cd ..
 
-python -m pytest -q
+# Fast feedback while editing; use `quick` for a five-minute cross-feature run.
+scripts/test.sh targeted tests/test_wordpress.py -k clone
+scripts/test.sh quick
+
+# Required complete suite before publishing.
+scripts/test.sh full
 bash -n scripts/install.sh scripts/release.sh
 ~~~
 
@@ -285,6 +290,8 @@ verification record.
 
 ## Documentation map
 
+- [Testing workflow](docs/TESTING.md) — targeted, failed, updater, quick, and
+  release-authorizing test tiers.
 - [Fresh-install checklist](docs/FRESH-INSTALL-CHECKLIST.md) — complete clean
   server runbook and post-install acceptance checks.
 - [Administrator guide](docs/ADMIN-GUIDE.md) — accounts, plans, suspension,
