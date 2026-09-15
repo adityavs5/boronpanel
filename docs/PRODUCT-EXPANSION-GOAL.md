@@ -1,6 +1,9 @@
-# Active product expansion goal
+# Completed product expansion goal
 
-The complete user objective remains active. A checked item requires implementation and verification, including live-server evidence where relevant. No item is complete solely because its code exists.
+The complete user objective closed on 2026-09-15 after implementation,
+validation, GitHub release v1.3.0 and protected self-update job 8. A checked item
+requires implementation and verification, including live-server evidence where
+relevant. No item was marked complete solely because its code existed.
 
 - [x] WordPress: explicit scan/import and refresh; soft deletion of records with suppression until manual rediscovery; hard deletion of selected installation files and owned database with confirmation and tenant isolation.
 - [x] Backups: usable admin and customer backup system, reusable jobs, incremental snapshots, inclusion/exclusion filters, notification channels, SSH destinations, retention and restores. Verify restore contents and unchanged-file deduplication, not merely successful commands.
@@ -232,11 +235,13 @@ phase boundary.
     account ownership and permissions.
 12. Provide prebuilt HTML account suspension templates.
 
-Expansion implementation status on 2026-09-14: items 1 through 12 are
-implemented in batches A through F and are awaiting the grouped release gate,
-full-suite validation and panel self-update. See
-`EXPANSION-IMPLEMENTATION-PLAN.md` and the batch checkpoint documents for the
-implemented boundaries and evidence.
+Expansion completion status on 2026-09-15: items 1 through 12 are implemented,
+validated and deployed in v1.3.0. The grouped release gate passed 2,733 backend
+tests and 130 browser checks, the public archive checksum was independently
+verified, and protected self-update job 8 completed without rollback while
+preserving configuration and hosting inventories. See
+`EXPANSION-IMPLEMENTATION-PLAN.md`,
+`EXPANSION-FINAL-AUDIT-2026-09-15.md` and the batch checkpoint documents.
 
 Every item requires implementation and appropriate behavioral/UI/live validation,
 not merely the existence of a menu or stub. Existing related features should be

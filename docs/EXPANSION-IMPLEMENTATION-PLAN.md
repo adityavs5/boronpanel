@@ -1,11 +1,11 @@
 # Product expansion implementation plan
 
-The initial product and release gate closed on 2026-09-14 with the successful protected 1.1.3-to-1.2.1 self-update. This plan covers the twelve queued expansion requirements in dependency order. A feature is complete only after backend authorization, both-theme UI behavior, focused regression checks and a live-server proof where it changes the host.
+The initial product and release gate closed on 2026-09-14 with the successful protected 1.1.3-to-1.2.1 self-update. This plan covers the twelve queued expansion requirements in dependency order. A feature is complete only after backend authorization, both-theme UI behavior, focused regression checks and a live-server proof where it changes the host. The expansion release gate closed on 2026-09-15 with published release v1.3.0 and successful protected self-update job 8; see `EXPANSION-FINAL-AUDIT-2026-09-15.md`.
 
 ## Batch A — navigation and simpler plans
 
 Implementation status: complete in commit `5afe051`; focused browser coverage
-passes in both themes. Deployment is grouped with the expansion release gate.
+passes in both themes and the implementation is deployed in v1.3.0.
 
 - Reorder customer tools into the requested hosting, email, WordPress, backup, application and advanced sequence.
 - Give subdomains and the three email areas direct entries while retaining the shared underlying management workflows.
@@ -14,8 +14,8 @@ passes in both themes. Deployment is grouped with the expansion release gate.
 
 ## Batch B — filesystem malware protection
 
-Implementation status: complete on 2026-09-14, pending the grouped expansion
-release. The scanner uses descriptor-relative `O_NOFOLLOW` walks and actions,
+Implementation status: complete on 2026-09-14 and deployed in v1.3.0. The
+scanner uses descriptor-relative `O_NOFOLLOW` walks and actions,
 runs ClamAV as the account UID/GID, binds findings to pre/post-scan SHA-256
 content, and keeps quarantine reversible. Focused backend/API coverage passed 21
 checks; the Evolution and Paper Lantern customer flows plus the administrator
@@ -30,8 +30,8 @@ handoff; both temporary test files were removed afterward.
 
 ## Batch C — firewall, OLS and administrator certificates
 
-Implementation status: complete on 2026-09-14, pending the grouped expansion
-release. UFW bypass entries use tagged, first-position full-access rules; a live
+Implementation status: complete on 2026-09-14 and deployed in v1.3.0. UFW
+bypass entries use tagged, first-position full-access rules; a live
 add/show/delete cycle with reserved TEST-NET address `192.0.2.254` succeeded and
 left the original active rules restored. OpenLiteSpeed tuning is persisted in
 the control-plane database and applied through the existing validate/reload/
@@ -49,8 +49,8 @@ workflow at desktop and mobile widths.
 
 ## Batch D — addresses and server resources
 
-Implementation status: complete on 2026-09-14, pending the grouped expansion
-release. Boron inventories only addresses that the host or installer already
+Implementation status: complete on 2026-09-14 and deployed in v1.3.0. Boron
+inventories only addresses that the host or installer already
 exposes, so IP allocation cannot rewrite netplan or disconnect the server.
 Shared and dedicated pools, primary/random/specific new-account policies,
 per-account overrides, managed-zone DNS updates, and termination cleanup are
@@ -67,8 +67,8 @@ the IP/account flow passed in both themes at desktop and mobile widths.
 
 ## Batch E — portable accounts and imports
 
-Implementation status: complete on 2026-09-14, pending the grouped expansion
-release. Full account backups are now versioned Boron archives with a manifest,
+Implementation status: complete on 2026-09-14 and deployed in v1.3.0. Full
+account backups are now versioned Boron archives with a manifest,
 per-component sizes and SHA-256 hashes. Administrator downloads work for local
 and remote backup destinations; imports copy uploads into root-only staging,
 enforce compressed and expanded size limits, reject unsafe paths and links,
@@ -86,8 +86,8 @@ both themes at desktop and mobile widths.
 
 ## Batch F — resellers and suspension pages
 
-Implementation status: complete on 2026-09-14, pending the grouped expansion
-release. Reseller identities use the administrator listener and have their own
+Implementation status: complete on 2026-09-14 and deployed in v1.3.0. Reseller
+identities use the administrator listener and have their own
 role-specific panel. Plans cap account count and allocated disk while supplying
 per-account PHP, disk, CPU, memory, I/O and process defaults. Ownership is
 stored explicitly and rechecked by both the API authorization helpers and the
@@ -99,8 +99,8 @@ and the raw HTML editor remains available for advanced customization.
 - Add reseller identities, plans, account ownership, quotas and a restricted reseller panel. Enforce scope in API and daemon layers rather than relying on hidden UI controls.
 - Add built-in responsive HTML suspension templates, preview, selection and safe customization. Render the selected template for suspended accounts without exposing account files.
 
-## Release gate
+## Release gate — complete 2026-09-15
 
-- Run focused suites after each batch and the complete backend/browser suites after all batches.
-- Exercise every host-mutating workflow on disposable or existing designated QA resources, restore its baseline, then deploy with rollback evidence.
-- Publish a versioned GitHub release, verify public artifacts independently and complete a protected panel self-update with configuration and inventory preservation checks.
+- [x] Run focused suites after each batch and the complete backend/browser suites after all batches.
+- [x] Exercise host-mutating workflows on disposable or existing designated QA resources, restore their baselines, then deploy with rollback evidence.
+- [x] Publish a versioned GitHub release, verify public artifacts independently and complete a protected panel self-update with configuration and inventory preservation checks.
