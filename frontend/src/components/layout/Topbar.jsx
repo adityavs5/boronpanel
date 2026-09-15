@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useLocation, Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Palette, Home, Search, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck } from 'lucide-react'
+import { Palette, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck } from 'lucide-react'
 import { ThemeSelector } from '@/components/themes/ThemeSelector'
 import { useBranding } from '@/hooks/useBranding'
 import { get } from '@/lib/api'
@@ -14,37 +14,6 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/DropdownMenu'
-
-const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
-
-// Opens the Ctrl/Cmd+K command palette: a full search pill on md+, icon below.
-function SearchTrigger() {
-  const setPaletteOpen = useUI((s) => s.setPaletteOpen)
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => setPaletteOpen(true)}
-        className="topbar-search hidden h-8 w-56 items-center gap-2 rounded-btn border border-border bg-surface px-2.5 text-sm text-muted-foreground transition-colors hover:border-accent/60 hover:text-foreground md:flex"
-      >
-        <Search className="h-3.5 w-3.5 shrink-0" />
-        <span className="flex-1 text-left">Search…</span>
-        <kbd className="rounded border border-border px-1 py-px text-[10px] font-medium uppercase text-muted-foreground">
-          {isMac ? '⌘K' : 'Ctrl K'}
-        </kbd>
-      </button>
-      <button
-        type="button"
-        onClick={() => setPaletteOpen(true)}
-        className="rounded-btn p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:hidden"
-        title="Search"
-        aria-label="Search the panel"
-      >
-        <Search className="h-[18px] w-[18px]" />
-      </button>
-    </>
-  )
-}
 
 function Breadcrumb() {
   const { pathname } = useLocation()
@@ -126,13 +95,13 @@ export function Topbar() {
     <header className="panel-topbar">
       <div className="flex items-center gap-3 min-w-0">
         <Link to={home} className="panel-brand" aria-label={`${panelName} home`}>
-          {logoUrl ? <img src={logoUrl} alt="" /> : <span className="brand-symbol">{panelName.charAt(0).toUpperCase()}</span>}
-          <span>{panelName}<small>web control panel</small></span>
+          {logoUrl
+            ? <img className="custom-brand-logo" src={logoUrl} alt={panelName} />
+            : <span className="boron-brand-logo"><img src="/static/dist/brand/boron-logo-source.png" alt="Boron" /></span>}
         </Link>
       </div>
 
       <div className="flex items-center gap-2">
-        <SearchTrigger />
         <span className="access-level"><span>Access Level</span><strong>{isAdmin ? 'Admin' : isReseller ? 'Reseller' : 'User'}</strong></span>
         <ThemeSelector />
 

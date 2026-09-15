@@ -1,7 +1,10 @@
-/* Self-hosted Inter (variable) — the design system always specified Inter but
- * never shipped it, so the panel rendered with OS fallbacks. No CDN: the
- * panel must render offline on the box it manages. */
-@import '@fontsource-variable/inter';
+/* Self-hosted Open Sans gives both traditional themes a clear control-panel
+ * typeface without a CDN dependency. Ship only the Latin subset used by the
+ * current English interface to keep the panel bundle small. */
+@import '@fontsource/open-sans/latin-400.css';
+@import '@fontsource/open-sans/latin-500.css';
+@import '@fontsource/open-sans/latin-600.css';
+@import '@fontsource/open-sans/latin-700.css';
 
 @tailwind base;
 @tailwind components;

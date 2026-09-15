@@ -41,13 +41,22 @@ for (const skin of ['evolution', 'paper-lantern']) {
     const links = await page.locator('.tool-link').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('href')))
     expect(links.slice(0, expectedCustomerOrder.length)).toEqual(expectedCustomerOrder)
 
-    await page.getByRole('textbox', { name: 'Filter tools' }).fill('mail deliverability')
-    await expect(page.locator('.tool-link').filter({ hasText: 'Email DNS Records' })).toBeVisible()
+    await page.getByRole('textbox', { name: 'Search hosting tools' }).fill('mail deliverability')
+    await expect(page.getByRole('option').filter({ hasText: 'Email DNS Records' })).toBeVisible()
 
     await page.goto('/app/subdomains')
     await expect(page.getByRole('heading', { name: 'Subdomains', exact: true })).toBeVisible()
     await expect(page.getByRole('table').getByText('blog.example.test', { exact: true })).toBeVisible()
     await expect(page.getByRole('table').getByText('example.test', { exact: true })).toHaveCount(0)
+
+    await page.goto('/app/domains/example.test')
+    await expect(page.getByRole('heading', { name: 'example.test', exact: true })).toBeVisible()
+    await expect(page.getByRole('tab')).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Advanced settings', exact: true })).toBeVisible()
+
+    await page.goto('/app/redirects')
+    await expect(page.getByRole('heading', { name: 'Site Redirection', exact: true })).toBeVisible()
+    await expect(page.getByRole('combobox', { name: 'Choose domain' })).toHaveValue('example.test')
 
     await page.goto('/app/email/settings')
     await expect(page.getByRole('tab', { name: 'Forwarders' })).toHaveAttribute('data-state', 'active')

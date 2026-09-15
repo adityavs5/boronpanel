@@ -5,7 +5,9 @@ import {
   Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
   History, FileCode2, Cloud, Layers, Palette, AlertOctagon, BookOpen, ArrowUpCircle,
   DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban, FileText, Store,
+  ExternalLink, Zap, Shield, GaugeCircle,
 } from 'lucide-react'
+import { WordPressIcon, RedisIcon } from '@/components/icons/BrandIcons'
 
 // Customer nav — resource pages scoped to the signed-in account. Paths are
 // client-router paths (mounted under the /app basename).
@@ -19,19 +21,22 @@ export const customerNav = [
   { label: 'SSL Certificates', to: '/ssl', icon: ShieldCheck },
   { label: 'Databases', to: '/databases', icon: Database },
   { label: 'DNS Management', to: '/dns', icon: Network },
+  { label: 'Redirects', to: '/redirects', icon: ExternalLink },
+  { label: 'Domain Forwarding', to: '/forwarding', icon: ArrowRightLeft },
+  { label: 'LiteSpeed Cache', to: '/cache', icon: Zap },
   { section: 'Email' },
   { label: 'Email Accounts', to: '/email', icon: Mail },
   { label: 'Email Settings', to: '/email/settings', icon: Cog },
   { label: 'Email DNS Records', to: '/email/dns', icon: Network },
   { section: 'WordPress' },
-  { label: 'WordPress Manager', to: '/wordpress', icon: Globe },
+  { label: 'WordPress Manager', to: '/wordpress', icon: WordPressIcon },
   { section: 'Backups' },
   { label: 'Backups', to: '/backups', icon: Archive },
   { section: 'Applications' },
   { label: 'Node.js App', to: '/node-apps', icon: Boxes },
   { label: 'Python App', to: '/python-apps', icon: FileCode2 },
   { label: 'Terminal', to: '/terminal', icon: TerminalSquare },
-  { label: 'Redis', to: '/redis', icon: Server },
+  { label: 'Redis', to: '/redis', icon: RedisIcon },
   { section: 'Other Tools' },
   { label: 'File Manager', to: '/files', icon: FolderOpen },
   { label: 'PHP Settings', to: '/php', icon: FileCode2 },
@@ -45,6 +50,10 @@ export const customerNav = [
   { label: 'Malware Scanner', to: '/malware', icon: ShieldAlert },
   { label: '2FA & Security', to: '/security', icon: ShieldCheck },
   { label: 'Processes', to: '/processes', icon: Cpu },
+  { label: 'Website Security', to: '/website-security', icon: Shield },
+  { label: 'Website Maintenance', to: '/website-maintenance', icon: Construction },
+  { label: 'Custom Error Pages', to: '/error-pages', icon: FileText },
+  { label: 'Website Statistics', to: '/website-statistics', icon: GaugeCircle },
   { label: 'Appearance', to: '/appearance', icon: Palette },
 ]
 
@@ -52,7 +61,7 @@ export const customerNav = [
 export const adminNav = [
   { section: 'Administration' },
   { label: 'Dashboard', to: '/overview', icon: LayoutDashboard },
-  { label: 'WordPress Installations', to: '/wordpress', icon: Globe },
+  { label: 'WordPress Installations', to: '/wordpress', icon: WordPressIcon },
   { label: 'Accounts', to: '/accounts', icon: Users },
   { label: 'Resellers', to: '/resellers', icon: Store },
   { label: 'Server Health', to: '/health', icon: Activity },

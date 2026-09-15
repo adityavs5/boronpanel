@@ -164,7 +164,7 @@ async def terminal_ws(websocket: WebSocket, username: str):
     # 2) Connect to sshd as the account user with the in-memory ephemeral key.
     try:
         client, chan = await loop.run_in_executor(
-            _TERMINAL_IO, lambda: _connect_ssh(username, private_key, session["host"], session["port"], quiet=identity.role=="admin")
+            _TERMINAL_IO, lambda: _connect_ssh(username, private_key, session["host"], session["port"], quiet=True)
         )
     except Exception as exc:  # noqa: BLE001
         logger.info("terminal SSH connect failed for %s: %s", username, exc)

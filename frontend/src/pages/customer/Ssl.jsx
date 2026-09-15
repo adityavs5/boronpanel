@@ -136,9 +136,13 @@ export default function Ssl() {
   const isWildcard = confirm?.action === 'wildcard'
   const confirmRow = confirm?.row
   const confirmLoading = isWildcard ? wildcardMut.isPending : issueMut.isPending
+  const domains = data?.domains || []
+  const secured = domains.filter((row) => row.cert_status && !['missing', 'none', 'expired'].includes(row.cert_status)).length
+  const expiring = domains.filter((row) => typeof row.days_remaining === 'number' && row.days_remaining < 30).length
+  const unsecured = Math.max(0, domains.length - secured)
 
   return (
-    <div>
+    <div className="ssl-page">
       <PageHeader title={admin ? 'SSL Certificates' : 'SSL/TLS'} description={admin ? "Issue and renew Let's Encrypt certificates across every hosted account." : "Manage Let's Encrypt certificates for your domains."} icon={ShieldCheck}>
         {timerActive === undefined ? null : timerActive ? (
           <Badge variant="success">
@@ -150,6 +154,14 @@ export default function Ssl() {
           </Badge>
         )}
       </PageHeader>
+
+      <div className="ssl-summary" aria-label="Certificate summary">
+        <div><ShieldCheck /><span><strong>{secured}</strong>Secured domains</span></div>
+        <div><ShieldOff /><span><strong>{unsecured}</strong>Need a certificate</span></div>
+        <div><Clock /><span><strong>{expiring}</strong>Expire within 30 days</span></div>
+      </div>
+
+      <div className="ssl-section-title"><div><h2>Certificate status</h2><p>Select a domain to view its certificate or request a free automatic certificate.</p></div><span>Let&apos;s Encrypt · Auto renewal</span></div>
 
       <DataTable
         columns={columns}
@@ -165,6 +177,7 @@ export default function Ssl() {
         emptyTitle="No domains yet"
         emptyDescription="Add a domain to issue an SSL certificate for it."
         emptyIcon={ShieldCheck}
+        className="ssl-domain-table"
       />
 
       <p className="mt-4 flex items-start gap-2 text-sm text-muted-foreground">

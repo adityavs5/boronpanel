@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Mail, Plus, Trash2, Inbox, Forward, ShieldAlert, AtSign, Network, ScrollText,
-  ShieldBan, ShieldCheck, ArrowRightLeft, Loader2, XCircle, CheckCircle2, X,
+  ShieldBan, ShieldCheck, ArrowRightLeft, Loader2, XCircle, CheckCircle2, X, ExternalLink,
 } from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
@@ -1017,6 +1017,11 @@ export default function Email({ defaultTab = 'mailboxes' }) {
     queryFn: () => get(`/api/v1/accounts/${username}/domains`),
     enabled: !!username,
   })
+  const webmailQ = useQuery({
+    queryKey: ['webmail-settings'],
+    queryFn: () => get('/api/v1/mail/webmail'),
+    staleTime: 300_000,
+  })
 
   const domains = domainsQ.data?.domains || []
 
@@ -1027,16 +1032,17 @@ export default function Email({ defaultTab = 'mailboxes' }) {
   return (
     <div>
       <PageHeader title="Email" description="Manage mailboxes, forwarders, catch-all delivery, and spam filtering." icon={Mail}>
-        {domains.length > 0 && (
-          <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {webmailQ.data?.enabled && <Button asChild variant="secondary"><a href={webmailQ.data.url} target="_blank" rel="noreferrer"><ExternalLink className="h-4 w-4" /> Open Webmail</a></Button>}
+          {domains.length > 0 && <div className="flex items-center gap-2">
             <AtSign className="h-4 w-4 text-muted-foreground" />
             <Select value={domain} onChange={(e) => setDomain(e.target.value)} className="w-56">
               {domains.map((d) => (
                 <option key={d.domain} value={d.domain}>{d.domain}</option>
               ))}
             </Select>
-          </div>
-        )}
+          </div>}
+        </div>
       </PageHeader>
 
       {domainsQ.isLoading ? (

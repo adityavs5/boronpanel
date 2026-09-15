@@ -50,6 +50,7 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
         "mariadb-server", "postfix", "dovecot-core", "pdns-server", "pure-ftpd",
         "certbot", "rclone", "spamassassin", "fail2ban", "ufw", "redis-server",
         "python3", "python3-pip", "nodejs", "composer", "imapsync", "geoipupdate",
+        "roundcubemail-1.7.4-complete", "setup_webmail",
         "install_filebrowser", "certbot-dns-cloudflare", "boron-filebrowser.service",
     ):
         assert required in source
@@ -77,7 +78,9 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert "$GROUP,nogroup,mysql" in source
     assert "write_file /usr/local/lsws/lsns/conf/lsns.conf 0644" in source
     assert "1000" in source[source.index("write_file /usr/local/lsws/lsns/conf/lsns.conf"):]
-    assert source.index("setup_ols_namespace\n    run systemctl enable --now lshttpd") >= 0
+    assert source.index("setup_ols_namespace") < source.index("run systemctl enable --now lshttpd")
+    assert "write_file /etc/systemd/system/lshttpd.service.d/boron-lifecycle.conf 0644" in source
+    assert "KillMode=mixed" in source
 
 
 def test_installer_rejects_unknown_flag():

@@ -132,6 +132,11 @@ def _write_unit(username: str, instance_id: int, mem_mb: int) -> str:
     unit = appunits.unit_name(KIND, username, instance_id)
     conf_path = _conf_path(unit)
     conf_path.parent.mkdir(parents=True, exist_ok=True)
+    # The service runs as the hosting account. It needs execute-only traversal
+    # through this directory to open its own world-readable, non-secret config.
+    # 0750 made every account Redis unit fail with EACCES before redis-server
+    # could parse the file. Directory listing remains unavailable to accounts.
+    os.chmod(conf_path.parent, 0o711)
     conf_path.write_text(_render_conf(username, mem_mb))
     os.chmod(conf_path, 0o644)
 

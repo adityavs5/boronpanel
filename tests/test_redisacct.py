@@ -80,6 +80,7 @@ def test_enable_redis_writes_conf_with_unix_socket_and_no_tcp_port(account_with_
     result = redisacct.enable_redis({"username": "demo1", "mem_mb": 96})
     conf_path = redisacct._conf_path(result["unit"])
     content = conf_path.read_text()
+    assert conf_path.parent.stat().st_mode & 0o777 == 0o711
     assert "port 0" in content
     assert f"unixsocket {result['socket_path']}" in content
     assert "unixsocketperm 700" in content

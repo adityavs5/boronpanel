@@ -199,7 +199,7 @@ function CloudflareZoneCard({ domain, cloudflare, proxyAvailable, onChanged }) {
 // ---------------------------------------------------------------------------
 // DNS
 // ---------------------------------------------------------------------------
-function DnsTab({ domain }) {
+export function DnsTab({ domain }) {
   const qc = useQueryClient()
   const [dialog, setDialog] = useState(null) // {mode, subdomain, type, ttl, values}
   const [toDelete, setToDelete] = useState(null)
@@ -523,7 +523,7 @@ function NameserversForm({ username, domain, nameservers, glue }) {
   )
 }
 
-function NameserversTab({ username, domain }) {
+export function NameserversTab({ username, domain }) {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['nameservers', username, domain],
     queryFn: () => get(`/api/v1/accounts/${username}/domains/${domain}/nameservers`),
@@ -596,7 +596,7 @@ function NameserversTab({ username, domain }) {
 // ---------------------------------------------------------------------------
 // Redirects
 // ---------------------------------------------------------------------------
-function RedirectsTab({ username, domain }) {
+export function RedirectsTab({ username, domain }) {
   const qc = useQueryClient()
   const base = `/api/v1/accounts/${username}/domains/${domain}/redirects`
   const [dialog, setDialog] = useState(null) // {mode, path, target_url, status_code}
@@ -713,7 +713,7 @@ function RedirectsTab({ username, domain }) {
 // ---------------------------------------------------------------------------
 // Forwarding (whole-domain 301/302) — Phase 8 feature 4
 // ---------------------------------------------------------------------------
-function ForwardingTab({ username, domain }) {
+export function ForwardingTab({ username, domain }) {
   const qc = useQueryClient()
   const base = `/api/v1/accounts/${username}/domains/${domain}/forwarding`
   const { data, isLoading, error, refetch } = useQuery({
@@ -860,7 +860,7 @@ function LscacheForm({ username, domain, settings }) {
   )
 }
 
-function CacheTab({ username, domain }) {
+export function CacheTab({ username, domain }) {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['lscache', username, domain],
     queryFn: () => get(`/api/v1/accounts/${username}/domains/${domain}/lscache`),
@@ -876,7 +876,7 @@ function CacheTab({ username, domain }) {
 // ---------------------------------------------------------------------------
 // PHP
 // ---------------------------------------------------------------------------
-function PhpTab({ username, domain }) {
+export function PhpTab({ username, domain }) {
   const qc = useQueryClient()
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['domains', username],
@@ -1243,7 +1243,7 @@ function DirectoryPrivacyCard({ username }) {
   )
 }
 
-function SecurityTab({ username, domain }) {
+export function SecurityTab({ username, domain }) {
   return (
     <div className="space-y-6">
       <HotlinkCard username={username} domain={domain} />
@@ -1594,7 +1594,7 @@ function WordPressInstallForm({ username, domain, suggestSubdirectory, onDone })
 // install found (root and/or any subdirectories) -- reusing the existing
 // WP-CLI backend wholesale. Falls back to the install form when nothing is
 // detected yet, same as before this item.
-function WordPressTab({ username, domain }) {
+export function WordPressTab({ username, domain }) {
   const base = `/api/v1/accounts/${username}/domains/${domain}/wordpress`
   const qc = useQueryClient()
   const [showInstallForm, setShowInstallForm] = useState(false)
@@ -1648,7 +1648,7 @@ const AUTO_DISABLE_OPTIONS = [
   { value: '1440', label: '24 hours' },
 ]
 
-function MaintenanceTab({ username, domain }) {
+export function MaintenanceTab({ username, domain }) {
   const qc = useQueryClient()
   const base = `/api/v1/accounts/${username}/domains/${domain}/maintenance`
   const key = ['maintenance', username, domain]
@@ -1759,7 +1759,7 @@ function MaintenanceTab({ username, domain }) {
 // ---------------------------------------------------------------------------
 // Wildcard domains (missing-features batch, goal feature 3)
 // ---------------------------------------------------------------------------
-function WildcardTab({ username, domain }) {
+export function WildcardTab({ username, domain }) {
   const qc = useQueryClient()
   const base = `/api/v1/accounts/${username}/domains/${domain}/wildcard`
   const key = ['wildcard', username, domain]
@@ -1827,7 +1827,7 @@ function WildcardTab({ username, domain }) {
 // ---------------------------------------------------------------------------
 const ERROR_CODE_LABELS = { 403: 'Forbidden', 404: 'Not Found', 500: 'Server Error', 503: 'Unavailable' }
 
-function ErrorPagesTab({ username, domain }) {
+export function ErrorPagesTab({ username, domain }) {
   const qc = useQueryClient()
   const base = `/api/v1/accounts/${username}/domains/${domain}/error-pages`
   const listKey = ['error-pages', username, domain]
@@ -1975,7 +1975,7 @@ function TopListCard({ title, rows, labelKey, icon: Icon }) {
   )
 }
 
-function StatsTab({ username, domain }) {
+export function StatsTab({ username, domain }) {
   const [period, setPeriod] = useState('daily')
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['sitestats', username, domain, period],
@@ -2025,44 +2025,43 @@ function StatsTab({ username, domain }) {
 export default function DomainDetail() {
   const username = useAccountUsername()
   const { domain } = useParams()
+  const { data, isLoading } = useQuery({
+    queryKey: ['domains', username],
+    queryFn: () => get(`/api/v1/accounts/${username}/domains`),
+    enabled: !!username,
+  })
+  const item = data?.domains?.find((entry) => entry.domain === domain)
 
   return (
-    <div>
+    <div className="domain-settings-page">
       <Link to="/domains" className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft className="h-4 w-4" /> All domains
       </Link>
-
-      <PageHeader title={domain} description="Manage DNS, nameservers, redirects, caching, PHP, security and WordPress for this domain." icon={Globe} />
-
-      <Tabs defaultValue="dns">
-        <TabsList>
-          <TabsTrigger value="dns">DNS</TabsTrigger>
-          <TabsTrigger value="nameservers">Nameservers</TabsTrigger>
-          <TabsTrigger value="redirects">Redirects</TabsTrigger>
-          <TabsTrigger value="forwarding">Forwarding</TabsTrigger>
-          <TabsTrigger value="cache">Cache</TabsTrigger>
-          <TabsTrigger value="php">PHP</TabsTrigger>
-          <TabsTrigger value="security">Security</TabsTrigger>
-          <TabsTrigger value="wordpress">WordPress</TabsTrigger>
-          <TabsTrigger value="wildcard">Wildcard</TabsTrigger>
-          <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
-          <TabsTrigger value="error-pages">Error Pages</TabsTrigger>
-          <TabsTrigger value="stats">Stats</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="dns"><DnsTab domain={domain} /></TabsContent>
-        <TabsContent value="nameservers"><NameserversTab username={username} domain={domain} /></TabsContent>
-        <TabsContent value="redirects"><RedirectsTab username={username} domain={domain} /></TabsContent>
-        <TabsContent value="forwarding"><ForwardingTab username={username} domain={domain} /></TabsContent>
-        <TabsContent value="cache"><CacheTab username={username} domain={domain} /></TabsContent>
-        <TabsContent value="php"><PhpTab username={username} domain={domain} /></TabsContent>
-        <TabsContent value="security"><SecurityTab username={username} domain={domain} /></TabsContent>
-        <TabsContent value="wordpress"><WordPressTab username={username} domain={domain} /></TabsContent>
-        <TabsContent value="wildcard"><WildcardTab username={username} domain={domain} /></TabsContent>
-        <TabsContent value="maintenance"><MaintenanceTab username={username} domain={domain} /></TabsContent>
-        <TabsContent value="error-pages"><ErrorPagesTab username={username} domain={domain} /></TabsContent>
-        <TabsContent value="stats"><StatsTab username={username} domain={domain} /></TabsContent>
-      </Tabs>
+      <PageHeader title={domain} description="Domain setup and advanced hosting settings." icon={Globe} />
+      <div className="settings-columns">
+        <Card>
+          <CardHeader><div><CardTitle>Domain information</CardTitle><CardDescription>The website location and current service state.</CardDescription></div></CardHeader>
+          <CardContent>
+            <dl className="settings-list">
+              <div><dt>Domain name</dt><dd>{domain}</dd></div>
+              <div><dt>Type</dt><dd>{isLoading ? 'Loading…' : item?.kind || 'Domain'}</dd></div>
+              <div><dt>Status</dt><dd><StatusBadge status={item?.status || 'active'} /></dd></div>
+              <div><dt>Document root</dt><dd className="font-mono">{item?.docroot || 'Loading…'}</dd></div>
+              <div><dt>PHP version</dt><dd>{item?.php_version ? `PHP ${item.php_version}` : 'Account default'}</dd></div>
+            </dl>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><div><CardTitle>Advanced settings</CardTitle><CardDescription>Changes here affect how this domain is served.</CardDescription></div></CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">Document-root and PHP changes are available from the dedicated PHP settings screen. Account suspension and disk or bandwidth limits are controlled by the account administrator.</p>
+            <div className="flex flex-wrap gap-2">
+              <Button asChild><Link to="/php">PHP & document root settings</Link></Button>
+              <Button asChild variant="secondary"><Link to="/domains">Add another domain</Link></Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }

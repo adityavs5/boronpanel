@@ -5,6 +5,15 @@ enableGzip                1
 context / {
   location                {{ docroot }}
   allowBrowse             1
+  rewrite {
+    enable                1
+    RewriteFile           .htaccess
+  }
+  phpIniOverride {
+    php_admin_value display_errors "Off"
+    php_admin_value log_errors "On"
+    php_admin_value error_log "{{ log_dir }}/errors.log"
+  }
 }
 
 context /.well-known/acme-challenge/ {

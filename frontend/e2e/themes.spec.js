@@ -40,7 +40,7 @@ async function noOverflow(page) {
 }
 for (const role of ['admin', 'customer']) {
   for (const skin of skins) {
-    test(`${role} ${skin}: dashboard, real tool links, filtering and collapse`, async ({ page }, testInfo) => {
+    test(`${role} ${skin}: dashboard, real tool links, search and collapse`, async ({ page }, testInfo) => {
       const errors = await setup(page, role, skin)
       await page.goto(role === 'admin' ? '/app/overview' : '/app/dashboard')
       await expect(page.getByRole('heading', { name: role === 'admin' ? 'Admin Dashboard' : 'Hosting Dashboard', exact: true })).toBeVisible()
@@ -57,12 +57,13 @@ for (const role of ['admin', 'customer']) {
       await expect(section.locator('.tool-grid')).toBeHidden()
       await page.reload()
       await expect(page.locator('.tool-group').first().locator('.tool-grid')).toBeHidden()
-      await page.getByRole('textbox', { name: 'Filter tools' }).fill(role === 'admin' ? 'accounts' : 'files')
-      await expect(page.locator('.tool-link').first()).toBeVisible()
-      await page.getByRole('textbox', { name: 'Filter tools' }).fill('no-such-tool-xyz')
-      await expect(page.getByRole('heading', { name: 'No tools found' })).toBeVisible()
-      await page.getByRole('button', { name: 'Show all tools' }).click()
-      await expect(page.getByRole('textbox', { name: 'Filter tools' })).toHaveValue('')
+      const search = page.getByRole('textbox', { name: 'Search hosting tools' })
+      await search.fill(role === 'admin' ? 'accounts' : 'files')
+      await expect(page.getByRole('option').first()).toBeVisible()
+      await search.fill('no-such-tool-xyz')
+      await expect(page.getByText('No matching tool.')).toBeVisible()
+      await page.getByRole('button', { name: 'Clear search' }).click()
+      await expect(search).toHaveValue('')
       expect(errors).toEqual([])
     })
     test(`${role} ${skin}: phone and tablet layouts`, async ({ page }, testInfo) => {
@@ -75,8 +76,8 @@ for (const role of ['admin', 'customer']) {
         if (width === 390) await page.screenshot({ path: testInfo.outputPath(`${role}-${skin}-mobile.png`), fullPage: true })
       }
       await expect(page.getByRole('button', { name: 'Open navigation' })).toHaveCount(0)
-      await page.getByRole('textbox', { name: 'Filter tools' }).fill('change style')
-      await page.locator('.tool-link').filter({ hasText: 'Change Style' }).click()
+      await page.getByRole('textbox', { name: 'Search hosting tools' }).fill('change style')
+      await page.getByRole('option').filter({ hasText: 'Appearance' }).click()
       await expect(page).toHaveURL(/\/appearance$/)
       expect(errors).toEqual([])
     })
@@ -156,10 +157,10 @@ test('keyboard navigation can switch themes and reach Appearance', async ({ page
   await page.keyboard.press('p')
   await page.keyboard.press('Enter')
   await expect(page.locator('html')).toHaveAttribute('data-skin', 'paper-lantern')
-  await page.keyboard.press('Control+k')
-  const dialog = page.getByRole('dialog', { name: 'Search the panel' })
-  await expect(dialog).toBeVisible()
-  await dialog.locator('input').fill('Appearance')
+  const search = page.getByRole('textbox', { name: 'Search hosting tools' })
+  await search.focus()
+  await search.fill('Appearance')
+  await expect(page.getByRole('option').filter({ hasText: 'Appearance' })).toBeVisible()
   await page.keyboard.press('Enter')
   await expect(page).toHaveURL(/\/appearance$/)
 })

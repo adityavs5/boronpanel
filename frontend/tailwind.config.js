@@ -69,9 +69,9 @@ export default {
         dropdown: '0 8px 24px -4px rgb(0 0 0 / 0.14)',
       },
       fontSize: {
-        xs: ['0.75rem', { lineHeight: '1rem' }],
-        sm: ['0.8125rem', { lineHeight: '1.25rem' }],
-        base: ['0.875rem', { lineHeight: '1.5rem' }],
+        xs: ['0.8125rem', { lineHeight: '1.15rem' }],
+        sm: ['0.9375rem', { lineHeight: '1.4rem' }],
+        base: ['1rem', { lineHeight: '1.6rem' }],
       },
       keyframes: {
         'fade-in': { from: { opacity: '0' }, to: { opacity: '1' } },

@@ -15,6 +15,7 @@ const PanelSettings = lazy(() => import('@/pages/admin/PanelSettings'))
 const Appearance = lazy(() => import('@/pages/Appearance'))
 const Domains = lazy(() => import('@/pages/customer/Domains'))
 const DomainDetail = lazy(() => import('@/pages/customer/DomainDetail'))
+const DomainFeature = lazy(() => import('@/pages/customer/DomainFeature'))
 const Email = lazy(() => import('@/pages/customer/Email'))
 const Databases = lazy(() => import('@/pages/customer/Databases'))
 const Files = lazy(() => import('@/pages/customer/Files'))
@@ -122,6 +123,13 @@ export const router = createBrowserRouter(
         { path: 'domains', element: customer(<Domains />) },
         { path: 'subdomains', element: customer(<Domains subdomainsOnly />) },
         { path: 'domains/:domain', element: customer(<DomainDetail />) },
+        { path: 'redirects', element: customer(<DomainFeature feature="redirects" />) },
+        { path: 'forwarding', element: customer(<DomainFeature feature="forwarding" />) },
+        { path: 'cache', element: customer(<DomainFeature feature="cache" />) },
+        { path: 'website-security', element: customer(<DomainFeature feature="security" />) },
+        { path: 'website-maintenance', element: customer(<DomainFeature feature="maintenance" />) },
+        { path: 'error-pages', element: customer(<DomainFeature feature="errors" />) },
+        { path: 'website-statistics', element: customer(<DomainFeature feature="statistics" />) },
         { path: 'php', element: customer(<Php />) },
         { path: 'email', element: customer(<Email />) },
         { path: 'email/settings', element: customer(<Email defaultTab="forwarders" />) },

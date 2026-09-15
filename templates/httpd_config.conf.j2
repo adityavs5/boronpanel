@@ -205,7 +205,10 @@ extProcessor roundcube_php{
 }
 
 virtualHost roundcube{
-    vhRoot                   {{ webmail_docroot }}/
+    {# Roundcube keeps application code and writable runtime directories next
+       to public_html. Keep the whole application inside a restrained vhost,
+       while the vhost config below serves only webmail_docroot. #}
+    vhRoot                   {{ webmail_vhroot }}/
     allowSymbolLink          1
     enableScript             1
     restrained                1

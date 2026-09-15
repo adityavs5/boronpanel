@@ -12,7 +12,8 @@
 #
 # Non-interactive install: preseed the prompts with env vars --
 #   FH_PANEL_DOMAIN, FH_LE_EMAIL, FH_ADMIN_USER, FH_ADMIN_PASSWORD,
-#   FH_SERVER_IP, FH_NONINTERACTIVE=1, FH_MAXMIND_LICENSE_KEY (optional,
+#   FH_SERVER_IP, FH_WEBMAIL_DOMAIN, FH_NONINTERACTIVE=1,
+#   FH_MAXMIND_LICENSE_KEY (optional,
 #   see README.md "GeoLite2 setup")
 #
 # No external dependencies beyond bash + coreutils + the OS package manager.
@@ -58,6 +59,7 @@ LE_EMAIL="${FH_LE_EMAIL:-}"
 ADMIN_USER="${FH_ADMIN_USER:-admin}"
 ADMIN_PASSWORD="${FH_ADMIN_PASSWORD:-}"
 SERVER_IP="${FH_SERVER_IP:-}"
+WEBMAIL_DOMAIN="${FH_WEBMAIL_DOMAIN:-}"
 # QA round 2, item 12: optional -- MaxMind requires a free account + license
 # key for GeoLite2 downloads (no anonymous path), so this is never prompted
 # interactively (same treatment as CLOUDFLARE_API_TOKEN -- an operator
@@ -261,6 +263,12 @@ readonly STACK_PKGS=(
     dovecot-mysql dovecot-sieve postfix-mysql pdns-server pdns-backend-sqlite3
     pure-ftpd certbot rclone restic spamassassin fail2ban redis-server clamav clamav-freshclam
 )
+readonly ROUNDCUBE_PKGS=(
+    lsphp83-imap
+)
+readonly ROUNDCUBE_VERSION="1.7.4"
+readonly ROUNDCUBE_URL="https://github.com/roundcube/roundcubemail/releases/download/1.7.4/roundcubemail-1.7.4-complete.tar.gz"
+readonly ROUNDCUBE_SHA256="2c6c878f0093f1bf7fb6086781d2dd9269d652c016b86939c157c5f1729139a2"
 # Ubuntu 24.04 does not publish an `imapsync` binary package. Install the
 # Perl modules it needs from Ubuntu, then install the pinned upstream source
 # archive in install_imapsync() below. Keeping these separate from STACK_PKGS
@@ -392,7 +400,6 @@ $HOMEDIR,bind-try
 /run/user/$UID,bind-try
 /var/lib/php/sessions,bind-try
 /usr/local/lsws/tmp/lshttpd,bind-try
-/var/lib/roundcube,bind-try
 /etc/roundcube,ro-bind-try
 /etc/phpmyadmin,ro-bind-try
 /var/lib/phpmyadmin,bind-try
@@ -440,6 +447,17 @@ install_openlitespeed() {
     # Must precede the first lshttpd start: httpd_config.conf contains the
     # namespaceConf directive and OLS rejects it when this file is absent.
     setup_ols_namespace
+    # The upstream unit uses KillMode=none, which leaves LSAPI workers and
+    # their mount namespaces alive across restarts. That can keep removed or
+    # newly-added namespace paths stale. Preserve graceful shutdown for the
+    # main process, then let systemd clean up the remaining control group.
+    run install -d -m 0755 /etc/systemd/system/lshttpd.service.d
+    write_file /etc/systemd/system/lshttpd.service.d/boron-lifecycle.conf 0644 <<'EOF'
+[Service]
+KillMode=mixed
+TimeoutStopSec=20s
+EOF
+    run systemctl daemon-reload
     run systemctl enable --now lshttpd
     ok "OpenLiteSpeed + PHP 8.1 through 8.5 installed"
 }
@@ -651,10 +669,17 @@ setup_config() {
     if [[ -z "$SERVER_IP" ]]; then
         SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
     fi
+    if [[ -z "$WEBMAIL_DOMAIN" && -n "$PANEL_DOMAIN" ]]; then
+        WEBMAIL_DOMAIN="webmail.${PANEL_DOMAIN}"
+    fi
 
     write_file "${CONF_DIR}/boron.toml" 640 "root:boron-api" <<EOF
 server_public_ip = "${SERVER_IP}"
 letsencrypt_email = "${LE_EMAIL}"
+panel_hostname = "${PANEL_DOMAIN}"
+webmail_hostname = "${WEBMAIL_DOMAIN}"
+webmail_url = "${WEBMAIL_DOMAIN:+https://${WEBMAIL_DOMAIN}}"
+webmail_docroot = "/var/www/roundcube/public_html"
 EOF
     ok "boron.toml written"
 
@@ -917,6 +942,93 @@ EOF
     run systemctl enable --now dovecot postfix
     run systemctl restart dovecot postfix
     ok "Postfix + Dovecot virtual mail configured"
+}
+
+# --- 5.6 Roundcube webmail ---------------------------------------------------
+
+setup_webmail() {
+    if [[ -z "$WEBMAIL_DOMAIN" ]]; then
+        warn "Roundcube skipped because no panel/webmail hostname is configured"
+        return 0
+    fi
+    info "Installing Roundcube webmail at ${WEBMAIL_DOMAIN}"
+    if ! apt_run "Roundcube PHP extension installation" apt-get install -y "${ROUNDCUBE_PKGS[@]}"; then
+        die "Roundcube PHP extension installation aborted; see ${INSTALL_LOG}"
+    fi
+    if $DRY_RUN; then
+        printf '  %s download and verify Roundcube %s; configure database, IMAP/SMTP, OLS vhost and webmail URL\n' "${C_YELLOW}[dry]${C_RESET}" "$ROUNDCUBE_VERSION"
+        return 0
+    fi
+
+    local db_pass des_key schema_file archive extract_dir
+    if [[ ! -f /var/www/roundcube/.boron-version ]] || [[ "$(< /var/www/roundcube/.boron-version)" != "$ROUNDCUBE_VERSION" ]]; then
+        archive="$(mktemp)"
+        extract_dir="$(mktemp -d)"
+        curl -fsSL --retry 3 --connect-timeout 15 --max-time 300 -o "$archive" "$ROUNDCUBE_URL"
+        printf '%s  %s\n' "$ROUNDCUBE_SHA256" "$archive" | sha256sum -c -
+        tar -xzf "$archive" -C "$extract_dir" --strip-components=1
+        install -d -m 0755 /var/www/roundcube
+        rsync -a --delete --exclude='config/config.inc.php' --exclude='temp/' --exclude='logs/' "$extract_dir/" /var/www/roundcube/
+        printf '%s\n' "$ROUNDCUBE_VERSION" >/var/www/roundcube/.boron-version
+        rm -f "$archive"
+        rm -rf "$extract_dir"
+    fi
+    if ! grep -q '^MARIADB_ROUNDCUBE_PASSWORD=' "${CONF_DIR}/secrets.env" 2>/dev/null; then
+        db_pass="$(_rand_pass)"
+        printf 'MARIADB_ROUNDCUBE_PASSWORD=%s\n' "$db_pass" >>"${CONF_DIR}/secrets.env"
+        chmod 600 "${CONF_DIR}/secrets.env"
+    fi
+    db_pass="$(awk -F= '$1 == "MARIADB_ROUNDCUBE_PASSWORD" { print substr($0, index($0, "=") + 1); exit }' "${CONF_DIR}/secrets.env")"
+    [[ -n "$db_pass" ]] || die "could not create the Roundcube database credential"
+    mysql <<SQL
+CREATE DATABASE IF NOT EXISTS roundcube CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'roundcube'@'localhost' IDENTIFIED BY '${db_pass}';
+ALTER USER 'roundcube'@'localhost' IDENTIFIED BY '${db_pass}';
+GRANT ALL PRIVILEGES ON roundcube.* TO 'roundcube'@'localhost';
+FLUSH PRIVILEGES;
+SQL
+    if [[ "$(mysql -NBe "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='roundcube'")" == "0" ]]; then
+        schema_file="/var/www/roundcube/SQL/mysql.initial.sql"
+        [[ -f "$schema_file" ]] || die "Roundcube database schema is missing from the verified release"
+        mysql roundcube <"$schema_file"
+    fi
+
+    des_key="$(openssl rand -base64 24 | tr -d '\n')"
+    cat >/var/www/roundcube/config/config.inc.php <<EOF
+<?php
+\$config = [];
+\$config['db_dsnw'] = 'mysql://roundcube:${db_pass}@127.0.0.1/roundcube';
+\$config['imap_host'] = 'tls://127.0.0.1:143';
+\$config['default_host'] = 'tls://127.0.0.1';
+\$config['smtp_host'] = 'tls://127.0.0.1:587';
+\$config['smtp_server'] = 'tls://127.0.0.1';
+\$config['smtp_port'] = 587;
+\$config['smtp_user'] = '%u';
+\$config['smtp_pass'] = '%p';
+\$config['imap_conn_options'] = ['ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
+\$config['smtp_conn_options'] = ['ssl' => ['verify_peer' => false, 'verify_peer_name' => false]];
+\$config['support_url'] = '';
+\$config['product_name'] = 'Boron Webmail';
+\$config['log_dir'] = '/var/www/roundcube/logs';
+\$config['temp_dir'] = '/var/www/roundcube/temp';
+\$config['des_key'] = '${des_key}';
+\$config['plugins'] = ['filesystem_attachments'];
+\$config['skin'] = 'elastic';
+\$config['enable_installer'] = false;
+EOF
+    chown -R root:root /var/www/roundcube
+    find /var/www/roundcube -type d -exec chmod 0755 {} +
+    find /var/www/roundcube -type f -exec chmod 0644 {} +
+    find /var/www/roundcube/bin -type f -name '*.sh' -exec chmod 0755 {} +
+    chown root:www-data /var/www/roundcube/config/config.inc.php
+    chmod 0640 /var/www/roundcube/config/config.inc.php
+    chown www-data:www-data /var/www/roundcube/public_html
+    install -d -o www-data -g www-data -m 0750 /var/www/roundcube/temp /var/www/roundcube/logs
+    install -d -o www-data -g www-data -m 0755 /var/www/roundcube/public_html/.well-known/acme-challenge
+    run sudo -u www-data -- /usr/local/lsws/lsphp83/bin/lsphp /var/www/roundcube/bin/updatedb.sh --dir /var/www/roundcube/SQL
+
+    run_sh "sudo -u boron-api -- '${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from shared.rpc import RpcClient; RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_webmail', _actor='setup', _role='admin')\""
+    ok "Roundcube installed and published at https://${WEBMAIL_DOMAIN}"
 }
 
 # --- 6. systemd services + cron + logrotate ----------------------------------
@@ -1242,7 +1354,8 @@ Usage: sudo bash scripts/install.sh [OPTIONS]
 
 Non-interactive install via env vars:
   FH_PANEL_DOMAIN, FH_LE_EMAIL, FH_ADMIN_USER, FH_ADMIN_PASSWORD,
-  FH_SERVER_IP, FH_NONINTERACTIVE=1, FH_MAXMIND_LICENSE_KEY (optional,
+  FH_SERVER_IP, FH_WEBMAIL_DOMAIN, FH_NONINTERACTIVE=1,
+  FH_MAXMIND_LICENSE_KEY (optional,
   see README.md "GeoLite2 setup")
 EOF
 }
@@ -1299,6 +1412,7 @@ main() {
     setup_pureftpd
     setup_php_hardening
     start_services
+    setup_webmail
     bootstrap_security_services
     create_admin
     setup_geoip

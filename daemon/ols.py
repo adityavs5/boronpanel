@@ -580,6 +580,7 @@ def render_httpd_config(
         panel_hostname=settings.panel_hostname,
         panel_acme_webroot=settings.panel_acme_webroot,
         webmail_hostname=settings.webmail_hostname,
+        webmail_vhroot=str(Path(settings.webmail_docroot).parent),
         webmail_docroot=settings.webmail_docroot,
         webmail_lsphp_path=_lsphp_path(settings.default_php_version),
         pma_hostname=settings.pma_hostname,
@@ -599,7 +600,9 @@ def render_webmail_vhost_conf(ssl_key_file: str, ssl_cert_file: str) -> str:
     template = _env.get_template("roundcube_vhost.conf.j2")
     return template.render(
         docroot=settings.webmail_docroot,
-        log_dir=settings.log_dir,
+        # Keep logs inside Roundcube's namespace-mounted tree: the www-data
+        # LSAPI worker can write here without widening Boron's own log access.
+        log_dir=str(Path(settings.webmail_docroot).parent / "logs"),
         ssl_key_file=ssl_key_file,
         ssl_cert_file=ssl_cert_file,
     )

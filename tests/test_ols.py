@@ -460,6 +460,9 @@ def test_render_httpd_config_includes_webmail_block_when_configured(monkeypatch)
     content = ols.render_httpd_config([], [])
     assert "virtualHost roundcube{" in content
     assert "extProcessor roundcube_php{" in content
+    roundcube_block = content.split("virtualHost roundcube{", 1)[1].split("}", 1)[0]
+    assert "vhRoot                   /var/www/roundcube/" in roundcube_block
+    assert "restrained                1" in roundcube_block
     assert "map                      roundcube webmail.example.com" in content
 
 

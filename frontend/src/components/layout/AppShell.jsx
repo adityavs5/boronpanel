@@ -1,13 +1,10 @@
 import { Suspense, useEffect } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { PaperRail } from '@/components/themes/PaperRail'
 import { Topbar, PageNavigation } from './Topbar'
 import { MobileBottomNav } from './MobileBottomNav'
 import { ImpersonationBanner } from './ImpersonationBanner'
-import { CommandPalette } from './CommandPalette'
 import { useAuth } from '@/store/auth'
-import { useUI } from '@/store/ui'
 
 // Shown while a code-split page chunk loads (usually <100ms on repeat visits).
 function PageFallback() {
@@ -29,31 +26,17 @@ function PageFallback() {
 // The authenticated app frame: iron sidebar (md+), topbar, scrollable content,
 // a mobile bottom nav below 768px, and the Ctrl/Cmd+K command palette.
 export function AppShell() {
-  const skin = useUI((s) => s.skin)
   const syncIdentity = useAuth((s) => s.syncIdentity)
-  const togglePalette = useUI((s) => s.togglePalette)
 
   // Reconcile identity with the server session on mount so a hard refresh
   // restores the correct role and the impersonation banner (Phase 8 f1).
   useEffect(() => { syncIdentity() }, [syncIdentity])
-
-  useEffect(() => {
-    function onKeyDown(e) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        togglePalette()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [togglePalette])
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <ImpersonationBanner />
       <Topbar />
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {skin === 'paper-lantern' && <PaperRail />}
         <div className="flex min-w-0 flex-1 flex-col">
           <PageNavigation />
           <main className="flex-1 overflow-y-auto bg-background">
@@ -66,7 +49,6 @@ export function AppShell() {
         </div>
         <MobileBottomNav />
       </div>
-      <CommandPalette />
     </div>
   )
 }

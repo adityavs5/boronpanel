@@ -41,6 +41,12 @@ class ChangeMailboxPasswordBody(BaseModel):
     password: str
 
 
+@api_router.get("/webmail")
+def webmail_settings(identity: Identity = Depends(get_identity)):
+    """Expose only the public webmail URL to authenticated panel users."""
+    return {"enabled": bool(settings.webmail_url), "url": settings.webmail_url}
+
+
 @api_router.post("/domains")
 def create_mail_domain(body: CreateMailDomainBody, identity: Identity = Depends(get_identity)):
     # This route has no {username} in its path (it's prefixed /api/v1/mail,

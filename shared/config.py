@@ -121,7 +121,7 @@ class Settings:
     # plain IMAP/SMTP auth against Dovecot/Postfix, so any existing
     # Boron mailbox's address+password already works.
     webmail_hostname: str = ""
-    webmail_docroot: str = "/var/lib/roundcube/public_html"
+    webmail_docroot: str = "/var/www/roundcube/public_html"
 
     # Phase 2 feature 6: cgroups v2 resource limits. The block device
     # IOReadBandwidthMax/IOWriteBandwidthMax apply to -- must be the whole

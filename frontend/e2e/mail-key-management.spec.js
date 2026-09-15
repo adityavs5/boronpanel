@@ -13,6 +13,7 @@ for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','
       let data={}
       if(path.endsWith('/whoami'))data={role:'customer',username:'alpha'}
       else if(path.endsWith('/onboarding'))data={completed:true}
+      else if(path==='/api/v1/mail/webmail')data={enabled:true,url:'https://webmail.example.test'}
       else if(path==='/api/v1/accounts/alpha/domains')data={domains:[{domain:'alpha.test'}]}
       else if(path.endsWith('/mailboxes'))data={mailboxes:[{local_part:'inbox',quota_mb:512,active:true}]}
       else if(path.endsWith('/email/inbox/password')){passwordRequest=route.request().postDataJSON();data={changed:true}}
@@ -21,6 +22,7 @@ for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','
       await route.fulfill({json:data})
     })
     await page.goto('/app/email')
+    await expect(page.getByRole('link',{name:'Open Webmail'})).toHaveAttribute('href','https://webmail.example.test')
     await page.getByRole('button',{name:'inbox@alpha.test',exact:true}).click()
     let dialog=page.getByRole('dialog')
     await expect(dialog.getByRole('heading',{name:'Manage mailbox'})).toBeVisible()
