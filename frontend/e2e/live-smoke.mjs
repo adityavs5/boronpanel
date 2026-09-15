@@ -93,8 +93,16 @@ try {
     await expect(page.getByRole('heading', { name: 'PHP', exact: true })).toBeVisible()
     await page.screenshot({ path: `${output}/paper-php.png`, fullPage: true })
   } finally {
-    await context.request.post(`${base}/api/v1/impersonate/return`)
+    const returned = await context.request.post(`${base}/api/v1/impersonate/return`)
+    expect(returned.status()).toBe(200)
   }
+  // API-only impersonation changes the cookie without updating the SPA's
+  // cached identity. The first navigation lets AppShell reconcile that cache;
+  // navigate again once the restored admin controls are visible.
+  await page.goto(`${base}/app/overview`)
+  await expect(page.getByRole('button', { name: 'Select account' })).toBeVisible({ timeout: 30000 })
+  await page.goto(`${base}/app/overview`)
+  await expect(page.getByRole('heading', { name: 'Admin Dashboard' })).toBeVisible({ timeout: 30000 })
   console.log('Full-page plans, OLS TLS, customer metrics, subdomain, database backup and PHP screens passed.')
   if (process.env.BORON_EXPECTED_VERSION) {
     const response = await context.request.get(`${base}/api/v1/admin/update/status`)
