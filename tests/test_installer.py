@@ -60,7 +60,7 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert source.index("ufw allow 22/tcp") < source.index("ufw --force enable")
     assert "ufw allow 30000:30100/tcp" in source
     assert "30000 30100" in source
-    assert "for p in 21 25 53 80 110 143 443 587 993 995 2222; do" in source
+    assert "for p in 21 25 53 80 110 143 443 587 993 995 2222 7080; do" in source
     assert 'run ufw allow "${p}/tcp"' in source
     assert "npm ci --no-audit --no-fund && npm run build" in source
     assert "web UI built from frontend source" in source
