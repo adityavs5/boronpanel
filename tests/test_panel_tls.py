@@ -34,8 +34,12 @@ def test_failed_listener_verification_restores_previous_pair(tmp_path,monkeypatc
     cert,key=pair();(source/'fullchain.pem').write_bytes(cert);(source/'privkey.pem').write_bytes(key)
     destination=tmp_path/'api';destination.mkdir()
     (destination/'panel.crt').write_bytes(b'old certificate');(destination/'panel.key').write_bytes(b'old key')
+    ols_destination=tmp_path/'ols';ols_destination.mkdir()
+    (ols_destination/'webadmin.crt').write_bytes(b'old OLS certificate');(ols_destination/'webadmin.key').write_bytes(b'old OLS key')
     monkeypatch.setattr(hook,'LINEAGE_ROOT',root);monkeypatch.setattr(hook,'TLS_DIRECTORY',destination)
+    monkeypatch.setattr(hook,'OLS_ADMIN_DIRECTORY',ols_destination)
     monkeypatch.setattr(hook.grp,'getgrnam',lambda name:SimpleNamespace(gr_gid=os.getgid()))
+    monkeypatch.setattr(hook.pwd,'getpwnam',lambda name:SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid()))
     monkeypatch.setattr(hook.os,'fchown',lambda *args:None)
     calls=[];monkeypatch.setattr(hook.subprocess,'run',lambda argv,**kwargs:calls.append(argv))
     def fail(*args):raise RuntimeError('listener failed')
@@ -43,8 +47,16 @@ def test_failed_listener_verification_restores_previous_pair(tmp_path,monkeypatc
     with pytest.raises(RuntimeError,match='listener failed'):hook.deploy('panel.example',source)
     assert (destination/'panel.crt').read_bytes()==b'old certificate'
     assert (destination/'panel.key').read_bytes()==b'old key'
-    assert len([call for call in calls if 'restart' in call])==2
+    assert (ols_destination/'webadmin.crt').read_bytes()==b'old OLS certificate'
+    assert (ols_destination/'webadmin.key').read_bytes()==b'old OLS key'
+    assert [call for call in calls if 'restart' in call]==[
+        ['systemctl','restart','boron-api.service'],
+        ['systemctl','restart','lshttpd.service'],
+        ['systemctl','restart','boron-api.service'],
+        ['systemctl','restart','lshttpd.service'],
+    ]
     assert not list(destination.glob('.panel-tls-*'))
+    assert not list(ols_destination.glob('.panel-tls-*'))
 
 
 def test_panel_acme_route_is_static_and_http_only(monkeypatch):
@@ -80,7 +92,7 @@ def test_certificate_verification_checks_both_ports(tmp_path,monkeypatch):
     context=SimpleNamespace(wrap_socket=lambda connection,server_hostname:nullcontext(SimpleNamespace(getpeercert=lambda binary_form:expected)))
     monkeypatch.setattr(hook.ssl,'SSLContext',lambda protocol:context)
     hook._wait_for_certificate('panel.example',cert)
-    assert {address[1] for address in connections}=={2222,3333}
+    assert {address[1] for address in connections}=={2222,3333,7080}
 
 
 def test_challenge_owner_is_dedicated_non_login_service(monkeypatch):
