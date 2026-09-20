@@ -190,6 +190,7 @@ def _extract_zip(zip_path: Path, docroot: str, root_prefix: str | None = None) -
                     continue
             else:
                 relative = name
+            relative = relative.replace("\\", "/")
             if len(relative.encode("utf-8", errors="replace")) > 2048 or len(Path(relative).parts) > 64:
                 raise AppInstallError("application archive contains an excessively long or deep path")
             if relative in seen:

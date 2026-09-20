@@ -53,3 +53,20 @@ def test_oversized_frame_rejected():
 def test_header_must_be_four_bytes():
     with pytest.raises(ValueError):
         decode_frame_header(b"\x00\x01")
+
+
+def test_root_daemon_rejects_peer_without_kernel_credentials():
+    from daemon.server import handle_client
+
+    class Writer:
+        closed = False
+
+        def get_extra_info(self, key, default=None):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    writer = Writer()
+    asyncio.run(handle_client(None, writer))
+    assert writer.closed

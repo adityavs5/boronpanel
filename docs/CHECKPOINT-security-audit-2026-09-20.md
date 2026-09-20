@@ -25,6 +25,15 @@ The daemon/API/MariaDB services and HTTPS `/healthz` passed. Every temporary
 database and user created by those tests was removed. This hotfix is not a
 signed panel release.
 
+WordPress's root installer also received a backed-up one-file live hotfix for
+bounded vendor download/ZIP extraction and duplicate normalized paths.
+The current app-installer module was refreshed with the matching normalized
+path check. The previous files are protected as
+`baseline/{wordpress,appinstaller}.py.before-archive-hotfix`; restart and
+panel health passed. WordPress tests passed (32) and app-installer tests
+passed (18) after this last change. A real WordPress installation/upgrade
+through the live panel still needs the disposable full-system lab.
+
 Completed live changes: FTPS now presents the trusted panel certificate and
 passes hostname validation; 10 pre-existing wildcard MariaDB grants were
 replaced with exact grants. A disposable MariaDB user and two temporary
@@ -77,8 +86,9 @@ Important pending work, in risk order:
    `SECURITY-ROOT-AUTHORITY-DESIGN-2026-09-20.md` records the required
    migration and tests; implementation is still open.
 2. Complete per-route/per-RPC resource and role review and async job
-   continuation checks; the 842 inventory rows remain pending individual
-   disposition. Add scheduled/helper/listener inventory and ASVS/WSTG map.
+   continuation checks; 10 deliberately public routes now have an exact
+   inventory test and reviewed status, while 832 entries remain pending.
+   Add scheduled/helper/listener inventory and ASVS/WSTG map.
 3. Build an isolated full-system Ubuntu test environment. This sandbox
    denies namespaces, service sockets and systemd, so host isolation and
    real TLS/mail/installer/upgrade tests cannot be claimed here.

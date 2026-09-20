@@ -98,12 +98,24 @@ def _fetch_salts() -> str:
     return resp.text
 
 
+MAX_WORDPRESS_DOWNLOAD_BYTES = 256 * 1024 * 1024
+MAX_WORDPRESS_EXPANDED_BYTES = 1024 * 1024 * 1024
+MAX_WORDPRESS_FILE_BYTES = 128 * 1024 * 1024
+MAX_WORDPRESS_ARCHIVE_MEMBERS = 100_000
+
+
 def _download_zip(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
     with httpx.stream("GET", url, timeout=120.0, follow_redirects=True) as resp:
         resp.raise_for_status()
+        if int(resp.headers.get("content-length", "0") or 0) > MAX_WORDPRESS_DOWNLOAD_BYTES:
+            raise WordPressError("WordPress download exceeds the size limit")
+        written = 0
         with open(dest, "wb") as f:
             for chunk in resp.iter_bytes():
+                written += len(chunk)
+                if written > MAX_WORDPRESS_DOWNLOAD_BYTES:
+                    raise WordPressError("WordPress download exceeds the size limit")
                 f.write(chunk)
 
 
@@ -125,20 +137,46 @@ def _extract_wordpress(zip_path: Path, docroot: str) -> None:
     """The official zip wraps everything in a top-level `wordpress/`
     directory -- strip it so the docroot itself becomes the WP root."""
     with zipfile.ZipFile(zip_path) as zf:
-        for info in zf.infolist():
+        members = zf.infolist()
+        if len(members) > MAX_WORDPRESS_ARCHIVE_MEMBERS:
+            raise WordPressError("WordPress archive contains too many members")
+        expanded = 0
+        seen: set[str] = set()
+        # Validate the complete index before writing any part of the site.
+        for info in members:
             name = info.filename
             if not name.startswith("wordpress/"):
                 continue
             relative = name[len("wordpress/"):]
             if not relative:
                 continue
-            target = _safe_extract_target(docroot, relative)
-            root_stat = os.stat(docroot, follow_symlinks=False)
+            relative = relative.replace("\\", "/")
+            if len(relative.encode("utf-8", errors="replace")) > 2048 or len(Path(relative).parts) > 64:
+                raise WordPressError("WordPress archive contains an excessively long or deep path")
+            if relative in seen:
+                raise WordPressError("WordPress archive contains a duplicate path")
+            seen.add(relative)
+            expanded += info.file_size
+            if expanded > MAX_WORDPRESS_EXPANDED_BYTES or info.file_size > MAX_WORDPRESS_FILE_BYTES:
+                raise WordPressError("WordPress archive exceeds the extraction limit")
+            _safe_extract_target(docroot, relative)
+        root_stat = os.stat(docroot, follow_symlinks=False)
+        for info in members:
+            name = info.filename
+            if not name.startswith("wordpress/"):
+                continue
+            relative = name[len("wordpress/"):]
+            if not relative:
+                continue
+            relative = relative.replace("\\", "/")
             if info.is_dir():
                 secure_mkdirs(docroot, relative.rstrip("/"), root_stat.st_uid, root_stat.st_gid, 0o750)
                 continue
             with zf.open(info) as src:
-                secure_write_file_beneath(docroot, relative, src.read(), root_stat.st_uid, root_stat.st_gid, 0o640)
+                data = src.read(MAX_WORDPRESS_FILE_BYTES + 1)
+                if len(data) > MAX_WORDPRESS_FILE_BYTES:
+                    raise WordPressError("WordPress archive member exceeds the file limit")
+                secure_write_file_beneath(docroot, relative, data, root_stat.st_uid, root_stat.st_gid, 0o640)
 
 
 def _docroot_is_empty_enough(docroot: str) -> bool:

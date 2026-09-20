@@ -145,6 +145,34 @@ def test_extract_wordpress_rejects_zip_slip(tmp_path):
     assert not os.path.exists("/tmp/boron_zipslip_wp.txt")
 
 
+def test_extract_wordpress_rejects_expansion_before_writing(tmp_path, monkeypatch):
+    import zipfile
+
+    archive = tmp_path / "large.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        output.writestr("wordpress/large.txt", "x" * 32)
+    docroot = tmp_path / "docroot"
+    docroot.mkdir()
+    monkeypatch.setattr(wp, "MAX_WORDPRESS_FILE_BYTES", 8)
+    with pytest.raises(wp.WordPressError, match="extraction limit"):
+        wp._extract_wordpress(archive, str(docroot))
+    assert list(docroot.iterdir()) == []
+
+
+def test_extract_wordpress_rejects_duplicate_normalized_paths(tmp_path):
+    import zipfile
+
+    archive = tmp_path / "duplicates.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("wordpress/a/b.txt", "first")
+        output.writestr("wordpress/a\\b.txt", "second")
+    docroot = tmp_path / "docroot"
+    docroot.mkdir()
+    with pytest.raises(wp.WordPressError, match="duplicate path"):
+        wp._extract_wordpress(archive, str(docroot))
+    assert list(docroot.iterdir()) == []
+
+
 def test_write_wp_config_contains_db_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(wp, "_fetch_salts", lambda: "define('AUTH_KEY', 'x');\n")
     docroot = tmp_path / "docroot"
