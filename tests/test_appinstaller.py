@@ -174,6 +174,81 @@ def test_extract_zip_accepts_normal_members(tmp_path):
     assert (docroot / "assets" / "style.css").exists()
 
 
+def test_extract_zip_rejects_expansion_before_writing(tmp_path, monkeypatch):
+    import zipfile
+
+    archive = tmp_path / "large.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        output.writestr("large.txt", "x" * 32)
+    docroot = tmp_path / "docroot"
+    docroot.mkdir()
+    monkeypatch.setattr(ai, "MAX_APP_FILE_BYTES", 8)
+    with pytest.raises(ai.AppInstallError, match="extraction limit"):
+        ai._extract_zip(archive, str(docroot))
+    assert list(docroot.iterdir()) == []
+
+
+def test_extract_wrapped_tar_rejects_traversal_and_links(tmp_path):
+    import io
+    import tarfile
+
+    for name, link in (("../outside", False), ("drupal-1/link", True)):
+        archive = tmp_path / ("link.tar" if link else "traversal.tar")
+        with tarfile.open(archive, "w") as output:
+            info = tarfile.TarInfo(name)
+            if link:
+                info.type = tarfile.SYMTYPE
+                info.linkname = "/etc/passwd"
+                output.addfile(info)
+            else:
+                info.size = 1
+                output.addfile(info, io.BytesIO(b"x"))
+        extracted = tmp_path / ("link-extract" if link else "traversal-extract")
+        extracted.mkdir()
+        with pytest.raises(ai.AppInstallError):
+            ai._extract_wrapped_tar(archive, extracted)
+    assert not (tmp_path / "outside").exists()
+
+
+def test_extract_wrapped_tar_accepts_single_app_directory(tmp_path):
+    import io
+    import tarfile
+
+    archive = tmp_path / "drupal.tar"
+    with tarfile.open(archive, "w") as output:
+        info = tarfile.TarInfo("drupal-1/index.php")
+        info.size = 3
+        output.addfile(info, io.BytesIO(b"php"))
+    extracted = tmp_path / "extracted"
+    extracted.mkdir()
+    root = ai._extract_wrapped_tar(archive, extracted)
+    assert root.name == "drupal-1"
+    assert (root / "index.php").read_bytes() == b"php"
+
+
+def test_app_sql_import_uses_exclusive_scoped_credentials(monkeypatch):
+    from daemon.procutil import ProcResult
+
+    observed = []
+
+    def fake_run(args, input_text=None, **kwargs):
+        from pathlib import Path
+        observed.append((args, input_text, Path(args[1].split("=", 1)[1]).read_text()))
+        return ProcResult(args=args, returncode=1, stdout="", stderr="secret SQL text")
+
+    monkeypatch.setattr(ai, "run", fake_run)
+    with pytest.raises(ai.AppInstallError, match="SQL import failed") as exc:
+        ai._mysql_import("demo1_app", "demo1_app", 'pass"word', ["SELECT 1;"])
+    args, sql, config = observed[0]
+    assert args[1].startswith("--defaults-file=")
+    assert "--binary-mode" in args
+    assert "--local-infile=0" in args
+    assert "user=\"demo1_app\"" in config
+    assert 'password="pass\\"word"' in config
+    assert sql == "SELECT 1;"
+    assert "secret SQL text" not in str(exc.value)
+
+
 def test_php_str_escapes_quotes_and_backslashes():
     assert ai._php_str("it's") == "'it\\'s'"
 

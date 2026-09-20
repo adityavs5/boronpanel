@@ -123,7 +123,19 @@ def _validate_inner_tar(path: Path) -> int:
     total = 0
     try:
         with tarfile.open(path) as archive:
-            for member in archive.getmembers():
+            count = 0
+            file_names: set[str] = set()
+            for member in archive:
+                count += 1
+                if count > backup.MAX_BACKUP_ARCHIVE_MEMBERS:
+                    raise PortableArchiveError(f"Nested archive {path.name} contains too many members")
+                if (len(member.name.encode("utf-8", errors="replace")) > backup.MAX_BACKUP_ARCHIVE_PATH_BYTES
+                        or len(Path(member.name).parts) > backup.MAX_BACKUP_ARCHIVE_PATH_DEPTH):
+                    raise PortableArchiveError(f"Nested archive {path.name} contains an excessively long or deep path")
+                if member.isreg():
+                    if member.name in file_names:
+                        raise PortableArchiveError(f"Nested archive {path.name} contains a duplicate file path")
+                    file_names.add(member.name)
                 total += member.size if member.isreg() else 0
                 if total > settings.cpanel_import_max_extracted_bytes:
                     raise PortableArchiveError(f"Nested archive {path.name} exceeds the extraction limit")

@@ -113,6 +113,32 @@ def test_validate_archive_rejects_unsafe_nested_tar(tmp_path):
         portable.validate_archive(artifact, extract, "demo1")
 
 
+def test_nested_archive_rejects_member_count_before_restore(tmp_path, monkeypatch):
+    component = tmp_path / "home.tar.gz"
+    with tarfile.open(component, "w:gz") as archive:
+        for name in ("demo1/a", "demo1/b"):
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            archive.addfile(info, io.BytesIO(b"x"))
+    monkeypatch.setattr(backup, "MAX_BACKUP_ARCHIVE_MEMBERS", 1)
+    with pytest.raises(portable.PortableArchiveError, match="too many members"):
+        portable._validate_inner_tar(component)
+
+
+def test_backup_extractor_rejects_duplicate_file_members(tmp_path):
+    component = tmp_path / "home.tar"
+    with tarfile.open(component, "w") as archive:
+        for content in (b"a", b"b"):
+            info = tarfile.TarInfo("demo1/index.php")
+            info.size = 1
+            archive.addfile(info, io.BytesIO(content))
+    destination = tmp_path / "extracted"
+    destination.mkdir()
+    with pytest.raises(backup.BackupError, match="duplicate file path"):
+        backup._safe_extract_tar(component, destination)
+    assert list(destination.iterdir()) == []
+
+
 def test_import_password_is_revealed_once(isolated_db):
     with write_session() as session:
         row = AccountArchiveImportJob(

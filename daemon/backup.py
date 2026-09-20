@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import shutil
 import tarfile
 import tempfile
@@ -62,6 +63,9 @@ FREQUENCIES = ("daily", "weekly", "monthly")
 FREQUENCY_SECONDS = {"daily": 86400, "weekly": 7 * 86400, "monthly": 30 * 86400}
 PORTABLE_ARCHIVE_FORMAT = "boron-account-archive"
 PORTABLE_ARCHIVE_VERSION = 1
+MAX_BACKUP_ARCHIVE_MEMBERS = 200_000
+MAX_BACKUP_ARCHIVE_PATH_BYTES = 2048
+MAX_BACKUP_ARCHIVE_PATH_DEPTH = 64
 
 
 class BackupError(Exception):
@@ -73,8 +77,19 @@ def _safe_extract_tar(archive_path: str | Path, destination: str | Path) -> None
     try:
         with tarfile.open(archive_path) as archive:
             total = 0
-            for member in archive.getmembers():
+            count = 0
+            file_names: set[str] = set()
+            for member in archive:
+                count += 1
+                if count > MAX_BACKUP_ARCHIVE_MEMBERS:
+                    raise BackupError("archive component contains too many members")
+                if (len(member.name.encode("utf-8", errors="replace")) > MAX_BACKUP_ARCHIVE_PATH_BYTES
+                        or len(Path(member.name).parts) > MAX_BACKUP_ARCHIVE_PATH_DEPTH):
+                    raise BackupError("archive component contains an excessively long or deep path")
                 if member.isreg():
+                    if member.name in file_names:
+                        raise BackupError("archive component contains a duplicate file path")
+                    file_names.add(member.name)
                     total += member.size
                     if total > settings.cpanel_import_max_extracted_bytes:
                         raise BackupError(
@@ -424,11 +439,19 @@ def _dump_database(db_name: str, output_path: Path) -> None:
         os.unlink(cnf_path)
 
 
-def _write_mysql_defaults_file() -> str:
+def _write_mysql_defaults_file(user: str | None = None, password: str | None = None) -> str:
+    if user is None:
+        user = settings.mariadb_admin_user
+    if password is None:
+        password = settings.mariadb_admin_password
+    # MariaDB option-file values need quoting, even for generated passwords.
+    def option(value: str) -> str:
+        return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".cnf", delete=False) as f:
         f.write(
-            f"[client]\nuser={settings.mariadb_admin_user}\n"
-            f"password={settings.mariadb_admin_password}\nsocket={settings.mariadb_socket}\n"
+            f"[client]\nuser={option(user)}\n"
+            f"password={option(password)}\nsocket={option(settings.mariadb_socket)}\n"
         )
         cnf_path = f.name
     os.chmod(cnf_path, 0o600)
@@ -908,15 +931,42 @@ def _update_restore(restore_job_id: int, **fields) -> None:
 def _restore_database_dump(db_name: str, dump_path: Path) -> None:
     if not mariadb.database_exists(db_name):
         raise BackupError(f"database '{db_name}' does not exist -- create it (db.create) before restoring into it")
-    cnf_path = _write_mysql_defaults_file()
+    # An imported or remotely stored backup is untrusted. SQL is executed
+    # with a one-use MariaDB principal scoped to exactly this database, never
+    # the provisioning principal. The client also runs in binary batch mode
+    # so dump text cannot invoke its own shell/source commands as root.
+    restore_user = "br_restore_" + secrets.token_hex(8)
+    restore_password = mariadb.generate_password()
+    mariadb.create_db_user(restore_user, restore_password)
+    cnf_path = None
+    sql_path = None
     try:
-        with gzip.open(dump_path, "rt") as gz:
-            sql = gz.read()
-        result = run(["mysql", f"--defaults-extra-file={cnf_path}", db_name], input_text=sql, timeout=1800)
+        mariadb.grant_exact_database(db_name, restore_user)
+        cnf_path = _write_mysql_defaults_file(restore_user, restore_password)
+        # A .sql.gz can expand far beyond its outer archive's declared size.
+        # Stream to a private file under a byte ceiling, then pipe it to the
+        # client without ever holding the whole SQL dump in daemon memory.
+        with tempfile.NamedTemporaryFile(mode="wb", prefix="boron-db-restore-", suffix=".sql", delete=False) as expanded:
+            sql_path = expanded.name
+            written = 0
+            with gzip.open(dump_path, "rb") as compressed:
+                while chunk := compressed.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > settings.cpanel_import_max_extracted_bytes:
+                        raise BackupError("database dump exceeds the restore expansion limit")
+                    expanded.write(chunk)
+        # --defaults-file is exclusive. --defaults-extra-file still reads
+        # later user option files, which can silently override the scoped
+        # credentials when this root daemon invokes the client.
+        result = run(["mysql", f"--defaults-file={cnf_path}", "--binary-mode", "--local-infile=0", db_name], input_path=sql_path, discard_stdout=True, timeout=1800)
         if not result.ok:
-            raise BackupError(f"mysql restore failed for '{db_name}': {result.stderr.strip()}")
+            raise BackupError(f"mysql restore failed for '{db_name}'")
     finally:
-        os.unlink(cnf_path)
+        if sql_path is not None:
+            os.unlink(sql_path)
+        if cnf_path is not None:
+            os.unlink(cnf_path)
+        mariadb.drop_db_user(restore_user)
 
 
 @serialized_worker

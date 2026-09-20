@@ -49,6 +49,7 @@ import os
 import pwd
 import secrets
 import shutil
+import tarfile
 import tempfile
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -69,6 +70,10 @@ from daemon.safeio import secure_mkdirs, secure_write_file_beneath
 logger = logging.getLogger("borond.appinstaller")
 
 _executor = ThreadPoolExecutor(max_workers=settings.app_install_concurrency, thread_name_prefix="app-install")
+MAX_APP_DOWNLOAD_BYTES = 1024 * 1024 * 1024
+MAX_APP_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024
+MAX_APP_ARCHIVE_MEMBERS = 100_000
+MAX_APP_FILE_BYTES = 512 * 1024 * 1024
 
 APP_TEMPLATES_DIR = Path(__file__).resolve().parent / "app_templates"
 
@@ -138,8 +143,14 @@ def _download(url: str, dest: Path, timeout: float = 180.0) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     with httpx.stream("GET", url, timeout=timeout, follow_redirects=True) as resp:
         resp.raise_for_status()
+        if int(resp.headers.get("content-length", "0") or 0) > MAX_APP_DOWNLOAD_BYTES:
+            raise AppInstallError("application download exceeds the size limit")
+        written = 0
         with open(dest, "wb") as f:
             for chunk in resp.iter_bytes():
+                written += len(chunk)
+                if written > MAX_APP_DOWNLOAD_BYTES:
+                    raise AppInstallError("application download exceeds the size limit")
                 f.write(chunk)
 
 
@@ -164,7 +175,12 @@ def _extract_zip(zip_path: Path, docroot: str, root_prefix: str | None = None) -
     mirrors) -- None extracts flat, for releases (Joomla's) that don't
     wrap at all."""
     with zipfile.ZipFile(zip_path) as zf:
-        for info in zf.infolist():
+        members = zf.infolist()
+        if len(members) > MAX_APP_ARCHIVE_MEMBERS:
+            raise AppInstallError("application archive contains too many members")
+        expanded = 0
+        seen: set[str] = set()
+        for info in members:
             name = info.filename
             if root_prefix:
                 if not name.startswith(root_prefix):
@@ -174,31 +190,72 @@ def _extract_zip(zip_path: Path, docroot: str, root_prefix: str | None = None) -
                     continue
             else:
                 relative = name
+            if len(relative.encode("utf-8", errors="replace")) > 2048 or len(Path(relative).parts) > 64:
+                raise AppInstallError("application archive contains an excessively long or deep path")
+            if relative in seen:
+                raise AppInstallError("application archive contains a duplicate path")
+            seen.add(relative)
+            expanded += info.file_size
+            if expanded > MAX_APP_EXPANDED_BYTES or info.file_size > MAX_APP_FILE_BYTES:
+                raise AppInstallError("application archive exceeds the extraction limit")
             target = _safe_extract_target(docroot, relative)
             root_uid, root_gid = os.stat(docroot, follow_symlinks=False).st_uid, os.stat(docroot, follow_symlinks=False).st_gid
             if info.is_dir() or name.endswith("/"):
                 secure_mkdirs(docroot, relative.rstrip("/"), root_uid, root_gid, 0o750)
                 continue
             with zf.open(info) as src:
-                secure_write_file_beneath(docroot, relative, src.read(), root_uid, root_gid, 0o640)
+                data = src.read(MAX_APP_FILE_BYTES + 1)
+                if len(data) > MAX_APP_FILE_BYTES:
+                    raise AppInstallError("application archive member exceeds the file limit")
+                secure_write_file_beneath(docroot, relative, data, root_uid, root_gid, 0o640)
+
+
+def _extract_wrapped_tar(archive_path: Path, destination: Path) -> Path:
+    """Extract a vendor tarball without trusting archive paths or links."""
+    try:
+        with tarfile.open(archive_path) as archive:
+            expanded = 0
+            count = 0
+            for member in archive:
+                count += 1
+                if count > MAX_APP_ARCHIVE_MEMBERS:
+                    raise AppInstallError("application archive contains too many members")
+                if (len(member.name.encode("utf-8", errors="replace")) > 2048
+                        or len(Path(member.name).parts) > 64):
+                    raise AppInstallError("application archive contains an excessively long or deep path")
+                if not (member.isdir() or member.isreg()):
+                    raise AppInstallError("application archive contains a link or special file")
+                expanded += member.size if member.isreg() else 0
+                if expanded > MAX_APP_EXPANDED_BYTES:
+                    raise AppInstallError("application archive exceeds the extraction limit")
+            archive.extractall(destination, filter="data")
+    except tarfile.TarError as exc:
+        raise AppInstallError("application archive is unsafe or unreadable") from exc
+    roots = [path for path in destination.iterdir() if path != archive_path]
+    if len(roots) != 1 or not roots[0].is_dir():
+        raise AppInstallError("application archive must contain one root directory")
+    return roots[0]
 
 
 def _mysql_import(db_name: str, db_user: str, db_password: str, sql_texts: list[str]) -> None:
     """Authenticates as the already-allocated per-app db_user (the same
     "use the newly created app's own credentials, not the daemon's admin
     ones" pattern wp_install() already uses via wp-config.php's DB_USER/
-    DB_PASSWORD) via mysql's --defaults-extra-file, never a CLI argument
+    DB_PASSWORD) via mysql's exclusive --defaults-file, never a CLI argument
     -- this project's hard "passwords never logged anywhere" rule
     (daemon/procutil.py's run() logs every command's full argument list)."""
+    def option(value: str) -> str:
+        return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".cnf", delete=False) as cnf:
-        cnf.write(f"[client]\nuser={db_user}\npassword={db_password}\nsocket={settings.mariadb_socket}\n")
+        cnf.write(f"[client]\nuser={option(db_user)}\npassword={option(db_password)}\nsocket={option(settings.mariadb_socket)}\n")
         cnf_path = cnf.name
     os.chmod(cnf_path, 0o600)
     try:
         for sql_text in sql_texts:
-            result = run(["mysql", f"--defaults-extra-file={cnf_path}", db_name], input_text=sql_text, timeout=120)
+            result = run(["mysql", f"--defaults-file={cnf_path}", "--binary-mode", "--local-infile=0", db_name], input_text=sql_text, timeout=120)
             if not result.ok:
-                raise AppInstallError(f"SQL import failed: {result.stderr.strip()[:800]}")
+                raise AppInstallError("SQL import failed")
     finally:
         os.unlink(cnf_path)
 
@@ -446,16 +503,12 @@ def install_drupal(username: str, domain_name: str, title: str, admin_user: str,
     with tempfile.TemporaryDirectory(dir=str(staging)) as tmp:
         archive_path = Path(tmp) / "drupal.tar.gz"
         _download(download_url, archive_path)
-        # Drupal's tarball wraps everything in "drupal-<version>/" --
-        # extracted with tar directly (not zipfile -- Drupal ships .tar.gz,
-        # unlike Joomla/WordPress's .zip).
-        result = run(["tar", "xzf", str(archive_path), "-C", tmp, "--strip-components=1"], timeout=120)
-        if not result.ok:
-            raise AppInstallError(f"failed to extract Drupal archive: {result.stderr.strip()}")
-        for entry in os.listdir(tmp):
-            if entry == "drupal.tar.gz":
-                continue
-            shutil.move(os.path.join(tmp, entry), os.path.join(docroot, entry))
+        # Drupal's tarball wraps everything in one drupal-<version> directory.
+        # The root daemon validates member types, paths and expansion before
+        # extraction; shelling out to tar here would bypass those checks.
+        source_root = _extract_wrapped_tar(archive_path, Path(tmp))
+        for entry in source_root.iterdir():
+            shutil.move(str(entry), os.path.join(docroot, entry.name))
 
     settings_php_dir = os.path.join(docroot, "sites", "default")
     os.makedirs(settings_php_dir, exist_ok=True)
@@ -540,10 +593,22 @@ def install_prestashop(username: str, domain_name: str, title: str, admin_user: 
         # PrestaShop's release zip itself contains prestashop.zip + docs --
         # the outer zip is a release bundle, not the installable tree.
         with zipfile.ZipFile(zip_path) as outer:
-            inner_names = [n for n in outer.namelist() if n.lower() == "prestashop.zip"]
-            if inner_names:
-                outer.extract(inner_names[0], tmp)
-                _extract_zip(Path(tmp) / inner_names[0], docroot)
+            infos = outer.infolist()
+            if len(infos) > MAX_APP_ARCHIVE_MEMBERS:
+                raise AppInstallError("application archive contains too many members")
+            inner = next((info for info in infos if info.filename.lower() == "prestashop.zip"), None)
+            if inner is not None:
+                if inner.file_size > MAX_APP_DOWNLOAD_BYTES:
+                    raise AppInstallError("nested application archive exceeds the size limit")
+                inner_path = Path(tmp) / "prestashop.zip"
+                with outer.open(inner) as source, inner_path.open("wb") as destination:
+                    written = 0
+                    while chunk := source.read(1024 * 1024):
+                        written += len(chunk)
+                        if written > MAX_APP_DOWNLOAD_BYTES:
+                            raise AppInstallError("nested application archive exceeds the size limit")
+                        destination.write(chunk)
+                _extract_zip(inner_path, docroot)
             else:
                 _extract_zip(zip_path, docroot)
 

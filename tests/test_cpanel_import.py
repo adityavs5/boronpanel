@@ -222,6 +222,8 @@ def test_import_mysql_dump_strips_context_before_invoking_mysql(tmp_path, monkey
     monkeypatch.setattr(ci, "run", fake_run)
     ci._import_mysql_dump("newuser_shop", dump_path, "newuser_shop", "scoped-secret")
     assert "newuser_shop" in captured["args"]
+    assert captured["args"][1].startswith("--defaults-file=")
+    assert "--binary-mode" in captured["args"]
     assert "--local-infile=0" in captured["args"]
     assert "scoped-secret" not in captured["args"]
     assert "CREATE DATABASE" not in captured["input_text"]

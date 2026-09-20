@@ -2,7 +2,7 @@
 
 Prepared: 2026-09-20. Planner: Astra. Intended executor: GPT Sol.
 
-Status: plan ready for handoff; audit execution, remediation, and deployment have not started under this plan. The current request authorizes preparing this plan. Sol should execute it when the user hands over execution, preserving any existing release authorization that still applies.
+Status: execution in progress on `security-audit-2026-09-20`. See `CHECKPOINT-security-audit-2026-09-20.md` for verified fixes and open release blockers. This original plan remains the completion standard; a live hotfix is not a completed security release.
 
 ## 1. Objective and completion standard
 

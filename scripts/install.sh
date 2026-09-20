@@ -436,10 +436,21 @@ install_openlitespeed() {
     if [[ -d /usr/local/lsws ]]; then
         skip "OpenLiteSpeed already present"
     else
-        # LiteSpeed's own repo, added exactly as their documented one-liner
-        # (curl | bash) -- the same source README §3 uses.
-        run_sh "curl -fsSL https://repo.litespeed.sh | bash"
-        ok "LiteSpeed apt repo added"
+        # The published repository helper executes downloaded code as root and
+        # installs its signing keys in APT's global trust store. Ship the
+        # repository's verified public key with Boron instead, and scope it to
+        # this one source. APT verifies signed Release metadata and package
+        # hashes before executing package maintainer scripts.
+        run install -D -m 0644 \
+            "${REPO_ROOT}/deploy/litespeed-repository-key.asc" \
+            /usr/share/keyrings/boron-litespeed-repository.asc
+        write_file /etc/apt/sources.list.d/boron-litespeed.list 0644 <<'EOF'
+deb [signed-by=/usr/share/keyrings/boron-litespeed-repository.asc] https://rpms.litespeedtech.com/debian/ noble main
+EOF
+        if ! apt_run "LiteSpeed apt cache update" apt-get update -qq; then
+            die "LiteSpeed repository setup failed; see ${INSTALL_LOG}"
+        fi
+        ok "LiteSpeed signed apt repo added"
     fi
     if ! apt_run "OpenLiteSpeed and lsphp package installation" apt-get install -y "${OLS_PKGS[@]}"; then
         die "OpenLiteSpeed and lsphp installation aborted; see ${INSTALL_LOG}"

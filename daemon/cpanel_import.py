@@ -594,7 +594,11 @@ def _import_mysql_dump(db_name: str, dump_path: Path, db_user: str, password: st
     cnf_path = _write_import_mysql_defaults_file(db_user, password)
     try:
         sql_text = _strip_dump_database_context(dump_path.read_text(errors="replace"))
-        result = run(["mysql", f"--defaults-extra-file={cnf_path}", "--local-infile=0", db_name], input_text=sql_text, timeout=1800)
+        # Untrusted dumps may contain MariaDB client commands such as \! (run
+        # a shell command). In batch mode --binary-mode disables client
+        # commands other than charset/delimiter; the scoped DB credential
+        # and disabled LOCAL INFILE constrain server-side SQL as well.
+        result = run(["mysql", f"--defaults-file={cnf_path}", "--binary-mode", "--local-infile=0", db_name], input_text=sql_text, timeout=1800)
         if not result.ok:
             # mysql can quote SQL input in its error output, including data
             # that must not be retained in a cross-role job report.

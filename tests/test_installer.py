@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 INSTALLER = Path(__file__).resolve().parent.parent / "scripts" / "install.sh"
+LITESPEED_KEY = INSTALLER.parent.parent / "deploy" / "litespeed-repository-key.asc"
 
 
 def test_installer_exists_and_is_executable():
@@ -26,6 +27,24 @@ def test_installer_bash_syntax_ok():
     # `bash -n` parses without executing -- no system deps, always runnable.
     r = subprocess.run(["bash", "-n", str(INSTALLER)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.skipif(shutil.which("gpg") is None, reason="gpg not installed")
+def test_litespeed_repository_has_pinned_scoped_trust():
+    source = INSTALLER.read_text()
+    assert "repo.litespeed.sh | bash" not in source
+    assert "signed-by=/usr/share/keyrings/boron-litespeed-repository.asc" in source
+    assert "https://rpms.litespeedtech.com/debian/ noble main" in source
+    assert "LiteSpeed apt cache update" in source
+    result = subprocess.run(
+        ["gpg", "--show-keys", "--with-colons", str(LITESPEED_KEY)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    fingerprints = [line.split(":")[9] for line in result.stdout.splitlines()
+                    if line.startswith("fpr:")]
+    assert fingerprints[0] == "3E892522DB44E1B063D366C5011AA62DEDA1F085"
 
 
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")

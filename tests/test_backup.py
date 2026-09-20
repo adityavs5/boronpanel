@@ -1,6 +1,7 @@
 import gzip
 import json
 import tarfile
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -663,10 +664,16 @@ def test_restore_database_dump_requires_existing_database(isolated_db, tmp_path,
 
 def test_restore_database_dump_runs_mysql_restore(isolated_db, tmp_path, monkeypatch):
     monkeypatch.setattr(backup.mariadb, "database_exists", lambda name: True)
+    created = []
+    granted = []
+    dropped = []
+    monkeypatch.setattr(backup.mariadb, "create_db_user", lambda user, password: created.append(user))
+    monkeypatch.setattr(backup.mariadb, "grant_exact_database", lambda db, user: granted.append((db, user)))
+    monkeypatch.setattr(backup.mariadb, "drop_db_user", lambda user: dropped.append(user))
     ran = []
 
-    def fake_run(args, input_text=None, timeout=30):
-        ran.append((args, input_text))
+    def fake_run(args, input_path=None, **kwargs):
+        ran.append((args, Path(input_path).read_text()))
         from daemon.procutil import ProcResult
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
 
@@ -677,6 +684,48 @@ def test_restore_database_dump_runs_mysql_restore(isolated_db, tmp_path, monkeyp
 
     backup._restore_database_dump("demo1_shop", dump)
     assert any(args[0] == "mysql" and "demo1_shop" in args for args, _ in ran)
+    assert "--binary-mode" in ran[0][0]
+    assert "--local-infile=0" in ran[0][0]
+    assert ran[0][0][1].startswith("--defaults-file=")
+    assert ran[0][1] == "INSERT INTO t VALUES (1);"
+    assert created == dropped
+    assert granted == [("demo1_shop", created[0])]
+    assert created[0] != backup.settings.mariadb_admin_user
+
+
+def test_restore_database_dump_rejects_expansion_bomb(isolated_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(backup.mariadb, "database_exists", lambda name: True)
+    dropped = []
+    monkeypatch.setattr(backup.mariadb, "create_db_user", lambda user, password: None)
+    monkeypatch.setattr(backup.mariadb, "grant_exact_database", lambda db, user: None)
+    monkeypatch.setattr(backup.mariadb, "drop_db_user", lambda user: dropped.append(user))
+    monkeypatch.setattr(backup.settings, "cpanel_import_max_extracted_bytes", 8)
+    monkeypatch.setattr(backup, "run", lambda *args, **kwargs: pytest.fail("oversized dump reached mysql"))
+    dump = tmp_path / "dump.sql.gz"
+    with gzip.open(dump, "wt") as output:
+        output.write("INSERT INTO t VALUES (12345);")
+    with pytest.raises(backup.BackupError, match="expansion limit"):
+        backup._restore_database_dump("demo1_shop", dump)
+    assert len(dropped) == 1
+
+
+def test_restore_database_dump_drops_scoped_user_on_failure(isolated_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(backup.mariadb, "database_exists", lambda name: True)
+    created = []
+    dropped = []
+    monkeypatch.setattr(backup.mariadb, "create_db_user", lambda user, password: created.append(user))
+    monkeypatch.setattr(backup.mariadb, "grant_exact_database", lambda db, user: None)
+    monkeypatch.setattr(backup.mariadb, "drop_db_user", lambda user: dropped.append(user))
+    from daemon.procutil import ProcResult
+    monkeypatch.setattr(backup, "run", lambda args, **kwargs: ProcResult(args=args, returncode=1, stdout="", stderr="secret SQL text"))
+    dump = tmp_path / "dump.sql.gz"
+    with gzip.open(dump, "wt") as output:
+        output.write("SELECT 1;")
+
+    with pytest.raises(backup.BackupError, match="mysql restore failed") as exc:
+        backup._restore_database_dump("demo1_shop", dump)
+    assert "secret SQL text" not in str(exc.value)
+    assert created == dropped
 
 
 def test_restore_mailbox_requires_at_sign(isolated_db):
@@ -902,9 +951,12 @@ def test_run_restore_job_database_end_to_end(isolated_db, tmp_path, fake_staging
     dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(dest_path)})
 
     monkeypatch.setattr(backup.mariadb, "database_exists", lambda name: True)
+    monkeypatch.setattr(backup.mariadb, "create_db_user", lambda user, password: None)
+    monkeypatch.setattr(backup.mariadb, "grant_exact_database", lambda db, user: None)
+    monkeypatch.setattr(backup.mariadb, "drop_db_user", lambda user: None)
     ran = []
 
-    def fake_run(args, input_text=None, timeout=30):
+    def fake_run(args, **kwargs):
         ran.append(args)
         from daemon.procutil import ProcResult
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
