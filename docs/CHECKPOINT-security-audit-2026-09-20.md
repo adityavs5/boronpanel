@@ -32,8 +32,14 @@ FileBrowser 2; release script 11, including a signed dry run; resource
 limits 1; Node 22, Python 16, FTP 13, database/mail 39, domain 26
 (one actual chown/ACL proof deferred by sandbox), cPanel archive/import 6.
 `shellcheck`, `bash -n`, Python compilation and `git diff --check` passed.
-The full suite, frontend production build, browser checks, and artifact
-acceptance have not yet been run.
+The frontend production build passed with the installed Node 22 toolchain
+after installing locked dependencies offline in the audit worktree. The full
+suite, browser checks, and final artifact acceptance have not yet been run.
+Refreshed Ubuntu apt metadata lists 324 upgradable packages, including 170
+with a security-pocket candidate. A dry-run would upgrade 317 and leave 7
+back. No OS package upgrade was applied; the simulation and local package
+inventories are protected evidence. OpenLiteSpeed WebAdmin on port 7080
+passed a trusted TLS 1.3 hostname check.
 
 Important pending work, in risk order:
 
@@ -56,6 +62,8 @@ Important pending work, in risk order:
    updater, protected off-host signing-key recovery, current dependency
    advisory review, release gate, fresh install, upgrade, rollback and
    deployed acceptance. Do not publish or self-update before this is safe.
+6. Plan and validate Ubuntu security package updates, including their
+   service restarts and reboot impact, before applying them to production.
 
 The work remains an active audit. There is no security release tag or GitHub
 push from this worktree yet. Do not describe any source-only fix as deployed.

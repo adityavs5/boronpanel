@@ -23,6 +23,8 @@ underlying root handler enforces account ownership.
 | Global spam Sieve write to mail service | Config transaction restores previous script after compile/reload failure; regression test | Source fixed, deployment pending |
 | Plan count limits | Database, subdomain, FTP, mailbox and combined Node/Python app creation reject at-cap accounts in root handlers; focused negative test | Source fixed, deployment pending; bandwidth remains alert-only |
 | Historical Redis socket squatting (A2-5) | Current source places each socket in the account's private `~/.redis`; installed config uses that path and socket/parent modes are 0700; no legacy shared sockets found | Historical finding no longer applies to current implementation |
+| OpenLiteSpeed WebAdmin TLS | Local port 7080 handshake negotiated TLS 1.3 and verified the panel hostname against its trusted certificate | Live verified |
+| Ubuntu package maintenance | Refreshed apt indexes show 324 upgradable packages, 170 with a security-pocket candidate; simulation would upgrade 317 and leave 7 back | Patch assessment and controlled maintenance pending |
 | Panel certificate to FTPS | Live FTP certificate replaced with trusted panel certificate, TLS 1.3/hostname verification passed; renewal/update hooks added | Live verified; source deployment pending |
 | API UID to root daemon | Kernel peer UID checked, but any compromised API process can currently invoke all 412 RPC operations and forge audit actor/role strings | High-risk architecture boundary remains open |
 

@@ -536,7 +536,7 @@ def _db_suffix_from_dump(dump_path: Path, old_username: str | None) -> str:
     return name[:40]
 
 
-_DUMP_DB_CONTEXT_RE = re.compile(r"^\s*(CREATE\s+DATABASE|USE|DROP\s+DATABASE)\b.*;\s*$", re.IGNORECASE)
+_DUMP_DB_CONTEXT_RE = re.compile(r"^\s*(?:CREATE\s+DATABASE|USE|DROP\s+DATABASE)\b[^;]*;", re.IGNORECASE)
 
 
 def _strip_dump_database_context(sql_text: str) -> str:
@@ -556,7 +556,17 @@ def _strip_dump_database_context(sql_text: str) -> str:
     original dump's own header says for normal mysqldump formatting. This
     text filter is a compatibility helper, not a security boundary: the
     import process authenticates as a user granted only the target database."""
-    return "\n".join(line for line in sql_text.splitlines() if not _DUMP_DB_CONTEXT_RE.match(line))
+    cleaned = []
+    for line in sql_text.splitlines():
+        # A dump can put a USE directive and subsequent INSERT on the same
+        # line. Remove only the directive; dropping the whole line would
+        # silently lose imported data. This is compatibility cleanup only;
+        # scoped MariaDB credentials enforce the actual destination boundary.
+        while match := _DUMP_DB_CONTEXT_RE.match(line):
+            line = line[match.end():]
+        if line.strip():
+            cleaned.append(line)
+    return "\n".join(cleaned)
 
 
 def _write_import_mysql_defaults_file(db_user: str, password: str) -> str:

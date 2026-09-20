@@ -199,6 +199,13 @@ def test_strip_dump_database_context_leaves_plain_dump_untouched():
     assert ci._strip_dump_database_context(sql).splitlines() == sql.splitlines()
 
 
+def test_strip_dump_context_preserves_same_line_table_data():
+    sql = "USE `olduser_shop`; INSERT INTO `products` VALUES (1);\n"
+    stripped = ci._strip_dump_database_context(sql)
+    assert "USE `olduser_shop`" not in stripped
+    assert "INSERT INTO `products` VALUES (1);" in stripped
+
+
 def test_import_mysql_dump_strips_context_before_invoking_mysql(tmp_path, monkeypatch):
     dump_path = tmp_path / "olduser_shop.sql"
     dump_path.write_text("CREATE DATABASE `olduser_shop`;\nUSE `olduser_shop`;\nCREATE TABLE t (id INT);\n")
