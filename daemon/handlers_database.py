@@ -8,7 +8,7 @@ from shared.models import Account, DatabaseGrant
 from shared.validation import ValidationError, validate_db_identifier, validate_password_strength, validate_username
 
 from daemon.database_operations import serialized
-from daemon import mariadb
+from daemon import mariadb, resource_limits
 
 
 def _grant_dict(grant: DatabaseGrant) -> dict:
@@ -64,6 +64,7 @@ def create_database(params: dict) -> dict:
         existing = session.scalar(select(DatabaseGrant).where(DatabaseGrant.db_name == db_name))
         if existing is not None:
             raise RuntimeError(f"database '{db_name}' already exists")
+        resource_limits.require_capacity(session, account.id, "database")
 
     if mariadb.database_exists(db_name):
         raise RuntimeError(f"database '{db_name}' already exists in MariaDB")

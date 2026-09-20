@@ -320,6 +320,17 @@ def test_checksum_mismatch_aborts_update(update_env, monkeypatch):
     assert not list((update_env["tmp"] / "dl").glob("*.tar.gz"))
 
 
+def test_update_refuses_writable_staging_directory(update_env, monkeypatch):
+    _mock_github(monkeypatch)
+    staging = update_env["tmp"] / "dl"
+    staging.mkdir(mode=0o700)
+    staging.chmod(0o777)
+    job_id = _make_job()
+    with pytest.raises(updates._StepFailed):
+        updates._download_and_verify(job_id, "1.0.1")
+    assert "mode 0700" in _get_job(job_id)["error"]
+
+
 def test_checksum_malformed_asset_aborts(update_env, monkeypatch):
     _mock_github(monkeypatch, sha256_text="not a checksum at all\n")
     updates.check({"force": True})
@@ -345,6 +356,29 @@ def test_bad_publisher_signature_aborts_before_extraction(update_env, monkeypatc
         updates._download_and_verify(job_id, "1.0.1")
     assert "publisher authentication failed" in _get_job(job_id)["error"]
     assert not list((update_env["tmp"] / "dl").glob("*.tar.gz"))
+
+
+def test_extraction_rechecks_signature_on_the_open_archive(update_env, monkeypatch):
+    _mock_github(monkeypatch)
+    job_id = _make_job()
+    path = updates._download_and_verify(job_id, "1.0.1")
+    # Simulate a pathname replacement after download verification. The
+    # replacement is a well-formed release tarball, but not the signed one.
+    Path(path).write_bytes(_make_tarball_bytes(members_extra={
+        "boron-1.0.1/changed.txt": "unsigned replacement"}))
+    with pytest.raises(updates._StepFailed):
+        updates._extract_staged(job_id, path, "1.0.1", signature_file=path + ".sig")
+    assert "publisher signature is invalid" in _get_job(job_id)["error"]
+    assert not Path(path).exists()
+
+
+def test_signed_archive_extracts_from_verified_handle(update_env, monkeypatch):
+    _mock_github(monkeypatch)
+    job_id = _make_job()
+    path = updates._download_and_verify(job_id, "1.0.1")
+    target = updates._extract_staged(job_id, path, "1.0.1", signature_file=path + ".sig")
+    assert (Path(target) / "version.py").is_file()
+    assert not Path(path + ".sig").exists()
 
 
 def test_signature_is_bound_to_release_version():
@@ -883,7 +917,7 @@ def test_mail_guard_update_gates_version_switch(update_env, tmp_path, monkeypatc
         monkeypatch.setattr(updates, name, lambda *args: None)
     monkeypatch.setattr(updates, '_backup', lambda *args: str(tmp_path / 'backup'))
     monkeypatch.setattr(updates, '_download_and_verify', lambda *args: 'archive')
-    monkeypatch.setattr(updates, '_extract_staged', lambda *args: str(target))
+    monkeypatch.setattr(updates, '_extract_staged', lambda *args, **kwargs: str(target))
     monkeypatch.setattr(updates, '_handoff_to_finalizer', lambda *args: handoffs.append(args))
     def run(args, **kwargs):
         commands.append((args, kwargs))

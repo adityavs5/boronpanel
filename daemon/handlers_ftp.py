@@ -15,7 +15,7 @@ from shared.db import write_session
 from shared.models import Account, FtpAccount
 from shared.validation import ValidationError, validate_db_identifier, validate_password_strength, validate_username
 
-from daemon import ftp
+from daemon import account_mutation, ftp, resource_limits
 from daemon.safeio import secure_mkdirs
 
 MAX_LOGIN_SUFFIX_LEN = 32
@@ -72,6 +72,7 @@ def _row_to_dict(row: FtpAccount, username: str) -> dict:
     }
 
 
+@account_mutation.locked
 def create_ftp_account(params: dict) -> dict:
     username = validate_username(params["username"])
     label = params["label"]
@@ -89,6 +90,7 @@ def create_ftp_account(params: dict) -> dict:
         existing = session.scalar(select(FtpAccount).where(FtpAccount.ftp_login == ftp_login))
         if existing is not None:
             raise RuntimeError(f"FTP account '{ftp_login}' already exists")
+        resource_limits.require_capacity(session, account.id, "ftp")
         account_id = account.id
 
     abs_path = _resolve_path(username, relative_path)

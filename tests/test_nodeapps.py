@@ -14,13 +14,16 @@ from shared.validation import ValidationError
 
 
 @pytest.fixture(autouse=True)
-def fixed_app_env_key(monkeypatch):
+def fixed_app_env_key(monkeypatch, tmp_path):
     """appcrypto.get_key() auto-generates and PERSISTS a key to the real
     /etc/boron/secrets.env on first use if none is already configured
     (daemon/appcrypto.py) -- never acceptable as a side effect of running
     the test suite. Every test in this file gets a fixed in-memory key via
     settings.secrets instead, so encrypt_env/decrypt_env never touch disk."""
     monkeypatch.setitem(nodeapps.appcrypto.settings.secrets, "APP_ENV_KEY", Fernet.generate_key().decode("ascii"))
+    units = tmp_path / "units"
+    units.mkdir()
+    monkeypatch.setattr(nodeapps.appunits, "UNITS_DIR", units)
 
 
 @pytest.fixture()

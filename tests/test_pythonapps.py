@@ -14,8 +14,11 @@ from shared.validation import ValidationError
 
 
 @pytest.fixture(autouse=True)
-def fixed_app_env_key(monkeypatch):
+def fixed_app_env_key(monkeypatch, tmp_path):
     monkeypatch.setitem(pythonapps.appcrypto.settings.secrets, "APP_ENV_KEY", Fernet.generate_key().decode("ascii"))
+    units = tmp_path / "units"
+    units.mkdir()
+    monkeypatch.setattr(pythonapps.appunits, "UNITS_DIR", units)
 
 
 @pytest.fixture()

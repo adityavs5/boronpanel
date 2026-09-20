@@ -22,7 +22,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import autoresponder, dkim, mail, spamfilter
+from daemon import autoresponder, dkim, mail, resource_limits, spamfilter
 from daemon.mail_mutation import serialized
 
 # Bounds for a single mailbox's quota. 100 GB is a generous shared-hosting
@@ -161,6 +161,8 @@ def create_mailbox(params: dict) -> dict:
         )
         if existing is not None:
             raise RuntimeError(f"mailbox '{local_part}@{domain_name}' already exists")
+        if mail_domain.account_id is not None:
+            resource_limits.require_capacity(session, mail_domain.account_id, "mailbox")
         mail_domain_id = mail_domain.id
 
     result = mail.create_mailbox(domain_name, local_part, password, quota_mb=quota_mb)

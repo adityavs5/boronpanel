@@ -43,12 +43,14 @@ only the two panel units restart.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
 import sqlite3
+import stat
 import tarfile
 import tempfile
 import time
@@ -473,7 +475,7 @@ def _run_update_job(job_id: int, to_version: str) -> None:
         tarball = _download_and_verify(job_id, to_version)
 
         # (e) staged extraction ------------------------------------------------
-        new_dir = _extract_staged(job_id, tarball, to_version)
+        new_dir = _extract_staged(job_id, tarball, to_version, signature_file=tarball + ".sig")
 
         # venv for the staged tree (units exec /opt/boron/.venv/... which
         # resolves through the symlink into the new dir after the swap).
@@ -631,7 +633,8 @@ def _safe_download(url: str, dest: str, max_bytes: int) -> int:
                     continue
                 resp.raise_for_status()
                 written = 0
-                with open(dest, "wb") as f:
+                fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as f:
                     for chunk in resp.iter_bytes():
                         written += len(chunk)
                         if written > max_bytes:
@@ -656,6 +659,10 @@ def _download_and_verify(job_id: int, to_version: str) -> str:
 
     download_dir = settings.update_download_dir
     os.makedirs(download_dir, mode=0o700, exist_ok=True)
+    directory_stat = os.lstat(download_dir)
+    if (not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.geteuid()
+            or directory_stat.st_mode & 0o077):
+        _fail_step(job_id, "download", "update staging directory must be owned by the daemon and mode 0700")
     tarball = os.path.join(download_dir, f"boron-{to_version}.tar.gz")
     checksum_file = os.path.join(download_dir, f"boron-{to_version}.sha256")
     signature_file = os.path.join(download_dir, f"boron-{to_version}.tar.gz.sig")
@@ -687,7 +694,7 @@ def _download_and_verify(job_id: int, to_version: str) -> str:
     except (OSError, ValueError) as exc:
         _remove_quietly(tarball, checksum_file, signature_file)
         _fail_step(job_id, "signature", f"publisher authentication failed: {exc}")
-    _remove_quietly(checksum_file, signature_file)
+    _remove_quietly(checksum_file)
     _step(job_id, "signature", "ok", "trusted Ed25519 publisher key")
     return tarball
 
@@ -727,7 +734,7 @@ def validate_tarball_members(tf: tarfile.TarFile, expected_prefix: str, max_tota
             raise ValidationError("tarball declared contents exceed the size cap -- refused")
 
 
-def _extract_staged(job_id: int, tarball: str, to_version: str) -> str:
+def _extract_staged(job_id: int, tarball: str, to_version: str, *, signature_file: str | None = None) -> str:
     prefix = f"boron-{to_version}"
     target = os.path.join(settings.update_versions_root, prefix)
     live_target = _live_target()
@@ -735,11 +742,22 @@ def _extract_staged(job_id: int, tarball: str, to_version: str) -> str:
         _fail_step(job_id, "extract", f"{target} is the live install -- refusing to overwrite")
     tmp_root = None
     try:
-        with tarfile.open(tarball, "r:gz") as tf:
-            validate_tarball_members(tf, prefix, settings.update_max_download_bytes * 4)
-            # Same filesystem as the target so the final rename is atomic.
-            tmp_root = tempfile.mkdtemp(prefix=".boron-extract-", dir=settings.update_versions_root)
-            tf.extractall(tmp_root, filter="data")
+        fd = os.open(tarball, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as archive_file:
+            if signature_file is not None:
+                # Verify the exact open inode that tarfile will extract. A
+                # pathname swap after the download check cannot change these
+                # bytes, closing the old verify-by-path/reopen-by-path race.
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                verify_signature(to_version, digest.digest(), Path(signature_file).read_bytes())
+                archive_file.seek(0)
+            with tarfile.open(fileobj=archive_file, mode="r:gz") as tf:
+                validate_tarball_members(tf, prefix, settings.update_max_download_bytes * 4)
+                # Same filesystem as the target so the final rename is atomic.
+                tmp_root = tempfile.mkdtemp(prefix=".boron-extract-", dir=settings.update_versions_root)
+                tf.extractall(tmp_root, filter="data")
         extracted = os.path.join(tmp_root, prefix)
         if not os.path.isdir(extracted):
             raise ValidationError("tarball did not contain the expected top-level dir")
@@ -748,12 +766,12 @@ def _extract_staged(job_id: int, tarball: str, to_version: str) -> str:
             # staging only (checked above it isn't live), safe to replace.
             shutil.rmtree(target)
         os.rename(extracted, target)
-    except (ValidationError, tarfile.TarError, OSError) as exc:
+    except (ValidationError, ValueError, tarfile.TarError, OSError) as exc:
         _fail_step(job_id, "extract", str(exc))
     finally:
         if tmp_root:
             shutil.rmtree(tmp_root, ignore_errors=True)
-        _remove_quietly(tarball)
+        _remove_quietly(tarball, signature_file) if signature_file else _remove_quietly(tarball)
     _step(job_id, "extract", "ok", target)
     return target
 

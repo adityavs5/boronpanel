@@ -1290,12 +1290,11 @@ class WebhookDelivery(Base):
 
 
 class AccountResourceLimits(Base):
-    """Phase 7b feature 5: alert-facing limits for the resources that have
+    """Per-account limits for the resources that have
     no existing quota column -- disk already has Account.quota_soft_mb/
     quota_hard_mb (Phase a, OS-enforced), reused directly as the "disk"
     resource's 80/90/100% reference rather than duplicated here. A row is
-    created lazily (no row = every *_limit is "not tracked", i.e. that
-    resource is never alerted on for this account) -- matches
+    created lazily (no row = every *_limit is unlimited and untracked) -- matches
     PhpIniOverride's own lazy-row convention."""
 
     __tablename__ = "account_resource_limits"

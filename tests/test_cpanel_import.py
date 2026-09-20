@@ -663,3 +663,25 @@ def test_extract_archive_allows_normal_size(tmp_path):
     extract_dir.mkdir()
     ci._extract_archive(archive_path, extract_dir)
     assert (extract_dir / "homedir" / "index.php").read_bytes() == b"<?php echo 'hi';"
+
+
+def test_extract_archive_bounds_member_count_and_duplicate_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(ci, "MAX_IMPORT_MEMBERS", 2)
+    archive_path = tmp_path / "many.tar"
+    with tarfile.open(archive_path, "w") as tf:
+        for index in range(3):
+            info = tarfile.TarInfo(name=f"homedir/{index}.txt")
+            info.size = 0
+            tf.addfile(info)
+    with pytest.raises(ci.CpanelImportError, match="too many archive members"):
+        ci._extract_archive(archive_path, tmp_path / "many-out")
+
+    monkeypatch.setattr(ci, "MAX_IMPORT_MEMBERS", 200_000)
+    duplicate = tmp_path / "duplicate.tar"
+    with tarfile.open(duplicate, "w") as tf:
+        for _ in range(2):
+            info = tarfile.TarInfo(name="homedir/index.php")
+            info.size = 0
+            tf.addfile(info)
+    with pytest.raises(ci.CpanelImportError, match="duplicate file path"):
+        ci._extract_archive(duplicate, tmp_path / "duplicate-out")

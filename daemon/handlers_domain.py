@@ -20,7 +20,7 @@ from shared.db import write_session
 from shared.models import Account, Domain, DnsZone
 from shared.validation import ValidationError, validate_domain, validate_php_version, validate_protected_dir_relative_path, validate_username
 
-from daemon import dnsprovider, handlers_redirect, lscache, ols, sysops
+from daemon import dnsprovider, handlers_redirect, lscache, ols, resource_limits, sysops
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 
 
@@ -71,6 +71,8 @@ def add_domain(params: dict) -> dict:
         existing = session.scalar(select(Domain).where(Domain.domain == domain_name))
         if existing is not None:
             raise RuntimeError(f"domain '{domain_name}' is already in use")
+        if kind == "subdomain":
+            resource_limits.require_capacity(session, account.id, "subdomain")
 
         owned_rows=session.scalars(select(Domain).where(Domain.account_id==account.id)).all()
         owned_domains=[row.domain for row in owned_rows]

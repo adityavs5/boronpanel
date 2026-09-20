@@ -36,7 +36,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import appcrypto, appunits, ols, safeio
+from daemon import account_mutation, appcrypto, appunits, ols, resource_limits, safeio
 from daemon.portalloc import allocate_port
 from daemon.procutil import run
 
@@ -189,6 +189,7 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, app_typ
     return unit
 
 
+@account_mutation.locked
 def create_app(params: dict) -> dict:
     username = validate_username(params["username"])
     domain_name = validate_domain(params["domain"])
@@ -203,6 +204,7 @@ def create_app(params: dict) -> dict:
         _assert_domain_free(session, domain_name)
         if session.scalar(select(PythonApp).where(PythonApp.account_id == account.id, PythonApp.name == name)) is not None:
             raise RuntimeError(f"app name '{name}' already exists for account '{username}'")
+        resource_limits.require_capacity(session, account.id, "app")
 
         port = allocate_port(session)
         row = PythonApp(

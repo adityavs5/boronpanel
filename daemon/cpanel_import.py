@@ -82,6 +82,9 @@ logger = logging.getLogger("borond.cpanel_import")
 _executor = ThreadPoolExecutor(max_workers=settings.cpanel_import_concurrency, thread_name_prefix="cpanel-import")
 
 MAX_RESULTS_DETAIL_LEN = 500
+MAX_IMPORT_MEMBERS = 200_000
+MAX_IMPORT_PATH_DEPTH = 64
+MAX_IMPORT_PATH_BYTES = 2048
 
 
 class CpanelImportError(Exception):
@@ -269,8 +272,19 @@ def _extract_archive(archive_path: Path, extract_dir: Path) -> None:
             # decompress the member data.
             max_bytes = settings.cpanel_import_max_extracted_bytes
             total = 0
-            for member in tf.getmembers():
+            count = 0
+            file_names: set[str] = set()
+            for member in tf:
+                count += 1
+                if count > MAX_IMPORT_MEMBERS:
+                    raise CpanelImportError("backup contains too many archive members")
+                if (len(member.name.encode("utf-8", errors="replace")) > MAX_IMPORT_PATH_BYTES
+                        or len(Path(member.name).parts) > MAX_IMPORT_PATH_DEPTH):
+                    raise CpanelImportError("backup contains an excessively long or deep path")
                 if member.isreg():
+                    if member.name in file_names:
+                        raise CpanelImportError("backup contains a duplicate file path")
+                    file_names.add(member.name)
                     total += member.size
                     if total > max_bytes:
                         raise CpanelImportError(

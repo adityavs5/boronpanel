@@ -19,8 +19,10 @@ underlying root handler enforces account ownership.
 | Customer database user to other databases | Legacy grant wildcard reproduced against temporary MariaDB databases; 10 existing broad grants repaired and verified | Live repaired; source/upgrade code pending deployment |
 | Imported cPanel SQL to MariaDB | Import now uses the newly created database's scoped user, with local file loading disabled; negative tests | Source fixed, deployment pending |
 | External IMAP to root migration worker | Validated public IP is passed directly to imapsync; original hostname used for SNI/certificate verification; plaintext disabled; 21 focused tests | Source fixed; controlled TLS integration pending |
-| GitHub asset to root updater | Ed25519 publisher signature bound to version and digest; missing/wrong signatures rejected in unit tests | Source fixed; trust bootstrap and artifact acceptance pending |
+| GitHub asset to root updater | Ed25519 publisher signature bound to version and digest; extraction verifies the exact open file handle again; missing/wrong/swapped archives rejected in unit tests | Source fixed; trust bootstrap and artifact acceptance pending |
 | Global spam Sieve write to mail service | Config transaction restores previous script after compile/reload failure; regression test | Source fixed, deployment pending |
+| Plan count limits | Database, subdomain, FTP, mailbox and combined Node/Python app creation reject at-cap accounts in root handlers; focused negative test | Source fixed, deployment pending; bandwidth remains alert-only |
+| Historical Redis socket squatting (A2-5) | Current source places each socket in the account's private `~/.redis`; installed config uses that path and socket/parent modes are 0700; no legacy shared sockets found | Historical finding no longer applies to current implementation |
 | Panel certificate to FTPS | Live FTP certificate replaced with trusted panel certificate, TLS 1.3/hostname verification passed; renewal/update hooks added | Live verified; source deployment pending |
 | API UID to root daemon | Kernel peer UID checked, but any compromised API process can currently invoke all 412 RPC operations and forge audit actor/role strings | High-risk architecture boundary remains open |
 
@@ -48,3 +50,7 @@ fresh-install/upgrade/rollback drills, and browser security checks are still
 required for the plan's completion standard. The online npm advisory request
 was rejected by automatic approval review; the offline npm audit found no
 cached advisories and cannot stand in for a current advisory check.
+
+The broader existing handler suite includes tests that write service files
+under `/etc/systemd/system` and certificate paths. Those fail under this
+sandbox's read-only host mounts; they require the isolated full-system lab.
