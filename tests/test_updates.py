@@ -1005,6 +1005,28 @@ def test_update_runs_staged_database_grant_repair(update_env, tmp_path, monkeypa
     assert kwargs == {'cwd': str(target), 'timeout': 120.0}
 
 
+def test_update_requires_staged_litespeed_repo_reconciliation(update_env, tmp_path, monkeypatch):
+    from daemon.procutil import ProcResult
+    target = tmp_path / 'staged'
+    script = target / 'scripts/reconcile_litespeed_repo.py'
+    script.parent.mkdir(parents=True)
+    script.touch()
+    backup = tmp_path / 'backup'
+    backup.mkdir()
+    job_id = _make_job()
+    commands = []
+    monkeypatch.setattr(updates, 'run', lambda args, **kwargs: (
+        commands.append((args, kwargs)) or
+        ProcResult(args=args, returncode=1, stdout='', stderr='private diagnostic')))
+    with pytest.raises(updates._StepFailed):
+        updates._install_litespeed_repo_trust(job_id, str(target), str(backup))
+    assert commands == [(['/usr/bin/python3', str(script), '--backup-dir', str(backup)],
+                         {'timeout': 360})]
+    row = _get_job(job_id)
+    assert row['status'] == 'failed'
+    assert 'private diagnostic' not in row['error']
+
+
 def test_update_blocks_version_switch_when_ols_reconciliation_fails(update_env, tmp_path, monkeypatch):
     from daemon.procutil import ProcResult
     target = tmp_path / 'staged'

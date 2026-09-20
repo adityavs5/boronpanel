@@ -60,7 +60,15 @@ limits 1; Node 22, Python 16, FTP 13, database/mail 39, domain 26
 The installer no longer pipes LiteSpeed's changing repo setup script to
 root; it ships a verified public key scoped to a HTTPS APT source. The
 bundled key verified the signed Noble Release cached on this host; installer
-tests passed (8), but a fresh install is still pending. Backup/portable
+tests passed (8). The installed server was migrated from the historical HTTP
+source and globally trusted keys to the HTTPS `signed-by` source. An isolated
+APT-source refresh passed first, then a normal `apt-get update -qq` passed;
+`openlitespeed` retained its installed/candidate 1.9.2 Noble package. No
+packages were upgraded. Original APT source/key files are protected under
+`baseline/*.before-scoped-trust`. The staged updater now runs a fail-closed,
+backed-up reconciliation before version switch; five focused tests cover the
+script, inventory, and update failure gate. A fresh install remains pending.
+Backup/portable
 archive tests passed (67), app-installer tests passed (18), and the updater
 suite passed (70) after the latest changes. Archive member and expansion
 limits now cover nested portable backups and app release packages. A full
@@ -87,8 +95,11 @@ Important pending work, in risk order:
    migration and tests; implementation is still open.
 2. Complete per-route/per-RPC resource and role review and async job
    continuation checks; 10 deliberately public routes now have an exact
-   inventory test and reviewed status, while 832 entries remain pending.
-   Add scheduled/helper/listener inventory and ASVS/WSTG map.
+   inventory test and reviewed status. Source inventory now includes cron,
+    static and generated services, shell/Python scripts and a native helper: 895
+   total entries, 885 pending. A protected read-only live snapshot records
+   59 listener rows, 208 services and 25 timers. Add listener-policy review,
+   asynchronous job continuations and ASVS/WSTG map.
 3. Build an isolated full-system Ubuntu test environment. This sandbox
    denies namespaces, service sockets and systemd, so host isolation and
    real TLS/mail/installer/upgrade tests cannot be claimed here.

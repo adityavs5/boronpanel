@@ -37,6 +37,7 @@ def _source(value) -> str:
 
 def inventory_rows() -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
+    repo_root = Path(__file__).resolve().parent.parent
     for item in app.routes:
         contexts = item.effective_route_contexts() if isinstance(item, _IncludedRouter) else [item]
         for route in contexts:
@@ -69,6 +70,63 @@ def inventory_rows() -> list[dict[str, str]]:
             "review_status": "pending",
             "test_evidence": "",
         })
+    # Root processes and scheduled entry points bypass HTTP entirely. Keep
+    # them in the same worklist as routes/RPCs rather than treating OpenAPI
+    # coverage as whole-panel coverage.
+    for unit in sorted((repo_root / "deploy").glob("*.service")):
+        content = unit.read_text().splitlines()
+        user = next((line.split("=", 1)[1] for line in content if line.startswith("User=")), "root")
+        command = next((line.split("=", 1)[1] for line in content if line.startswith("ExecStart=")), "")
+        rows.append({
+            "kind": "service", "name": unit.name, "source": str(unit.relative_to(repo_root)),
+            "handler": command, "auth_dependencies": f"systemd user={user}",
+            "review_status": "pending", "test_evidence": "",
+        })
+    for cron in sorted((repo_root / "deploy").glob("*.cron")):
+        for line_number, line in enumerate(cron.read_text().splitlines(), 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = stripped.split(None, 6)
+            if len(parts) != 7:
+                raise ValueError(f"Invalid cron entry at {cron}:{line_number}")
+            rows.append({
+                "kind": "cron", "name": f"{cron.name}:{line_number}",
+                "source": str(cron.relative_to(repo_root)), "handler": parts[6],
+                "auth_dependencies": f"cron user={parts[5]}",
+                "review_status": "pending", "test_evidence": "",
+            })
+    for script in sorted((repo_root / "scripts").glob("*.sh")):
+        rows.append({
+            "kind": "shell-script", "name": script.name,
+            "source": str(script.relative_to(repo_root)), "handler": script.name,
+            "auth_dependencies": "invocation and effective UID pending review",
+            "review_status": "pending", "test_evidence": "",
+        })
+    for script in sorted((repo_root / "scripts").glob("*.py")):
+        rows.append({
+            "kind": "python-script", "name": script.name,
+            "source": str(script.relative_to(repo_root)), "handler": script.name,
+            "auth_dependencies": "invocation and effective UID pending review",
+            "review_status": "pending", "test_evidence": "",
+        })
+    for helper in sorted((repo_root / "daemon").glob("*.c")):
+        rows.append({
+            "kind": "native-helper", "name": helper.name,
+            "source": str(helper.relative_to(repo_root)), "handler": helper.name,
+            "auth_dependencies": "setuid/capabilities and caller pending review",
+            "review_status": "pending", "test_evidence": "",
+        })
+    for label, source in (
+        ("per-account Node.js unit", "daemon/nodeapps.py"),
+        ("per-account Python unit", "daemon/pythonapps.py"),
+        ("per-account Redis unit", "daemon/redisacct.py"),
+    ):
+        rows.append({
+            "kind": "dynamic-service", "name": label, "source": source,
+            "handler": "generated systemd unit", "auth_dependencies": "account owner and unit template pending review",
+            "review_status": "pending", "test_evidence": "",
+        })
     return sorted(rows, key=lambda row: (row["kind"], row["name"], row["source"]))
 
 
@@ -80,8 +138,8 @@ def main() -> None:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
-    print(f"Inventoried {sum(r['kind'] == 'route' for r in rows)} routes and "
-          f"{sum(r['kind'] == 'rpc' for r in rows)} RPC operations.")
+    counts = {kind: sum(row["kind"] == kind for row in rows) for kind in sorted({row["kind"] for row in rows})}
+    print("Inventoried " + ", ".join(f"{count} {kind}" for kind, count in counts.items()) + ".")
 
 
 if __name__ == "__main__":

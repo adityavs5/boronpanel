@@ -483,6 +483,7 @@ def _run_update_job(job_id: int, to_version: str) -> None:
 
         # (f) migrations from the NEW version against the live DB --------------
         _run_migrations(job_id, new_dir)
+        _install_litespeed_repo_trust(job_id, new_dir, backup_dir)
         _install_db_grant_fix(job_id, new_dir, backup_dir)
         _install_mail_guard(job_id, new_dir)
         _install_ols_webadmin_integration(job_id, new_dir)
@@ -845,6 +846,21 @@ def _install_db_grant_fix(job_id: int, new_dir: str, backup_dir: str) -> None:
     if result.returncode != 0:
         _fail_step(job_id, "db-grants", "database grant reconciliation failed; panel version was not switched")
     _step(job_id, "db-grants", "ok")
+
+
+def _install_litespeed_repo_trust(job_id: int, new_dir: str, backup_dir: str) -> None:
+    """Apply the staged release's scoped APT source before activation."""
+    script = Path(new_dir, "scripts/reconcile_litespeed_repo.py")
+    if not script.is_file():
+        return
+    _step(job_id, "litespeed-repo", "running", "Scoping LiteSpeed APT repository trust")
+    result = run(
+        ["/usr/bin/python3", str(script), "--backup-dir", backup_dir],
+        timeout=360,
+    )
+    if result.returncode:
+        _fail_step(job_id, "litespeed-repo", "LiteSpeed APT repository reconciliation failed")
+    _step(job_id, "litespeed-repo", "ok")
 
 
 def _install_mail_guard(job_id: int, new_dir: str) -> None:
