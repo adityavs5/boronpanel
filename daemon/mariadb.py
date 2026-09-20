@@ -145,15 +145,10 @@ HOSTED_DB_PRIVILEGES = (
 
 
 def grant_all(db_name: str, db_user: str, host: str = "localhost") -> None:
-    db_ident = _quote_ident(db_name)
-    validate_db_identifier(db_user)
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"GRANT {HOSTED_DB_PRIVILEGES} ON {db_ident}.* TO '{db_user}'@'{host}'")
-            cur.execute("FLUSH PRIVILEGES")
-    finally:
-        conn.close()
+    # Database-level GRANT patterns treat `_` and `%` as wildcards even in
+    # backticks. All hosted database names contain an underscore, so the
+    # general identifier quoter is insufficient for an authorization grant.
+    grant_exact_database(db_name, db_user, host)
 
 
 def grant_exact_database(db_name: str, db_user: str, host: str = "localhost") -> None:
@@ -167,6 +162,7 @@ def grant_exact_database(db_name: str, db_user: str, host: str = "localhost") ->
     try:
         with conn.cursor() as cur:
             cur.execute(f"GRANT {HOSTED_DB_PRIVILEGES} ON {db_ident}.* TO '{db_user}'@'localhost'")
+            cur.execute("FLUSH PRIVILEGES")
     finally:
         conn.close()
 

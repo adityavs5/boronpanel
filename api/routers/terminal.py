@@ -75,6 +75,19 @@ def _ws_identity(websocket: WebSocket) -> Identity | None:
     return _identity_from_session_cookie(cookie)
 
 
+def _same_origin(websocket: WebSocket) -> bool:
+    """A browser terminal may only be opened by this panel's own origin.
+
+    WebSocket handshakes carry cookies, so a hostile page on a sibling hosted
+    domain could otherwise drive an authenticated customer's shell. Browsers
+    always send Origin for WebSockets; absence fails closed as well.
+    """
+    origin = websocket.headers.get("origin")
+    scheme = "https" if websocket.url.scheme == "wss" else "http"
+    expected = f"{scheme}://{websocket.url.netloc}"
+    return origin == expected
+
+
 def _authorized(identity: Identity, username: str) -> bool:
     """Admin may open a terminal for any account; a customer only for their own.
     Either way the SSH login is as the account user, never root."""
@@ -128,6 +141,9 @@ def _read_chan(chan) -> str | None:
 
 @router.websocket("/ws/accounts/{username}/terminal")
 async def terminal_ws(websocket: WebSocket, username: str):
+    if not _same_origin(websocket):
+        await websocket.close(code=4403)
+        return
     identity = _ws_identity(websocket)
     if identity is None:
         await websocket.close(code=4401)  # unauthenticated

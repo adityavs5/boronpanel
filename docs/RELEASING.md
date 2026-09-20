@@ -3,8 +3,8 @@
 Boron ships as **versioned release tarballs attached to GitHub
 releases**. Production servers never `git pull` — they consume these
 tarballs through the panel's built-in update system (or an operator
-downloads one manually), and the SHA256 checksum is verified before a
-single byte is extracted.
+downloads one manually). The pinned Ed25519 publisher signature and SHA256
+checksum are verified before a single byte is extracted.
 
 ## The artifacts
 
@@ -14,7 +14,7 @@ Every release `vX.Y.Z` carries:
 |---|---|
 | `boron-X.Y.Z.tar.gz` | The deployable tree: `api/`, `daemon/`, `shared/`, `scripts/`, `deploy/`, `templates/`, `static/` (with the **freshly built** SPA bundle in `static/dist`), `tests/` (used by the updater's pre-flight), `docs/`, `version.py`, `requirements.txt`, `pytest.ini`, `README.md` — all under a single `boron-X.Y.Z/` top-level directory. |
 | `boron-X.Y.Z.sha256` | `sha256sum` output for the tarball. The update daemon aborts on any mismatch. |
-| `boron-X.Y.Z.tar.gz.asc` | Detached ASCII-armored GPG signature — present only when the release machine has a GPG secret key. |
+| `boron-X.Y.Z.tar.gz.sig` | Mandatory detached Ed25519 signature over the release version and archive SHA256 digest. |
 
 What is **never** in the tarball, by construction: the tarball is built
 from `git archive HEAD` (tracked files only), so `secrets.env`,
@@ -32,8 +32,11 @@ ships); everything else tracked in git is included.
 - [`gh`](https://cli.github.com/) installed and authenticated
   (`gh auth login`) with permission to create releases.
 - Node 18+ / npm (frontend build) and the repo `.venv` (test suite).
-- Optional: a GPG secret key if you want signed tarballs. Verify with
-  `gpg --list-secret-keys`.
+- Set `BORON_RELEASE_SIGNING_KEY_FILE` to the protected Ed25519 private PEM
+  matching `deploy/release-ed25519-public.hex`. The private PEM must never
+  enter Git, release archives, backups shipped with the panel, or logs. Keep
+  a protected off-host recovery copy; loss of the key requires an explicit
+  operator-managed trust-key migration.
 
 ## Cutting a release
 
@@ -68,9 +71,9 @@ A real run, in order:
 6. **Artifacts** — deterministic-ish tarball (sorted members, root
    ownership) into `dist/` (gitignored; override with `--output-dir`),
    plus the `.sha256`.
-7. **Sign** — detached GPG signature if a secret key exists; skipped
-   (loudly) otherwise.
-8. **Self-verify** — `sha256sum -c`, no members outside the version
+7. **Sign** — mandatory detached Ed25519 signature, bound to version and
+   digest; aborts if the private key is missing or mismatched.
+8. **Self-verify** — Ed25519 signature and `sha256sum -c`, no members outside the version
    prefix, no absolute/`..` paths, packaged `version.py` matches, runtime
    essentials present. These mirror the checks the update daemon runs.
 9. **Publish** — commit `release: vX.Y.Z`, annotated tag `vX.Y.Z`, push,
@@ -78,9 +81,9 @@ A real run, in order:
 
 ## Flags you should rarely use
 
-- `--skip-tests` / `--skip-build` — CI/debug escape hatches (used by
-  `tests/test_release.py`, which can't run pytest inside pytest). A real
-  release must never use them.
+- `--skip-tests` / `--skip-build` — local dry-run debugging only (used by
+  `tests/test_release.py`, which can't run pytest inside pytest). The release
+  command rejects either flag for a published release.
 - `--output-dir DIR` — relocate artifacts (default `dist/`).
 
 ## How production consumes a release
@@ -91,7 +94,8 @@ from `update_github_repo` in `/etc/boron/boron.toml`), compares
 `tag_name` against the running `version.py`, and surfaces "update
 available" in the admin UI. The one-click update job downloads the tarball
 **only** from `https://github.com/OWNER/REPO/releases/download/...`,
-verifies the SHA256 against the `.sha256` asset before extraction,
+verifies the pinned publisher signature and SHA256 against the `.sha256`
+asset before extraction,
 validates every tarball member against path traversal, stages into
 `/opt/boron-X.Y.Z/`, and atomically swaps the `/opt/boron`
 symlink. See the update-system checkpoints in `docs/` for the full design.
@@ -110,7 +114,7 @@ full live preflight.
 - **"working tree is dirty"** — commit or stash; the tarball ships `HEAD`.
 - **"no 'origin' remote"** — `git remote add origin git@github.com:OWNER/REPO.git`
   or pass `--repo OWNER/REPO`.
-- **GPG signing skipped** — informational; add a secret key to the release
-  machine if you want signed artifacts.
+- **Signing key missing or mismatched** — provide the correct protected PEM
+  through `BORON_RELEASE_SIGNING_KEY_FILE`; unsigned publication is refused.
 - A failed release run reverts the version bump and removes its temp
   staging dir; artifacts already written to `dist/` are safe to delete.

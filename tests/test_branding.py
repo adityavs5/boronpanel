@@ -19,6 +19,13 @@ SVG_BYTES = b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><rect
 SVG_WITH_SCRIPT = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
 
 
+@pytest.fixture(autouse=True)
+def _avoid_host_ownership_changes(monkeypatch):
+    # Upload tests use tmp_path; changing its real group is unnecessary and
+    # may be disallowed in a restricted test sandbox.
+    monkeypatch.setattr(branding, "_grant_api_group_read", lambda _path: None)
+
+
 def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
@@ -136,6 +143,32 @@ def test_upload_logo_accepts_plain_svg_with_harmless_entities(isolated_db, tmp_p
     monkeypatch.setattr(branding.settings, "branding_dir", str(tmp_path))
     result = branding.upload_logo({"image_base64": _b64(svg)})
     assert result["has_logo"] is True
+
+
+@pytest.mark.parametrize("svg", [
+    b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>',
+    b'<svg xmlns="http://www.w3.org/2000/svg"><a href="https://example.org"><rect/></a></svg>',
+    b'<svg xmlns="http://www.w3.org/2000/svg"><rect style="fill:url(https://example.org/x)"/></svg>',
+    b'<svg xmlns="http://www.w3.org/2000/svg"><image href="data:text/html,attack"/></svg>',
+    b'<svg xmlns="http://www.w3.org/2000/svg"><rect fill="url(https://example.org/x)"/></svg>',
+    b'<!DOCTYPE svg [<!ENTITY x "attack">]><svg xmlns="http://www.w3.org/2000/svg"><title>&x;</title></svg>',
+    b'<svg xmlns="http://www.w3.org/2000/svg"><g xmlns="http://www.w3.org/1999/xhtml"><script/></g></svg>',
+])
+def test_upload_logo_rejects_non_drawing_svg(isolated_db, tmp_path, monkeypatch, svg):
+    monkeypatch.setattr(branding.settings, "branding_dir", str(tmp_path))
+    with pytest.raises(Exception):
+        branding.upload_logo({"image_base64": _b64(svg)})
+    assert not list(tmp_path.glob("logo.*"))
+
+
+def test_upload_logo_serializes_safe_svg(isolated_db, tmp_path, monkeypatch):
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><title>Acme &amp; Co</title><rect fill="#123456" width="20" height="10"/></svg>'
+    monkeypatch.setattr(branding.settings, "branding_dir", str(tmp_path))
+    branding.upload_logo({"image_base64": _b64(svg)})
+    stored = (tmp_path / "logo.svg").read_bytes()
+    assert b"Acme &amp; Co" in stored
+    assert b"<rect" in stored
+    assert b"<!" not in stored
 
 
 def test_upload_logo_rejects_ico(isolated_db, tmp_path, monkeypatch):

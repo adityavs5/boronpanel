@@ -213,13 +213,36 @@ def test_import_mysql_dump_strips_context_before_invoking_mysql(tmp_path, monkey
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(ci, "run", fake_run)
-    monkeypatch.setattr(ci, "_write_mysql_defaults_file", lambda: str(tmp_path / "fake.cnf"))
-    (tmp_path / "fake.cnf").write_text("[client]\n")
-
-    ci._import_mysql_dump("newuser_shop", dump_path)
+    ci._import_mysql_dump("newuser_shop", dump_path, "newuser_shop", "scoped-secret")
     assert "newuser_shop" in captured["args"]
+    assert "--local-infile=0" in captured["args"]
+    assert "scoped-secret" not in captured["args"]
     assert "CREATE DATABASE" not in captured["input_text"]
     assert "USE `olduser_shop`" not in captured["input_text"]
+
+
+def test_import_mysql_dump_never_runs_as_panel_admin(monkeypatch, tmp_path):
+    from daemon.procutil import ProcResult
+
+    dump_path = tmp_path / "source.sql"
+    dump_path.write_text("SELECT 1; USE other_database; INSERT INTO t VALUES (1);\n")
+    observed = {}
+
+    def fake_run(args, input_text=None, timeout=None):
+        cnf_path = args[1].split("=", 1)[1]
+        observed["config"] = Path(cnf_path).read_text()
+        observed["mode"] = Path(cnf_path).stat().st_mode & 0o777
+        observed["sql"] = input_text
+        return ProcResult(args=args, returncode=1, stdout="", stderr="secret from dump")
+
+    monkeypatch.setattr(ci, "run", fake_run)
+    with pytest.raises(ci.CpanelImportError, match="mysql import failed") as exc:
+        ci._import_mysql_dump("demo1_shop", dump_path, "demo1_shop", "scoped-secret")
+    assert "user=\"demo1_shop\"" in observed["config"]
+    assert "password=\"scoped-secret\"" in observed["config"]
+    assert observed["mode"] == 0o600
+    assert "USE other_database" in observed["sql"]
+    assert "secret from dump" not in str(exc.value)
 
 
 # --- BIND zone file parsing (real dnspython parse, no mocking) --------------

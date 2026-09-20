@@ -903,10 +903,7 @@ function ImapMigrateTab({ username, domain }) {
                     <Input type="password" value={form.source_password} onChange={(e) => setForm((f) => ({ ...f, source_password: e.target.value }))} />
                   </FormField>
                 </div>
-                <div className="mt-3 flex items-center gap-2">
-                  <Switch checked={form.source_ssl} onCheckedChange={(v) => setForm((f) => ({ ...f, source_ssl: v }))} />
-                  <span className="text-sm text-muted-foreground">Use SSL/TLS to connect to the source server</span>
-                </div>
+                <p className="mt-3 text-sm text-muted-foreground">A verified TLS connection is required. Use port 993 for IMAPS or port 143 for STARTTLS.</p>
               </div>
               {folders !== null && (
                 <FormField label={`Folders to migrate (${selectedFolders.size}/${folders.length} selected)`}>

@@ -29,31 +29,38 @@ def test_certificate_hostname_validity_and_key_pair():
     with pytest.raises(ValueError,match='valid'):hook.validate_pair('panel.example',*pair(expired=True))
 
 
-def test_failed_listener_verification_restores_previous_pair(tmp_path,monkeypatch):
+@pytest.mark.parametrize('failed_listener',['panel','ftp'])
+def test_failed_listener_verification_restores_previous_pair(tmp_path,monkeypatch,failed_listener):
     root=tmp_path/'live';source=root/'panel.example';source.mkdir(parents=True)
     cert,key=pair();(source/'fullchain.pem').write_bytes(cert);(source/'privkey.pem').write_bytes(key)
     destination=tmp_path/'api';destination.mkdir()
     (destination/'panel.crt').write_bytes(b'old certificate');(destination/'panel.key').write_bytes(b'old key')
     ols_destination=tmp_path/'ols';ols_destination.mkdir()
     (ols_destination/'webadmin.crt').write_bytes(b'old OLS certificate');(ols_destination/'webadmin.key').write_bytes(b'old OLS key')
+    ftp_destination=tmp_path/'pure-ftpd.pem';ftp_destination.write_bytes(b'old FTP certificate')
     monkeypatch.setattr(hook,'LINEAGE_ROOT',root);monkeypatch.setattr(hook,'TLS_DIRECTORY',destination)
     monkeypatch.setattr(hook,'OLS_ADMIN_DIRECTORY',ols_destination)
+    monkeypatch.setattr(hook,'FTP_CERT_PATH',ftp_destination)
     monkeypatch.setattr(hook.grp,'getgrnam',lambda name:SimpleNamespace(gr_gid=os.getgid()))
     monkeypatch.setattr(hook.pwd,'getpwnam',lambda name:SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid()))
     monkeypatch.setattr(hook.os,'fchown',lambda *args:None)
     calls=[];monkeypatch.setattr(hook.subprocess,'run',lambda argv,**kwargs:calls.append(argv))
     def fail(*args):raise RuntimeError('listener failed')
-    monkeypatch.setattr(hook,'_wait_for_certificate',fail)
+    monkeypatch.setattr(hook,'_wait_for_certificate',fail if failed_listener=='panel' else lambda *_:None)
+    monkeypatch.setattr(hook,'_wait_for_ftps_certificate',fail if failed_listener=='ftp' else lambda *_:None)
     with pytest.raises(RuntimeError,match='listener failed'):hook.deploy('panel.example',source)
     assert (destination/'panel.crt').read_bytes()==b'old certificate'
     assert (destination/'panel.key').read_bytes()==b'old key'
     assert (ols_destination/'webadmin.crt').read_bytes()==b'old OLS certificate'
     assert (ols_destination/'webadmin.key').read_bytes()==b'old OLS key'
+    assert ftp_destination.read_bytes()==b'old FTP certificate'
     assert [call for call in calls if 'restart' in call]==[
         ['systemctl','restart','boron-api.service'],
         ['systemctl','restart','lshttpd.service'],
+        ['systemctl','restart','pure-ftpd.service'],
         ['systemctl','restart','boron-api.service'],
         ['systemctl','restart','lshttpd.service'],
+        ['systemctl','restart','pure-ftpd.service'],
     ]
     assert not list(destination.glob('.panel-tls-*'))
     assert not list(ols_destination.glob('.panel-tls-*'))
@@ -93,6 +100,35 @@ def test_certificate_verification_checks_both_ports(tmp_path,monkeypatch):
     monkeypatch.setattr(hook.ssl,'SSLContext',lambda protocol:context)
     hook._wait_for_certificate('panel.example',cert)
     assert {address[1] for address in connections}=={2222,3333,7080}
+
+
+@pytest.mark.parametrize('verify_fails',[False,True])
+def test_ftps_reconciliation_is_atomic_and_recovers(tmp_path,monkeypatch,verify_fails):
+    from scripts import reconcile_ftps_tls
+    cert,key=pair()
+    panel=tmp_path/'api';panel.mkdir()
+    (panel/'panel.crt').write_bytes(cert);(panel/'panel.key').write_bytes(key)
+    ftp=tmp_path/'pure-ftpd.pem';ftp.write_bytes(b'old FTP certificate')
+    monkeypatch.setattr(hook,'TLS_DIRECTORY',panel)
+    monkeypatch.setattr(hook,'FTP_CERT_PATH',ftp)
+    monkeypatch.setattr(hook.os,'fchown',lambda *args:None)
+    calls=[]
+    monkeypatch.setattr(reconcile_ftps_tls.subprocess,'run',lambda argv,**kwargs:calls.append(argv))
+    if verify_fails:
+        monkeypatch.setattr(hook,'_wait_for_ftps_certificate',lambda *_:(_ for _ in ()).throw(RuntimeError('bad FTP cert')))
+        with pytest.raises(RuntimeError,match='bad FTP cert'):
+            reconcile_ftps_tls.reconcile('panel.example')
+        assert ftp.read_bytes()==b'old FTP certificate'
+        assert [call for call in calls if 'restart' in call]==[
+            ['systemctl','restart','pure-ftpd.service'],
+            ['systemctl','restart','pure-ftpd.service'],
+        ]
+    else:
+        monkeypatch.setattr(hook,'_wait_for_ftps_certificate',lambda *_:None)
+        assert reconcile_ftps_tls.reconcile('panel.example') is True
+        assert ftp.read_bytes()==cert+b'\n'+key
+        assert reconcile_ftps_tls.reconcile('panel.example') is False
+        assert [call for call in calls if 'restart' in call]==[['systemctl','restart','pure-ftpd.service']]
 
 
 def test_challenge_owner_is_dedicated_non_login_service(monkeypatch):

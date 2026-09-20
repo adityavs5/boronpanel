@@ -10,11 +10,11 @@
 # Pipeline: bump version.py -> run test suite -> build React frontend ->
 # stage tracked files only (git archive; secrets/DB/logs are untracked by
 # construction) -> tarball boron-{version}.tar.gz + SHA256 checksum ->
-# GPG-sign if a secret key exists -> git commit + tag + push + gh release.
+# Ed25519-sign with the pinned publisher key -> git commit + tag + push + gh release.
 #
 # Production servers NEVER git-pull: they consume these tarballs through the
-# panel's update system (daemon/updates.py), which verifies the SHA256
-# before extracting anything.
+# panel's update system (daemon/updates.py), which verifies the SHA256 and
+# publisher signature before extracting anything.
 
 set -euo pipefail
 
@@ -67,13 +67,13 @@ Usage: scripts/release.sh [OPTIONS] [NEW_VERSION]
   --repo OWNER/REPO  GitHub repository for the release (default: derived
                      from the 'origin' remote, or \$FH_RELEASE_REPO).
   --output-dir DIR   Where artifacts land (default: dist/ in the repo).
-  --skip-tests       Skip the test suite (CI/debug escape hatch -- a real
-                     release must never use this).
-  --skip-build       Reuse the existing static/dist instead of rebuilding.
+  --skip-tests       Skip tests only for a local dry-run (debugging).
+  --skip-build       Reuse static/dist only for a local dry-run (debugging).
   -h, --help         Show this help.
 
-Artifacts: boron-{version}.tar.gz, boron-{version}.sha256, and
-boron-{version}.tar.gz.asc when a GPG secret key is available.
+Artifacts: boron-{version}.tar.gz, boron-{version}.sha256, and the
+mandatory boron-{version}.tar.gz.sig Ed25519 publisher signature.
+Set BORON_RELEASE_SIGNING_KEY_FILE to the protected private PEM path.
 EOF
 }
 
@@ -156,6 +156,9 @@ preflight() {
     fi
 
     if ! $DRY_RUN; then
+        if $SKIP_TESTS || $SKIP_BUILD; then
+            die "published releases require both the full test suite and a fresh frontend build"
+        fi
         require_tool gh
         gh auth status >/dev/null 2>&1 || die "gh is not authenticated (run: gh auth login)"
         if [[ -z "$GITHUB_REPO" ]]; then
@@ -283,23 +286,13 @@ build_artifacts() {
 
 sign_artifacts() {
     local version="$1"
-    if ! command -v gpg >/dev/null 2>&1; then
-        skip "GPG signing (gpg not installed)"
-        return
-    fi
-    if ! gpg --list-secret-keys 2>/dev/null | grep -q '^sec'; then
-        skip "GPG signing (no secret key available)"
-        return
-    fi
-    info "GPG-signing tarball"
-    rm -f "${TARBALL}.asc"
-    if gpg --batch --yes --armor --detach-sign --output "${TARBALL}.asc" "$TARBALL"; then
-        ok "signed: boron-${version}.tar.gz.asc"
-    else
-        # A signature is an optional extra; a locked key must not block a release.
-        warn "GPG signing failed (locked/no-pinentry key?) -- continuing unsigned"
-        rm -f "${TARBALL}.asc"
-    fi
+    local signing_key="${BORON_RELEASE_SIGNING_KEY_FILE:-}"
+    [[ -n "$signing_key" && -f "$signing_key" ]] \
+        || die "BORON_RELEASE_SIGNING_KEY_FILE must name the protected Ed25519 private key"
+    info "Signing release with the pinned Ed25519 publisher key"
+    (cd "$REPO_ROOT" && "$PY" -m scripts.sign_release "$version" "$TARBALL" "$signing_key") \
+        || die "publisher signature failed -- refusing unsigned release"
+    ok "signed: boron-${version}.tar.gz.sig"
 }
 
 verify_artifacts() {
@@ -307,6 +300,14 @@ verify_artifacts() {
     info "Self-verifying artifacts (the same checks the updater will run)"
     (cd "$OUT_DIR" && sha256sum -c "boron-${version}.sha256" >/dev/null) \
         || die "checksum self-verification failed"
+    (cd "$REPO_ROOT" && "$PY" - "$version" "$TARBALL" <<'PYEOF'
+import sys
+from pathlib import Path
+from shared.release_signature import archive_digest, verify_signature
+version, path = sys.argv[1:]
+verify_signature(version, archive_digest(path), Path(path + ".sig").read_bytes())
+PYEOF
+    ) || die "publisher signature self-verification failed"
     # Every member must live under the version prefix with no traversal --
     # the update daemon rejects violations, so catch them at build time.
     local bad members
@@ -324,7 +325,8 @@ verify_artifacts() {
     [[ "$packaged" == "$version" ]] || die "packaged version.py says '${packaged}', expected '${version}'"
     # And the runtime essentials must be present.
     local member
-    for member in api/main.py daemon/server.py shared/config.py requirements.txt \
+    for member in api/main.py daemon/server.py shared/config.py \
+                  shared/release_signature.py deploy/release-ed25519-public.hex requirements.txt \
                   static/dist/index.html tests/conftest.py deploy/boron-api.service; do
         grep -qxF "boron-${version}/${member}" <<<"$members" \
             || die "tarball is missing ${member}"
@@ -338,8 +340,8 @@ publish() {
         # NB: in a dry-run nothing was bumped, so the rehearsal artifacts
         # carry the CURRENT version; a real run would produce ${NEW_VERSION}.
         skip "publish (dry-run): a real run would commit the bump, tag v${NEW_VERSION}, push, and run:"
-        printf '       gh release create v%s --repo %s --title "Boron v%s" boron-%s.tar.gz boron-%s.sha256 [.asc]\n' \
-            "$NEW_VERSION" "${GITHUB_REPO:-<origin>}" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION"
+        printf '       gh release create v%s --repo %s --title "Boron v%s" boron-%s.tar.gz boron-%s.sha256 boron-%s.tar.gz.sig\n' \
+            "$NEW_VERSION" "${GITHUB_REPO:-<origin>}" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION"
         return
     fi
     info "Publishing v${version}"
@@ -348,11 +350,10 @@ publish() {
     BUMPED=false   # the bump is committed now; the failure trap must not revert it
     git -C "$REPO_ROOT" tag -a "v${version}" -m "Boron v${version}"
     git -C "$REPO_ROOT" push origin HEAD "v${version}"
-    local assets=("$TARBALL" "$CHECKSUM_FILE")
-    [[ -f "${TARBALL}.asc" ]] && assets+=("${TARBALL}.asc")
+    local assets=("$TARBALL" "$CHECKSUM_FILE" "${TARBALL}.sig")
     gh release create "v${version}" --repo "$GITHUB_REPO" \
         --title "Boron v${version}" \
-        --notes "Boron v${version}. Install/update via the panel's update system (verifies the SHA256 checksum before applying) -- see docs/RELEASING.md." \
+        --notes "Boron v${version}. Install/update via the panel's update system (verifies the Ed25519 publisher signature and SHA256 checksum before applying) -- see docs/RELEASING.md." \
         "${assets[@]}"
     ok "release v${version} published to ${GITHUB_REPO}"
 }

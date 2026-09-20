@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import base64
 import binascii
-import html
 import logging
 import os
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from shared.config import settings
@@ -38,34 +38,66 @@ logger = logging.getLogger("borond.branding")
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _ICO_MAGIC = b"\x00\x00\x01\x00"
 _SVG_ROOT_RE = re.compile(rb"<svg[\s>]", re.IGNORECASE)
-# SVG is XSS-capable (embedded <script>, on*= event handlers, javascript:
-# URIs, <foreignObject> smuggling arbitrary (X)HTML) -- this isn't a full
-# XML-aware sanitizer (Audit 3 finding: a real allowlist-based parser is the
-# complete fix, deferred as a larger follow-up), just a reject-obvious-cases
-# guard. foreignObject is included because it lets an SVG embed a nested
-# HTML document (e.g. <foreignObject><iframe srcdoc="...">), which is not a
-# real branding-logo use case and has no legitimate reason to appear here.
-_SVG_DANGEROUS_RE = re.compile(rb"<script[\s>]|javascript:|on\w+\s*=|<foreignobject[\s>]", re.IGNORECASE)
+_SVG_PROLOG_RE = re.compile(rb'^<\?xml\s+version=["\']1\.0["\']\s*\?>', re.IGNORECASE)
+_SVG_NS = "http://www.w3.org/2000/svg"
+_SVG_TAGS = frozenset({"svg", "g", "path", "rect", "circle", "ellipse", "line",
+                       "polyline", "polygon", "title", "desc", "defs",
+                       "linearGradient", "radialGradient", "stop", "clipPath"})
+_SVG_ATTRS = frozenset({
+    "id", "width", "height", "viewBox", "preserveAspectRatio", "x", "y",
+    "x1", "x2", "y1", "y2", "cx", "cy", "r", "rx", "ry", "d", "points",
+    "fill", "fill-rule", "fill-opacity", "stroke", "stroke-width",
+    "stroke-linecap", "stroke-linejoin", "stroke-opacity", "stroke-dasharray",
+    "opacity", "transform", "offset", "stop-color", "stop-opacity",
+    "gradientUnits", "gradientTransform", "clip-path",
+})
+_SVG_VALUE_RE = re.compile(r"^[A-Za-z0-9#.,()%+\-/\s]*$")
+_SVG_LOCAL_REF_RE = re.compile(r"url\(#[A-Za-z][A-Za-z0-9_-]{0,63}\)")
+ET.register_namespace("", _SVG_NS)
 
 MAX_PANEL_NAME_LEN = 64
 
 
-def _entity_decoded(data: bytes) -> bytes:
-    """Best-effort XML/HTML entity decoding so an obfuscated payload can't
-    smuggle a dangerous construct past the literal substring search above --
-    confirmed live that both a numeric-character-reference-obfuscated
-    `javascript:` URI (`&#106;avascript:...`) and an entity-encoded
-    `<script>` inside a `srcdoc` attribute decode, in a real browser, to the
-    exact dangerous strings _SVG_DANGEROUS_RE already rejects, even though
-    neither contains the literal substring in the raw bytes. Not a
-    replacement for a real XML parse (attribute context still isn't
-    understood), just a second pass over the decoded text that closes the
-    two confirmed bypasses without a new dependency."""
+def _sanitize_svg(data: bytes) -> bytes:
+    """Accept a small drawing-only SVG vocabulary and serialize a fresh tree.
+
+    No DTD, processing instruction, foreign namespace, URL attribute, style,
+    animation or embedded HTML survives. Validation happens after XML entity
+    decoding by the parser, and only the serialized output is stored.
+    """
+    stripped = data.lstrip(b"\xef\xbb\xbf \t\r\n")
+    stripped = _SVG_PROLOG_RE.sub(b"", stripped, count=1).lstrip()
+    if b"<!" in stripped or b"<?" in stripped:
+        raise ValidationError("SVG declarations and processing instructions are not allowed")
     try:
-        text = data.decode("utf-8", errors="replace")
-    except Exception:
-        return data
-    return html.unescape(text).encode("utf-8", errors="replace")
+        root = ET.fromstring(stripped)
+    except ET.ParseError as exc:
+        raise ValidationError("invalid SVG XML") from exc
+    if root.tag != f"{{{_SVG_NS}}}svg":
+        raise ValidationError("SVG root must use the SVG namespace")
+    nodes = 0
+    pending = [(root, 0)]
+    while pending:
+        element, depth = pending.pop()
+        nodes += 1
+        if nodes > 4096 or depth > 32:
+            raise ValidationError("SVG is too complex")
+        if element.tag not in {f"{{{_SVG_NS}}}{name}" for name in _SVG_TAGS}:
+            raise ValidationError("unsupported SVG element")
+        if element.tail and element.tail.strip():
+            raise ValidationError("SVG mixed content is not allowed")
+        if element.tag not in (f"{{{_SVG_NS}}}title", f"{{{_SVG_NS}}}desc") and element.text and element.text.strip():
+            raise ValidationError("SVG text is only allowed in title/desc")
+        for key, value in element.attrib.items():
+            if key not in _SVG_ATTRS or len(value) > 16384 or not _SVG_VALUE_RE.fullmatch(value):
+                raise ValidationError("unsupported SVG attribute or value")
+            if "url(" in value.lower():
+                if key not in ("fill", "stroke", "clip-path") or not _SVG_LOCAL_REF_RE.fullmatch(value):
+                    raise ValidationError("external SVG references are not allowed")
+            if key == "id" and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", value):
+                raise ValidationError("invalid SVG identifier")
+        pending.extend((child, depth + 1) for child in element)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=False)
 
 
 def _sniff_image(data: bytes, allow_ico: bool) -> str:
@@ -79,8 +111,7 @@ def _sniff_image(data: bytes, allow_ico: bool) -> str:
         end = stripped.find(b"?>")
         stripped = stripped[end + 2 :].lstrip() if end != -1 else stripped
     if _SVG_ROOT_RE.match(stripped) or stripped.startswith(b"<svg"):
-        if _SVG_DANGEROUS_RE.search(data) or _SVG_DANGEROUS_RE.search(_entity_decoded(data)):
-            raise ValidationError("SVG contains a <script>/event-handler/javascript: URI and was rejected")
+        _sanitize_svg(data)
         return "svg"
     kinds = "PNG or SVG" if not allow_ico else "PNG, SVG or ICO"
     raise ValidationError(f"unrecognized image data -- must be {kinds}")
@@ -99,6 +130,8 @@ def _decode_upload(params: dict, allow_ico: bool = False) -> tuple[bytes, str]:
     if len(data) > settings.branding_max_upload_bytes:
         raise ValidationError(f"file exceeds the {settings.branding_max_upload_bytes} byte limit")
     ext = _sniff_image(data, allow_ico)
+    if ext == "svg":
+        data = _sanitize_svg(data)
     return data, ext
 
 

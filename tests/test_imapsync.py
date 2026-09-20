@@ -79,6 +79,41 @@ def test_start_migration_rejects_loopback_source(mailbox):
         })
 
 
+def test_migration_rejects_plaintext_source(mailbox):
+    local_part, domain = mailbox
+    with pytest.raises(ValidationError, match="requires TLS"):
+        im.start_migration({
+            "domain": domain, "local_part": local_part,
+            "source_host": "imap.example.net", "source_port": 143,
+            "source_email": "old@example.net", "source_password": "source-pw",
+            "dest_password": "dest-pw", "source_ssl": False,
+        })
+    with pytest.raises(ValidationError, match="requires TLS"):
+        im.list_source_folders("imap.example.net", 143, "old@example.net", "source-pw", False)
+
+
+@pytest.mark.parametrize("port,transport", [(993, "--ssl1"), (143, "--tls1")])
+def test_source_connection_pins_validated_ip_and_verifies_hostname(monkeypatch, port, transport):
+    calls = []
+
+    def fake_run(args, timeout=None, redact=None):
+        calls.append(args)
+        return ProcResult(args=args, returncode=0,
+                          stdout="Host1: folders list (...)\n[INBOX]\nHost2: folders list (...)\n", stderr="")
+
+    monkeypatch.setattr(im, "run", fake_run)
+    assert im.list_source_folders("imap.example.net", port, "old@example.net", "source-pw") == ["INBOX"]
+    args = calls[0]
+    assert args[args.index("--host1") + 1] == "8.8.8.8"
+    assert args[args.index("--host2") + 1] == "8.8.8.8"
+    assert transport in args
+    assert "SSL_verify_mode=1" in args
+    assert "SSL_verifycn_name=imap.example.net" in args
+    assert "SSL_hostname=imap.example.net" in args
+    if port == 143:
+        assert "--nossl1" in args and "--nossl2" in args
+
+
 def test_start_migration_rejects_unknown_mailbox(isolated_db):
     with pytest.raises(RuntimeError, match="does not exist"):
         im.start_migration({
@@ -276,7 +311,7 @@ def test_list_source_folders_parses_output(monkeypatch):
 
 def test_list_source_folders_raises_on_failure(monkeypatch):
     monkeypatch.setattr(im, "run", lambda args, timeout=None, redact=None: ProcResult(args=args, returncode=1, stdout="", stderr="Login failed"))
-    with pytest.raises(im.ImapSyncError, match="Login failed"):
+    with pytest.raises(im.ImapSyncError, match="check TLS certificate and login credentials"):
         im.list_source_folders("imap.example.net", 993, "old@example.net", "wrongpw")
 
 
@@ -303,7 +338,7 @@ def test_run_job_revalidates_source_host_before_connecting(mailbox, monkeypatch,
         revalidate_calls.append(host)
         raise ValidationError(f"'{host}' resolves to a non-public address (simulated DNS rebind)")
 
-    monkeypatch.setattr(im, "validate_imap_source_host", fake_validate)
+    monkeypatch.setattr(im, "resolve_public_imap_source", fake_validate)
     run_calls = []
     monkeypatch.setattr(im, "run", lambda *a, **kw: run_calls.append(a))
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tarfile
+import os
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RELEASE = REPO_ROOT / "scripts" / "release.sh"
 
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/tmp"}
+if os.environ.get("BORON_RELEASE_SIGNING_KEY_FILE"):
+    ENV["BORON_RELEASE_SIGNING_KEY_FILE"] = os.environ["BORON_RELEASE_SIGNING_KEY_FILE"]
 
 
 def _run(*args: str, cwd: Path = REPO_ROOT) -> subprocess.CompletedProcess:
@@ -62,7 +65,15 @@ def test_release_rejects_malformed_version():
     assert "x.y.z" in r.stderr
 
 
+@pytest.mark.parametrize("flag", ["--skip-tests", "--skip-build"])
+def test_published_release_rejects_skipped_gates(flag):
+    r = _run(flag)
+    assert r.returncode != 0
+    assert "published releases require both" in r.stderr
+
+
 @pytest.mark.skipif(not (REPO_ROOT / ".git").exists(), reason="release builds require a source checkout")
+@pytest.mark.skipif(not os.environ.get("BORON_RELEASE_SIGNING_KEY_FILE"), reason="release signing key unavailable")
 def test_release_dry_run_builds_verified_artifacts(tmp_path):
     from version import BORON_VERSION
 
@@ -73,7 +84,8 @@ def test_release_dry_run_builds_verified_artifacts(tmp_path):
 
     tarball = out / f"boron-{BORON_VERSION}.tar.gz"
     checksum = out / f"boron-{BORON_VERSION}.sha256"
-    assert tarball.exists() and checksum.exists()
+    signature = out / f"boron-{BORON_VERSION}.tar.gz.sig"
+    assert tarball.exists() and checksum.exists() and signature.exists()
 
     # The checksum file must verify against the tarball (the update daemon
     # runs exactly this check before extracting anything).
@@ -103,6 +115,7 @@ def test_release_dry_run_builds_verified_artifacts(tmp_path):
 
 
 @pytest.mark.skipif(not (REPO_ROOT / ".git").exists(), reason="release builds require a source checkout")
+@pytest.mark.skipif(not os.environ.get("BORON_RELEASE_SIGNING_KEY_FILE"), reason="release signing key unavailable")
 def test_release_dry_run_does_not_touch_version_py():
     before = (REPO_ROOT / "version.py").read_text()
     r = _run("--dry-run", "--skip-tests", "--skip-build", "--output-dir",
@@ -111,3 +124,15 @@ def test_release_dry_run_does_not_touch_version_py():
     shutil.rmtree("/tmp/fh-release-nochange-test", ignore_errors=True)
     assert r.returncode == 0
     assert before == after
+
+
+def test_release_without_signing_key_fails_closed(tmp_path):
+    env = dict(ENV)
+    env.pop("BORON_RELEASE_SIGNING_KEY_FILE", None)
+    result = subprocess.run(
+        ["bash", str(RELEASE), "--dry-run", "--skip-tests", "--skip-build",
+         "--output-dir", str(tmp_path / "unsigned")],
+        capture_output=True, text=True, env=env, cwd=REPO_ROOT, timeout=300,
+    )
+    assert result.returncode != 0
+    assert "BORON_RELEASE_SIGNING_KEY_FILE" in result.stderr

@@ -394,15 +394,30 @@ def _validate_sieve(content: str) -> None:
 
 def _install_global_sieve_script(content: str | None = None) -> None:
     content = build_global_sieve_source() if content is None else content
-    _validate_sieve(content)
-    Path(GLOBAL_SIEVE_DIR).mkdir(parents=True, exist_ok=True, mode=0o755)
-    tmp_path = Path(f"{GLOBAL_SIEVE_PATH}.tmp.{os.getpid()}")
-    tmp_path.write_text(content)
-    os.replace(tmp_path, GLOBAL_SIEVE_PATH)
-    Path(GLOBAL_SIEVE_PATH).with_suffix(".svbin").unlink(missing_ok=True)
-    result = run([SIEVEC_BIN, GLOBAL_SIEVE_PATH], timeout=15)
+    def validate(path: Path) -> StepResult:
+        try:
+            _validate_sieve(path.read_text())
+        except SpamFilterError as exc:
+            return StepResult(False, str(exc))
+        return StepResult(True)
+
+    def compile_and_reload() -> StepResult:
+        result = run([SIEVEC_BIN, GLOBAL_SIEVE_PATH], timeout=15)
+        if not result.ok:
+            return StepResult(False, "global Sieve compile failed")
+        return _dovecot_reload()
+
+    writer = ConfigWriter(
+        target_path=GLOBAL_SIEVE_PATH,
+        validate=validate,
+        reload=compile_and_reload,
+        verify=_dovecot_verify,
+        backup_dir=BACKUP_DIR,
+        subsystem="global-sieve",
+    )
+    result = writer.apply(content)
     if not result.ok:
-        raise SpamFilterError(f"failed to compile global Sieve script in place: {result.stderr.strip() or result.stdout.strip()}")
+        raise SpamFilterError(f"global Sieve update failed: {result.summary()}")
 
 
 def _dovecot_validate(tmp_path: Path) -> StepResult:
@@ -476,12 +491,6 @@ def _refresh_global_sieve() -> None:
     _ensure_dovecot_sieve_wiring already uses, just re-run on every entry
     change instead of only at bootstrap time."""
     _install_global_sieve_script()
-    reload_result = _dovecot_reload()
-    if not reload_result.ok:
-        raise SpamFilterError(f"dovecot reload failed after Sieve update: {reload_result.message}")
-    verify_result = _dovecot_verify()
-    if not verify_result.ok:
-        raise SpamFilterError(f"dovecot not active after Sieve update: {verify_result.message}")
 
 
 def list_entries(params: dict) -> dict:

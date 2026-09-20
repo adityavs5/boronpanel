@@ -74,7 +74,6 @@ from shared.validation import (
 )
 
 from daemon import audit, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, mariadb, ols, webhooks
-from daemon.backup import _write_mysql_defaults_file
 from daemon.procutil import run
 from daemon.wordpress import _php_str
 
@@ -540,17 +539,42 @@ def _strip_dump_database_context(sql_text: str) -> str:
     same-named database happened to already exist, write into the wrong
     one entirely. Stripped line-by-line before import so this dump always
     lands in the caller-specified `db_name`, regardless of what the
-    original dump's own header says."""
+    original dump's own header says for normal mysqldump formatting. This
+    text filter is a compatibility helper, not a security boundary: the
+    import process authenticates as a user granted only the target database."""
     return "\n".join(line for line in sql_text.splitlines() if not _DUMP_DB_CONTEXT_RE.match(line))
 
 
-def _import_mysql_dump(db_name: str, dump_path: Path) -> None:
-    cnf_path = _write_mysql_defaults_file()
+def _write_import_mysql_defaults_file(db_user: str, password: str) -> str:
+    """Give untrusted dump SQL only the newly created database's privileges."""
+    validate_db_identifier(db_user)
+    if not isinstance(password, str) or not password:
+        raise ValueError("database import password is missing")
+    def option(value: str) -> str:
+        return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+    fd, path = tempfile.mkstemp(prefix="boron-db-import-", suffix=".cnf")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as output:
+            output.write("[client]\n")
+            output.write(f"user={option(db_user)}\npassword={option(password)}\n")
+            output.write(f"socket={option(settings.mariadb_socket)}\n")
+        return path
+    except Exception:
+        os.unlink(path)
+        raise
+
+
+def _import_mysql_dump(db_name: str, dump_path: Path, db_user: str, password: str) -> None:
+    cnf_path = _write_import_mysql_defaults_file(db_user, password)
     try:
         sql_text = _strip_dump_database_context(dump_path.read_text(errors="replace"))
-        result = run(["mysql", f"--defaults-extra-file={cnf_path}", db_name], input_text=sql_text, timeout=1800)
+        result = run(["mysql", f"--defaults-extra-file={cnf_path}", "--local-infile=0", db_name], input_text=sql_text, timeout=1800)
         if not result.ok:
-            raise CpanelImportError(f"mysql import failed for '{db_name}': {result.stderr.strip()}")
+            # mysql can quote SQL input in its error output, including data
+            # that must not be retained in a cross-role job report.
+            raise CpanelImportError(f"mysql import failed for '{db_name}'")
     finally:
         os.unlink(cnf_path)
 
@@ -1055,7 +1079,7 @@ def _relocate_docroot_step(root: Path, username: str, domain: str) -> str:
 def _import_database_step(username: str, dump_path: Path, old_username: str | None, db_name_map: dict) -> str:
     suffix = _db_suffix_from_dump(dump_path, old_username)
     grant = handlers_database.create_database({"username": username, "name": suffix})
-    _import_mysql_dump(grant["db_name"], dump_path)
+    _import_mysql_dump(grant["db_name"], dump_path, grant["db_user"], grant["password"])
     db_name_map[dump_path.stem] = grant["db_name"]
     return f"imported into '{grant['db_name']}'"
 

@@ -17,12 +17,19 @@ from pathlib import Path
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from shared.config import settings
 from shared.models import UpdateJob, UpdateState
 from shared.validation import ValidationError
+from shared.release_signature import signed_message, verify_signature
 
 import daemon.updates as updates
+
+_TEST_SIGNER = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+_TEST_PUBLIC_KEY = _TEST_SIGNER.public_key().public_bytes(
+    serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
 # --- helpers ---------------------------------------------------------------------
@@ -42,6 +49,8 @@ def _release_json(version="1.0.1", repo="acme/boron", assets=True, tag=None):
              "browser_download_url": f"{prefix}/boron-{version}.tar.gz"},
             {"name": f"boron-{version}.sha256",
              "browser_download_url": f"{prefix}/boron-{version}.sha256"},
+            {"name": f"boron-{version}.tar.gz.sig",
+             "browser_download_url": f"{prefix}/boron-{version}.tar.gz.sig"},
         ]
     return data
 
@@ -70,12 +79,17 @@ def _make_tarball_bytes(version="1.0.1", members_extra=None) -> bytes:
 
 def _mock_github(monkeypatch, version="1.0.1", repo="acme/boron",
                  tarball: bytes | None = None, sha256_text: str | None = None,
-                 counter: dict | None = None, redirect_host="objects.githubusercontent.com"):
+                 counter: dict | None = None, redirect_host="objects.githubusercontent.com",
+                 signature: bytes | None = None):
     """MockTransport speaking the whole flow: releases API -> 302 from
     github.com -> content from the CDN host."""
     tarball = tarball if tarball is not None else _make_tarball_bytes(version)
     sha = sha256_text if sha256_text is not None else (
         hashlib.sha256(tarball).hexdigest() + f"  boron-{version}.tar.gz\n")
+    signature = signature if signature is not None else _TEST_SIGNER.sign(
+        signed_message(version, hashlib.sha256(tarball).digest()))
+    monkeypatch.setattr(updates, "verify_signature", lambda version, digest, sig:
+                        verify_signature(version, digest, sig, _TEST_PUBLIC_KEY))
 
     def handler(request: httpx.Request) -> httpx.Response:
         if counter is not None:
@@ -91,6 +105,8 @@ def _mock_github(monkeypatch, version="1.0.1", repo="acme/boron",
         if host == redirect_host:
             if url.endswith(".sha256"):
                 return httpx.Response(200, content=sha.encode())
+            if url.endswith(".sig"):
+                return httpx.Response(200, content=signature)
             return httpx.Response(200, content=tarball)
         return httpx.Response(404)
 
@@ -320,6 +336,23 @@ def test_checksum_match_passes(update_env, monkeypatch):
     path = updates._download_and_verify(job_id, "1.0.1")
     assert os.path.exists(path)
     assert hashlib.sha256(open(path, "rb").read()).hexdigest() == hashlib.sha256(tarball).hexdigest()
+
+
+def test_bad_publisher_signature_aborts_before_extraction(update_env, monkeypatch):
+    _mock_github(monkeypatch, signature=b"0" * 64)
+    job_id = _make_job()
+    with pytest.raises(updates._StepFailed):
+        updates._download_and_verify(job_id, "1.0.1")
+    assert "publisher authentication failed" in _get_job(job_id)["error"]
+    assert not list((update_env["tmp"] / "dl").glob("*.tar.gz"))
+
+
+def test_signature_is_bound_to_release_version():
+    digest = hashlib.sha256(b"archive").digest()
+    signature = _TEST_SIGNER.sign(signed_message("1.0.1", digest))
+    verify_signature("1.0.1", digest, signature, _TEST_PUBLIC_KEY)
+    with pytest.raises(ValueError, match="signature is invalid"):
+        verify_signature("1.0.2", digest, signature, _TEST_PUBLIC_KEY)
 
 
 # --- tarball member validation (goal: path traversal -> rejected) --------------------------
@@ -901,6 +934,41 @@ def test_update_runs_staged_ols_webadmin_reconciliation(update_env, tmp_path, mo
     updates._install_ols_webadmin_integration(_make_job(), str(target))
 
     assert commands == [(['/usr/bin/python3', str(script)], {'timeout': 120})]
+
+
+def test_update_runs_staged_ftps_reconciliation(update_env, tmp_path, monkeypatch):
+    from daemon.procutil import ProcResult
+    target = tmp_path / 'staged'
+    script = target / 'scripts/reconcile_ftps_tls.py'
+    script.parent.mkdir(parents=True)
+    script.write_text('# staged reconciliation')
+    monkeypatch.setattr(settings, 'panel_hostname', 'panel.example')
+    commands = []
+    monkeypatch.setattr(updates, 'run', lambda args, **kwargs: (
+        commands.append((args, kwargs)) or ProcResult(args=args, returncode=0, stdout='', stderr='')))
+    updates._install_ftps_tls(_make_job(), str(target))
+    assert commands == [([str(target / '.venv/bin/python'), '-m', 'scripts.reconcile_ftps_tls'],
+                         {'cwd': str(target), 'timeout': 120})]
+
+
+def test_update_runs_staged_database_grant_repair(update_env, tmp_path, monkeypatch):
+    from daemon.procutil import ProcResult
+    target = tmp_path / 'staged'
+    backup = tmp_path / 'backup'
+    backup.mkdir()
+    script = target / 'scripts/reconcile_db_grants.py'
+    script.parent.mkdir(parents=True)
+    script.write_text('# staged reconciliation')
+    commands = []
+    monkeypatch.setattr(updates, 'run', lambda args, **kwargs: (
+        commands.append((args, kwargs)) or ProcResult(args=args, returncode=0, stdout='', stderr='')))
+    job_id = _make_job()
+    updates._install_db_grant_fix(job_id, str(target), str(backup))
+    args, kwargs = commands[0]
+    assert args[:3] == [str(target / '.venv/bin/python'), '-m', 'scripts.reconcile_db_grants']
+    assert args[3:5] == ['--apply', '--evidence-path']
+    assert args[5] == str(backup / f'database-grants-before-{job_id}.jsonl')
+    assert kwargs == {'cwd': str(target), 'timeout': 120.0}
 
 
 def test_update_blocks_version_switch_when_ols_reconciliation_fails(update_env, tmp_path, monkeypatch):

@@ -10,7 +10,8 @@ Design (goal: "release tarballs from GitHub, never git pull on production"):
   that does everything SAFE while the current code keeps running:
   pre-flight (tests + disk), backup (panel DB + /etc/boron), download
   (github.com release URL only, every redirect hop re-validated against a
-  GitHub-owned host allowlist), SHA256 verify BEFORE extraction, tarball
+  GitHub-owned host allowlist), SHA256 and pinned publisher-signature verify
+  BEFORE extraction, tarball
   member validation (no absolute/traversal/link members) + staged
   extraction to /opt/boron-{version}/, venv build, and the new
   version's DB migrations (create_all + additive -- old code keeps working
@@ -42,7 +43,6 @@ only the two panel units restart.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
 import logging
 import os
@@ -64,6 +64,7 @@ from daemon.procutil import run
 from shared.config import settings
 from shared.db import write_session
 from shared.models import UpdateJob, UpdateState, utcnow
+from shared.release_signature import archive_digest, verify_signature
 from shared.validation import ValidationError
 from version import BORON_VERSION
 
@@ -187,7 +188,7 @@ def _release_download_prefix(repo: str) -> str:
 def _fetch_release(tag: str | None = None) -> dict:
     """Fetch release metadata from the GitHub API (latest, or an exact tag).
 
-    Returns {version, changelog_url, tarball_url, checksum_url}. Raises
+    Returns {version, changelog_url, tarball_url, checksum_url, signature_url}. Raises
     ValidationError on anything malformed -- including assets whose
     download URL is not under https://github.com/{repo}/releases/download/
     (goal security rule 1: the tarball URL comes from github.com releases
@@ -205,7 +206,7 @@ def _fetch_release(tag: str | None = None) -> dict:
     tag_name = str(data.get("tag_name", ""))
     version = "%d.%d.%d" % parse_version(tag_name)
     prefix = _release_download_prefix(repo)
-    tarball_url = checksum_url = None
+    tarball_url = checksum_url = signature_url = None
     for asset in data.get("assets", []):
         name = asset.get("name", "")
         dl = asset.get("browser_download_url", "")
@@ -213,11 +214,13 @@ def _fetch_release(tag: str | None = None) -> dict:
             tarball_url = dl
         elif name == f"boron-{version}.sha256":
             checksum_url = dl
-    if not tarball_url or not checksum_url:
+        elif name == f"boron-{version}.tar.gz.sig":
+            signature_url = dl
+    if not tarball_url or not checksum_url or not signature_url:
         raise ValidationError(
-            f"release {tag_name} is missing boron-{version}.tar.gz and/or its .sha256 asset"
+            f"release {tag_name} is missing its archive, checksum or publisher signature"
         )
-    for dl in (tarball_url, checksum_url):
+    for dl in (tarball_url, checksum_url, signature_url):
         if not dl.startswith(prefix):
             raise ValidationError(f"refusing release asset URL outside {prefix}: {dl}")
     return {
@@ -225,6 +228,7 @@ def _fetch_release(tag: str | None = None) -> dict:
         "changelog_url": str(data.get("html_url", "")),
         "tarball_url": tarball_url,
         "checksum_url": checksum_url,
+        "signature_url": signature_url,
     }
 
 
@@ -477,13 +481,14 @@ def _run_update_job(job_id: int, to_version: str) -> None:
 
         # (f) migrations from the NEW version against the live DB --------------
         _run_migrations(job_id, new_dir)
+        _install_db_grant_fix(job_id, new_dir, backup_dir)
         _install_mail_guard(job_id, new_dir)
         _install_ols_webadmin_integration(job_id, new_dir)
+        _install_ftps_tls(job_id, new_dir)
 
         # (g..j) handoff: swap/restart/health/rollback happen in the detached
         # finalizer -- see module docstring for why. backup_dir already
         # recorded in the job's steps for the operator.
-        del backup_dir
         _handoff_to_finalizer(job_id, new_dir)
     except _StepFailed:
         pass  # already recorded by _fail_step
@@ -637,26 +642,29 @@ def _safe_download(url: str, dest: str, max_bytes: int) -> int:
 
 
 def _download_and_verify(job_id: int, to_version: str) -> str:
-    with write_session() as session:
-        state = _get_state(session)
-        tarball_url, checksum_url = state.tarball_url, state.checksum_url
-    # The cached URLs are for the *latest* release; refetch by tag when
-    # updating to anything else (or when the cache is empty).
-    if not tarball_url or f"boron-{to_version}.tar.gz" not in tarball_url:
-        try:
-            info = _fetch_release(tag=f"v{to_version}")
-        except (httpx.HTTPError, ValidationError) as exc:
-            _fail_step(job_id, "download", f"cannot resolve release v{to_version}: {exc}")
-        tarball_url, checksum_url = info["tarball_url"], info["checksum_url"]
+    # Refresh the exact tag, even when latest-release metadata is cached.
+    # The detached publisher signature is never taken from mutable DB state.
+    try:
+        info = _fetch_release(tag=f"v{to_version}")
+        if info["version"] != to_version:
+            raise ValidationError("release tag does not match target version")
+    except (httpx.HTTPError, ValidationError) as exc:
+        _fail_step(job_id, "download", f"cannot resolve signed release v{to_version}: {exc}")
+    tarball_url = info["tarball_url"]
+    checksum_url = info["checksum_url"]
+    signature_url = info["signature_url"]
 
     download_dir = settings.update_download_dir
     os.makedirs(download_dir, mode=0o700, exist_ok=True)
     tarball = os.path.join(download_dir, f"boron-{to_version}.tar.gz")
     checksum_file = os.path.join(download_dir, f"boron-{to_version}.sha256")
+    signature_file = os.path.join(download_dir, f"boron-{to_version}.tar.gz.sig")
     try:
         size = _safe_download(tarball_url, tarball, settings.update_max_download_bytes)
         _safe_download(checksum_url, checksum_file, 64 * 1024)
+        _safe_download(signature_url, signature_file, 1024)
     except (httpx.HTTPError, ValidationError, OSError) as exc:
+        _remove_quietly(tarball, checksum_file, signature_file)
         _fail_step(job_id, "download", str(exc))
     _step(job_id, "download", "ok", f"{size} bytes from {tarball_url}")
 
@@ -666,17 +674,21 @@ def _download_and_verify(job_id: int, to_version: str) -> str:
     except (OSError, IndexError):
         expected = ""
     if not re.fullmatch(r"[0-9a-f]{64}", expected or ""):
-        _remove_quietly(tarball, checksum_file)
+        _remove_quietly(tarball, checksum_file, signature_file)
         _fail_step(job_id, "checksum", "checksum asset is malformed -- update aborted")
-    digest = hashlib.sha256()
-    with open(tarball, "rb") as f:
-        for block in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(block)
-    if digest.hexdigest() != expected:
-        _remove_quietly(tarball, checksum_file)
+    digest = archive_digest(tarball)
+    if digest.hex() != expected:
+        _remove_quietly(tarball, checksum_file, signature_file)
         _fail_step(job_id, "checksum",
-                   f"SHA256 mismatch (expected {expected[:12]}..., got {digest.hexdigest()[:12]}...) -- update aborted")
+                   f"SHA256 mismatch (expected {expected[:12]}..., got {digest.hex()[:12]}...) -- update aborted")
     _step(job_id, "checksum", "ok", expected)
+    try:
+        verify_signature(to_version, digest, Path(signature_file).read_bytes())
+    except (OSError, ValueError) as exc:
+        _remove_quietly(tarball, checksum_file, signature_file)
+        _fail_step(job_id, "signature", f"publisher authentication failed: {exc}")
+    _remove_quietly(checksum_file, signature_file)
+    _step(job_id, "signature", "ok", "trusted Ed25519 publisher key")
     return tarball
 
 
@@ -797,6 +809,26 @@ def _run_migrations(job_id: int, new_dir: str) -> None:
     _step(job_id, "migrate", "ok")
 
 
+def _install_db_grant_fix(job_id: int, new_dir: str, backup_dir: str) -> None:
+    """Repair pre-existing wildcard MariaDB grants before new code starts.
+
+    The staged release owns the migration code. Existing grants are recorded
+    in the update's protected backup directory for operator recovery.
+    """
+    if not Path(new_dir, "scripts/reconcile_db_grants.py").is_file():
+        return
+    _step(job_id, "db-grants", "running", "Restricting hosted database grants")
+    evidence = os.path.join(backup_dir, f"database-grants-before-{job_id}.jsonl")
+    result = run(
+        [os.path.join(new_dir, ".venv", "bin", "python"), "-m", "scripts.reconcile_db_grants",
+         "--apply", "--evidence-path", evidence],
+        cwd=new_dir, timeout=120.0,
+    )
+    if result.returncode != 0:
+        _fail_step(job_id, "db-grants", "database grant reconciliation failed; panel version was not switched")
+    _step(job_id, "db-grants", "ok")
+
+
 def _install_mail_guard(job_id: int, new_dir: str) -> None:
     """Activate the staged version's guard before switching panel code."""
     if not Path(new_dir, 'daemon/snapshot_mail_guard_config.py').is_file():
@@ -827,6 +859,18 @@ def _install_ols_webadmin_integration(job_id: int, new_dir: str) -> None:
     if result.returncode:
         _fail_step(job_id, 'ols-webadmin', 'OpenLiteSpeed WebAdmin integration failed')
     _step(job_id, 'ols-webadmin', 'ok')
+
+
+def _install_ftps_tls(job_id: int, new_dir: str) -> None:
+    """Reconcile FTP with the panel certificate before activating new code."""
+    if not settings.panel_hostname or not Path(new_dir, 'scripts/reconcile_ftps_tls.py').is_file():
+        return
+    _step(job_id, 'ftps-tls', 'running', 'Applying current panel certificate to FTPS')
+    result = run([os.path.join(new_dir, '.venv/bin/python'), '-m',
+                  'scripts.reconcile_ftps_tls'], cwd=new_dir, timeout=120)
+    if result.returncode:
+        _fail_step(job_id, 'ftps-tls', 'FTPS certificate reconciliation failed')
+    _step(job_id, 'ftps-tls', 'ok')
 
 
 def _admin_alert_target() -> tuple[str, str]:

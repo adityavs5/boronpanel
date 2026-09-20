@@ -28,6 +28,36 @@ def test_signed_target_roundtrip_and_tamper_rejected():
     assert fbr._unsign_target("garbage") is None
 
 
+def test_file_proxy_write_origin_is_exact():
+    from starlette.requests import Request
+
+    def request(method, origin=None):
+        headers = [(b"host", b"panel.example:2222")]
+        if origin is not None:
+            headers.append((b"origin", origin.encode()))
+        return Request({"type": "http", "scheme": "https", "server": ("panel.example", 2222),
+                        "path": "/files/api/resources", "method": method, "headers": headers})
+
+    assert fbr._valid_write_origin(request("POST", "https://panel.example:2222"))
+    assert not fbr._valid_write_origin(request("POST", "https://customer.example"))
+    assert not fbr._valid_write_origin(request("DELETE"))
+
+
+def test_file_proxy_rejects_cross_origin_cookie_write_before_backend(monkeypatch):
+    import asyncio
+    from starlette.requests import Request
+    from fastapi import HTTPException
+    admin = Identity(panel_user_id=1, username="adminuser", role="admin", account_id=None, auth_method="session")
+    monkeypatch.setattr(fbr, "_resolve_identity", lambda _request: admin)
+    monkeypatch.setattr(fbr._client, "send", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("backend reached")))
+    request = Request({"type": "http", "scheme": "https", "server": ("panel.example", 2222),
+                       "path": "/files/api/resources", "method": "POST",
+                       "headers": [(b"host", b"panel.example:2222"), (b"origin", b"https://customer.example")]})
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(fbr.proxy(request, "api/resources"))
+    assert rejected.value.status_code == 403
+
+
 class _FakeRequest:
     def __init__(self, headers):
         from starlette.datastructures import Headers

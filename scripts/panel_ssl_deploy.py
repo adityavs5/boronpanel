@@ -2,6 +2,7 @@
 """Certbot deploy hook for the panel's own TLS listener."""
 import argparse
 import datetime as dt
+import ftplib
 import grp
 import pwd
 import os
@@ -20,6 +21,7 @@ from cryptography.hazmat.primitives import serialization
 LINEAGE_ROOT=Path('/etc/letsencrypt/live')
 TLS_DIRECTORY=Path('/etc/boron/ssl/api')
 OLS_ADMIN_DIRECTORY=Path('/usr/local/lsws/admin/conf')
+FTP_CERT_PATH=Path('/etc/ssl/private/pure-ftpd.pem')
 CONFIG_PATH=Path('/etc/boron/boron.toml')
 
 def validate_pair(hostname,certificate,key):
@@ -65,6 +67,27 @@ def _wait_for_certificate(hostname,certificate):
     raise RuntimeError('Panel did not serve the newly installed certificate')
 
 
+def _wait_for_ftps_certificate(hostname,certificate):
+    """Verify the STARTTLS certificate without sending FTP credentials."""
+    expected=x509.load_pem_x509_certificate(certificate).public_bytes(serialization.Encoding.DER)
+    context=ssl._create_unverified_context()
+    deadline=time.monotonic()+20
+    while time.monotonic()<deadline:
+        try:
+            ftp=ftplib.FTP_TLS(context=context,timeout=3)
+            try:
+                ftp.connect('127.0.0.1',21)
+                ftp.auth()
+                if ftp.sock.getpeercert(binary_form=True)==expected:
+                    return
+            finally:
+                ftp.close()
+        except (OSError,ftplib.Error):
+            pass
+        time.sleep(.25)
+    raise RuntimeError('FTP did not serve the newly installed certificate')
+
+
 def deploy(hostname,lineage):
     lineage=Path(lineage)
     expected=LINEAGE_ROOT/hostname
@@ -77,21 +100,30 @@ def deploy(hostname,lineage):
     lsadm=pwd.getpwnam('lsadm')
     certpath=destination/'panel.crt';keypath=destination/'panel.key'
     olscert=OLS_ADMIN_DIRECTORY/'webadmin.crt';olskey=OLS_ADMIN_DIRECTORY/'webadmin.key'
+    ftpfile=FTP_CERT_PATH
     oldcert=certpath.read_bytes();oldkey=keypath.read_bytes()
     oldolscert=olscert.read_bytes();oldolskey=olskey.read_bytes()
+    oldftp=ftpfile.read_bytes() if ftpfile.exists() else None
     try:
         _replace(keypath,key,0,gid);_replace(certpath,certificate,0,gid)
         _replace(olskey,key,lsadm.pw_uid,lsadm.pw_gid,0o400);_replace(olscert,certificate,lsadm.pw_uid,lsadm.pw_gid,0o400)
+        _replace(ftpfile,certificate+b'\n'+key,0,0,0o600)
         subprocess.run(['systemctl','restart','boron-api.service'],check=True,timeout=45)
         subprocess.run(['systemctl','restart','lshttpd.service'],check=True,timeout=45)
+        subprocess.run(['systemctl','restart','pure-ftpd.service'],check=True,timeout=45)
         subprocess.run(['systemctl','is-active','--quiet','boron-api.service'],check=True,timeout=10)
         subprocess.run(['systemctl','is-active','--quiet','lshttpd.service'],check=True,timeout=10)
+        subprocess.run(['systemctl','is-active','--quiet','pure-ftpd.service'],check=True,timeout=10)
         _wait_for_certificate(hostname,certificate)
+        _wait_for_ftps_certificate(hostname,certificate)
     except Exception:
         _replace(keypath,oldkey,0,gid);_replace(certpath,oldcert,0,gid)
         _replace(olskey,oldolskey,lsadm.pw_uid,lsadm.pw_gid,0o400);_replace(olscert,oldolscert,lsadm.pw_uid,lsadm.pw_gid,0o400)
+        if oldftp is None:ftpfile.unlink(missing_ok=True)
+        else:_replace(ftpfile,oldftp,0,0,0o600)
         subprocess.run(['systemctl','restart','boron-api.service'],check=False,timeout=45)
         subprocess.run(['systemctl','restart','lshttpd.service'],check=False,timeout=45)
+        subprocess.run(['systemctl','restart','pure-ftpd.service'],check=False,timeout=45)
         raise
 
 

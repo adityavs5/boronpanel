@@ -4,6 +4,8 @@ _authorized() is the gate that must keep one customer out of another's shell.
 Previously it had zero test coverage."""
 from api.routers import terminal
 from api.security import Identity
+import asyncio
+from starlette.datastructures import Headers, URL
 
 
 def _identity(role, account_id):
@@ -46,6 +48,30 @@ def test_customer_with_no_account_denied(isolated_db):
 def test_customer_with_stale_account_id_denied(isolated_db):
     # account_id pointing at a row that no longer exists must not authorize.
     assert terminal._authorized(_identity("customer", 999999), "alice") is False
+
+
+def test_terminal_websocket_rejects_foreign_origin_before_identity(monkeypatch):
+    monkeypatch.setattr(terminal, "_ws_identity", lambda _: (_ for _ in ()).throw(AssertionError("identity reached")))
+
+    class Socket:
+        url = URL("wss://panel.example:2222/ws/accounts/alice/terminal")
+        def __init__(self, origin):
+            self.headers = Headers({"origin": origin}) if origin else Headers({})
+            self.closed = None
+        async def close(self, code):
+            self.closed = code
+
+    for origin in ("https://hosted.example", "https://panel.example:2222.evil.example", None):
+        socket = Socket(origin)
+        asyncio.run(terminal.terminal_ws(socket, "alice"))
+        assert socket.closed == 4403
+
+
+def test_terminal_websocket_same_origin_matches_exact_host_and_port():
+    class Socket:
+        url = URL("wss://panel.example:2222/ws/accounts/alice/terminal")
+        headers = Headers({"origin": "https://panel.example:2222"})
+    assert terminal._same_origin(Socket()) is True
 
 
 def test_terminal_uses_quiet_interactive_shell(monkeypatch):

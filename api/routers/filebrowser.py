@@ -128,6 +128,14 @@ def _wants_html(request: Request) -> bool:
     return "text/html" in request.headers.get("accept", "")
 
 
+def _valid_write_origin(request: Request) -> bool:
+    """The cookie-authenticated file proxy is a write-capable CSRF surface."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return True
+    expected = f"{request.url.scheme}://{request.url.netloc}"
+    return request.headers.get("origin") == expected
+
+
 def _build_upstream_headers(request: Request, target: str) -> list[tuple[str, str]]:
     """Copy the request headers, dropping hop-by-hop, host, content-length
     (httpx sets its own for the streamed body), the client's cookies (FB Quantum
@@ -188,6 +196,8 @@ async def proxy(request: Request, path: str = ""):
         if request.method in ("GET", "HEAD") and _wants_html(request):
             return RedirectResponse("/app", status_code=302)
         raise HTTPException(status_code=401, detail="authentication required")
+    if identity.auth_method == "session" and not _valid_write_origin(request):
+        raise HTTPException(status_code=403, detail="cross-origin file operation rejected")
 
     # Determine which account's files to serve.
     target: str | None = None

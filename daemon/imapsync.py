@@ -29,14 +29,11 @@ password (which they already know, having set it) alongside the source
 server's credentials. Both are handled with the identical
 never-stored/never-logged discipline above.
 
-**Internal-IP blocking**: `shared/validation.validate_imap_source_host`
-(shared with webhooks' own SSRF guard shape) rejects a source host that
-resolves to a private/loopback/link-local/reserved address at job-creation
-time; this module does not re-resolve at connect time the way
-`daemon/webhooks.py` does for delivery-time SSRF (imapsync itself makes the
-real connection, and its own connection failure surfaces as a normal job
-failure -- there is no "deliver now vs. later" TOCTOU window here the way
-there is for a webhook queued for retry).
+**Source connection**: the hostname is resolved and checked for public
+addresses immediately before every subprocess connection. imapsync dials
+the selected numeric address while verifying the original hostname against
+the peer certificate and using it for SNI. Plaintext source connections are
+rejected.
 
 **Per-folder progress**: this project's other long-running background jobs
 (WordPressJob, AppInstallJob, CpanelImportJob) all report progress via
@@ -69,6 +66,7 @@ from shared.validation import (
     validate_domain,
     validate_email_address,
     validate_imap_source_host,
+    resolve_public_imap_source,
     validate_imap_source_port,
     validate_mailbox_local_part,
     validate_username,
@@ -159,6 +157,17 @@ def _parse_host1_folders(stdout: str) -> list[str]:
     return folders
 
 
+def _source_tls_args(source_host: str, source_port: int) -> list[str]:
+    """Require CA and hostname verification, including when dialing a pinned IP."""
+    return [
+        "--nossl1" if source_port == 143 else "--ssl1",
+        "--tls1" if source_port == 143 else "--notls1",
+        "--sslargs1", "SSL_verify_mode=1",
+        "--sslargs1", f"SSL_verifycn_name={source_host}",
+        "--sslargs1", f"SSL_hostname={source_host}",
+    ]
+
+
 def list_source_folders(source_host: str, source_port: int, source_email: str, source_password: str, use_ssl: bool = True) -> list[str]:
     """Lists the source server's folders without syncing any messages
     (`--justfolders`) -- used both by the UI's "select mailboxes" step and
@@ -175,28 +184,28 @@ def list_source_folders(source_host: str, source_port: int, source_email: str, s
     `--justfolders` never touches messages, so this never writes
     anything), which makes imapsync actually authenticate and list
     real folders."""
+    if not use_ssl:
+        raise ValidationError("IMAP migration requires TLS")
+    source_host, source_address = resolve_public_imap_source(source_host)
     ensure_installed()
     with tempfile.TemporaryDirectory(dir=IMAPSYNC_RUN_DIR if Path(IMAPSYNC_RUN_DIR).exists() else None) as tmp:
         os.chmod(tmp, 0o700)
         passfile = _write_passfile(tmp, "passfile1", source_password)
         args = [
             IMAPSYNC_BIN,
-            "--host1", source_host, "--port1", str(source_port), "--user1", source_email, "--passfile1", passfile,
-            "--host2", source_host, "--port2", str(source_port), "--user2", source_email, "--passfile2", passfile,
+            "--host1", source_address, "--port1", str(source_port), "--user1", source_email, "--passfile1", passfile,
+            "--host2", source_address, "--port2", str(source_port), "--user2", source_email, "--passfile2", passfile,
             "--justfolders", "--nofoldersizes",
             # Audit 3 finding A3-5 -- see the matching comment in _run_job.
             "--nolog",
         ]
-        args += ["--ssl1", "--ssl2"] if use_ssl else ["--notls1", "--notls2"]
+        args += _source_tls_args(source_host, source_port)
+        args += ["--nossl2", "--tls2"] if source_port == 143 else ["--ssl2", "--notls2"]
+        args += ["--sslargs2", "SSL_verify_mode=1", "--sslargs2", f"SSL_verifycn_name={source_host}", "--sslargs2", f"SSL_hostname={source_host}"]
         result = run(args, timeout=LIST_FOLDERS_TIMEOUT_SECONDS, redact=[source_password])
     if not result.ok:
-        raise ImapSyncError(f"could not list folders on source server: {_summarize_error(result.stdout, result.stderr)}")
+        raise ImapSyncError("could not list folders on source server; check TLS certificate and login credentials")
     return _parse_host1_folders(result.stdout)
-
-
-def _summarize_error(stdout: str, stderr: str) -> str:
-    text = (stderr.strip() or stdout.strip())
-    return text[-800:] if text else "imapsync exited non-zero with no output"
 
 
 def _domain_account_for_mailbox(session, domain_name: str, local_part: str) -> tuple[MailUser, Account]:
@@ -222,6 +231,8 @@ def rpc_list_folders(params: dict) -> dict:
     if not isinstance(source_password, str) or not source_password:
         raise ValidationError("source_password must not be empty")
     use_ssl = bool(params.get("source_ssl", True))
+    if not use_ssl:
+        raise ValidationError("IMAP migration requires TLS")
     folders = list_source_folders(source_host, source_port, source_email, source_password, use_ssl)
     return {"folders": folders}
 
@@ -235,6 +246,8 @@ def start_migration(params: dict) -> dict:
     source_password = params["source_password"]
     dest_password = params["dest_password"]
     use_ssl = bool(params.get("source_ssl", True))
+    if not use_ssl:
+        raise ValidationError("IMAP migration requires TLS")
     folders = params.get("folders") or []
     if not isinstance(folders, list) or len(folders) > MAX_FOLDERS_PER_JOB:
         raise ValidationError(f"folders must be a list of at most {MAX_FOLDERS_PER_JOB} names")
@@ -362,15 +375,10 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
         # before the job runs). shared/validation.py's own docstring for
         # validate_imap_source_host already claimed this re-check happens
         # here ("the authoritative guard") -- it didn't, until this fix.
-        # Re-validating immediately before use shrinks the rebinding window
-        # from the full queue-wait time down to the gap between this check
-        # and imapsync's own connect (milliseconds); it does not pin the
-        # connection to a specific resolved IP (imapsync performs its own
-        # resolution as a separate process it isn't practical to override
-        # here), so a rebind landing in that much smaller residual window
-        # remains theoretically possible -- documented, not eliminated.
+        # Use the resolved address for every imapsync connection. Keep the
+        # hostname separately for TLS certificate verification and SNI.
         try:
-            source_host = validate_imap_source_host(source_host)
+            source_host, source_address = resolve_public_imap_source(source_host)
         except ValidationError as exc:
             _update_job(job_id, status="failed", error=str(exc), completed_at=utcnow())
             return
@@ -399,7 +407,7 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
 
             args = [
                 IMAPSYNC_BIN,
-                "--host1", source_host, "--port1", str(source_port), "--user1", source_email, "--passfile1", source_passfile,
+                "--host1", source_address, "--port1", str(source_port), "--user1", source_email, "--passfile1", source_passfile,
                 "--host2", DEST_HOST, "--port2", str(DEST_PORT), "--user2", mailbox, "--passfile2", dest_passfile,
                 "--folder", folder, "--nofoldersizes", "--noexpunge", "--syncinternaldates",
                 "--sslargs2", "SSL_verify_mode=0",
@@ -411,7 +419,7 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
                 # should never happen.
                 "--nolog",
             ]
-            args += ["--ssl1"] if use_ssl else ["--notls1"]
+            args += _source_tls_args(source_host, source_port)
             args += ["--ssl2"]
 
             result = run(args, timeout=FOLDER_TIMEOUT_SECONDS, redact=[source_password, dest_password])
@@ -421,7 +429,7 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
                 folders_done += 1
                 results.append({"folder": folder, "status": "ok", "messages": copied, "detail": ""})
             else:
-                results.append({"folder": folder, "status": "failed", "messages": 0, "detail": _summarize_error(result.stdout, result.stderr)})
+                results.append({"folder": folder, "status": "failed", "messages": 0, "detail": "IMAP sync failed; check TLS certificate and login credentials"})
 
             status = _update_job(
                 job_id, folders_done=folders_done, messages_done=messages_done, results=results,

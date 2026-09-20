@@ -746,6 +746,17 @@ def validate_spam_filter_kind(value: str) -> str:
 # the creation-time half, daemon/imapsync.py re-checks again immediately
 # before connecting (the authoritative guard).
 def validate_imap_source_host(value: str) -> str:
+    host, _address = resolve_public_imap_source(value)
+    return host
+
+
+def resolve_public_imap_source(value: str) -> tuple[str, str]:
+    """Return the validated name and an address to use for the connection.
+
+    Callers must connect to the returned address, while retaining the name
+    for TLS SNI and certificate identity checks. Re-resolving the name in a
+    subprocess would reopen the DNS rebinding window.
+    """
     if not isinstance(value, str) or not value.strip():
         raise ValidationError("source host must not be empty")
     host = value.strip().lower()
@@ -767,13 +778,15 @@ def validate_imap_source_host(value: str) -> str:
         addresses = [ipaddress.ip_address(r[4][0]) for r in resolved]
     else:
         addresses = [ip]
+    if not addresses:
+        raise ValidationError(f"source host '{value}' has no usable addresses")
     for addr in addresses:
         if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
             raise ValidationError(
                 f"'{value}' resolves to a non-public address ({addr}) -- internal/loopback/link-local/"
                 "reserved hosts are not allowed as an IMAP migration source"
             )
-    return host
+    return host, str(addresses[0])
 
 
 def validate_imap_source_port(value) -> int:

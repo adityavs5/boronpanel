@@ -77,6 +77,31 @@ def test_global_sieve_script_is_valid_sieve(isolated_db):
     sf._validate_sieve(sf.build_global_sieve_source())
 
 
+def test_global_sieve_install_rolls_back_if_compile_fails(monkeypatch, tmp_path):
+    from daemon.procutil import ProcResult
+    from daemon.configtx import StepResult
+
+    target = tmp_path / "global.sieve"
+    target.write_text("old valid script")
+    monkeypatch.setattr(sf, "GLOBAL_SIEVE_PATH", str(target))
+    monkeypatch.setattr(sf, "BACKUP_DIR", str(tmp_path / "backups"))
+    monkeypatch.setattr(sf, "_validate_sieve", lambda content: None)
+    monkeypatch.setattr(sf, "_dovecot_reload", lambda: StepResult(True))
+    monkeypatch.setattr(sf, "_dovecot_verify", lambda: StepResult(True))
+    calls = []
+
+    def fake_run(args, timeout=None):
+        calls.append(args)
+        return ProcResult(args=args, returncode=1 if len(calls) == 1 else 0,
+                          stdout="", stderr="compile failed")
+
+    monkeypatch.setattr(sf, "run", fake_run)
+    with pytest.raises(sf.SpamFilterError, match="global Sieve update failed"):
+        sf._install_global_sieve_script("new valid script")
+    assert target.read_text() == "old valid script"
+    assert len(calls) == 2, "rollback must recompile the restored script"
+
+
 # --- master.cf rendering (pure string transform, no subprocess) -----------
 
 STOCK_MASTER_CF = """\
