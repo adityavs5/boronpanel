@@ -259,3 +259,87 @@ def test_proxy_html_gets_hashed_csp_not_middleware_fallback(monkeypatch):
     expected = b64.b64encode(hl.sha256(script).digest()).decode()
     csp = r.headers.get("content-security-policy", "")
     assert f"'sha256-{expected}'" in csp, csp  # hash present, middleware didn't clobber it
+
+
+def test_proxy_uploaded_html_cannot_bless_its_own_script(monkeypatch):
+    """A customer HTML download is not the trusted FileBrowser SPA shell."""
+    import asyncio
+    import httpx
+    from starlette.requests import Request
+    admin = Identity(panel_user_id=1, username="adminuser", role="admin", account_id=None,
+                     auth_method="session")
+    monkeypatch.setattr(fbr, "_resolve_identity", lambda _request: admin)
+
+    class _FakeResp:
+        status_code = 200
+        headers = httpx.Headers({"content-type": "text/html; charset=utf-8"})
+
+        async def aread(self):
+            return b"<html><script>fetch('/api/v1/whoami')</script></html>"
+
+        async def aclose(self):
+            pass
+
+    async def fake_send(req, **kwargs):
+        return _FakeResp()
+
+    monkeypatch.setattr(fbr._client, "send", fake_send)
+    path = fbr.settings.filebrowser_base_url + "/api/resources/evil.html"
+    request = Request({"type": "http", "scheme": "https", "server": ("panel.example", 2222),
+                       "path": path, "method": "GET",
+                       "headers": [(b"host", b"panel.example:2222"),
+                                   (b"cookie", (fbr.FB_TARGET_COOKIE + "=" + fbr._sign_target("demo1")).encode()),
+                                   (b"accept", b"text/html")]})
+    response = asyncio.run(fbr.proxy(request, "api/resources/evil.html"))
+    assert response.status_code == 200
+    assert response.headers["content-security-policy"] == fbr.untrusted_html_csp()
+    assert "sha256-" not in response.headers["content-security-policy"]
+    assert response.headers["content-disposition"] == "attachment"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_proxy_svg_document_is_sandboxed(monkeypatch):
+    import asyncio
+    import httpx
+    from starlette.requests import Request
+    admin = Identity(panel_user_id=1, username="adminuser", role="admin", account_id=None,
+                     auth_method="session")
+    monkeypatch.setattr(fbr, "_resolve_identity", lambda _request: admin)
+
+    class _FakeResp:
+        status_code = 200
+        headers = httpx.Headers({"content-type": "image/svg+xml"})
+
+        async def aiter_raw(self):
+            yield b"<svg/>"
+
+        async def aclose(self):
+            pass
+
+    async def fake_send(req, **kwargs):
+        return _FakeResp()
+
+    monkeypatch.setattr(fbr._client, "send", fake_send)
+    request = Request({"type": "http", "scheme": "https", "server": ("panel.example", 2222),
+                       "path": "/files/api/resources/evil.svg", "method": "GET",
+                       "headers": [(b"host", b"panel.example:2222"),
+                                   (b"cookie", (fbr.FB_TARGET_COOKIE + "=" + fbr._sign_target("demo1")).encode())]})
+    response = asyncio.run(fbr.proxy(request, "api/resources/evil.svg"))
+    assert response.headers["content-security-policy"] == fbr.untrusted_html_csp()
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_filebrowser_shell_hashes_only_exact_url():
+    import httpx
+    from starlette.requests import Request
+    base = fbr.settings.filebrowser_base_url
+    upstream = httpx.Response(200, headers={"content-type": "text/html"})
+
+    def request(path, query=b""):
+        return Request({"type": "http", "scheme": "https", "server": ("panel.example", 2222),
+                        "path": path, "query_string": query, "method": "GET",
+                        "headers": [(b"host", b"panel.example:2222")]})
+
+    assert fbr._is_spa_shell(request(base + "/"), upstream)
+    assert not fbr._is_spa_shell(request(base + "/", b"download=site.html"), upstream)
+    assert not fbr._is_spa_shell(request(base + "/api/resources/site.html"), upstream)

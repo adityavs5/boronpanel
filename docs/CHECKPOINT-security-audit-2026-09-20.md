@@ -34,6 +34,18 @@ panel health passed. WordPress tests passed (32) and app-installer tests
 passed (18) after this last change. A real WordPress installation/upgrade
 through the live panel still needs the disposable full-system lab.
 
+The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
+inline scripts from *every* upstream HTML response, which could bless scripts
+from a hosted HTML file if the backend served one on the panel origin. Dynamic
+hashing is now limited to the exact FileBrowser SPA shell URL without a query;
+other HTML is sandboxed and sent as an attachment, while SVG/XML documents are
+sandboxed. Five focused tests passed. The installed API module received a backed-up
+one-file hotfix (`baseline/filebrowser.py.before-csp-hotfix`); API restart,
+trusted local HTTPS `/healthz`, and source/live hash match passed. The first
+restart health check ran before the API had bound port 2222, so the guard
+restored the original; a later readiness-waiting attempt completed. Browser
+tests of actual FileBrowser file delivery remain pending.
+
 Completed live changes: FTPS now presents the trusted panel certificate and
 passes hostname validation; 10 pre-existing wildcard MariaDB grants were
 replaced with exact grants. A disposable MariaDB user and two temporary
@@ -107,7 +119,8 @@ Important pending work, in risk order:
    legacy deferred fixes (bandwidth enforcement). Redis socket squatting
    was rechecked and no longer applies: current sockets are per-account
    under private 0700 home directories.
-   Continue negative and positive tests.
+   Continue negative and positive tests, including FileBrowser HTML/SVG
+   delivery and normal SPA use after the CSP restriction.
 5. Finish the signed-update trust bootstrap from the deployed unsigned
    updater, protected off-host signing-key recovery, current dependency
    advisory review, release gate, fresh install, upgrade, rollback and

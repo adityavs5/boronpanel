@@ -169,11 +169,12 @@ _INLINE_SCRIPT_RE = re.compile(rb"<script(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script>"
 
 
 def html_csp(body: bytes) -> str:
-    """Same posture as the /app SPA CSP (no remote/injected scripts) but with
-    sha256 allowances for the page's own inline bootstrap script(s), computed
-    from the served bytes. An attacker-injected inline script (e.g. an XSS via
-    a hostile filename) would never match a hash, so inline execution stays
-    effectively disabled."""
+    """CSP for the trusted FileBrowser SPA shell only, never hosted files.
+
+    Hashing arbitrary HTML would bless attacker-authored inline scripts from
+    an uploaded file. The caller must restrict this policy to the fixed app
+    shell URL; all other HTML responses receive an opaque-origin sandbox.
+    """
     hashes = " ".join(
         f"'sha256-{base64.b64encode(hashlib.sha256(m).digest()).decode()}'"
         for m in _INLINE_SCRIPT_RE.findall(body)
@@ -186,6 +187,31 @@ def html_csp(body: bytes) -> str:
         "media-src 'self' blob:; connect-src 'self'; "
         "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     )
+
+
+def untrusted_html_csp() -> str:
+    """Stop customer HTML served by the proxy from running on panel origin."""
+    return (
+        "sandbox; default-src 'none'; script-src 'none'; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    )
+
+
+def _is_spa_shell(request: Request, upstream: httpx.Response) -> bool:
+    return (
+        request.method in ("GET", "HEAD")
+        and request.url.path.rstrip("/") == settings.filebrowser_base_url.rstrip("/")
+        and not request.url.query
+        and upstream.status_code == 200
+    )
+
+
+_ACTIVE_DOCUMENT_TYPES = {"image/svg+xml", "application/xhtml+xml", "application/xml", "text/xml"}
+
+
+def _is_active_document(upstream: httpx.Response) -> bool:
+    media_type = upstream.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    return media_type in _ACTIVE_DOCUMENT_TYPES
 
 
 @proxy_router.api_route(settings.filebrowser_base_url, methods=PROXY_METHODS)
@@ -247,12 +273,24 @@ async def proxy(request: Request, path: str = ""):
         finally:
             await upstream.aclose()
         headers = dict(_build_response_headers(upstream))
-        headers["Content-Security-Policy"] = html_csp(body)
+        if _is_spa_shell(request, upstream):
+            headers["Content-Security-Policy"] = html_csp(body)
+        else:
+            headers["Content-Security-Policy"] = untrusted_html_csp()
+            headers["Content-Disposition"] = "attachment"
+            headers["X-Content-Type-Options"] = "nosniff"
         return Response(content=body, status_code=upstream.status_code, headers=headers)
 
+    headers = dict(_build_response_headers(upstream))
+    if _is_active_document(upstream):
+        # An uploaded SVG/XHTML can be a browser document with script execution
+        # privileges even though its MIME type is not text/html. Keep bundled
+        # FB icons renderable as images while sandboxing direct navigation.
+        headers["Content-Security-Policy"] = untrusted_html_csp()
+        headers["X-Content-Type-Options"] = "nosniff"
     return StreamingResponse(
         upstream.aiter_raw(),
         status_code=upstream.status_code,
-        headers=dict(_build_response_headers(upstream)),
+        headers=headers,
         background=BackgroundTask(upstream.aclose),
     )

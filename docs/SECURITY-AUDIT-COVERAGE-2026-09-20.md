@@ -18,7 +18,8 @@ underlying root handler enforces account ownership.
 | Boundary | Current evidence | Disposition |
 | --- | --- | --- |
 | Browser to terminal WebSocket | Foreign and missing Origin rejected before cookie authentication; direct negative tests | Source fixed, deployment pending |
-| Browser to FileBrowser proxy | Cookie-authenticated writes require same Origin; direct negative tests | Source fixed, deployment pending |
+| Browser to FileBrowser proxy | Cookie-authenticated writes require same Origin; direct negative tests | Live one-file hotfix; browser regression pending |
+| FileBrowser-served active documents | Dynamic inline-script hashing now applies only to its exact SPA shell URL with no query; other HTML is sandboxed and attached, while SVG/XML is sandboxed; five focused tests and live API health passed | Live one-file hotfix; real browser/file delivery check pending |
 | Uploaded SVG to panel browser | XML drawing allowlist; external names, DTDs, processing instructions, event handlers and references rejected; valid logo round trip | Source fixed, deployment pending |
 | Customer database user to other databases | Legacy grant wildcard reproduced against temporary MariaDB databases; 10 existing broad grants repaired and verified | Live repaired; source/upgrade code pending deployment |
 | Imported cPanel and backup SQL to MariaDB | `mysql --binary-mode` blocks client-side shell commands; exclusive `--defaults-file` preserves scoped credentials; backup restore gets a one-use target-DB user. Disposable live tests proved normal writes and denied cross-database writes, including after the three-module hotfix | Live hotfix verified; signed release and full restore/import workflows pending |
