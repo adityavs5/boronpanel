@@ -98,6 +98,20 @@ The installed module received a backed-up one-file hotfix
 (`baseline/appinstaller.py.before-error-redaction-hotfix`); the provisioner
 restart, local HTTPS health and source/live hash match passed.
 
+The root RPC dispatcher also wrote arbitrary handler exception text to audit
+details and returned it to the API, while logging the full traceback. Vendor,
+OS or database errors can include generated credentials absent from request
+parameters. Unexpected exceptions and third-party `ValueError` messages now
+return generic text and retain only the exception class in logs/audit rows;
+known validation messages remain useful but redact secret-valued request
+parameters. Ten focused RPC tests and 58 nearby API/auth/account tests passed.
+The installed `server.py` received a backed-up one-file hotfix
+(`baseline/server.py.before-rpc-error-hotfix`), including the previously
+source-only fail-closed SO_PEERCRED check. The daemon restart, local HTTPS
+health, source/live hash match, and a read-only `health.get` RPC as the real
+`boron-api` UID all passed. This does not close the daemon's separate root
+authorization gap: an API-UID process can still request any RPC operation.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic
