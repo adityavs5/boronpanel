@@ -88,6 +88,16 @@ PrestaShop's documented CLI password flags and upstream `$argv` use are at
 <https://devdocs.prestashop-project.org/8/basics/installation/advanced/install-from-cli/>
 and <https://raw.githubusercontent.com/PrestaShop/PrestaShop/8.2.x/install-dev/index_cli.php>.
 
+Application-install worker failures could also persist and log arbitrary
+exception messages from vendors and database tools. Those messages can embed
+credentials, so the worker now records only the exception class and marks the
+job failed; password validation is inside the same failure handler so an
+invalid password does not leave a pending job. A deliberately secret-bearing
+failure passed the new regression, with 21 focused app-installer tests passing.
+The installed module received a backed-up one-file hotfix
+(`baseline/appinstaller.py.before-error-redaction-hotfix`); the provisioner
+restart, local HTTPS health and source/live hash match passed.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic
