@@ -752,6 +752,28 @@ LIFECYCLE_OPS = {
 }
 
 
+def _redact_request_secrets(message: str, params: dict) -> str:
+    """Do not copy password/token inputs into validation errors or audit rows."""
+    from daemon.audit import _SENSITIVE_KEY_PARTS
+
+    def visit(key: str, value) -> None:
+        nonlocal message
+        if any(part in key.lower() for part in _SENSITIVE_KEY_PARTS):
+            if isinstance(value, str) and value:
+                message = message.replace(value, "***")
+            return
+        if isinstance(value, dict):
+            for nested_key, nested_value in value.items():
+                visit(str(nested_key), nested_value)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(key, item)
+
+    for key, value in params.items():
+        visit(str(key), value)
+    return message[:1000]
+
+
 async def dispatch(op: str, params: dict) -> dict:
     actor = params.pop("_actor", "unknown")
     role = params.pop("_role", "unknown")
@@ -765,13 +787,24 @@ async def dispatch(op: str, params: dict) -> dict:
     executor = REPORTING_EXECUTOR if op in REPORTING_OPS else None
     try:
         result = await loop.run_in_executor(executor, handler, params)
-    except (ValidationError, ValueError) as exc:
-        audit.record(actor, role, op, params.get("username"), params, "failed", str(exc))
+    except ValidationError as exc:
+        detail = _redact_request_secrets(str(exc), params)
+        audit.record(actor, role, op, params.get("username"), params, "failed", detail)
+        if detail != str(exc):
+            raise ValidationError(detail) from None
         raise
+    except ValueError:
+        # ValueError also comes from third-party parsers, whose message may
+        # contain generated secrets that are absent from request params.
+        audit.record(actor, role, op, params.get("username"), params, "failed", "invalid request")
+        raise ValueError("invalid request") from None
     except Exception as exc:  # noqa: BLE001
-        logger.exception("handler for %s failed", op)
-        audit.record(actor, role, op, params.get("username"), params, "failed", str(exc))
-        raise
+        # A vendor/OS/DB exception can contain generated credentials that
+        # were never present in params. Preserve the class for triage without
+        # persisting or returning arbitrary exception text or traceback.
+        logger.error("handler for %s failed (%s)", op, type(exc).__name__)
+        audit.record(actor, role, op, params.get("username"), params, "failed", type(exc).__name__)
+        raise RuntimeError("internal operation failure") from None
     else:
         audit.record(actor, role, op, params.get("username"), params, "ok")
         if op in LIFECYCLE_OPS and params.get("username"):
