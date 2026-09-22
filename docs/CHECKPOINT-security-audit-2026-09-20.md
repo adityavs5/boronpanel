@@ -48,6 +48,20 @@ remains to be exercised in a disposable full-system lab. WordPress documents
 the password-bearing return value at
 <https://developer.wordpress.org/reference/functions/wp_install/>.
 
+WP-CLI's password-reset action also passed the newly generated password in a
+`--user_pass=` process argument. The local procfs mount has no `hidepid`
+restriction, so this was an avoidable local exposure path. WP-CLI now receives
+the password over stdin via its documented `--prompt=user_pass` option, and
+the shared command runner masks known secrets from persisted stdout, stderr,
+errors and sensitive exception logs. All 21 focused tests passed. The two
+installed daemon files were backed up as
+`baseline/{wpcli,cmdjobs}.py.before-stdin-hotfix`, replaced, restarted and
+health-checked; source/live hashes matched. A read-only scan of 30 existing
+command jobs found no password-reset jobs, pending one-time secrets, or stored
+`user_pass` flags. A real reset and cross-account procfs check still need a
+disposable lab. WP-CLI documents the prompt option at
+<https://developer.wordpress.org/cli/commands/user/update/>.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic

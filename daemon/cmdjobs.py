@@ -27,6 +27,13 @@ _executor = ThreadPoolExecutor(max_workers=settings.command_run_concurrency, thr
 MAX_CAPTURE = 190_000  # keep well under the column ceiling
 
 
+def _mask_output(value: str, secrets: list[str]) -> str:
+    for secret in secrets:
+        if secret:
+            value = value.replace(secret, "***REDACTED***")
+    return value
+
+
 def _account(username: str) -> Account:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
@@ -86,8 +93,8 @@ def _run_job(job_id: int, argv: list[str], cwd: str, redact: list[str], timeout:
             on_failure()
         if result.returncode == 0 and on_success:
             on_success()
-        stdout = result.stdout[:MAX_CAPTURE]
-        stderr = result.stderr[:MAX_CAPTURE]
+        stdout = _mask_output(result.stdout, redact)[:MAX_CAPTURE]
+        stderr = _mask_output(result.stderr, redact)[:MAX_CAPTURE]
         with write_session() as session:
             job = session.get(CommandRun, job_id)
             job.exit_code = result.returncode
@@ -98,14 +105,23 @@ def _run_job(job_id: int, argv: list[str], cwd: str, redact: list[str], timeout:
                 job.error = (stderr.strip() or stdout.strip() or "command exited non-zero")[:4000]
             job.completed_at = utcnow()
     except Exception as exc:  # noqa: BLE001
-        logger.exception("command run %s failed", job_id)
+        # Exceptions from subprocess/timeouts can embed argv; no raw exception
+        # traceback may enter journald for a password-bearing operation.
+        if redact:
+            logger.error("command run %s failed (%s)", job_id, type(exc).__name__)
+        else:
+            logger.exception("command run %s failed", job_id)
         if on_failure:
             try: on_failure()
-            except Exception: logger.exception("cleanup failed for command run %s", job_id)
+            except Exception:
+                if redact:
+                    logger.error("cleanup failed for command run %s", job_id)
+                else:
+                    logger.exception("cleanup failed for command run %s", job_id)
         with write_session() as session:
             job = session.get(CommandRun, job_id)
             job.status = "failed"
-            job.error = str(exc)[:4000]
+            job.error = _mask_output(str(exc), redact)[:4000]
             job.completed_at = utcnow()
 
 

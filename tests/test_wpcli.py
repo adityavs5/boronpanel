@@ -44,9 +44,9 @@ def test_build_search_replace_preview_and_apply():
 def test_build_user_reset_password_reveals_and_redacts():
     args, display, secret, redact = wpcli._build("user_reset_password", {"user": "admin"})
     assert secret is not None and len(secret) >= 12
-    assert redact == [secret]  # password redacted from the daemon log
-    assert "***" in display  # never displayed in the command string
-    assert any(a.startswith("--user_pass=") for a in args)
+    assert redact == [secret]  # also mask unexpected WP-CLI output
+    assert secret not in display
+    assert args == ["user", "update", "admin", "--prompt=user_pass"]
 
 
 # --- detection -------------------------------------------------------------
@@ -95,6 +95,23 @@ def test_run_wpcli_builds_argv(isolated_db, tmp_path, monkeypatch):
     assert argv[0].endswith("php") and argv[1] == "/usr/local/bin/wp-cli.phar"
     assert f"--path={docroot}" in argv
     assert argv[-2:] == ["plugin", "list"] or "list" in argv
+
+
+def test_password_reset_passes_secret_only_on_stdin(isolated_db, tmp_path, monkeypatch):
+    docroot = tmp_path / "public_html"
+    docroot.mkdir()
+    (docroot / "wp-config.php").write_text("<?php")
+    _account_with_docroot(docroot)
+    monkeypatch.setattr(wpcli, "ensure_wpcli", lambda: "/usr/local/bin/wp-cli.phar")
+    captured = {}
+    monkeypatch.setattr(wpcli.cmdjobs, "submit",
+                        lambda *a, **k: captured.update(args=a, kwargs=k) or {"id": 1})
+
+    wpcli.run_wpcli({"username": "demo1", "domain": "site.com", "action": "user_reset_password", "user": "admin"})
+    secret = captured["kwargs"]["revealed_secret"]
+    assert captured["kwargs"]["input_text"] == secret + "\n"
+    assert captured["kwargs"]["redact"] == [secret]
+    assert secret not in " ".join(captured["args"][3])
 
 
 def test_run_wpcli_rejects_domain_without_wordpress(isolated_db, tmp_path, monkeypatch):

@@ -200,8 +200,8 @@ def _build(action: str, p: dict):
         login = _slug(p.get("user"), "user")
         password = generate_strong_password(20)
         return (
-            ["user", "update", login, f"--user_pass={password}"],
-            f"user update {login} --user_pass=***",
+            ["user", "update", login, "--prompt=user_pass"],
+            f"user update {login} --prompt=user_pass",
             password,
             [password],
         )
@@ -229,6 +229,7 @@ def _run_wpcli(params: dict) -> dict:
     return cmdjobs.submit(
         username, "wpcli", docroot, argv, f"wp {display}",
         redact=redact, revealed_secret=secret,
+        input_text=secret + "\n" if action == "user_reset_password" else None,
     )
 
 
