@@ -247,14 +247,17 @@ def _run_silent_install(
         redact=[admin_password],
     )
     if not result.ok:
-        raise WordPressError(f"WordPress install script failed: {result.stderr.strip() or result.stdout.strip()}")
+        # WordPress/plugins can put sensitive install values into diagnostics.
+        # These errors flow into a job row and the daemon log, so never echo
+        # raw subprocess output back to the panel.
+        raise WordPressError("WordPress install script failed; check site files and retry")
     try:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError) as exc:
-        raise WordPressError(f"WordPress install script returned unparseable output: {result.stdout!r}") from exc
-    if not payload.get("success"):
-        raise WordPressError(f"WordPress install did not report success: {payload}")
-    return payload
+        raise WordPressError("WordPress install script returned an invalid result") from exc
+    if payload != {"success": True}:
+        raise WordPressError("WordPress install script did not report success")
+    return {"success": True}
 
 
 def _account_and_domain(username: str, domain_name: str) -> tuple[int, str]:

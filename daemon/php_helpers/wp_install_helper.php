@@ -28,9 +28,11 @@ require_once rtrim($docroot, '/') . '/wp-load.php';
 require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 require_once ABSPATH . 'wp-admin/includes/translation-install.php';
 
-$result = wp_install($title, $admin_user, $admin_email, true, '', $admin_password);
+// wp_install() returns the plaintext password in its result array. Never
+// serialize that array into the daemon's captured subprocess output.
+wp_install($title, $admin_user, $admin_email, true, '', $admin_password);
 // Persist the selected scheme, hostname and folder; URL guessing in CLI
 // installations otherwise drops subdirectory paths.
 update_option('siteurl', rtrim($site_url, '/'));
 update_option('home', rtrim($site_url, '/'));
-echo json_encode(array('success' => true, 'result' => $result));
+echo json_encode(array('success' => true));

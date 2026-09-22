@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from daemon import handlers_account as ha
 from daemon import wordpress as wp
+from daemon.procutil import ProcResult
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, WordPressInstall
@@ -20,6 +21,20 @@ def _fake_wp_zip() -> bytes:
         zf.writestr("wordpress/wp-config-sample.php", "<?php // sample config\n")
         zf.writestr("wordpress/wp-admin/includes/upgrade.php", "<?php // fake upgrade.php\n")
     return buf.getvalue()
+
+
+@pytest.mark.parametrize("returncode,stdout,stderr", [
+    (1, "", "private-password from PHP diagnostics"),
+    (0, "not JSON private-password", ""),
+    (0, '{"success":false,"password":"private-password"}', ""),
+])
+def test_install_helper_errors_never_expose_subprocess_output(monkeypatch, returncode, stdout, stderr):
+    monkeypatch.setattr(wp, "run", lambda args, **kwargs: ProcResult(
+        args=args, returncode=returncode, stdout=stdout, stderr=stderr))
+    with pytest.raises(wp.WordPressError) as failed:
+        wp._run_silent_install("/site", "demo1", "/home/demo1", "https://example.test",
+                               "Site", "admin", "admin@example.test", "private-password")
+    assert "private-password" not in str(failed.value)
 
 
 @pytest.fixture()

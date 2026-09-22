@@ -34,6 +34,20 @@ panel health passed. WordPress tests passed (32) and app-installer tests
 passed (18) after this last change. A real WordPress installation/upgrade
 through the live panel still needs the disposable full-system lab.
 
+Further WordPress review found that `wp_install()` returns the plaintext
+administrator password, and Boron's PHP helper serialized that return value
+into captured subprocess output. Its invalid-output and failure paths could
+also copy raw output into a job error. The helper now emits only a success
+boolean and the daemon uses generic failure messages. All 39 focused
+WordPress/helper tests passed. Both installed files received backed-up live
+hotfixes (`baseline/{wordpress.py,wp_install_helper.php}.before-output-hotfix`);
+daemon restart, local HTTPS health, and source/live hashes passed. A read-only
+check of the six live WordPress job rows found no failed jobs, pending plaintext
+password reveal, or known password in stored errors. A real fresh install
+remains to be exercised in a disposable full-system lab. WordPress documents
+the password-bearing return value at
+<https://developer.wordpress.org/reference/functions/wp_install/>.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic
