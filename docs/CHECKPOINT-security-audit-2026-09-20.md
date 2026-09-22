@@ -62,6 +62,15 @@ command jobs found no password-reset jobs, pending one-time secrets, or stored
 disposable lab. WP-CLI documents the prompt option at
 <https://developer.wordpress.org/cli/commands/user/update/>.
 
+The optional MaxMind GeoLite download previously included its license key in
+curl's process arguments and parsed an unbounded tar response. The URL now
+enters curl through stdin config, with compressed download, member count and
+expanded database limits. Three focused tests passed, including an actual
+curl stdin-config invocation. The installed daemon module received a backed-up
+one-file hotfix (`baseline/geoip.py.before-stdin-hotfix`); restart, HTTPS
+health and source/live hash match passed. The live host has no configured
+MaxMind key, so an authenticated download remains untested.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic

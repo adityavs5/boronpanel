@@ -18,14 +18,19 @@ everywhere else a feature depends on operator-supplied config
 """
 from __future__ import annotations
 
+import json
 import tarfile
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 from daemon.procutil import run
 
 GEOLITE_DB_PATH = "/var/lib/boron/GeoLite2-Country.mmdb"
 GEOLITE_DOWNLOAD_URL = "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&suffix=tar.gz&license_key="
+MAX_GEOLITE_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_GEOLITE_DATABASE_BYTES = 128 * 1024 * 1024
+MAX_GEOLITE_MEMBERS = 1000
 
 
 class GeoIpError(Exception):
@@ -39,30 +44,48 @@ def is_configured() -> bool:
 def download_database(license_key: str) -> None:
     """Admin-triggered (not automatic) -- fetches and installs the
     GeoLite2-Country database using an operator-supplied license key.
-    Never logs the key (redact=) and never persists it (the caller,
-    daemon/sitestats.py's RPC entry point, writes it straight into
-    secrets.env via the same mechanism every other operator-supplied
-    secret in this project uses, not into the SQLite control plane)."""
+    Never places the key in process arguments or logs it. The caller,
+    daemon/sitestats.py's RPC entry point, writes it into the root-only
+    secrets.env file rather than the SQLite control plane."""
     if not license_key:
         raise GeoIpError("a MaxMind license key is required")
     with tempfile.TemporaryDirectory() as tmp:
         archive_path = f"{tmp}/geolite2.tar.gz"
+        # curl accepts config from stdin. Keep the license key out of
+        # /proc/<pid>/cmdline, which application-log redaction cannot protect.
+        url = GEOLITE_DOWNLOAD_URL + quote(license_key, safe="")
         result = run(
-            ["curl", "-sSL", "-f", "-o", archive_path, f"{GEOLITE_DOWNLOAD_URL}{license_key}"],
+            ["curl", "--config", "-", "-sSL", "-f", "--max-filesize",
+             str(MAX_GEOLITE_ARCHIVE_BYTES), "-o", archive_path],
+            input_text=f"url = {json.dumps(url)}\n",
             timeout=60, redact=[license_key],
         )
         if not result.ok:
             raise GeoIpError("failed to download GeoLite2-Country database -- check the license key")
+        if not Path(archive_path).is_file():
+            raise GeoIpError("GeoLite2 download did not produce an archive")
+        if Path(archive_path).stat().st_size > MAX_GEOLITE_ARCHIVE_BYTES:
+            raise GeoIpError("GeoLite2 download exceeds the archive size limit")
         try:
-            with tarfile.open(archive_path) as tar:
-                mmdb_member = next((m for m in tar.getmembers() if m.name.endswith(".mmdb")), None)
-                if mmdb_member is None:
+            with tarfile.open(archive_path, mode="r|gz") as tar:
+                data = None
+                for count, member in enumerate(tar, 1):
+                    if count > MAX_GEOLITE_MEMBERS:
+                        raise GeoIpError("GeoLite2 archive contains too many members")
+                    if not member.name.endswith(".mmdb"):
+                        continue
+                    if not member.isfile() or member.size > MAX_GEOLITE_DATABASE_BYTES:
+                        raise GeoIpError("GeoLite2 database member is unsafe or too large")
+                    extracted = tar.extractfile(member)
+                    if extracted is None:
+                        raise GeoIpError("could not read .mmdb file from downloaded archive")
+                    data = extracted.read(MAX_GEOLITE_DATABASE_BYTES + 1)
+                    if len(data) > MAX_GEOLITE_DATABASE_BYTES:
+                        raise GeoIpError("GeoLite2 database exceeds the size limit")
+                    break
+                if data is None:
                     raise GeoIpError("downloaded archive did not contain a .mmdb file")
-                extracted = tar.extractfile(mmdb_member)
-                if extracted is None:
-                    raise GeoIpError("could not read .mmdb file from downloaded archive")
-                data = extracted.read()
-        except tarfile.TarError as exc:
+        except (tarfile.TarError, EOFError) as exc:
             raise GeoIpError(f"downloaded file is not a valid archive: {exc}") from exc
 
     Path(GEOLITE_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
