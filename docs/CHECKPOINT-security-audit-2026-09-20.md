@@ -71,6 +71,23 @@ one-file hotfix (`baseline/geoip.py.before-stdin-hotfix`); restart, HTTPS
 health and source/live hash match passed. The live host has no configured
 MaxMind key, so an authenticated download remains untested.
 
+PrestaShop's optional CLI installer exposed both the generated database and
+administrator passwords in process arguments. Its first-party PHP entry point
+reads the passed `$argv` array, so a root-owned PHP helper now reconstructs
+that array from a bounded JSON payload on stdin and includes the vendor's
+installer under the hosting UID. The 20 focused app-installer tests pass,
+including an actual PHP helper invocation and the Python call-site check;
+PHP lint and Python compilation pass. The installed app-installer module and
+new helper received a backed-up live hotfix; the GeoIP module also received
+its missing-archive guard. After correcting an initial restart command that
+named a nonexistent unit, the actual `boron-provisiond` service restarted,
+local HTTPS health passed and all three installed files matched source. No
+PrestaShop jobs exist in the live SQLite database. A real vendor release
+install remains unverified until the disposable full-system lab is available.
+PrestaShop's documented CLI password flags and upstream `$argv` use are at
+<https://devdocs.prestashop-project.org/8/basics/installation/advanced/install-from-cli/>
+and <https://raw.githubusercontent.com/PrestaShop/PrestaShop/8.2.x/install-dev/index_cli.php>.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic
