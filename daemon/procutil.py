@@ -48,17 +48,9 @@ def run(
     input_path: str | None = None, discard_stdout: bool = False,
     uid: int | None = None, gid: int | None = None,
 ) -> ProcResult:
-    """redact: values that must appear as literal CLI arguments (a
-    third-party tool's own documented flag syntax, e.g. `--password=...`,
-    that offers no stdin/config-file alternative) but must never reach the
-    log line verbatim -- this project's hard "passwords never logged
-    anywhere" rule (found violated once, by Joomla's own password-hashing
-    call in daemon/appinstaller.py, and fixed there by switching to stdin
-    instead; PrestaShop's first-party install/index_cli.php genuinely has
-    no stdin-based alternative, so this is the fix for that case). Every
-    other password-bearing call in this codebase pipes via input_text
-    instead, which was already never logged -- redact exists only for the
-    rare case where argv is the tool's only real interface."""
+    """Run an argv command. redact masks known secrets in the logged argv,
+    but cannot hide them from process listings; prefer input_text for secrets.
+    """
     if isinstance(args, str):  # pragma: no cover - defensive, should never happen
         raise TypeError("run() requires an argument list, never a shell string")
     if redact:

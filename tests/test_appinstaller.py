@@ -1,4 +1,5 @@
 import os
+import json
 import pwd as real_pwd
 import time
 
@@ -309,3 +310,64 @@ def test_terminate_account_apps_removes_rows(isolated_db):
 
     ai.terminate_account_apps(FakeAccount())
     assert ai.list_installed_apps({"username": "demo1"})["apps"] == []
+
+
+def test_prestashop_helper_reconstructs_vendor_argv_without_os_password_args(tmp_path):
+    """The real PHP process must pass the same option array to index_cli.php."""
+    import subprocess
+
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    installer = install_dir / "index_cli.php"
+    installer.write_text("<?php echo json_encode([$argc, $argv, $_SERVER['argv']]);")
+    options = {
+        "domain": "example.test", "db_server": "localhost", "db_name": "db",
+        "db_user": "dbuser", "db_password": "db secret", "email": "a@example.test",
+        "firstname": "Store", "lastname": "Admin", "password": "admin secret",
+        "language": "en", "country": "us", "admin_dir": "admin1234",
+        "newsletter": "0", "send_email": "0",
+    }
+    cmd = [ai.settings.php_cli_bin, str(ai.PRESTASHOP_CLI_HELPER), str(installer)]
+    result = subprocess.run(cmd, input=json.dumps(options), text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    argc, argv, server_argv = json.loads(result.stdout)
+    assert argc == len(options) + 1
+    assert argv == server_argv
+    assert argv[0] == str(installer)
+    assert "--db_password=db secret" in argv
+    assert "--password=admin secret" in argv
+    assert "db secret" not in " ".join(cmd)
+    assert "admin secret" not in " ".join(cmd)
+
+
+def test_prestashop_install_sends_passwords_only_through_stdin(account_with_domain, monkeypatch):
+    import zipfile
+    from daemon.procutil import ProcResult
+
+    monkeypatch.setattr(ai, "fetch_prestashop_latest_version_and_url", lambda: ("test", "local"))
+    monkeypatch.setattr(ai.settings, "app_staging_dir", str(account_with_domain["docroot"].parent / "staging"))
+    monkeypatch.setattr(ai, "_allocate_database", lambda *_: {
+        "db_name": "demo1_ps", "db_user": "demo1_ps", "password": "database secret",
+    })
+
+    def fake_download(_url, path):
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("install/index_cli.php", "<?php")
+
+    monkeypatch.setattr(ai, "_download", fake_download)
+    original_run = ai.run
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        if args[0] == "runuser":
+            captured.update(args=args, kwargs=kwargs)
+            return ProcResult(args=args, returncode=0, stdout="", stderr="")
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(ai, "run", fake_run)
+    ai.install_prestashop("demo1", "demo1.example", "Shop", "admin", "admin@example.test", "admin secret")
+    assert "database secret" not in " ".join(captured["args"])
+    assert "admin secret" not in " ".join(captured["args"])
+    options = json.loads(captured["kwargs"]["input_text"])
+    assert options["db_password"] == "database secret"
+    assert options["password"] == "admin secret"

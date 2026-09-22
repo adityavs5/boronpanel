@@ -45,6 +45,7 @@ CHECKPOINT-phase4-8-app-installer.md for exactly what wasn't and why.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import pwd
 import secrets
@@ -76,6 +77,7 @@ MAX_APP_ARCHIVE_MEMBERS = 100_000
 MAX_APP_FILE_BYTES = 512 * 1024 * 1024
 
 APP_TEMPLATES_DIR = Path(__file__).resolve().parent / "app_templates"
+PRESTASHOP_CLI_HELPER = Path(__file__).resolve().parent / "php_helpers" / "prestashop_cli_helper.php"
 
 
 class AppInstallError(Exception):
@@ -621,27 +623,33 @@ def install_prestashop(username: str, domain_name: str, title: str, admin_user: 
     installer = os.path.join(docroot, "install", "index_cli.php")
     admin_dir_final = f"admin{secrets.token_hex(4)}"
     if os.path.isfile(installer):
+        # PrestaShop's CLI accepts passwords only as --key=value arguments.
+        # Its PHP entry point consumes the $argv array, so our root-owned
+        # helper reconstructs that array from stdin inside the account's PHP
+        # process without publishing either secret in /proc/*/cmdline.
+        options = {
+            "domain": domain_name,
+            "db_server": settings.mariadb_socket,
+            "db_name": db_name,
+            "db_user": db_user,
+            "db_password": db_password,
+            "email": admin_email,
+            "firstname": "Store",
+            "lastname": "Admin",
+            "password": admin_password,
+            "language": "en",
+            "country": "us",
+            "admin_dir": admin_dir_final,
+            "newsletter": "0",
+            "send_email": "0",
+        }
         result = run(
             [
                 "runuser", "-u", username, "--",
-                settings.php_cli_bin, installer,
-                f"--domain={domain_name}",
-                "--db_server=" + settings.mariadb_socket,
-                f"--db_name={db_name}",
-                f"--db_user={db_user}",
-                f"--db_password={db_password}",
-                f"--email={admin_email}",
-                f"--firstname=Store",
-                f"--lastname=Admin",
-                f"--password={admin_password}",
-                "--language=en",
-                "--country=us",
-                f"--admin_dir={admin_dir_final}",
-                "--newsletter=0",
-                "--send_email=0",
+                settings.php_cli_bin, str(PRESTASHOP_CLI_HELPER), installer,
             ],
+            input_text=json.dumps(options, separators=(",", ":")),
             timeout=300,
-            redact=[db_password, admin_password],
         )
         if not result.ok:
             logger.warning(
