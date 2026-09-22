@@ -793,13 +793,16 @@ def _run_install_job(job_id: int, username: str, domain_name: str, app_id: str, 
     title = (params.get("title") or domain_name).strip()
     admin_user = (params.get("admin_user") or "admin").strip()
     admin_email = (params.get("admin_email") or f"webmaster@{domain_name}").strip()
-    admin_password = validate_password_strength(params["admin_password"]) if params.get("admin_password") else _generate_password()
-
     try:
+        admin_password = validate_password_strength(params["admin_password"]) if params.get("admin_password") else _generate_password()
         result = APPS[app_id]["installer"](username, domain_name, title, admin_user, admin_email, admin_password)
     except Exception as exc:  # noqa: BLE001 -- report to the job row, don't crash the worker thread
-        logger.exception("app install job %d (%s) failed", job_id, app_id)
-        _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
+        # Vendor/DB failures can embed installer arguments or SQL, including
+        # generated passwords. Neither the job row nor service log should
+        # persist an arbitrary exception message or traceback from here.
+        logger.error("app install job %d (%s) failed (%s)", job_id, app_id, type(exc).__name__)
+        _update_job(job_id, status="failed", error=f"application installation failed ({type(exc).__name__})",
+                    progress_message="failed", completed_at=utcnow())
         return
 
     with write_session() as session:

@@ -371,3 +371,28 @@ def test_prestashop_install_sends_passwords_only_through_stdin(account_with_doma
     options = json.loads(captured["kwargs"]["input_text"])
     assert options["db_password"] == "database secret"
     assert options["password"] == "admin secret"
+
+
+def test_app_install_failure_does_not_store_or_log_exception_secrets(isolated_db, monkeypatch, caplog):
+    from shared.db import write_session
+    from shared.models import Account, AppInstallJob
+
+    with write_session() as session:
+        account = Account(username="demo1", uid=6001, gid=6001, status="active")
+        session.add(account)
+        session.flush()
+        job = AppInstallJob(account_id=account.id, domain="demo1.example", app_id="prestashop", status="pending")
+        session.add(job)
+        session.flush()
+        job_id = job.id
+
+    def fail(*_args):
+        raise RuntimeError("vendor error: db secret / Admin secret 2026!")
+
+    monkeypatch.setitem(ai.APPS["prestashop"], "installer", fail)
+    ai._run_install_job(job_id, "demo1", "demo1.example", "prestashop", {"admin_password": "Admin secret 2026!"})
+    with write_session() as session:
+        job = session.get(AppInstallJob, job_id)
+        assert job.status == "failed"
+        assert "secret" not in job.error
+    assert "secret" not in caplog.text
