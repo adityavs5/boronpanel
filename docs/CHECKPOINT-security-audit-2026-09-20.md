@@ -332,6 +332,17 @@ back. No OS package upgrade was applied; the simulation and local package
 inventories are protected evidence. OpenLiteSpeed WebAdmin on port 7080
 passed a trusted TLS 1.3 hostname check.
 
+The focused release/update safety suite was rerun after the authority and
+delayed-worker changes. A sandboxed run passed 83 tests and skipped 2, then
+hit the expected local-socket sandbox denial in the finalizer tests. The same
+suite run outside the sandbox passed 88 and skipped 2:
+`tests/test_release.py`, `tests/test_release_signature.py`,
+`tests/test_updates.py`, and `tests/test_update_finalizer.py`. This validates
+the local packaging/signature/updater/finalizer test coverage only. The
+remaining release gate is still a real GitHub release asset followed by an
+installed update and rollback drill on the disposable VM; publishing that
+asset has intentionally not been done from this unreleased audit branch.
+
 Important pending work, in risk order:
 
 1. Complete full-system validation of the root-daemon authorization boundary:
