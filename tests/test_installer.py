@@ -103,6 +103,10 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert source.index("install_node_runtimes", source.index("main()")) < source.index(
         "deploy_app", source.index("main()")
     )
+    assert "for _wait in {1..30}" in source
+    assert "sudo -u boron-api -- test -r /run/boron/provisiond.sock" in source
+    assert "sudo -u boron-api -- test -w /run/boron/provisiond.sock" in source
+    assert "provisioning daemon socket was not ready for boron-api after 30 seconds" in source
     assert "web UI built from frontend source" in source
     filebrowser_source = Path(__file__).resolve().parent.parent.joinpath("daemon/filebrowser.py").read_text()
     assert '["iptables", "-I", "OUTPUT", str(position)]' in filebrowser_source

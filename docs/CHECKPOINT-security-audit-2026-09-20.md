@@ -148,6 +148,13 @@ new regression test and the OLS/panel-TLS suite pass. The resumed install then
 caught and corrected a PATH quoting error in the managed-Node build command
 before any release candidate was produced.
 
+A subsequent retry exposed a provisioning-daemon readiness race. The
+installer accepted a stale socket path after ten seconds, then attempted its
+first RPC three seconds before the freshly started daemon replaced that path
+with the `boron-api`-accessible socket. The gate now waits up to thirty
+seconds and verifies read/write access as the actual API service user before
+continuing. Nine installer tests, shellcheck and bash syntax pass.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic

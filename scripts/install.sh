@@ -1119,10 +1119,19 @@ start_services() {
     # (create_all + additive migrations); give it a moment to bind its socket.
     if ! $DRY_RUN; then
         local _wait
-        for _wait in 1 2 3 4 5 6 7 8 9 10; do
-            [[ -S /run/boron/provisiond.sock ]] && break
+        for _wait in {1..30}; do
+            if [[ -S /run/boron/provisiond.sock ]] && \
+                sudo -u boron-api -- test -r /run/boron/provisiond.sock && \
+                sudo -u boron-api -- test -w /run/boron/provisiond.sock; then
+                break
+            fi
             sleep 1
         done
+        if [[ ! -S /run/boron/provisiond.sock ]] || \
+            ! sudo -u boron-api -- test -r /run/boron/provisiond.sock || \
+            ! sudo -u boron-api -- test -w /run/boron/provisiond.sock; then
+            die "provisioning daemon socket was not ready for boron-api after 30 seconds"
+        fi
     fi
     # One-time: replace OLS's stock Example vhost with a clean baseline.
     run_sh "sudo -u boron-api -- '${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from shared.rpc import RpcClient; RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_ols', _actor='setup', _role='admin')\""
