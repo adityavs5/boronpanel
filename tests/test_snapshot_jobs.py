@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import contextmanager
 import pytest
 from sqlalchemy import select
 from daemon import snapshot_jobs as jobs, snapshot_storage as storage
@@ -115,6 +116,35 @@ def test_source_symlink_escape_fails_and_marks_job_failed(environment,monkeypatc
     assert row['notification_results']=={'email':'dispatched','webhook':'dispatched'}
     jobs.execute_run(ident)
     assert calls==['email','webhook']
+
+
+def test_execute_run_rechecks_account_status_inside_lock(environment, monkeypatch):
+    root, _ = environment
+    dest = make_destination(root)
+    policy = make_policy(dest)
+    ident = jobs.queue_policy({'id': policy['id']})['run_ids'][0]
+    account_id = jobs._row(SnapshotRun, ident).account_id
+    original_lock = jobs.lock
+    flipped = False
+
+    @contextmanager
+    def lock_and_suspend(name, *args, **kwargs):
+        nonlocal flipped
+        with original_lock(name, *args, **kwargs):
+            if name == f'account-{account_id}' and not flipped:
+                with write_session() as session:
+                    session.get(Account, account_id).status = 'terminated'
+                flipped = True
+            yield
+
+    monkeypatch.setattr(jobs, 'lock', lock_and_suspend)
+    monkeypatch.setattr(jobs, 'sources', lambda *_a, **_k: pytest.fail('stale snapshot run must not collect sources'))
+
+    jobs.execute_run(ident)
+
+    row = jobs._row(SnapshotRun, ident)
+    assert row.status == 'failed'
+    assert 'no longer active' in row.error
 
 
 def test_frozen_options_filters_and_recovery(environment):

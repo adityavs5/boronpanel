@@ -360,14 +360,16 @@ def _notify(row,account):
 
 def execute_run(ident):
     row=_row(SnapshotRun,ident)
-    account=_row(Account,row.account_id)
+    account_id=row.account_id
+    account=None
     should_notify=False
     try:
-        with lock(f'account-{account.id}'),lock(f'repository-{row.destination_id}'):
+        with lock(f'account-{account_id}'),lock(f'repository-{row.destination_id}'):
             # A second worker must not execute the same persisted run again.
             row=_row(SnapshotRun,ident)
             if row.status!='pending':return
             should_notify=True
+            account=_row(Account,row.account_id)
             if account.status!='active':raise ValidationError('Account is no longer active')
             _update(ident,status='running',progress_message='Preparing account files and databases')
             paths=sources(account,row.options)
@@ -394,7 +396,7 @@ def execute_run(ident):
         logger.exception('Snapshot run %s failed',ident)
         _update(ident,status='failed',error=str(exc)[-3000:],progress_message='Backup failed',completed_at=utcnow())
     finally:
-        if should_notify:_notify(_row(SnapshotRun,ident),account)
+        if should_notify and account is not None:_notify(_row(SnapshotRun,ident),account)
 
 
 def _restore_entries(entries,account):
