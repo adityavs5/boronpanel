@@ -619,22 +619,34 @@ def _build_mailbox_backup(item_ref: str, staging_dir: Path, job_id: int) -> Path
 
 
 def _run_backup_job(job_id: int) -> None:
-    with write_session() as session:
-        job = session.get(BackupJob, job_id)
-        account = session.get(Account, job.account_id)
-        destination = session.get(BackupDestination, job.destination_id)
-        username = account.username
-        kind = job.kind
-        item_ref = job.item_ref
-        dest_kind = destination.kind
-        dest_local_path = destination.local_path
-        dest_remote = destination.rclone_remote
-        dest_prefix = destination.rclone_path_prefix
-        account_snapshot = account
-
-    _update_job(job_id, status="running", progress_message="starting")
     staging_dir = Path(settings.backup_staging_dir) / f"job-{job_id}"
+    kind = None
+    account_snapshot = None
     try:
+        with write_session() as session:
+            job = session.get(BackupJob, job_id)
+            if job is None or job.status != "pending":
+                return
+            account = session.get(Account, job.account_id)
+            if account is None:
+                raise BackupError("backup account no longer exists")
+            if account.status != "active":
+                raise BackupError(f"cannot run backup for an account in status '{account.status}'")
+            destination = session.get(BackupDestination, job.destination_id)
+            if destination is None:
+                raise BackupError("backup destination no longer exists")
+            username = account.username
+            kind = job.kind
+            item_ref = job.item_ref
+            dest_kind = destination.kind
+            dest_local_path = destination.local_path
+            dest_remote = destination.rclone_remote
+            dest_prefix = destination.rclone_path_prefix
+            session.expunge(account)
+            account_snapshot = account
+            job.status = "running"
+            job.progress_message = "starting"
+
         staging_dir.mkdir(parents=True, exist_ok=True)
         timestamp = utcnow().strftime("%Y%m%d-%H%M%S")
 
@@ -689,7 +701,7 @@ def _run_backup_job(job_id: int) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("backup job %d failed", job_id)
         _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
-        if kind == "full":
+        if kind == "full" and account_snapshot is not None:
             events.emit("backup.failed", account_snapshot, job_id=job_id, error=str(exc))
     finally:
         if staging_dir.exists():

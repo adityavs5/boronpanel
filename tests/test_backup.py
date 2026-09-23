@@ -421,6 +421,35 @@ def test_run_backup_job_marks_failed_on_error(isolated_db, fake_home, fake_stagi
         assert "boom" in failed.error
 
 
+def test_run_backup_job_rechecks_active_account_before_build(isolated_db, fake_home, fake_staging, tmp_path, monkeypatch):
+    with write_session() as session:
+        account = make_account(session)
+    dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(tmp_path / "dest")})
+
+    monkeypatch.setattr(backup, "_build_database_backup", lambda *a, **k: pytest.fail("stale backup must not build"))
+
+    with write_session() as session:
+        job = BackupJob(
+            account_id=account.id,
+            kind="database",
+            item_ref="demo1_shop",
+            destination_id=dest["id"],
+            status="pending",
+            progress_message="queued",
+        )
+        session.add(job)
+        session.flush()
+        job_id = job.id
+        session.get(Account, account.id).status = "suspended"
+
+    backup._run_backup_job(job_id)
+
+    with write_session() as session:
+        failed = session.get(BackupJob, job_id)
+        assert failed.status == "failed"
+        assert "suspended" in failed.error
+
+
 def test_run_backup_job_uploads_to_rclone_destination(isolated_db, fake_home, fake_staging, stub_rclone, monkeypatch):
     with write_session() as session:
         account = make_account(session)
