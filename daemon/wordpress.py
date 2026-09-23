@@ -265,6 +265,8 @@ def _account_and_domain(username: str, domain_name: str) -> tuple[int, str]:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise RuntimeError(f"account '{username}' not found")
+        if account.status != "active":
+            raise RuntimeError(f"cannot install WordPress for an account in status '{account.status}'")
         domain_row = session.scalar(
             select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id)
         )
@@ -491,10 +493,27 @@ def trigger_install(params: dict) -> dict:
 def _run_install_job(job_id: int, params: dict) -> None:
     from shared.models import utcnow
 
-    _update_job(job_id, status="running", progress_message="downloading WordPress core")
     try:
+        with write_session() as session:
+            job = session.get(WordPressJob, job_id)
+            if job is None or job.status != "pending":
+                return
+            account = session.get(Account, job.account_id)
+            if account is None:
+                raise RuntimeError("WordPress install account no longer exists")
+            if account.status != "active":
+                raise RuntimeError(f"cannot install WordPress for an account in status '{account.status}'")
+            domain_row = session.scalar(select(Domain).where(Domain.account_id == account.id, Domain.domain == job.domain))
+            if domain_row is None:
+                raise RuntimeError("WordPress install domain no longer belongs to this account")
+            runtime_params = dict(params)
+            runtime_params["username"] = account.username
+            runtime_params["domain"] = job.domain
+            job.status = "running"
+            job.progress_message = "downloading WordPress core"
+
         _update_job(job_id, progress_message="creating database")
-        result = install(params)
+        result = install(runtime_params)
     except Exception as exc:  # noqa: BLE001 - report to the job row, don't crash the worker thread
         logger.exception("WordPress install job %d failed", job_id)
         _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())

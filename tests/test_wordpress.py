@@ -10,7 +10,7 @@ from daemon import wordpress as wp
 from daemon.procutil import ProcResult
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, WordPressInstall
+from shared.models import Account, Domain, WordPressInstall, WordPressJob
 
 
 def _fake_wp_zip() -> bytes:
@@ -281,6 +281,24 @@ def test_trigger_install_creates_pending_job_and_runs_async(account_with_domain,
     # Second read must not re-reveal the password (one-time reveal).
     job2 = wp.get_job({"job_id": result["id"], "username": "demo1"})
     assert job2["admin_password"] is None
+
+
+def test_install_worker_rechecks_active_account_before_install(account_with_domain, monkeypatch):
+    monkeypatch.setattr(wp._executor, "submit", lambda *args: None)
+    result = wp._trigger_install({"username": "demo1", "domain": "demo1.example"})
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        account.status = "terminated"
+
+    monkeypatch.setattr(wp, "install", lambda *_a, **_k: pytest.fail("stale WordPress install must not run"))
+
+    wp._run_install_job(result["id"], {"username": "demo1", "domain": "demo1.example"})
+
+    with write_session() as session:
+        row = session.get(WordPressJob, result["id"])
+        assert row.status == "failed"
+        assert "terminated" in row.error
 
 
 def test_get_job_missing_raises(account_with_domain):

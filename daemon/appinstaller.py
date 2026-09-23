@@ -97,6 +97,8 @@ def _account_and_domain(username: str, domain_name: str) -> tuple[int, str]:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise AppInstallError(f"account '{username}' not found")
+        if account.status != "active":
+            raise AppInstallError(f"cannot install applications for an account in status '{account.status}'")
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id))
         if domain_row is None:
             raise AppInstallError(f"domain '{domain_name}' not found for account '{username}'")
@@ -789,11 +791,35 @@ def trigger_install(params: dict) -> dict:
 
 
 def _run_install_job(job_id: int, username: str, domain_name: str, app_id: str, params: dict) -> None:
-    _update_job(job_id, status="running", progress_message=f"installing {APPS[app_id]['name']}")
-    title = (params.get("title") or domain_name).strip()
-    admin_user = (params.get("admin_user") or "admin").strip()
-    admin_email = (params.get("admin_email") or f"webmaster@{domain_name}").strip()
     try:
+        with write_session() as session:
+            job = session.get(AppInstallJob, job_id)
+            if job is None or job.status != "pending":
+                return
+            account = session.get(Account, job.account_id)
+            if account is None:
+                raise AppInstallError("app install account no longer exists")
+            if account.status != "active":
+                raise AppInstallError(f"cannot install applications for an account in status '{account.status}'")
+            domain_row = session.scalar(select(Domain).where(Domain.account_id == account.id, Domain.domain == job.domain))
+            if domain_row is None:
+                raise AppInstallError("app install domain no longer belongs to this account")
+            if job.app_id not in APPS:
+                raise AppInstallError(f"unknown app_id '{job.app_id}' -- must be one of {sorted(APPS)}")
+            username = account.username
+            domain_name = job.domain
+            app_id = job.app_id
+            job.status = "running"
+            job.progress_message = f"installing {APPS[app_id]['name']}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("app install job %d rejected before installer start (%s)", job_id, type(exc).__name__)
+        _update_job(job_id, status="failed", error=str(exc)[:4000], progress_message="failed", completed_at=utcnow())
+        return
+
+    try:
+        title = (params.get("title") or domain_name).strip()
+        admin_user = (params.get("admin_user") or "admin").strip()
+        admin_email = (params.get("admin_email") or f"webmaster@{domain_name}").strip()
         admin_password = validate_password_strength(params["admin_password"]) if params.get("admin_password") else _generate_password()
         result = APPS[app_id]["installer"](username, domain_name, title, admin_user, admin_email, admin_password)
     except Exception as exc:  # noqa: BLE001 -- report to the job row, don't crash the worker thread

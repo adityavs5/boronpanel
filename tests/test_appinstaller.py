@@ -68,6 +68,26 @@ def test_trigger_install_static_runs_async_end_to_end(account_with_domain):
     assert apps[0]["domain"] == "demo1.example"
 
 
+def test_install_worker_rechecks_active_account_before_install(account_with_domain, monkeypatch):
+    from shared.db import write_session
+    from shared.models import Account, AppInstallJob
+
+    monkeypatch.setattr(ai._executor, "submit", lambda *args: None)
+    result = ai.trigger_install({"username": "demo1", "domain": "demo1.example", "app_id": "static", "title": "My Site"})
+
+    with write_session() as session:
+        session.query(Account).filter_by(username="demo1").one().status = "terminated"
+
+    monkeypatch.setitem(ai.APPS["static"], "installer", lambda *_a, **_k: pytest.fail("stale app install must not run"))
+
+    ai._run_install_job(result["id"], "demo1", "demo1.example", "static", {"title": "My Site"})
+
+    with write_session() as session:
+        row = session.get(AppInstallJob, result["id"])
+        assert row.status == "failed"
+        assert "terminated" in row.error
+
+
 def test_trigger_install_rejects_unknown_app_id(account_with_domain):
     with pytest.raises(ai.AppInstallError):
         ai.trigger_install({"username": "demo1", "domain": "demo1.example", "app_id": "not-a-real-app"})
