@@ -76,18 +76,8 @@ def build_config() -> dict:
             "baseURL": settings.filebrowser_base_url,
             "database": _database_path(),
             "cacheDir": _cache_dir(),
-            # CRITICAL isolation control (found by live testing on a real
-            # 711-home box): FileBrowser Quantum runs as root and, by default,
-            # explicitly chmods every file it creates to 0644 — world-readable.
-            # Under Boron's world-traversable 711 account homes (required so
-            # OLS's `nobody` worker can reach public_html), a 0644 file is
-            # readable by EVERY other account on the box → a cross-tenant leak
-            # the old manager avoided by writing 0640 account-owned files. These
-            # two knobs make FB create 0660 files / 0770 dirs instead: `other`
-            # has no access (leak closed), while the account's own uid still gets
-            # read+write via the default ACL add_source applies (its mask is the
-            # group triad, rw/rwx here), and `nobody` still serves public_html
-            # files via that dir's own nobody ACL (masked to read).
+            # Keep private files unreadable to other account UIDs. Default
+            # directory ACLs retain the web-server access required for docroots.
             "filesystem": {
                 "createFilePermission": "660",
                 "createDirectoryPermission": "770",

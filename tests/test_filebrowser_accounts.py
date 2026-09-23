@@ -43,7 +43,8 @@ def test_instance_config_uses_own_state_and_unix_socket(isolated_instance):
     assert config['server']['database'] == str(root / 'state/database.db')
     assert config['server']['sources'][0]['path'] == str(home.parent)
     assert (root / 'state').stat().st_mode & 0o777 == 0o700
-    assert calls == [['systemctl', 'start', 'boron-filebrowser@demo1.service']]
+    assert calls[-1] == ['systemctl', 'start', 'boron-filebrowser@demo1.service']
+    assert calls[0][:3] == ['setfacl', '-m', 'd:u:boron-api:rwx']
 
 
 def test_instance_rejects_moved_or_symlinked_home(isolated_instance):

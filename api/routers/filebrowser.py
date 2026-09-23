@@ -9,7 +9,7 @@ Two surfaces:
   short-lived **signed** `fh_fb_target` cookie naming the account whose files to
   serve, and 302s to `/files/`.
 
-* `/files` + `/files/{path}` — a reverse proxy to the loopback-only FileBrowser
+* `/files` + `/files/{path}` — a reverse proxy to the account-isolated FileBrowser
   Quantum backend. On every request it: resolves the panel identity; reads the
   signed target cookie; **re-authorizes** (`require_account_access`) so an
   expired/ended session or a tampered cookie can't reach another account;
@@ -67,7 +67,7 @@ _HOP_BY_HOP = {
     "te", "trailers", "transfer-encoding", "upgrade",
 }
 
-# One shared async client to the loopback backend, reused across requests.
+# Reuse an isolated Unix-socket client for each authorized account.
 _clients: dict[str, httpx.AsyncClient] = {}
 
 

@@ -14,6 +14,7 @@ import pwd
 import stat
 import time
 import shutil
+from threading import RLock
 
 import yaml
 
@@ -23,6 +24,7 @@ from shared.filebrowser_paths import account_socket
 from shared.validation import validate_username
 
 TEMPLATE_PATH = "/etc/systemd/system/boron-filebrowser@.service"
+_lifecycle_lock = RLock()
 
 
 def unit_content() -> str:
@@ -83,6 +85,11 @@ def _directory(path: Path, uid: int, gid: int, mode: int) -> None:
 
 
 def start(username: str, home: str) -> None:
+    with _lifecycle_lock:
+        _start(username, home)
+
+
+def _start(username: str, home: str) -> None:
     validate_username(username)
     user = pwd.getpwnam(username)
     expected = Path(settings.home_base) / username
@@ -97,7 +104,11 @@ def start(username: str, home: str) -> None:
     data = data_root / username
     _directory(data, 0, 0, 0o755)
     _directory(data / "state", user.pw_uid, user.pw_gid, 0o700)
-    _directory(runtime_root / username, user.pw_uid, api_gid, 0o2750)
+    _directory(runtime_root / username, user.pw_uid, api_gid, 0o750)
+    # The provisioning daemon deliberately cannot set SUID/SGID bits. A
+    # default ACL gives only the API UID access to newly bound sockets,
+    # without adding the customer process to the privileged API group.
+    run(["setfacl", "-m", "d:u:boron-api:rwx", str(runtime_root / username)], timeout=10, check=True)
 
     from daemon.filebrowser import build_config
     config = build_config()
@@ -124,6 +135,11 @@ def start(username: str, home: str) -> None:
 
 
 def stop(username: str) -> None:
+    with _lifecycle_lock:
+        _stop(username)
+
+
+def _stop(username: str) -> None:
     validate_username(username)
     run(["systemctl", "stop", f"boron-filebrowser@{username}.service"], timeout=30, check=True)
     for root in (settings.filebrowser_account_data_dir, settings.filebrowser_runtime_dir):
