@@ -86,9 +86,27 @@ fi
 _logline() {
     # Append to the install log if we can (best-effort: the log dir may not
     # exist yet during pre-flight, and a dry-run shouldn't need to write it).
-    if [[ -w "$(dirname "$INSTALL_LOG")" ]] || [[ -w "$INSTALL_LOG" ]]; then
+    $DRY_RUN && return 0
+    if [[ ! -e "$INSTALL_LOG" && -w "$(dirname "$INSTALL_LOG")" ]]; then
+        (umask 077; : >"$INSTALL_LOG")
+    fi
+    if [[ -e "$INSTALL_LOG" ]]; then
+        chmod 600 "$INSTALL_LOG" 2>/dev/null || true
+    fi
+    if [[ -w "$INSTALL_LOG" ]]; then
         printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$1" >>"$INSTALL_LOG" 2>/dev/null || true
     fi
+}
+
+_redact_command_output() {
+    # The OpenLiteSpeed package prints its generated WebAdmin credential in
+    # apt output. It is temporary, but remains valid until Boron resets it and
+    # must never be copied to a world-readable installer log or error output.
+    sed -E 's#(WebAdmin user/password is [^/[:space:]]+/)[^[:space:]]+#\1***#g'
+}
+
+_append_command_output() {
+    _redact_command_output <"$1" >>"$INSTALL_LOG" 2>/dev/null || true
 }
 
 info()  { printf '%s\n' "${C_BLUE}==>${C_RESET} $1"; _logline "INFO  $1"; }
@@ -110,7 +128,7 @@ run() {
     output="$(mktemp)"
     _logline "RUN   $*"
     if "$@" >"$output" 2>&1; then
-        cat "$output" >>"$INSTALL_LOG" 2>/dev/null || true
+        _append_command_output "$output"
         rm -f "$output"
         return 0
     else
@@ -118,10 +136,10 @@ run() {
         # the `if` compound command would mask a failed service command as 0.
         rc=$?
     fi
-    cat "$output" >>"$INSTALL_LOG" 2>/dev/null || true
+    _append_command_output "$output"
     fail "command failed (exit ${rc}): $*"
     printf '%s\n' "--- command output ---" >&2
-    cat "$output" >&2
+    _redact_command_output <"$output" >&2
     printf '%s\n' '--- end command output ---' >&2
     rm -f "$output"
     die "command failed (exit ${rc}); see ${INSTALL_LOG}"
@@ -319,7 +337,7 @@ apt_run() {
     output="$(mktemp)"
     _logline "RUN   $*"
     if "$@" >"$output" 2>&1; then
-        cat "$output" >>"$INSTALL_LOG" 2>/dev/null || true
+        _append_command_output "$output"
         rm -f "$output"
         return 0
     else
@@ -329,10 +347,10 @@ apt_run() {
         rc=$?
     fi
 
-    cat "$output" >>"$INSTALL_LOG" 2>/dev/null || true
+    _append_command_output "$output"
     fail "${description} failed (exit ${rc})"
     printf '%s\n' "--- ${description} output ---" >&2
-    cat "$output" >&2
+    _redact_command_output <"$output" >&2
     printf '%s\n' "--- end ${description} output ---" >&2
     rm -f "$output"
     return "$rc"

@@ -29,6 +29,22 @@ def test_installer_bash_syntax_ok():
     assert r.returncode == 0, r.stderr
 
 
+def test_installer_redacts_openlitespeed_generated_password():
+    source = INSTALLER.read_text()
+    start = source.index("_redact_command_output()")
+    end = source.index("\n}\n", start) + 3
+    function = source[start:end]
+    secret = "TemporaryWebAdminSecret"
+    result = subprocess.run(
+        ["bash", "-c", function + "\nprintf '%s\\n' \"$1\" | _redact_command_output", "bash",
+         f"WebAdmin user/password is admin/{secret}"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert secret not in result.stdout
+    assert result.stdout.strip() == "WebAdmin user/password is admin/***"
+
+
 @pytest.mark.skipif(shutil.which("gpg") is None, reason="gpg not installed")
 def test_litespeed_repository_has_pinned_scoped_trust():
     source = INSTALLER.read_text()
@@ -95,6 +111,10 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert 'unset FH_ADMIN_PASSWORD' in source
     assert '--password-stdin' in source
     assert "printf '%s' \"$ADMIN_PASSWORD\"" in source
+    assert 'chmod 600 "$INSTALL_LOG"' in source
+    assert 'WebAdmin user/password is' in source
+    assert '_append_command_output "$output"' in source
+    assert 'cat "$output" >>"$INSTALL_LOG"' not in source
 
     # Namespace isolation is enabled by the generated OLS config.  The
     # namespace template and its companion lsns state must exist before the

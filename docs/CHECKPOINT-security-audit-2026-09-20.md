@@ -120,6 +120,15 @@ password argument. Ten installer/CLI tests, shellcheck, bash syntax, Python
 compilation and diff checks passed. This fix will be exercised by the fresh
 Ubuntu 24.04 installation before any release candidate is built.
 
+That fresh install exposed OpenLiteSpeed's package-generated temporary
+WebAdmin credential in apt output. Boron's generic command logger copied the
+line into `/var/log/boron-install.log`, which was created with mode 0644 until
+the later log-directory setup. Command output now masks that credential before
+logging or error display, and `_logline` creates and maintains the installer
+log as 0600 from its first write. Eleven focused installer/CLI tests,
+shellcheck, bash syntax and diff checks pass. The disposable VM's existing
+log was redacted and restricted without printing the credential.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic
