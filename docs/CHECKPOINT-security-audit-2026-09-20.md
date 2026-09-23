@@ -723,3 +723,25 @@ confirmed DB/file state remained at the old threshold, forced a global lint
 failure and confirmed `local.cf` was unchanged, then forced a global DB failure
 and confirmed the old default was restored. The same daemon files are installed
 on the development panel with matching hashes and `boron-provisiond` active.
+
+### 2026-09-23 spam-filter entry CRUD rollback hardening
+
+BSA-2026-043 records spam-filter entry consistency gaps. Per-mailbox
+blacklist/whitelist add, delete, import and mailbox cleanup committed SQLite row
+changes before regenerating the global Dovecot `sieve_before` script. If the
+Sieve render/install/reload path failed, the panel could show rules that were
+not enforced, or remove rules that remained enforced in the live Sieve script.
+
+The source now compensates those row changes on refresh failure. Adds and
+imports delete the newly inserted rows, deletes and mailbox cleanup restore the
+previous rows with their original ids, and each rollback attempts to refresh the
+global Sieve script back to the restored DB state before re-raising the original
+failure. Entry mutations now also use the same mail-edit serialization guard as
+other mail settings.
+
+Focused validation passed 93 spamfilter/mail/RPC-authority tests. The disposable
+VM was hotfixed with `daemon/spamfilter.py` matching source; a live canary
+forced global Sieve refresh failure on add, delete, import and mailbox-cleanup
+paths and verified rows were rolled back or restored in every case. The same
+daemon file is installed on the development panel with matching hashes and
+`boron-provisiond` active.

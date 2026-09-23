@@ -48,6 +48,24 @@ def test_add_entry_is_idempotent_for_duplicate(isolated_db):
     assert first["id"] == second["id"]
 
 
+def test_add_entry_refresh_failure_rolls_back_row(isolated_db, monkeypatch):
+    calls = 0
+
+    def flaky_refresh():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sf.SpamFilterError("sieve refresh failed")
+
+    monkeypatch.setattr(sf, "_refresh_global_sieve", flaky_refresh)
+
+    with pytest.raises(sf.SpamFilterError, match="sieve refresh failed"):
+        sf.add_entry({"domain": "example.com", "local_part": "sales", "kind": "blacklist", "pattern": "evil.com"})
+
+    assert calls == 2
+    assert sf.list_entries({"domain": "example.com", "local_part": "sales"})["entries"] == []
+
+
 def test_list_entries_scoped_to_mailbox(isolated_db):
     sf.add_entry({"domain": "example.com", "local_part": "sales", "kind": "blacklist", "pattern": "evil.com"})
     sf.add_entry({"domain": "example.com", "local_part": "support", "kind": "whitelist", "pattern": "vip.com"})
@@ -61,6 +79,28 @@ def test_delete_entry_removes_it(isolated_db):
     sf.delete_entry({"id": added["id"], "domain": "example.com"})
     result = sf.list_entries({"domain": "example.com", "local_part": "sales"})
     assert result["entries"] == []
+
+
+def test_delete_entry_refresh_failure_restores_row(isolated_db, monkeypatch):
+    added = sf.add_entry({"domain": "example.com", "local_part": "sales", "kind": "blacklist", "pattern": "evil.com"})
+    calls = 0
+
+    def flaky_refresh():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sf.SpamFilterError("sieve refresh failed")
+
+    monkeypatch.setattr(sf, "_refresh_global_sieve", flaky_refresh)
+
+    with pytest.raises(sf.SpamFilterError, match="sieve refresh failed"):
+        sf.delete_entry({"id": added["id"], "domain": "example.com"})
+
+    assert calls == 2
+    result = sf.list_entries({"domain": "example.com", "local_part": "sales"})
+    assert len(result["entries"]) == 1
+    assert result["entries"][0]["id"] == added["id"]
+    assert result["entries"][0]["pattern"] == "evil.com"
 
 
 def test_delete_entry_missing_raises(isolated_db):
@@ -93,11 +133,52 @@ def test_import_entries_reports_invalid_lines_without_failing_whole_batch(isolat
     assert len(result["errors"]) == 1
 
 
+def test_import_entries_refresh_failure_rolls_back_added_rows(isolated_db, monkeypatch):
+    calls = 0
+
+    def flaky_refresh():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sf.SpamFilterError("sieve refresh failed")
+
+    monkeypatch.setattr(sf, "_refresh_global_sieve", flaky_refresh)
+
+    with pytest.raises(sf.SpamFilterError, match="sieve refresh failed"):
+        sf.import_entries(
+            {"domain": "example.com", "local_part": "sales", "kind": "blacklist", "text": "evil.com\nspammer@bad.net\n"}
+        )
+
+    assert calls == 2
+    assert sf.list_entries({"domain": "example.com", "local_part": "sales"})["entries"] == []
+
+
 def test_delete_entries_for_mailbox_cascades(isolated_db):
     sf.add_entry({"domain": "example.com", "local_part": "sales", "kind": "blacklist", "pattern": "evil.com"})
     sf.delete_entries_for_mailbox("example.com", "sales")
     result = sf.list_entries({"domain": "example.com", "local_part": "sales"})
     assert result["entries"] == []
+
+
+def test_delete_entries_for_mailbox_refresh_failure_restores_rows(isolated_db, monkeypatch):
+    first = sf.add_entry({"domain": "example.com", "local_part": "sales", "kind": "blacklist", "pattern": "evil.com"})
+    second = sf.add_entry({"domain": "example.com", "local_part": "sales", "kind": "whitelist", "pattern": "vip.com"})
+    calls = 0
+
+    def flaky_refresh():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sf.SpamFilterError("sieve refresh failed")
+
+    monkeypatch.setattr(sf, "_refresh_global_sieve", flaky_refresh)
+
+    with pytest.raises(sf.SpamFilterError, match="sieve refresh failed"):
+        sf.delete_entries_for_mailbox("example.com", "sales")
+
+    assert calls == 2
+    result = sf.list_entries({"domain": "example.com", "local_part": "sales"})
+    assert {entry["id"] for entry in result["entries"]} == {first["id"], second["id"]}
 
 
 def test_build_global_sieve_source_includes_whitelist_and_blacklist_blocks(isolated_db):

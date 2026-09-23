@@ -7,7 +7,7 @@ It currently lists 430 HTTP/WebSocket route-method entries, 414 root RPC
 operations, 14 cron entries, three static services, five generated account
 services, seven shell scripts, 27 Python scripts, and one native helper: 901 total. Eleven
 route entries are marked `reviewed-public` and locked by
-`tests/test_public_route_inventory.py`; 121 entries are reviewed with fix/test evidence, and 769 entries remain
+`tests/test_public_route_inventory.py`; 129 entries are reviewed with fix/test evidence, and 761 entries remain
 pending until their authorization, ownership, side effects, and negative tests
 have been individually reviewed.
 In particular, a declared FastAPI dependency is not evidence that the
@@ -45,6 +45,7 @@ underlying root handler enforces account ownership.
 | API UID to root daemon | Root-owned session/token resolution and explicit policies now cover 414 operations; forged metadata rejected on the disposable VM. Every operation has an anonymous-access negative check; all admin policy groups reject customers/resellers, and all shared account policy groups reject foreign/mismatched targets | Implemented and VM-tested; migration, rollback and full resource review remain release gates |
 | Mail domain/mailbox lifecycle | Post-create cache write failures now roll back the external `boron_mail` mail domain or mailbox and maildir; no-owner mail-domain creation fails before touching the external mail DB. 63 focused mail/mutation/RPC-authority tests passed and the disposable VM canary forced both rollback windows successfully | VM and primary hotfixed; signed release regression pending |
 | Spam-filter settings consistency | Per-domain prefs now write before the cache row and restore the old prefs on cache failure; global `local.cf` is linted in a temporary site-config directory before atomic apply and the old default is restored if the DB write fails. 89 focused mail/spam/RPC tests passed and the disposable VM canary forced each failure window | VM and primary hotfixed; signed release regression pending |
+| Spam-filter entry CRUD consistency | Blacklist/whitelist add, delete, import and mailbox cleanup now compensate SQLite row changes if global Dovecot Sieve refresh fails, then refresh back to the restored DB state. 93 focused tests passed and the disposable VM canary forced each failure window | VM and primary hotfixed; signed release regression pending |
 
 ## Entry-point classification still required
 

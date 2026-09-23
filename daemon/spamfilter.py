@@ -51,6 +51,7 @@ from shared.validation import (
     validate_spam_threshold,
 )
 
+from daemon.mail_mutation import serialized
 from daemon.configtx import ConfigWriter, StepResult
 from daemon.procutil import run
 
@@ -523,6 +524,36 @@ def _entry_to_dict(row: SpamFilterEntry) -> dict:
     }
 
 
+def _entry_snapshot(row: SpamFilterEntry) -> dict:
+    return {
+        "id": row.id,
+        "domain": row.domain,
+        "local_part": row.local_part,
+        "kind": row.kind,
+        "pattern": row.pattern,
+        "created_at": row.created_at,
+    }
+
+
+def _delete_entry_ids(ids: list[int]) -> None:
+    if not ids:
+        return
+    with write_session() as session:
+        for entry_id in ids:
+            row = session.get(SpamFilterEntry, entry_id)
+            if row is not None:
+                session.delete(row)
+
+
+def _restore_entry_snapshots(snapshots: list[dict]) -> None:
+    if not snapshots:
+        return
+    with write_session() as session:
+        for snapshot in snapshots:
+            if session.get(SpamFilterEntry, snapshot["id"]) is None:
+                session.add(SpamFilterEntry(**snapshot))
+
+
 def _refresh_global_sieve() -> None:
     """Re-render + reinstall the global sieve_before script from current DB
     state and reload dovecot -- same validate/apply/reload/verify pipeline
@@ -545,12 +576,14 @@ def list_entries(params: dict) -> dict:
         }
 
 
+@serialized
 def add_entry(params: dict) -> dict:
     domain = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
     kind = validate_spam_filter_kind(params["kind"])
     pattern = validate_spam_filter_pattern(params["pattern"])
 
+    added_id = None
     with write_session() as session:
         count = len(session.scalars(
             select(SpamFilterEntry.id).where(SpamFilterEntry.domain == domain, SpamFilterEntry.local_part == local_part)
@@ -572,13 +605,25 @@ def add_entry(params: dict) -> dict:
             session.add(row)
             session.flush()
             result = _entry_to_dict(row)
+            added_id = row.id
 
-    _refresh_global_sieve()
+    if added_id is not None:
+        try:
+            _refresh_global_sieve()
+        except Exception:
+            _delete_entry_ids([added_id])
+            try:
+                _refresh_global_sieve()
+            except Exception:
+                logger.exception("failed to refresh global spam Sieve after rolling back entry add")
+            raise
     return result
 
 
+@serialized
 def delete_entry(params: dict) -> dict:
     domain = validate_domain(params["domain"])
+    snapshot = None
     with write_session() as session:
         row = session.get(SpamFilterEntry, int(params["id"]))
         # Cross-account IDOR guard: id is a small sequential int, not a
@@ -592,12 +637,22 @@ def delete_entry(params: dict) -> dict:
         if row is None or row.domain != domain:
             raise RuntimeError(f"spam filter entry {params['id']} not found")
         deleted = _entry_to_dict(row)
+        snapshot = _entry_snapshot(row)
         session.delete(row)
 
-    _refresh_global_sieve()
+    try:
+        _refresh_global_sieve()
+    except Exception:
+        _restore_entry_snapshots([snapshot])
+        try:
+            _refresh_global_sieve()
+        except Exception:
+            logger.exception("failed to refresh global spam Sieve after restoring deleted entry")
+        raise
     return {**deleted, "status": "deleted"}
 
 
+@serialized
 def import_entries(params: dict) -> dict:
     """goal: "import from text list" -- one pattern per line, blank lines
     and '#'-prefixed comments ignored. All entries in the batch share the
@@ -643,10 +698,20 @@ def import_entries(params: dict) -> dict:
             added.append(_entry_to_dict(row))
 
     if added:
-        _refresh_global_sieve()
+        added_ids = [item["id"] for item in added]
+        try:
+            _refresh_global_sieve()
+        except Exception:
+            _delete_entry_ids(added_ids)
+            try:
+                _refresh_global_sieve()
+            except Exception:
+                logger.exception("failed to refresh global spam Sieve after rolling back imported entries")
+            raise
     return {"domain": domain, "local_part": local_part, "kind": kind, "added": added, "errors": errors}
 
 
+@serialized
 def delete_entries_for_mailbox(domain: str, local_part: str) -> None:
     """Called from handlers_mail.delete_mailbox -- this project's manual-
     cascade convention (no DB-level ON DELETE CASCADE anywhere in this
@@ -655,8 +720,17 @@ def delete_entries_for_mailbox(domain: str, local_part: str) -> None:
         rows = session.scalars(
             select(SpamFilterEntry).where(SpamFilterEntry.domain == domain, SpamFilterEntry.local_part == local_part)
         ).all()
+        snapshots = [_entry_snapshot(row) for row in rows]
         any_deleted = bool(rows)
         for row in rows:
             session.delete(row)
     if any_deleted:
-        _refresh_global_sieve()
+        try:
+            _refresh_global_sieve()
+        except Exception:
+            _restore_entry_snapshots(snapshots)
+            try:
+                _refresh_global_sieve()
+            except Exception:
+                logger.exception("failed to refresh global spam Sieve after restoring mailbox entries")
+            raise
