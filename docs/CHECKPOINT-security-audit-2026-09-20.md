@@ -401,3 +401,82 @@ A complete regression run of `87ac752` is running in the separate disposable-VM
 source directory `/root/boron-audit-suite-87ac752`, with production secret loading
 disabled and a protected log `/root/boron-audit-suite-87ac752.log`. It is not yet
 a passed release gate. The running panel has not yet received this commit.
+
+### 2026-09-23 FileBrowser isolation and regression follow-up
+
+BSA-2026-030 is a confirmed cross-account disclosure in the shared root
+FileBrowser backend: an authenticated disposable customer could download a
+0600 peer-owned canary through a symlink in its own home. The shared backend
+was stopped on the VM. Commits `46547ff` and `112ed30` replace it with one
+account-UID process per account, no Linux capabilities, a private home mount,
+and an authenticated API proxy over an account-specific Unix socket. The
+provisioning daemon cannot set SGID bits, so socket access uses a default ACL
+for the API UID. Lifecycle changes are serialized.
+
+On the disposable VM, real customer tests now pass: own-file download 200,
+foreign account launch/admin access 403, peer symlink and parent traversal
+rejected without private content, foreign-origin write 403. Actual Chromium
+loads the SPA and editor without page errors. Uploaded HTML downloads as an
+attachment; SVG navigation is sandboxed; neither test script executes. The
+header replacement fix `c14bcd2` also prevents duplicate Content-Disposition
+headers that previously broke HTML downloads. Focused FileBrowser/account
+regression passed 92 tests outside the local Unix-socket restriction.
+
+The same limited FileBrowser hotfix was installed on the development server
+under `/opt/boron-1.5.0`, after disabling its vulnerable shared backend.
+Backups are under the protected audit baseline `filebrowser-isolation/`.
+Only the FileBrowser modules plus two path settings were copied; this is
+not deployment of the full audit branch or a new published version. Panel,
+provisioning and web services remained healthy during containment; primary browser acceptance passed: real admin login and file listing 200,
+SPA visible without page errors, service UID matches the customer, no
+capabilities, private home mount, and shared root service disabled.
+
+Additional fixes: `a661451` retries configured resource suspension even when
+notification deduplication applies (21 tests passed); `5dc3178` serializes
+login attempt reservations in SQLite (25 tests passed). `c9ae28c` corrects
+two fresh-install bootstrap calls which new root authorization intentionally
+rejects: the root installer now invokes OLS/webmail setup locally, following
+the existing security-service bootstrap pattern.
+
+The earlier full run of `87ac752` was stopped after identifying test harness
+configuration problems. A replacement full run of `b194c35` is running in
+two shards on the disposable VM (logs `/root/boron-suite-b194c35-{0,1}.log`).
+It is not a passed gate. `b194c35` isolates test configuration from installed
+secrets. `a048f09` fixes test-only assumptions about checkout-local Python
+interpreters and permissive umasks, and prevents collected server hooks from
+polluting synthetic account-handler tests. These corrections are being
+retested in a separate VM checkout; original running-suite files are retained.
+
+Remaining release gates and individual surface review remain open. No GitHub
+release or security version tag has been published.
+
+The full `b194c35` baseline run completed: **2,847 passed, 20 failed, 4 skipped**
+across two shards (46m54s and 51m38s). All 20 failures were traced to harness
+assumptions: collected lifecycle hooks, restrictive umask, missing
+checkout-local `.venv`, missing `.git` in the archive-based test checkout,
+and restic hiding SSH's host-key diagnostic. Corrections do not bypass the
+security assertions: the SSH test now checks the exact transport's host-key
+rejection directly and separately proves storage initialization refuses it.
+The affected host suites passed 82 tests with one skip; additional Dovecot/
+SSH checks passed four tests. Release/installer checks passed 19 with two
+signing-key-dependent skips in the real local checkout. This baseline plus
+focused reruns is not an exact-final-revision complete release run.
+
+Real WordPress installation on a disposable auditweb domain completed.
+Customer polling revealed its password once, then cleared it. Its one-click
+login rejected GET and wrong token, accepted the valid POST and opened the
+WordPress dashboard, and denied reuse. FileBrowser own create/edit/read/delete
+also passed; peer symlink writes were rejected. Parent path syntax was clamped
+to a path inside the caller's own home, and the peer private canary remained
+unchanged; all files created by that write test were removed.
+
+BSA-2026-033: WordPress/app-install completion passwords and WP-CLI reset
+passwords were plaintext in the API-readable SQLite database until collected.
+Commit `4fe7ab7` encrypts them with the root-only application key before
+storage, migrates outstanding legacy rows at daemon startup, and serializes
+read-and-clear under BEGIN IMMEDIATE. Tests exercise actual worker storage,
+legacy migration, malformed ciphertext and concurrent retrieval. The affected
+installer/command tests passed 84; the final five new cases passed again after
+migration coverage was expanded. Deployed to the disposable VM for live reset
+acceptance; primary deployment remains pending. This migration does not claim
+to scrub historical backup copies or obsolete SQLite pages.
