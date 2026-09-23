@@ -519,11 +519,14 @@ was stripped, and the admin session remained valid. The trusted frontend hotfix
 is installed on the development panel and the existing Chromium FileBrowser
 smoke still passes.
 
-The coverage inventory now has 901 entries: 865 pending, 26 reviewed-fixed and
-10 reviewed-public. New reviewed-fixed rows cover `scripts/app_files.py`,
+The coverage inventory now has 901 entries: 848 pending, 42 reviewed-fixed and
+11 reviewed-public. New reviewed-fixed rows cover `scripts/app_files.py`,
 `scripts/wordpress_files.py`, and the trusted FileBrowser frontend unit, while
 existing FileBrowser route/RPC rows now cite both the per-account isolation and
-trusted-renderer evidence. This is still not a final security release gate:
+trusted-renderer evidence. The update routes/RPCs, updater cron wrapper,
+`scripts/update_check.py`, and `scripts/update_finalize.py` now cite the
+focused update/release tests plus the signed VM update/rollback drill. This is
+still not a final security release gate:
 signed update packaging, installed upgrade/rollback, fresh install from the
 candidate, and the remaining route/resource review remain open.
 

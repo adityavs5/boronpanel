@@ -12,7 +12,7 @@ cron,boron-jobs.cron:9,deploy/boron-jobs.cron,/opt/boron/scripts/usage_alert_che
 cron,boron-maintenance.cron:8,deploy/boron-maintenance.cron,/opt/boron/scripts/maintenance_autodisable.py >> /var/log/boron/maintenance-autodisable.log 2>&1,cron user=root,pending,
 cron,boron-monitoring.cron:8,deploy/boron-monitoring.cron,/opt/boron/scripts/monitoring_check.py >> /var/log/boron/monitoring-check.log 2>&1,cron user=root,pending,
 cron,boron-sitestats.cron:9,deploy/boron-sitestats.cron,/opt/boron/scripts/sitestats_snapshot.py >> /var/log/boron/sitestats-snapshot.log 2>&1,cron user=root,pending,
-cron,boron-update.cron:8,deploy/boron-update.cron,/opt/boron/scripts/update_check.py >> /var/log/boron/update-check.log 2>&1,cron user=root,pending,
+cron,boron-update.cron:8,deploy/boron-update.cron,/opt/boron/scripts/update_check.py >> /var/log/boron/update-check.log 2>&1,cron user=root,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
 dynamic-service,per-account FileBrowser unit,daemon/filebrowser_accounts.py,generated systemd unit,account owner and unit template pending review,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 dynamic-service,per-account Node.js unit,daemon/nodeapps.py,generated systemd unit,account owner and unit template pending review,pending,
 dynamic-service,per-account Python unit,daemon/pythonapps.py,generated systemd unit,account owner and unit template pending review,pending,
@@ -39,8 +39,8 @@ python-script,sign_release.py,scripts/sign_release.py,sign_release.py,invocation
 python-script,sitestats_snapshot.py,scripts/sitestats_snapshot.py,sitestats_snapshot.py,invocation and effective UID pending review,pending,
 python-script,ssl_deploy_hook.py,scripts/ssl_deploy_hook.py,ssl_deploy_hook.py,invocation and effective UID pending review,pending,
 python-script,ssl_expiry_check.py,scripts/ssl_expiry_check.py,ssl_expiry_check.py,invocation and effective UID pending review,pending,
-python-script,update_check.py,scripts/update_check.py,update_check.py,invocation and effective UID pending review,pending,
-python-script,update_finalize.py,scripts/update_finalize.py,update_finalize.py,invocation and effective UID pending review,pending,
+python-script,update_check.py,scripts/update_check.py,update_check.py,invocation and effective UID pending review,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+python-script,update_finalize.py,scripts/update_finalize.py,update_finalize.py,invocation and effective UID pending review,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
 python-script,usage_alert_check.py,scripts/usage_alert_check.py,usage_alert_check.py,invocation and effective UID pending review,pending,
 python-script,usage_snapshot.py,scripts/usage_snapshot.py,usage_snapshot.py,invocation and effective UID pending review,pending,
 python-script,verify_phase7b_live.py,scripts/verify_phase7b_live.py,verify_phase7b_live.py,invocation and effective UID pending review,pending,
@@ -217,9 +217,9 @@ route,GET /api/v1/admin/ssl,api/routers/ssl_router.py,admin_ssl_dashboard,get_id
 route,GET /api/v1/admin/templates/suspended-page,api/routers/site_templates.py,get_suspended_page,get_identity,pending,
 route,GET /api/v1/admin/templates/suspension-designs,api/routers/site_templates.py,get_suspension_designs,get_identity,pending,
 route,GET /api/v1/admin/templates/welcome-email,api/routers/site_templates.py,get_welcome_email,get_identity,pending,
-route,GET /api/v1/admin/update/history,api/routers/update.py,update_history,get_identity,pending,
-route,GET /api/v1/admin/update/log,api/routers/update.py,update_log,get_identity,pending,
-route,GET /api/v1/admin/update/status,api/routers/update.py,update_status,get_identity,pending,
+route,GET /api/v1/admin/update/history,api/routers/update.py,update_history,get_identity,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+route,GET /api/v1/admin/update/log,api/routers/update.py,update_log,get_identity,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+route,GET /api/v1/admin/update/status,api/routers/update.py,update_status,get_identity,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
 route,GET /api/v1/admin/webhooks,api/routers/webhooks.py,list_webhooks,get_identity,pending,
 route,GET /api/v1/admin/webhooks/{webhook_id},api/routers/webhooks.py,get_webhook,get_identity,pending,
 route,GET /api/v1/admin/webhooks/{webhook_id}/deliveries,api/routers/webhooks.py,list_deliveries,get_identity,pending,
@@ -263,7 +263,7 @@ route,GET /api/v1/services/{service},api/routers/services.py,get_service,get_ide
 route,GET /api/v1/spamfilter/global-default,api/routers/email.py,get_global_default,get_identity,pending,
 route,GET /api/v1/ssl/{domain}/status,api/routers/ssl_router.py,certificate_status,get_identity,pending,
 route,GET /api/v1/tokens,api/routers/tokens.py,list_tokens,get_identity,pending,
-route,GET /api/v1/version,api/routers/update.py,get_version,get_identity,pending,
+route,GET /api/v1/version,api/routers/update.py,get_version,get_identity,reviewed-public,version endpoint requires auth and returns BORON_VERSION; update-version/API tests passed outside socket sandbox
 route,GET /api/v1/waf,api/routers/waf.py,get_status,get_identity,pending,
 route,GET /api/v1/waf/blocked-requests,api/routers/waf.py,blocked_requests,get_identity,pending,
 route,GET /api/v1/whoami,api/routers/auth.py,whoami,get_identity,pending,
@@ -400,9 +400,9 @@ route,POST /api/v1/admin/resellers/plans,api/routers/resellers.py,create_plan,ge
 route,POST /api/v1/admin/sitestats/geoip,api/routers/sitestats.py,configure_geoip,get_identity,pending,
 route,POST /api/v1/admin/ssl/domains/{domain}/issue,api/routers/ssl_router.py,admin_issue_certificate,get_identity,pending,
 route,POST /api/v1/admin/ssl/domains/{domain}/wildcard,api/routers/ssl_router.py,admin_issue_wildcard_certificate,get_identity,pending,
-route,POST /api/v1/admin/update/check,api/routers/update.py,update_check_now,get_identity,pending,
-route,POST /api/v1/admin/update/rollback,api/routers/update.py,update_rollback,get_identity,pending,
-route,POST /api/v1/admin/update/start,api/routers/update.py,update_start,get_identity,pending,
+route,POST /api/v1/admin/update/check,api/routers/update.py,update_check_now,get_identity,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+route,POST /api/v1/admin/update/rollback,api/routers/update.py,update_rollback,get_identity,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+route,POST /api/v1/admin/update/start,api/routers/update.py,update_start,get_identity,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
 route,POST /api/v1/admin/webhooks,api/routers/webhooks.py,create_webhook,get_identity,pending,
 route,POST /api/v1/admin/webhooks/{webhook_id}/test,api/routers/webhooks.py,test_webhook,get_identity,pending,
 route,POST /api/v1/backups/destinations,api/routers/backups.py,create_destination,get_identity,pending,
@@ -851,13 +851,13 @@ rpc,totp.disable,daemon/totp.py,disable_totp,kernel-peer-uid; root-credential; p
 rpc,totp.setup,daemon/totp.py,setup_totp,kernel-peer-uid; root-credential; policy=self_panel_user_session_only,pending,
 rpc,totp.status,daemon/totp.py,get_status,kernel-peer-uid; root-credential; policy=self_panel_user_session_only,pending,
 rpc,totp.verify,daemon/totp.py,verify_totp,kernel-peer-uid; root-credential; policy=self_panel_user_session_only,pending,
-rpc,update.check,daemon/updates.py,check,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,update.cleanup,daemon/updates.py,cleanup_old_versions,kernel-peer-uid; root-credential; policy=root_internal,pending,
-rpc,update.history,daemon/updates.py,get_history,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,update.log,daemon/updates.py,get_log,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,update.rollback,daemon/updates.py,start_rollback,kernel-peer-uid; root-credential; policy=admin_confirmed_update,pending,
-rpc,update.start,daemon/updates.py,start_update,kernel-peer-uid; root-credential; policy=admin_confirmed_update,pending,
-rpc,update.status,daemon/updates.py,get_status,kernel-peer-uid; root-credential; policy=global_admin,pending,
+rpc,update.check,daemon/updates.py,check,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+rpc,update.cleanup,daemon/updates.py,cleanup_old_versions,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+rpc,update.history,daemon/updates.py,get_history,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+rpc,update.log,daemon/updates.py,get_log,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+rpc,update.rollback,daemon/updates.py,start_rollback,kernel-peer-uid; root-credential; policy=admin_confirmed_update,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+rpc,update.start,daemon/updates.py,start_update,kernel-peer-uid; root-credential; policy=admin_confirmed_update,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
+rpc,update.status,daemon/updates.py,get_status,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
 rpc,usage.alerts.get,daemon/usage_alerts.py,get_alerts,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,usage.get,daemon/handlers_usage.py,get_account_usage,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,usage.limits.get,daemon/usage_alerts.py,get_limits,kernel-peer-uid; root-credential; policy=account_username,pending,
