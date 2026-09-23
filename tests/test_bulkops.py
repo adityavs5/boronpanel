@@ -94,3 +94,18 @@ def test_bulk_update_limits(isolated_db, monkeypatch):
     final = bulkops.get_bulk_action({"job_id": job["id"]})
     assert final["status"] == "completed"
     assert applied[0]["mem_mb"] == 1024
+
+
+def test_bulk_job_does_not_rerun_completed_job(isolated_db, monkeypatch):
+    with write_session() as session:
+        job = BulkActionJob(action="suspend", status="completed", total=1, completed_count=1)
+        session.add(job)
+        session.flush()
+        job_id = job.id
+
+    monkeypatch.setattr(bulkops.handlers_account, "suspend_account", lambda *_a, **_k: pytest.fail("completed bulk job must not rerun"))
+
+    bulkops._run_job(job_id, "suspend", ["acc1"], {}, "admin", "127.0.0.1")
+
+    final = bulkops.get_bulk_action({"job_id": job_id})
+    assert final["status"] == "completed"

@@ -106,7 +106,10 @@ def _apply(action: str, username: str, action_params: dict, requested_by: str = 
 def _run_job(job_id: int, action: str, usernames: list[str], action_params: dict, requested_by: str = "unknown", requested_ip: str | None = None) -> None:
     results: list[dict] = []
     with write_session() as session:
-        session.get(BulkActionJob, job_id).status = "running"
+        job = session.get(BulkActionJob, job_id)
+        if job is None or job.status != "pending":
+            return
+        job.status = "running"
 
     for username in usernames:
         with write_session() as session:
