@@ -241,7 +241,7 @@ and real admin login still returned 303 plus an admin `/api/v1/whoami`
 identity.
 
 A broader delayed-worker pass is now fixed in source and installed on the
-disposable VM at commit `7cdb79f`. Malware scans now enqueue only the scan
+disposable VM at commit `77abd1d`. Malware scans now enqueue only the scan
 job ID and re-read the scan row, account, domain, UID/GID, home path and
 exclusions before walking files; the daemon malware tests passed (8), while
 the separate malware API TestClient test still hangs in this sandbox like the
@@ -259,11 +259,15 @@ host-dependent cPanel tests deselected (`/etc/letsencrypt` writes and ACLs).
 Snapshot backup runs now re-read the account under the account lock before
 collecting sources; the worker-focused snapshot jobs passed (13), with the
 API/TestClient authorization case still excluded due the same sandbox hang
-pattern. After deploying the batch to the disposable VM, both Boron services
-were active, local `/healthz` returned 200 after the API completed its normal
-startup delay, the daemon registry reported 414/414 policy equality, the
-forged `boron-api` metadata canary still failed with `unauthenticated`, and
-real admin login still returned 303 plus an admin `/api/v1/whoami` identity.
+pattern. Namespace bulk-enable now re-checks that each queued account is still
+active before calling `lsnsctl enable-uid`; the namespace suite passed (28).
+Bulk account jobs now refuse stale reruns of non-pending jobs; the bulkops
+suite passed (8). After deploying the batch to the disposable VM, both Boron
+services were active, local `/healthz` returned 200 after the API completed
+its normal startup delay, the daemon registry reported 414/414 policy
+equality, the forged `boron-api` metadata canary still failed with
+`unauthenticated`, and real admin login still returned 303 plus an admin
+`/api/v1/whoami` identity.
 
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
