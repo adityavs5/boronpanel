@@ -59,7 +59,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from daemon import monitoring, notifications
 from daemon.procutil import run
@@ -419,7 +419,7 @@ def _live_target() -> str | None:
 
 
 def start_update(params: dict) -> dict:
-    """Op `update.start`. The API layer has already done require_admin +
+    """Op `update.start`. Root RPC policy verifies admin authority and
     the conditional 2FA confirmation; this validates versions/state,
     records who initiated it, and hands off to the single-worker executor.
     """
@@ -461,9 +461,29 @@ def start_update(params: dict) -> dict:
     return result
 
 
+def _claim_job(job_id: int, kind: str) -> UpdateJob | None:
+    """Claim a queued job once, using the root-owned row as authority."""
+    with write_session() as session:
+        claimed = session.execute(
+            update(UpdateJob)
+            .where(UpdateJob.id == job_id, UpdateJob.kind == kind,
+                   UpdateJob.status == "pending")
+            .values(status="running", progress_message="starting")
+        )
+        if claimed.rowcount != 1:
+            return None
+        return session.get(UpdateJob, job_id)
+
+
 def _run_update_job(job_id: int, to_version: str) -> None:
     try:
-        _update_job(job_id, status="running", progress_message="starting")
+        job = _claim_job(job_id, "update")
+        if job is None:
+            return
+        to_version = job.to_version
+        parse_version(to_version)
+        if not is_newer(to_version, BORON_VERSION):
+            _fail_step(job_id, "preflight", "queued update is no longer newer than the running version")
 
         # (a) pre-flight ------------------------------------------------------
         _preflight(job_id)
@@ -1025,6 +1045,7 @@ def start_rollback(params: dict) -> dict:
             status="pending",
             from_version=candidate["from_version"],
             to_version=candidate["to_version"],
+            old_dir=candidate["old_dir"],
             initiated_by=initiated_by,
             progress_message="queued",
         )
@@ -1041,7 +1062,16 @@ def start_rollback(params: dict) -> dict:
 
 def _run_rollback_job(job_id: int, target_dir: str) -> None:
     try:
-        _update_job(job_id, status="running", progress_message="starting rollback")
+        job = _claim_job(job_id, "rollback")
+        if job is None:
+            return
+        candidate = rollback_candidate()
+        if (candidate is None or not job.old_dir
+                or candidate["old_dir"] != job.old_dir
+                or candidate["to_version"] != job.to_version
+                or candidate["from_version"] != job.from_version):
+            _fail_step(job_id, "preflight", "queued rollback target is no longer current")
+        target_dir = job.old_dir
         # Sanity: the rollback target must still look like a runnable install.
         for essential in ("version.py", ".venv/bin/python", "daemon/server.py"):
             if not os.path.exists(os.path.join(target_dir, essential)):

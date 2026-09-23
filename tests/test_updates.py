@@ -910,7 +910,7 @@ def test_mail_guard_update_gates_version_switch(update_env, tmp_path, monkeypatc
     target = tmp_path / 'staged'
     (target / 'daemon').mkdir(parents=True)
     (target / 'daemon/snapshot_mail_guard_config.py').write_text('# staged guard')
-    job_id = _make_job()
+    job_id = _make_job(status="pending", to_version="99.0.1")
     commands = []
     handoffs = []
     for name in ('_preflight', '_build_venv', '_run_migrations'):
@@ -1043,3 +1043,66 @@ def test_update_blocks_version_switch_when_ols_reconciliation_fails(update_env, 
     assert row['status'] == 'failed'
     assert 'OpenLiteSpeed WebAdmin integration failed' in row['error']
     assert 'private diagnostic' not in row['error']
+
+
+@pytest.mark.parametrize("kind", ["update", "rollback"])
+@pytest.mark.parametrize("status", ["running", "finalizing", "completed", "failed"])
+def test_worker_does_not_repeat_consumed_job(update_env, monkeypatch, kind, status):
+    job_id = _make_job(kind=kind, status=status)
+    def unexpected(*args, **kwargs):
+        pytest.fail("consumed job reached privileged work")
+    monkeypatch.setattr(updates, "_preflight", unexpected)
+    monkeypatch.setattr(updates, "rollback_candidate", unexpected)
+    worker = updates._run_update_job if kind == "update" else updates._run_rollback_job
+    worker(job_id, "untrusted-stale-argument")
+    assert _get_job(job_id)["status"] == status
+
+
+def test_update_worker_uses_persisted_version(update_env, monkeypatch):
+    job_id = _make_job(status="pending", to_version="99.0.1")
+    versions = []
+    monkeypatch.setattr(updates, "_preflight", lambda *args: None)
+    def backup(job_id, version):
+        versions.append(version)
+        raise updates._StepFailed()
+    monkeypatch.setattr(updates, "_backup", backup)
+    updates._run_update_job(job_id, "../../stale")
+    assert versions == ["99.0.1"]
+    assert updates._claim_job(job_id, "update") is None
+
+
+def test_rollback_worker_rejects_changed_candidate(update_env, monkeypatch):
+    job_id = _make_job(kind="rollback", status="pending", old_dir="/old")
+    monkeypatch.setattr(updates, "rollback_candidate", lambda: None)
+    handoffs = []
+    monkeypatch.setattr(updates, "_handoff_to_finalizer", lambda *a, **kw: handoffs.append(a))
+    updates._run_rollback_job(job_id, "/old")
+    assert not handoffs
+    assert _get_job(job_id)["status"] == "failed"
+    assert "no longer current" in _get_job(job_id)["error"]
+
+
+def test_rollback_worker_uses_saved_target(update_env, monkeypatch, tmp_path):
+    target = tmp_path / 'saved-target'
+    for essential in ('version.py', '.venv/bin/python', 'daemon/server.py'):
+        file = target / essential
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text('test fixture')
+    job_id = _make_job(kind='rollback', status='pending', old_dir=str(target))
+    monkeypatch.setattr(updates, 'rollback_candidate', lambda: {
+        'old_dir': str(target), 'from_version': '1.0.0', 'to_version': '1.0.1',
+    })
+    handoffs = []
+    monkeypatch.setattr(updates, '_handoff_to_finalizer', lambda *a, **kw: handoffs.append((a, kw)))
+    updates._run_rollback_job(job_id, '/stale-argument')
+    assert handoffs == [((job_id, str(target)), {'kind': 'rollback'})]
+    updates._run_rollback_job(job_id, str(target))
+    assert len(handoffs) == 1
+
+
+def test_update_job_claim_is_atomic(update_env):
+    from concurrent.futures import ThreadPoolExecutor
+    job_id = _make_job(status='pending')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(lambda _: updates._claim_job(job_id, 'update'), range(2)))
+    assert sum(claim is not None for claim in claims) == 1
