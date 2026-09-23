@@ -285,3 +285,20 @@ def test_check_login_lockout_clears_after_expiry(isolated_db):
 
     # A fresh attempt after expiry starts a new window (reserved, not locked).
     assert hauth.check_login_lockout({"username": "admin"}) == {"locked": False}
+
+
+@pytest.mark.parametrize('existing', [False, True])
+def test_login_attempt_reservation_is_atomic_under_parallel_requests(isolated_db, existing):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    initial = 1 if existing else 0
+    if existing:
+        assert not hauth.check_login_lockout({'username': 'burst-test'})['locked']
+    workers = hauth.LOCKOUT_THRESHOLD + 3
+    barrier = Barrier(workers)
+    def reserve(_):
+        barrier.wait(timeout=10)
+        return hauth.check_login_lockout({'username': 'burst-test'})
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(reserve, range(workers)))
+    assert sum(not result['locked'] for result in results) == hauth.LOCKOUT_THRESHOLD - initial

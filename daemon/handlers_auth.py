@@ -11,7 +11,7 @@ import hashlib
 import secrets
 import string
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from shared.db import write_session
 from shared.models import Account, ApiToken, LoginAttempt, LoginChallenge, PanelUser, Session, TotpCredential, utcnow
@@ -121,6 +121,10 @@ def check_login_lockout(params: dict) -> dict:
     username = params["username"]
     now = dt.datetime.now(dt.timezone.utc)
     with write_session() as session:
+        # SQLite SELECT does not acquire a row write lock. Reserve the
+        # transaction before reading so parallel attempts cannot lose counts
+        # or race the initial unique username insert.
+        session.execute(text("BEGIN IMMEDIATE"))
         row = session.scalar(select(LoginAttempt).where(LoginAttempt.username == username))
         if row is not None and row.locked_until is not None:
             locked_until = row.locked_until
