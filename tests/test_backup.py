@@ -1009,6 +1009,45 @@ def test_run_restore_job_marks_failed_on_error(isolated_db, tmp_path, fake_stagi
         assert failed.error
 
 
+def test_run_restore_job_rechecks_active_account_before_fetch(isolated_db, tmp_path, fake_staging, monkeypatch):
+    with write_session() as session:
+        account = make_account(session)
+    dest_path = tmp_path / "dest"
+    dest_path.mkdir()
+    dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(dest_path)})
+
+    with write_session() as session:
+        backup_job = BackupJob(
+            account_id=account.id,
+            kind="database",
+            item_ref="demo1_shop",
+            destination_id=dest["id"],
+            status="completed",
+            artifact_path=str(dest_path / "unused.sql.gz"),
+        )
+        session.add(backup_job)
+        session.flush()
+        restore_job = RestoreJob(
+            backup_job_id=backup_job.id,
+            account_id=account.id,
+            kind="database",
+            item_ref="demo1_shop",
+            status="pending",
+        )
+        session.add(restore_job)
+        session.flush()
+        restore_job_id = restore_job.id
+        session.get(Account, account.id).status = "suspended"
+
+    monkeypatch.setattr(backup, "_fetch_artifact_locally", lambda *a, **k: pytest.fail("stale restore must not fetch"))
+    backup._run_restore_job(restore_job_id)
+
+    with write_session() as session:
+        failed = session.get(RestoreJob, restore_job_id)
+        assert failed.status == "failed"
+        assert "suspended" in failed.error
+
+
 # --- scheduler --------------------------------------------------------------------
 
 

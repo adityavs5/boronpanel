@@ -219,6 +219,14 @@ registry still reported 414/414 policy equality, the forged `boron-api`
 metadata canary still failed with `unauthenticated`, and real admin login
 still returned 303 plus an admin `/api/v1/whoami` identity.
 
+A second delayed-job class is fixed in source: queued backup restores now
+re-read the restore row, backup row, destination, and account inside the
+worker, require the restore job to still be pending, and require the account
+to still be active before any artifact is fetched or restored. The regression
+queues a restore, suspends the account before the worker starts, and confirms
+the artifact fetch is never reached. The backup suite passed (57). This fix
+has not yet been installed on the disposable VM.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic

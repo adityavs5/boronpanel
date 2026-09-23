@@ -1225,21 +1225,29 @@ def _restore_mailbox(item_ref: str, local_artifact: str, restore_job_id: int) ->
 
 
 def _run_restore_job(restore_job_id: int) -> None:
-    with write_session() as session:
-        restore_job = session.get(RestoreJob, restore_job_id)
-        backup_job = session.get(BackupJob, restore_job.backup_job_id)
-        destination = session.get(BackupDestination, backup_job.destination_id)
-        account = session.get(Account, restore_job.account_id)
-        username = account.username
-        account_status = account.status
-        kind = restore_job.kind
-        item_ref = restore_job.item_ref
-        artifact_path = backup_job.artifact_path
-        dest_kind = destination.kind
-
-    _update_restore(restore_job_id, status="running", progress_message="fetching backup artifact")
-    tmp_dir = tempfile.mkdtemp(dir=settings.backup_staging_dir, prefix=f"restore-{restore_job_id}-")
+    tmp_dir = None
     try:
+        with write_session() as session:
+            restore_job = session.get(RestoreJob, restore_job_id)
+            if restore_job is None or restore_job.status != "pending":
+                return
+            backup_job = session.get(BackupJob, restore_job.backup_job_id)
+            destination = session.get(BackupDestination, backup_job.destination_id)
+            account = session.get(Account, restore_job.account_id)
+            if account is None:
+                raise BackupError("restore account no longer exists")
+            if account.status != "active":
+                raise BackupError(f"cannot run restore for an account in status '{account.status}'")
+            username = account.username
+            account_status = account.status
+            kind = restore_job.kind
+            item_ref = restore_job.item_ref
+            artifact_path = backup_job.artifact_path
+            dest_kind = destination.kind
+            restore_job.status = "running"
+            restore_job.progress_message = "fetching backup artifact"
+
+        tmp_dir = tempfile.mkdtemp(dir=settings.backup_staging_dir, prefix=f"restore-{restore_job_id}-")
         local_artifact = _fetch_artifact_locally(artifact_path, dest_kind, tmp_dir)
 
         if kind == "full":
@@ -1260,4 +1268,5 @@ def _run_restore_job(restore_job_id: int) -> None:
         logger.exception("restore job %d failed", restore_job_id)
         _update_restore(restore_job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
