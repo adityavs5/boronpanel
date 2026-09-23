@@ -88,7 +88,7 @@ route,DELETE /api/v1/firewall/bypass/{bypass_id},api/routers/firewall.py,delete_
 route,DELETE /api/v1/firewall/rules/{rule_id},api/routers/firewall.py,delete_rule,get_identity,pending,
 route,DELETE /api/v1/mail/domains/{domain}/mailboxes/{local_part},api/routers/mail.py,delete_mailbox,get_identity,pending,
 route,DELETE /api/v1/security/ip-whitelist/{entry_id},api/routers/ipwhitelist.py,delete_entry,get_identity,pending,
-route,DELETE /api/v1/tokens/{token_id},api/routers/tokens.py,revoke_token,get_identity,pending,
+route,DELETE /api/v1/tokens/{token_id},api/routers/tokens.py,revoke_token,get_identity,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 route,DELETE /api/v1/waf/custom-rules/{rule_id},api/routers/waf.py,delete_custom_rule,get_identity,pending,
 route,DELETE /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,DELETE /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
@@ -262,18 +262,18 @@ route,GET /api/v1/services,api/routers/services.py,list_services,get_identity,pe
 route,GET /api/v1/services/{service},api/routers/services.py,get_service,get_identity,pending,
 route,GET /api/v1/spamfilter/global-default,api/routers/email.py,get_global_default,get_identity,pending,
 route,GET /api/v1/ssl/{domain}/status,api/routers/ssl_router.py,certificate_status,get_identity,pending,
-route,GET /api/v1/tokens,api/routers/tokens.py,list_tokens,get_identity,pending,
+route,GET /api/v1/tokens,api/routers/tokens.py,list_tokens,get_identity,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 route,GET /api/v1/version,api/routers/update.py,get_version,get_identity,reviewed-public,version endpoint requires auth and returns BORON_VERSION; update-version/API tests passed outside socket sandbox
 route,GET /api/v1/waf,api/routers/waf.py,get_status,get_identity,pending,
 route,GET /api/v1/waf/blocked-requests,api/routers/waf.py,blocked_requests,get_identity,pending,
-route,GET /api/v1/whoami,api/routers/auth.py,whoami,get_identity,pending,
+route,GET /api/v1/whoami,api/routers/auth.py,whoami,get_identity,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 route,GET /api/v1/wordpress,api/routers/wordpress.py,manager_inventory,get_identity,pending,
 route,GET /app,api/main.py,spa,,reviewed-public,tests/test_public_route_inventory.py
 route,GET /app/{spa_path:path},api/main.py,spa,,reviewed-public,tests/test_public_route_inventory.py
 route,GET /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,GET /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,GET /healthz,api/main.py,healthz,,reviewed-public,tests/test_public_route_inventory.py
-route,GET /login,api/routers/auth.py,login_form,,reviewed-public,tests/test_public_route_inventory.py
+route,GET /login,api/routers/auth.py,login_form,,reviewed-public,public login endpoints reviewed: public-route inventory plus 82 auth/session/TOTP/RPC authority tests; cross-origin form guard and root-side login protocol
 route,HEAD /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,HEAD /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,OPTIONS /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
@@ -444,17 +444,17 @@ route,POST /api/v1/reseller/accounts/{username}/{action},api/routers/resellers.p
 route,POST /api/v1/security/ip-whitelist,api/routers/ipwhitelist.py,add_entry,get_identity,pending,
 route,POST /api/v1/services/{service}/{action},api/routers/services.py,control_service,get_identity,pending,
 route,POST /api/v1/ssl/issue,api/routers/ssl_router.py,issue_certificate,get_identity,pending,
-route,POST /api/v1/tokens,api/routers/tokens.py,create_token,get_identity,pending,
+route,POST /api/v1/tokens,api/routers/tokens.py,create_token,get_identity,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 route,POST /api/v1/waf/custom-rules,api/routers/waf.py,add_custom_rule,get_identity,pending,
 route,POST /api/v1/waf/domain-override,api/routers/waf.py,set_domain_override,get_identity,pending,
 route,POST /api/v1/waf/enable,api/routers/waf.py,set_enabled,get_identity,pending,
 route,POST /api/v1/wordpress/scan,api/routers/wordpress.py,scan_installations,get_identity,pending,
-route,POST /change-password,api/routers/auth.py,change_password_submit,get_identity,pending,
+route,POST /change-password,api/routers/auth.py,change_password_submit,get_identity,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 route,POST /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,POST /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
-route,POST /login,api/routers/auth.py,login_submit,,reviewed-public,tests/test_public_route_inventory.py
-route,POST /login/2fa,api/routers/auth.py,login_2fa_submit,,reviewed-public,tests/test_public_route_inventory.py
-route,POST /logout,api/routers/auth.py,logout,get_identity,pending,
+route,POST /login,api/routers/auth.py,login_submit,,reviewed-public,public login endpoints reviewed: public-route inventory plus 82 auth/session/TOTP/RPC authority tests; cross-origin form guard and root-side login protocol
+route,POST /login/2fa,api/routers/auth.py,login_2fa_submit,,reviewed-public,public login endpoints reviewed: public-route inventory plus 82 auth/session/TOTP/RPC authority tests; cross-origin form guard and root-side login protocol
+route,POST /logout,api/routers/auth.py,logout,get_identity,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 route,PUT /api/v1/accounts/{username}/crons/{job_id},api/routers/cron.py,update_cron,get_identity,pending,
 route,PUT /api/v1/accounts/{username}/domains/{domain}/error-pages/{code},api/routers/errorpages.py,set_error_page,get_identity,pending,
 route,PUT /api/v1/accounts/{username}/domains/{domain}/forwarding,api/routers/forwarding.py,set_forwarding,get_identity,pending,
@@ -512,14 +512,14 @@ rpc,apps.python.restart,daemon/pythonapps.py,restart_app,kernel-peer-uid; root-c
 rpc,apps.python.start,daemon/pythonapps.py,start_app,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,apps.python.stop,daemon/pythonapps.py,stop_app,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,apps.python.update,daemon/pythonapps.py,update_app,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,auth.check_login_lockout,daemon/handlers_auth.py,check_login_lockout,kernel-peer-uid; root-credential; policy=root_internal_replace_with_login_protocol,pending,
-rpc,auth.create_api_token,daemon/handlers_auth.py,create_api_token,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,auth.create_session,daemon/handlers_auth.py,create_session,kernel-peer-uid; root-credential; policy=root_internal_replace_with_login_protocol,pending,
-rpc,auth.login.begin,daemon/handlers_auth.py,login_begin,kernel-peer-uid; root-credential; policy=login_protocol,pending,
-rpc,auth.login.finish,daemon/handlers_auth.py,login_finish,kernel-peer-uid; root-credential; policy=login_protocol,pending,
-rpc,auth.record_login_result,daemon/handlers_auth.py,record_login_result,kernel-peer-uid; root-credential; policy=root_internal_replace_with_login_protocol,pending,
-rpc,auth.revoke_api_token,daemon/handlers_auth.py,revoke_api_token,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,auth.revoke_session,daemon/handlers_auth.py,revoke_session,kernel-peer-uid; root-credential; policy=current_session_self,pending,
+rpc,auth.check_login_lockout,daemon/handlers_auth.py,check_login_lockout,kernel-peer-uid; root-credential; policy=root_internal_replace_with_login_protocol,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,auth.create_api_token,daemon/handlers_auth.py,create_api_token,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,auth.create_session,daemon/handlers_auth.py,create_session,kernel-peer-uid; root-credential; policy=root_internal_replace_with_login_protocol,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,auth.login.begin,daemon/handlers_auth.py,login_begin,kernel-peer-uid; root-credential; policy=login_protocol,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,auth.login.finish,daemon/handlers_auth.py,login_finish,kernel-peer-uid; root-credential; policy=login_protocol,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,auth.record_login_result,daemon/handlers_auth.py,record_login_result,kernel-peer-uid; root-credential; policy=root_internal_replace_with_login_protocol,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,auth.revoke_api_token,daemon/handlers_auth.py,revoke_api_token,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,auth.revoke_session,daemon/handlers_auth.py,revoke_session,kernel-peer-uid; root-credential; policy=current_session_self,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 rpc,backup.destination.create,daemon/backup.py,create_destination,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,backup.destination.delete,daemon/backup.py,delete_destination,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,backup.destination.list,daemon/backup.py,list_destinations,kernel-peer-uid; root-credential; policy=mixed_admin_or_account,pending,
@@ -739,8 +739,8 @@ rpc,onboarding.get,daemon/onboarding.py,get_onboarding,kernel-peer-uid; root-cre
 rpc,onboarding.set,daemon/onboarding.py,set_onboarding,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,panel.config.start,daemon/panel_jobs.py,start,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,panel.config.status,daemon/panel_jobs.py,status,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,panel_user.create,daemon/handlers_auth.py,create_panel_user,kernel-peer-uid; root-credential; policy=root_internal,pending,
-rpc,panel_user.set_password,daemon/handlers_auth.py,set_panel_user_password,kernel-peer-uid; root-credential; policy=self_with_current_password_or_admin,pending,
+rpc,panel_user.create,daemon/handlers_auth.py,create_panel_user,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,panel_user.set_password,daemon/handlers_auth.py,set_panel_user_password,kernel-peer-uid; root-credential; policy=self_with_current_password_or_admin,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 rpc,parked.add,daemon/parked.py,add_parked_domain,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,parked.list,daemon/parked.py,list_parked_domains,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,parked.remove,daemon/parked.py,remove_parked_domain,kernel-peer-uid; root-credential; policy=account_username,pending,
@@ -846,11 +846,11 @@ rpc,templates.welcome_email.set,daemon/site_templates.py,set_welcome_email_templ
 rpc,terminal.close,daemon/terminal.py,close_session,kernel-peer-uid; root-credential; policy=account_terminal_session_owner,pending,
 rpc,terminal.list,daemon/terminal.py,list_sessions,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,terminal.open,daemon/terminal.py,open_session,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,totp.check_login_code,daemon/totp.py,check_login_code,kernel-peer-uid; root-credential; policy=root_internal_replace_with_login_protocol,pending,
-rpc,totp.disable,daemon/totp.py,disable_totp,kernel-peer-uid; root-credential; policy=self_panel_user_session_with_password,pending,
-rpc,totp.setup,daemon/totp.py,setup_totp,kernel-peer-uid; root-credential; policy=self_panel_user_session_only,pending,
-rpc,totp.status,daemon/totp.py,get_status,kernel-peer-uid; root-credential; policy=self_panel_user_session_only,pending,
-rpc,totp.verify,daemon/totp.py,verify_totp,kernel-peer-uid; root-credential; policy=self_panel_user_session_only,pending,
+rpc,totp.check_login_code,daemon/totp.py,check_login_code,kernel-peer-uid; root-credential; policy=root_internal_replace_with_login_protocol,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,totp.disable,daemon/totp.py,disable_totp,kernel-peer-uid; root-credential; policy=self_panel_user_session_with_password,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,totp.setup,daemon/totp.py,setup_totp,kernel-peer-uid; root-credential; policy=self_panel_user_session_only,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,totp.status,daemon/totp.py,get_status,kernel-peer-uid; root-credential; policy=self_panel_user_session_only,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
+rpc,totp.verify,daemon/totp.py,verify_totp,kernel-peer-uid; root-credential; policy=self_panel_user_session_only,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 rpc,update.check,daemon/updates.py,check,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
 rpc,update.cleanup,daemon/updates.py,cleanup_old_versions,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"
 rpc,update.history,daemon/updates.py,get_history,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"update/release gate: 16 API/version/signature, 89 update/finalizer, 11 release tests; VM signed 1.5.1 update job and rollback job completed; post-rollback admin login smoke"

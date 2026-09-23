@@ -519,14 +519,17 @@ was stripped, and the admin session remained valid. The trusted frontend hotfix
 is installed on the development panel and the existing Chromium FileBrowser
 smoke still passes.
 
-The coverage inventory now has 901 entries: 848 pending, 42 reviewed-fixed and
+The coverage inventory now has 901 entries: 827 pending, 63 reviewed-fixed and
 11 reviewed-public. New reviewed-fixed rows cover `scripts/app_files.py`,
-`scripts/wordpress_files.py`, and the trusted FileBrowser frontend unit, while
-existing FileBrowser route/RPC rows now cite both the per-account isolation and
-trusted-renderer evidence. The update routes/RPCs, updater cron wrapper,
-`scripts/update_check.py`, and `scripts/update_finalize.py` now cite the
-focused update/release tests plus the signed VM update/rollback drill. This is
-still not a final security release gate:
+`scripts/wordpress_files.py`, the trusted FileBrowser frontend unit, the auth
+routes, token routes, `daemon/handlers_auth.py`, and `daemon/totp.py`. The auth
+rows cite the 82-test focused auth/session/TOTP/RPC authority suite, hashed
+sessions, root-side login protocol, TOTP replay/recovery serialization, and the
+live VM login smoke. Existing FileBrowser route/RPC rows now cite both the
+per-account isolation and trusted-renderer evidence. The update routes/RPCs,
+updater cron wrapper, `scripts/update_check.py`, and
+`scripts/update_finalize.py` now cite the focused update/release tests plus the
+signed VM update/rollback drill. This is still not a final security release gate:
 signed update packaging, installed upgrade/rollback, fresh install from the
 candidate, and the remaining route/resource review remain open.
 
