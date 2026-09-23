@@ -22,6 +22,7 @@ def gate(tmp_path):
         root.chmod(0o755)
         directory = root / 'gates'
         directory.mkdir(mode=0o710)
+        directory.chmod(0o710)
         os.chown(directory, 0, grp.getgrnam('dovecot').gr_gid)
         binary = root / 'gate'
         source = Path(__file__).parents[1] / 'daemon/mail_restore_gate.c'
@@ -29,6 +30,7 @@ def gate(tmp_path):
                                    f'-DBORON_MAIL_RESTORE_GATES="{directory}"', str(source), '-o', str(binary), '-lcrypto'],
                                   capture_output=True, text=True, timeout=30)
         assert compiled.returncode == 0, compiled.stderr
+        binary.chmod(0o755)
 
         def lookup(user=b'inbox@example.test', authorized='1'):
             payload = root / 'request'
@@ -131,6 +133,7 @@ def test_real_dovecot_userdb_delegation_and_temporary_failure(gate, tmp_path, mo
     root.chmod(0o755)
     for name in ('run', 'state', 'home'):
         (root / name).mkdir()
+        (root / name).chmod(0o755)
     config = root / 'dovecot.conf'
     config.write_text(
         f'base_dir = {root}/run\nstate_dir = {root}/state\n'

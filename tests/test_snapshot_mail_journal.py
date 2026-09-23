@@ -1,3 +1,4 @@
+import sys
 import copy
 import os
 from pathlib import Path
@@ -147,7 +148,7 @@ def test_real_supervised_journal_worker(saved, isolated_service, tmp_path, inter
            'exchange.apply = interrupt\n' if interrupted else '')
         + f'journal.execute({str(path)!r}, service={service_name!r})\n'
     )
-    command = [str(repo / '.venv/bin/python'), str(script)]
+    command = [sys.executable, str(script)]
     if interrupted:
         with pytest.raises(ValidationError, match='Mail switch failed'):
             supervisor.supervised_command(command, operation, service=service_name)
@@ -192,7 +193,7 @@ def test_real_supervised_journal_worker(saved, isolated_service, tmp_path, inter
                      'exchange.apply = interrupt\n')
         undo_script.write_text(clean_undo_code.replace('journal.execute(', injection + 'journal.execute('))
         with pytest.raises(ValidationError, match='Mail switch failed'):
-            supervisor.supervised_command([str(repo / '.venv/bin/python'), str(undo_script)],
+            supervisor.supervised_command([sys.executable, str(undo_script)],
                                          undo_payload['operation_id'], service=service_name)
         assert [row['state'] for row in journal.inspect(path)] == ['ready', 'applied']
         remaining = journal.continue_rollback(path, rollback, path.with_name('undo-remaining.json'), service=service_name)
@@ -202,7 +203,7 @@ def test_real_supervised_journal_worker(saved, isolated_service, tmp_path, inter
         undo_script.write_text(clean_undo_code.replace(repr(str(rollback)), repr(str(remaining))))
         rollback, undo_payload = remaining, next_payload
         operations.append(undo_payload['operation_id'])
-    supervisor.supervised_command([str(repo / '.venv/bin/python'), str(undo_script)],
+    supervisor.supervised_command([sys.executable, str(undo_script)],
                                  undo_payload['operation_id'], service=service_name)
     assert [row['state'] for row in journal.inspect(path)] == ['ready', 'ready']
     assert journal.recovery_state(rollback, service=service_name)['state'] == 'applied'

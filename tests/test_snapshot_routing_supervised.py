@@ -1,3 +1,4 @@
+import sys
 """Real systemd worker execution against isolated SQL, files and a test service."""
 from pathlib import Path
 
@@ -50,7 +51,7 @@ def test_real_systemd_routing_restore_and_interrupted_rollback(prepared, isolate
         payload = journal.read(account, path)
         operations.append(payload['operation_id'])
         before = service.service_status(name)
-        command = [str(source / '.venv/bin/python'), str(worker), str(path), crash_phase]
+        command = [sys.executable, str(worker), str(path), crash_phase]
         if crash_phase != 'none':
             with pytest.raises(ValidationError, match='Mail switch failed'):
                 service.supervised_command(command, payload['operation_id'], service=name)

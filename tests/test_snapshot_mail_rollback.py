@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -50,7 +51,7 @@ def test_rollback_orchestration_recovers_partial_undo(isolated_db, saved, isolat
                      ' return original(domain, local, plan, **kwargs)\n'
                      'exchange.apply = interrupt\n')
         script.write_text(code + f'journal.execute({str(undo)!r}, service={name!r})\n')
-        return supervisor.supervised_command([str(repo / '.venv/bin/python'), str(script)], operation, service=name)
+        return supervisor.supervised_command([sys.executable, str(script)], operation, service=name)
     monkeypatch.setattr(journal, 'launch', launch)
     if interrupt_undo:
         with pytest.raises(ValidationError, match='Mail switch failed'):

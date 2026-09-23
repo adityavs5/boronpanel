@@ -10,6 +10,10 @@ from shared.validation import ValidationError
 @pytest.fixture()
 def stub_sysops(monkeypatch):
     calls = []
+    # Importing the RPC registry during collection registers real system
+    # hooks. This module tests hook dispatch with its own synthetic callbacks.
+    for name in ("CREATE_HOOKS", "LIMITS_HOOKS", "SUSPEND_HOOKS", "UNSUSPEND_HOOKS", "TERMINATE_HOOKS"):
+        monkeypatch.setattr(ha, name, [])
 
     def create_linux_user(username):
         calls.append(("create_linux_user", username))

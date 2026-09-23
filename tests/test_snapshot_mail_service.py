@@ -1,3 +1,4 @@
+import sys
 import os
 from pathlib import Path
 import subprocess
@@ -116,7 +117,7 @@ def test_switch_survives_loss_of_calling_panel_process(isolated_service, tmp_pat
                       f'settings.snapshot_private_dir = {settings.snapshot_private_dir!r}\n'
                       'from daemon.snapshot_mail_service import supervised_command\n'
                       f'supervised_command({command!r}, {operation!r}, service={name!r})\n')
-    process = subprocess.Popen([str(repo / '.venv/bin/python'), str(caller)],
+    process = subprocess.Popen([sys.executable, str(caller)],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         deadline = time.monotonic() + 10
