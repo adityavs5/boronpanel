@@ -673,3 +673,26 @@ no panel rows left. The same canary forced MariaDB/PureDB delete failures and
 confirmed the rows and external objects remained for retry, then performed the
 real cleanup. The same daemon files are installed on the development panel with
 matching hashes and `boron-provisiond` active.
+
+### 2026-09-23 mail domain/mailbox lifecycle hardening
+
+BSA-2026-041 records mail-domain and mailbox lifecycle rollback gaps. Mail domain
+and mailbox creation wrote the real Postfix/Dovecot MariaDB objects before
+recording the SQLite control-plane cache row. If the cache write failed after
+that external step, the server could retain an unmanaged mail domain or mailbox.
+A live canary also exposed that no-owner mail-domain creation reached the
+external mail database before failing on the non-null `MailDomain.account_id`
+constraint.
+
+The source now resolves a missing `username` from an existing hosting `Domain`
+row, and rejects an orphan mail domain before calling the external mail helper.
+After a mail domain or mailbox is created externally, any cache-write failure
+now rolls back the corresponding external `boron_mail` row and maildir before
+re-raising the original failure.
+
+Focused validation passed 63 mail/mutation/RPC-authority tests. The disposable
+VM was hotfixed with `daemon/handlers_mail.py` matching source; a live canary
+used the active `auditweb` account, forced post-create cache-write failures for
+both a mail domain and a mailbox, and confirmed the external domain, mailbox,
+maildirs and cache rows were removed. The same daemon file is installed on the
+development panel with matching hashes and `boron-provisiond` active.

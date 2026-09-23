@@ -86,7 +86,7 @@ route,DELETE /api/v1/cloudflare/accounts/{account_id},api/routers/cloudflare.py,
 route,DELETE /api/v1/dns/zones/{domain}/records,api/routers/dns.py,delete_record,get_identity,pending,
 route,DELETE /api/v1/firewall/bypass/{bypass_id},api/routers/firewall.py,delete_bypass,get_identity,pending,
 route,DELETE /api/v1/firewall/rules/{rule_id},api/routers/firewall.py,delete_rule,get_identity,pending,
-route,DELETE /api/v1/mail/domains/{domain}/mailboxes/{local_part},api/routers/mail.py,delete_mailbox,get_identity,pending,
+route,DELETE /api/v1/mail/domains/{domain}/mailboxes/{local_part},api/routers/mail.py,delete_mailbox,get_identity,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
 route,DELETE /api/v1/security/ip-whitelist/{entry_id},api/routers/ipwhitelist.py,delete_entry,get_identity,pending,
 route,DELETE /api/v1/tokens/{token_id},api/routers/tokens.py,revoke_token,get_identity,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 route,DELETE /api/v1/waf/custom-rules/{rule_id},api/routers/waf.py,delete_custom_rule,get_identity,pending,
@@ -252,7 +252,7 @@ route,GET /api/v1/firewall/status,api/routers/firewall.py,get_status,get_identit
 route,GET /api/v1/health,api/routers/health.py,get_health,get_identity,pending,
 route,GET /api/v1/health/history,api/routers/health.py,get_health_history,get_identity,pending,
 route,GET /api/v1/mail-queue,api/routers/mailqueue.py,list_queue,get_identity,pending,
-route,GET /api/v1/mail/domains/{domain}/mailboxes,api/routers/mail.py,list_mailboxes,get_identity,pending,
+route,GET /api/v1/mail/domains/{domain}/mailboxes,api/routers/mail.py,list_mailboxes,get_identity,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
 route,GET /api/v1/mail/webmail,api/routers/mail.py,webmail_settings,get_identity,pending,
 route,GET /api/v1/mysql/slow-queries,api/routers/slowquery.py,list_slow_queries,get_identity,pending,
 route,GET /api/v1/mysql/slow-queries/status,api/routers/slowquery.py,get_status,get_identity,pending,
@@ -288,7 +288,7 @@ route,PATCH /api/v1/accounts/{username}/domains/{domain}/hotlink-protection,api/
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/maintenance,api/routers/maintenance.py,set_maintenance,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/php-version,api/routers/domains.py,set_domain_php_version,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/wildcard,api/routers/wildcard.py,set_wildcard,get_identity,pending,
-route,PATCH /api/v1/accounts/{username}/email/{local_part}/password,api/routers/mail.py,change_mailbox_password,get_identity,pending,
+route,PATCH /api/v1/accounts/{username}/email/{local_part}/password,api/routers/mail.py,change_mailbox_password,get_identity,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
 route,PATCH /api/v1/accounts/{username}/ftp/{label},api/routers/ftp.py,set_ftp_path,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,PATCH /api/v1/accounts/{username}/ftp/{label}/password,api/routers/ftp.py,change_ftp_password,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,PATCH /api/v1/accounts/{username}/git/{name}/deploy-target,api/routers/git.py,set_deploy_target,get_identity,pending,
@@ -436,8 +436,8 @@ route,POST /api/v1/mail-queue/delete-all,api/routers/mailqueue.py,delete_all,get
 route,POST /api/v1/mail-queue/flush,api/routers/mailqueue.py,flush_all,get_identity,pending,
 route,POST /api/v1/mail-queue/{queue_id}/delete,api/routers/mailqueue.py,delete_one,get_identity,pending,
 route,POST /api/v1/mail-queue/{queue_id}/flush,api/routers/mailqueue.py,flush_one,get_identity,pending,
-route,POST /api/v1/mail/domains,api/routers/mail.py,create_mail_domain,get_identity,pending,
-route,POST /api/v1/mail/mailboxes,api/routers/mail.py,create_mailbox,get_identity,pending,
+route,POST /api/v1/mail/domains,api/routers/mail.py,create_mail_domain,get_identity,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
+route,POST /api/v1/mail/mailboxes,api/routers/mail.py,create_mailbox,get_identity,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
 route,POST /api/v1/mysql/slow-queries/bootstrap,api/routers/slowquery.py,bootstrap,get_identity,pending,
 route,POST /api/v1/reseller/accounts,api/routers/resellers.py,create_account,get_identity,pending,
 route,POST /api/v1/reseller/accounts/{username}/{action},api/routers/resellers.py,lifecycle,get_identity,pending,
@@ -682,15 +682,15 @@ rpc,mail.autoresponder.set,daemon/database_operations.py,set_autoresponder,kerne
 rpc,mail.catchall.delete,daemon/database_operations.py,delete_catchall,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,mail.catchall.get,daemon/handlers_mail.py,get_catchall,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,mail.catchall.set,daemon/database_operations.py,set_catchall,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,mail.change_password,daemon/database_operations.py,change_mailbox_password,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,mail.create_domain,daemon/database_operations.py,create_mail_domain,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,mail.create_mailbox,daemon/database_operations.py,create_mailbox,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,mail.delete_domain,daemon/database_operations.py,delete_mail_domain,kernel-peer-uid; root-credential; policy=root_internal,pending,
-rpc,mail.delete_mailbox,daemon/database_operations.py,delete_mailbox,kernel-peer-uid; root-credential; policy=domain_owner,pending,
+rpc,mail.change_password,daemon/database_operations.py,change_mailbox_password,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
+rpc,mail.create_domain,daemon/database_operations.py,create_mail_domain,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
+rpc,mail.create_mailbox,daemon/database_operations.py,create_mailbox,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
+rpc,mail.delete_domain,daemon/database_operations.py,delete_mail_domain,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
+rpc,mail.delete_mailbox,daemon/database_operations.py,delete_mailbox,kernel-peer-uid; root-credential; policy=domain_owner,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
 rpc,mail.forward.create,daemon/database_operations.py,create_forward,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,mail.forward.delete,daemon/database_operations.py,delete_forward,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,mail.forward.list,daemon/handlers_mail.py,list_forwards,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,mail.list_mailboxes,daemon/handlers_mail.py,list_mailboxes,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
+rpc,mail.list_mailboxes,daemon/handlers_mail.py,list_mailboxes,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
 rpc,mail.spamfilter.get,daemon/handlers_mail.py,get_spam_filter,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,mail.spamfilter.set,daemon/handlers_mail.py,set_spam_filter,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,maillog.delivery,daemon/maillog.py,get_delivery_log,kernel-peer-uid; root-credential; policy=account_username,pending,

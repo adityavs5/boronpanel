@@ -5,6 +5,7 @@ what the admin UI links out to.
 """
 from __future__ import annotations
 
+import logging
 import threading
 
 from sqlalchemy import select
@@ -30,6 +31,7 @@ from daemon.mail_mutation import serialized
 # 1 MB floor rejects 0/negative (which Dovecot would read as "unlimited").
 MAILBOX_QUOTA_MIN_MB = 1
 MAILBOX_QUOTA_MAX_MB = 100 * 1024
+logger = logging.getLogger("borond.mail")
 
 
 @serialized
@@ -38,11 +40,18 @@ def create_mail_domain(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
 
     with write_session() as session:
-        account = None
+        account_id = None
         if username:
             account = session.scalar(select(Account).where(Account.username == username))
             if account is None:
                 raise RuntimeError(f"account '{username}' not found")
+            account_id = account.id
+        else:
+            domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
+            account = session.get(Account, domain.account_id) if domain else None
+            if account is None:
+                raise RuntimeError(f"mail domain '{domain_name}' requires an owning hosting account")
+            account_id = account.id
         existing = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))
         if existing is not None:
             raise RuntimeError(f"mail domain '{domain_name}' already provisioned")
@@ -52,11 +61,18 @@ def create_mail_domain(params: dict) -> dict:
 
     mail.create_mail_domain(domain_name)
 
-    with write_session() as session:
-        row = MailDomain(account_id=account.id if account else None, domain=domain_name)
-        session.add(row)
-        session.flush()
-        result = {"id": row.id, "domain": row.domain, "account_id": row.account_id}
+    try:
+        with write_session() as session:
+            row = MailDomain(account_id=account_id, domain=domain_name)
+            session.add(row)
+            session.flush()
+            result = {"id": row.id, "domain": row.domain, "account_id": row.account_id}
+    except Exception:
+        try:
+            mail.delete_mail_domain(domain_name)
+        except Exception:
+            logger.exception("failed to roll back external mail domain '%s' after cache write failure", domain_name)
+        raise
 
     # Phase 3 feature 1: SPF/DKIM/DMARC sane defaults, generated the moment
     # a domain gets real mail routing -- a failure here must not undo the
@@ -67,9 +83,7 @@ def create_mail_domain(params: dict) -> dict:
     try:
         result["dkim"] = dkim.setup_dns_signing(domain_name)
     except Exception:
-        import logging
-
-        logging.getLogger("borond.mail").exception(
+        logger.exception(
             "SPF/DKIM/DMARC setup failed for '%s' -- mail domain itself was still created", domain_name
         )
     return result
@@ -105,9 +119,7 @@ def delete_mail_domain(params: dict) -> dict:
     try:
         dkim.teardown_dns_signing(domain_name)
     except Exception:
-        import logging
-
-        logging.getLogger("borond.mail").exception("DKIM teardown failed for '%s'", domain_name)
+        logger.exception("DKIM teardown failed for '%s'", domain_name)
     return {"domain": domain_name, "status": "deleted"}
 
 
@@ -167,9 +179,20 @@ def create_mailbox(params: dict) -> dict:
 
     result = mail.create_mailbox(domain_name, local_part, password, quota_mb=quota_mb)
 
-    with write_session() as session:
-        row = MailUser(mail_domain_id=mail_domain_id, local_part=local_part, domain=domain_name, quota_mb=quota_mb)
-        session.add(row)
+    try:
+        with write_session() as session:
+            row = MailUser(mail_domain_id=mail_domain_id, local_part=local_part, domain=domain_name, quota_mb=quota_mb)
+            session.add(row)
+    except Exception:
+        try:
+            mail.delete_mailbox(domain_name, local_part)
+        except Exception:
+            logger.exception(
+                "failed to roll back external mailbox '%s@%s' after cache write failure",
+                local_part,
+                domain_name,
+            )
+        raise
 
     return result
 
@@ -221,9 +244,7 @@ def terminate_account_mail(account: Account) -> None:
         try:
             dkim.teardown_dns_signing(domain_name)
         except Exception:
-            import logging
-
-            logging.getLogger("borond.mail").exception("DKIM teardown failed for '%s'", domain_name)
+            logger.exception("DKIM teardown failed for '%s'", domain_name)
 
 
 # --- Forwarders (Phase 3 feature 4) -----------------------------------

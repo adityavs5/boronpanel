@@ -150,6 +150,72 @@ def test_create_mail_domain_rejects_duplicate(isolated_db, stub_sysops, stub_mai
         hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
 
 
+def test_create_mail_domain_without_username_uses_hosting_domain_owner(isolated_db, stub_mail):
+    from shared.db import write_session
+    from shared.models import Account, Domain
+
+    with write_session() as session:
+        account = Account(username="demo1", uid=5001, gid=5001, status="active")
+        session.add(account)
+        session.flush()
+        session.add(
+            Domain(
+                account_id=account.id,
+                domain="demo1.example",
+                docroot="/home/demo1/public_html",
+                kind="primary",
+            )
+        )
+        account_id = account.id
+
+    result = hm.create_mail_domain({"domain": "demo1.example"})
+
+    assert result["account_id"] == account_id
+    assert ("create_mail_domain", "demo1.example") in stub_mail
+
+
+def test_create_mail_domain_without_owner_fails_before_external_create(isolated_db, stub_mail):
+    with pytest.raises(RuntimeError, match="requires an owning hosting account"):
+        hm.create_mail_domain({"domain": "orphan.example"})
+
+    assert ("create_mail_domain", "orphan.example") not in stub_mail
+    assert hm.mail.domain_exists("orphan.example") is False
+
+
+def test_create_mail_domain_rolls_back_external_when_cache_write_fails(
+    isolated_db, stub_sysops, stub_mail, monkeypatch
+):
+    from contextlib import contextmanager
+
+    from sqlalchemy import select
+
+    from shared.db import write_session as real_write_session
+    from shared.models import MailDomain
+
+    ha.create_account({"username": "demo1"})
+    calls = 0
+
+    @contextmanager
+    def flaky_write_session():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("cache write failed")
+        with real_write_session() as session:
+            yield session
+
+    monkeypatch.setattr(hm, "write_session", flaky_write_session)
+
+    with pytest.raises(RuntimeError, match="cache write failed"):
+        hm.create_mail_domain({"username": "demo1", "domain": "rollback.example"})
+
+    assert ("create_mail_domain", "rollback.example") in stub_mail
+    assert ("delete_mail_domain", "rollback.example") in stub_mail
+    assert hm.mail.domain_exists("rollback.example") is False
+    with real_write_session() as session:
+        assert session.scalar(select(MailDomain).where(MailDomain.domain == "rollback.example")) is None
+
+
 def test_create_mailbox_requires_domain(isolated_db, stub_sysops, stub_mail):
     with pytest.raises(RuntimeError):
         hm.create_mailbox({"domain": "nope.example", "local_part": "john", "password": "Secret123!Pass"})
@@ -176,6 +242,41 @@ def test_create_mailbox_rejects_invalid_local_part(isolated_db, stub_sysops, stu
     hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
     with pytest.raises(ValidationError):
         hm.create_mailbox({"domain": "demo1.example", "local_part": "John Doe", "password": "Secret123!Pass"})
+
+
+def test_create_mailbox_rolls_back_external_when_cache_write_fails(isolated_db, stub_sysops, stub_mail, monkeypatch):
+    from contextlib import contextmanager
+
+    from sqlalchemy import select
+
+    from shared.db import write_session as real_write_session
+    from shared.models import MailUser
+
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    calls = 0
+
+    @contextmanager
+    def flaky_write_session():
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("mailbox cache write failed")
+        with real_write_session() as session:
+            yield session
+
+    monkeypatch.setattr(hm, "write_session", flaky_write_session)
+
+    with pytest.raises(RuntimeError, match="mailbox cache write failed"):
+        hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
+
+    assert ("create_mailbox", "demo1.example", "john") in stub_mail
+    assert ("delete_mailbox", "demo1.example", "john") in stub_mail
+    assert hm.mail.list_mailboxes("demo1.example") == []
+    with real_write_session() as session:
+        assert session.scalar(
+            select(MailUser).where(MailUser.domain == "demo1.example", MailUser.local_part == "john")
+        ) is None
 
 
 def test_delete_mailbox(isolated_db, stub_sysops, stub_mail):
