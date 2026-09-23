@@ -213,7 +213,11 @@ still be active, verifies the pending job still belongs to that account, and
 only then constructs `runuser`. The regression queues a command, suspends the
 account before the worker runs, and confirms no subprocess is invoked. Focused
 Composer/WP-CLI/cmdjobs tests passed (31), along with Python compilation and
-diff checks. This fix has not yet been installed on the disposable VM.
+diff checks. This fix is now installed on the disposable VM. After deployment
+both Boron services were active, local `/healthz` returned 200, the daemon
+registry still reported 414/414 policy equality, the forged `boron-api`
+metadata canary still failed with `unauthenticated`, and real admin login
+still returned 303 plus an admin `/api/v1/whoami` identity.
 
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
