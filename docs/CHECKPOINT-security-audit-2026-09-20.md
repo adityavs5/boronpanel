@@ -526,3 +526,38 @@ existing FileBrowser route/RPC rows now cite both the per-account isolation and
 trusted-renderer evidence. This is still not a final security release gate:
 signed update packaging, installed upgrade/rollback, fresh install from the
 candidate, and the remaining route/resource review remain open.
+
+### 2026-09-23 signed update and rollback drill
+
+Focused update/release gates passed after rerunning FastAPI TestClient slices
+outside the local socket-restricted sandbox: 16 update-version/API/signature
+tests, 89 update-daemon/finalizer tests, and 11 release-pipeline tests. The
+release tests include the signed dry-run artifact build, checksum verification,
+tarball path/leak checks, shellcheck, and fail-closed unsigned-release behavior.
+
+A protected signed candidate artifact set was built for VM testing:
+`release-candidate-1.5.1-8aa5db3/boron-1.5.1.tar.gz`, `.sha256`, and
+`.tar.gz.sig`. This was intentionally not published to GitHub. It was produced
+from a temporary detached worktree at `8aa5db3` with only `version.py` bumped to
+`1.5.1`; the artifact self-verified with the pinned Ed25519 public key.
+
+On the disposable VM, a mocked GitHub transport inside the installed
+`daemon.updates` served those exact local assets while the rest of the updater
+path stayed real. Update job 1 completed the installed focused preflight,
+online backup, GitHub-style redirect download, SHA256, publisher signature,
+tarball extraction to `/opt/boron-1.5.1`, venv build, migrations, LiteSpeed repo
+trust, database-grant reconciliation, mailbox guard, OLS WebAdmin integration,
+FTPS TLS reconciliation, first-update conversion of real `/opt/boron` into a
+versioned symlink, service restarts, and finalizer health checks. Rollback job 2
+then completed through the same detached finalizer path, swapping back to
+`/opt/boron-1.5.0` and restarting services. Final VM state: `/opt/boron` points
+to `/opt/boron-1.5.0`, reported version is `1.5.0`, and `boron-provisiond`,
+`boron-api`, and OpenLiteSpeed are active. Evidence is stored in the protected
+VM folder as `mock-signed-update-drill.json`.
+An authenticated admin login smoke after rollback returned a 303 login and
+200 `/api/v1/whoami` as `admin`.
+
+This closes the installed update/rollback mechanics for a signed candidate in
+the disposable lab, but it is not a public release: the GitHub release creation,
+real GitHub asset download, primary self-update, fresh install from the final
+candidate, and remaining route/resource review are still open.
