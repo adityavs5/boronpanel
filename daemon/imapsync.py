@@ -350,21 +350,31 @@ def _parse_folder_result(stdout: str) -> int:
 
 
 def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: bool) -> None:
-    dir_path = _job_passfile_dir(job_id)
+    dir_path: str | None = None
     try:
+        try:
+            with write_session() as session:
+                job = session.get(ImapMigrationJob, job_id)
+                if job is None or job.status != "pending":
+                    return
+                mailbox = job.mailbox
+                local_part, _, domain_name = mailbox.partition("@")
+                _mail_user, account = _domain_account_for_mailbox(session, domain_name, local_part)
+                if account.id != job.account_id:
+                    raise RuntimeError("migration mailbox no longer belongs to this account")
+                if account.status != "active":
+                    raise RuntimeError(f"cannot migrate mail for an account in status '{account.status}'")
+                requested_folders = list(job.folders or [])
+                source_host, source_port, source_email = job.source_host, job.source_port, job.source_email
+        except Exception as exc:  # noqa: BLE001
+            _update_job(job_id, status="failed", error=str(exc)[:4000], completed_at=utcnow())
+            return
+
         try:
             ensure_installed()
         except ImapSyncError as exc:
             _update_job(job_id, status="failed", error=str(exc), completed_at=utcnow())
             return
-
-        with write_session() as session:
-            job = session.get(ImapMigrationJob, job_id)
-            mailbox = job.mailbox
-            requested_folders = list(job.folders or [])
-            source_host, source_port, source_email = job.source_host, job.source_port, job.source_email
-
-        local_part, _, domain_name = mailbox.partition("@")
 
         # Audit 3 finding A3-4: validate_imap_source_host was previously
         # only ever called once, at start_migration (job-creation) time --
@@ -394,6 +404,7 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
             return
 
         status = _update_job(job_id, status="running", folders_total=len(folders), progress_message="Starting migration")
+        dir_path = _job_passfile_dir(job_id)
         source_passfile = _write_passfile(dir_path, "passfile1", source_password)
         dest_passfile = _write_passfile(dir_path, "passfile2", dest_password)
 
@@ -449,7 +460,8 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
         # source_password/dest_password fall out of scope with this function
         # returning -- never assigned to any object that outlives it, never
         # written anywhere but the passfiles just removed here.
-        _cleanup_passfile_dir(dir_path)
+        if dir_path is not None:
+            _cleanup_passfile_dir(dir_path)
 
 
 def _job_for_account(session, job_id: int, username: str) -> ImapMigrationJob:

@@ -351,6 +351,34 @@ def test_run_job_revalidates_source_host_before_connecting(mailbox, monkeypatch,
     assert run_calls == [], "imapsync must never be invoked once re-validation fails"
 
 
+def test_run_job_rechecks_active_account_before_connecting(mailbox, monkeypatch, tmp_path):
+    local_part, domain = mailbox
+    monkeypatch.setattr(im.IMAPSYNC_EXECUTOR, "submit", lambda fn, *a: None)
+    monkeypatch.setattr(im, "IMAPSYNC_RUN_DIR", str(tmp_path))
+    job = im.start_migration({
+        "domain": domain, "local_part": local_part,
+        "source_host": "imap.example.net", "source_port": 993,
+        "source_email": "old@example.net", "source_password": "s3cret-source-pw", "dest_password": "s3cret-dest-pw",
+    })
+
+    from shared.db import write_session
+    from shared.models import Account, ImapMigrationJob
+
+    with write_session() as session:
+        session.get(Account, job["account_id"]).status = "terminated"
+
+    monkeypatch.setattr(im, "resolve_public_imap_source", lambda *_a, **_k: pytest.fail("stale migration must not resolve source"))
+    monkeypatch.setattr(im, "run", lambda *_a, **_k: pytest.fail("stale migration must not run imapsync"))
+
+    im._run_job(job["id"], "s3cret-source-pw", "s3cret-dest-pw", True)
+
+    with write_session() as session:
+        row = session.get(ImapMigrationJob, job["id"])
+        assert row.status == "failed"
+        assert "terminated" in row.error
+    assert not (tmp_path / str(job["id"])).exists()
+
+
 def test_run_job_never_logs_or_stores_passwords(mailbox, monkeypatch, tmp_path, caplog):
     local_part, domain = mailbox
     monkeypatch.setattr(im, "IMAPSYNC_RUN_DIR", str(tmp_path))
