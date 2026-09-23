@@ -1,7 +1,10 @@
 import os
 import json
 import pwd as real_pwd
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +14,15 @@ from daemon import handlers_account as ha
 
 @pytest.fixture()
 def account_with_domain(isolated_db, tmp_path, monkeypatch):
+    from scripts.app_files import execute
+    def files(username, action, docroot, *, payload=None, archive=None):
+        if action == 'access':
+            return {'ok': True}
+        if archive is not None:
+            with open(archive, 'rb') as stream:
+                return execute(action, docroot, payload=payload, archive=stream)
+        return execute(action, docroot, payload=payload)
+    monkeypatch.setattr(ai, '_files_as_account', files)
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
     monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
@@ -416,3 +428,111 @@ def test_app_install_failure_does_not_store_or_log_exception_secrets(isolated_db
         assert job.status == "failed"
         assert "secret" not in job.error
     assert "secret" not in caplog.text
+
+
+def test_application_file_worker_drops_uid_and_keeps_secrets_off_argv(monkeypatch):
+    from types import SimpleNamespace
+    from daemon.procutil import ProcResult
+    seen = []
+    monkeypatch.setattr(ai.pwd, 'getpwnam', lambda _: SimpleNamespace(pw_uid=5011, pw_gid=5012))
+    def run(args, **kwargs):
+        seen.append((args, kwargs))
+        return ProcResult(args=args, returncode=0, stdout='{"ok":true}', stderr='')
+    monkeypatch.setattr(ai, 'run', run)
+    ai._files_as_account('demo1', 'joomla-config', '/home/demo1/public_html', payload={'db_password':'private value'})
+    args, options = seen[0]
+    assert options['uid'] == 5011 and options['gid'] == 5012
+    assert 'private value' not in ' '.join(args)
+    assert json.loads(options['input_text'])['db_password'] == 'private value'
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason='root-execution refusal is only meaningful under root')
+def test_application_file_worker_refuses_root_execution(tmp_path):
+    result = subprocess.run(
+        [sys.executable, 'scripts/app_files.py', 'prepare', str(tmp_path / 'site')],
+        input='{}',
+        text=True,
+        capture_output=True,
+        timeout=10,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    assert result.returncode != 0
+    assert 'RuntimeError' in result.stderr
+
+
+def test_application_file_worker_zip_action_rejects_symlink_without_writing_target(tmp_path):
+    from scripts.app_files import execute
+    import zipfile
+
+    archive = tmp_path / 'release.zip'
+    with zipfile.ZipFile(archive, 'w') as output:
+        output.writestr('index.php', '<?php echo "ok";')
+    root = tmp_path / 'site'
+    root.mkdir()
+    canary = tmp_path / 'root-canary'
+    canary.write_text('UNCHANGED')
+    (root / 'index.php').symlink_to(canary)
+
+    with archive.open('rb') as stream:
+        with pytest.raises(ai.AppInstallError):
+            execute('zip', str(root), archive=stream)
+
+    assert canary.read_text() == 'UNCHANGED'
+    assert (root / 'index.php').is_symlink()
+
+
+def test_application_file_worker_tar_and_drupal_config_actions(tmp_path):
+    from scripts.app_files import execute
+    import io
+    import tarfile
+
+    archive = tmp_path / 'drupal.tar.gz'
+    with tarfile.open(archive, 'w:gz') as output:
+        for name, data in {
+            'drupal-1/index.php': b'<?php echo "drupal";',
+            'drupal-1/sites/default/default.settings.php': b'<?php\n// defaults\n',
+        }.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            output.addfile(info, io.BytesIO(data))
+
+    root = tmp_path / 'site'
+    root.mkdir()
+    with archive.open('rb') as stream:
+        execute('tar', str(root), archive=stream)
+    execute('drupal-config', str(root), payload={'content': '$databases = [];' + "\n"})
+
+    assert (root / 'index.php').read_text() == '<?php echo "drupal";'
+    settings = (root / 'sites/default/settings.php').read_text()
+    assert '// defaults' in settings
+    assert '$databases = [];' in settings
+
+
+def test_application_file_worker_laravel_env_quotes_values(tmp_path):
+    from scripts.app_files import execute
+
+    root = tmp_path / 'site'
+    root.mkdir()
+    (root / '.env').write_text('APP_NAME=Laravel\nDB_CONNECTION=sqlite\n')
+
+    execute('laravel-env', str(root), payload={'values': {
+        'DB_DATABASE': 'demo db',
+        'DB_USERNAME': 'demo"user',
+        'DB_PASSWORD': 'space and # and "quotes"',
+        'APP_URL': 'https://demo.example',
+    }})
+
+    content = (root / '.env').read_text()
+    assert 'DB_CONNECTION=mysql' in content
+    assert 'DB_DATABASE="demo db"' in content
+    assert 'DB_USERNAME="demo\\"user"' in content
+    assert 'DB_PASSWORD="space and # and \\"quotes\\""' in content
+
+
+def test_joomla_configuration_replaces_symlink_without_writing_target(tmp_path):
+    root = tmp_path / 'site'; root.mkdir()
+    canary = tmp_path / 'root-canary'; canary.write_text('UNCHANGED')
+    (root / 'configuration.php').symlink_to(canary)
+    ai._write_joomla_configuration(str(root), 'db', 'user', 'password', 'jos_', 'Site')
+    assert canary.read_text() == 'UNCHANGED'
+    assert not (root / 'configuration.php').is_symlink()

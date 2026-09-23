@@ -50,6 +50,7 @@ import os
 import pwd
 import secrets
 import shutil
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -67,7 +68,7 @@ from shared.validation import generate_strong_password, validate_domain, validat
 from daemon import handlers_database, wordpress
 from daemon import jobcredentials
 from daemon.procutil import run
-from daemon.safeio import secure_mkdirs, secure_write_file_beneath
+from daemon.safeio import secure_mkdirs, secure_write_file_beneath, secure_replace_file
 
 logger = logging.getLogger("borond.appinstaller")
 
@@ -104,11 +105,9 @@ def _account_and_domain(username: str, domain_name: str) -> tuple[int, str]:
         if domain_row is None:
             raise AppInstallError(f"domain '{domain_name}' not found for account '{username}'")
         # The account can write its own home, so it may have replaced its
-        # docroot with a symlink after domain-add. Extraction and `chown -R`
-        # below run as ROOT and follow symlinks, so a docroot symlinked to /etc
-        # (or another tenant's home) would be an arbitrary root-write / cross-
-        # tenant clobber. Resolve it and require it to stay within this
-        # account's own home before any install touches it.
+        # docroot with a symlink after domain-add. Require account scope
+        # before starting; filesystem workers also run as that account UID
+        # so a later replacement cannot gain root filesystem authority.
         home = os.path.realpath(f"{settings.home_base}/{username}")
         real_docroot = os.path.realpath(domain_row.docroot)
         if real_docroot != home and not real_docroot.startswith(home + os.sep):
@@ -137,11 +136,21 @@ def _allocate_database(username: str, prefix: str) -> dict:
     raise AppInstallError(f"could not allocate a database for the install: {last_error}")
 
 
-def _set_ownership(username: str, docroot: str) -> None:
-    pw = pwd.getpwnam(username)
-    result = run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", docroot], timeout=120)
+def _files_as_account(username: str, action: str, docroot: str, *, payload=None, archive=None):
+    user = pwd.getpwnam(username)
+    helper = Path(__file__).resolve().parent.parent / 'scripts/app_files.py'
+    inputs = {'input_path': str(archive)} if archive is not None else {'input_text': json.dumps(payload or {})}
+    result = run([sys.executable, str(helper), action, docroot], uid=user.pw_uid, gid=user.pw_gid,
+                 timeout=300, **inputs)
     if not result.ok:
-        raise AppInstallError(f"failed to set ownership on '{docroot}': {result.stderr.strip()}")
+        raise AppInstallError('Application file preparation failed; check directory permissions and retry')
+    return json.loads(result.stdout)
+
+
+def _set_ownership(username: str, docroot: str) -> None:
+    # Files are created by the account itself. Only grant the web worker read
+    # access; never recursively chown customer-writable paths as root.
+    _files_as_account(username, 'access', docroot)
 
 
 def _download(url: str, dest: Path, timeout: float = 180.0) -> None:
@@ -162,11 +171,9 @@ def _download(url: str, dest: Path, timeout: float = 180.0) -> None:
 def _safe_extract_target(docroot: str, relative: str) -> str:
     """Zip Slip defense: a malicious/compromised archive can name a member
     `../../../etc/cron.d/evil` -- os.path.join alone happily builds a path
-    outside docroot from that. Extraction runs as root (before
-    _set_ownership chowns the result), so an unchecked escape here is a
-    root-level arbitrary file write, not just a jail breakout -- this is
-    the same os.path.realpath + startswith jail check
-    daemon/filemanager.py uses, applied per zip member."""
+    outside docroot from that. The account-UID extraction worker checks
+    member paths and byte limits before writing; its OS identity provides
+    an independent boundary against privileged filesystem changes."""
     docroot_real = os.path.realpath(docroot)
     target = os.path.realpath(os.path.join(docroot_real, relative))
     if target != docroot_real and not target.startswith(docroot_real + os.sep):
@@ -288,11 +295,7 @@ def _install_static(username: str, domain_name: str, title: str, admin_user: str
     if not _docroot_is_empty_enough(docroot):
         raise AppInstallError(f"'{docroot}' is not empty -- refusing to overwrite existing content")
 
-    os.makedirs(docroot, exist_ok=True)
-    for name in ("index.html", "style.css"):
-        src = APP_TEMPLATES_DIR / "static" / name
-        content = src.read_text().replace("{{SITE_TITLE}}", title or domain_name)
-        (Path(docroot) / name).write_text(content)
+    _files_as_account(username, 'static', docroot, payload={'title': title or domain_name})
 
     _set_ownership(username, docroot)
     return {"version": "1.0", "admin_url": f"https://{domain_name}/", "admin_user": None, "admin_password": None}
@@ -400,10 +403,7 @@ def _write_joomla_configuration(docroot: str, db_name: str, db_user: str, db_pas
         "    public $session_metadata = true;\n"
         "}\n"
     )
-    path = os.path.join(docroot, "configuration.php")
-    with open(path, "w") as f:
-        f.write(content)
-    os.chmod(path, 0o640)
+    secure_replace_file(docroot, "configuration.php", content.encode(), os.geteuid(), os.getegid(), 0o640)
 
 
 def _php_str(value: str) -> str:
@@ -425,16 +425,9 @@ def install_joomla(username: str, domain_name: str, title: str, admin_user: str,
     with tempfile.TemporaryDirectory(dir=str(staging)) as tmp:
         zip_path = Path(tmp) / "joomla.zip"
         _download(download_url, zip_path)
-        _extract_zip(zip_path, docroot)  # Joomla's release zip has no wrapping top-level dir
+        _files_as_account(username, 'zip', docroot, archive=zip_path)
 
-    sql_dir = os.path.join(docroot, "installation", "sql", "mysql")
-    sql_texts = []
-    for name in ("base.sql", "extensions.sql", "supports.sql"):
-        path = os.path.join(sql_dir, name)
-        if not os.path.isfile(path):
-            raise AppInstallError(f"expected Joomla schema file '{name}' not found in downloaded release")
-        with open(path, "r", encoding="utf-8") as f:
-            sql_texts.append(f.read().replace("#__", table_prefix))
+    sql_texts = _files_as_account(username, 'joomla-schema', docroot, payload={'prefix': table_prefix})
 
     _mysql_import(db_name, db_user, db_password, sql_texts)
 
@@ -448,9 +441,11 @@ def install_joomla(username: str, domain_name: str, title: str, admin_user: str,
     )
     _mysql_import(db_name, db_user, db_password, [admin_insert_sql])
 
-    _write_joomla_configuration(docroot, db_name, db_user, db_password, table_prefix, title or domain_name)
+    _files_as_account(username, 'joomla-config', docroot, payload={
+        'db_name': db_name, 'db_user': db_user, 'db_password': db_password,
+        'db_socket': settings.mariadb_socket, 'prefix': table_prefix, 'title': title or domain_name})
 
-    shutil.rmtree(os.path.join(docroot, "installation"), ignore_errors=True)
+    _files_as_account(username, 'remove-installation', docroot)
 
     _set_ownership(username, docroot)
 
@@ -510,18 +505,10 @@ def install_drupal(username: str, domain_name: str, title: str, admin_user: str,
         archive_path = Path(tmp) / "drupal.tar.gz"
         _download(download_url, archive_path)
         # Drupal's tarball wraps everything in one drupal-<version> directory.
-        # The root daemon validates member types, paths and expansion before
-        # extraction; shelling out to tar here would bypass those checks.
-        source_root = _extract_wrapped_tar(archive_path, Path(tmp))
-        for entry in source_root.iterdir():
-            shutil.move(str(entry), os.path.join(docroot, entry.name))
+        # The account-UID worker validates member types, paths and expansion
+        # before extraction, then moves the files under the same identity.
+        _files_as_account(username, 'tar', docroot, archive=archive_path)
 
-    settings_php_dir = os.path.join(docroot, "sites", "default")
-    os.makedirs(settings_php_dir, exist_ok=True)
-    default_settings = os.path.join(settings_php_dir, "default.settings.php")
-    settings_php = os.path.join(settings_php_dir, "settings.php")
-    if os.path.isfile(default_settings):
-        shutil.copy2(default_settings, settings_php)
     db_config = (
         "\n$databases['default']['default'] = [\n"
         f"  'database' => {_php_str(db_name)},\n"
@@ -534,10 +521,7 @@ def install_drupal(username: str, domain_name: str, title: str, admin_user: str,
         "];\n"
         f"$settings['hash_salt'] = {_php_str(secrets.token_hex(32))};\n"
     )
-    with open(settings_php, "a") as f:
-        f.write(db_config)
-    os.makedirs(os.path.join(settings_php_dir, "files"), exist_ok=True)
-    os.chmod(settings_php, 0o640)
+    _files_as_account(username, 'drupal-config', docroot, payload={'content': db_config})
 
     _set_ownership(username, docroot)
 
@@ -606,7 +590,7 @@ def install_prestashop(username: str, domain_name: str, title: str, admin_user: 
             if inner is not None:
                 if inner.file_size > MAX_APP_DOWNLOAD_BYTES:
                     raise AppInstallError("nested application archive exceeds the size limit")
-                inner_path = Path(tmp) / "prestashop.zip"
+                inner_path = Path(tmp) / "prestashop-inner.zip"
                 with outer.open(inner) as source, inner_path.open("wb") as destination:
                     written = 0
                     while chunk := source.read(1024 * 1024):
@@ -614,9 +598,9 @@ def install_prestashop(username: str, domain_name: str, title: str, admin_user: 
                         if written > MAX_APP_DOWNLOAD_BYTES:
                             raise AppInstallError("nested application archive exceeds the size limit")
                         destination.write(chunk)
-                _extract_zip(inner_path, docroot)
+                _files_as_account(username, 'zip', docroot, archive=inner_path)
             else:
-                _extract_zip(zip_path, docroot)
+                _files_as_account(username, 'zip', docroot, archive=zip_path)
 
     _set_ownership(username, docroot)
 
@@ -685,7 +669,7 @@ def install_laravel(username: str, domain_name: str, title: str, admin_user: str
     grant = _allocate_database(username, "lv")
     db_name, db_user, db_password = grant["db_name"], grant["db_user"], grant["password"]
 
-    os.makedirs(docroot, exist_ok=True)
+    _files_as_account(username, 'prepare', docroot)
     _set_ownership(username, docroot)
 
     pw = pwd.getpwnam(username)
@@ -700,35 +684,22 @@ def install_laravel(username: str, domain_name: str, title: str, admin_user: str
     if not result.ok:
         raise AppInstallError(f"composer create-project laravel/laravel failed: {result.stderr.strip()[:800]}")
 
-    env_path = os.path.join(docroot, ".env")
-    if os.path.isfile(env_path):
-        with open(env_path) as f:
-            env_content = f.read()
-        env_content = env_content.replace("DB_CONNECTION=sqlite", "DB_CONNECTION=mysql")
-        for key, value in [
-            ("DB_HOST", "localhost"), ("DB_PORT", "3306"), ("DB_DATABASE", db_name),
-            ("DB_USERNAME", db_user), ("DB_PASSWORD", db_password), ("APP_URL", f"https://{domain_name}"),
-        ]:
-            if f"{key}=" in env_content:
-                import re as _re
-                env_content = _re.sub(rf"^{key}=.*$", f"{key}={value}", env_content, flags=_re.MULTILINE)
-            else:
-                env_content += f"\n{key}={value}\n"
-        with open(env_path, "w") as f:
-            f.write(env_content)
+    _files_as_account(username, 'laravel-env', docroot, payload={'values': {
+        'DB_HOST': 'localhost', 'DB_PORT': '3306', 'DB_DATABASE': db_name,
+        'DB_USERNAME': db_user, 'DB_PASSWORD': db_password, 'APP_URL': f'https://{domain_name}'}})
 
     run(["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", settings.php_cli_bin, "artisan", "key:generate", "--force"],
-        timeout=30, )
+        timeout=30, cwd=docroot)
     migrate_result = run(
         ["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", settings.php_cli_bin, "artisan", "migrate", "--force"],
-        timeout=60,
+        timeout=60, cwd=docroot,
     )
     if not migrate_result.ok:
         logger.warning("Laravel `artisan migrate` for %s failed: %s", domain_name, migrate_result.stderr.strip()[:500])
 
     _set_ownership(username, docroot)
 
-    version_result = run(["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", settings.php_cli_bin, "artisan", "--version"], timeout=15)
+    version_result = run(["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", settings.php_cli_bin, "artisan", "--version"], timeout=15, cwd=docroot)
     version = version_result.stdout.strip().replace("Laravel Framework ", "") if version_result.ok else "unknown"
 
     return {"version": version, "admin_url": f"https://{domain_name}/", "admin_user": None, "admin_password": None}
