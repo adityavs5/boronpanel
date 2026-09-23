@@ -239,7 +239,7 @@ def test_proxy_html_gets_hashed_csp_not_middleware_fallback(monkeypatch):
 
     class _FakeResp:
         status_code = 200
-        headers = httpx.Headers({"content-type": "text/html; charset=utf-8"})
+        headers = httpx.Headers({"content-type": "text/html; charset=utf-8", "Content-Disposition": "inline; filename=evil.html", "Content-Security-Policy": "default-src *", "X-Content-Type-Options": "upstream"})
 
         async def aread(self):
             return html
@@ -272,7 +272,7 @@ def test_proxy_uploaded_html_cannot_bless_its_own_script(monkeypatch):
 
     class _FakeResp:
         status_code = 200
-        headers = httpx.Headers({"content-type": "text/html; charset=utf-8"})
+        headers = httpx.Headers({"content-type": "text/html; charset=utf-8", "Content-Disposition": "inline; filename=evil.html", "Content-Security-Policy": "default-src *", "X-Content-Type-Options": "upstream"})
 
         async def aread(self):
             return b"<html><script>fetch('/api/v1/whoami')</script></html>"
@@ -294,7 +294,8 @@ def test_proxy_uploaded_html_cannot_bless_its_own_script(monkeypatch):
     assert response.status_code == 200
     assert response.headers["content-security-policy"] == fbr.untrusted_html_csp()
     assert "sha256-" not in response.headers["content-security-policy"]
-    assert response.headers["content-disposition"] == "attachment"
+    assert response.headers.getlist("content-disposition") == ["attachment"]
+    assert response.headers.getlist("content-security-policy") == [fbr.untrusted_html_csp()]
     assert response.headers["x-content-type-options"] == "nosniff"
 
 

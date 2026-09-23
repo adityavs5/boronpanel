@@ -274,11 +274,11 @@ async def proxy(request: Request, path: str = ""):
             await upstream.aclose()
         headers = dict(_build_response_headers(upstream))
         if _is_spa_shell(request, upstream):
-            headers["Content-Security-Policy"] = html_csp(body)
+            headers["content-security-policy"] = html_csp(body)
         else:
-            headers["Content-Security-Policy"] = untrusted_html_csp()
-            headers["Content-Disposition"] = "attachment"
-            headers["X-Content-Type-Options"] = "nosniff"
+            headers["content-security-policy"] = untrusted_html_csp()
+            headers["content-disposition"] = "attachment"
+            headers["x-content-type-options"] = "nosniff"
         return Response(content=body, status_code=upstream.status_code, headers=headers)
 
     headers = dict(_build_response_headers(upstream))
@@ -286,8 +286,8 @@ async def proxy(request: Request, path: str = ""):
         # An uploaded SVG/XHTML can be a browser document with script execution
         # privileges even though its MIME type is not text/html. Keep bundled
         # FB icons renderable as images while sandboxing direct navigation.
-        headers["Content-Security-Policy"] = untrusted_html_csp()
-        headers["X-Content-Type-Options"] = "nosniff"
+        headers["content-security-policy"] = untrusted_html_csp()
+        headers["x-content-type-options"] = "nosniff"
     return StreamingResponse(
         upstream.aiter_raw(),
         status_code=upstream.status_code,
