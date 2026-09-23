@@ -1,0 +1,33 @@
+[Unit]
+Description=Boron file manager for %i
+After=network.target
+[Service]
+Type=simple
+User=%i
+Group=%i
+UMask=0007
+ExecStart=/usr/local/bin/filebrowser-quantum -c /var/lib/boron-filebrowser/%i/config.yaml
+WorkingDirectory=/var/lib/boron-filebrowser/%i/state
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/%i
+ReadWritePaths=/home/%i /var/lib/boron-filebrowser/%i/state /run/boron-filebrowser/%i
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryMax=256M
+CPUQuota=100%
+TasksMax=128
+TimeoutStopSec=15

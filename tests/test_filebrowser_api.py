@@ -18,6 +18,14 @@ from api.routers import filebrowser as fbr
 from api.security import Identity, get_identity
 
 
+@pytest.fixture(autouse=True)
+def isolated_backend_client(monkeypatch):
+    import httpx
+    client = httpx.AsyncClient()
+    monkeypatch.setattr(fbr, "_client", client, raising=False)
+    monkeypatch.setattr(fbr, "_account_client", lambda _username: client)
+
+
 # --- pure helpers ----------------------------------------------------------
 
 

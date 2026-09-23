@@ -1091,10 +1091,9 @@ install_systemd_units() {
     info "Installing systemd units"
     run install -m 644 "${DEST}/deploy/boron-provisiond.service" /etc/systemd/system/
     run install -m 644 "${DEST}/deploy/boron-api.service" /etc/systemd/system/
-    run install -m 644 "${DEST}/deploy/boron-filebrowser.service" /etc/systemd/system/
+    run install -m 644 "${DEST}/deploy/boron-filebrowser@.service" /etc/systemd/system/
     run systemctl daemon-reload
     run systemctl enable boron-provisiond
-    run systemctl enable boron-filebrowser
     ok "systemd units installed + provisiond enabled"
 }
 
@@ -1146,7 +1145,6 @@ start_services() {
     run_sh "sudo -u boron-api -- '${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from shared.rpc import RpcClient; RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_ols', _actor='setup', _role='admin')\""
     run systemctl restart lshttpd
     run systemctl enable --now boron-api
-    run systemctl enable --now boron-filebrowser
     # The package starts freshclam during installation but leaves its unit
     # disabled on Ubuntu 24.04. Without explicit enablement the malware
     # scanner keeps using installation-day signatures after the first reboot.

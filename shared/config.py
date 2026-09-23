@@ -312,6 +312,8 @@ class Settings:
     filebrowser_bin: str = "/usr/local/bin/filebrowser-quantum"
     filebrowser_config: str = "/etc/boron/filebrowser.yaml"
     filebrowser_data_dir: str = "/var/lib/boron/filebrowser"
+    filebrowser_account_data_dir: str = "/var/lib/boron-filebrowser"
+    filebrowser_runtime_dir: str = "/run/boron-filebrowser"
     filebrowser_bind_host: str = "127.0.0.1"
     filebrowser_bind_port: int = 8088
     filebrowser_base_url: str = "/files"

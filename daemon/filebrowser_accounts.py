@@ -1,0 +1,134 @@
+"""Run each file manager as its account UID, with a private home mount.
+
+The former shared root backend followed customer-created symlinks outside
+their scope. Backend application path checks are not a privilege boundary.
+These instances have no root capabilities, cannot see other homes, and expose
+only a Unix socket to the authenticated panel proxy.
+"""
+from __future__ import annotations
+
+import grp
+import os
+from pathlib import Path
+import pwd
+import stat
+import time
+import shutil
+
+import yaml
+
+from daemon.procutil import run
+from shared.config import settings
+from shared.filebrowser_paths import account_socket
+from shared.validation import validate_username
+
+TEMPLATE_PATH = "/etc/systemd/system/boron-filebrowser@.service"
+
+
+def unit_content() -> str:
+    home = str(Path(settings.home_base) / "%i")
+    data = str(Path(settings.filebrowser_account_data_dir) / "%i")
+    runtime = str(Path(settings.filebrowser_runtime_dir) / "%i")
+    return f"""[Unit]
+Description=Boron file manager for %i
+After=network.target
+[Service]
+Type=simple
+User=%i
+Group=%i
+UMask=0007
+ExecStart={settings.filebrowser_bin} -c {data}/config.yaml
+WorkingDirectory={data}/state
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths={home}
+ReadWritePaths={home} {data}/state {runtime}
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryMax=256M
+CPUQuota=100%
+TasksMax=128
+TimeoutStopSec=15
+"""
+
+
+def bootstrap() -> dict:
+    # Stop the vulnerable backend before exposing any replacement. Do not
+    # silently fall back to the shared root process if isolation cannot start.
+    run(["systemctl", "disable", "--now", "boron-filebrowser.service"], timeout=30)
+    Path(TEMPLATE_PATH).write_text(unit_content())
+    run(["systemctl", "daemon-reload"], timeout=20, check=True)
+    return {"status": "ok", "service": "boron-filebrowser@.service", "active": "on-demand"}
+
+
+def _directory(path: Path, uid: int, gid: int, mode: int) -> None:
+    path.mkdir(exist_ok=True)
+    if not stat.S_ISDIR(path.lstat().st_mode):
+        raise RuntimeError("file manager state path is not a directory")
+    os.chown(path, uid, gid, follow_symlinks=False)
+    os.chmod(path, mode, follow_symlinks=False)
+
+
+def start(username: str, home: str) -> None:
+    validate_username(username)
+    user = pwd.getpwnam(username)
+    expected = Path(settings.home_base) / username
+    if str(expected) != home or expected.is_symlink() or expected.stat().st_uid != user.pw_uid:
+        raise RuntimeError("file manager home ownership is invalid")
+    api_gid = grp.getgrnam("boron-api").gr_gid
+    data_root = Path(settings.filebrowser_account_data_dir)
+    runtime_root = Path(settings.filebrowser_runtime_dir)
+    for root in (data_root, runtime_root):
+        root.parent.mkdir(parents=True, exist_ok=True)
+        _directory(root, 0, 0, 0o755)
+    data = data_root / username
+    _directory(data, 0, 0, 0o755)
+    _directory(data / "state", user.pw_uid, user.pw_gid, 0o700)
+    _directory(runtime_root / username, user.pw_uid, api_gid, 0o2750)
+
+    from daemon.filebrowser import build_config
+    config = build_config()
+    config["server"].update(
+        socket=account_socket(username), database=str(data / "state" / "database.db"),
+        cacheDir=str(data / "state" / "cache"), disableUpdateCheck=True,
+    )
+    # The source still uses /home/<proxy-user>, but this process's private
+    # mount namespace contains only its own bind-mounted account home.
+    config_path = data / "config.yaml"
+    with open(config_path, "w", opener=lambda path, flags: os.open(path, flags | os.O_NOFOLLOW, 0o644)) as stream:
+        yaml.safe_dump(config, stream, sort_keys=False)
+    os.chmod(config_path, 0o644)
+    run(["systemctl", "start", f"boron-filebrowser@{username}.service"], timeout=30, check=True)
+    for _ in range(100):
+        try:
+            entry = Path(account_socket(username)).lstat()
+            if stat.S_ISSOCK(entry.st_mode) and entry.st_uid == user.pw_uid:
+                return
+        except FileNotFoundError:
+            pass
+        time.sleep(0.1)
+    raise RuntimeError("account file manager did not become ready")
+
+
+def stop(username: str) -> None:
+    validate_username(username)
+    run(["systemctl", "stop", f"boron-filebrowser@{username}.service"], timeout=30, check=True)
+    for root in (settings.filebrowser_account_data_dir, settings.filebrowser_runtime_dir):
+        path = Path(root) / username
+        if path.is_symlink():
+            raise RuntimeError("file manager state path was substituted")
+        if path.exists():
+            shutil.rmtree(path)

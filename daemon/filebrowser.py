@@ -1,34 +1,9 @@
-"""FileBrowser Quantum integration -- the file manager, replacing the custom
-one (daemon/filemanager.py is retired once this is verified).
+"""FileBrowser integration with account-UID processes and private home mounts.
 
-Design (full reasoning + the empirical verification behind it live in
-docs/CHECKPOINT-filebrowser-quantum.md):
-
-- ONE FileBrowser Quantum process (`boron-filebrowser.service`), a single
-  Go binary, bound to 127.0.0.1 only and reached exclusively through
-  boron-api's authenticated proxy, which injects the trusted `X-Fb-User`
-  header server-side. Never public.
-
-- It runs as **root** on purpose: like the old manager (ARCHITECTURE.md §10),
-  the file manager must read/write files across every account home under
-  Boron's 711-home / 750-docroot perms model, which only root can do from a
-  single long-lived process. FB Quantum can't per-request drop to the account
-  uid, so files it creates are root-owned; `add_source` compensates by putting
-  a default POSIX ACL on the account home granting the account rwX, so
-  FB-created files stay fully usable by the account's own PHP/FTP/SSH.
-
-- Isolation is a SINGLE shared source at `settings.home_base` (`/home`) with
-  `createUserDir: true` + `defaultUserScope: "/"`: a proxy-authenticated user
-  `alice` is auto-created and auto-scoped to `/home/alice`, unable to see
-  `/home` or any sibling account. Verified live (listing, `..`-traversal,
-  URL-encoded traversal, alternate source names, and search are all
-  scope-clamped). Per-account *sources* are deliberately NOT used -- FB Quantum
-  can't auto-bind a source to a same-named user without per-user DB writes, and
-  its config is not hot-reloaded, so a static single source is both correct and
-  restart-free across the account lifecycle.
-
-Ops: fb.bootstrap (install-time), fb.add_source, fb.remove_source, fb.status,
-fb.open (the audited "who opened whose files" record used by the launch flow).
+Each file manager uses a Unix socket and runs without root privileges. The
+root provisioning daemon prepares lifecycle state; the API authenticates and
+routes every request to the selected account. Legacy shared-backend helpers
+below are retained only for old-install diagnostics and ACL repair.
 """
 from __future__ import annotations
 
@@ -174,60 +149,6 @@ def render_config() -> str:
     return path
 
 
-def _unit_content() -> str:
-    return (
-        "[Unit]\n"
-        "Description=Boron File Manager (FileBrowser Quantum)\n"
-        "After=network.target\n"
-        "\n"
-        "[Service]\n"
-        "Type=simple\n"
-        "User=root\n"
-        "Group=root\n"
-        f"ExecStart={settings.filebrowser_bin} -c {settings.filebrowser_config}\n"
-        "Restart=on-failure\n"
-        "RestartSec=2\n"
-        # Runs as root by necessity (cross-account home access); it must NOT be
-        # confined away from /home, so no ProtectHome/ProtectSystem and no
-        # CapabilityBoundingSet narrowing (needs full DAC + chown/chmod/setfacl
-        # across every account uid). Loopback-only bind + the iptables uid-owner
-        # restriction in restrict_backend_access() are the actual network
-        # boundary (Audit 3 A3-7). The directives below (A3-8) are the subset of
-        # systemd hardening that is compatible with that requirement -- they
-        # narrow everything that ISN'T "access arbitrary files as root", so an
-        # RCE/traversal bug in the binary itself doesn't also grant kernel-module
-        # loading, namespace escapes, or SUID execution. MemoryDenyWriteExecute
-        # is intentionally omitted: FileBrowser Quantum's Go runtime crashes
-        # under that restriction during startup.
-        "NoNewPrivileges=true\n"
-        "ProtectKernelModules=true\n"
-        "ProtectKernelLogs=true\n"
-        "ProtectKernelTunables=true\n"
-        "ProtectClock=true\n"
-        "ProtectHostname=true\n"
-        "ProtectControlGroups=true\n"
-        "RestrictSUIDSGID=true\n"
-        "RestrictNamespaces=true\n"
-        "RestrictRealtime=true\n"
-        "LockPersonality=true\n"
-        "CapabilityBoundingSet=~CAP_SYS_MODULE CAP_SYS_BOOT CAP_SYS_TIME "
-        "CAP_SYS_ADMIN CAP_NET_ADMIN CAP_MKNOD CAP_SYS_RAWIO\n"
-        f"StandardOutput=append:{settings.log_dir}/filebrowser.log\n"
-        f"StandardError=append:{settings.log_dir}/filebrowser.log\n"
-        "\n"
-        "[Install]\n"
-        "WantedBy=multi-user.target\n"
-    )
-
-
-def _write_unit() -> None:
-    content = _unit_content()
-    p = Path(UNIT_PATH)
-    if p.exists() and p.read_text() == content:
-        return
-    p.write_text(content)
-
-
 # --- ownership mitigation --------------------------------------------------
 
 
@@ -346,30 +267,11 @@ def restrict_backend_access() -> None:
 
 
 def bootstrap(params: dict | None = None) -> dict:
-    """Install-time: ensure data dir, config, systemd unit, and a running
-    service. Idempotent. Raises if the binary is missing (so an admin-triggered
-    fb.bootstrap fails loudly; the startup call in server.amain() catches it)."""
+    """Disable the shared root backend and install account-isolated services."""
+    from daemon import filebrowser_accounts
     if not os.path.exists(settings.filebrowser_bin):
-        raise FileBrowserError(
-            f"FileBrowser Quantum binary not found at {settings.filebrowser_bin}; "
-            "run scripts/install_filebrowser.sh first"
-        )
-    Path(settings.filebrowser_data_dir).mkdir(parents=True, exist_ok=True)
-    os.chmod(settings.filebrowser_data_dir, 0o700)
-    Path(_cache_dir()).mkdir(parents=True, exist_ok=True)
-    Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
-    render_config()
-    _write_unit()
-    run(["systemctl", "daemon-reload"], timeout=20, check=True)
-    run(["systemctl", "enable", "--now", SERVICE_NAME], timeout=30, check=True)
-    restrict_backend_access()
-    active = run(["systemctl", "is-active", SERVICE_NAME], timeout=10)
-    return {
-        "status": "ok",
-        "service": SERVICE_NAME,
-        "active": active.stdout.strip() or active.stderr.strip(),
-        "config": settings.filebrowser_config,
-    }
+        raise FileBrowserError("FileBrowser binary is not installed")
+    return filebrowser_accounts.bootstrap()
 
 
 def add_source(params: dict) -> dict:
@@ -386,15 +288,10 @@ def add_source(params: dict) -> dict:
 
 
 def remove_source(params: dict) -> dict:
-    """Stop serving an account. There is deliberately nothing to delete at the
-    FB Quantum layer: the shared /home source covers every account, and the
-    account's auto-provisioned FB user record (scoped to its now-removed home)
-    is benign -- on terminate `userdel --remove` deletes the home + files, which
-    drop from the index on the next reindex, and if the username is later reused
-    the record maps to the same path again. Validated + idempotent so the
-    lifecycle wiring + audit trail stay symmetric with add_source."""
-    username = params["username"]
-    validate_username(username)
+    """Stop the account process before its home is removed or reused."""
+    from daemon import filebrowser_accounts
+    username = validate_username(params["username"])
+    filebrowser_accounts.stop(username)
     return {"username": username, "status": "removed"}
 
 
@@ -431,17 +328,11 @@ def refresh_all_sources(params: dict | None = None) -> dict:
 
 
 def status(params: dict | None = None) -> dict:
-    active = run(["systemctl", "is-active", SERVICE_NAME], timeout=10)
-    enabled = run(["systemctl", "is-enabled", SERVICE_NAME], timeout=10)
     return {
-        "service": SERVICE_NAME,
-        "active": active.stdout.strip() or active.stderr.strip(),
-        "enabled": enabled.stdout.strip() or enabled.stderr.strip(),
-        "binary_installed": os.path.exists(settings.filebrowser_bin),
-        "config": settings.filebrowser_config,
+        "service": "boron-filebrowser@.service", "active": "on-demand",
+        "enabled": "on-demand", "binary_installed": os.path.exists(settings.filebrowser_bin),
         "source_path": os.path.realpath(settings.home_base),
-        "header": settings.filebrowser_header,
-        "internal_url": settings.filebrowser_internal_url,
+        "header": settings.filebrowser_header, "internal_url": "account-scoped Unix sockets",
     }
 
 
@@ -452,6 +343,8 @@ def open_access(params: dict) -> dict:
     admin file access lands in the audit log."""
     username = params["username"]
     home = _account_home(username)
+    from daemon import filebrowser_accounts
+    filebrowser_accounts.start(username, home)
     return {"username": username, "scope": f"/{username}", "path": home}
 
 

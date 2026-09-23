@@ -46,6 +46,7 @@ from api.security import (
 from shared.config import settings
 from shared.db import read_session
 from shared.models import Account
+from shared.filebrowser_paths import account_socket
 
 api_router = APIRouter(prefix="/api/v1/accounts/{username}/files", tags=["filebrowser"])
 proxy_router = APIRouter(tags=["filebrowser-proxy"])
@@ -67,7 +68,17 @@ _HOP_BY_HOP = {
 }
 
 # One shared async client to the loopback backend, reused across requests.
-_client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=None, write=None, pool=None))
+_clients: dict[str, httpx.AsyncClient] = {}
+
+
+def _account_client(username: str) -> httpx.AsyncClient:
+    if username not in _clients:
+        _clients[username] = httpx.AsyncClient(
+            transport=httpx.AsyncHTTPTransport(uds=account_socket(username)),
+            timeout=httpx.Timeout(connect=10.0, read=None, write=None, pool=None),
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=2),
+        )
+    return _clients[username]
 
 
 def _sign_target(username: str) -> str:
@@ -247,17 +258,18 @@ async def proxy(request: Request, path: str = ""):
     require_account_access(identity, target)
 
     upstream_url = httpx.URL(
-        settings.filebrowser_internal_url + request.url.path,
+        "http://filebrowser" + request.url.path,
         query=request.url.query.encode("utf-8"),
     )
-    upstream_req = _client.build_request(
+    client = _account_client(target)
+    upstream_req = client.build_request(
         request.method,
         upstream_url,
         headers=_build_upstream_headers(request, target),
         content=request.stream(),
     )
     try:
-        upstream = await _client.send(upstream_req, stream=True)
+        upstream = await client.send(upstream_req, stream=True)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"file manager backend unreachable: {exc}") from exc
 

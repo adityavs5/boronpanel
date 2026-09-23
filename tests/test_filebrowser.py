@@ -25,6 +25,8 @@ def fb_env(tmp_path, monkeypatch):
     (home_base / "demo1").mkdir(parents=True)
     monkeypatch.setattr(fb.settings, "home_base", str(home_base))
     monkeypatch.setattr(fb.settings, "filebrowser_data_dir", str(tmp_path / "fbdata"))
+    monkeypatch.setattr(fb.settings, "filebrowser_account_data_dir", str(tmp_path / "accounts"))
+    monkeypatch.setattr(fb.settings, "filebrowser_runtime_dir", str(tmp_path / "runtime"))
     monkeypatch.setattr(fb.settings, "filebrowser_config", str(tmp_path / "filebrowser.yaml"))
 
     calls = []
@@ -39,6 +41,10 @@ def fb_env(tmp_path, monkeypatch):
         return ProcResult(args=list(args), returncode=0, stdout=out, stderr="")
 
     monkeypatch.setattr(fb, "run", fake_run)
+    from daemon import filebrowser_accounts
+    monkeypatch.setattr(filebrowser_accounts, "run", fake_run)
+    monkeypatch.setattr(filebrowser_accounts, "start", lambda username, home: None)
+    monkeypatch.setattr(filebrowser_accounts, "TEMPLATE_PATH", str(tmp_path / "account.service"))
     return {"home_base": home_base, "calls": calls}
 
 
@@ -171,9 +177,9 @@ def test_open_access_missing_home_raises(fb_env):
 
 def test_status_reports_service_state(fb_env):
     st = fb.status({})
-    assert st["service"] == fb.SERVICE_NAME
-    assert st["active"] == "active"
-    assert st["enabled"] == "enabled"
+    assert st["service"] == "boron-filebrowser@.service"
+    assert st["active"] == "on-demand"
+    assert st["enabled"] == "on-demand"
     assert st["header"] == fb.settings.filebrowser_header
     assert st["source_path"].endswith("/home")
 
@@ -233,6 +239,7 @@ def test_restrict_backend_access_installs_accept_then_reject(fb_env, monkeypatch
         return ProcResult(args=list(args), returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(fb, "run", fake_run)
+
     monkeypatch.setattr(fb.pwd, "getpwnam", lambda name: _FakePasswd(pw_uid=996))
 
     fb.restrict_backend_access()
@@ -277,12 +284,9 @@ def test_restrict_backend_access_missing_api_user_does_not_raise(fb_env, monkeyp
     assert calls == []
 
 
-def test_bootstrap_calls_restrict_backend_access(fb_env, monkeypatch):
+def test_bootstrap_disables_shared_root_backend(fb_env, monkeypatch):
     monkeypatch.setattr("os.path.exists", lambda p: True)
-    # bootstrap normally writes the host systemd unit. Keep this unit test
-    # hermetic: the CI/container filesystem may expose /etc read-only.
-    monkeypatch.setattr(fb, "_write_unit", lambda: None)
-    called = []
-    monkeypatch.setattr(fb, "restrict_backend_access", lambda: called.append(True))
-    fb.bootstrap({})
-    assert called == [True]
+    result = fb.bootstrap({})
+    assert result["active"] == "on-demand"
+    assert ["systemctl", "disable", "--now", "boron-filebrowser.service"] in fb_env["calls"]
+    assert not any("enable" in call for call in fb_env["calls"])
