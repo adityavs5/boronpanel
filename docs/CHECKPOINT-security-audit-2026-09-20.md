@@ -171,6 +171,23 @@ enables and starts the signature updater with Boron's core services. Nine
 installer tests, shellcheck and bash syntax pass; disposable activation and a
 second persistence check remain to close this finding.
 
+Disposable acceptance is now complete for these fresh-install fixes. The
+managed Node 20 build completed without an engine warning; the atomic OLS
+bootstrap and daemon readiness gate passed; Roundcube schema/bootstrap and
+external HTTPS returned 200; the generated admin login returned 303 and
+resolved as an administrator; and a plaintext scan found zero hits in files,
+process argv/environment, or the recent journal. After a second reboot there
+were zero failed units, `openlitespeed -t` returned zero, quotas and UFW were
+active, panel and webmail returned 200, and `clamav-freshclam` was enabled and
+active. The install log remained root-owned mode 0600.
+
+The disposable host also reproduced BSA-2026-005 directly: a process running
+as `boron-api` supplied forged administrator audit metadata and successfully
+called `account.list` without any panel credential. It returned an empty list
+because the fresh host has no customer accounts, but acceptance itself proves
+the root daemon still lacks an authorization boundary. This remains the main
+release blocker.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic
