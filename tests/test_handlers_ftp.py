@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 
 import pytest
 from sqlalchemy import select
@@ -105,6 +106,28 @@ def test_create_ftp_account_rejects_duplicate_label(account, fake_account_home, 
         hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
 
 
+def test_create_ftp_account_deletes_external_user_when_bookkeeping_fails(account, fake_account_home, stub_pure_ftpd, monkeypatch):
+    original = hf.write_session
+    calls = 0
+
+    @contextmanager
+    def fail_row_insert():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("control database unavailable")
+        with original() as session:
+            yield session
+
+    monkeypatch.setattr(hf, "write_session", fail_row_insert)
+
+    with pytest.raises(RuntimeError, match="control database"):
+        hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
+
+    assert ("create", "demo1_designer", str(fake_account_home["home"])) in stub_pure_ftpd
+    assert ("delete", "demo1_designer") in stub_pure_ftpd
+
+
 def test_list_ftp_accounts(account, fake_account_home, stub_pure_ftpd):
     hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
     result = hf.list_ftp_accounts({"username": "demo1"})["ftp_accounts"]
@@ -138,6 +161,20 @@ def test_delete_ftp_account(account, fake_account_home, stub_pure_ftpd):
     assert result["status"] == "deleted"
     assert hf.list_ftp_accounts({"username": "demo1"})["ftp_accounts"] == []
     assert ("delete", "demo1_designer") in stub_pure_ftpd
+
+
+def test_delete_ftp_account_keeps_row_when_external_delete_fails(account, fake_account_home, stub_pure_ftpd, monkeypatch):
+    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
+
+    def fail_delete(login):
+        raise RuntimeError("pure-ftpd unavailable")
+
+    monkeypatch.setattr(hf.ftp, "delete_ftp_user", fail_delete)
+
+    with pytest.raises(RuntimeError, match="pure-ftpd unavailable"):
+        hf.delete_ftp_account({"username": "demo1", "label": "designer"})
+
+    assert hf.list_ftp_accounts({"username": "demo1"})["ftp_accounts"][0]["ftp_login"] == "demo1_designer"
 
 
 def test_delete_ftp_account_not_found(account, fake_account_home, stub_pure_ftpd):

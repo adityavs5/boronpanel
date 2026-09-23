@@ -1,4 +1,5 @@
 import pytest
+from contextlib import contextmanager
 
 from daemon import handlers_account as ha
 from daemon import handlers_database as hdb
@@ -96,12 +97,50 @@ def test_create_database_rolls_back_on_grant_failure(isolated_db, stub_sysops, s
     assert result["databases"] == []
 
 
+def test_create_database_cleans_up_when_bookkeeping_fails(isolated_db, stub_sysops, stub_mariadb, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    original = hdb.write_session
+    calls = 0
+
+    @contextmanager
+    def fail_row_insert():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("control database unavailable")
+        with original() as session:
+            yield session
+
+    monkeypatch.setattr(hdb, "write_session", fail_row_insert)
+
+    with pytest.raises(RuntimeError, match="control database"):
+        hdb.create_database({"username": "demo1", "name": "shop"})
+
+    assert ("drop_db_user", "demo1_shop") in stub_mariadb
+    assert ("drop_database", "demo1_shop") in stub_mariadb
+
+
 def test_drop_database(isolated_db, stub_sysops, stub_mariadb):
     ha.create_account({"username": "demo1"})
     hdb.create_database({"username": "demo1", "name": "shop"})
     result = hdb.drop_database({"username": "demo1", "name": "shop"})
     assert result["status"] == "dropped"
     assert hdb.list_databases({"username": "demo1"})["databases"] == []
+
+
+def test_drop_database_keeps_row_when_mariadb_drop_fails(isolated_db, stub_sysops, stub_mariadb, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    hdb.create_database({"username": "demo1", "name": "shop"})
+
+    def fail_drop(db_name):
+        raise RuntimeError("mariadb unavailable")
+
+    monkeypatch.setattr(hdb.mariadb, "drop_database", fail_drop)
+
+    with pytest.raises(RuntimeError, match="mariadb unavailable"):
+        hdb.drop_database({"username": "demo1", "name": "shop"})
+
+    assert hdb.list_databases({"username": "demo1"})["databases"][0]["db_name"] == "demo1_shop"
 
 
 def test_drop_database_not_found(isolated_db, stub_sysops, stub_mariadb):

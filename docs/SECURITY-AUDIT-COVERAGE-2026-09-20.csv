@@ -49,7 +49,7 @@ python-script,wordpress_manage.py,scripts/wordpress_manage.py,wordpress_manage.p
 route,DELETE /api/v1/accounts/{username}/apps/node/{app_id},api/routers/nodeapps.py,delete_node_app,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/apps/python/{app_id},api/routers/pythonapps.py,delete_python_app,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/crons/{job_id},api/routers/cron.py,delete_cron,get_identity,pending,
-route,DELETE /api/v1/accounts/{username}/databases/{name},api/routers/databases.py,drop_database,get_identity,pending,
+route,DELETE /api/v1/accounts/{username}/databases/{name},api/routers/databases.py,drop_database,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,DELETE /api/v1/accounts/{username}/domains/{domain},api/routers/domains.py,remove_domain,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/email/autoresponders/{local_part},api/routers/email.py,delete_autoresponder,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/email/catchall,api/routers/email.py,delete_catchall,get_identity,pending,
@@ -63,7 +63,7 @@ route,DELETE /api/v1/accounts/{username}/domains/{domain}/staging,api/routers/st
 route,DELETE /api/v1/accounts/{username}/email/{mailbox}/spam-filters,api/routers/spamfilter.py,delete_entry,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,disable_protection,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,DELETE /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,delete_user,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
-route,DELETE /api/v1/accounts/{username}/ftp/{label},api/routers/ftp.py,delete_ftp_account,get_identity,pending,
+route,DELETE /api/v1/accounts/{username}/ftp/{label},api/routers/ftp.py,delete_ftp_account,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,DELETE /api/v1/accounts/{username}/git/{name},api/routers/git.py,delete_repo,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/parked-domains/{parked_domain},api/routers/parked.py,remove_parked,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/php-extensions,api/routers/php_ini.py,reset_php_extensions,get_identity,pending,
@@ -124,7 +124,7 @@ route,GET /api/v1/accounts/{username}/composer/runs,api/routers/devtools.py,list
 route,GET /api/v1/accounts/{username}/composer/runs/{job_id},api/routers/devtools.py,get_composer_run,get_identity,pending,
 route,GET /api/v1/accounts/{username}/crons,api/routers/cron.py,list_crons,get_identity,pending,
 route,GET /api/v1/accounts/{username}/crons/mailto,api/routers/cron.py,get_mailto,get_identity,pending,
-route,GET /api/v1/accounts/{username}/databases,api/routers/databases.py,list_databases,get_identity,pending,
+route,GET /api/v1/accounts/{username}/databases,api/routers/databases.py,list_databases,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,GET /api/v1/accounts/{username}/disk-tree,api/routers/disktree.py,get_disk_tree,get_identity,pending,
 route,GET /api/v1/accounts/{username}/disk-tree/top-files,api/routers/disktree.py,get_top_files,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains,api/routers/domains.py,list_domains,get_identity,pending,
@@ -158,7 +158,7 @@ route,GET /api/v1/accounts/{username}/email/{mailbox}/spam-filters,api/routers/s
 route,GET /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,list_protected_dirs,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,GET /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,list_users,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,GET /api/v1/accounts/{username}/files/launch,api/routers/filebrowser.py,launch,get_identity,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
-route,GET /api/v1/accounts/{username}/ftp,api/routers/ftp.py,list_ftp_accounts,get_identity,pending,
+route,GET /api/v1/accounts/{username}/ftp,api/routers/ftp.py,list_ftp_accounts,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,GET /api/v1/accounts/{username}/git,api/routers/git.py,list_repos,get_identity,pending,
 route,GET /api/v1/accounts/{username}/git/{name}/push-log,api/routers/git.py,get_push_log,get_identity,pending,
 route,GET /api/v1/accounts/{username}/logs/{type},api/routers/logs_router.py,get_log,get_identity,pending,
@@ -281,7 +281,7 @@ route,OPTIONS /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-in
 route,PATCH /api/v1/accounts/{username}/apps/node/{app_id},api/routers/nodeapps.py,update_node_app,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/apps/python/{app_id},api/routers/pythonapps.py,update_python_app,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/crons/mailto,api/routers/cron.py,set_mailto,get_identity,pending,
-route,PATCH /api/v1/accounts/{username}/databases/{name}/password,api/routers/databases.py,change_password_patch,get_identity,pending,
+route,PATCH /api/v1/accounts/{username}/databases/{name}/password,api/routers/databases.py,change_password_patch,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/email/routing,api/routers/email_extras.py,set_routing,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/email/spam-filter,api/routers/email.py,set_spam_filter,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/hotlink-protection,api/routers/hotlink.py,set_hotlink_protection,get_identity,pending,
@@ -289,8 +289,8 @@ route,PATCH /api/v1/accounts/{username}/domains/{domain}/maintenance,api/routers
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/php-version,api/routers/domains.py,set_domain_php_version,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/wildcard,api/routers/wildcard.py,set_wildcard,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/email/{local_part}/password,api/routers/mail.py,change_mailbox_password,get_identity,pending,
-route,PATCH /api/v1/accounts/{username}/ftp/{label},api/routers/ftp.py,set_ftp_path,get_identity,pending,
-route,PATCH /api/v1/accounts/{username}/ftp/{label}/password,api/routers/ftp.py,change_ftp_password,get_identity,pending,
+route,PATCH /api/v1/accounts/{username}/ftp/{label},api/routers/ftp.py,set_ftp_path,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
+route,PATCH /api/v1/accounts/{username}/ftp/{label}/password,api/routers/ftp.py,change_ftp_password,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,PATCH /api/v1/accounts/{username}/git/{name}/deploy-target,api/routers/git.py,set_deploy_target,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/limits,api/routers/accounts.py,set_limits,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/namespace,api/routers/accounts.py,set_namespace,get_identity,pending,
@@ -335,8 +335,8 @@ route,POST /api/v1/accounts/{username}/backups/snapshots/runs/{run_id}/restore,a
 route,POST /api/v1/accounts/{username}/backups/{job_id}/restore,api/routers/account_backups.py,trigger_restore,get_identity,pending,
 route,POST /api/v1/accounts/{username}/composer,api/routers/devtools.py,run_composer,get_identity,pending,
 route,POST /api/v1/accounts/{username}/crons,api/routers/cron.py,add_cron,get_identity,pending,
-route,POST /api/v1/accounts/{username}/databases,api/routers/databases.py,create_database,get_identity,pending,
-route,POST /api/v1/accounts/{username}/databases/{name}/password,api/routers/databases.py,change_password,get_identity,pending,
+route,POST /api/v1/accounts/{username}/databases,api/routers/databases.py,create_database,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
+route,POST /api/v1/accounts/{username}/databases/{name}/password,api/routers/databases.py,change_password,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,POST /api/v1/accounts/{username}/databases/{name}/pma-token,api/routers/pma.py,create_pma_token,get_identity,reviewed-fixed,"PMA token hardening: 18 PMA unit/sign-on tests plus 1 exact-grant MariaDB test; VM token canary minted temp DB token, verified 0640 regular token file, expired cleanup dropped ephemeral DB user/file/row and dropped temp DB; primary hash deployed"
 route,POST /api/v1/accounts/{username}/domains,api/routers/domains.py,add_domain,get_identity,pending,
 route,POST /api/v1/accounts/{username}/domains/{domain}/apps/{app_id},api/routers/apps.py,trigger_install,get_identity,pending,
@@ -364,7 +364,7 @@ route,POST /api/v1/accounts/{username}/email/{mailbox}/spam-filters,api/routers/
 route,POST /api/v1/accounts/{username}/email/{mailbox}/spam-filters/import,api/routers/spamfilter.py,import_entries,get_identity,pending,
 route,POST /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,enable_protection,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,POST /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,add_user,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
-route,POST /api/v1/accounts/{username}/ftp,api/routers/ftp.py,create_ftp_account,get_identity,pending,
+route,POST /api/v1/accounts/{username}/ftp,api/routers/ftp.py,create_ftp_account,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,POST /api/v1/accounts/{username}/git,api/routers/git.py,create_repo,get_identity,pending,
 route,POST /api/v1/accounts/{username}/malware/findings/{finding_id}/ignore,api/routers/malware.py,ignore,get_identity,pending,
 route,POST /api/v1/accounts/{username}/malware/findings/{finding_id}/quarantine,api/routers/malware.py,quarantine,get_identity,pending,
@@ -573,10 +573,10 @@ rpc,cron.list,daemon/handlers_cron.py,list_cron_jobs,kernel-peer-uid; root-crede
 rpc,cron.mailto.get,daemon/handlers_cron.py,get_cron_mailto,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,cron.mailto.set,daemon/handlers_cron.py,set_cron_mailto,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,cron.update,daemon/handlers_cron.py,update_cron_job,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,db.change_password,daemon/database_operations.py,change_password,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,db.create,daemon/database_operations.py,create_database,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,db.drop,daemon/database_operations.py,drop_database,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,db.list,daemon/handlers_database.py,list_databases,kernel-peer-uid; root-credential; policy=account_username,pending,
+rpc,db.change_password,daemon/database_operations.py,change_password,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
+rpc,db.create,daemon/database_operations.py,create_database,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
+rpc,db.drop,daemon/database_operations.py,drop_database,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
+rpc,db.list,daemon/handlers_database.py,list_databases,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 rpc,dbmonitor.bootstrap_kill_privilege,daemon/dbmonitor.py,bootstrap_kill_query_privilege,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,dbmonitor.connections,daemon/server.py,<lambda>,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,dbmonitor.db_sizes,daemon/server.py,<lambda>,kernel-peer-uid; root-credential; policy=global_admin,pending,
@@ -631,11 +631,11 @@ rpc,firewall.status,daemon/firewall.py,get_status,kernel-peer-uid; root-credenti
 rpc,forwarding.delete,daemon/forwarding.py,delete_forwarding,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,forwarding.get,daemon/forwarding.py,get_forwarding,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,forwarding.set,daemon/forwarding.py,set_forwarding,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,ftp.change_password,daemon/handlers_ftp.py,change_ftp_password,kernel-peer-uid; root-credential; policy=account_username,pending,
+rpc,ftp.change_password,daemon/handlers_ftp.py,change_ftp_password,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 rpc,ftp.create,daemon/account_mutation.py,create_ftp_account,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,ftp.delete,daemon/handlers_ftp.py,delete_ftp_account,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,ftp.list,daemon/handlers_ftp.py,list_ftp_accounts,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,ftp.set_path,daemon/handlers_ftp.py,set_ftp_path,kernel-peer-uid; root-credential; policy=account_username,pending,
+rpc,ftp.delete,daemon/handlers_ftp.py,delete_ftp_account,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
+rpc,ftp.list,daemon/handlers_ftp.py,list_ftp_accounts,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
+rpc,ftp.set_path,daemon/handlers_ftp.py,set_ftp_path,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 rpc,git.repo.create,daemon/gitrepo.py,create_repo,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,git.repo.delete,daemon/gitrepo.py,delete_repo,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,git.repo.list,daemon/gitrepo.py,list_repos,kernel-peer-uid; root-credential; policy=account_username,pending,

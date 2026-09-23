@@ -519,19 +519,20 @@ was stripped, and the admin session remained valid. The trusted frontend hotfix
 is installed on the development panel and the existing Chromium FileBrowser
 smoke still passes.
 
-The coverage inventory now has 901 entries: 806 pending, 84 reviewed-fixed and
+The coverage inventory now has 901 entries: 788 pending, 102 reviewed-fixed and
 11 reviewed-public. New reviewed-fixed rows cover `scripts/app_files.py`,
 `scripts/wordpress_files.py`, the trusted FileBrowser frontend unit, the auth
 routes, token routes, `daemon/handlers_auth.py`, `daemon/totp.py`, and the
 terminal WebSocket/RPC surface, and the phpMyAdmin token route/RPC/cleanup
-surface, and the protected-directory fileauth route/RPC surface. The auth rows
-cite the 82-test focused auth/session/TOTP/RPC authority suite, hashed sessions,
-root-side login protocol, TOTP replay/recovery serialization, and the live VM
-login smoke. Existing FileBrowser route/RPC rows now cite both the per-account
-isolation and trusted-renderer evidence. The update routes/RPCs, updater cron
-wrapper, `scripts/update_check.py`, and `scripts/update_finalize.py` now cite
-the focused update/release tests plus the signed VM update/rollback drill. This
-is still not a final security release gate:
+surface, the protected-directory fileauth route/RPC surface, and the database
+and FTP route/RPC lifecycle surfaces. The auth rows cite the 82-test focused
+auth/session/TOTP/RPC authority suite, hashed sessions, root-side login protocol,
+TOTP replay/recovery serialization, and the live VM login smoke. Existing
+FileBrowser route/RPC rows now cite both the per-account isolation and
+trusted-renderer evidence. The update routes/RPCs, updater cron wrapper,
+`scripts/update_check.py`, and `scripts/update_finalize.py` now cite the focused
+update/release tests plus the signed VM update/rollback drill. This is still not
+a final security release gate:
 signed update packaging, installed upgrade/rollback, fresh install from the
 candidate, and the remaining route/resource review remain open.
 
@@ -647,3 +648,28 @@ confirmed the add-user path was rejected and the symlink target stayed unchanged
 disabled the row, and removed the temporary directory. The same daemon file is
 installed on the development panel with matching hashes and `boron-provisiond`
 active.
+
+### 2026-09-23 database and FTP lifecycle hardening
+
+BSA-2026-040 records database/FTP lifecycle rollback gaps. Database and FTP
+creation created external service objects before committing SQLite bookkeeping,
+but did not remove those external objects if the bookkeeping commit failed.
+Database and FTP deletion removed SQLite rows before deleting the external
+objects, so a MariaDB/PureDB failure could leave a live database, database user,
+or FTP login no longer tracked by the panel.
+
+The source now treats the external object as authoritative until the operation
+finishes: create cleans up the MariaDB/PureDB object if the bookkeeping row
+cannot be recorded, and delete removes the external object first, then deletes
+the row only after that succeeds. A failed external delete therefore leaves the
+row available for retry instead of orphaning access. Account-termination FTP
+cleanup now follows the same external-first order per login.
+
+Focused validation passed 47 database/FTP/RPC-authority tests. The disposable VM
+was hotfixed with `daemon/handlers_database.py` and `daemon/handlers_ftp.py`
+matching source; a live canary forced post-create bookkeeping failures and
+confirmed the temporary MariaDB database/user and PureDB login were removed with
+no panel rows left. The same canary forced MariaDB/PureDB delete failures and
+confirmed the rows and external objects remained for retry, then performed the
+real cleanup. The same daemon files are installed on the development panel with
+matching hashes and `boron-provisiond` active.

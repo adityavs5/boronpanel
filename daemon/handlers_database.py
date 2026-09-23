@@ -65,6 +65,7 @@ def create_database(params: dict) -> dict:
         if existing is not None:
             raise RuntimeError(f"database '{db_name}' already exists")
         resource_limits.require_capacity(session, account.id, "database")
+        account_id = account.id
 
     if mariadb.database_exists(db_name):
         raise RuntimeError(f"database '{db_name}' already exists in MariaDB")
@@ -80,11 +81,16 @@ def create_database(params: dict) -> dict:
         mariadb.drop_database(db_name)
         raise
 
-    with write_session() as session:
-        grant = DatabaseGrant(account_id=account.id, db_name=db_name, db_user=db_user)
-        session.add(grant)
-        session.flush()
-        result = _grant_dict(grant)
+    try:
+        with write_session() as session:
+            grant = DatabaseGrant(account_id=account_id, db_name=db_name, db_user=db_user)
+            session.add(grant)
+            session.flush()
+            result = _grant_dict(grant)
+    except Exception:
+        mariadb.drop_db_user(db_user)
+        mariadb.drop_database(db_name)
+        raise
 
     result["password"] = password
     return result
@@ -115,10 +121,14 @@ def drop_database(params: dict) -> dict:
         if grant is None:
             raise RuntimeError(f"database '{db_name}' not found for account '{username}'")
         db_user = grant.db_user
-        session.delete(grant)
+        grant_id = grant.id
 
     mariadb.drop_database(db_name)
     mariadb.drop_db_user(db_user)
+    with write_session() as session:
+        grant = session.get(DatabaseGrant, grant_id)
+        if grant is not None:
+            session.delete(grant)
     return {"db_name": db_name, "status": "dropped"}
 
 

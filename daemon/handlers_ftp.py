@@ -99,11 +99,15 @@ def create_ftp_account(params: dict) -> dict:
 
     ftp.create_ftp_user(ftp_login, pw.pw_uid, pw.pw_gid, abs_path, password)
 
-    with write_session() as session:
-        row = FtpAccount(account_id=account_id, ftp_login=ftp_login, path=abs_path)
-        session.add(row)
-        session.flush()
-        return _row_to_dict(row, username)
+    try:
+        with write_session() as session:
+            row = FtpAccount(account_id=account_id, ftp_login=ftp_login, path=abs_path)
+            session.add(row)
+            session.flush()
+            return _row_to_dict(row, username)
+    except Exception:
+        ftp.delete_ftp_user(ftp_login)
+        raise
 
 
 def list_ftp_accounts(params: dict) -> dict:
@@ -167,9 +171,11 @@ def delete_ftp_account(params: dict) -> dict:
     with write_session() as session:
         row = _get_owned_ftp_account(session, username, label)
         ftp_login = row.ftp_login
-        session.delete(row)
 
     ftp.delete_ftp_user(ftp_login)
+    with write_session() as session:
+        row = _get_owned_ftp_account(session, username, label)
+        session.delete(row)
     return {"ftp_login": ftp_login, "status": "deleted"}
 
 
@@ -179,8 +185,10 @@ def terminate_account_ftp(account: Account) -> None:
     with write_session() as session:
         rows = session.scalars(select(FtpAccount).where(FtpAccount.account_id == account.id)).all()
         logins = [r.ftp_login for r in rows]
-        for row in rows:
-            session.delete(row)
 
     for ftp_login in logins:
         ftp.delete_ftp_user(ftp_login)
+        with write_session() as session:
+            row = session.scalar(select(FtpAccount).where(FtpAccount.ftp_login == ftp_login, FtpAccount.account_id == account.id))
+            if row is not None:
+                session.delete(row)
