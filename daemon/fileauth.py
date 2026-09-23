@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import pwd
 import re
+import stat
 
 from sqlalchemy import select
 
@@ -46,7 +47,7 @@ from shared.validation import (
 
 from daemon import filemanager, ols
 from daemon.procutil import run
-from daemon.safeio import secure_ensure_file_beneath
+from daemon.safeio import open_dir_beneath, secure_ensure_file_beneath, secure_write_file_beneath
 
 HTPASSWD_FILENAME = ".htpasswd"
 HTPASSWD_BIN = "/usr/bin/htpasswd"
@@ -107,6 +108,64 @@ def _domain_for_path(session, account_id: int, resolved_path: str) -> Domain:
     raise FileAuthError("directory is not inside any of this account's domain docroots -- protecting it would have no effect")
 
 
+def _is_protected(session, account_id: int, relative_path: str) -> bool:
+    return session.scalar(
+        select(FileAuthDir.id).where(FileAuthDir.account_id == account_id, FileAuthDir.path == relative_path)
+    ) is not None
+
+
+def _protected_account_path(username: str, raw_path: str, *, require_enabled: bool = True) -> tuple[Account, str, str, str]:
+    resolved, home, relative_path = _resolve_protected_dir(username, raw_path)
+    with write_session() as session:
+        account = _account_or_raise(session, username)
+        if require_enabled and not _is_protected(session, account.id, relative_path):
+            raise FileAuthError("directory protection is not enabled for this path")
+        return account, resolved, home, relative_path
+
+
+def _read_htpasswd_beneath(home: str, relative_path: str) -> str | None:
+    dir_fd = open_dir_beneath(home, relative_path)
+    try:
+        try:
+            fd = os.open(HTPASSWD_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise FileAuthError(".htpasswd is not a safe regular file") from exc
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise FileAuthError(".htpasswd is not a regular file")
+            chunks: list[bytes] = []
+            remaining = 1024 * 1024
+            while remaining > 0:
+                chunk = os.read(fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if remaining == 0 and os.read(fd, 1):
+                raise FileAuthError(".htpasswd is too large")
+            return b"".join(chunks).decode("utf-8", "replace")
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _write_htpasswd_beneath(home: str, relative_path: str, content: str, uid: int, gid: int) -> None:
+    secure_write_file_beneath(home, f"{relative_path}/{HTPASSWD_FILENAME}", content.encode(), uid, gid, 0o640)
+
+
+def _hash_htpasswd_user(htuser: str, password: str) -> str:
+    result = run([HTPASSWD_BIN, "-n", "-i", "-B", htuser], input_text=f"{password}\n", timeout=15)
+    if not result.ok:
+        raise FileAuthError(f"htpasswd failed: {result.stderr.strip() or result.stdout.strip()}")
+    line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+    if not line.startswith(f"{htuser}:"):
+        raise FileAuthError("htpasswd returned an unexpected user record")
+    return line
+
+
 def list_protected_dirs(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:
@@ -127,20 +186,28 @@ def enable_protection(params: dict) -> dict:
         )
         if existing is not None:
             raise ValidationError(f"'{relative_path}' is already protected")
+        account_id = account.id
 
+    pw = pwd.getpwnam(username)
+    secure_ensure_file_beneath(_home, relative_path, HTPASSWD_FILENAME, pw.pw_uid, pw.pw_gid, 0o640)
+    # The docroot's own recursive default ACL (daemon/handlers_domain.py's
+    # _grant_webserver_acl, applied at domain-add time) already grants
+    # OLS's worker uid read access to anything created later inside the
+    # docroot tree -- no separate ACL call needed here.
+
+    with write_session() as session:
+        account = session.get(Account, account_id)
+        if account is None:
+            raise FileAuthError(f"account '{username}' not found")
+        existing = session.scalar(
+            select(FileAuthDir).where(FileAuthDir.account_id == account.id, FileAuthDir.path == relative_path)
+        )
+        if existing is not None:
+            raise ValidationError(f"'{relative_path}' is already protected")
         row = FileAuthDir(account_id=account.id, path=relative_path, realm_name=_realm_name(username, relative_path))
         session.add(row)
         session.flush()
         account_snapshot = account
-
-    htpasswd_path = os.path.join(resolved, HTPASSWD_FILENAME)
-    if not os.path.exists(htpasswd_path):
-        pw = pwd.getpwnam(username)
-        secure_ensure_file_beneath(_home, relative_path, HTPASSWD_FILENAME, pw.pw_uid, pw.pw_gid, 0o640)
-        # The docroot's own recursive default ACL (daemon/handlers_domain.py's
-        # _grant_webserver_acl, applied at domain-add time) already grants
-        # OLS's worker uid read access to anything created later inside the
-        # docroot tree -- no separate ACL call needed here.
 
     ols.refresh_vhost(account_snapshot)
     return {"path": relative_path, "status": "protected"}
@@ -169,46 +236,59 @@ def disable_protection(params: dict) -> dict:
 
 def list_users(params: dict) -> dict:
     username = validate_username(params["username"])
-    resolved, _home, _relative_path = _resolve_protected_dir(username, params.get("path", ""))
-    htpasswd_path = os.path.join(resolved, HTPASSWD_FILENAME)
-    if not os.path.isfile(htpasswd_path):
+    account, _resolved, home, relative_path = _protected_account_path(username, params.get("path", ""), require_enabled=False)
+    with write_session() as session:
+        if not _is_protected(session, account.id, relative_path):
+            return {"users": []}
+    content = _read_htpasswd_beneath(home, relative_path)
+    if content is None:
         return {"users": []}
     users = []
-    with open(htpasswd_path) as f:
-        for line in f:
-            line = line.strip()
-            if line and ":" in line and not line.startswith("#"):
-                users.append(line.split(":", 1)[0])
+    for line in content.splitlines():
+        line = line.strip()
+        if line and ":" in line and not line.startswith("#"):
+            users.append(line.split(":", 1)[0])
     return {"users": users}
 
 
 def add_user(params: dict) -> dict:
     username = validate_username(params["username"])
-    resolved, _home, _relative_path = _resolve_protected_dir(username, params.get("path", ""))
-    htpasswd_path = os.path.join(resolved, HTPASSWD_FILENAME)
-    if not os.path.isfile(htpasswd_path):
+    account, _resolved, home, relative_path = _protected_account_path(username, params.get("path", ""))
+    content = _read_htpasswd_beneath(home, relative_path)
+    if content is None:
         raise FileAuthError("directory protection is not enabled for this path -- enable it first")
 
     htuser = validate_htpasswd_username(params["htuser"])
     password = validate_password_strength(params["password"])
 
-    result = run([HTPASSWD_BIN, "-i", "-B", htpasswd_path, htuser], input_text=f"{password}\n", timeout=15)
-    if not result.ok:
-        raise FileAuthError(f"htpasswd failed: {result.stderr.strip() or result.stdout.strip()}")
+    new_line = _hash_htpasswd_user(htuser, password)
+    kept = [
+        line for line in content.splitlines()
+        if not (line and not line.startswith("#") and line.split(":", 1)[0] == htuser)
+    ]
+    kept.append(new_line)
+    _write_htpasswd_beneath(home, relative_path, "\n".join(kept) + "\n", account.uid, account.gid)
     return {"htuser": htuser, "status": "set"}
 
 
 def delete_user(params: dict) -> dict:
     username = validate_username(params["username"])
-    resolved, _home, _relative_path = _resolve_protected_dir(username, params.get("path", ""))
-    htpasswd_path = os.path.join(resolved, HTPASSWD_FILENAME)
+    account, _resolved, home, relative_path = _protected_account_path(username, params.get("path", ""))
     htuser = validate_htpasswd_username(params["htuser"])
-    if not os.path.isfile(htpasswd_path):
+    content = _read_htpasswd_beneath(home, relative_path)
+    if content is None:
         raise FileAuthError("directory protection is not enabled for this path")
 
-    result = run([HTPASSWD_BIN, "-D", htpasswd_path, htuser], timeout=15)
-    if not result.ok:
-        raise FileAuthError(f"htpasswd failed: {result.stderr.strip() or result.stdout.strip()}")
+    removed = False
+    kept: list[str] = []
+    for line in content.splitlines():
+        if line and not line.startswith("#") and line.split(":", 1)[0] == htuser:
+            removed = True
+            continue
+        kept.append(line)
+    if not removed:
+        raise FileAuthError(f"user '{htuser}' not found")
+    _write_htpasswd_beneath(home, relative_path, ("\n".join(kept) + "\n") if kept else "", account.uid, account.gid)
     return {"htuser": htuser, "status": "deleted"}
 
 

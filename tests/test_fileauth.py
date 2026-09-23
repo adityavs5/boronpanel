@@ -1,6 +1,7 @@
 import pytest
 
 from daemon import fileauth
+from daemon.safeio import UnsafePathError
 from shared.validation import ValidationError
 
 
@@ -31,6 +32,7 @@ def account_with_docroot(isolated_db, tmp_path, monkeypatch):
 
     monkeypatch.setattr(fileauth.pwd, "getpwnam", fake_getpwnam)
     monkeypatch.setattr(fileauth.os, "chown", lambda *a, **k: None)
+    monkeypatch.setattr(fileauth.os, "fchown", lambda *a, **k: None)
 
     with write_session() as session:
         account = Account(username="demo1", uid=5001, gid=5001, status="active")
@@ -72,6 +74,19 @@ def test_enable_protection_rejects_nonexistent_dir(account_with_docroot):
         fileauth.enable_protection({"username": "demo1", "path": "public_html/does-not-exist"})
 
 
+def test_enable_protection_rejects_preplanted_htpasswd_symlink_without_row(account_with_docroot):
+    target = account_with_docroot["home"] / "target"
+    target.write_text("do-not-touch")
+    htpasswd = account_with_docroot["docroot"] / "members" / ".htpasswd"
+    htpasswd.symlink_to(target)
+
+    with pytest.raises(UnsafePathError):
+        fileauth.enable_protection({"username": "demo1", "path": "public_html/members"})
+
+    assert target.read_text() == "do-not-touch"
+    assert fileauth.list_protected_dirs({"username": "demo1"})["protected"] == []
+
+
 def test_disable_protection_removes_row_but_keeps_htpasswd(account_with_docroot):
     fileauth.enable_protection({"username": "demo1", "path": "public_html/members"})
     htpasswd = account_with_docroot["docroot"] / "members" / ".htpasswd"
@@ -93,6 +108,16 @@ def test_add_user_requires_protection_enabled_first(account_with_docroot):
         fileauth.add_user({"username": "demo1", "path": "public_html/members", "htuser": "alice", "password": "Whatever123!Pass"})
 
 
+def test_add_user_requires_enabled_row_even_if_htpasswd_exists(account_with_docroot):
+    htpasswd = account_with_docroot["docroot"] / "members" / ".htpasswd"
+    htpasswd.write_text("")
+
+    with pytest.raises(fileauth.FileAuthError):
+        fileauth.add_user({"username": "demo1", "path": "public_html/members", "htuser": "alice", "password": "Whatever123!Pass"})
+
+    assert htpasswd.read_text() == ""
+
+
 def test_add_list_delete_user_real_htpasswd_cycle(account_with_docroot):
     fileauth.enable_protection({"username": "demo1", "path": "public_html/members"})
 
@@ -110,6 +135,20 @@ def test_add_list_delete_user_real_htpasswd_cycle(account_with_docroot):
 
     fileauth.delete_user({"username": "demo1", "path": "public_html/members", "htuser": "alice"})
     assert fileauth.list_users({"username": "demo1", "path": "public_html/members"})["users"] == ["bob"]
+
+
+def test_add_user_rejects_htpasswd_symlink_swapped_after_enable(account_with_docroot):
+    fileauth.enable_protection({"username": "demo1", "path": "public_html/members"})
+    target = account_with_docroot["home"] / "target"
+    target.write_text("do-not-touch")
+    htpasswd = account_with_docroot["docroot"] / "members" / ".htpasswd"
+    htpasswd.unlink()
+    htpasswd.symlink_to(target)
+
+    with pytest.raises(fileauth.FileAuthError):
+        fileauth.add_user({"username": "demo1", "path": "public_html/members", "htuser": "alice", "password": "AlicePass123!"})
+
+    assert target.read_text() == "do-not-touch"
 
 
 def test_add_user_rejects_invalid_username(account_with_docroot):

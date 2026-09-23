@@ -61,8 +61,8 @@ route,DELETE /api/v1/accounts/{username}/domains/{domain}/nameservers,api/router
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/redirects,api/routers/redirects.py,delete_redirect,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/staging,api/routers/staging.py,delete_staging,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/email/{mailbox}/spam-filters,api/routers/spamfilter.py,delete_entry,get_identity,pending,
-route,DELETE /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,disable_protection,get_identity,pending,
-route,DELETE /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,delete_user,get_identity,pending,
+route,DELETE /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,disable_protection,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
+route,DELETE /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,delete_user,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,DELETE /api/v1/accounts/{username}/ftp/{label},api/routers/ftp.py,delete_ftp_account,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/git/{name},api/routers/git.py,delete_repo,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/parked-domains/{parked_domain},api/routers/parked.py,remove_parked,get_identity,pending,
@@ -155,8 +155,8 @@ route,GET /api/v1/accounts/{username}/email/delivery-log,api/routers/email_extra
 route,GET /api/v1/accounts/{username}/email/imap-migrate,api/routers/imapsync.py,list_migrations,get_identity,pending,
 route,GET /api/v1/accounts/{username}/email/imap-migrate/{job_id},api/routers/imapsync.py,get_migration_status,get_identity,pending,
 route,GET /api/v1/accounts/{username}/email/{mailbox}/spam-filters,api/routers/spamfilter.py,list_entries,get_identity,pending,
-route,GET /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,list_protected_dirs,get_identity,pending,
-route,GET /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,list_users,get_identity,pending,
+route,GET /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,list_protected_dirs,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
+route,GET /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,list_users,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,GET /api/v1/accounts/{username}/files/launch,api/routers/filebrowser.py,launch,get_identity,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,GET /api/v1/accounts/{username}/ftp,api/routers/ftp.py,list_ftp_accounts,get_identity,pending,
 route,GET /api/v1/accounts/{username}/git,api/routers/git.py,list_repos,get_identity,pending,
@@ -362,8 +362,8 @@ route,POST /api/v1/accounts/{username}/email/imap-migrate/list-folders,api/route
 route,POST /api/v1/accounts/{username}/email/imap-migrate/{job_id}/cancel,api/routers/imapsync.py,cancel_migration,get_identity,pending,
 route,POST /api/v1/accounts/{username}/email/{mailbox}/spam-filters,api/routers/spamfilter.py,add_entry,get_identity,pending,
 route,POST /api/v1/accounts/{username}/email/{mailbox}/spam-filters/import,api/routers/spamfilter.py,import_entries,get_identity,pending,
-route,POST /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,enable_protection,get_identity,pending,
-route,POST /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,add_user,get_identity,pending,
+route,POST /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,enable_protection,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
+route,POST /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,add_user,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,POST /api/v1/accounts/{username}/ftp,api/routers/ftp.py,create_ftp_account,get_identity,pending,
 route,POST /api/v1/accounts/{username}/git,api/routers/git.py,create_repo,get_identity,pending,
 route,POST /api/v1/accounts/{username}/malware/findings/{finding_id}/ignore,api/routers/malware.py,ignore,get_identity,pending,
@@ -613,12 +613,12 @@ rpc,fb.open,daemon/filebrowser.py,open_access,kernel-peer-uid; root-credential; 
 rpc,fb.refresh_all,daemon/filebrowser.py,refresh_all_sources,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 rpc,fb.remove_source,daemon/filebrowser.py,remove_source,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 rpc,fb.status,daemon/filebrowser.py,status,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
-rpc,fileauth.disable,daemon/fileauth.py,disable_protection,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,fileauth.enable,daemon/fileauth.py,enable_protection,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,fileauth.list,daemon/fileauth.py,list_protected_dirs,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,fileauth.user.add,daemon/fileauth.py,add_user,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,fileauth.user.delete,daemon/fileauth.py,delete_user,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,fileauth.user.list,daemon/fileauth.py,list_users,kernel-peer-uid; root-credential; policy=account_username,pending,
+rpc,fileauth.disable,daemon/fileauth.py,disable_protection,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
+rpc,fileauth.enable,daemon/fileauth.py,enable_protection,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
+rpc,fileauth.list,daemon/fileauth.py,list_protected_dirs,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
+rpc,fileauth.user.add,daemon/fileauth.py,add_user,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
+rpc,fileauth.user.delete,daemon/fileauth.py,delete_user,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
+rpc,fileauth.user.list,daemon/fileauth.py,list_users,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 rpc,firewall.add,daemon/firewall.py,add_rule,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,firewall.bypass.add,daemon/firewall.py,add_bypass,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,firewall.bypass.delete,daemon/firewall.py,delete_bypass,kernel-peer-uid; root-credential; policy=global_admin,pending,

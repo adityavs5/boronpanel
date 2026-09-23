@@ -519,18 +519,19 @@ was stripped, and the admin session remained valid. The trusted frontend hotfix
 is installed on the development panel and the existing Chromium FileBrowser
 smoke still passes.
 
-The coverage inventory now has 901 entries: 818 pending, 72 reviewed-fixed and
+The coverage inventory now has 901 entries: 806 pending, 84 reviewed-fixed and
 11 reviewed-public. New reviewed-fixed rows cover `scripts/app_files.py`,
 `scripts/wordpress_files.py`, the trusted FileBrowser frontend unit, the auth
 routes, token routes, `daemon/handlers_auth.py`, `daemon/totp.py`, and the
 terminal WebSocket/RPC surface, and the phpMyAdmin token route/RPC/cleanup
-surface. The auth rows cite the 82-test focused auth/session/TOTP/RPC authority
-suite, hashed sessions, root-side login protocol, TOTP replay/recovery
-serialization, and the live VM login smoke. Existing FileBrowser route/RPC rows
-now cite both the per-account isolation and trusted-renderer evidence. The
-update routes/RPCs, updater cron wrapper, `scripts/update_check.py`, and
-`scripts/update_finalize.py` now cite the focused update/release tests plus the
-signed VM update/rollback drill. This is still not a final security release gate:
+surface, and the protected-directory fileauth route/RPC surface. The auth rows
+cite the 82-test focused auth/session/TOTP/RPC authority suite, hashed sessions,
+root-side login protocol, TOTP replay/recovery serialization, and the live VM
+login smoke. Existing FileBrowser route/RPC rows now cite both the per-account
+isolation and trusted-renderer evidence. The update routes/RPCs, updater cron
+wrapper, `scripts/update_check.py`, and `scripts/update_finalize.py` now cite
+the focused update/release tests plus the signed VM update/rollback drill. This
+is still not a final security release gate:
 signed update packaging, installed upgrade/rollback, fresh install from the
 candidate, and the remaining route/resource review remain open.
 
@@ -619,3 +620,30 @@ without printing the raw token or password, verified the token file was a regula
 user, token file and row were removed, and dropped the temporary database. The
 same daemon file is installed on the development panel with matching hashes and
 `boron-provisiond` active.
+
+### 2026-09-23 protected-directory fileauth hardening
+
+BSA-2026-039 records a protected-directory `.htpasswd` symlink issue. Enabling
+protection created `.htpasswd` through the symlink-safe helper, but later
+add/delete user operations called the real `htpasswd` binary as root with the
+customer-controlled `.htpasswd` pathname. A customer who replaced that file with
+a symlink after enable could make the privileged helper follow the link. The
+same review found that the database row was committed before the safe file
+creation step, so a refused file setup could leave stale protected-directory
+state.
+
+The source now generates the bcrypt htpasswd record with `htpasswd -n -i -B`
+without passing a file path, then reads and atomically replaces `.htpasswd`
+through symlink-safe `openat`/`O_NOFOLLOW` helpers under the account home. User
+add/delete requires an enabled `FileAuthDir` row for the normalized path; merely
+placing a `.htpasswd` file in an arbitrary account directory is not enough.
+Enable now creates or verifies the `.htpasswd` file before committing the row.
+
+Focused validation passed 31 fileauth/RPC-authority tests. The disposable VM was
+hotfixed with `daemon/fileauth.py` matching source; a live canary enabled a
+temporary directory under `auditweb`'s docroot, added/listed/deleted a bcrypt
+user without storing the plaintext password, swapped `.htpasswd` to a symlink,
+confirmed the add-user path was rejected and the symlink target stayed unchanged,
+disabled the row, and removed the temporary directory. The same daemon file is
+installed on the development panel with matching hashes and `boron-provisiond`
+active.
