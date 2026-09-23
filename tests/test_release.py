@@ -126,6 +126,7 @@ def test_release_dry_run_does_not_touch_version_py():
     assert before == after
 
 
+@pytest.mark.skipif(not (REPO_ROOT / ".git").exists(), reason="release builds require a source checkout")
 def test_release_without_signing_key_fails_closed(tmp_path):
     env = dict(ENV)
     env.pop("BORON_RELEASE_SIGNING_KEY_FILE", None)

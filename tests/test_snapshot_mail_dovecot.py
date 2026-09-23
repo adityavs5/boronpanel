@@ -34,6 +34,8 @@ def mailbox_store():
             'namespace inbox {\n inbox = yes\n separator = /\n}\n'
         )
 
+        config.chmod(0o644)
+
         def command(*args):
             privilege = dict(user=uid, group=gid, extra_groups=[]) if os.geteuid() == 0 else {}
             result = subprocess.run(['doveadm', '-c', str(config), *args], cwd=root,
