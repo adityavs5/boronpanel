@@ -219,13 +219,26 @@ registry still reported 414/414 policy equality, the forged `boron-api`
 metadata canary still failed with `unauthenticated`, and real admin login
 still returned 303 plus an admin `/api/v1/whoami` identity.
 
-A second delayed-job class is fixed in source: queued backup restores now
+A second delayed-job class is fixed and installed on the disposable VM:
+queued backup restores now
 re-read the restore row, backup row, destination, and account inside the
 worker, require the restore job to still be pending, and require the account
 to still be active before any artifact is fetched or restored. The regression
 queues a restore, suspends the account before the worker starts, and confirms
-the artifact fetch is never reached. The backup suite passed (57). This fix
-has not yet been installed on the disposable VM.
+the artifact fetch is never reached. The backup suite passed (57).
+
+A third delayed-job class is fixed and installed on the disposable VM: queued
+backup jobs now re-read the backup row, destination and account inside the
+worker, require the backup job to still be pending, and require the account to
+still be active before any backup artifact is built. The regression queues a
+database backup, suspends the account before the worker starts, and confirms
+the database backup builder is never reached. The expanded backup suite passed
+(58), along with Python compilation and diff checks. After deploying commit
+`2171e44` to the disposable VM, both Boron services were active, local
+`/healthz` returned 200, the daemon registry reported 414/414 policy equality,
+the forged `boron-api` metadata canary still failed with `unauthenticated`,
+and real admin login still returned 303 plus an admin `/api/v1/whoami`
+identity.
 
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
@@ -292,12 +305,11 @@ passed a trusted TLS 1.3 hostname check.
 
 Important pending work, in risk order:
 
-1. Design and implement a meaningful root-daemon authorization boundary.
-   The daemon currently authenticates the API Unix UID but trusts API-side
-   authorization and client-supplied audit identity for all operations.
-   API-held signing keys or rechecking a forged role are insufficient.
-   `SECURITY-ROOT-AUTHORITY-DESIGN-2026-09-20.md` records the required
-   migration and tests; implementation is still open.
+1. Complete full-system validation of the root-daemon authorization boundary:
+   installed 1.5.0-to-candidate migration, rollback behavior, hostile canaries
+   for imported archives and WordPress/application flows, and remaining
+   asynchronous job continuations. The core BSA-2026-005 implementation is
+   present, but it is not a releasable security update until these gates pass.
 2. Complete per-route/per-RPC resource and role review and async job
    continuation checks; 10 deliberately public routes now have an exact
    inventory test and reviewed status. Source inventory now includes cron,
