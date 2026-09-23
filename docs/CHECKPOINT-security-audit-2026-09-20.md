@@ -202,9 +202,9 @@ daemon reports 414/414 registry equality, the original forged `boron-api`
 metadata canary now fails with `unauthenticated`, real admin login on the
 panel listener returns 303 and `/api/v1/whoami` returns the admin identity,
 and the session table contains only SHA-256-shaped session identifiers. This
-does not yet close BSA-2026-005: delayed-job reauthorization, installed
-1.5.0-to-candidate migration behavior, rollback behavior, and hostile
-full-system canaries remain unverified.
+does not yet close BSA-2026-005: installed 1.5.0-to-candidate migration
+behavior, rollback behavior, hostile full-system canaries, and lower-risk
+admin-only async continuations remain unverified.
 
 One delayed-job class is now fixed in source: the shared WP-CLI/Composer
 `CommandRun` worker no longer executes a prebuilt `runuser` command captured
@@ -239,6 +239,31 @@ the database backup builder is never reached. The expanded backup suite passed
 the forged `boron-api` metadata canary still failed with `unauthenticated`,
 and real admin login still returned 303 plus an admin `/api/v1/whoami`
 identity.
+
+A broader delayed-worker pass is now fixed in source and installed on the
+disposable VM at commit `7cdb79f`. Malware scans now enqueue only the scan
+job ID and re-read the scan row, account, domain, UID/GID, home path and
+exclusions before walking files; the daemon malware tests passed (8), while
+the separate malware API TestClient test still hangs in this sandbox like the
+known update API TestClient case. IMAP migrations now re-check that the
+mailbox still belongs to the queued account and that the account is still
+active before resolving the source host or starting imapsync; the IMAP suite
+passed (22). WordPress and generic app installer jobs now make the persisted
+job row authoritative for account/domain/app at execution, reject stale
+inactive accounts or moved domains before vendor code runs, and preserve
+vendor-error redaction; the focused WordPress/app-installer suites passed
+(58). cPanel/DirectAdmin import and portable Boron archive import jobs now
+re-check the target account/login state before archive fetch, validation or
+restore; the environment-safe import suites passed (54) with the two known
+host-dependent cPanel tests deselected (`/etc/letsencrypt` writes and ACLs).
+Snapshot backup runs now re-read the account under the account lock before
+collecting sources; the worker-focused snapshot jobs passed (13), with the
+API/TestClient authorization case still excluded due the same sandbox hang
+pattern. After deploying the batch to the disposable VM, both Boron services
+were active, local `/healthz` returned 200 after the API completed its normal
+startup delay, the daemon registry reported 414/414 policy equality, the
+forged `boron-api` metadata canary still failed with `unauthenticated`, and
+real admin login still returned 303 plus an admin `/api/v1/whoami` identity.
 
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
@@ -307,11 +332,11 @@ Important pending work, in risk order:
 
 1. Complete full-system validation of the root-daemon authorization boundary:
    installed 1.5.0-to-candidate migration, rollback behavior, hostile canaries
-   for imported archives and WordPress/application flows, and remaining
-   asynchronous job continuations. The core BSA-2026-005 implementation is
+   for imported archives and WordPress/application flows, and lower-risk
+   admin-only asynchronous continuations. The core BSA-2026-005 implementation is
    present, but it is not a releasable security update until these gates pass.
-2. Complete per-route/per-RPC resource and role review and async job
-   continuation checks; 10 deliberately public routes now have an exact
+2. Complete per-route/per-RPC resource and role review; 10 deliberately public
+   routes now have an exact
    inventory test and reviewed status. Source inventory now includes cron,
     static and generated services, shell/Python scripts and a native helper: 895
    total entries, 885 pending. A protected read-only live snapshot records
