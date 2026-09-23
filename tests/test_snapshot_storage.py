@@ -172,9 +172,20 @@ def test_ssh_incremental_filter_and_verified_restore(ssh_repo,tmp_path):
 
 
 def test_ssh_refuses_unrecognized_host_key(ssh_repo):
+    import shlex
+    import subprocess
     Path(ssh_repo.ssh_known_hosts_file).write_text('')
-    with pytest.raises(storage.SnapshotStorageError,match='[Hh]ost key verification failed'):
+    command = next(arg.removeprefix('sftp.command=') for arg in ssh_repo.arguments()
+                   if arg.startswith('sftp.command='))
+    rejected = subprocess.run(shlex.split(command), input='', capture_output=True,
+                              text=True, timeout=20, env={**os.environ, 'LC_ALL': 'C'})
+    assert rejected.returncode != 0
+    assert 'Host key verification failed' in rejected.stderr
+    # Restic versions may replace SSH's stderr with a generic SFTP error.
+    # Verify the exact transport's cause above, and the storage refusal here.
+    with pytest.raises(storage.SnapshotStorageError):
         storage.initialize(ssh_repo)
+    assert not (Path(ssh_repo.path) / 'config').exists()
 
 
 def test_retention_cannot_remove_another_account_snapshot(repo,tmp_path):

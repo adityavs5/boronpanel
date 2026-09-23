@@ -89,6 +89,8 @@ def test_point_in_time_mail_restore_and_safety_undo(mailbox_store, tmp_path, mon
     mail_base = root / 'vmail'
     home = mail_base / 'example.test/inbox'
     home.mkdir(parents=True)
+    for directory in (mail_base, home.parent, home):
+        os.chown(directory, 65534, 65534)
     monkeypatch.setattr(settings, 'mail_base', str(mail_base))
     (root / 'live').rename(home / 'Maildir')
     name = stage_for_exchange(prepared_source, tmp_path, 'example.test', 'inbox',
