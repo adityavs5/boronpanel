@@ -125,3 +125,29 @@ def test_cmdjobs_get_run_rejects_foreign_account(isolated_db, tmp_path, monkeypa
     result = cmdjobs.submit("demo1", "composer", "/home/demo1/app", ["/usr/bin/composer", "install"], "composer install")
     with pytest.raises(RuntimeError, match="does not belong"):
         cmdjobs.get_run({"username": "demo2", "job_id": result["id"]})
+
+
+def test_cmdjobs_worker_rechecks_account_status_before_running(isolated_db, tmp_path, monkeypatch):
+    account_id = _account()
+    queued = []
+
+    class _Queued:
+        def submit(self, fn, *args, **kwargs):
+            queued.append((fn, args, kwargs))
+
+    monkeypatch.setattr(cmdjobs, "_executor", _Queued())
+    monkeypatch.setattr(cmdjobs.pwd, "getpwnam", lambda u: types.SimpleNamespace(pw_dir="/home/demo1"))
+    ran = []
+    monkeypatch.setattr(cmdjobs, "run", lambda argv, **k: ran.append(argv) or ProcResult(argv, 0, "ok", ""))
+
+    result = cmdjobs.submit("demo1", "composer", "/home/demo1/app", ["/usr/bin/composer", "install"], "composer install")
+    with write_session() as db:
+        db.get(Account, account_id).status = "suspended"
+
+    fn, args, kwargs = queued.pop()
+    fn(*args, **kwargs)
+
+    job = cmdjobs.get_run({"username": "demo1", "job_id": result["id"]})
+    assert job["status"] == "failed"
+    assert "suspended" in job["error"]
+    assert ran == []

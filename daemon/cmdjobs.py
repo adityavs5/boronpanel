@@ -65,7 +65,6 @@ def submit(
     run as the account user (already including runuser/env wrapping is NOT done
     here -- callers pass the bare tool argv; this wraps it)."""
     account = _account(username)
-    pw = pwd.getpwnam(username)
     with write_session() as session:
         job = CommandRun(
             account_id=account.id, kind=kind, target=target,
@@ -76,19 +75,37 @@ def submit(
         session.flush()
         job_id = job.id
 
-    wrapped = ["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", *argv]
     _executor.submit(
-        _run_job, job_id, wrapped, target, redact or [], timeout or settings.command_run_timeout_seconds, input_text, on_failure, on_success
+        _run_job, job_id, username, argv, target, redact or [],
+        timeout or settings.command_run_timeout_seconds, input_text, on_failure, on_success
     )
     return _job_dict(_get(job_id), reveal=False)
 
 
-def _run_job(job_id: int, argv: list[str], cwd: str, redact: list[str], timeout: float, input_text: str | None = None, on_failure=None, on_success=None) -> None:
-    with write_session() as session:
-        job = session.get(CommandRun, job_id)
-        job.status = "running"
+def _run_job(
+    job_id: int,
+    username: str,
+    argv: list[str],
+    cwd: str,
+    redact: list[str],
+    timeout: float,
+    input_text: str | None = None,
+    on_failure=None,
+    on_success=None,
+) -> None:
     try:
-        result = run(argv, cwd=cwd, timeout=timeout, redact=redact or None, **({"input_text": input_text} if input_text is not None else {}))
+        account = _account(username)
+        pw = pwd.getpwnam(username)
+        with write_session() as session:
+            job = session.get(CommandRun, job_id)
+            if job is None or job.status != "pending":
+                return
+            if job.account_id != account.id:
+                raise RuntimeError("queued command no longer belongs to this account")
+            job.status = "running"
+
+        wrapped = ["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", *argv]
+        result = run(wrapped, cwd=cwd, timeout=timeout, redact=redact or None, **({"input_text": input_text} if input_text is not None else {}))
         if result.returncode != 0 and on_failure:
             on_failure()
         if result.returncode == 0 and on_success:

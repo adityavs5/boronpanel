@@ -188,6 +188,33 @@ because the fresh host has no customer accounts, but acceptance itself proves
 the root daemon still lacks an authorization boundary. This remains the main
 release blocker.
 
+The root RPC authority patch is now source-complete and installed on the
+disposable VM only. Commits `d70cbf8`, `8cba26f`, and `c5b6258` hash browser
+sessions, migrate legacy session rows, send credentials in a top-level RPC
+envelope, derive the acting principal inside borond from root-owned database
+state, require an explicit reviewed policy for all 414 registered operations,
+move login password/TOTP checks into borond, block legacy session-minting RPCs,
+and add root-side proof checks for current-password and update-confirmation
+flows. Local focused validation passed: 84 session/auth/API/RPC tests, the
+current 14-test RPC authority file, Python compilation, diff checks, and a
+414/414 policy-registry equality check. On the disposable VM the deployed
+daemon reports 414/414 registry equality, the original forged `boron-api`
+metadata canary now fails with `unauthenticated`, real admin login on the
+panel listener returns 303 and `/api/v1/whoami` returns the admin identity,
+and the session table contains only SHA-256-shaped session identifiers. This
+does not yet close BSA-2026-005: delayed-job reauthorization, installed
+1.5.0-to-candidate migration behavior, rollback behavior, and hostile
+full-system canaries remain unverified.
+
+One delayed-job class is now fixed in source: the shared WP-CLI/Composer
+`CommandRun` worker no longer executes a prebuilt `runuser` command captured
+at enqueue time. It re-loads the account at execution time, requires it to
+still be active, verifies the pending job still belongs to that account, and
+only then constructs `runuser`. The regression queues a command, suspends the
+account before the worker runs, and confirms no subprocess is invoked. Focused
+Composer/WP-CLI/cmdjobs tests passed (31), along with Python compilation and
+diff checks. This fix has not yet been installed on the disposable VM.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic
