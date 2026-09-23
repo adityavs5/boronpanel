@@ -42,9 +42,16 @@ def terminal_sessions(username: str, identity: Identity = Depends(get_identity))
 
 IDLE_TIMEOUT_SECONDS = 30 * 60  # 30-minute idle timeout (per goal)
 _RECV_TIMEOUT = 0.2
+MAX_INPUT_CHARS = 16 * 1024
+MAX_RESIZE_COLUMNS = 300
+MAX_RESIZE_ROWS = 120
 # Terminal I/O blocks a thread while recv()'ing; a dedicated pool keeps that off
 # the request-serving executors.
 _TERMINAL_IO = ThreadPoolExecutor(max_workers=64, thread_name_prefix="terminal-io")
+
+
+def _bounded_terminal_input(value: object) -> str:
+    return str(value)[:MAX_INPUT_CHARS]
 
 
 def parse_client_message(text: str):
@@ -54,15 +61,17 @@ def parse_client_message(text: str):
     try:
         msg = json.loads(text)
     except (ValueError, TypeError):
-        return ("input", text)
+        return ("input", _bounded_terminal_input(text))
     if not isinstance(msg, dict):
-        return ("input", text)
+        return ("input", _bounded_terminal_input(text))
     t = msg.get("t")
     if t == "i":
-        return ("input", str(msg.get("d", "")))
+        return ("input", _bounded_terminal_input(msg.get("d", "")))
     if t == "r":
         try:
-            return ("resize", max(1, int(msg.get("c", 80))), max(1, int(msg.get("r", 24))))
+            cols = min(MAX_RESIZE_COLUMNS, max(1, int(msg.get("c", 80))))
+            rows = min(MAX_RESIZE_ROWS, max(1, int(msg.get("r", 24))))
+            return ("resize", cols, rows)
         except (TypeError, ValueError):
             return ("ignore",)
     return ("ignore",)

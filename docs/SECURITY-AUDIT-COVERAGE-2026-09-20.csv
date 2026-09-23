@@ -176,7 +176,7 @@ route,GET /api/v1/accounts/{username}/redis,api/routers/redis_router.py,get_redi
 route,GET /api/v1/accounts/{username}/redis/connection-info,api/routers/redis_router.py,get_redis_connection_info,get_identity,pending,
 route,GET /api/v1/accounts/{username}/ssh-keys,api/routers/sshkeys.py,list_keys,get_identity,pending,
 route,GET /api/v1/accounts/{username}/ssl,api/routers/ssl_router.py,ssl_dashboard,get_identity,pending,
-route,GET /api/v1/accounts/{username}/terminal/sessions,api/routers/terminal.py,terminal_sessions,get_identity,pending,
+route,GET /api/v1/accounts/{username}/terminal/sessions,api/routers/terminal.py,terminal_sessions,get_identity,reviewed-fixed,"terminal local-only key hardening: 44 focused terminal/RPC-authority tests; VM real sshd canary proved localhost generated-key login, public-host key rejection by sshd from= restriction, close removed key; primary hashes deployed"
 route,GET /api/v1/accounts/{username}/usage,api/routers/usage.py,get_usage,get_identity,pending,
 route,GET /api/v1/accounts/{username}/usage-limits,api/routers/usage_alerts.py,get_limits,get_identity,pending,
 route,GET /api/v1/accounts/{username}/wordpress/detect,api/routers/devtools.py,detect,get_identity,pending,
@@ -475,7 +475,7 @@ route,PUT /api/v1/backups/snapshots/policies/{policy_id},api/routers/backups.py,
 route,PUT /api/v1/dns/zones/{domain}/records,api/routers/dns.py,set_record,get_identity,pending,
 route,PUT /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,PUT /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
-route,WEBSOCKET /ws/accounts/{username}/terminal,api/routers/terminal.py,terminal_ws,manual-auth-inside-handler,pending,
+route,WEBSOCKET /ws/accounts/{username}/terminal,api/routers/terminal.py,terminal_ws,manual-auth-inside-handler,reviewed-fixed,"terminal local-only key hardening: 44 focused terminal/RPC-authority tests; VM real sshd canary proved localhost generated-key login, public-host key rejection by sshd from= restriction, close removed key; primary hashes deployed"
 rpc,account.create,daemon/handlers_account.py,create_account,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,account.get,daemon/handlers_account.py,get_account,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,account.list,daemon/handlers_account.py,list_accounts,kernel-peer-uid; root-credential; policy=global_admin,pending,
@@ -843,9 +843,9 @@ rpc,templates.suspension_designs.get,daemon/site_templates.py,get_suspension_des
 rpc,templates.welcome_email.get,daemon/site_templates.py,get_welcome_email_template,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,templates.welcome_email.reset,daemon/site_templates.py,reset_welcome_email_template,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,templates.welcome_email.set,daemon/site_templates.py,set_welcome_email_template,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,terminal.close,daemon/terminal.py,close_session,kernel-peer-uid; root-credential; policy=account_terminal_session_owner,pending,
-rpc,terminal.list,daemon/terminal.py,list_sessions,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,terminal.open,daemon/terminal.py,open_session,kernel-peer-uid; root-credential; policy=account_username,pending,
+rpc,terminal.close,daemon/terminal.py,close_session,kernel-peer-uid; root-credential; policy=account_terminal_session_owner,reviewed-fixed,"terminal local-only key hardening: 44 focused terminal/RPC-authority tests; VM real sshd canary proved localhost generated-key login, public-host key rejection by sshd from= restriction, close removed key; primary hashes deployed"
+rpc,terminal.list,daemon/terminal.py,list_sessions,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"terminal local-only key hardening: 44 focused terminal/RPC-authority tests; VM real sshd canary proved localhost generated-key login, public-host key rejection by sshd from= restriction, close removed key; primary hashes deployed"
+rpc,terminal.open,daemon/terminal.py,open_session,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"terminal local-only key hardening: 44 focused terminal/RPC-authority tests; VM real sshd canary proved localhost generated-key login, public-host key rejection by sshd from= restriction, close removed key; primary hashes deployed"
 rpc,totp.check_login_code,daemon/totp.py,check_login_code,kernel-peer-uid; root-credential; policy=root_internal_replace_with_login_protocol,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 rpc,totp.disable,daemon/totp.py,disable_totp,kernel-peer-uid; root-credential; policy=self_panel_user_session_with_password,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 rpc,totp.setup,daemon/totp.py,setup_totp,kernel-peer-uid; root-credential; policy=self_panel_user_session_only,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"

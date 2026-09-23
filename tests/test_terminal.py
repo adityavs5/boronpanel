@@ -50,6 +50,31 @@ def test_remove_session_line_targets_only_its_session():
     assert b in remaining and user_key in remaining
 
 
+def test_terminal_authorized_key_is_limited_to_localhost():
+    _, pub = terminal.generate_keypair()
+    line = terminal.build_authorized_line(pub, "aaa", 1)
+    assert line.startswith('from="127.0.0.1",')
+    assert "no-port-forwarding" in line
+    assert "no-user-rc" in line
+
+
+def test_terminal_marker_parser_keeps_user_key_comments():
+    """A normal user SSH key comment must not be treated as Boron's marker."""
+    user_key = "ssh-rsa AAAAuser user@host boron-terminal-aaa-1"
+    kept, active = terminal.prune_and_count([user_key], 1_751_800_000)
+    assert kept == [user_key]
+    assert active == 0
+    assert terminal.remove_session_line([user_key], "aaa") == [user_key]
+
+
+def test_legacy_terminal_markers_are_still_cleaned_up():
+    _, pub = terminal.generate_keypair()
+    legacy = f"no-agent-forwarding,no-port-forwarding,no-X11-forwarding {pub} boron-terminal-old-1"
+    kept, active = terminal.prune_and_count([legacy], 1_751_800_000)
+    assert kept == []
+    assert active == 0
+
+
 # --- open/close/list lifecycle (against a tmp authorized_keys) --------------
 
 
@@ -135,6 +160,17 @@ def test_open_refuses_preplanted_ssh_directory_symlink(isolated_db, monkeypatch,
     assert target.stat().st_uid == os.getuid()
 
 
+def test_write_lines_removes_temp_file_on_short_write(tmp_path, monkeypatch):
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    monkeypatch.setattr(terminal.os, "write", lambda _fd, _data: 0)
+    try:
+        with pytest.raises(OSError, match="short write"):
+            terminal._write_lines(dir_fd, ["ssh-rsa AAAAuser user@host"], os.getuid(), os.getgid())
+    finally:
+        os.close(dir_fd)
+    assert not list(tmp_path.glob(".authorized_keys.tmp.*"))
+
+
 # --- WebSocket client protocol ---------------------------------------------
 
 
@@ -156,3 +192,14 @@ def test_parse_client_message_raw_fallback():
 def test_parse_client_message_unknown_type_ignored():
     from api.routers.terminal import parse_client_message
     assert parse_client_message('{"t":"x"}') == ("ignore",)
+
+
+def test_parse_client_message_bounds_paste_and_resize():
+    from api.routers.terminal import MAX_INPUT_CHARS, MAX_RESIZE_COLUMNS, MAX_RESIZE_ROWS, parse_client_message
+
+    assert parse_client_message("x" * (MAX_INPUT_CHARS + 1)) == ("input", "x" * MAX_INPUT_CHARS)
+    assert parse_client_message('{"t":"r","c":99999,"r":99999}') == (
+        "resize",
+        MAX_RESIZE_COLUMNS,
+        MAX_RESIZE_ROWS,
+    )

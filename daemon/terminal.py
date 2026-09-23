@@ -49,8 +49,13 @@ SSH_HOST = "127.0.0.1"
 SSH_PORT = 22
 _MARKER_PREFIX = "boron-terminal-"
 # No forwarding of any kind; a pty is still allowed (we need it) -- deliberately
-# NOT `restrict`, which would also disable the pty.
-_KEY_OPTIONS = "no-agent-forwarding,no-port-forwarding,no-X11-forwarding"
+# NOT `restrict`, which would also disable the pty.  The private key is only
+# held by boron-api, but sshd should still enforce the local-only design if that
+# key is ever mishandled.
+_KEY_OPTIONS = 'from="127.0.0.1",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc'
+_LEGACY_KEY_OPTIONS = (
+    "no-agent-forwarding,no-port-forwarding,no-X11-forwarding",
+)
 
 
 def _marker(session_id: str, epoch: int) -> str:
@@ -78,25 +83,35 @@ def build_authorized_line(public_openssh: str, session_id: str, epoch: int) -> s
     return f"{_KEY_OPTIONS} {public_openssh} {_marker(session_id, epoch)}"
 
 
+def _line_marker(line: str) -> str | None:
+    parts = line.strip().split()
+    if len(parts) != 4:
+        return None
+    options, key_type, _key_body, comment = parts
+    if options != _KEY_OPTIONS and options not in _LEGACY_KEY_OPTIONS:
+        return None
+    if key_type != "ssh-ed25519" or not comment.startswith(_MARKER_PREFIX):
+        return None
+    return comment[len(_MARKER_PREFIX):]
+
+
 def _is_terminal_line(line: str) -> bool:
-    return _MARKER_PREFIX in line
+    return _line_marker(line) is not None
 
 
 def _line_session_id(line: str) -> str | None:
     """Extract the <sid> from a terminal marker's `...-<sid>-<epoch>` comment."""
-    idx = line.rfind(_MARKER_PREFIX)
-    if idx < 0:
+    marker = _line_marker(line)
+    if marker is None:
         return None
-    marker = line[idx + len(_MARKER_PREFIX):].strip().split()[0]
     parts = marker.rsplit("-", 1)
     return parts[0] if len(parts) == 2 else marker
 
 
 def _line_epoch(line: str) -> int | None:
-    idx = line.rfind(_MARKER_PREFIX)
-    if idx < 0:
+    marker = _line_marker(line)
+    if marker is None:
         return None
-    marker = line[idx + len(_MARKER_PREFIX):].strip().split()[0]
     parts = marker.rsplit("-", 1)
     if len(parts) == 2 and parts[1].isdigit():
         return int(parts[1])
@@ -157,20 +172,32 @@ def _read_lines(dir_fd: int) -> list[str]:
 def _write_lines(dir_fd: int, lines: list[str], uid: int, gid: int) -> None:
     tmp = f".authorized_keys.tmp.{os.getpid()}.{secrets.token_hex(4)}"
     content = ("\n".join(lines) + "\n") if lines else ""
+    renamed = False
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
     try:
-        os.write(fd, content.encode())
-        os.fchown(fd, uid, gid)
-        os.fchmod(fd, 0o600)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    try:
+        try:
+            data = memoryview(content.encode())
+            while data:
+                written = os.write(fd, data)
+                if written <= 0:
+                    raise OSError("short write while updating authorized_keys")
+                data = data[written:]
+            os.fchown(fd, uid, gid)
+            os.fchmod(fd, 0o600)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         os.rename(tmp, "authorized_keys", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        renamed = True
         os.fsync(dir_fd)
-    except OSError:
-        os.unlink(tmp, dir_fd=dir_fd)
-        raise
+    finally:
+        if not renamed:
+            try:
+                os.unlink(tmp, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning("failed to remove temporary authorized_keys file %s", tmp)
 
 
 def _locked(dir_fd: int):

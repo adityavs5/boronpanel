@@ -519,17 +519,18 @@ was stripped, and the admin session remained valid. The trusted frontend hotfix
 is installed on the development panel and the existing Chromium FileBrowser
 smoke still passes.
 
-The coverage inventory now has 901 entries: 827 pending, 63 reviewed-fixed and
+The coverage inventory now has 901 entries: 822 pending, 68 reviewed-fixed and
 11 reviewed-public. New reviewed-fixed rows cover `scripts/app_files.py`,
 `scripts/wordpress_files.py`, the trusted FileBrowser frontend unit, the auth
-routes, token routes, `daemon/handlers_auth.py`, and `daemon/totp.py`. The auth
-rows cite the 82-test focused auth/session/TOTP/RPC authority suite, hashed
-sessions, root-side login protocol, TOTP replay/recovery serialization, and the
-live VM login smoke. Existing FileBrowser route/RPC rows now cite both the
-per-account isolation and trusted-renderer evidence. The update routes/RPCs,
-updater cron wrapper, `scripts/update_check.py`, and
-`scripts/update_finalize.py` now cite the focused update/release tests plus the
-signed VM update/rollback drill. This is still not a final security release gate:
+routes, token routes, `daemon/handlers_auth.py`, `daemon/totp.py`, and the
+terminal WebSocket/RPC surface. The auth rows cite the 82-test focused
+auth/session/TOTP/RPC authority suite, hashed sessions, root-side login protocol,
+TOTP replay/recovery serialization, and the live VM login smoke. Existing
+FileBrowser route/RPC rows now cite both the per-account isolation and
+trusted-renderer evidence. The update routes/RPCs, updater cron wrapper,
+`scripts/update_check.py`, and `scripts/update_finalize.py` now cite the focused
+update/release tests plus the signed VM update/rollback drill. This is still not
+a final security release gate:
 signed update packaging, installed upgrade/rollback, fresh install from the
 candidate, and the remaining route/resource review remain open.
 
@@ -567,3 +568,27 @@ This closes the installed update/rollback mechanics for a signed candidate in
 the disposable lab, but it is not a public release: the GitHub release creation,
 real GitHub asset download, primary self-update, fresh install from the final
 candidate, and remaining route/resource review are still open.
+
+### 2026-09-23 terminal local-only key hardening
+
+BSA-2026-037 records a terminal defense-in-depth gap. The web terminal generated
+an ephemeral SSH key and only boron-api held the private key, but sshd did not
+itself enforce that the key could only be used by the local panel process. The
+same review found that Boron terminal cleanup recognized the marker substring
+anywhere in an `authorized_keys` line, so an ordinary user key comment containing
+`boron-terminal-...` could be counted or pruned as a Boron key.
+
+The source now emits terminal key lines with `from="127.0.0.1"` and `no-user-rc`
+in addition to the existing no-forwarding options. Marker parsing now accepts
+only Boron-generated Ed25519 lines, while still recognizing legacy Boron terminal
+lines for cleanup. The WebSocket frame parser also caps pasted input and resize
+dimensions before passing them to Paramiko. The authorized_keys rewrite helper
+now completes short writes and removes temporary files if replacement fails.
+
+Focused validation passed 44 terminal/RPC-authority tests. The disposable VM was hotfixed with
+hashes matching source; a real sshd canary for `auditweb` opened a Boron terminal
+session, confirmed the generated line was localhost-only, logged in successfully
+through 127.0.0.1, failed to authenticate with the same key through the public
+host, closed the session, and confirmed the key line was gone. The same two
+terminal files are installed on the development panel with matching hashes and
+`boron-api`/`boron-provisiond` active.
