@@ -7,6 +7,8 @@ from sqlalchemy import select
 from daemon import handlers_auth as hauth
 from daemon import impersonation
 from shared.db import write_session
+from shared.session_ids import session_digest
+from daemon.appcrypto import decrypt_secret
 from shared.models import (
     Account,
     ImpersonationSession,
@@ -88,14 +90,15 @@ def test_redeem_creates_customer_session_and_marks_used(isolated_db):
 
     with write_session() as db:
         # session created, owned by the admin panel user
-        sess = db.scalar(select(SessionModel).where(SessionModel.session_id == session_id))
+        sess = db.scalar(select(SessionModel).where(SessionModel.session_id == session_digest(session_id)))
         assert sess is not None
         assert sess.panel_user_id == admin["id"]
         assert sess.revoked is False
         # impersonation record links it to the account + admin session to restore
-        imp = db.scalar(select(ImpersonationSession).where(ImpersonationSession.session_id == session_id))
+        imp = db.scalar(select(ImpersonationSession).where(ImpersonationSession.session_id == session_digest(session_id)))
         assert imp.account_id == account_id
-        assert imp.admin_session_id == "admin-sess-1"
+        assert imp.admin_session_id is None
+        assert decrypt_secret(imp.admin_session_enc) == "admin-sess-1"
         assert imp.ended_at is None
         # token consumed
         tok = db.scalar(select(ImpersonationToken))
@@ -164,9 +167,9 @@ def test_end_revokes_session_and_returns_admin_session(isolated_db):
     assert result["status"] == "ended"
 
     with write_session() as db:
-        sess = db.scalar(select(SessionModel).where(SessionModel.session_id == session_id))
+        sess = db.scalar(select(SessionModel).where(SessionModel.session_id == session_digest(session_id)))
         assert sess.revoked is True
-        imp = db.scalar(select(ImpersonationSession).where(ImpersonationSession.session_id == session_id))
+        imp = db.scalar(select(ImpersonationSession).where(ImpersonationSession.session_id == session_digest(session_id)))
         assert imp.ended_at is not None
 
 

@@ -19,6 +19,7 @@ from shared.db import write_session
 from shared.models import Account, ApiToken, LoginAttempt, PanelUser, Session, utcnow
 from shared.passwords import hash_password
 from shared.validation import ValidationError, validate_password_strength
+from shared.session_ids import session_digest
 
 from daemon import events
 
@@ -169,7 +170,7 @@ def create_session(params: dict) -> dict:
         user = db.get(PanelUser, panel_user_id)
         if user is None or user.disabled:
             raise RuntimeError("panel user not found or disabled")
-        row = Session(session_id=session_id, panel_user_id=panel_user_id, expires_at=expires_at)
+        row = Session(session_id=session_digest(session_id), panel_user_id=panel_user_id, expires_at=expires_at)
         db.add(row)
         # Phase 7b feature 3: "new login to customer panel" notification --
         # admin logins are deliberately excluded (goal names only the
@@ -188,7 +189,7 @@ def create_session(params: dict) -> dict:
 def revoke_session(params: dict) -> dict:
     session_id = params["session_id"]
     with write_session() as db:
-        row = db.scalar(select(Session).where(Session.session_id == session_id))
+        row = db.scalar(select(Session).where(Session.session_id == session_digest(session_id)))
         if row is not None:
             row.revoked = True
     return {"status": "revoked"}

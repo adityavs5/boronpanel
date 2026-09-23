@@ -76,11 +76,12 @@ def test_identity_from_revoked_session_is_none(isolated_db):
 
 
 def test_identity_from_expired_session_is_none(isolated_db):
+    from shared.session_ids import session_digest
     admin = _make_admin(isolated_db)
     session_result = hauth.create_session({"panel_user_id": admin["id"]})
     with write_session() as db:
         row = db.scalar(
-            __import__("sqlalchemy").select(Session).where(Session.session_id == session_result["session_id"])
+            __import__("sqlalchemy").select(Session).where(Session.session_id == session_digest(session_result["session_id"]))
         )
         row.expires_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)
     cookie = sec.sign_session_id(session_result["session_id"])

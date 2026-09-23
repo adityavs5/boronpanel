@@ -24,6 +24,8 @@ import string
 from sqlalchemy import select
 
 from shared.db import write_session
+from shared.session_ids import session_digest
+from daemon.appcrypto import decrypt_secret, encrypt_secret
 from shared.models import (
     Account,
     ImpersonationSession,
@@ -132,14 +134,15 @@ def redeem_token(params: dict) -> dict:
         # panel_user_id = the ADMIN's own id: the session stays owned by, and
         # revocable through, a real panel user. get_identity downscopes it to
         # a customer identity for account_id via the ImpersonationSession row.
-        session.add(Session(session_id=session_id, panel_user_id=admin_panel_user_id, expires_at=expires))
+        digest = session_digest(session_id)
+        session.add(Session(session_id=digest, panel_user_id=admin_panel_user_id, expires_at=expires))
         session.add(
             ImpersonationSession(
-                session_id=session_id,
+                session_id=digest,
                 account_id=account.id,
                 admin_panel_user_id=admin_panel_user_id,
                 admin_username=admin_username,
-                admin_session_id=admin_session_id,
+                admin_session_enc=encrypt_secret(admin_session_id) if admin_session_id else None,
             )
         )
         return {
@@ -155,14 +158,14 @@ def end(params: dict) -> dict:
     impersonation cookie's session id): revoke it and return the admin's
     original session id to restore. Idempotent -- ending an already-ended or
     unknown session just reports no admin session to restore."""
-    session_id = params["session_id"]
+    session_id = session_digest(params["session_id"])
     with write_session() as session:
         imp = session.scalar(
             select(ImpersonationSession).where(ImpersonationSession.session_id == session_id)
         )
         if imp is None:
             return {"admin_session_id": None, "account_username": None, "status": "not_impersonating"}
-        admin_session_id = imp.admin_session_id
+        admin_session_id = decrypt_secret(imp.admin_session_enc) if imp.admin_session_enc else None
         account = session.get(Account, imp.account_id)
         account_username = account.username if account else None
         if imp.ended_at is None:

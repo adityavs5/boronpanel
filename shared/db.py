@@ -66,6 +66,7 @@ def init_db() -> None:
         connection.exec_driver_sql("BEGIN IMMEDIATE")
         Base.metadata.create_all(connection)
     _apply_additive_migrations(_write_engine)
+    _migrate_session_identifiers(_write_engine)
     _WriteSession = sessionmaker(bind=_write_engine, future=True, expire_on_commit=False)
     _grant_api_group_read()
 
@@ -80,6 +81,7 @@ def init_db() -> None:
 # helper stays tiny and strictly additive -- it only ever ADDs a declared
 # missing column, never drops/renames/retypes anything.
 _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
+    "impersonation_sessions": {"admin_session_enc": "VARCHAR(512)"},
     "branding_settings": {"terminal_banner": "TEXT"},
     "cloudflare_zones": {"cf_account_id": "INTEGER", "last_purge_at": "DATETIME"},
     # Run A feature 1 (plan templates): both tables predate the Plan model.
@@ -95,6 +97,41 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "initial_password": "VARCHAR(128)",
     },
 }
+
+
+def _migrate_session_identifiers(engine) -> None:
+    """Rehash legacy raw IDs atomically before the API can read the DB.
+
+    A restart finds only digests and does nothing. Impersonation's original
+    admin cookie is encrypted with borond's root-only key before plaintext is
+    cleared. The migration never falls back to raw lookup after this point.
+    """
+    from sqlalchemy import text
+
+    from shared.session_ids import is_session_digest, session_digest
+
+    with engine.begin() as conn:
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        for row_id, value in conn.execute(text("SELECT id, session_id FROM sessions")):
+            if not is_session_digest(value):
+                conn.execute(text("UPDATE sessions SET session_id=:digest WHERE id=:id"),
+                             {"digest": session_digest(value), "id": row_id})
+        for row_id, value, raw_admin, encrypted_admin in conn.execute(text(
+            "SELECT id, session_id, admin_session_id, admin_session_enc FROM impersonation_sessions"
+        )):
+            updates = {}
+            if not is_session_digest(value):
+                updates["digest"] = session_digest(value)
+            if raw_admin is not None:
+                from daemon.appcrypto import encrypt_secret
+
+                updates["encrypted"] = encrypt_secret(raw_admin)
+            if updates:
+                conn.execute(text("UPDATE impersonation_sessions SET "
+                                  "session_id=COALESCE(:digest, session_id), "
+                                  "admin_session_id=NULL, "
+                                  "admin_session_enc=COALESCE(:encrypted, admin_session_enc) WHERE id=:id"),
+                             {"digest": updates.get("digest"), "encrypted": updates.get("encrypted"), "id": row_id})
 
 
 def _apply_additive_migrations(engine) -> None:

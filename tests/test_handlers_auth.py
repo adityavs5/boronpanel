@@ -92,6 +92,7 @@ def test_set_panel_user_password(isolated_db):
 
 
 def test_create_and_revoke_session(isolated_db):
+    from shared.session_ids import session_digest
     user = hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
     session_result = hauth.create_session({"panel_user_id": user["id"]})
     assert "session_id" in session_result
@@ -102,13 +103,14 @@ def test_create_and_revoke_session(isolated_db):
     from shared.models import Session as SessionModel
 
     with write_session() as db:
-        row = db.scalar(select(SessionModel).where(SessionModel.session_id == session_result["session_id"]))
+        row = db.scalar(select(SessionModel).where(SessionModel.session_id == session_digest(session_result["session_id"])))
         assert row is not None
+        assert row.session_id != session_result["session_id"]
         assert row.revoked is False
 
     hauth.revoke_session({"session_id": session_result["session_id"]})
     with write_session() as db:
-        row = db.scalar(select(SessionModel).where(SessionModel.session_id == session_result["session_id"]))
+        row = db.scalar(select(SessionModel).where(SessionModel.session_id == session_digest(session_result["session_id"])))
         assert row.revoked is True
 
 
@@ -194,6 +196,7 @@ def test_revoke_api_token(isolated_db):
 
 # Security audit finding F11: password change revokes existing sessions.
 def test_set_panel_user_password_revokes_existing_sessions(isolated_db):
+    from shared.session_ids import session_digest
     user = hauth.create_panel_user({"username": "admin", "password": "SuperSecret123!", "role": "admin"})
     session_result = hauth.create_session({"panel_user_id": user["id"]})
 
@@ -205,7 +208,7 @@ def test_set_panel_user_password_revokes_existing_sessions(isolated_db):
     from shared.models import Session as SessionModel
 
     with write_session() as db:
-        row = db.scalar(select(SessionModel).where(SessionModel.session_id == session_result["session_id"]))
+        row = db.scalar(select(SessionModel).where(SessionModel.session_id == session_digest(session_result["session_id"])))
         assert row.revoked is True
 
 

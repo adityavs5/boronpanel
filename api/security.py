@@ -23,6 +23,7 @@ from shared.config import settings
 from shared.db import read_session
 from shared.models import Account, ApiToken, Domain, ImpersonationSession, PanelUser, ResellerAccount, ResellerProfile, Session
 from shared.validation import ValidationError, validate_domain
+from shared.session_ids import session_digest
 
 COOKIE_NAME = "fh_session"
 COOKIE_MAX_AGE_SECONDS = 7 * 24 * 3600
@@ -94,7 +95,8 @@ def _identity_from_session_cookie(cookie_value: str) -> Identity | None:
     if session_id is None:
         return None
     with read_session() as db:
-        row = db.scalar(select(Session).where(Session.session_id == session_id))
+        digest = session_digest(session_id)
+        row = db.scalar(select(Session).where(Session.session_id == digest))
         if row is None or row.revoked:
             return None
         if row.expires_at.replace(tzinfo=dt.timezone.utc) < dt.datetime.now(dt.timezone.utc):
@@ -108,7 +110,7 @@ def _identity_from_session_cookie(cookie_value: str) -> Identity | None:
         # only touch that one account and can never reach an admin endpoint.
         imp = db.scalar(
             select(ImpersonationSession).where(
-                ImpersonationSession.session_id == session_id,
+                ImpersonationSession.session_id == digest,
                 ImpersonationSession.ended_at.is_(None),
             )
         )

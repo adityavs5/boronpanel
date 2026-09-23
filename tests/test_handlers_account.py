@@ -223,7 +223,8 @@ def test_terminate_disables_panel_user_and_revokes_sessions_and_tokens(isolated_
     with write_session() as session:
         panel_user = session.get(PanelUser, access["panel_user"]["id"])
         assert panel_user.disabled is True
-        session_row = session.scalar(select(SessionModel).where(SessionModel.session_id == access["session"]["session_id"]))
+        from shared.session_ids import session_digest
+        session_row = session.scalar(select(SessionModel).where(SessionModel.session_id == session_digest(access["session"]["session_id"])))
         assert session_row.revoked is True
         token_row = session.get(ApiToken, access["token"]["id"])
         assert token_row.revoked_at is not None

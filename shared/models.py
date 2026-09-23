@@ -309,6 +309,8 @@ class Session(Base):
     __tablename__ = "sessions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # SHA-256 of the raw browser session identifier. Raw IDs only leave the
+    # daemon once when a cookie is minted; the API-readable DB cannot replay them.
     session_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     panel_user_id: Mapped[int] = mapped_column(ForeignKey("panel_users.id"))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -1416,7 +1418,11 @@ class ImpersonationSession(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     admin_panel_user_id: Mapped[int] = mapped_column(ForeignKey("panel_users.id"))
     admin_username: Mapped[str] = mapped_column(String(64))
+    # Retained for the one-time migration only. New rows keep this NULL.
     admin_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The original admin cookie must be recoverable for "Return to admin";
+    # its Fernet key belongs to borond and is absent from the API-readable DB.
+    admin_session_enc: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
