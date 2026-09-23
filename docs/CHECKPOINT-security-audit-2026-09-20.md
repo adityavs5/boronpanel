@@ -129,6 +129,15 @@ log as 0600 from its first write. Eleven focused installer/CLI tests,
 shellcheck, bash syntax and diff checks pass. The disposable VM's existing
 log was redacted and restricted without printing the credential.
 
+The same fresh install built the frontend with Ubuntu's system Node 18 before
+installing Boron's verified Node 20 runtime, despite the frontend declaring
+Node 20 or newer. The installer now provisions managed runtimes before
+deployment and explicitly places the managed Node 20 binary directory first
+for both locked dependency installation and the production build. Nine
+installer tests, shellcheck, bash syntax and diff checks pass. The disposable
+run captured the original engine mismatch; final candidate acceptance must
+exercise the corrected ordering.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic

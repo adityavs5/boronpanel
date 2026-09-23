@@ -97,7 +97,12 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert "30000 30100" in source
     assert "for p in 21 25 53 80 110 143 443 587 993 995 2222 7080; do" in source
     assert 'run ufw allow "${p}/tcp"' in source
-    assert "npm ci --no-audit --no-fund && npm run build" in source
+    build_command = "PATH='/opt/boron-nodejs/20/bin:\\$PATH' npm ci --no-audit --no-fund"
+    assert build_command in source
+    assert "PATH='/opt/boron-nodejs/20/bin:\\$PATH' npm run build" in source
+    assert source.index("install_node_runtimes", source.index("main()")) < source.index(
+        "deploy_app", source.index("main()")
+    )
     assert "web UI built from frontend source" in source
     filebrowser_source = Path(__file__).resolve().parent.parent.joinpath("daemon/filebrowser.py").read_text()
     assert '["iptables", "-I", "OUTPUT", str(position)]' in filebrowser_source

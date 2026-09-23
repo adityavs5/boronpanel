@@ -657,7 +657,10 @@ deploy_app() {
 
     # Source-only repository: static/dist is generated on every install from
     # the frontend source. Never trust a stale or operator-supplied bundle.
-    run_sh "cd '${DEST}/frontend' && npm ci --no-audit --no-fund && npm run build"
+    # Build with the managed Node 20 runtime that the frontend declares in
+    # package.json.  Ubuntu 24.04 ships Node 18, which only emits an engine
+    # warning and can produce an unsupported bundle if it is used implicitly.
+    run_sh "cd '${DEST}/frontend' && PATH='/opt/boron-nodejs/20/bin:\$PATH' npm ci --no-audit --no-fund && PATH='/opt/boron-nodejs/20/bin:\$PATH' npm run build"
     ok "web UI built from frontend source"
 
     # Security: logs contain cross-tenant operational data and must never be
@@ -1442,8 +1445,8 @@ main() {
     install_stack_packages
     setup_quota
     setup_system_users
-    deploy_app
     install_node_runtimes
+    deploy_app
     install_filebrowser
     install_imapsync
     setup_config
