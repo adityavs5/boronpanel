@@ -347,7 +347,8 @@ def test_set_catchall_rejects_invalid_destination(isolated_db, stub_mail):
 # --- Autoresponders ----------------------------------------------------
 
 
-def test_set_get_delete_autoresponder(isolated_db, stub_mail):
+def test_set_get_delete_autoresponder(isolated_db, stub_mail, tmp_path, monkeypatch):
+    _fake_autoresponder_file(tmp_path, monkeypatch)
     result = hm.set_autoresponder(
         {
             "domain": "demo1.example",
@@ -363,6 +364,78 @@ def test_set_get_delete_autoresponder(isolated_db, stub_mail):
     assert current["start_date"] == "2026-07-01"
     hm.delete_autoresponder({"domain": "demo1.example", "local_part": "john"})
     assert hm.get_autoresponder({"domain": "demo1.example", "local_part": "john"})["autoresponder"] is None
+
+
+def _fake_autoresponder_file(tmp_path, monkeypatch):
+    base = tmp_path / "vmail"
+    monkeypatch.setattr(hm.os, "chown", lambda *a, **k: None)
+
+    def sieve_path(domain, local_part):
+        return base / domain / local_part / ".dovecot.sieve"
+
+    def apply(domain, local_part, subject, body, start_date, end_date):
+        path = sieve_path(domain, local_part)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"subject={subject}\\nbody={body}\\n")
+        path.chmod(0o600)
+
+    def remove(domain, local_part):
+        path = sieve_path(domain, local_part)
+        path.unlink(missing_ok=True)
+        path.with_suffix(".svbin").unlink(missing_ok=True)
+
+    monkeypatch.setattr(hm.autoresponder, "_sieve_path", sieve_path)
+    monkeypatch.setattr(hm.autoresponder, "apply_autoresponder", apply)
+    monkeypatch.setattr(hm.autoresponder, "remove_autoresponder", remove)
+    return sieve_path("demo1.example", "john")
+
+
+def test_set_autoresponder_row_failure_removes_new_sieve_file(isolated_db, stub_mail, tmp_path, monkeypatch):
+    sieve_path = _fake_autoresponder_file(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        hm.mail,
+        "set_autoresponder",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("autoresponder row failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="autoresponder row failed"):
+        hm.set_autoresponder({"domain": "demo1.example", "local_part": "john", "subject": "Away", "body": "new"})
+
+    assert not sieve_path.exists()
+
+
+def test_set_autoresponder_row_failure_restores_previous_sieve_file(isolated_db, stub_mail, tmp_path, monkeypatch):
+    sieve_path = _fake_autoresponder_file(tmp_path, monkeypatch)
+    sieve_path.parent.mkdir(parents=True)
+    sieve_path.write_text("old sieve")
+    sieve_path.chmod(0o600)
+    monkeypatch.setattr(
+        hm.mail,
+        "set_autoresponder",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("autoresponder row failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="autoresponder row failed"):
+        hm.set_autoresponder({"domain": "demo1.example", "local_part": "john", "subject": "Away", "body": "new"})
+
+    assert sieve_path.read_text() == "old sieve"
+
+
+def test_delete_autoresponder_row_failure_restores_sieve_file(isolated_db, stub_mail, tmp_path, monkeypatch):
+    sieve_path = _fake_autoresponder_file(tmp_path, monkeypatch)
+    sieve_path.parent.mkdir(parents=True)
+    sieve_path.write_text("old sieve")
+    sieve_path.chmod(0o600)
+    monkeypatch.setattr(
+        hm.mail,
+        "delete_autoresponder",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("autoresponder row delete failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="autoresponder row delete failed"):
+        hm.delete_autoresponder({"domain": "demo1.example", "local_part": "john"})
+
+    assert sieve_path.read_text() == "old sieve"
 
 
 def test_set_autoresponder_rejects_empty_subject(isolated_db, stub_mail):

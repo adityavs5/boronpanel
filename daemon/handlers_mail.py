@@ -6,6 +6,8 @@ what the admin UI links out to.
 from __future__ import annotations
 
 import logging
+import os
+import stat
 import threading
 
 from sqlalchemy import select
@@ -301,6 +303,37 @@ MAX_AUTORESPONDER_SUBJECT_LEN = 255
 MAX_AUTORESPONDER_BODY_LEN = 10_000
 
 
+def _autoresponder_file_snapshot(domain_name: str, local_part: str) -> dict:
+    path = autoresponder._sieve_path(domain_name, local_part)
+    svbin = path.with_suffix(".svbin")
+    if not path.exists():
+        return {"path": path, "svbin": svbin, "exists": False}
+    info = path.stat()
+    return {
+        "path": path,
+        "svbin": svbin,
+        "exists": True,
+        "content": path.read_bytes(),
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+        "mode": stat.S_IMODE(info.st_mode),
+    }
+
+
+def _restore_autoresponder_file(snapshot: dict) -> None:
+    path = snapshot["path"]
+    snapshot["svbin"].unlink(missing_ok=True)
+    if not snapshot["exists"]:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + f".restore.{os.getpid()}")
+    tmp_path.write_bytes(snapshot["content"])
+    os.chown(tmp_path, snapshot["uid"], snapshot["gid"])
+    os.chmod(tmp_path, snapshot["mode"])
+    os.replace(tmp_path, path)
+
+
 @serialized
 def set_autoresponder(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
@@ -316,11 +349,19 @@ def set_autoresponder(params: dict) -> dict:
     if start_date and end_date and end_date < start_date:
         raise ValueError("end_date must not be before start_date")
 
-    # Apply the Sieve script (validated via sievec, see daemon/autoresponder.py)
-    # BEFORE recording it as this account's current setting -- a script
-    # that fails validation must not be reported as successfully set.
-    autoresponder.apply_autoresponder(domain_name, local_part, subject, body, start_date, end_date)
-    return mail.set_autoresponder(domain_name, local_part, subject, body, start_date, end_date)
+    snapshot = _autoresponder_file_snapshot(domain_name, local_part)
+    try:
+        # Apply the Sieve script (validated via sievec, see daemon/autoresponder.py)
+        # BEFORE recording it as this account's current setting -- a script
+        # that fails validation must not be reported as successfully set.
+        autoresponder.apply_autoresponder(domain_name, local_part, subject, body, start_date, end_date)
+        return mail.set_autoresponder(domain_name, local_part, subject, body, start_date, end_date)
+    except Exception:
+        try:
+            _restore_autoresponder_file(snapshot)
+        except Exception:
+            logger.exception("failed to restore autoresponder Sieve file for '%s@%s'", local_part, domain_name)
+        raise
 
 
 def get_autoresponder(params: dict) -> dict:
@@ -334,8 +375,16 @@ def get_autoresponder(params: dict) -> dict:
 def delete_autoresponder(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
+    snapshot = _autoresponder_file_snapshot(domain_name, local_part)
     autoresponder.remove_autoresponder(domain_name, local_part)
-    mail.delete_autoresponder(domain_name, local_part)
+    try:
+        mail.delete_autoresponder(domain_name, local_part)
+    except Exception:
+        try:
+            _restore_autoresponder_file(snapshot)
+        except Exception:
+            logger.exception("failed to restore autoresponder Sieve file for '%s@%s'", local_part, domain_name)
+        raise
     return {"domain": domain_name, "local_part": local_part, "status": "deleted"}
 
 

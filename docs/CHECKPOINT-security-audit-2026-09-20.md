@@ -745,3 +745,25 @@ forced global Sieve refresh failure on add, delete, import and mailbox-cleanup
 paths and verified rows were rolled back or restored in every case. The same
 daemon file is installed on the development panel with matching hashes and
 `boron-provisiond` active.
+
+### 2026-09-23 autoresponder Sieve rollback hardening
+
+BSA-2026-044 records autoresponder file/database consistency gaps. Setting an
+autoresponder wrote the mailbox `.dovecot.sieve` file before recording the
+MariaDB `mail_autoresponder` row. If the row write failed, the vacation reply
+could remain active while the panel showed no autoresponder. Deleting an
+autoresponder removed the Sieve file before deleting the row, so a row-delete
+failure could leave stale UI state with no active reply.
+
+The source now snapshots the previous `.dovecot.sieve` state before set/delete.
+If the MariaDB row write/delete fails after the file operation, the handler
+removes a newly-created file or restores the prior file contents, ownership and
+mode, and clears the compiled `.svbin` cache so Dovecot recompiles from the
+restored source.
+
+Focused validation passed 82 handler/autoresponder/mail-mutation/RPC-authority
+tests. The disposable VM was hotfixed with `daemon/handlers_mail.py` matching
+source; a live canary used a temporary `/var/vmail` mailbox path, forced row set
+and delete failures, and verified new-file removal plus old-file restoration.
+The same daemon file is installed on the development panel with matching hashes
+and `boron-provisiond` active.

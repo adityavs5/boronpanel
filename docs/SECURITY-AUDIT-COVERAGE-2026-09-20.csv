@@ -51,7 +51,7 @@ route,DELETE /api/v1/accounts/{username}/apps/python/{app_id},api/routers/python
 route,DELETE /api/v1/accounts/{username}/crons/{job_id},api/routers/cron.py,delete_cron,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/databases/{name},api/routers/databases.py,drop_database,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,DELETE /api/v1/accounts/{username}/domains/{domain},api/routers/domains.py,remove_domain,get_identity,pending,
-route,DELETE /api/v1/accounts/{username}/domains/{domain}/email/autoresponders/{local_part},api/routers/email.py,delete_autoresponder,get_identity,pending,
+route,DELETE /api/v1/accounts/{username}/domains/{domain}/email/autoresponders/{local_part},api/routers/email.py,delete_autoresponder,get_identity,reviewed-fixed,autoresponder Sieve rollback hardening: 82 handler/autoresponder/mail-mutation/RPC-authority tests; VM canary forced row set/delete failures and verified .dovecot.sieve new-file removal and old-file restoration; primary handlers_mail.py hash deployed
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/email/catchall,api/routers/email.py,delete_catchall,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/email/forwarders,api/routers/email.py,delete_forwarder,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/error-pages/{code},api/routers/errorpages.py,delete_error_page,get_identity,pending,
@@ -129,7 +129,7 @@ route,GET /api/v1/accounts/{username}/disk-tree,api/routers/disktree.py,get_disk
 route,GET /api/v1/accounts/{username}/disk-tree/top-files,api/routers/disktree.py,get_top_files,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains,api/routers/domains.py,list_domains,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/apps/jobs/{job_id},api/routers/apps.py,get_job,get_identity,pending,
-route,GET /api/v1/accounts/{username}/domains/{domain}/email/autoresponders/{local_part},api/routers/email.py,get_autoresponder,get_identity,pending,
+route,GET /api/v1/accounts/{username}/domains/{domain}/email/autoresponders/{local_part},api/routers/email.py,get_autoresponder,get_identity,reviewed-fixed,autoresponder Sieve rollback hardening: 82 handler/autoresponder/mail-mutation/RPC-authority tests; VM canary forced row set/delete failures and verified .dovecot.sieve new-file removal and old-file restoration; primary handlers_mail.py hash deployed
 route,GET /api/v1/accounts/{username}/domains/{domain}/email/catchall,api/routers/email.py,get_catchall,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/email/forwarders,api/routers/email.py,list_forwarders,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/email/routing,api/routers/email_extras.py,get_routing,get_identity,pending,
@@ -340,7 +340,7 @@ route,POST /api/v1/accounts/{username}/databases/{name}/password,api/routers/dat
 route,POST /api/v1/accounts/{username}/databases/{name}/pma-token,api/routers/pma.py,create_pma_token,get_identity,reviewed-fixed,"PMA token hardening: 18 PMA unit/sign-on tests plus 1 exact-grant MariaDB test; VM token canary minted temp DB token, verified 0640 regular token file, expired cleanup dropped ephemeral DB user/file/row and dropped temp DB; primary hash deployed"
 route,POST /api/v1/accounts/{username}/domains,api/routers/domains.py,add_domain,get_identity,pending,
 route,POST /api/v1/accounts/{username}/domains/{domain}/apps/{app_id},api/routers/apps.py,trigger_install,get_identity,pending,
-route,POST /api/v1/accounts/{username}/domains/{domain}/email/autoresponders,api/routers/email.py,set_autoresponder,get_identity,pending,
+route,POST /api/v1/accounts/{username}/domains/{domain}/email/autoresponders,api/routers/email.py,set_autoresponder,get_identity,reviewed-fixed,autoresponder Sieve rollback hardening: 82 handler/autoresponder/mail-mutation/RPC-authority tests; VM canary forced row set/delete failures and verified .dovecot.sieve new-file removal and old-file restoration; primary handlers_mail.py hash deployed
 route,POST /api/v1/accounts/{username}/domains/{domain}/email/catchall,api/routers/email.py,set_catchall,get_identity,pending,
 route,POST /api/v1/accounts/{username}/domains/{domain}/email/forwarders,api/routers/email.py,create_forwarder,get_identity,pending,
 route,POST /api/v1/accounts/{username}/domains/{domain}/ip-block,api/routers/ipblock.py,add_ip_block,get_identity,pending,
@@ -676,9 +676,9 @@ rpc,lscache.get,daemon/lscache.py,get_settings,kernel-peer-uid; root-credential;
 rpc,lscache.purge,daemon/lscache.py,purge,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,lscache.set,daemon/lscache.py,set_settings,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,lscache.stats,daemon/lscache.py,get_stats,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,mail.autoresponder.delete,daemon/database_operations.py,delete_autoresponder,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,mail.autoresponder.get,daemon/handlers_mail.py,get_autoresponder,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,mail.autoresponder.set,daemon/database_operations.py,set_autoresponder,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
+rpc,mail.autoresponder.delete,daemon/database_operations.py,delete_autoresponder,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,autoresponder Sieve rollback hardening: 82 handler/autoresponder/mail-mutation/RPC-authority tests; VM canary forced row set/delete failures and verified .dovecot.sieve new-file removal and old-file restoration; primary handlers_mail.py hash deployed
+rpc,mail.autoresponder.get,daemon/handlers_mail.py,get_autoresponder,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,autoresponder Sieve rollback hardening: 82 handler/autoresponder/mail-mutation/RPC-authority tests; VM canary forced row set/delete failures and verified .dovecot.sieve new-file removal and old-file restoration; primary handlers_mail.py hash deployed
+rpc,mail.autoresponder.set,daemon/database_operations.py,set_autoresponder,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,autoresponder Sieve rollback hardening: 82 handler/autoresponder/mail-mutation/RPC-authority tests; VM canary forced row set/delete failures and verified .dovecot.sieve new-file removal and old-file restoration; primary handlers_mail.py hash deployed
 rpc,mail.catchall.delete,daemon/database_operations.py,delete_catchall,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,mail.catchall.get,daemon/handlers_mail.py,get_catchall,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,mail.catchall.set,daemon/database_operations.py,set_catchall,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
