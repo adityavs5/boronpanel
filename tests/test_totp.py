@@ -76,7 +76,7 @@ def test_disable_removes_credential_and_recovery_codes(panel_user_id):
 def test_check_login_code_accepts_valid_totp(panel_user_id):
     result = totp.setup_totp({"panel_user_id": panel_user_id})
     totp.verify_totp({"panel_user_id": panel_user_id, "code": pyotp.TOTP(result["secret"]).now()})
-    code = pyotp.TOTP(result["secret"]).now()
+    code = pyotp.TOTP(result["secret"]).at(totp.time.time() + 30)
     check = totp.check_login_code({"panel_user_id": panel_user_id, "code": code})
     assert check == {"valid": True, "used_recovery_code": False}
 
@@ -117,3 +117,65 @@ def test_verify_regenerates_recovery_codes_invalidating_old_ones(panel_user_id):
 
     check = totp.check_login_code({"panel_user_id": panel_user_id, "code": old_code})
     assert check["valid"] is False
+
+
+@pytest.fixture()
+def enrolled(panel_user_id, monkeypatch):
+    clock = [1800000000]
+    monkeypatch.setattr(totp.time, 'time', lambda: clock[0])
+    setup = totp.setup_totp({'panel_user_id': panel_user_id})
+    generator = pyotp.TOTP(setup['secret'])
+    code = generator.at(clock[0])
+    result = totp.verify_totp({'panel_user_id': panel_user_id, 'code': code})
+    return panel_user_id, generator, clock, result, code
+
+
+def test_enrollment_code_cannot_be_replayed(enrolled):
+    uid, generator, clock, result, code = enrolled
+    assert not totp.check_login_code({'panel_user_id': uid, 'code': code})['valid']
+    with pytest.raises(ValidationError, match='already enabled'):
+        totp.verify_totp({'panel_user_id': uid, 'code': code})
+    with write_session() as session:
+        assert session.query(TotpRecoveryCode).filter_by(panel_user_id=uid).count() == 8
+
+
+@pytest.mark.parametrize('recovery', [False, True])
+def test_second_factor_is_single_use_under_concurrent_requests(enrolled, recovery):
+    from concurrent.futures import ThreadPoolExecutor
+    uid, generator, clock, result, _ = enrolled
+    clock[0] += 30
+    code = result['recovery_codes'][0] if recovery else generator.at(clock[0])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: totp.check_login_code({'panel_user_id': uid, 'code': code}), range(2)))
+    assert sum(row['valid'] for row in results) == 1
+    assert not totp.check_login_code({'panel_user_id': uid, 'code': code})['valid']
+
+
+def test_consumed_code_stays_rejected_after_clock_moves_back(enrolled):
+    uid, generator, clock, _, _ = enrolled
+    clock[0] += 30
+    code = generator.at(clock[0])
+    assert totp.check_login_code({'panel_user_id': uid, 'code': code})['valid']
+    clock[0] -= 30
+    assert not totp.check_login_code({'panel_user_id': uid, 'code': code})['valid']
+    clock[0] += 60
+    assert totp.check_login_code({'panel_user_id': uid, 'code': generator.at(clock[0])})['valid']
+
+
+def test_non_ascii_totp_is_rejected(enrolled):
+    uid, *_ = enrolled
+    assert not totp.check_login_code({'panel_user_id': uid, 'code': '１２３４５６'})['valid']
+
+
+def test_legacy_totp_schema_migration_preserves_enrollment(tmp_path):
+    from sqlalchemy import create_engine
+    from shared.db import _apply_additive_migrations
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql('CREATE TABLE totp_credentials (id INTEGER PRIMARY KEY, panel_user_id INTEGER, secret TEXT, enabled BOOLEAN)')
+        connection.exec_driver_sql("INSERT INTO totp_credentials VALUES (1, 1, 'existing-encrypted-seed', 1)")
+    _apply_additive_migrations(engine)
+    _apply_additive_migrations(engine)
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql('SELECT secret, enabled, last_used_step FROM totp_credentials').one() == ('existing-encrypted-seed', 1, None)
+    engine.dispose()

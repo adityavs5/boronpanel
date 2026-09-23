@@ -216,7 +216,7 @@ def test_root_second_factor_challenge_is_one_use_and_bound_to_password(isolated_
     }))
     assert begin["needs_2fa"] is True
     assert "session_id" not in begin
-    proof = {"pending_token": begin["pending_token"], "code": pyotp.TOTP(setup["secret"]).now()}
+    proof = {"pending_token": begin["pending_token"], "code": pyotp.TOTP(setup["secret"]).at(totp.time.time() + 30)}
     finished = asyncio.run(server.dispatch("auth.login.finish", proof))
     assert finished["valid"] is True
     assert asyncio.run(server.dispatch("auth.login.finish", proof)) == {"valid": False}
@@ -295,6 +295,7 @@ def test_update_requires_root_confirmed_admin_session_and_second_factor(isolated
     setup = totp.setup_totp({"panel_user_id": admin_id})
     code = pyotp.TOTP(setup["secret"]).now()
     totp.verify_totp({"panel_user_id": admin_id, "code": code})
+    code = pyotp.TOTP(setup["secret"]).at(totp.time.time() + 30)
     with pytest.raises(AuthorizationError):
         asyncio.run(server.dispatch("update.start", {**base, "confirm": True}, _credential(admin_session)))
     with pytest.raises(AuthorizationError):
@@ -303,3 +304,54 @@ def test_update_requires_root_confirmed_admin_session_and_second_factor(isolated
     assert asyncio.run(server.dispatch("update.start", {**base, "confirm": True, "totp_code": code},
                                        _credential(admin_session))) == {"ok": True}
     assert entered == [True]
+
+
+def test_every_registered_operation_rejects_anonymous_except_login():
+    from daemon.rpc_authority import authorize
+    for operation, policy in POLICY_BY_OPERATION.items():
+        if policy == 'login_protocol':
+            authorize(operation, {}, None)
+        else:
+            with pytest.raises((AuthenticationError, AuthorizationError)):
+                authorize(operation, {}, None)
+
+
+def test_every_admin_policy_rejects_customer_and_reseller():
+    from daemon.rpc_authority import Principal, authorize
+    for operation, policy in POLICY_BY_OPERATION.items():
+        if policy not in ('global_admin', 'admin_account_username', 'admin_confirmed_update',
+                          'admin_impersonation_issue', 'admin_impersonation_redeem'):
+            continue
+        for role in ('customer', 'reseller'):
+            principal = Principal(role, 'forged-admin', 1, 1, 'session', reseller_id=1)
+            with pytest.raises(AuthorizationError):
+                authorize(operation, {'username': 'alice', 'confirm': True,
+                                     'initiated_by': 'forged-admin', 'admin_username': 'forged-admin'}, principal)
+
+
+def test_all_account_policies_reject_missing_foreign_and_mismatched_targets(isolated_db):
+    from daemon.rpc_authority import Principal, authorize
+    from shared.models import Domain
+    with write_session() as db:
+        alice = Account(username='alice')
+        bob = Account(username='bob')
+        db.add_all([alice, bob])
+        db.flush()
+        db.add_all([
+            Domain(account_id=alice.id, domain='alice.example', kind='primary', docroot='/fixture/alice'),
+            Domain(account_id=bob.id, domain='bob.example', kind='primary', docroot='/fixture/bob'),
+        ])
+        alice_id = alice.id
+    principal = Principal('customer', 'alice-login', alice_id, 1, 'session')
+    account_policies = {'account_username', 'account_and_domain', 'domain_owner',
+                        'mixed_admin_or_account', 'mixed_admin_or_account_and_domain',
+                        'account_terminal_session_owner'}
+    for operation, policy in POLICY_BY_OPERATION.items():
+        if policy not in account_policies:
+            continue
+        authorize(operation, {'username': 'alice', 'domain': 'alice.example'}, principal)
+        for target in ({}, {'username': 'bob'}, {'domain': 'bob.example'},
+                       {'username': 'alice', 'domain': 'bob.example'},
+                       {'username': 'bob', 'domain': 'alice.example'}):
+            with pytest.raises(AuthorizationError):
+                authorize(operation, target, principal)

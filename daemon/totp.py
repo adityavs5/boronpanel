@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import time
 
 import pyotp
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from shared.db import write_session
 from shared.validation import ValidationError
@@ -49,6 +50,20 @@ def _hash_code(code: str) -> str:
     return hashlib.sha256(code.encode()).hexdigest()
 
 
+def _consume_totp(credential: TotpCredential, code: str) -> bool:
+    """Called under BEGIN IMMEDIATE so a timestep can succeed only once."""
+    if len(code) != 6 or not code.isascii() or not code.isdigit():
+        return False
+    generator = pyotp.TOTP(_migrate_secret(credential))
+    current_step = int(time.time()) // generator.interval
+    for step in (current_step, current_step - 1, current_step + 1):
+        if (credential.last_used_step is None or step > credential.last_used_step):
+            if secrets.compare_digest(generator.generate_otp(step), code):
+                credential.last_used_step = step
+                return True
+    return False
+
+
 def get_status(params: dict) -> dict:
     panel_user_id = int(params["panel_user_id"])
     with write_session() as session:
@@ -59,6 +74,7 @@ def get_status(params: dict) -> dict:
 def setup_totp(params: dict) -> dict:
     panel_user_id = int(params["panel_user_id"])
     with write_session() as session:
+        session.execute(text("BEGIN IMMEDIATE"))
         user = session.get(PanelUser, panel_user_id)
         if user is None:
             raise ValidationError("panel user not found")
@@ -68,6 +84,7 @@ def setup_totp(params: dict) -> dict:
             raise ValidationError("2FA is already enabled -- disable it first to generate a new secret")
         if existing is not None:
             existing.secret = appcrypto.encrypt_secret(secret)
+            existing.last_used_step = None
         else:
             session.add(TotpCredential(panel_user_id=panel_user_id, secret=appcrypto.encrypt_secret(secret), enabled=False))
         uri = pyotp.TOTP(secret).provisioning_uri(name=user.username, issuer_name=ISSUER_NAME)
@@ -78,10 +95,13 @@ def verify_totp(params: dict) -> dict:
     panel_user_id = int(params["panel_user_id"])
     code = str(params["code"]).strip()
     with write_session() as session:
+        session.execute(text("BEGIN IMMEDIATE"))
         row = session.scalar(select(TotpCredential).where(TotpCredential.panel_user_id == panel_user_id))
         if row is None:
             raise ValidationError("no pending 2FA setup for this user -- call setup first")
-        if not pyotp.TOTP(_migrate_secret(row)).verify(code, valid_window=1):
+        if row.enabled:
+            raise ValidationError("2FA is already enabled")
+        if not _consume_totp(row, code):
             raise ValidationError("invalid or expired code")
         row.enabled = True
         # Regenerate recovery codes every time 2FA is (re-)verified/enabled
@@ -97,6 +117,7 @@ def verify_totp(params: dict) -> dict:
 def disable_totp(params: dict) -> dict:
     panel_user_id = int(params["panel_user_id"])
     with write_session() as session:
+        session.execute(text("BEGIN IMMEDIATE"))
         session.query(TotpRecoveryCode).filter(TotpRecoveryCode.panel_user_id == panel_user_id).delete()
         row = session.scalar(select(TotpCredential).where(TotpCredential.panel_user_id == panel_user_id))
         if row is not None:
@@ -110,11 +131,12 @@ def check_login_code(params: dict) -> dict:
     panel_user_id = int(params["panel_user_id"])
     code = str(params["code"]).strip()
     with write_session() as session:
+        session.execute(text("BEGIN IMMEDIATE"))
         cred = session.scalar(select(TotpCredential).where(TotpCredential.panel_user_id == panel_user_id, TotpCredential.enabled == True))  # noqa: E712
         if cred is None:
             raise ValidationError("2FA is not enabled for this user")
 
-        if pyotp.TOTP(_migrate_secret(cred)).verify(code, valid_window=1):
+        if _consume_totp(cred, code):
             return {"valid": True, "used_recovery_code": False}
 
         code_hash = _hash_code(code.upper())

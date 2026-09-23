@@ -960,6 +960,7 @@ class TotpCredential(Base):
     panel_user_id: Mapped[int] = mapped_column(ForeignKey("panel_users.id"), unique=True, index=True)
     secret: Mapped[str] = mapped_column(String(512))
     enabled: Mapped[bool] = mapped_column(default=False)
+    last_used_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
