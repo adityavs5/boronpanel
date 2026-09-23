@@ -607,6 +607,31 @@ def test_get_job_missing_raises(isolated_db):
         ci.get_job({"job_id": 999999, "username": "ghostuser1"})
 
 
+def test_import_worker_rechecks_target_account_before_fetch(isolated_db, tmp_path, monkeypatch):
+    with write_session() as session:
+        job = CpanelImportJob(
+            username="newacct4",
+            panel="cpanel",
+            source="upload",
+            source_ref=str(tmp_path / "unused.tar.gz"),
+            status="pending",
+            progress_message="queued",
+        )
+        session.add(job)
+        session.flush()
+        job_id = job.id
+        session.add(Account(username="newacct4", uid=6004, gid=6004, status="active"))
+
+    monkeypatch.setattr(ci, "_obtain_archive", lambda *_a, **_k: pytest.fail("stale import must not fetch archive"))
+
+    ci._run_import_job(job_id, {"username": "newacct4", "source": "upload", "source_ref": str(tmp_path / "unused.tar.gz")})
+
+    with write_session() as session:
+        row = session.get(CpanelImportJob, job_id)
+        assert row.status == "failed"
+        assert "already exists" in row.error
+
+
 # --- archive extraction safety -----------------------------------------------
 
 

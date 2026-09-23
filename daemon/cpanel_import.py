@@ -1146,12 +1146,25 @@ def _add_cron_step(username: str, schedule: str, command: str) -> str:
 
 
 def _run_import_job(job_id: int, params: dict) -> None:
-    username = params["username"]
-    panel = params.get("panel", "cpanel")
-    source = params["source"]
-    source_ref = params["source_ref"]
+    try:
+        with write_session() as session:
+            job = session.get(CpanelImportJob, job_id)
+            if job is None or job.status != "pending":
+                return
+            username = validate_username(job.username)
+            panel = job.panel or params.get("panel", "cpanel")
+            source = job.source or params["source"]
+            source_ref = job.source_ref or params["source_ref"]
+            if session.scalar(select(Account).where(Account.username == username)) is not None:
+                raise CpanelImportError(f"account '{username}' already exists -- refusing stale import job")
+            if session.scalar(select(PanelUser).where(PanelUser.username == username)) is not None:
+                raise CpanelImportError(f"panel login '{username}' already exists -- refusing stale import job")
+            job.status = "running"
+            job.progress_message = "fetching backup archive"
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
+        return
 
-    _update_job(job_id, status="running", progress_message="fetching backup archive")
     try:
         # The staging root holds transient extracted backup contents (DB
         # dumps, mailbox data) and is root-only (0700), same posture as

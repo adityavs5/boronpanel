@@ -223,3 +223,29 @@ def test_fresh_portable_import_creates_customer_panel_login(isolated_db, tmp_pat
         assert job.status == "completed"
         assert login.role == "customer"
         assert login.account_id == account.id
+
+
+def test_portable_import_worker_rechecks_target_account_before_restore(isolated_db, tmp_path, monkeypatch):
+    source = Path("/tmp/boron-archive-import-stale-target.boron.tar")
+    source.write_bytes(b"unused")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(portable.settings, "cpanel_import_staging_dir", str(staging))
+
+    with write_session() as session:
+        job = AccountArchiveImportJob(username="demo1", source_ref=str(source), status="pending")
+        session.add(job)
+        session.add(Account(username="demo1", uid=2000, gid=2000, status="active"))
+        session.flush()
+        job_id = job.id
+
+    monkeypatch.setattr(portable, "validate_archive", lambda *_a, **_k: pytest.fail("stale portable import must not validate archive"))
+    monkeypatch.setattr(backup, "_restore_full", lambda *_a, **_k: pytest.fail("stale portable import must not restore"))
+
+    portable._run_import(job_id, "demo1", str(source))
+
+    with write_session() as session:
+        job = session.get(AccountArchiveImportJob, job_id)
+        assert job.status == "failed"
+        assert "already exists" in job.error
+    assert not source.exists()

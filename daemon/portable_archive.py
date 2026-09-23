@@ -204,10 +204,23 @@ def validate_archive(archive_path: Path, extract_dir: Path, expected_username: s
 
 
 def _run_import(job_id: int, username: str, source_ref: str) -> None:
-    _update(job_id, status="running", progress_message="verifying archive")
     work_dir = None
     placeholder_created = False
     try:
+        with write_session() as session:
+            job = session.get(AccountArchiveImportJob, job_id)
+            if job is None or job.status != "pending":
+                return
+            username = validate_username(job.username)
+            source_ref = job.source_ref
+            account = session.scalar(select(Account).where(Account.username == username))
+            if account is not None and account.status not in {"terminated", "error"}:
+                raise PortableArchiveError(f"account '{username}' already exists and is not terminated")
+            if account is None and session.scalar(select(PanelUser).where(PanelUser.username == username)) is not None:
+                raise PortableArchiveError(f"panel login '{username}' already exists -- choose another account username")
+            job.status = "running"
+            job.progress_message = "verifying archive"
+
         os.makedirs(settings.cpanel_import_staging_dir, mode=0o700, exist_ok=True)
         work_dir = Path(tempfile.mkdtemp(dir=settings.cpanel_import_staging_dir, prefix=f"boron-import-{job_id}-"))
         private_archive = work_dir / "account.boron.tar"
