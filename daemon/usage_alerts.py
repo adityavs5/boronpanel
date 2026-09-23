@@ -201,6 +201,10 @@ def check_usage_alerts(account: Account) -> list[dict]:
             continue
         pct = (current / limit) * 100
         crossed = _highest_crossed(pct)
+        # Enforcement must not depend on notification deduplication: a prior
+        # failed suspension or newly enabled policy still needs another try.
+        if crossed == 100 and limits_snapshot.auto_suspend_at_100 and account.status == "active":
+            should_auto_suspend = True
 
         with write_session() as session:
             existing = session.scalar(
@@ -222,8 +226,6 @@ def check_usage_alerts(account: Account) -> list[dict]:
             new_alerts.append(_alert_to_dict(alert))
 
         events.emit("usage.limit.reached", account, resource=resource, threshold_pct=crossed)
-        if crossed == 100 and limits_snapshot.auto_suspend_at_100:
-            should_auto_suspend = True
 
     if should_auto_suspend:
         try:

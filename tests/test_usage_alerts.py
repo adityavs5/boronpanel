@@ -316,3 +316,28 @@ def test_check_all_accounts_skips_terminated(isolated_db, stub_sysops, monkeypat
     monkeypatch.setattr(ua, "check_usage_alerts", spy)
     ua.check_all_accounts()
     assert checked == ["demo1"]
+
+
+@pytest.mark.parametrize('initially_enabled', [False, True])
+def test_bandwidth_enforcement_survives_existing_alert(isolated_db, stub_sysops, monkeypatch, initially_enabled):
+    ha.create_account({'username': 'demo1'})
+    account = _account()
+    _seed_snapshot(account.id, disk_total_bytes=0, bandwidth_mtd_bytes=101 * 1024 * 1024)
+    ua.set_limits({'username': 'demo1', 'bandwidth_limit_mb': 100, 'auto_suspend_at_100': initially_enabled})
+    monkeypatch.setattr(ua.events, 'emit', lambda *a, **kw: None)
+    attempts = []
+    def suspend(params):
+        attempts.append(params)
+        if initially_enabled and len(attempts) == 1:
+            raise RuntimeError('temporary service failure')
+        with write_session() as session:
+            session.get(Account, account.id).status = 'suspended'
+    monkeypatch.setattr(ha, 'suspend_account', suspend)
+    monkeypatch.setattr(ua.audit, 'record_account_event', lambda *a, **kw: None)
+    assert len(ua.check_usage_alerts(_account())) == 1
+    ua.set_limits({'username': 'demo1', 'auto_suspend_at_100': True})
+    assert ua.check_usage_alerts(_account()) == []
+    assert _account().status == 'suspended'
+    count = len(attempts)
+    assert ua.check_usage_alerts(_account()) == []
+    assert len(attempts) == count
