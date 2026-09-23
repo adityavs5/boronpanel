@@ -127,17 +127,26 @@ def get_global_default_threshold() -> float:
 
 def set_global_default_threshold(threshold: float) -> dict:
     threshold = validate_spam_threshold(threshold)
-    with write_session() as session:
-        row = session.scalar(select(SpamGlobalSettings).where(SpamGlobalSettings.id == 1))
-        if row is None:
-            row = SpamGlobalSettings(id=1, default_threshold=threshold)
-            session.add(row)
-        else:
-            row.default_threshold = threshold
-        session.flush()
-        result_threshold = row.default_threshold
+    old_threshold = get_global_default_threshold()
 
-    _write_local_cf(result_threshold)
+    _write_local_cf(threshold)
+    try:
+        with write_session() as session:
+            row = session.scalar(select(SpamGlobalSettings).where(SpamGlobalSettings.id == 1))
+            if row is None:
+                row = SpamGlobalSettings(id=1, default_threshold=threshold)
+                session.add(row)
+            else:
+                row.default_threshold = threshold
+            session.flush()
+            result_threshold = row.default_threshold
+    except Exception:
+        try:
+            _write_local_cf(old_threshold)
+        except Exception:
+            logger.exception("failed to restore SpamAssassin global default after DB write failure")
+        raise
+
     return {"default_threshold": result_threshold}
 
 
@@ -149,15 +158,44 @@ def _write_local_cf(default_threshold: float) -> None:
         "rewrite_header Subject [SPAM]\n"
         "report_safe 0\n"
     )
-    path = Path(LOCAL_CF_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f".tmp.{os.getpid()}")
-    tmp_path.write_text(content)
-    os.replace(tmp_path, path)
-
-    result = run(["spamassassin", "--lint"], timeout=30)
+    writer = ConfigWriter(
+        target_path=LOCAL_CF_PATH,
+        validate=_validate_local_cf_candidate,
+        reload=lambda: StepResult(True, "no service reload required for linted local.cf"),
+        verify=_lint_live_spamassassin_config,
+        backup_dir=BACKUP_DIR,
+        subsystem="spamassassin-localcf",
+    )
+    result = writer.apply(content)
     if not result.ok:
-        raise SpamFilterError(f"spamassassin --lint failed after writing local.cf: {result.stderr.strip() or result.stdout.strip()}")
+        raise SpamFilterError(f"SpamAssassin local.cf update failed: {result.summary()}")
+
+
+def _spamassassin_lint_result(args: list[str]) -> StepResult:
+    result = run(args, timeout=30)
+    if result.ok:
+        return StepResult(True)
+    return StepResult(False, result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")
+
+
+def _validate_local_cf_candidate(candidate: Path) -> StepResult:
+    target = Path(LOCAL_CF_PATH)
+    with tempfile.TemporaryDirectory(prefix="boron-spamassassin-") as tmpdir:
+        site_dir = Path(tmpdir)
+        copied_from: set[Path] = set()
+        for existing_dir in (Path("/etc/spamassassin"), target.parent):
+            if not existing_dir.is_dir() or existing_dir in copied_from:
+                continue
+            copied_from.add(existing_dir)
+            for child in existing_dir.iterdir():
+                if child.is_file() and child.suffix in {".cf", ".pre"}:
+                    shutil.copy2(child, site_dir / child.name)
+        shutil.copy2(candidate, site_dir / target.name)
+        return _spamassassin_lint_result(["spamassassin", "--lint", "-L", "--siteconfigpath", str(site_dir)])
+
+
+def _lint_live_spamassassin_config() -> StepResult:
+    return _spamassassin_lint_result(["spamassassin", "--lint", "-L"])
 
 
 # --- one-time global bootstrap (system.bootstrap_spamassassin RPC op,

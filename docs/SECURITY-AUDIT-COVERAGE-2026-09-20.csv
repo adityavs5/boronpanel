@@ -133,7 +133,7 @@ route,GET /api/v1/accounts/{username}/domains/{domain}/email/autoresponders/{loc
 route,GET /api/v1/accounts/{username}/domains/{domain}/email/catchall,api/routers/email.py,get_catchall,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/email/forwarders,api/routers/email.py,list_forwarders,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/email/routing,api/routers/email_extras.py,get_routing,get_identity,pending,
-route,GET /api/v1/accounts/{username}/domains/{domain}/email/spam-filter,api/routers/email.py,get_spam_filter,get_identity,pending,
+route,GET /api/v1/accounts/{username}/domains/{domain}/email/spam-filter,api/routers/email.py,get_spam_filter,get_identity,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
 route,GET /api/v1/accounts/{username}/domains/{domain}/error-pages,api/routers/errorpages.py,list_error_pages,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/error-pages/{code},api/routers/errorpages.py,get_error_page,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/forwarding,api/routers/forwarding.py,get_forwarding,get_identity,pending,
@@ -260,7 +260,7 @@ route,GET /api/v1/reseller/dashboard,api/routers/resellers.py,dashboard,get_iden
 route,GET /api/v1/security/ip-whitelist,api/routers/ipwhitelist.py,list_entries,get_identity,pending,
 route,GET /api/v1/services,api/routers/services.py,list_services,get_identity,pending,
 route,GET /api/v1/services/{service},api/routers/services.py,get_service,get_identity,pending,
-route,GET /api/v1/spamfilter/global-default,api/routers/email.py,get_global_default,get_identity,pending,
+route,GET /api/v1/spamfilter/global-default,api/routers/email.py,get_global_default,get_identity,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
 route,GET /api/v1/ssl/{domain}/status,api/routers/ssl_router.py,certificate_status,get_identity,pending,
 route,GET /api/v1/tokens,api/routers/tokens.py,list_tokens,get_identity,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 route,GET /api/v1/version,api/routers/update.py,get_version,get_identity,reviewed-public,version endpoint requires auth and returns BORON_VERSION; update-version/API tests passed outside socket sandbox
@@ -283,7 +283,7 @@ route,PATCH /api/v1/accounts/{username}/apps/python/{app_id},api/routers/pythona
 route,PATCH /api/v1/accounts/{username}/crons/mailto,api/routers/cron.py,set_mailto,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/databases/{name}/password,api/routers/databases.py,change_password_patch,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/email/routing,api/routers/email_extras.py,set_routing,get_identity,pending,
-route,PATCH /api/v1/accounts/{username}/domains/{domain}/email/spam-filter,api/routers/email.py,set_spam_filter,get_identity,pending,
+route,PATCH /api/v1/accounts/{username}/domains/{domain}/email/spam-filter,api/routers/email.py,set_spam_filter,get_identity,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/hotlink-protection,api/routers/hotlink.py,set_hotlink_protection,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/maintenance,api/routers/maintenance.py,set_maintenance,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/domains/{domain}/php-version,api/routers/domains.py,set_domain_php_version,get_identity,pending,
@@ -311,7 +311,7 @@ route,PATCH /api/v1/admin/webhooks/{webhook_id},api/routers/webhooks.py,update_w
 route,PATCH /api/v1/cloudflare/accounts/{account_id},api/routers/cloudflare.py,set_account,get_identity,pending,
 route,PATCH /api/v1/cloudflare/lockdown,api/routers/cloudflare.py,lockdown,get_identity,pending,
 route,PATCH /api/v1/cloudflare/settings,api/routers/cloudflare.py,set_settings,get_identity,pending,
-route,PATCH /api/v1/spamfilter/global-default,api/routers/email.py,set_global_default,get_identity,pending,
+route,PATCH /api/v1/spamfilter/global-default,api/routers/email.py,set_global_default,get_identity,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
 route,PATCH /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,PATCH /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,POST /api/v1/2fa/disable,api/routers/twofactor.py,disable,get_identity,pending,
@@ -691,8 +691,8 @@ rpc,mail.forward.create,daemon/database_operations.py,create_forward,kernel-peer
 rpc,mail.forward.delete,daemon/database_operations.py,delete_forward,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,mail.forward.list,daemon/handlers_mail.py,list_forwards,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,mail.list_mailboxes,daemon/handlers_mail.py,list_mailboxes,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
-rpc,mail.spamfilter.get,daemon/handlers_mail.py,get_spam_filter,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,mail.spamfilter.set,daemon/handlers_mail.py,set_spam_filter,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
+rpc,mail.spamfilter.get,daemon/handlers_mail.py,get_spam_filter,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
+rpc,mail.spamfilter.set,daemon/handlers_mail.py,set_spam_filter,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
 rpc,maillog.delivery,daemon/maillog.py,get_delivery_log,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,mailqueue.delete,daemon/mailqueue.py,delete_message,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,mailqueue.delete_all,daemon/mailqueue.py,delete_all,kernel-peer-uid; root-credential; policy=global_admin,pending,
@@ -816,8 +816,8 @@ rpc,spamfilter.entries.add,daemon/spamfilter.py,add_entry,kernel-peer-uid; root-
 rpc,spamfilter.entries.delete,daemon/spamfilter.py,delete_entry,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,spamfilter.entries.import,daemon/spamfilter.py,import_entries,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,spamfilter.entries.list,daemon/spamfilter.py,list_entries,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,spamfilter.global_default.get,daemon/server.py,<lambda>,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,spamfilter.global_default.set,daemon/server.py,<lambda>,kernel-peer-uid; root-credential; policy=global_admin,pending,
+rpc,spamfilter.global_default.get,daemon/server.py,<lambda>,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
+rpc,spamfilter.global_default.set,daemon/server.py,<lambda>,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
 rpc,sshkeys.add,daemon/sshkeys.py,add_key,kernel-peer-uid; root-credential; policy=customer_self_account,pending,
 rpc,sshkeys.delete,daemon/sshkeys.py,delete_key,kernel-peer-uid; root-credential; policy=customer_self_account,pending,
 rpc,sshkeys.list,daemon/sshkeys.py,list_keys,kernel-peer-uid; root-credential; policy=customer_self_account,pending,

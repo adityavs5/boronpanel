@@ -696,3 +696,30 @@ used the active `auditweb` account, forced post-create cache-write failures for
 both a mail domain and a mailbox, and confirmed the external domain, mailbox,
 maildirs and cache rows were removed. The same daemon file is installed on the
 development panel with matching hashes and `boron-provisiond` active.
+
+### 2026-09-23 spam-filter settings consistency hardening
+
+BSA-2026-042 records spam-filter consistency gaps. Per-domain spam-filter
+updates committed the SQLite `MailDomain` row before writing the SpamAssassin
+`user_prefs` file, so a filesystem failure could leave the UI and enforcement
+state diverged. The server-wide default also committed the DB row before writing
+`local.cf`, and `_write_local_cf()` replaced the live file before running
+`spamassassin --lint`, so a lint failure could leave an invalid live config.
+
+The source now serializes per-domain spam-filter mutations with the rest of the
+mail-edit guard. It writes the requested prefs first, commits the cache row
+second, and restores the previous prefs if the cache commit fails. The global
+`local.cf` writer now uses the shared config transaction path: it copies the
+existing SpamAssassin site config into a temporary directory, overlays the
+candidate `local.cf`, lints that candidate before apply, atomically replaces the
+live file only after validation, verifies the live config, and rolls back on
+failure. The global default setter writes the config before the DB row and
+restores the old default if the DB write fails.
+
+Focused validation passed 89 mail/spamfilter/RPC-authority tests. The disposable
+VM was hotfixed with `daemon/handlers_mail.py` and `daemon/spamfilter.py`
+matching source; a live canary forced per-domain cache and prefs-write failures,
+confirmed DB/file state remained at the old threshold, forced a global lint
+failure and confirmed `local.cf` was unchanged, then forced a global DB failure
+and confirmed the old default was restored. The same daemon files are installed
+on the development panel with matching hashes and `boron-provisiond` active.

@@ -440,6 +440,60 @@ def test_set_spam_filter_disabled_writes_high_threshold_to_disk(mail_domain_row)
     assert f"required_score {hm.spamfilter.DISABLED_THRESHOLD}" in prefs
 
 
+def test_set_spam_filter_disk_failure_leaves_cache_unchanged(mail_domain_row, monkeypatch):
+    from shared.db import write_session
+    from shared.models import MailDomain
+
+    def fail_apply(domain, enabled, threshold):
+        raise OSError("prefs write failed")
+
+    monkeypatch.setattr(hm.spamfilter, "apply_domain_spam_settings", fail_apply)
+
+    with pytest.raises(OSError, match="prefs write failed"):
+        hm.set_spam_filter({"domain": "demo1.example", "enabled": True, "threshold": 3.5})
+
+    with write_session() as session:
+        row = session.get(MailDomain, mail_domain_row.id)
+        assert row.spam_filter_enabled is True
+        assert row.spam_filter_threshold is None
+
+
+def test_set_spam_filter_cache_failure_restores_previous_prefs(mail_domain_row, monkeypatch):
+    from contextlib import contextmanager
+
+    from shared.db import write_session as real_write_session
+    from shared.models import MailDomain
+
+    with real_write_session() as session:
+        row = session.get(MailDomain, mail_domain_row.id)
+        row.spam_filter_enabled = True
+        row.spam_filter_threshold = 4.0
+    hm.spamfilter.apply_domain_spam_settings("demo1.example", True, 4.0)
+
+    calls = 0
+
+    @contextmanager
+    def flaky_write_session():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("cache update failed")
+        with real_write_session() as session:
+            yield session
+
+    monkeypatch.setattr(hm, "write_session", flaky_write_session)
+
+    with pytest.raises(RuntimeError, match="cache update failed"):
+        hm.set_spam_filter({"domain": "demo1.example", "enabled": True, "threshold": 3.0})
+
+    prefs = hm.spamfilter._user_prefs_path("demo1.example").read_text()
+    assert "required_score 4.0" in prefs
+    with real_write_session() as session:
+        row = session.get(MailDomain, mail_domain_row.id)
+        assert row.spam_filter_enabled is True
+        assert row.spam_filter_threshold == 4.0
+
+
 def test_set_spam_filter_rejects_out_of_range_threshold(mail_domain_row):
     with pytest.raises(ValidationError):
         hm.set_spam_filter({"domain": "demo1.example", "enabled": True, "threshold": 500})

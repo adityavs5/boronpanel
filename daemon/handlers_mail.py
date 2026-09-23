@@ -372,6 +372,7 @@ def get_spam_filter(params: dict) -> dict:
     }
 
 
+@serialized
 def set_spam_filter(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     enabled = bool(params.get("enabled", True))
@@ -380,18 +381,21 @@ def set_spam_filter(params: dict) -> dict:
 
     with write_session() as session:
         row = _mail_domain_row(session, domain_name)
-        row.spam_filter_enabled = enabled
-        row.spam_filter_threshold = threshold
-        session.flush()
+        old_enabled = row.spam_filter_enabled
+        old_threshold = row.spam_filter_threshold
 
-    # Apply to disk AFTER the DB commit succeeds, mirroring this file's own
-    # autoresponder ordering rationale (mail.set_autoresponder is called
-    # only after autoresponder.apply_autoresponder succeeds) -- inverted
-    # here on purpose: a prefs-file write failing after the DB already
-    # says "enabled" would leave a domain silently unprotected rather than
-    # silently un-set, and a filesystem write is far less likely to fail
-    # than a validated DB update, so recording intent first is the safer
-    # order for this specific feature.
     spamfilter.apply_domain_spam_settings(domain_name, enabled, threshold)
+    try:
+        with write_session() as session:
+            row = _mail_domain_row(session, domain_name)
+            row.spam_filter_enabled = enabled
+            row.spam_filter_threshold = threshold
+            session.flush()
+    except Exception:
+        try:
+            spamfilter.apply_domain_spam_settings(domain_name, old_enabled, old_threshold)
+        except Exception:
+            logger.exception("failed to restore spam-filter prefs for '%s' after cache write failure", domain_name)
+        raise
 
     return get_spam_filter({"domain": domain_name})

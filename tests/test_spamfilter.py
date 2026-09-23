@@ -163,6 +163,70 @@ def test_set_and_get_global_default_threshold(isolated_db, tmp_path, monkeypatch
     assert "required_score 6.5" in content
 
 
+def test_write_local_cf_lints_before_apply_and_keeps_old_file(tmp_path, monkeypatch):
+    from daemon.procutil import ProcResult
+
+    target = tmp_path / "local.cf"
+    target.write_text("old config")
+    monkeypatch.setattr(sf, "LOCAL_CF_PATH", str(target))
+    monkeypatch.setattr(sf, "BACKUP_DIR", str(tmp_path / "backups"))
+    monkeypatch.setattr(
+        sf,
+        "run",
+        lambda args, timeout=None: ProcResult(args=args, returncode=1, stdout="", stderr="lint failed"),
+    )
+
+    with pytest.raises(sf.SpamFilterError, match="validate=FAIL"):
+        sf._write_local_cf(6.5)
+
+    assert target.read_text() == "old config"
+
+
+def test_set_global_default_threshold_file_failure_leaves_db_unchanged(isolated_db, monkeypatch):
+    monkeypatch.setattr(
+        sf,
+        "_write_local_cf",
+        lambda threshold: (_ for _ in ()).throw(sf.SpamFilterError("local cf failed")),
+    )
+
+    with pytest.raises(sf.SpamFilterError, match="local cf failed"):
+        sf.set_global_default_threshold(6.5)
+
+    assert sf.get_global_default_threshold() == 5.0
+
+
+def test_set_global_default_threshold_db_failure_restores_previous_default(isolated_db, monkeypatch):
+    from contextlib import contextmanager
+
+    from shared.db import write_session as real_write_session
+    from shared.models import SpamGlobalSettings
+
+    with real_write_session() as session:
+        session.add(SpamGlobalSettings(id=1, default_threshold=4.0))
+
+    written = []
+    monkeypatch.setattr(sf, "_write_local_cf", lambda threshold: written.append(threshold))
+    calls = 0
+
+    @contextmanager
+    def flaky_write_session():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("settings DB failed")
+        with real_write_session() as session:
+            yield session
+
+    monkeypatch.setattr(sf, "write_session", flaky_write_session)
+
+    with pytest.raises(RuntimeError, match="settings DB failed"):
+        sf.set_global_default_threshold(6.5)
+
+    assert written == [6.5, 4.0]
+    with real_write_session() as session:
+        assert session.get(SpamGlobalSettings, 1).default_threshold == 4.0
+
+
 def test_set_global_default_threshold_rejects_out_of_range(isolated_db, tmp_path, monkeypatch):
     monkeypatch.setattr(sf, "LOCAL_CF_PATH", str(tmp_path / "local.cf"))
     with pytest.raises(ValidationError):
