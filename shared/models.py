@@ -15,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -637,16 +638,12 @@ class WordPressInstall(Base):
 
 
 class WordPressJob(Base):
-    """Async install job (goal requirement: "shows install progress
-    async"). admin_password is stored here ONLY transiently -- it has to
-    survive from the background worker thread until the polling UI/API
-    call that first observes status=="completed" reads it, since (unlike
-    account.create's synchronous response) there's no single request/
-    response round trip to hand it back on. The first successful read
-    clears it (see get_job) so a second poll -- or a row inspected later
-    for any other reason -- never re-exposes it. This is a deliberate,
-    minimal-exposure tradeoff forced by the async requirement, not an
-    oversight; documented in CHECKPOINT-phase3-2.md."""
+    """Async install status with a root-key-encrypted one-time credential.
+
+    The daemon encrypts the admin password before persisting it. Authorized
+    retrieval decrypts and clears it under an immediate SQLite transaction;
+    the API's read-only database access cannot recover pending credentials.
+    """
 
     __tablename__ = "wordpress_jobs"
 
@@ -658,7 +655,7 @@ class WordPressJob(Base):
     error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     admin_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     admin_user: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    admin_password: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    admin_password: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -1023,7 +1020,7 @@ class AppInstallJob(Base):
     error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     admin_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     admin_user: Mapped[str | None] = mapped_column(String(150), nullable=True)
-    admin_password: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    admin_password: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -1574,7 +1571,7 @@ class CommandRun(Base):
     # For a WP-CLI user-reset-password run, the generated password is surfaced
     # once (cleared on first read, same one-time-reveal pattern as
     # WordPressJob.admin_password).
-    revealed_secret: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    revealed_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

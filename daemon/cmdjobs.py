@@ -19,6 +19,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, CommandRun, utcnow
 
+from daemon import jobcredentials
 from daemon.procutil import run
 
 logger = logging.getLogger("borond.cmdjobs")
@@ -69,7 +70,7 @@ def submit(
         job = CommandRun(
             account_id=account.id, kind=kind, target=target,
             command_display=command_display[:1024], status="pending",
-            revealed_secret=revealed_secret,
+            revealed_secret=jobcredentials.seal(revealed_secret),
         )
         session.add(job)
         session.flush()
@@ -162,7 +163,7 @@ def _job_dict(job: CommandRun, reveal: bool) -> dict:
         "stdout": job.stdout,
         "stderr": job.stderr,
         "error": job.error,
-        "revealed_secret": job.revealed_secret if reveal else None,
+        "revealed_secret": jobcredentials.reveal(job.revealed_secret) if reveal else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
     }
@@ -175,6 +176,7 @@ def get_run(params: dict) -> dict:
     job_id = int(params["job_id"])
     username = params["username"]
     with write_session() as session:
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         job = session.get(CommandRun, job_id)
         if job is None:
             raise RuntimeError(f"command run {job_id} not found")

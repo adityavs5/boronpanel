@@ -918,6 +918,8 @@ async def _cgroup_reconcile_loop() -> None:
 
 async def amain() -> None:
     init_db()
+    from daemon import jobcredentials
+    jobcredentials.migrate()
     try:
         from daemon.snapshot_databases import cleanup_abandoned_logins
         cleanup_abandoned_logins()

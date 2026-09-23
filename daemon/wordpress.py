@@ -49,6 +49,7 @@ from shared.models import Account, Domain, WordPressInstall, WordPressJob, WordP
 from shared.validation import generate_strong_password, validate_domain, validate_password_strength, validate_username
 
 from daemon import handlers_database
+from daemon import jobcredentials
 from daemon.procutil import run
 from daemon.safeio import secure_mkdirs, secure_write_file_beneath
 
@@ -450,7 +451,7 @@ def _job_to_dict(job: WordPressJob, *, reveal_password: bool) -> dict:
         "error": job.error,
         "admin_url": job.admin_url,
         "admin_user": job.admin_user,
-        "admin_password": job.admin_password if reveal_password else None,
+        "admin_password": jobcredentials.reveal(job.admin_password) if reveal_password else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
     }
@@ -525,7 +526,7 @@ def _run_install_job(job_id: int, params: dict) -> None:
         progress_message="done",
         admin_url=result["admin_url"],
         admin_user=result["admin_user"],
-        admin_password=result["admin_password"],
+        admin_password=jobcredentials.seal(result["admin_password"]),
         completed_at=utcnow(),
     )
 
@@ -547,6 +548,7 @@ def get_job(params: dict) -> dict:
     job_id = int(params["job_id"])
     username = validate_username(params["username"])
     with write_session() as session:
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise RuntimeError(f"account '{username}' not found")
@@ -556,7 +558,7 @@ def get_job(params: dict) -> dict:
         reveal = job.status == "completed" and job.admin_password is not None
         result = _job_to_dict(job, reveal_password=reveal)
         # One-time reveal: the first successful read clears the persisted
-        # password so it can never leak from this row again (a second
+        # encrypted value so it cannot be retrieved from this row again (a second
         # poll, an admin browsing job history later, a DB dump/backup
         # taken after this point) -- see WordPressJob's docstring.
         if reveal:
