@@ -70,3 +70,32 @@ def test_secure_replace_file_replaces_symlink_dest_without_following(tmp_path):
     assert target.read_text() == "original"  # target untouched
     assert not os.path.islink(d / "authorized_keys")
     assert (d / "authorized_keys").read_text() == "new-key\n"
+
+
+def test_beneath_write_rejects_ancestor_substitution_after_mkdir(tmp_path, monkeypatch):
+    root = tmp_path / 'tenant'; root.mkdir()
+    peer = tmp_path / 'peer'; peer.mkdir(); (peer / 'b').mkdir()
+    original = safeio.secure_mkdirs
+    def substitute(*args, **kwargs):
+        result = original(*args, **kwargs)
+        (root / 'a').rename(root / 'retained')
+        (root / 'a').symlink_to(peer)
+        return result
+    monkeypatch.setattr(safeio, 'secure_mkdirs', substitute)
+    with pytest.raises(safeio.UnsafePathError):
+        safeio.secure_write_file_beneath(str(root), 'a/b/probe', b'ROOT_WRITE', os.getuid(), os.getgid())
+    assert not (peer / 'b/probe').exists()
+
+
+def test_replace_handles_short_writes_and_removes_failed_temporary_files(tmp_path, monkeypatch):
+    original = os.write
+    monkeypatch.setattr(safeio.os, 'write', lambda fd, data: original(fd, data[:2]))
+    safeio.secure_replace_file(str(tmp_path), 'config', b'complete content', os.getuid(), os.getgid())
+    assert (tmp_path / 'config').read_bytes() == b'complete content'
+    def fail(*args):
+        raise OSError('disk write failed')
+    monkeypatch.setattr(safeio.os, 'write', fail)
+    with pytest.raises(OSError):
+        safeio.secure_replace_file(str(tmp_path), 'config', b'replacement', os.getuid(), os.getgid())
+    assert (tmp_path / 'config').read_bytes() == b'complete content'
+    assert list(tmp_path.iterdir()) == [tmp_path / 'config']

@@ -94,7 +94,11 @@ def secure_write_file_beneath(trusted_root: str, relative: str, data: bytes, uid
         raise UnsafePathError(f"'{relative}' is not a safe file path")
     parent = "/".join(parts[:-1]) or "."
     secure_mkdirs(trusted_root, parent, uid, gid, 0o750)
-    secure_replace_file(os.path.join(trusted_root, parent), parts[-1], data, uid, gid, mode)
+    dir_fd = open_dir_beneath(trusted_root, parent)
+    try:
+        _replace_file_at_fd(dir_fd, parts[-1], data, uid, gid, mode)
+    finally:
+        os.close(dir_fd)
 
 
 def secure_mkdirs(trusted_root: str, relative: str, uid: int, gid: int, mode: int = 0o750) -> str:
@@ -231,28 +235,36 @@ def secure_replace_file(dir_path: str, name: str, data: bytes, uid: int, gid: in
     created ``O_EXCL | O_NOFOLLOW`` relative to it (so a pre-planted symlink/
     file can't be written through); and the ``renameat`` over ``name`` replaces
     a symlink at the destination rather than following it."""
+    dir_fd = _open_dir_nofollow(dir_path)
+    try:
+        _replace_file_at_fd(dir_fd, name, data, uid, gid, mode)
+    finally:
+        os.close(dir_fd)
+
+
+def _replace_file_at_fd(dir_fd: int, name: str, data: bytes, uid: int, gid: int, mode: int) -> None:
+    """Preserve the verified parent descriptor through creation and rename."""
     _reject_name(name)
     if isinstance(data, str):
         data = data.encode()
-    dir_fd = _open_dir_nofollow(dir_path)
+    tmp = f".{name}.tmp.{os.getpid()}.{os.urandom(4).hex()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                 mode, dir_fd=dir_fd)
     try:
-        tmp = f".{name}.tmp.{os.getpid()}.{os.urandom(4).hex()}"
-        fd = os.open(
-            tmp,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-            mode,
-            dir_fd=dir_fd,
-        )
         try:
-            os.write(fd, data)
+            pending = memoryview(data)
+            while pending:
+                written = os.write(fd, pending)
+                if written <= 0:
+                    raise OSError("file write made no progress")
+                pending = pending[written:]
             os.fchown(fd, uid, gid)
             os.fchmod(fd, mode)
         finally:
             os.close(fd)
-        try:
-            os.rename(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        except OSError:
-            os.unlink(tmp, dir_fd=dir_fd)
-            raise
+        os.rename(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     finally:
-        os.close(dir_fd)
+        try:
+            os.unlink(tmp, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
