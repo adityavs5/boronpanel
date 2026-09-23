@@ -396,7 +396,7 @@ def install(params: dict) -> dict:
 
         _files_as_account(username, "config", target_dir, input_text=json.dumps({
             "db_name": db_grant["db_name"], "db_user": db_grant["db_user"],
-            "db_password": db_grant["password"],
+            "db_password": db_grant["password"], "db_socket": settings.mariadb_socket,
         }))
 
         _run_silent_install(target_dir, username, home_dir, site_url, title, admin_user, admin_email, admin_password)
