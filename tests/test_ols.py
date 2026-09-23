@@ -486,6 +486,60 @@ def test_bootstrap_webmail_requires_hostname_configured(monkeypatch):
         ols.bootstrap_webmail()
 
 
+def test_fresh_baseline_applies_infrastructure_vhosts_atomically(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from daemon import panel_tls
+
+    panel_root = tmp_path / "panel-acme"
+    webmail_root = tmp_path / "roundcube/public_html"
+    vhost_root = tmp_path / "ols/conf/vhosts"
+    monkeypatch.setattr(ols.settings, "panel_hostname", "panel.example.test")
+    monkeypatch.setattr(ols.settings, "panel_acme_webroot", str(panel_root))
+    monkeypatch.setattr(ols.settings, "webmail_hostname", "webmail.example.test")
+    monkeypatch.setattr(ols.settings, "webmail_docroot", str(webmail_root))
+    monkeypatch.setattr(ols.settings, "vhost_conf_dir", str(vhost_root))
+    monkeypatch.setattr(ols.settings, "pma_hostname", "")
+    monkeypatch.setattr(ols, "HTTPD_CONFIG_PATH", str(tmp_path / "httpd_config.conf"))
+    monkeypatch.setattr(ols, "OLS_SERVER_BASE", str(tmp_path / "ols"))
+    monkeypatch.setattr(ols, "write_session", lambda: nullcontext(None))
+    monkeypatch.setattr(ols, "_all_active_vhosts", lambda _: ([], []))
+    monkeypatch.setattr(ols, "waf_template_context", lambda _: {})
+    monkeypatch.setattr(ols, "_ols_settings_from_session", lambda _: {})
+    monkeypatch.setattr(ols, "_webmail_ssl_paths", lambda _: ("key", "cert"))
+    monkeypatch.setattr(
+        ols.pwd,
+        "getpwnam",
+        lambda _: SimpleNamespace(pw_uid=33, pw_gid=33),
+    )
+    monkeypatch.setattr(
+        panel_tls,
+        "_challenge_owner",
+        lambda: SimpleNamespace(pw_uid=123, pw_gid=123),
+    )
+    monkeypatch.setattr(ols.os, "chown", lambda *_: None)
+
+    captured = {}
+
+    class Writer:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def apply(self, contents):
+            captured["contents"] = contents
+            return SimpleNamespace(ok=True)
+
+    monkeypatch.setattr(ols, "ConfigWriterMulti", Writer)
+    ols.bootstrap_baseline()
+
+    assert set(captured["targets"]) == {"main", "panel", "webmail"}
+    assert set(captured["contents"]) == {"main", "panel", "webmail"}
+    assert "virtualHost boron_panel_acme{" in captured["contents"]["main"]
+    assert "virtualHost roundcube{" in captured["contents"]["main"]
+    assert panel_root.is_dir()
+    assert webmail_root.is_dir()
+
+
 def test_render_httpd_config_includes_pma_block_when_configured(monkeypatch):
     monkeypatch.setattr(ols.settings, "pma_hostname", "pma.example.com")
     content = ols.render_httpd_config([], [])

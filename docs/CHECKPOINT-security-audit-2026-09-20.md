@@ -138,6 +138,16 @@ installer tests, shellcheck, bash syntax and diff checks pass. The disposable
 run captured the original engine mismatch; final candidate acceptance must
 exercise the corrected ordering.
 
+The first OpenLiteSpeed baseline transaction also failed on a clean host
+because the rendered main config referenced the configured panel and webmail
+vhosts before later installer steps created their webroots and vhost files.
+The baseline now validates and prepares both infrastructure webroots, then
+applies the main, panel, and webmail configs in one rollback-capable
+transaction. The candidate transaction succeeded on the disposable VM; the
+new regression test and the OLS/panel-TLS suite pass. The resumed install then
+caught and corrected a PATH quoting error in the managed-Node build command
+before any release candidate was produced.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic

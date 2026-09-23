@@ -14,6 +14,7 @@ import logging
 import os
 import json
 from pathlib import Path
+import pwd
 import re
 import secrets
 import stat
@@ -25,7 +26,7 @@ from sqlalchemy import func, select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, OlsServerSettings, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings, WildcardDomain, utcnow
-from shared.validation import ValidationError
+from shared.validation import ValidationError, validate_domain
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
@@ -986,7 +987,80 @@ def bootstrap_baseline() -> None:
     """
     with write_session() as session:
         domain_vhosts, account_procs = _all_active_vhosts(session)
-    _apply_main_only(domain_vhosts, account_procs, context="bootstrap_baseline")
+        waf = waf_template_context(session)
+        ols_settings = _ols_settings_from_session(session)
+
+    # A configured infrastructure hostname makes the main template reference
+    # its vhost immediately.  A fresh install must therefore create the main
+    # config and those vhost configs in one transaction; applying main first
+    # makes `openlitespeed -t` fail on missing paths before the installer can
+    # reach the later Roundcube/panel certificate bootstrap steps.
+    targets = {"main": HTTPD_CONFIG_PATH}
+    contents = {
+        "main": render_httpd_config(
+            domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings
+        )
+    }
+
+    if settings.panel_hostname:
+        from daemon import panel_tls
+
+        validate_domain(settings.panel_hostname)
+        webroot = Path(settings.panel_acme_webroot)
+        if not webroot.is_absolute() or webroot.resolve() != webroot:
+            raise ValidationError(
+                "Panel certificate webroot must be an absolute path without symlinks"
+            )
+        challenge = webroot / ".well-known/acme-challenge"
+        challenge.mkdir(parents=True, exist_ok=True, mode=0o755)
+        owner = panel_tls._challenge_owner()
+        os.chown(webroot, owner.pw_uid, owner.pw_gid)
+        webroot.chmod(0o555)
+        for directory in (webroot / ".well-known", challenge):
+            os.chown(directory, 0, 0)
+            directory.chmod(0o755)
+        targets["panel"] = str(
+            Path(settings.vhost_conf_dir) / "boron-panel-acme/vhconf.conf"
+        )
+        contents["panel"] = _env.get_template(
+            "panel_acme_vhost.conf.j2"
+        ).render(webroot=str(webroot))
+
+    if settings.webmail_hostname:
+        validate_domain(settings.webmail_hostname)
+        docroot = Path(settings.webmail_docroot)
+        if not docroot.is_absolute() or docroot.resolve() != docroot:
+            raise ValidationError(
+                "Webmail document root must be an absolute path without symlinks"
+            )
+        challenge = docroot / ".well-known/acme-challenge"
+        challenge.mkdir(parents=True, exist_ok=True, mode=0o755)
+        web_user = pwd.getpwnam("www-data")
+        os.chown(docroot, web_user.pw_uid, web_user.pw_gid)
+        docroot.chmod(0o755)
+        log_dir = docroot.parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
+        os.chown(log_dir, web_user.pw_uid, web_user.pw_gid)
+        log_dir.chmod(0o750)
+        targets["webmail"] = _webmail_vhost_conf_path()
+        contents["webmail"] = render_webmail_vhost_conf(
+            *_webmail_ssl_paths(None)
+        )
+
+    writer = ConfigWriterMulti(
+        targets=targets,
+        validate=_validate_multi,
+        reload=_reload,
+        verify=_verify,
+        backup_dir=settings.backup_dir,
+        subsystem="ols",
+    )
+    result = writer.apply(contents)
+    if not result.ok:
+        raise RuntimeError(
+            "OLS config transaction failed during bootstrap_baseline: "
+            f"{result.summary()}"
+        )
 
 
 # --- Expansion: administrator OpenLiteSpeed controls -----------------------
