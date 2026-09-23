@@ -1081,7 +1081,7 @@ EOF
     install -d -o www-data -g www-data -m 0755 /var/www/roundcube/public_html/.well-known/acme-challenge
     run sudo -u www-data -- /usr/local/lsws/lsphp83/bin/lsphp /var/www/roundcube/bin/updatedb.sh --dir /var/www/roundcube/SQL
 
-    run_sh "sudo -u boron-api -- '${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from shared.rpc import RpcClient; RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_webmail', _actor='setup', _role='admin')\""
+    run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from daemon.ols import bootstrap_webmail; bootstrap_webmail()\""
     ok "Roundcube installed and published at https://${WEBMAIL_DOMAIN}"
 }
 
@@ -1142,7 +1142,7 @@ start_services() {
         fi
     fi
     # One-time: replace OLS's stock Example vhost with a clean baseline.
-    run_sh "sudo -u boron-api -- '${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from shared.rpc import RpcClient; RpcClient('/run/boron/provisiond.sock').call('system.bootstrap_ols', _actor='setup', _role='admin')\""
+    run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from daemon.ols import bootstrap_baseline; bootstrap_baseline()\""
     run systemctl restart lshttpd
     run systemctl enable --now boron-api
     # The package starts freshclam during installation but leaves its unit

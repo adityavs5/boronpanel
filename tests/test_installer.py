@@ -164,3 +164,11 @@ def test_installer_dry_run_succeeds():
     # The plan must reach the final step and never actually mutate.
     assert "Summary:" in r.stdout
     assert "0 failed" in r.stdout
+
+
+def test_bootstrap_runs_locally_without_forged_rpc_identity():
+    source = INSTALLER.read_text()
+    assert "from daemon.ols import bootstrap_baseline; bootstrap_baseline()" in source
+    assert "from daemon.ols import bootstrap_webmail; bootstrap_webmail()" in source
+    assert "_actor='setup'" not in source
+    assert "RpcClient('/run/boron/provisiond.sock').call('system.bootstrap" not in source
