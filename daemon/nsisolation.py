@@ -281,6 +281,10 @@ def _run_bulk_enable_job(job_id: int, usernames: list[str]) -> None:
     for username in usernames:
         _update_job(job_id, current_username=username)
         try:
+            with write_session() as session:
+                account = session.scalar(select(Account).where(Account.username == username))
+                if account is None or account.status != "active":
+                    raise NamespaceError(f"account '{username}' is no longer active")
             status = enable_namespace({"username": username})
             if not status["enabled"]:
                 # Structurally possible (e.g. still below min_uid) without

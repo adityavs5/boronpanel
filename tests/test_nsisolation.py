@@ -6,7 +6,7 @@ from sqlalchemy import select
 from daemon import nsisolation
 from daemon.procutil import ProcResult
 from shared.db import write_session
-from shared.models import Account, AuditLog
+from shared.models import Account, AuditLog, NamespaceMigrationJob
 
 
 def make_account(session, **overrides):
@@ -245,6 +245,28 @@ def test_trigger_bulk_enable_stops_at_first_failure(monkeypatch, isolated_db):
     assert usernames_attempted == ["acct1", "acct2"]  # acct3 never reached
     assert job["results"][0]["ok"] is True
     assert job["results"][1]["ok"] is False
+
+
+def test_bulk_enable_rechecks_account_status_before_lsnsctl(fake_lsnsctl, monkeypatch, isolated_db):
+    calls, _responses = fake_lsnsctl
+    submitted = []
+    monkeypatch.setattr(nsisolation._executor, "submit", lambda fn, *args: submitted.append((fn, args)))
+    with write_session() as session:
+        account = make_account(session, username="acct1", uid=2001)
+
+    triggered = nsisolation.trigger_bulk_enable({})
+
+    with write_session() as session:
+        session.get(Account, account.id).status = "terminated"
+
+    fn, args = submitted[0]
+    fn(*args)
+
+    with write_session() as session:
+        job = session.get(NamespaceMigrationJob, triggered["id"])
+        assert job.status == "failed"
+        assert "no longer active" in job.error
+    assert not any(call[-1] == "enable-uid" for call in calls)
 
 
 def test_get_bulk_enable_job_unknown_id_raises(isolated_db):
