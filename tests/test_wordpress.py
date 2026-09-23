@@ -1,4 +1,6 @@
 import io
+import json
+from pathlib import Path
 import os
 import zipfile
 
@@ -57,6 +59,16 @@ def stub_system(monkeypatch):
     def fake_run(args, **kwargs):
         calls.append(args)
         from daemon.procutil import ProcResult
+        if len(args) > 2 and args[1] == str(wp.FILES_HELPER_PATH):
+            assert kwargs['uid'] == os.getuid() and kwargs['gid'] == os.getgid()
+            action, target = args[2:4]
+            if action == 'prepare':
+                Path(target).mkdir(parents=True, exist_ok=True)
+            elif action == 'extract':
+                wp._extract_wordpress(Path(kwargs['input_path']), target)
+            elif action == 'config':
+                data = json.loads(kwargs['input_text'])
+                wp._write_wp_config(target, data['db_name'], data['db_user'], data['db_password'])
 
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
 
@@ -431,3 +443,28 @@ def test_www_address_refuses_separate_site(account_with_domain):
             domain='www.demo1.example',kind='addon',docroot='/separate/site'))
     with pytest.raises(wp.WordPressError,match='separate site'):
         wp.website_url('demo1.example',use_www=True)
+
+
+def test_config_write_replaces_planted_symlink_without_touching_canary(tmp_path, monkeypatch):
+    monkeypatch.setattr(wp, '_fetch_salts', lambda: "define('AUTH_KEY', 'test');")
+    site = tmp_path / 'site'; site.mkdir()
+    canary = tmp_path / 'root-canary'; canary.write_text('UNCHANGED')
+    (site / 'wp-config.php').symlink_to(canary)
+    wp._write_wp_config(str(site), 'db', 'user', 'private-password')
+    assert canary.read_text() == 'UNCHANGED'
+    assert not (site / 'wp-config.php').is_symlink()
+
+
+def test_filesystem_actions_drop_privileges_and_hide_failure_output(monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    monkeypatch.setattr(wp.pwd, 'getpwnam', lambda _: SimpleNamespace(pw_uid=5001, pw_gid=5002))
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        return ProcResult(args=args, returncode=1, stdout='secret', stderr='secret')
+    monkeypatch.setattr(wp, 'run', run)
+    with pytest.raises(wp.WordPressError) as failed:
+        wp._files_as_account('demo1', 'config', '/home/demo1/site', input_text='secret')
+    assert 'secret' not in str(failed.value)
+    assert calls[0][1]['uid'] == 5001 and calls[0][1]['gid'] == 5002
+    assert 'secret' not in calls[0][0]

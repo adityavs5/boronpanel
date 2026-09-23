@@ -36,6 +36,7 @@ import pwd
 import re
 import secrets
 import shutil
+import sys
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -51,7 +52,9 @@ from shared.validation import generate_strong_password, validate_domain, validat
 from daemon import handlers_database
 from daemon import jobcredentials
 from daemon.procutil import run
-from daemon.safeio import secure_mkdirs, secure_write_file_beneath
+from daemon.safeio import secure_mkdirs, secure_write_file_beneath, secure_replace_file
+
+FILES_HELPER_PATH = Path(__file__).resolve().parent.parent / "scripts" / "wordpress_files.py"
 
 logger = logging.getLogger("borond.wordpress")
 
@@ -227,10 +230,15 @@ def _write_wp_config(docroot: str, db_name: str, db_user: str, db_password: str)
         "}\n"
         "require_once ABSPATH . 'wp-settings.php';\n"
     )
-    path = os.path.join(docroot, "wp-config.php")
-    with open(path, "w") as f:
-        f.write(content)
-    os.chmod(path, 0o640)
+    secure_replace_file(docroot, "wp-config.php", content.encode(), os.geteuid(), os.getegid(), 0o640)
+
+
+def _files_as_account(username: str, action: str, target: str, **kwargs) -> None:
+    user = pwd.getpwnam(username)
+    result = run([sys.executable, str(FILES_HELPER_PATH), action, target],
+                 uid=user.pw_uid, gid=user.pw_gid, timeout=180, **kwargs)
+    if not result.ok:
+        raise WordPressError("WordPress file preparation failed; check directory permissions and retry")
 
 
 def _run_silent_install(
@@ -371,14 +379,9 @@ def install(params: dict) -> dict:
             "(move or back up existing content first)"
         )
 
-    pw = pwd.getpwnam(username)
     home_dir = f"{settings.home_base}/{username}"
     if path:
-        # A subdirectory install has no extraction root yet. Create it
-        # beneath the already-provisioned docroot through O_NOFOLLOW fds,
-        # with the account's ownership and the same 0750 directory mode used
-        # for normal account docroots.
-        secure_mkdirs(docroot, path, pw.pw_uid, pw.pw_gid, 0o750)
+        _files_as_account(username, "prepare", target_dir)
 
     version, download_url = fetch_latest_version_and_url()
     db_grant, suffix = _allocate_database(username, path)
@@ -387,12 +390,14 @@ def install(params: dict) -> dict:
         staging_zip = Path(settings.wp_staging_dir) / f"wordpress-{version}-{secrets.token_hex(4)}.zip"
         try:
             _download_zip(download_url, staging_zip)
-            _extract_wordpress(staging_zip, target_dir)
+            _files_as_account(username, "extract", target_dir, input_path=str(staging_zip))
         finally:
             staging_zip.unlink(missing_ok=True)
 
-        _write_wp_config(target_dir, db_grant["db_name"], db_grant["db_user"], db_grant["password"])
-        run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", target_dir], check=True)
+        _files_as_account(username, "config", target_dir, input_text=json.dumps({
+            "db_name": db_grant["db_name"], "db_user": db_grant["db_user"],
+            "db_password": db_grant["password"],
+        }))
 
         _run_silent_install(target_dir, username, home_dir, site_url, title, admin_user, admin_email, admin_password)
     except Exception:
@@ -402,7 +407,6 @@ def install(params: dict) -> dict:
             logger.exception("failed to clean up database after a failed WordPress install for '%s'", domain_name)
         raise
 
-    run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", target_dir], check=True)
     # Newly created subfolders and extracted modes can mask the default ACL.
     # Restore OLS worker access as the account, without root following site files.
     run(["runuser", "-u", username, "--", "setfacl", "-R", "-m", "u:nobody:rX", "-d", "-m", "u:nobody:rX", target_dir], check=True)
