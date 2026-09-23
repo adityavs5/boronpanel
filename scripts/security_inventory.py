@@ -123,6 +123,7 @@ def inventory_rows() -> list[dict[str, str]]:
         ("per-account Python unit", "daemon/pythonapps.py"),
         ("per-account Redis unit", "daemon/redisacct.py"),
         ("per-account FileBrowser unit", "daemon/filebrowser_accounts.py"),
+        ("trusted FileBrowser frontend unit", "daemon/filebrowser_accounts.py"),
     ):
         rows.append({
             "kind": "dynamic-service", "name": label, "source": source,

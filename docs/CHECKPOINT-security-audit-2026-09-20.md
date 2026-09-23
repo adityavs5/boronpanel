@@ -480,3 +480,49 @@ installer/command tests passed 84; the final five new cases passed again after
 migration coverage was expanded. Deployed to the disposable VM for live reset
 acceptance; primary deployment remains pending. This migration does not claim
 to scrub historical backup copies or obsolete SQLite pages.
+
+### 2026-09-23 installer filesystem and FileBrowser renderer follow-up
+
+BSA-2026-034 is now fixed beyond WordPress. Commit `09329f7` moved WordPress
+filesystem preparation, archive extraction and config writes into an account-UID
+helper; `faf0a27` made that helper independent of root-only Boron config. Commit
+`7edecb9` applies the same boundary to generic application installers:
+Joomla/Drupal/PrestaShop/Laravel/static file actions now run as the hosting UID,
+credentials enter helper processes through stdin, and recursive root `chown` is
+gone. Focused appinstaller/jobcredential/safeio tests passed 41. On the
+disposable VM, the new helper passed 10 real UID canaries covering root refusal,
+root/peer symlink targets, zip/tar actions, Joomla and Drupal config writes,
+Laravel `.env`, and the real web ACL path. A static app install through the
+customer HTTP API completed on `appuid0.104.234.179.63.sslip.io`; the page served
+over HTTP and installed files were owned by `auditweb`. The same limited hotfix
+was applied to `/opt/boron-1.5.0` on the development panel after checking that
+no app or WordPress jobs were pending. Source/live hashes match, `boron-api`,
+`boron-provisiond`, and OpenLiteSpeed are active, and primary login/FileBrowser
+smoke passed.
+
+BSA-2026-035 records a shared safe-write race found during the same review:
+`secure_write_file_beneath` verified parent directories but reopened the final
+parent by pathname before replacing the file. Commit `106fe65` keeps the verified
+directory fd through temp-file creation, full short-write handling, chmod/chown
+and rename. The deterministic canary now preserves the peer file and cleans temp
+files after partial writes. The fixed `safeio.py` is deployed on both the VM and
+development panel as part of the app-files hotfix.
+
+BSA-2026-036 records the FileBrowser trusted-renderer follow-up. Commit `b8ec15d`
+separates trusted FileBrowser shell/assets into a dedicated `boron-files-ui`
+system user and backend, while only `/api` paths reach customer-UID backends.
+Unsafe origin-wide headers are stripped from backend responses and data HTML/SVG
+responses are sandboxed or attached. Forty-three focused proxy tests passed. A
+hostile VM backend that returned mixed-case HTML plus `Set-Cookie` could not
+control the `/files` shell; API HTML was sandboxed/attachment, the cookie header
+was stripped, and the admin session remained valid. The trusted frontend hotfix
+is installed on the development panel and the existing Chromium FileBrowser
+smoke still passes.
+
+The coverage inventory now has 901 entries: 865 pending, 26 reviewed-fixed and
+10 reviewed-public. New reviewed-fixed rows cover `scripts/app_files.py`,
+`scripts/wordpress_files.py`, and the trusted FileBrowser frontend unit, while
+existing FileBrowser route/RPC rows now cite both the per-account isolation and
+trusted-renderer evidence. This is still not a final security release gate:
+signed update packaging, installed upgrade/rollback, fresh install from the
+candidate, and the remaining route/resource review remain open.

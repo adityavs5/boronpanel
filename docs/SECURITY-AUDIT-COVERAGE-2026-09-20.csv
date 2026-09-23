@@ -13,11 +13,13 @@ cron,boron-maintenance.cron:8,deploy/boron-maintenance.cron,/opt/boron/scripts/m
 cron,boron-monitoring.cron:8,deploy/boron-monitoring.cron,/opt/boron/scripts/monitoring_check.py >> /var/log/boron/monitoring-check.log 2>&1,cron user=root,pending,
 cron,boron-sitestats.cron:9,deploy/boron-sitestats.cron,/opt/boron/scripts/sitestats_snapshot.py >> /var/log/boron/sitestats-snapshot.log 2>&1,cron user=root,pending,
 cron,boron-update.cron:8,deploy/boron-update.cron,/opt/boron/scripts/update_check.py >> /var/log/boron/update-check.log 2>&1,cron user=root,pending,
-dynamic-service,per-account FileBrowser unit,daemon/filebrowser_accounts.py,generated systemd unit,account owner and unit template pending review,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
+dynamic-service,per-account FileBrowser unit,daemon/filebrowser_accounts.py,generated systemd unit,account owner and unit template pending review,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 dynamic-service,per-account Node.js unit,daemon/nodeapps.py,generated systemd unit,account owner and unit template pending review,pending,
 dynamic-service,per-account Python unit,daemon/pythonapps.py,generated systemd unit,account owner and unit template pending review,pending,
 dynamic-service,per-account Redis unit,daemon/redisacct.py,generated systemd unit,account owner and unit template pending review,pending,
+dynamic-service,trusted FileBrowser frontend unit,daemon/filebrowser_accounts.py,generated systemd unit,account owner and unit template pending review,reviewed-fixed,BSA-2026-036; b8ec15d; 43 focused tests; VM hostile backend canary; primary trusted frontend service smoke
 native-helper,mail_restore_gate.c,daemon/mail_restore_gate.c,mail_restore_gate.c,setuid/capabilities and caller pending review,pending,
+python-script,app_files.py,scripts/app_files.py,app_files.py,invocation and effective UID pending review,reviewed-fixed,BSA-2026-034/035; 7edecb9; 41 focused tests; VM 10 UID canaries; VM static API install; primary hotfix hash/service/login smoke
 python-script,backup_scheduler.py,scripts/backup_scheduler.py,backup_scheduler.py,invocation and effective UID pending review,pending,
 python-script,cloudflare_ranges.py,scripts/cloudflare_ranges.py,cloudflare_ranges.py,invocation and effective UID pending review,pending,
 python-script,cloudflare_zone_check.py,scripts/cloudflare_zone_check.py,cloudflare_zone_check.py,invocation and effective UID pending review,pending,
@@ -42,6 +44,7 @@ python-script,update_finalize.py,scripts/update_finalize.py,update_finalize.py,i
 python-script,usage_alert_check.py,scripts/usage_alert_check.py,usage_alert_check.py,invocation and effective UID pending review,pending,
 python-script,usage_snapshot.py,scripts/usage_snapshot.py,usage_snapshot.py,invocation and effective UID pending review,pending,
 python-script,verify_phase7b_live.py,scripts/verify_phase7b_live.py,verify_phase7b_live.py,invocation and effective UID pending review,pending,
+python-script,wordpress_files.py,scripts/wordpress_files.py,wordpress_files.py,invocation and effective UID pending review,reviewed-fixed,BSA-2026-034; 09329f7/faf0a27; focused WordPress/safeio tests; VM UID canaries and WordPress acceptance; primary hotfix
 python-script,wordpress_manage.py,scripts/wordpress_manage.py,wordpress_manage.py,invocation and effective UID pending review,pending,
 route,DELETE /api/v1/accounts/{username}/apps/node/{app_id},api/routers/nodeapps.py,delete_node_app,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/apps/python/{app_id},api/routers/pythonapps.py,delete_python_app,get_identity,pending,
@@ -87,8 +90,8 @@ route,DELETE /api/v1/mail/domains/{domain}/mailboxes/{local_part},api/routers/ma
 route,DELETE /api/v1/security/ip-whitelist/{entry_id},api/routers/ipwhitelist.py,delete_entry,get_identity,pending,
 route,DELETE /api/v1/tokens/{token_id},api/routers/tokens.py,revoke_token,get_identity,pending,
 route,DELETE /api/v1/waf/custom-rules/{rule_id},api/routers/waf.py,delete_custom_rule,get_identity,pending,
-route,DELETE /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-route,DELETE /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
+route,DELETE /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+route,DELETE /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,GET /,api/main.py,root,,reviewed-public,tests/test_public_route_inventory.py
 route,GET /api/docs,api/main.py,swagger_ui,get_identity,pending,
 route,GET /api/openapi.json,api/main.py,openapi_schema,get_identity,pending,
@@ -154,7 +157,7 @@ route,GET /api/v1/accounts/{username}/email/imap-migrate/{job_id},api/routers/im
 route,GET /api/v1/accounts/{username}/email/{mailbox}/spam-filters,api/routers/spamfilter.py,list_entries,get_identity,pending,
 route,GET /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,list_protected_dirs,get_identity,pending,
 route,GET /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,list_users,get_identity,pending,
-route,GET /api/v1/accounts/{username}/files/launch,api/routers/filebrowser.py,launch,get_identity,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
+route,GET /api/v1/accounts/{username}/files/launch,api/routers/filebrowser.py,launch,get_identity,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,GET /api/v1/accounts/{username}/ftp,api/routers/ftp.py,list_ftp_accounts,get_identity,pending,
 route,GET /api/v1/accounts/{username}/git,api/routers/git.py,list_repos,get_identity,pending,
 route,GET /api/v1/accounts/{username}/git/{name}/push-log,api/routers/git.py,get_push_log,get_identity,pending,
@@ -267,14 +270,14 @@ route,GET /api/v1/whoami,api/routers/auth.py,whoami,get_identity,pending,
 route,GET /api/v1/wordpress,api/routers/wordpress.py,manager_inventory,get_identity,pending,
 route,GET /app,api/main.py,spa,,reviewed-public,tests/test_public_route_inventory.py
 route,GET /app/{spa_path:path},api/main.py,spa,,reviewed-public,tests/test_public_route_inventory.py
-route,GET /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-route,GET /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
+route,GET /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+route,GET /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,GET /healthz,api/main.py,healthz,,reviewed-public,tests/test_public_route_inventory.py
 route,GET /login,api/routers/auth.py,login_form,,reviewed-public,tests/test_public_route_inventory.py
-route,HEAD /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-route,HEAD /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-route,OPTIONS /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-route,OPTIONS /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
+route,HEAD /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+route,HEAD /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+route,OPTIONS /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+route,OPTIONS /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,PATCH /api/v1/accounts/{username}/apps/node/{app_id},api/routers/nodeapps.py,update_node_app,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/apps/python/{app_id},api/routers/pythonapps.py,update_python_app,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/crons/mailto,api/routers/cron.py,set_mailto,get_identity,pending,
@@ -309,8 +312,8 @@ route,PATCH /api/v1/cloudflare/accounts/{account_id},api/routers/cloudflare.py,s
 route,PATCH /api/v1/cloudflare/lockdown,api/routers/cloudflare.py,lockdown,get_identity,pending,
 route,PATCH /api/v1/cloudflare/settings,api/routers/cloudflare.py,set_settings,get_identity,pending,
 route,PATCH /api/v1/spamfilter/global-default,api/routers/email.py,set_global_default,get_identity,pending,
-route,PATCH /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-route,PATCH /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
+route,PATCH /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+route,PATCH /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,POST /api/v1/2fa/disable,api/routers/twofactor.py,disable,get_identity,pending,
 route,POST /api/v1/2fa/setup,api/routers/twofactor.py,setup,get_identity,pending,
 route,POST /api/v1/2fa/verify,api/routers/twofactor.py,verify,get_identity,pending,
@@ -447,8 +450,8 @@ route,POST /api/v1/waf/domain-override,api/routers/waf.py,set_domain_override,ge
 route,POST /api/v1/waf/enable,api/routers/waf.py,set_enabled,get_identity,pending,
 route,POST /api/v1/wordpress/scan,api/routers/wordpress.py,scan_installations,get_identity,pending,
 route,POST /change-password,api/routers/auth.py,change_password_submit,get_identity,pending,
-route,POST /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-route,POST /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
+route,POST /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+route,POST /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,POST /login,api/routers/auth.py,login_submit,,reviewed-public,tests/test_public_route_inventory.py
 route,POST /login/2fa,api/routers/auth.py,login_2fa_submit,,reviewed-public,tests/test_public_route_inventory.py
 route,POST /logout,api/routers/auth.py,logout,get_identity,pending,
@@ -470,8 +473,8 @@ route,PUT /api/v1/admin/templates/suspension-designs,api/routers/site_templates.
 route,PUT /api/v1/admin/templates/welcome-email,api/routers/site_templates.py,set_welcome_email,get_identity,pending,
 route,PUT /api/v1/backups/snapshots/policies/{policy_id},api/routers/backups.py,snapshot_update_policy,get_identity,pending,
 route,PUT /api/v1/dns/zones/{domain}/records,api/routers/dns.py,set_record,get_identity,pending,
-route,PUT /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-route,PUT /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
+route,PUT /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+route,PUT /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,WEBSOCKET /ws/accounts/{username}/terminal,api/routers/terminal.py,terminal_ws,manual-auth-inside-handler,pending,
 rpc,account.create,daemon/handlers_account.py,create_account,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,account.get,daemon/handlers_account.py,get_account,kernel-peer-uid; root-credential; policy=account_username,pending,
@@ -604,12 +607,12 @@ rpc,fail2ban.list_jails,daemon/fail2ban.py,list_jails,kernel-peer-uid; root-cred
 rpc,fail2ban.recent_events,daemon/fail2ban.py,recent_events,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,fail2ban.unban_all,daemon/fail2ban.py,unban_all_in_jail,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,fail2ban.unban_ip,daemon/fail2ban.py,unban_ip,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,fb.add_source,daemon/filebrowser.py,add_source,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-rpc,fb.bootstrap,daemon/filebrowser.py,bootstrap,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-rpc,fb.open,daemon/filebrowser.py,open_access,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-rpc,fb.refresh_all,daemon/filebrowser.py,refresh_all_sources,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-rpc,fb.remove_source,daemon/filebrowser.py,remove_source,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
-rpc,fb.status,daemon/filebrowser.py,status,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
+rpc,fb.add_source,daemon/filebrowser.py,add_source,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+rpc,fb.bootstrap,daemon/filebrowser.py,bootstrap,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+rpc,fb.open,daemon/filebrowser.py,open_access,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+rpc,fb.refresh_all,daemon/filebrowser.py,refresh_all_sources,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+rpc,fb.remove_source,daemon/filebrowser.py,remove_source,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
+rpc,fb.status,daemon/filebrowser.py,status,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 rpc,fileauth.disable,daemon/fileauth.py,disable_protection,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,fileauth.enable,daemon/fileauth.py,enable_protection,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,fileauth.list,daemon/fileauth.py,list_protected_dirs,kernel-peer-uid; root-credential; policy=account_username,pending,
@@ -888,7 +891,7 @@ rpc,wpmanager.refresh,daemon/wpmanager.py,refresh_site,kernel-peer-uid; root-cre
 rpc,wpmanager.remove,daemon/wpmanager.py,remove,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,wpmanager.scan,daemon/wpmanager.py,scan,kernel-peer-uid; root-credential; policy=mixed_admin_or_account,pending,
 service,boron-api.service,deploy/boron-api.service,/opt/boron/.venv/bin/python -m api.serve,systemd user=boron-api,pending,
-service,boron-filebrowser@.service,deploy/boron-filebrowser@.service,/usr/local/bin/filebrowser-quantum -c /var/lib/boron-filebrowser/%i/config.yaml,systemd user=%i,reviewed-fixed,BSA-2026-030; 46547ff/112ed30; 92 focused tests; VM own-read/write and cross-account canaries; Chromium HTML/SVG isolation; primary hotfix smoke
+service,boron-filebrowser@.service,deploy/boron-filebrowser@.service,/usr/local/bin/filebrowser-quantum -c /var/lib/boron-filebrowser/%i/config.yaml,systemd user=%i,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 service,boron-provisiond.service,deploy/boron-provisiond.service,/opt/boron/.venv/bin/python -m daemon.server,systemd user=root,pending,
 shell-script,deploy.sh,scripts/deploy.sh,deploy.sh,invocation and effective UID pending review,pending,
 shell-script,install.sh,scripts/install.sh,install.sh,invocation and effective UID pending review,pending,
