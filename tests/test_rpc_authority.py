@@ -9,7 +9,8 @@ from daemon import handlers_auth, server
 from daemon.rpc_authority import AuthenticationError, AuthorizationError
 from daemon.rpc_policy import POLICY_BY_OPERATION
 from shared.db import write_session
-from shared.models import Account, ApiToken, BackupDestination, BackupJob, PanelUser, RestoreJob, Session, utcnow
+from shared.models import (Account, ApiToken, BackupDestination, BackupJob, PanelUser,
+                           ResellerAccount, ResellerPlan, ResellerProfile, RestoreJob, Session, utcnow)
 from shared.session_ids import session_digest
 
 
@@ -74,6 +75,35 @@ def test_customer_account_scope_checked_in_root_db(isolated_db, monkeypatch):
     with pytest.raises(AuthorizationError):
         asyncio.run(server.dispatch("account.get", {"username": "bob", "_role": "admin"},
                                     _credential(customer_session)))
+    assert seen == ["alice"]
+
+
+def test_reseller_scope_tracks_current_owner_and_profile_status(isolated_db, monkeypatch):
+    _setup_users()
+    reseller = handlers_auth.create_panel_user({
+        "username": "seller", "password": "ResellerPass123!", "role": "reseller",
+    })
+    with write_session() as db:
+        plan = ResellerPlan(name="reseller-plan")
+        db.add(plan)
+        db.flush()
+        profile = ResellerProfile(panel_user_id=reseller["id"], plan_id=plan.id)
+        db.add(profile)
+        db.flush()
+        alice_id = db.scalar(select(Account.id).where(Account.username == "alice"))
+        db.add(ResellerAccount(reseller_id=profile.id, account_id=alice_id))
+    seller_session = handlers_auth.create_session({"panel_user_id": reseller["id"]})["session_id"]
+    seen = []
+    monkeypatch.setitem(server.OP_TABLE, "account.get", lambda params: seen.append(params["username"]) or {"ok": True})
+    assert asyncio.run(server.dispatch("account.get", {"username": "alice"},
+                                       _credential(seller_session))) == {"ok": True}
+    with pytest.raises(AuthorizationError):
+        asyncio.run(server.dispatch("account.get", {"username": "bob"}, _credential(seller_session)))
+    with write_session() as db:
+        profile = db.scalar(select(ResellerProfile).where(ResellerProfile.panel_user_id == reseller["id"]))
+        profile.status = "suspended"
+    with pytest.raises(AuthenticationError):
+        asyncio.run(server.dispatch("account.get", {"username": "alice"}, _credential(seller_session)))
     assert seen == ["alice"]
 
 
