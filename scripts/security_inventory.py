@@ -15,6 +15,7 @@ from fastapi.routing import APIRoute, APIWebSocketRoute, _IncludedRouter
 
 from api.main import app
 from daemon.server import OP_TABLE
+from daemon.rpc_policy import POLICY_BY_OPERATION
 
 
 def _dependencies(dependant) -> list[str]:
@@ -66,7 +67,7 @@ def inventory_rows() -> list[dict[str, str]]:
             "name": name,
             "source": _source(handler),
             "handler": getattr(handler, "__name__", repr(handler)),
-            "auth_dependencies": "kernel-peer-uid; operation-policy-pending-review",
+            "auth_dependencies": "kernel-peer-uid; root-credential; policy=" + POLICY_BY_OPERATION.get(name, "MISSING"),
             "review_status": "pending",
             "test_evidence": "",
         })

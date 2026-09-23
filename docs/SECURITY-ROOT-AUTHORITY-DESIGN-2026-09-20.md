@@ -1,6 +1,6 @@
 # Root daemon authorization boundary — design and release blocker
 
-Status: design only, not implemented or verified. Finding BSA-2026-005 remains High and open.
+Status: implemented and verified with focused source tests and disposable-VM RPC canaries. Finding BSA-2026-005 remains open for installed migration, rollback, and full-system acceptance; see the audit checkpoint for current evidence.
 
 ## Current authority
 

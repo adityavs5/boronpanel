@@ -375,3 +375,29 @@ Important pending work, in risk order:
 
 The work remains an active audit. There is no security release tag or GitHub
 push from this worktree yet. Do not describe any source-only fix as deployed.
+
+### 2026-09-23 continued audit
+
+Commit `0d0522b` atomically claims pending update/rollback jobs, uses the saved
+version/target, and revalidates rollback candidacy. The updater suite passed
+81 tests, plus two additional positive/concurrent-claim tests. The previously
+stalled malware/snapshot/update API suites passed 25 tests outside the local
+socket-restricted sandbox. On the disposable Ubuntu VM, 120 tests passed across
+cPanel import, portable archives, WordPress, app installer and update finalizer,
+including both earlier host-dependent cPanel certificate/ACL checks.
+
+BSA-2026-029: second factors were replayable within their time window, and
+recovery-code read/consume was not serialized. Commit `87ac752` adds an additive
+last-used timestep column and serializes enrollment/verification/recovery
+consumption. Enrollment cannot regenerate recovery codes once enabled. Existing
+enrollments survive the idempotent migration. Authentication/session regression
+suite passed 55 tests; the additional migration case passed separately. Three
+RPC policy matrix tests also passed, covering every operation's anonymous
+disposition, all admin-policy denials for customer/reseller identities, and all
+shared account policy groups against foreign and mismatched account/domain
+identifiers. These policy tests do not replace individual handler reviews.
+
+A complete regression run of `87ac752` is running in the separate disposable-VM
+source directory `/root/boron-audit-suite-87ac752`, with production secret loading
+disabled and a protected log `/root/boron-audit-suite-87ac752.log`. It is not yet
+a passed release gate. The running panel has not yet received this commit.
