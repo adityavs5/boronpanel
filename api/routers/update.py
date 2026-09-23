@@ -41,12 +41,8 @@ class RollbackBody(BaseModel):
     totp_code: str | None = None
 
 
-def _require_confirmed_admin_action(identity: Identity, confirm: bool, totp_code: str | None) -> None:
-    """Shared gate for update/rollback: explicit confirm flag, a real browser
-    session (API tokens carry panel_user_id=-1 and cannot satisfy a TOTP
-    check -- same rule as twofactor.py's _require_session_identity), and a
-    fresh TOTP code whenever the admin has 2FA enabled (goal security rule:
-    2FA confirmation required for update if enabled)."""
+def _require_confirmed_admin_action(identity: Identity, confirm: bool) -> None:
+    """Give immediate UI feedback; borond repeats this and verifies 2FA."""
     if not confirm:
         raise HTTPException(status_code=400, detail="pass confirm=true to proceed")
     if identity.panel_user_id is None or identity.panel_user_id < 0:
@@ -54,19 +50,6 @@ def _require_confirmed_admin_action(identity: Identity, confirm: bool, totp_code
             status_code=400,
             detail="panel updates require a browser session, not an API token",
         )
-    status = call_daemon("totp.status", identity, panel_user_id=identity.panel_user_id)
-    if status.get("enabled"):
-        if not totp_code or not totp_code.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="2FA confirmation required: supply totp_code",
-            )
-        check = call_daemon(
-            "totp.check_login_code", identity,
-            panel_user_id=identity.panel_user_id, code=totp_code.strip(),
-        )
-        if not check.get("valid"):
-            raise HTTPException(status_code=403, detail="invalid 2FA code")
 
 
 @admin_api_router.get("/status")
@@ -85,18 +68,20 @@ def update_check_now(identity: Identity = Depends(get_identity)):
 @admin_api_router.post("/start")
 def update_start(body: StartUpdateBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
-    _require_confirmed_admin_action(identity, body.confirm, body.totp_code)
+    _require_confirmed_admin_action(identity, body.confirm)
     return call_daemon(
         "update.start", identity,
         initiated_by=identity.username, to_version=body.to_version,
+        confirm=body.confirm, totp_code=body.totp_code,
     )
 
 
 @admin_api_router.post("/rollback")
 def update_rollback(body: RollbackBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
-    _require_confirmed_admin_action(identity, body.confirm, body.totp_code)
-    return call_daemon("update.rollback", identity, initiated_by=identity.username)
+    _require_confirmed_admin_action(identity, body.confirm)
+    return call_daemon("update.rollback", identity, initiated_by=identity.username,
+                       confirm=body.confirm, totp_code=body.totp_code)
 
 
 @admin_api_router.get("/log")

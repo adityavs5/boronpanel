@@ -139,7 +139,7 @@ def list_account_restores(username: str, identity: Identity = Depends(get_identi
 def ui_account_backups(request: Request, username: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     jobs = call_daemon("backup.job.list", identity, username=username)["jobs"]
-    destinations = call_daemon("backup.destination.list", identity)["destinations"]
+    destinations = call_daemon("backup.destination.list", identity, username=username)["destinations"]
     return templates.TemplateResponse(
         request,
         "account_backups.html",

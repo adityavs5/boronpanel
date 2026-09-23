@@ -81,7 +81,8 @@ def disable(body: DisableBody, identity: Identity = Depends(get_identity)):
         current_ok = user is not None and verify_password(body.current_password, user.password_hash)
     if not current_ok:
         raise HTTPException(status_code=401, detail="current password is incorrect")
-    return call_daemon("totp.disable", identity, panel_user_id=identity.panel_user_id)
+    return call_daemon("totp.disable", identity, panel_user_id=identity.panel_user_id,
+                       current_password=body.current_password)
 
 
 # --- server-rendered UI ------------------------------------------------------
@@ -126,5 +127,6 @@ def ui_disable(current_password: str = Form(...), identity: Identity = Depends(g
         user = db.get(PanelUser, identity.panel_user_id)
         current_ok = user is not None and verify_password(current_password, user.password_hash)
     if current_ok:
-        call_daemon("totp.disable", identity, panel_user_id=identity.panel_user_id)
+        call_daemon("totp.disable", identity, panel_user_id=identity.panel_user_id,
+                    current_password=current_password)
     return RedirectResponse("/ui/2fa", status_code=303)

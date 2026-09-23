@@ -1,18 +1,18 @@
-"""Auth/RBAC for boron-api.
+"""HTTP identity resolution and presentation guards for boron-api.
 
 ARCHITECTURE.md SS9: role-aware access control, with the same auth dependency
 applied uniformly across every router regardless of HTTP verb -- a direct,
 deliberate countermeasure to CyberPanel's CVE-2024-51567 (their input
 sanitizer only checked POST, so PUT bypassed it). Session cookies are
-itsdangerous-signed (httpOnly), backed by a real Session row so they can be
-revoked server-side; API tokens are SHA-256-hashed bearer tokens for
-machine-to-machine use (the "integration surface for a billing system").
+itsdangerous-signed (httpOnly); sessions and API tokens are SHA-256-hashed in
+the API-readable database. Root RPC authority is independently derived by
+daemon.rpc_authority from the raw credential on each call.
 """
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastapi import Cookie, Header, HTTPException
 from starlette.requests import Request
@@ -30,27 +30,6 @@ COOKIE_MAX_AGE_SECONDS = 7 * 24 * 3600
 API_TOKEN_MAX_AGE_SECONDS = 90 * 24 * 3600
 
 _serializer = URLSafeTimedSerializer(settings.session_secret, salt="boron-session")
-
-# Phase 5 feature 10: TOTP 2FA login's second step. A separate salt from
-# the real session serializer above -- this token only ever proves
-# "the password check already passed for this panel_user_id a moment
-# ago," never grants an authenticated session by itself, so it's
-# deliberately short-lived (5 minutes) and carried as a hidden form
-# field, not a cookie.
-_TWOFACTOR_PENDING_MAX_AGE_SECONDS = 5 * 60
-_twofactor_serializer = URLSafeTimedSerializer(settings.session_secret, salt="boron-2fa-pending")
-
-
-def sign_twofactor_pending(panel_user_id: int) -> str:
-    return _twofactor_serializer.dumps(panel_user_id)
-
-
-def unsign_twofactor_pending(token: str) -> int | None:
-    try:
-        return _twofactor_serializer.loads(token, max_age=_TWOFACTOR_PENDING_MAX_AGE_SECONDS)
-    except BadSignature:
-        return None
-
 
 def sign_session_id(session_id: str) -> str:
     return _serializer.dumps(session_id)
@@ -70,6 +49,9 @@ class Identity:
     role: str  # admin | reseller | customer
     account_id: int | None
     auth_method: str  # session | token
+    # Raw proof is kept in this request-local object only and sent in the
+    # top-level RPC envelope. Metadata fields are diagnostic, never proof.
+    rpc_credential: str | None = field(default=None, repr=False)
     # Phase 8 feature 1: set only while an admin is impersonating a customer.
     # `impersonator` is the admin's panel username (also carried as this
     # Identity's audit `username`, so actions taken while impersonating are
@@ -119,15 +101,11 @@ def _identity_from_session_cookie(cookie_value: str) -> Identity | None:
             if account is None:
                 return None
             return Identity(
-                panel_user_id=user.id,
-                username=imp.admin_username,
-                role="customer",
-                account_id=imp.account_id,
-                auth_method="session",
-                impersonator=imp.admin_username,
-                impersonated_account=account.username,
+                panel_user_id=user.id, username=imp.admin_username, role="customer",
+                account_id=imp.account_id, auth_method="session", rpc_credential=session_id,
+                impersonator=imp.admin_username, impersonated_account=account.username,
             )
-        return Identity(user.id, user.username, user.role, user.account_id, "session")
+        return Identity(user.id, user.username, user.role, user.account_id, "session", rpc_credential=session_id)
 
 
 def _identity_from_bearer_token(token: str) -> Identity | None:
@@ -139,7 +117,8 @@ def _identity_from_bearer_token(token: str) -> Identity | None:
         created = row.created_at.replace(tzinfo=dt.timezone.utc) if row.created_at.tzinfo is None else row.created_at
         if (dt.datetime.now(dt.timezone.utc) - created).total_seconds() > API_TOKEN_MAX_AGE_SECONDS:
             return None
-        return Identity(panel_user_id=-1, username=row.label, role=row.role, account_id=row.account_id, auth_method="token")
+        return Identity(panel_user_id=-1, username=row.label, role=row.role, account_id=row.account_id,
+                        auth_method="token", rpc_credential=token)
 
 
 def enforce_listener_role(identity,connection):

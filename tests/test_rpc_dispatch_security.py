@@ -21,6 +21,10 @@ def synchronous_dispatch_executor(monkeypatch):
         return future
 
     monkeypatch.setattr(asyncio.BaseEventLoop, "run_in_executor", run_immediately)
+    from daemon.rpc_authority import Principal
+    monkeypatch.setattr(server, "resolve_principal", lambda _: Principal("admin", "admin", None, 1, "session"))
+    for op in ("test.secret_failure", "test.validation_failure", "test.safe_validation"):
+        monkeypatch.setitem(server.POLICY_BY_OPERATION, op, "global_admin")
 
 
 @pytest.mark.parametrize("exception,public_message", [

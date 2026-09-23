@@ -305,6 +305,19 @@ class LoginAttempt(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class LoginChallenge(Base):
+    """Root-issued, short-lived proof that a password step succeeded."""
+
+    __tablename__ = "login_challenges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    panel_user_id: Mapped[int] = mapped_column(ForeignKey("panel_users.id"))
+    password_hash: Mapped[str] = mapped_column(String(256))
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Session(Base):
     __tablename__ = "sessions"
 

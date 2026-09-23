@@ -21,12 +21,14 @@ async def _frame_from_bytes(raw: bytes) -> dict:
 
 
 def test_request_round_trip_via_streamreader():
-    req = RpcRequest(op="account.create", params={"username": "demo"})
+    req = RpcRequest(op="account.create", params={"username": "demo"},
+                     credential={"type": "session", "value": "opaque-session"})
     raw = req.to_bytes()
 
     frame = asyncio.run(_frame_from_bytes(raw))
     assert frame["op"] == "account.create"
     assert frame["params"] == {"username": "demo"}
+    assert frame["credential"] == {"type": "session", "value": "opaque-session"}
     assert frame["request_id"] == req.request_id
 
 

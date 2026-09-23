@@ -1167,20 +1167,19 @@ create_admin() {
         printf '  %s prompt for admin username/password, create panel admin\n' "${C_YELLOW}[dry]${C_RESET}"
         return 0
     fi
-    # provisiond authenticates the Unix socket peer and rejects uid 0. The
-    # installer itself runs as root, so bootstrap through the API service
-    # identity just as a manual operator invocation must.
+    # Initial admin creation is a root-only local command. The API service
+    # socket cannot mint an administrator without a panel credential.
     if [[ -n "$ADMIN_PASSWORD" ]]; then
-        if printf '%s' "$ADMIN_PASSWORD" | sudo -u boron-api -- "${VENV}/bin/python" \
+        if printf '%s' "$ADMIN_PASSWORD" | "${VENV}/bin/python" \
                 "${DEST}/scripts/create_admin.py" --username "$ADMIN_USER" --password-stdin; then
             ok "admin '${ADMIN_USER}' created"
         else
-            warn "admin creation returned non-zero -- create it manually as boron-api"
+            warn "admin creation returned non-zero -- create it manually as root"
         fi
-    elif sudo -u boron-api -- "${VENV}/bin/python" "${DEST}/scripts/create_admin.py" --username "$ADMIN_USER"; then
+    elif "${VENV}/bin/python" "${DEST}/scripts/create_admin.py" --username "$ADMIN_USER"; then
         ok "admin '${ADMIN_USER}' created"
     else
-        warn "admin creation returned non-zero (may already exist) -- create manually as boron-api: sudo -u boron-api python3 '${DEST}/scripts/create_admin.py' --username '${ADMIN_USER}'"
+        warn "admin creation returned non-zero (may already exist) -- create manually as root: '${VENV}/bin/python' '${DEST}/scripts/create_admin.py' --username '${ADMIN_USER}'"
     fi
 }
 

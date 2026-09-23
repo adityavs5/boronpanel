@@ -64,6 +64,7 @@ def test_identity_from_valid_session_cookie(isolated_db):
     assert identity.username == "admin1"
     assert identity.role == "admin"
     assert identity.auth_method == "session"
+    assert identity.rpc_credential == session_result["session_id"]
 
 
 def test_identity_from_revoked_session_is_none(isolated_db):
@@ -106,6 +107,7 @@ def test_identity_from_bearer_token(isolated_db):
     assert identity is not None
     assert identity.role == "admin"
     assert identity.auth_method == "token"
+    assert identity.rpc_credential == result["token"]
 
 
 def test_identity_from_revoked_token_is_none(isolated_db):

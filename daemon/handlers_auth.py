@@ -1,10 +1,8 @@
-"""Panel auth primitives borond exposes so boron-api (which only
-ever opens SQLite read-only, ARCHITECTURE.md SS4) can still create/revoke
-sessions and API tokens -- the only *writes* auth needs. Password
-verification itself is plain application logic (no privileged system
-action involved) and happens in boron-api directly against a read-only
-PanelUser row; only the resulting state changes (new session row, revoked
-session, new/revoked token, new panel user) route through here.
+"""Root-owned panel authentication and credential state.
+
+borond verifies passwords and second factors before minting browser sessions.
+Legacy mutation helpers remain for root-internal use and are blocked at the
+public RPC policy boundary.
 """
 from __future__ import annotations
 
@@ -16,8 +14,8 @@ import string
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, ApiToken, LoginAttempt, PanelUser, Session, utcnow
-from shared.passwords import hash_password
+from shared.models import Account, ApiToken, LoginAttempt, LoginChallenge, PanelUser, Session, TotpCredential, utcnow
+from shared.passwords import hash_password, verify_password
 from shared.validation import ValidationError, validate_password_strength
 from shared.session_ids import session_digest
 
@@ -184,6 +182,75 @@ def create_session(params: dict) -> dict:
     if account_snapshot is not None:
         events.emit("login.new", account_snapshot)
     return {"session_id": session_id, "expires_at": expires_at.isoformat()}
+
+
+def login_begin(params: dict) -> dict:
+    """The only unauthenticated session path: root checks the password first."""
+    username = params.get("username")
+    password = params.get("password")
+    if not isinstance(username, str) or not isinstance(password, str) or not username:
+        raise ValidationError("invalid login request")
+    gate = check_login_lockout({"username": username})
+    if gate["locked"]:
+        return {"locked": True, "retry_after_seconds": gate["retry_after_seconds"]}
+    with write_session() as db:
+        user = db.scalar(select(PanelUser).where(PanelUser.username == username))
+        valid = user is not None and not user.disabled and verify_password(password, user.password_hash)
+        if not valid:
+            return {"valid": False}
+        has_totp = db.scalar(select(TotpCredential.id).where(
+            TotpCredential.panel_user_id == user.id, TotpCredential.enabled.is_(True),
+        )) is not None
+        user_id = user.id
+        role = user.role
+        account_id = user.account_id
+        if has_totp:
+            raw = secrets.token_urlsafe(32)
+            db.add(LoginChallenge(token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+                                  panel_user_id=user_id, password_hash=user.password_hash,
+                                  expires_at=utcnow() + dt.timedelta(minutes=5)))
+    if has_totp:
+        return {"needs_2fa": True, "pending_token": raw,
+                "role": role, "account_id": account_id, "panel_user_id": user_id}
+    record_login_result({"username": username, "success": True})
+    result = create_session({"panel_user_id": user_id})
+    return {"valid": True, "role": role, "account_id": account_id, **result}
+
+
+def login_finish(params: dict) -> dict:
+    """Consume a root-issued challenge after root verifies TOTP or recovery."""
+    raw = params.get("pending_token")
+    code = params.get("code")
+    if not isinstance(raw, str) or not isinstance(code, str) or not raw:
+        raise ValidationError("invalid second-factor request")
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    with write_session() as db:
+        challenge = db.scalar(select(LoginChallenge).where(LoginChallenge.token_hash == digest))
+        now = utcnow()
+        if challenge is None or challenge.used_at is not None or challenge.expires_at.replace(tzinfo=dt.timezone.utc) <= now:
+            return {"valid": False}
+        user = db.get(PanelUser, challenge.panel_user_id)
+        if user is None or user.disabled or user.password_hash != challenge.password_hash:
+            return {"valid": False}
+        username, user_id, role, account_id = user.username, user.id, user.role, user.account_id
+    gate = check_login_lockout({"username": username})
+    if gate["locked"]:
+        return {"locked": True, "retry_after_seconds": gate["retry_after_seconds"]}
+    from daemon.totp import check_login_code
+
+    if not check_login_code({"panel_user_id": user_id, "code": code})["valid"]:
+        return {"valid": False}
+    from sqlalchemy import update
+
+    with write_session() as db:
+        consumed = db.execute(update(LoginChallenge).where(
+            LoginChallenge.token_hash == digest, LoginChallenge.used_at.is_(None),
+        ).values(used_at=utcnow()))
+        if consumed.rowcount != 1:
+            return {"valid": False}
+    record_login_result({"username": username, "success": True})
+    result = create_session({"panel_user_id": user_id})
+    return {"valid": True, "role": role, "account_id": account_id, **result}
 
 
 def revoke_session(params: dict) -> dict:

@@ -33,11 +33,13 @@ class RpcError(Exception):
 class RpcRequest:
     op: str
     params: dict[str, Any] = field(default_factory=dict)
+    credential: dict[str, str] | None = None
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def to_bytes(self) -> bytes:
         payload = json.dumps(
-            {"op": self.op, "params": self.params, "request_id": self.request_id}
+            {"op": self.op, "params": self.params, "credential": self.credential,
+             "request_id": self.request_id}
         ).encode("utf-8")
         return _LEN_STRUCT.pack(len(payload)) + payload
 
@@ -93,8 +95,8 @@ class RpcClient:
         self.socket_path = socket_path
         self.timeout = timeout
 
-    def call(self, op: str, **params: Any) -> Any:
-        req = RpcRequest(op=op, params=params)
+    def call(self, op: str, *, credential: dict[str, str] | None = None, **params: Any) -> Any:
+        req = RpcRequest(op=op, params=params, credential=credential)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(self.timeout)
         try:

@@ -24,6 +24,8 @@ from shared.validation import ValidationError
 
 from daemon import panel_jobs, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
+from daemon.rpc_authority import AuthenticationError, AuthorizationError, authorize, resolve_principal
+from daemon.rpc_policy import POLICY_BY_OPERATION
 
 logger = logging.getLogger("borond")
 
@@ -186,6 +188,8 @@ OP_TABLE = {
     "panel_user.create": handlers_auth.create_panel_user,
     "panel_user.set_password": handlers_auth.set_panel_user_password,
     "auth.create_session": handlers_auth.create_session,
+    "auth.login.begin": handlers_auth.login_begin,
+    "auth.login.finish": handlers_auth.login_finish,
     "auth.revoke_session": handlers_auth.revoke_session,
     # Security audit finding F2: login brute-force throttling
     "auth.check_login_lockout": handlers_auth.check_login_lockout,
@@ -734,7 +738,19 @@ def register_op(name: str, handler) -> None:
     """Used by later phases (vhost/dns/db/mail/ssl) to add ops without
     server.py growing a giant import list at the top -- each phase's
     __init__ calls this once at daemon startup."""
+    if name not in POLICY_BY_OPERATION:
+        raise RuntimeError(f"RPC operation {name!r} has no reviewed policy")
     OP_TABLE[name] = handler
+
+
+def verify_policy_registry() -> None:
+    missing = set(OP_TABLE) - set(POLICY_BY_OPERATION)
+    stale = set(POLICY_BY_OPERATION) - set(OP_TABLE)
+    if missing or stale:
+        raise RuntimeError(f"RPC policy registry mismatch: missing={sorted(missing)}, stale={sorted(stale)}")
+
+
+verify_policy_registry()
 
 
 # Ops that change an account's lifecycle state. Successful dispatches of
@@ -774,14 +790,27 @@ def _redact_request_secrets(message: str, params: dict) -> str:
     return message[:1000]
 
 
-async def dispatch(op: str, params: dict) -> dict:
-    actor = params.pop("_actor", "unknown")
-    role = params.pop("_role", "unknown")
+async def dispatch(op: str, params: dict, credential: object = None) -> dict:
+    params.pop("_actor", None)
+    params.pop("_role", None)
     ip = params.pop("_ip", None)
     handler = OP_TABLE.get(op)
     if handler is None:
-        audit.record(actor, role, op, None, params, "failed", "unknown op")
+        audit.record("unknown", "unknown", op, None, params, "failed", "unknown op")
         raise LookupError(f"unknown op '{op}'")
+
+    # Resolve and enforce on the daemon side before allocating a worker or
+    # entering a privileged handler. Client labels never supply authority.
+    principal = None
+    try:
+        if op not in ("auth.login.begin", "auth.login.finish"):
+            principal = resolve_principal(credential)
+        authorize(op, params, principal)
+    except (AuthenticationError, AuthorizationError) as exc:
+        audit.record("unknown", "unknown", op, params.get("username"), params, "failed", type(exc).__name__)
+        raise
+    actor = principal.username if principal else "login"
+    role = principal.role if principal else "anonymous"
 
     loop = asyncio.get_running_loop()
     executor = REPORTING_EXECUTOR if op in REPORTING_OPS else None
@@ -841,12 +870,22 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         writer.close()
         return
 
+    if not isinstance(request, dict) or not isinstance(request.get("op"), str) or not isinstance(request.get("params", {}), dict):
+        writer.write(encode_response(False, error_code="bad_request", error_message="malformed RPC request"))
+        await writer.drain()
+        writer.close()
+        return
     op = request.get("op", "")
-    params = request.get("params", {}) or {}
+    params = request.get("params", {})
+    credential = request.get("credential")
 
     try:
-        result = await dispatch(op, dict(params))
+        result = await dispatch(op, dict(params), credential)
         writer.write(encode_response(True, result=result))
+    except AuthenticationError as exc:
+        writer.write(encode_response(False, error_code="unauthenticated", error_message=str(exc)))
+    except AuthorizationError as exc:
+        writer.write(encode_response(False, error_code="forbidden", error_message=str(exc)))
     except (ValidationError, ValueError, LookupError) as exc:
         writer.write(encode_response(False, error_code="bad_request", error_message=str(exc)))
     except Exception as exc:  # noqa: BLE001
@@ -977,8 +1016,7 @@ async def amain() -> None:
 def main() -> None:
     if os.geteuid() != 0:
         raise SystemExit("borond must run as root")
-    # Same guard as boron-api's startup: the daemon signs the 2FA-pending
-    # token with this key too, so refuse to run on the insecure default.
+    # Keep both services from starting with the insecure cookie-signing default.
     from shared.config import require_secure_session_secret
 
     require_secure_session_secret()
