@@ -109,6 +109,7 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert "provisioning daemon socket was not ready for boron-api after 30 seconds" in source
     assert source.count("mysql --defaults-file=/root/.my.cnf") == 3
     assert "existing_root_pass" in source
+    assert "systemctl enable --now clamav-freshclam" in source
     assert "web UI built from frontend source" in source
     filebrowser_source = Path(__file__).resolve().parent.parent.joinpath("daemon/filebrowser.py").read_text()
     assert '["iptables", "-I", "OUTPUT", str(position)]' in filebrowser_source

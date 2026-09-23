@@ -164,6 +164,13 @@ reconciles the root client file from the protected secret, and every Roundcube
 database command names that file explicitly. Nine installer tests, shellcheck
 and bash syntax pass.
 
+The first reboot left `clamav-freshclam` disabled and inactive even though
+the package had started it during installation. That would freeze malware
+definitions at their installation-day versions. The installer now explicitly
+enables and starts the signature updater with Boron's core services. Nine
+installer tests, shellcheck and bash syntax pass; disposable activation and a
+second persistence check remain to close this finding.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic

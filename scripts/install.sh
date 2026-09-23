@@ -1147,7 +1147,11 @@ start_services() {
     run systemctl restart lshttpd
     run systemctl enable --now boron-api
     run systemctl enable --now boron-filebrowser
-    ok "provisiond + api + FileBrowser started; OLS baseline applied"
+    # The package starts freshclam during installation but leaves its unit
+    # disabled on Ubuntu 24.04. Without explicit enablement the malware
+    # scanner keeps using installation-day signatures after the first reboot.
+    run systemctl enable --now clamav-freshclam
+    ok "provisiond + api + FileBrowser + ClamAV updates started; OLS baseline applied"
 }
 
 bootstrap_security_services() {
