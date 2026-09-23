@@ -20,10 +20,11 @@ import yaml
 
 from daemon.procutil import run
 from shared.config import settings
-from shared.filebrowser_paths import account_socket
+from shared.filebrowser_paths import account_socket, frontend_socket
 from shared.validation import validate_username
 
 TEMPLATE_PATH = "/etc/systemd/system/boron-filebrowser@.service"
+FRONTEND_TEMPLATE_PATH = "/etc/systemd/system/boron-filebrowser-ui.service"
 _lifecycle_lock = RLock()
 
 
@@ -72,7 +73,9 @@ def bootstrap() -> dict:
     # silently fall back to the shared root process if isolation cannot start.
     run(["systemctl", "disable", "--now", "boron-filebrowser.service"], timeout=30)
     Path(TEMPLATE_PATH).write_text(unit_content())
+    _bootstrap_frontend()
     run(["systemctl", "daemon-reload"], timeout=20, check=True)
+    run(["systemctl", "start", "boron-filebrowser-ui.service"], timeout=30, check=True)
     return {"status": "ok", "service": "boron-filebrowser@.service", "active": "on-demand"}
 
 
@@ -148,3 +151,40 @@ def _stop(username: str) -> None:
             raise RuntimeError("file manager state path was substituted")
         if path.exists():
             shutil.rmtree(path)
+
+
+def _bootstrap_frontend() -> None:
+    """Tenant backends must never supply trusted executable panel assets."""
+    name = 'boron-files-ui'
+    try:
+        user = pwd.getpwnam(name)
+    except KeyError:
+        run(['useradd', '--system', '--no-create-home', '--home-dir', '/nonexistent',
+             '--shell', '/usr/sbin/nologin', name], timeout=30, check=True)
+        user = pwd.getpwnam(name)
+    api_gid = grp.getgrnam('boron-api').gr_gid
+    data_root = Path(settings.filebrowser_account_data_dir)
+    runtime_root = Path(settings.filebrowser_runtime_dir)
+    for root in (data_root, runtime_root):
+        root.parent.mkdir(parents=True, exist_ok=True)
+        _directory(root, 0, 0, 0o755)
+    data = data_root / '_frontend'
+    _directory(data, 0, 0, 0o755)
+    _directory(data / 'state', user.pw_uid, user.pw_gid, 0o700)
+    _directory(data / 'empty', 0, 0, 0o755)
+    runtime = runtime_root / '_frontend'
+    _directory(runtime, user.pw_uid, api_gid, 0o750)
+    run(['setfacl', '-m', 'd:u:boron-api:rwx', str(runtime)], timeout=10, check=True)
+    from daemon.filebrowser import build_config
+    config = build_config()
+    config['server'].update(socket=frontend_socket(), database=str(data / 'state/database.db'),
+                            cacheDir=str(data / 'state/cache'), disableUpdateCheck=True,
+                            sources=[{'path': str(data / 'empty'), 'name': 'home',
+                                      'config': {'defaultEnabled': True}}])
+    (data / 'config.yaml').write_text(yaml.safe_dump(config, sort_keys=False))
+    (data / 'config.yaml').chmod(0o644)
+    home = str(Path(settings.home_base) / '_frontend')
+    unit = unit_content().replace('%i', '_frontend')
+    unit = unit.replace('User=_frontend', 'User='+name).replace('Group=_frontend', 'Group='+name)
+    unit = unit.replace('BindPaths='+home+'\n', '').replace('ReadWritePaths='+home+' ', 'ReadWritePaths=')
+    Path(FRONTEND_TEMPLATE_PATH).write_text(unit)

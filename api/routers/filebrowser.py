@@ -46,7 +46,7 @@ from api.security import (
 from shared.config import settings
 from shared.db import read_session
 from shared.models import Account
-from shared.filebrowser_paths import account_socket
+from shared.filebrowser_paths import account_socket, frontend_socket
 
 api_router = APIRouter(prefix="/api/v1/accounts/{username}/files", tags=["filebrowser"])
 proxy_router = APIRouter(tags=["filebrowser-proxy"])
@@ -71,10 +71,18 @@ _HOP_BY_HOP = {
 _clients: dict[str, httpx.AsyncClient] = {}
 
 
+def _frontend_client() -> httpx.AsyncClient:
+    return _backend_client('_frontend', frontend_socket())
+
+
 def _account_client(username: str) -> httpx.AsyncClient:
+    return _backend_client(username, account_socket(username))
+
+
+def _backend_client(username: str, socket_path: str) -> httpx.AsyncClient:
     if username not in _clients:
         _clients[username] = httpx.AsyncClient(
-            transport=httpx.AsyncHTTPTransport(uds=account_socket(username)),
+            transport=httpx.AsyncHTTPTransport(uds=socket_path),
             timeout=httpx.Timeout(connect=10.0, read=None, write=None, pool=None),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=2),
         )
@@ -165,7 +173,9 @@ def _build_upstream_headers(request: Request, target: str) -> list[tuple[str, st
 def _build_response_headers(upstream: httpx.Response) -> list[tuple[str, str]]:
     return [
         (k, v) for k, v in upstream.headers.items()
-        if k.lower() not in _HOP_BY_HOP and k.lower() != "content-length"
+        if k.lower() not in _HOP_BY_HOP and k.lower() not in {
+            "content-length", "set-cookie", "clear-site-data", "service-worker-allowed", "refresh"
+        }
     ]
 
 
@@ -261,7 +271,10 @@ async def proxy(request: Request, path: str = ""):
         "http://filebrowser" + request.url.path,
         query=request.url.query.encode("utf-8"),
     )
-    client = _account_client(target)
+    # Only data APIs reach a tenant-controlled process. The shell and all
+    # executable assets come from a separate system UID with no customer homes.
+    is_data_api = path == "api" or path.startswith("api/")
+    client = _account_client(target) if is_data_api else _frontend_client()
     upstream_req = client.build_request(
         request.method,
         upstream_url,
@@ -279,7 +292,7 @@ async def proxy(request: Request, path: str = ""):
     # through untouched; the main-app CSP middleware leaves /files responses
     # that already carry a CSP alone and stamps its static fallback on the
     # rest.
-    if "text/html" in upstream.headers.get("content-type", ""):
+    if upstream.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "text/html":
         try:
             body = await upstream.aread()
         finally:
@@ -294,7 +307,7 @@ async def proxy(request: Request, path: str = ""):
         return Response(content=body, status_code=upstream.status_code, headers=headers)
 
     headers = dict(_build_response_headers(upstream))
-    if _is_active_document(upstream):
+    if is_data_api or _is_active_document(upstream):
         # An uploaded SVG/XHTML can be a browser document with script execution
         # privileges even though its MIME type is not text/html. Keep bundled
         # FB icons renderable as images while sandboxing direct navigation.

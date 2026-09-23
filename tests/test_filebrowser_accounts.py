@@ -67,3 +67,18 @@ def test_unit_confines_home_and_drops_all_privileges():
     assert f'BindPaths={settings.home_base}/%i\n' in unit
     assert 'User=root' not in unit
     assert 'ListenStream' not in unit
+
+
+def test_frontend_uses_separate_system_identity_and_no_tenant_source(isolated_instance, tmp_path, monkeypatch):
+    unit_path = tmp_path / 'ui.service'
+    monkeypatch.setattr(fb, 'FRONTEND_TEMPLATE_PATH', str(unit_path))
+    fb._bootstrap_frontend()
+    unit = unit_path.read_text()
+    assert 'User=boron-files-ui\n' in unit
+    assert 'Group=boron-files-ui\n' in unit
+    assert 'BindPaths=' not in unit
+    assert 'ProtectHome=tmpfs' in unit and 'CapabilityBoundingSet=\n' in unit
+    data = Path(settings.filebrowser_account_data_dir) / '_frontend'
+    config = yaml.safe_load((data / 'config.yaml').read_text())
+    assert config['server']['sources'][0]['path'] == str(data / 'empty')
+    assert 'createUserDir' not in config['server']['sources'][0]['config']

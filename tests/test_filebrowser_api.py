@@ -24,6 +24,7 @@ def isolated_backend_client(monkeypatch):
     client = httpx.AsyncClient()
     monkeypatch.setattr(fbr, "_client", client, raising=False)
     monkeypatch.setattr(fbr, "_account_client", lambda _username: client)
+    monkeypatch.setattr(fbr, "_frontend_client", lambda: client)
 
 
 # --- pure helpers ----------------------------------------------------------
@@ -139,7 +140,7 @@ def test_build_response_headers_drops_hop_by_hop_and_length():
     )
     out = {k.lower() for k, _ in fbr._build_response_headers(resp)}
     assert "content-type" in out
-    assert "set-cookie" in out
+    assert "set-cookie" not in out
     assert "content-length" not in out
     assert "connection" not in out
     assert "transfer-encoding" not in out
@@ -352,3 +353,32 @@ def test_filebrowser_shell_hashes_only_exact_url():
     assert fbr._is_spa_shell(request(base + "/"), upstream)
     assert not fbr._is_spa_shell(request(base + "/", b"download=site.html"), upstream)
     assert not fbr._is_spa_shell(request(base + "/api/resources/site.html"), upstream)
+
+
+@pytest.mark.parametrize('path', ['', 'files/home/', 'assets/main.js'])
+def test_shell_and_assets_never_use_tenant_backend(monkeypatch, path):
+    import asyncio
+    import httpx
+    from starlette.requests import Request
+    admin = Identity(panel_user_id=1, username='admin', role='admin', account_id=None, auth_method='session')
+    monkeypatch.setattr(fbr, '_resolve_identity', lambda request: admin)
+    monkeypatch.setattr(fbr, 'require_account_access', lambda *args: None)
+    def forbidden(*args):
+        pytest.fail('Tenant process must not supply trusted HTML or executable assets')
+    monkeypatch.setattr(fbr, '_account_client', forbidden)
+    async def send(request, **kwargs):
+        return httpx.Response(200, content=b'trusted frontend', headers={'content-type':'text/plain'})
+    monkeypatch.setattr(fbr._client, 'send', send)
+    request = Request({'type':'http', 'scheme':'https', 'server':('panel.example',2222),
+                       'path':'/files/'+path, 'method':'GET', 'headers':[(b'host',b'panel.example:2222'),
+                       (b'cookie',(fbr.FB_TARGET_COOKIE+'='+fbr._sign_target('demo1')).encode())]})
+    assert asyncio.run(fbr.proxy(request, path)).status_code == 200
+
+
+def test_backend_cannot_set_panel_cookies_or_origin_wide_controls():
+    import httpx
+    upstream = httpx.Response(200, headers={'Set-Cookie':'fh_session=attacker',
+        'Clear-Site-Data':'"*"', 'Service-Worker-Allowed':'/', 'Refresh':'0;url=https://attacker.invalid',
+        'Content-Type':'application/json'})
+    headers = dict(fbr._build_response_headers(upstream))
+    assert set(headers) == {'content-type'}

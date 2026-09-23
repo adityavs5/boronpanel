@@ -285,6 +285,7 @@ def test_restrict_backend_access_missing_api_user_does_not_raise(fb_env, monkeyp
 
 
 def test_bootstrap_disables_shared_root_backend(fb_env, monkeypatch):
+    monkeypatch.setattr("daemon.filebrowser_accounts._bootstrap_frontend", lambda: None)
     monkeypatch.setattr("os.path.exists", lambda p: True)
     result = fb.bootstrap({})
     assert result["active"] == "on-demand"
