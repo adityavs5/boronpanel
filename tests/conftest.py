@@ -1,4 +1,26 @@
+import base64
+import os
+from pathlib import Path
+import secrets
+import tempfile
+
 import pytest
+
+# Establish disposable configuration before importing any application module.
+# A test run must not read the installed server's keys or persist a generated
+# encryption key into /etc/boron (or a device such as /dev/null).
+_test_config = tempfile.TemporaryDirectory(prefix="boron-test-config-")
+_test_root = Path(_test_config.name)
+(_test_root / "boron.toml").write_text("")
+(_test_root / "secrets.env").write_text(
+    "SESSION_SECRET=" + secrets.token_hex(32) + "\n"
+    "APP_ENV_KEY=" + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode() + "\n"
+)
+(_test_root / "secrets.env").chmod(0o600)
+(_test_root / "api-secrets.env").write_text("")
+os.environ["BORON_CONFIG"] = str(_test_root / "boron.toml")
+os.environ["BORON_SECRETS"] = str(_test_root / "secrets.env")
+os.environ["BORON_API_SECRETS"] = str(_test_root / "api-secrets.env")
 
 from shared.config import settings
 
