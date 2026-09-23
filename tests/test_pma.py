@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 from sqlalchemy import select
@@ -8,7 +9,8 @@ from daemon import handlers_database as hdb
 from daemon import pma
 from shared.config import settings
 from shared.db import write_session
-from shared.models import PmaToken
+from shared.models import Account, PmaToken, utcnow
+from shared.validation import ValidationError
 
 
 @pytest.fixture()
@@ -116,6 +118,21 @@ def test_create_token_without_pma_hostname_returns_no_url(account_with_db, stub_
     assert result["pma_url"] is None
 
 
+def test_create_token_validates_pma_hostname_before_temp_user(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
+    monkeypatch.setattr(settings, "pma_hostname", "bad/host")
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    before = set(stub_mariadb)
+
+    with pytest.raises(ValidationError):
+        pma.create_token({"username": "demo1", "name": "shop"})
+
+    assert set(stub_mariadb) == before
+    assert not (tmp_path / "pma-tokens").exists()
+    with write_session() as session:
+        assert session.scalar(select(PmaToken)) is None
+
+
 def test_two_tokens_for_different_databases_get_different_ephemeral_users(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
     hdb.create_database({"username": "demo1", "name": "shop"})
@@ -166,6 +183,7 @@ def test_cleanup_leaves_unexpired_tokens_alone(account_with_db, stub_mariadb, st
 def test_bootstrap_pma_files_generates_config_and_signon_script(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "pma_docroot", str(tmp_path / "pma-docroot"))
     monkeypatch.setattr(settings, "pma_token_dir", "/var/lib/boron-pma-tokens")
+    monkeypatch.setattr(pma.os, "chown", lambda *args: None)
     (tmp_path / "pma-docroot").mkdir()
 
     secret = pma.bootstrap_pma_files()
@@ -182,6 +200,7 @@ def test_bootstrap_pma_files_generates_config_and_signon_script(tmp_path, monkey
 def test_bootstrap_pma_files_reuses_existing_blowfish_secret(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "pma_docroot", str(tmp_path / "pma-docroot"))
     monkeypatch.setattr(settings, "pma_token_dir", "/var/lib/boron-pma-tokens")
+    monkeypatch.setattr(pma.os, "chown", lambda *args: None)
     (tmp_path / "pma-docroot").mkdir()
 
     first = pma.bootstrap_pma_files()
@@ -222,6 +241,73 @@ def test_token_storage_failure_removes_temporary_login(account_with_db,stub_mari
     assert not list((tmp_path/'tokens').glob('*.json'))
 
 
+def test_token_dir_refuses_symlink_without_chowning_target(tmp_path, monkeypatch):
+    target = tmp_path / "target"
+    target.mkdir()
+    target.chmod(0o755)
+    link = tmp_path / "tokens"
+    link.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(settings, "pma_token_dir", str(link))
+
+    with pytest.raises(pma.PmaError, match="symbolic link"):
+        pma._token_dir()
+
+    assert target.stat().st_mode & 0o777 == 0o755
+
+
+def test_preexisting_token_path_does_not_follow_symlink(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
+    import hashlib
+
+    token = "KnownPmaTokenValueForCollisionTest"
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    canary = tmp_path / "canary.json"
+    canary.write_text("do-not-overwrite")
+    (token_dir / f"{token_hash}.json").symlink_to(canary)
+    monkeypatch.setattr(settings, "pma_token_dir", str(token_dir))
+    monkeypatch.setattr(settings, "pma_hostname", "pma.example")
+    monkeypatch.setattr(pma.secrets, "token_urlsafe", lambda _n: token)
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    before = set(stub_mariadb)
+
+    with pytest.raises(FileExistsError):
+        pma.create_token({"username": "demo1", "name": "shop"})
+
+    assert canary.read_text() == "do-not-overwrite"
+    assert set(stub_mariadb) == before
+    assert not os.path.lexists(token_dir / f"{token_hash}.json")
+
+
+def test_cleanup_invalid_token_hash_does_not_unlink_outside_token_dir(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
+    import datetime as dt
+
+    token_dir = tmp_path / "tokens"
+    token_dir.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("keep")
+    monkeypatch.setattr(settings, "pma_token_dir", str(token_dir))
+    user = "boronphpmyadminlogin_badrow"
+    stub_mariadb[user] = "pw"
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        session.add(
+            PmaToken(
+                token_hash="../outside",
+                account_id=account.id,
+                db_name="demo1_shop",
+                ephemeral_db_user=user,
+                expires_at=utcnow() - dt.timedelta(minutes=1),
+            )
+        )
+
+    assert pma.cleanup_expired_tokens() == 1
+    assert outside.read_text() == "keep"
+    assert user not in stub_mariadb
+    with write_session() as session:
+        assert session.scalar(select(PmaToken)) is None
+
+
 def test_prepare_root_keeps_php_worker_from_owning_package(isolated_db,tmp_path,monkeypatch):
     from types import SimpleNamespace
     root=tmp_path/'pma';root.mkdir();(root/'index.php').write_text('<?php')
@@ -242,6 +328,7 @@ def test_package_configuration_outside_webroot_is_used(tmp_path, monkeypatch):
     config = tmp_path / 'config.inc.php'
     (root / 'libraries/vendor_config.php').write_text("<?php return ['configFile' => '" + str(config) + "'];")
     monkeypatch.setattr(settings, 'pma_docroot', str(root))
+    monkeypatch.setattr(pma.os, "chown", lambda *args: None)
     secret = pma.bootstrap_pma_files()
     assert "'auth_type'] = 'signon'" in config.read_text()
     assert not (root / 'config.inc.php').exists()

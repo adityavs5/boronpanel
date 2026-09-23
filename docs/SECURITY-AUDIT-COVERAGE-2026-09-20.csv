@@ -4,7 +4,7 @@ cron,boron-cloudflare.cron:12,deploy/boron-cloudflare.cron,/opt/boron/scripts/cl
 cron,boron-cloudflare.cron:7,deploy/boron-cloudflare.cron,/opt/boron/scripts/cloudflare_zone_check.py >> /var/log/boron/cloudflare-zone-check.log 2>&1,cron user=root,pending,
 cron,boron-geoip.cron:3,deploy/boron-geoip.cron,"/bin/sh -c 'key=""$(cat /etc/boron/maxmind-license 2>/dev/null)""; [ -n ""$key"" ] || exit 0; MAXMIND_LICENSE_KEY=""$key"" /opt/boron/.venv/bin/python -c ""import os,sys; sys.path.insert(0,\""/opt/boron\""); from daemon import geoip; geoip.download_database(os.environ[\""MAXMIND_LICENSE_KEY\""])"" >> /var/log/boron/geoip-refresh.log 2>&1'",cron user=root,pending,
 cron,boron-jobs.cron:13,deploy/boron-jobs.cron,/opt/boron/scripts/backup_scheduler.py >> /var/log/boron/backup-scheduler.log 2>&1,cron user=root,pending,
-cron,boron-jobs.cron:16,deploy/boron-jobs.cron,/opt/boron/scripts/pma_token_cleanup.py >> /var/log/boron/pma-token-cleanup.log 2>&1,cron user=root,pending,
+cron,boron-jobs.cron:16,deploy/boron-jobs.cron,/opt/boron/scripts/pma_token_cleanup.py >> /var/log/boron/pma-token-cleanup.log 2>&1,cron user=root,reviewed-fixed,"PMA token hardening: 18 PMA unit/sign-on tests plus 1 exact-grant MariaDB test; VM token canary minted temp DB token, verified 0640 regular token file, expired cleanup dropped ephemeral DB user/file/row and dropped temp DB; primary hash deployed"
 cron,boron-jobs.cron:17,deploy/boron-jobs.cron,/opt/boron/scripts/ssl_expiry_check.py >> /var/log/boron/ssl-expiry-check.log 2>&1,cron user=root,pending,
 cron,boron-jobs.cron:5,deploy/boron-jobs.cron,/opt/boron/.venv/bin/python /opt/boron/scripts/health_snapshot.py >> /var/log/boron/health-snapshot.log 2>&1,cron user=root,pending,
 cron,boron-jobs.cron:8,deploy/boron-jobs.cron,/opt/boron/scripts/usage_snapshot.py >> /var/log/boron/usage-snapshot.log 2>&1,cron user=root,pending,
@@ -29,7 +29,7 @@ python-script,health_snapshot.py,scripts/health_snapshot.py,health_snapshot.py,i
 python-script,maintenance_autodisable.py,scripts/maintenance_autodisable.py,maintenance_autodisable.py,invocation and effective UID pending review,pending,
 python-script,monitoring_check.py,scripts/monitoring_check.py,monitoring_check.py,invocation and effective UID pending review,pending,
 python-script,panel_ssl_deploy.py,scripts/panel_ssl_deploy.py,panel_ssl_deploy.py,invocation and effective UID pending review,pending,
-python-script,pma_token_cleanup.py,scripts/pma_token_cleanup.py,pma_token_cleanup.py,invocation and effective UID pending review,pending,
+python-script,pma_token_cleanup.py,scripts/pma_token_cleanup.py,pma_token_cleanup.py,invocation and effective UID pending review,reviewed-fixed,"PMA token hardening: 18 PMA unit/sign-on tests plus 1 exact-grant MariaDB test; VM token canary minted temp DB token, verified 0640 regular token file, expired cleanup dropped ephemeral DB user/file/row and dropped temp DB; primary hash deployed"
 python-script,reconcile_db_grants.py,scripts/reconcile_db_grants.py,reconcile_db_grants.py,invocation and effective UID pending review,pending,
 python-script,reconcile_ftps_tls.py,scripts/reconcile_ftps_tls.py,reconcile_ftps_tls.py,invocation and effective UID pending review,pending,
 python-script,reconcile_litespeed_repo.py,scripts/reconcile_litespeed_repo.py,reconcile_litespeed_repo.py,invocation and effective UID pending review,pending,
@@ -337,7 +337,7 @@ route,POST /api/v1/accounts/{username}/composer,api/routers/devtools.py,run_comp
 route,POST /api/v1/accounts/{username}/crons,api/routers/cron.py,add_cron,get_identity,pending,
 route,POST /api/v1/accounts/{username}/databases,api/routers/databases.py,create_database,get_identity,pending,
 route,POST /api/v1/accounts/{username}/databases/{name}/password,api/routers/databases.py,change_password,get_identity,pending,
-route,POST /api/v1/accounts/{username}/databases/{name}/pma-token,api/routers/pma.py,create_pma_token,get_identity,pending,
+route,POST /api/v1/accounts/{username}/databases/{name}/pma-token,api/routers/pma.py,create_pma_token,get_identity,reviewed-fixed,"PMA token hardening: 18 PMA unit/sign-on tests plus 1 exact-grant MariaDB test; VM token canary minted temp DB token, verified 0640 regular token file, expired cleanup dropped ephemeral DB user/file/row and dropped temp DB; primary hash deployed"
 route,POST /api/v1/accounts/{username}/domains,api/routers/domains.py,add_domain,get_identity,pending,
 route,POST /api/v1/accounts/{username}/domains/{domain}/apps/{app_id},api/routers/apps.py,trigger_install,get_identity,pending,
 route,POST /api/v1/accounts/{username}/domains/{domain}/email/autoresponders,api/routers/email.py,set_autoresponder,get_identity,pending,
@@ -759,7 +759,7 @@ rpc,plan.delete,daemon/plans.py,delete_plan,kernel-peer-uid; root-credential; po
 rpc,plan.get,daemon/plans.py,get_plan,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,plan.list,daemon/plans.py,list_plans,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,plan.update,daemon/plans.py,update_plan,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,pma.token.create,daemon/pma.py,create_token,kernel-peer-uid; root-credential; policy=account_username,pending,
+rpc,pma.token.create,daemon/pma.py,create_token,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"PMA token hardening: 18 PMA unit/sign-on tests plus 1 exact-grant MariaDB test; VM token canary minted temp DB token, verified 0640 regular token file, expired cleanup dropped ephemeral DB user/file/row and dropped temp DB; primary hash deployed"
 rpc,portable.export.prepare,daemon/portable_archive.py,prepare_download,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,portable.import.get,daemon/portable_archive.py,get_job,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,portable.import.list,daemon/portable_archive.py,list_jobs,kernel-peer-uid; root-credential; policy=global_admin,pending,

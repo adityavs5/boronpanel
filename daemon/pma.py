@@ -51,10 +51,28 @@ logger = logging.getLogger("borond.pma")
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)
+_TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class PmaError(Exception):
     pass
+
+
+def _validate_token_dir_path() -> Path:
+    path = Path(settings.pma_token_dir)
+    if not path.is_absolute():
+        raise PmaError("phpMyAdmin token directory must be an absolute path")
+    if path.exists() and path.resolve() != path:
+        raise PmaError("phpMyAdmin token directory must not be a symbolic link")
+    return path
+
+
+def _www_data_gid() -> int | None:
+    try:
+        return grp.getgrnam("www-data").gr_gid
+    except KeyError:
+        logger.warning("www-data group not found; pma token files left root-only, signon will fail")
+        return None
 
 
 def _token_dir() -> Path:
@@ -66,20 +84,66 @@ def _token_dir() -> Path:
     www-data could not even traverse into the directory to read them.
     Explicit chown here, every call (idempotent, cheap), same pattern
     server.py's amain() already uses for /run/boron's socket dir."""
-    path = Path(settings.pma_token_dir)
+    path = _validate_token_dir_path()
     path.mkdir(parents=True, exist_ok=True, mode=0o770)
-    try:
-        gid = grp.getgrnam("www-data").gr_gid
+    if path.resolve() != path:
+        raise PmaError("phpMyAdmin token directory must not traverse symbolic links")
+    gid = _www_data_gid()
+    if gid is not None:
         os.chown(path, 0, gid)
-        os.chmod(path, 0o770)
-    except KeyError:
-        logger.warning("www-data group not found; pma token dir left root-only, signon will fail")
+    os.chmod(path, 0o770)
     return path
+
+
+def _token_file_for_hash(token_hash: str, token_dir: Path | None = None) -> Path:
+    if not isinstance(token_hash, str) or not _TOKEN_HASH_RE.fullmatch(token_hash):
+        raise PmaError("invalid phpMyAdmin token hash")
+    return (token_dir or _token_dir()) / f"{token_hash}.json"
+
+
+def _write_token_file(token_file: Path, payload: dict) -> None:
+    token_dir = token_file.parent
+    gid = _www_data_gid()
+    dir_fd = os.open(token_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    created = False
+    name = token_file.name
+    try:
+        fd = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o640,
+            dir_fd=dir_fd,
+        )
+        created = True
+        try:
+            data = memoryview(json.dumps(payload).encode())
+            while data:
+                written = os.write(fd, data)
+                if written <= 0:
+                    raise OSError("short write while creating phpMyAdmin token")
+                data = data[written:]
+            if gid is not None:
+                os.fchown(fd, 0, gid)
+            os.fchmod(fd, 0o640)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.fsync(dir_fd)
+    except Exception:
+        if created:
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+        raise
+    finally:
+        os.close(dir_fd)
 
 
 def create_token(params: dict) -> dict:
     username = validate_username(params["username"])
     db_name = _resolve_existing_db_name(username, params["name"])
+    pma_hostname = validate_domain(settings.pma_hostname) if settings.pma_hostname else ""
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
@@ -103,23 +167,16 @@ def create_token(params: dict) -> dict:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         expires_at_epoch = int(time.time()) + settings.pma_token_ttl_seconds
 
-        token_file = _token_dir() / f"{token_hash}.json"
-        token_file.write_text(
-            json.dumps(
-                {
-                    "db_user": ephemeral_user,
-                    "db_password": ephemeral_password,
-                    "db_name": db_name,
-                    "expires_at": expires_at_epoch,
-                }
-            )
+        token_file = _token_file_for_hash(token_hash)
+        _write_token_file(
+            token_file,
+            {
+                "db_user": ephemeral_user,
+                "db_password": ephemeral_password,
+                "db_name": db_name,
+                "expires_at": expires_at_epoch,
+            },
         )
-        token_file.chmod(0o640)
-        try:
-            gid = grp.getgrnam("www-data").gr_gid
-            os.chown(token_file, 0, gid)
-        except KeyError:
-            logger.warning("www-data group not found; pma token file left root-only, signon will fail")
 
         with write_session() as session:
             session.add(
@@ -137,10 +194,10 @@ def create_token(params: dict) -> dict:
         mariadb.drop_db_user(ephemeral_user)
         raise
 
-    if not settings.pma_hostname:
+    if not pma_hostname:
         pma_url = None
     else:
-        pma_url = f"https://{settings.pma_hostname}/boron_signon.php?token={token}"
+        pma_url = f"https://{pma_hostname}/boron_signon.php?token={token}"
 
     return {
         "token": token,
@@ -159,6 +216,7 @@ def cleanup_expired_tokens() -> int:
     signon.php deletes it on first use -- but the ephemeral MariaDB user
     still needs dropping either way, since nothing else ever does that).
     Returns the number of tokens cleaned up."""
+    token_dir = _token_dir()
     with write_session() as session:
         expired = session.scalars(select(PmaToken).where(PmaToken.expires_at < utcnow())).all()
         rows = [(t.id, t.token_hash, t.ephemeral_db_user) for t in expired]
@@ -170,8 +228,12 @@ def cleanup_expired_tokens() -> int:
         except Exception:
             logger.exception("failed to drop ephemeral pma MariaDB user '%s'", ephemeral_user)
             continue  # Retain the row so the next cleanup retries credential revocation.
-        token_file = _token_dir() / f"{token_hash}.json"
-        token_file.unlink(missing_ok=True)
+        try:
+            token_file = _token_file_for_hash(token_hash, token_dir)
+        except PmaError:
+            logger.warning("skipping invalid phpMyAdmin token hash for cleanup row %s", token_id)
+        else:
+            token_file.unlink(missing_ok=True)
         with write_session() as session:
             row = session.get(PmaToken, token_id)
             if row is not None:
@@ -224,7 +286,7 @@ def bootstrap_pma_files(blowfish_secret: str | None = None) -> str:
     config_path.chmod(0o640)
 
     signon_template = _env.get_template("pma_signon.php.j2")
-    signon_content = signon_template.render(pma_token_dir=settings.pma_token_dir)
+    signon_content = signon_template.render(pma_token_dir=str(_validate_token_dir_path()))
     signon_path = docroot / "boron_signon.php"
     signon_path.write_text(signon_content)
     signon_path.chmod(0o644)
@@ -261,7 +323,6 @@ def _prepare_service_root():
     # OLS validates docroot UID even though PHP runs explicitly as www-data.
     # The PHP worker must not own the package directory or replace its code.
     os.chown(root, owner.pw_uid, owner.pw_gid)
-    root.chmod(0o555)
     challenge = root/'.well-known/acme-challenge'
     if challenge.resolve() != challenge:
         raise PmaError('phpMyAdmin challenge path contains a symbolic link')
@@ -269,6 +330,7 @@ def _prepare_service_root():
     for directory in (root/'.well-known', challenge):
         os.chown(directory, 0, 0)
         directory.chmod(0o755)
+    root.chmod(0o555)
 
 
 def bootstrap_pma() -> None:

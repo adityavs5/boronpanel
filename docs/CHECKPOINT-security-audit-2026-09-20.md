@@ -519,18 +519,18 @@ was stripped, and the admin session remained valid. The trusted frontend hotfix
 is installed on the development panel and the existing Chromium FileBrowser
 smoke still passes.
 
-The coverage inventory now has 901 entries: 822 pending, 68 reviewed-fixed and
+The coverage inventory now has 901 entries: 818 pending, 72 reviewed-fixed and
 11 reviewed-public. New reviewed-fixed rows cover `scripts/app_files.py`,
 `scripts/wordpress_files.py`, the trusted FileBrowser frontend unit, the auth
 routes, token routes, `daemon/handlers_auth.py`, `daemon/totp.py`, and the
-terminal WebSocket/RPC surface. The auth rows cite the 82-test focused
-auth/session/TOTP/RPC authority suite, hashed sessions, root-side login protocol,
-TOTP replay/recovery serialization, and the live VM login smoke. Existing
-FileBrowser route/RPC rows now cite both the per-account isolation and
-trusted-renderer evidence. The update routes/RPCs, updater cron wrapper,
-`scripts/update_check.py`, and `scripts/update_finalize.py` now cite the focused
-update/release tests plus the signed VM update/rollback drill. This is still not
-a final security release gate:
+terminal WebSocket/RPC surface, and the phpMyAdmin token route/RPC/cleanup
+surface. The auth rows cite the 82-test focused auth/session/TOTP/RPC authority
+suite, hashed sessions, root-side login protocol, TOTP replay/recovery
+serialization, and the live VM login smoke. Existing FileBrowser route/RPC rows
+now cite both the per-account isolation and trusted-renderer evidence. The
+update routes/RPCs, updater cron wrapper, `scripts/update_check.py`, and
+`scripts/update_finalize.py` now cite the focused update/release tests plus the
+signed VM update/rollback drill. This is still not a final security release gate:
 signed update packaging, installed upgrade/rollback, fresh install from the
 candidate, and the remaining route/resource review remain open.
 
@@ -592,3 +592,30 @@ through 127.0.0.1, failed to authenticate with the same key through the public
 host, closed the session, and confirmed the key line was gone. The same two
 terminal files are installed on the development panel with matching hashes and
 `boron-api`/`boron-provisiond` active.
+
+### 2026-09-23 phpMyAdmin token hardening
+
+BSA-2026-038 records phpMyAdmin single-sign-on hardening. The PMA design already
+used a short-lived token file and a temporary MariaDB user scoped to one exact
+database, but token creation still trusted the configured PMA hostname until
+after privileged work began, created the token JSON through the final pathname,
+and cleanup built a filesystem path directly from the database row's token hash.
+
+The source now validates `pma_hostname` before creating the temporary MariaDB
+user, rejects relative or symlink-traversing PMA token directories, creates token
+files with `O_EXCL|O_NOFOLLOW` under a verified directory fd, completes short
+writes, and removes partial files on failure. Expired-token cleanup now accepts
+only 64-character lowercase SHA-256 hashes for token-file unlinking; corrupted
+rows still drop the recorded temporary database user and delete the bookkeeping
+row without treating the hash as a path. PMA service-root setup now creates the
+ACME challenge directory before making the package docroot read-only.
+
+Focused validation passed 18 PMA unit/sign-on tests, including the real PHP
+single-use/replay test, and the exact MariaDB grant test passed outside the
+local socket sandbox. The disposable VM was hotfixed with `daemon/pma.py` matching
+source; a live canary created a temporary `auditweb` database, minted a PMA token
+without printing the raw token or password, verified the token file was a regular
+`0640` file for that database, forced expiry cleanup, confirmed the temporary DB
+user, token file and row were removed, and dropped the temporary database. The
+same daemon file is installed on the development panel with matching hashes and
+`boron-provisiond` active.

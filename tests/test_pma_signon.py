@@ -19,6 +19,7 @@ def test_real_php_concurrent_tokens_and_replay(tmp_path,monkeypatch):
     sessions=tmp_path/'sessions';sessions.mkdir()
     monkeypatch.setattr(settings,'pma_docroot',str(root))
     monkeypatch.setattr(settings,'pma_token_dir',str(tokens))
+    monkeypatch.setattr(pma.os,'chown',lambda *args:None)
     pma.bootstrap_pma_files()
     token='A'*40
     tokenfile=tokens/(hashlib.sha256(token.encode()).hexdigest()+'.json')
