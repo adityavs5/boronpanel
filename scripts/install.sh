@@ -58,6 +58,9 @@ PANEL_DOMAIN="${FH_PANEL_DOMAIN:-}"
 LE_EMAIL="${FH_LE_EMAIL:-}"
 ADMIN_USER="${FH_ADMIN_USER:-admin}"
 ADMIN_PASSWORD="${FH_ADMIN_PASSWORD:-}"
+# Do not let every package/service helper inherit the bootstrap credential.
+# The shell-local copy is sent only to create_admin.py over stdin.
+unset FH_ADMIN_PASSWORD
 SERVER_IP="${FH_SERVER_IP:-}"
 WEBMAIL_DOMAIN="${FH_WEBMAIL_DOMAIN:-}"
 # QA round 2, item 12: optional -- MaxMind requires a free account + license
@@ -1121,14 +1124,17 @@ create_admin() {
         printf '  %s prompt for admin username/password, create panel admin\n' "${C_YELLOW}[dry]${C_RESET}"
         return 0
     fi
-    local args=(--username "$ADMIN_USER")
-    if [[ -n "$ADMIN_PASSWORD" ]]; then
-        args+=(--password "$ADMIN_PASSWORD")
-    fi
     # provisiond authenticates the Unix socket peer and rejects uid 0. The
     # installer itself runs as root, so bootstrap through the API service
     # identity just as a manual operator invocation must.
-    if sudo -u boron-api -- "${VENV}/bin/python" "${DEST}/scripts/create_admin.py" "${args[@]}"; then
+    if [[ -n "$ADMIN_PASSWORD" ]]; then
+        if printf '%s' "$ADMIN_PASSWORD" | sudo -u boron-api -- "${VENV}/bin/python" \
+                "${DEST}/scripts/create_admin.py" --username "$ADMIN_USER" --password-stdin; then
+            ok "admin '${ADMIN_USER}' created"
+        else
+            warn "admin creation returned non-zero -- create it manually as boron-api"
+        fi
+    elif sudo -u boron-api -- "${VENV}/bin/python" "${DEST}/scripts/create_admin.py" --username "$ADMIN_USER"; then
         ok "admin '${ADMIN_USER}' created"
     else
         warn "admin creation returned non-zero (may already exist) -- create manually as boron-api: sudo -u boron-api python3 '${DEST}/scripts/create_admin.py' --username '${ADMIN_USER}'"

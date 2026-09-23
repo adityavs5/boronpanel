@@ -89,6 +89,13 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert 'boron-geoip.cron' in source
     assert 'Optional MaxMind GeoLite2 license key' in source
 
+    # The bootstrap password must not appear in create_admin.py's argv or be
+    # inherited by every installer child through FH_ADMIN_PASSWORD.
+    assert 'args+=(--password' not in source
+    assert 'unset FH_ADMIN_PASSWORD' in source
+    assert '--password-stdin' in source
+    assert "printf '%s' \"$ADMIN_PASSWORD\"" in source
+
     # Namespace isolation is enabled by the generated OLS config.  The
     # namespace template and its companion lsns state must exist before the
     # first lshttpd start, or every fresh account provision fails validation.

@@ -24,10 +24,18 @@ from shared.config import settings  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create the first Boron admin user")
     parser.add_argument("--username", required=True)
-    parser.add_argument("--password", help="omit to be prompted (recommended -- avoids shell history)")
+    parser.add_argument(
+        "--password-stdin", action="store_true",
+        help="read the password from stdin instead of prompting (for unattended installation)",
+    )
     args = parser.parse_args()
 
-    password = args.password or getpass.getpass("Password (min 12 chars): ")
+    if args.password_stdin:
+        password = sys.stdin.read(257)
+        if len(password) > 256:
+            parser.error("password from stdin exceeds 256 characters")
+    else:
+        password = getpass.getpass("Password (min 12 chars): ")
 
     client = RpcClient(settings.rpc_socket)
     try:

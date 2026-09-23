@@ -112,6 +112,14 @@ health, source/live hash match, and a read-only `health.get` RPC as the real
 `boron-api` UID all passed. This does not close the daemon's separate root
 authorization gap: an API-UID process can still request any RPC operation.
 
+The first disposable-VM install review found that `FH_ADMIN_PASSWORD` was
+inherited by installer children and then passed to `create_admin.py` in argv.
+The installer now unsets the environment variable immediately and supplies
+its shell-local value only over stdin; the bootstrap CLI no longer accepts a
+password argument. Ten installer/CLI tests, shellcheck, bash syntax, Python
+compilation and diff checks passed. This fix will be exercised by the fresh
+Ubuntu 24.04 installation before any release candidate is built.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic
