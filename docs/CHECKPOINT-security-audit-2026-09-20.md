@@ -155,6 +155,15 @@ with the `boron-api`-accessible socket. The gate now waits up to thirty
 seconds and verifies read/write access as the actual API service user before
 continuing. Nine installer tests, shellcheck and bash syntax pass.
 
+Roundcube's verified release then installed, but its first database command
+relied on the client discovering `/root/.my.cnf` through an ambient `HOME`.
+The transient systemd installer did not provide that lookup. A non-disclosing
+comparison confirmed that the protected root secret and client file matched,
+and an explicit-defaults authentication probe passed. Idempotent setup now
+reconciles the root client file from the protected secret, and every Roundcube
+database command names that file explicitly. Nine installer tests, shellcheck
+and bash syntax pass.
+
 The FileBrowser API proxy had a source-confirmed CSP trust error: it hashed
 inline scripts from *every* upstream HTML response, which could bless scripts
 from a hosted HTML file if the backend served one on the panel origin. Dynamic

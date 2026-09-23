@@ -733,6 +733,15 @@ setup_mariadb() {
     info "Securing MariaDB + creating Boron database users"
     run systemctl enable --now mariadb
     if [[ -f "${CONF_DIR}/secrets.env" ]] && grep -q '^MARIADB_DAEMON_PASSWORD=' "${CONF_DIR}/secrets.env"; then
+        # systemd-run and other non-login installers may not set HOME=/root,
+        # so later database steps use this file explicitly. Reconcile it on
+        # every idempotent run from the existing root-only source of truth.
+        local existing_root_pass
+        existing_root_pass="$(awk -F= '$1 == "MARIADB_ROOT_PASSWORD" { print substr($0, index($0, "=") + 1); exit }' "${CONF_DIR}/secrets.env")"
+        [[ -n "$existing_root_pass" ]] || die "MARIADB_ROOT_PASSWORD is missing from ${CONF_DIR}/secrets.env"
+        printf '[client]\nuser=root\npassword=%s\n' "$existing_root_pass" >/root/.my.cnf
+        chmod 600 /root/.my.cnf
+        unset existing_root_pass
         skip "MariaDB users already provisioned"
         return 0
     fi
@@ -1025,17 +1034,17 @@ setup_webmail() {
     fi
     db_pass="$(awk -F= '$1 == "MARIADB_ROUNDCUBE_PASSWORD" { print substr($0, index($0, "=") + 1); exit }' "${CONF_DIR}/secrets.env")"
     [[ -n "$db_pass" ]] || die "could not create the Roundcube database credential"
-    mysql <<SQL
+    mysql --defaults-file=/root/.my.cnf <<SQL
 CREATE DATABASE IF NOT EXISTS roundcube CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS 'roundcube'@'localhost' IDENTIFIED BY '${db_pass}';
 ALTER USER 'roundcube'@'localhost' IDENTIFIED BY '${db_pass}';
 GRANT ALL PRIVILEGES ON roundcube.* TO 'roundcube'@'localhost';
 FLUSH PRIVILEGES;
 SQL
-    if [[ "$(mysql -NBe "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='roundcube'")" == "0" ]]; then
+    if [[ "$(mysql --defaults-file=/root/.my.cnf -NBe "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='roundcube'")" == "0" ]]; then
         schema_file="/var/www/roundcube/SQL/mysql.initial.sql"
         [[ -f "$schema_file" ]] || die "Roundcube database schema is missing from the verified release"
-        mysql roundcube <"$schema_file"
+        mysql --defaults-file=/root/.my.cnf roundcube <"$schema_file"
     fi
 
     des_key="$(openssl rand -base64 24 | tr -d '\n')"
