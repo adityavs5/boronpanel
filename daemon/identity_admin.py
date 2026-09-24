@@ -15,6 +15,8 @@ from __future__ import annotations
 import logging
 import os
 
+from daemon import database_operations
+
 from sqlalchemy import select
 
 from shared.config import settings
@@ -95,6 +97,7 @@ def set_contact_email(params: dict) -> dict:
 # --- primary domain --------------------------------------------------------
 
 
+@database_operations.serialized
 def set_primary_domain(params: dict) -> dict:
     """Rename the account's primary domain (the apex served from
     public_html). If the account has no primary domain yet, this creates it.
@@ -109,6 +112,8 @@ def set_primary_domain(params: dict) -> dict:
         account = _account_or_raise(session, username)
         if account.status not in ("active", "suspended"):
             raise RuntimeError(f"cannot change primary domain for an account in status '{account.status}'")
+        from daemon import domain_ownership
+        domain_ownership.require_available(session, new_domain, account.id)
         clash = session.scalar(select(Domain).where(Domain.domain == new_domain))
         if clash is not None and clash.account_id != account.id:
             raise RuntimeError(f"domain '{new_domain}' is already in use")

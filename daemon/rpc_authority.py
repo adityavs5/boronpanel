@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, ApiToken, Domain, ImpersonationSession, PanelUser, ResellerAccount, ResellerProfile, RestoreJob, Session, TotpCredential
+from shared.models import Account, ApiToken, Domain, ImpersonationSession, MailDomain, PanelUser, ResellerAccount, ResellerProfile, RestoreJob, Session, TotpCredential
 from shared.session_ids import session_digest
 from shared.passwords import verify_password
 from shared.validation import ValidationError, validate_domain
@@ -108,6 +108,10 @@ def _target_account_id(db, params: dict, *, allow_new_domain: bool = False) -> i
         except ValidationError as exc:
             raise AuthorizationError("domain target unavailable") from exc
         from_domain = db.scalar(select(Domain.account_id).where(Domain.domain == domain))
+        mail_owner = db.scalar(select(MailDomain.account_id).where(MailDomain.domain == domain))
+        target_owner = from_domain if from_domain is not None else from_username
+        if mail_owner is not None and mail_owner != target_owner:
+            raise AuthorizationError("domain resource ownership is inconsistent")
         if from_domain is None and not (allow_new_domain and from_username is not None):
             raise AuthorizationError("domain target unavailable")
     if from_username is not None and from_domain is not None and from_username != from_domain:

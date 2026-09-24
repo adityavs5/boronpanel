@@ -54,6 +54,9 @@ def create_mail_domain(params: dict) -> dict:
             if account is None:
                 raise RuntimeError(f"mail domain '{domain_name}' requires an owning hosting account")
             account_id = account.id
+        hosting_domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
+        if hosting_domain is not None and hosting_domain.account_id != account_id:
+            raise ValidationError("mail and hosting domain ownership must match")
         existing = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))
         if existing is not None:
             raise RuntimeError(f"mail domain '{domain_name}' already provisioned")
@@ -139,6 +142,9 @@ def ensure_mail_domain(domain_name: str) -> None:
         with write_session() as session:
             existing = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))
             if existing is not None:
+                domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
+                if domain is not None and domain.account_id != existing.account_id:
+                    raise ValidationError("mail and hosting domain ownership must match")
                 return
             domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
             account = session.get(Account, domain.account_id) if domain else None
@@ -146,9 +152,9 @@ def ensure_mail_domain(domain_name: str) -> None:
                 raise RuntimeError(f"mail domain '{domain_name}' not provisioned for an active hosting account")
             username, account_id = account.username, account.id
         if mail.domain_exists(domain_name):
-            # Repair a cache row after an interrupted provisioning operation.
-            with write_session() as session:
-                session.add(MailDomain(account_id=account_id, domain=domain_name))
+            # Missing ownership metadata is not evidence that external mail
+            # belongs to the current web owner. Require explicit recovery.
+            raise ValidationError("Existing mail domain has no ownership record; administrator recovery required")
         else:
             create_mail_domain({'username': username, 'domain': domain_name})
 

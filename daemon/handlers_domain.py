@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
-from daemon import account_mutation
+from daemon import account_mutation, database_operations, domain_ownership
 
 from sqlalchemy import select
 
@@ -51,6 +51,7 @@ _find_parent_zone = find_managed_zone
 _subdomain_label = label_within_zone
 
 
+@database_operations.serialized
 @account_mutation.locked
 def add_domain(params: dict) -> dict:
     username = validate_username(params["username"])
@@ -67,6 +68,7 @@ def add_domain(params: dict) -> dict:
             raise RuntimeError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
             raise RuntimeError(f"cannot add a domain to an account in status '{account.status}'")
+        domain_ownership.require_available(session, domain_name, account.id)
 
         existing = session.scalar(select(Domain).where(Domain.domain == domain_name))
         if existing is not None:

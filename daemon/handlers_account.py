@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from daemon import account_mutation
+from daemon import account_mutation, database_operations
 
 from sqlalchemy import select
 
@@ -88,6 +88,7 @@ def _validate_limits(cpu_pct: int, mem_mb: int, io_mb: int, pids_max: int) -> No
         raise ValidationError("pids_max must be between 10 and 10000")
 
 
+@database_operations.serialized
 def create_account(params: dict) -> dict:
     username = validate_username(params["username"])
     php_version = validate_php_version(
@@ -125,6 +126,8 @@ def create_account(params: dict) -> dict:
         if existing is not None:
             raise RuntimeError(f"account '{username}' already exists")
         if primary_domain is not None:
+            from daemon import domain_ownership
+            domain_ownership.require_available(session, primary_domain, None)
             existing_domain = session.scalar(select(Domain).where(Domain.domain == primary_domain))
             if existing_domain is not None:
                 raise RuntimeError(f"domain '{primary_domain}' is already in use")

@@ -19,7 +19,7 @@ from shared.db import write_session
 from shared.models import Account, Domain, ParkedDomain
 from shared.validation import validate_domain, validate_username
 
-from daemon import dnsprovider, ols
+from daemon import database_operations, dnsprovider, ols
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from daemon.handlers_domain import ensure_docroot
 
@@ -36,6 +36,7 @@ def _row_to_dict(parked: ParkedDomain, domain: Domain | None) -> dict:
     }
 
 
+@database_operations.serialized
 def add_parked_domain(params: dict) -> dict:
     username = validate_username(params["username"])
     parked_domain = validate_domain(params["parked_domain"])
@@ -47,6 +48,8 @@ def add_parked_domain(params: dict) -> dict:
             raise RuntimeError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
             raise RuntimeError(f"cannot add a parked domain to an account in status '{account.status}'")
+        from daemon import domain_ownership
+        domain_ownership.require_available(session, parked_domain, account.id)
 
         if session.scalar(select(Domain).where(Domain.domain == parked_domain)) is not None:
             raise RuntimeError(f"domain '{parked_domain}' is already in use")
