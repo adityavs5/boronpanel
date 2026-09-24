@@ -237,3 +237,13 @@ def test_run_wpcli_default_path_still_targets_root(isolated_db, tmp_path, monkey
     wpcli.run_wpcli({"username": "demo1", "domain": "site.com", "action": "cache_flush"})
     _username, _kind, target, _argv, _display = captured["args"]
     assert target == str(docroot)
+
+
+def test_wordpress_version_scan_does_not_follow_file_symlink(tmp_path):
+    from daemon import wpcli
+    includes = tmp_path / 'wp-includes'
+    includes.mkdir()
+    outside = tmp_path / 'private'
+    outside.write_text("<?php $wp_version = 'outside-canary';")
+    (includes / 'version.php').symlink_to(outside)
+    assert wpcli._wp_version_at(str(tmp_path)) is None

@@ -423,3 +423,9 @@ def test_run_job_never_logs_or_stores_passwords(mailbox, monkeypatch, tmp_path, 
     # sync) must suppress imapsync's own transcript logging.
     for args in captured_args:
         assert "--nolog" in args
+
+
+def test_discovered_folder_list_cannot_bypass_job_limit():
+    output = 'Host1: folders list\n' + '\n'.join(f'[folder{i}]' for i in range(im.MAX_FOLDERS_PER_JOB + 1))
+    with pytest.raises(im.ImapSyncError, match='folder limit'):
+        im._parse_host1_folders(output)

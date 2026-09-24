@@ -128,7 +128,7 @@ def test_copy_files_reasserts_docroot_permissions(isolated_db, tmp_path, monkeyp
     from shared.config import settings
 
     monkeypatch.setattr(settings, "home_base", str(tmp_path))
-    fake_pw = real_pwd.struct_passwd(("demo1", "x", os.getuid(), os.getgid(), "", str(tmp_path), "/usr/sbin/nologin"))
+    fake_pw = real_pwd.struct_passwd(("demo1", "x", 5001, 5001, "", str(tmp_path), "/usr/sbin/nologin"))
     monkeypatch.setattr(real_pwd, "getpwnam", lambda name: fake_pw)
 
     source = tmp_path / "source_docroot"
@@ -140,6 +140,16 @@ def test_copy_files_reasserts_docroot_permissions(isolated_db, tmp_path, monkeyp
     staging_docroot.mkdir(parents=True)
     os.chmod(staging_docroot, 0o750)  # as add_domain's own ensure_docroot would have set it
 
+    import shutil
+    from daemon.procutil import ProcResult
+    def copy_as_tenant(argv, **kwargs):
+        assert kwargs['uid'] == kwargs['gid'] == 5001
+        assert argv[:3] == ['cp', '-a', '--no-preserve=ownership']
+        shutil.copytree(source, staging_docroot, dirs_exist_ok=True)
+        return ProcResult(argv, 0, '', '')
+    monkeypatch.setattr(staging, 'run', copy_as_tenant)
+    monkeypatch.setattr(hd, '_grant_webserver_acl', lambda *args: None)
+
     staging._copy_files(str(source), str(staging_docroot), "demo1")
 
     assert (staging_docroot / "index.php").read_text() == "<?php echo 'hi';"
@@ -149,6 +159,7 @@ def test_copy_files_reasserts_docroot_permissions(isolated_db, tmp_path, monkeyp
 
 
 def test_copy_files_raises_on_cp_failure(monkeypatch):
+    monkeypatch.setattr(real_pwd, 'getpwnam', lambda name: real_pwd.struct_passwd((name, 'x', 5001, 5001, '', '/home/demo1', '/bin/bash')))
     monkeypatch.setattr(staging, "run", lambda *a, **k: type("R", (), {"ok": False, "stderr": "no such file"})())
     with pytest.raises(staging.StagingError):
         staging._copy_files("/nonexistent/source", "/nonexistent/dest", "demo1")
@@ -195,6 +206,7 @@ def stub_database(monkeypatch):
     def fake_create(params):
         db_name = f"{params['username']}_{params['name']}"
         created.append(db_name)
+        _grant_db(params['username'], db_name)
         return {"db_name": db_name, "db_user": db_name, "password": "genpass123!"}
 
     def fake_drop(params):
@@ -411,3 +423,43 @@ def test_terminate_account_staging_noop_when_none_exist(account_with_domain):
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == "demo1"))
     staging.terminate_account_staging(account)  # must not raise
+
+
+@pytest.mark.parametrize('ancestor', [False, True])
+def test_staging_config_refuses_symlinks_and_preserves_outside_file(tmp_path, ancestor):
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    canary = outside / 'wp-config.php'
+    text = "<?php\ndefine('DB_NAME', 'victim');\ndefine('DB_USER', 'victim');\ndefine('DB_PASSWORD', 'secret');\ndefine('DB_HOST', 'localhost');\n"
+    canary.write_text(text)
+    site = tmp_path / 'site'
+    if ancestor:
+        site.symlink_to(outside, target_is_directory=True)
+    else:
+        site.mkdir()
+        (site / 'wp-config.php').symlink_to(canary)
+    with pytest.raises(staging.StagingError):
+        staging._source_db_name(str(site))
+    with pytest.raises(staging.StagingError):
+        staging._rewrite_staging_wp_config(str(site), 'new', 'new', 'new', 'https://staging.example.com')
+    assert canary.read_text() == text
+
+
+def test_staging_copy_refuses_root_identity(monkeypatch):
+    monkeypatch.setattr(real_pwd, 'getpwnam', lambda name: real_pwd.struct_passwd((name, 'x', 0, 0, '', '/', '/bin/bash')))
+    with pytest.raises(staging.StagingError, match='system identity'):
+        staging._copy_files('/source', '/destination', 'demo1')
+
+
+def test_sync_refuses_reassigned_staging_domain(account_with_domain, stub_ols, stub_filesystem, stub_copy_files, stub_ssl, stub_database):
+    staging.create_staging({'username': 'demo1', 'domain': 'demo1.example'})
+    stub_copy_files.clear()
+    with write_session() as session:
+        victim = Account(username='victim1', uid=5002, gid=5002, status='active')
+        session.add(victim)
+        session.flush()
+        row = session.scalar(select(Domain).where(Domain.domain == 'staging.demo1.example'))
+        row.account_id = victim.id
+    with pytest.raises(staging.StagingError, match='no longer exists'):
+        staging.sync_staging({'username': 'demo1', 'domain': 'demo1.example'})
+    assert stub_copy_files == []

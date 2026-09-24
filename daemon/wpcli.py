@@ -20,7 +20,7 @@ from shared.db import write_session
 from shared.models import Account, Domain
 from shared.validation import ValidationError, generate_strong_password, validate_domain, validate_username
 
-from daemon import cmdjobs
+from daemon import cmdjobs, safeio
 from daemon.procutil import run
 
 _SLUG_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -40,11 +40,8 @@ def ensure_wpcli() -> str:
 
 
 def _wp_version_at(docroot: str) -> str | None:
-    version_file = os.path.join(docroot, "wp-includes", "version.php")
-    try:
-        with open(version_file, errors="replace") as f:
-            text = f.read(20000)
-    except OSError:
+    text = safeio.secure_read_text(os.path.join(docroot, "wp-includes"), "version.php", 20000)
+    if text is None:
         return None
     m = _WP_VERSION_RE.search(text)
     return m.group(1) if m else None

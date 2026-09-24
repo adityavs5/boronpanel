@@ -154,6 +154,8 @@ def _parse_host1_folders(stdout: str) -> list[str]:
             m = _BRACKETED_FOLDER_RE.match(line)
             if m:
                 folders.append(m.group(1))
+                if len(folders) > MAX_FOLDERS_PER_JOB:
+                    raise ImapSyncError("source server exceeds the folder limit; select folders explicitly")
     return folders
 
 
@@ -257,6 +259,7 @@ def start_migration(params: dict) -> dict:
         raise ValidationError("dest_password must not be empty")
 
     with write_session() as session:
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         _mail_user, account = _domain_account_for_mailbox(session, domain_name, local_part)
 
         # Audit 3 finding A3-3: IMAPSYNC_EXECUTOR is a small pool shared by

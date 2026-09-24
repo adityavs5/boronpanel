@@ -332,3 +332,17 @@ def test_customer_cannot_read_admin_terminal_branding(isolated_db):
         with TestClient(main.app) as client:
             assert client.get('/api/v1/admin/branding').status_code==403
     finally:main.app.dependency_overrides.clear()
+
+
+def test_api_upload_reads_only_bounded_prefix(monkeypatch):
+    import asyncio
+    from api.routers import branding as routes
+    from fastapi import HTTPException
+    monkeypatch.setattr(routes.settings, 'branding_max_upload_bytes', 8)
+    class OversizedUpload:
+        async def read(self, size=-1):
+            assert size == 9
+            return b'x' * size
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(routes._upload('branding.logo.upload', OversizedUpload(), Identity(1,'admin','admin',None,'session')))
+    assert exc.value.status_code == 413

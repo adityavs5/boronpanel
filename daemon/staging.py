@@ -32,7 +32,7 @@ from shared.db import write_session
 from shared.models import Account, DatabaseGrant, Domain, StagingEnvironment, utcnow
 from shared.validation import validate_domain, validate_username
 
-from daemon import backup, handlers_database, handlers_domain, mariadb, ssl
+from daemon import backup, handlers_database, handlers_domain, mariadb, safeio, ssl
 from daemon.procutil import run
 from daemon.wordpress import _php_str
 
@@ -86,11 +86,20 @@ _DB_NAME_RE = re.compile(r"define\(\s*['\"]DB_NAME['\"]\s*,\s*['\"]([^'\"]+)['\"
 
 def _source_db_name(source_docroot: str) -> str:
     path = Path(source_docroot) / "wp-config.php"
-    content = path.read_text(errors="replace")
+    content = _read_config(source_docroot)
     m = _DB_NAME_RE.search(content)
     if not m:
         raise StagingError(f"could not determine the production database name from '{path}'")
     return m.group(1)
+
+
+def _read_config(docroot: str) -> str:
+    content = safeio.secure_read_text(docroot, "wp-config.php", 1024 * 1024 + 1)
+    if content is None:
+        raise StagingError("wp-config.php does not exist or is not a safe regular file")
+    if len(content.encode("utf-8")) > 1024 * 1024:
+        raise StagingError("wp-config.php exceeds the supported size")
+    return content
 
 
 def _assert_source_db_owned_by_account(username: str, db_name: str) -> None:
@@ -136,9 +145,7 @@ def _rewrite_staging_wp_config(docroot: str, db_name: str, db_user: str, db_pass
     cpanel_import.py's own copy, so this feature doesn't take on a
     dependency on an unrelated one for a few lines of shared logic."""
     path = os.path.join(docroot, "wp-config.php")
-    if not os.path.isfile(path):
-        raise StagingError(f"'{path}' does not exist -- cannot rewrite a nonexistent wp-config.php")
-    content = Path(path).read_text(errors="replace")
+    content = _read_config(docroot)
     replacements = {"DB_NAME": db_name, "DB_USER": db_user, "DB_PASSWORD": db_password, "DB_HOST": f"localhost:{settings.mariadb_socket}"}
     missing = []
     for key, pattern in _WP_DEFINE_RE.items():
@@ -181,15 +188,22 @@ def _rewrite_staging_wp_config(docroot: str, db_name: str, db_user: str, db_pass
         f"define('WP_SITEURL', {_php_str(staging_url)});\n"
     )
     content = content.replace("<?php\n", "<?php\n" + home_lines, 1)
-    Path(path).write_text(content)
+    directory = safeio.open_dir_beneath(docroot)
+    try:
+        owner = os.fstat(directory)
+        safeio._replace_file_at_fd(directory, "wp-config.php", content, owner.st_uid, owner.st_gid, 0o640)
+    finally:
+        os.close(directory)
 
 
 def _copy_files(source_docroot: str, staging_docroot: str, username: str) -> None:
-    result = run(["cp", "-a", f"{source_docroot}/.", staging_docroot], timeout=600)
+    pw = pwd.getpwnam(username)
+    if pw.pw_uid < 1000 or pw.pw_gid <= 0:
+        raise StagingError("refusing staging copy with a system identity")
+    result = run(["cp", "-a", "--no-preserve=ownership", "--", f"{source_docroot}/.", staging_docroot],
+                 timeout=600, uid=pw.pw_uid, gid=pw.pw_gid)
     if not result.ok:
         raise StagingError(f"failed to copy files to the staging docroot: {result.stderr.strip()}")
-    pw = pwd.getpwnam(username)
-    run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", staging_docroot], timeout=600, check=True)
     # Same real bug as daemon/cpanel_import.py's own docroot-permission fix
     # (found reviewing that module, confirmed with a real copytree call):
     # a recursive copy can reset the target directory's own mode away from
@@ -318,10 +332,17 @@ def sync_staging(params: dict) -> dict:
         db_user = row.db_user
 
     with write_session() as session:
-        staging_domain_row = session.scalar(select(Domain).where(Domain.domain == staging_domain))
+        staging_domain_row = session.scalar(select(Domain).where(Domain.domain == staging_domain, Domain.account_id == account.id))
         if staging_domain_row is None:
             raise StagingError(f"staging domain '{staging_domain}' no longer exists -- recreate the staging environment")
         staging_docroot = staging_domain_row.docroot
+        if is_wp and db_name and db_user:
+            grant = session.scalar(select(DatabaseGrant).where(
+                DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == db_name,
+                DatabaseGrant.db_user == db_user,
+            ))
+            if grant is None:
+                raise StagingError("staging database no longer belongs to this account")
 
     _copy_files(source_docroot, staging_docroot, username)
 

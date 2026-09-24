@@ -113,7 +113,9 @@ def set_branding(body: BrandingBody, identity: Identity = Depends(get_identity))
 
 async def _upload(op: str, file: UploadFile, identity: Identity):
     require_admin(identity)
-    data = await file.read()
+    data = await file.read(settings.branding_max_upload_bytes + 1)
+    if len(data) > settings.branding_max_upload_bytes:
+        raise HTTPException(status_code=413, detail="branding image exceeds the upload limit")
     if not data:
         raise HTTPException(status_code=400, detail="uploaded file is empty")
     image_base64 = base64.b64encode(data).decode("ascii")
