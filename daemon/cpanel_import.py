@@ -1150,6 +1150,17 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
 
 
 def _add_domain_step(username: str, domain_entry: dict) -> str:
+    # create_account provisions the primary domain, including its OLS vhost.
+    # Reuse only that exact owned primary; normal add-domain validation still
+    # rejects another account's domain and all other unexpected duplicates.
+    if domain_entry["kind"] == "primary":
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == username))
+            domain = session.scalar(select(Domain).where(Domain.domain == domain_entry["domain"]))
+            if (account is not None and domain is not None
+                    and domain.account_id == account.id and domain.kind == "primary"
+                    and account.primary_domain == domain_entry["domain"]):
+                return "primary domain already provisioned during account creation"
     handlers_domain.add_domain({"username": username, "domain": domain_entry["domain"], "kind": domain_entry["kind"]})
     return f"added as {domain_entry['kind']}"
 

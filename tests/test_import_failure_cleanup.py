@@ -48,14 +48,14 @@ def test_cleanup_never_deletes_unowned_or_incompletely_terminated_account(isolat
         assert db.scalar(select(PanelUser)) is not None
 
 
-@pytest.mark.parametrize('failure', ['panel_login', 'files', 'provisioning'])
+@pytest.mark.parametrize('failure', ['panel_login', 'files', 'provisioning', 'primary_success'])
 def test_worker_rolls_back_new_account_on_failure(isolated_db, tmp_path, monkeypatch, failure):
     monkeypatch.setattr(ci.settings, 'cpanel_import_staging_dir', str(tmp_path / 'staging'))
     monkeypatch.setattr(ci, '_obtain_archive', lambda *args: tmp_path / 'source.tar.gz')
     monkeypatch.setattr(ci, '_extract_archive', lambda *args, **kwargs: None)
     monkeypatch.setattr(ci, '_find_content_root', lambda path: path)
     monkeypatch.setattr(ci, '_parse_account_info', lambda path: {})
-    monkeypatch.setattr(ci, '_parse_domains', lambda *args: [])
+    monkeypatch.setattr(ci, '_parse_domains', lambda *args: [{'domain': 'example.com', 'kind': 'primary'}] if failure == 'primary_success' else [])
     monkeypatch.setattr(ci, '_parse_mysql_dumps', lambda *args: [])
     monkeypatch.setattr(ci, '_parse_ssl_certs', lambda *args: [])
     monkeypatch.setattr(ci, '_parse_mailboxes', lambda *args: [])
@@ -65,10 +65,12 @@ def test_worker_rolls_back_new_account_on_failure(isolated_db, tmp_path, monkeyp
         raise RuntimeError('test failure')
     def create(params):
         with write_session() as db:
-            account = Account(username=params['username'])
+            account = Account(username=params['username'], primary_domain=params['primary_domain'])
             db.add(account)
             db.flush()
             result = {'id': account.id}
+            if params['primary_domain']:
+                db.add(Domain(account_id=account.id, domain=params['primary_domain'], kind='primary', docroot='/unused'))
         if failure == 'provisioning':
             fail()
         return result
@@ -76,7 +78,8 @@ def test_worker_rolls_back_new_account_on_failure(isolated_db, tmp_path, monkeyp
     monkeypatch.setattr(ci.handlers_account, '_terminate_account', lambda p: {'status': 'terminated'})
     monkeypatch.setattr(ci.handlers_auth, 'create_panel_user', fail if failure == 'panel_login' else lambda p: None)
     monkeypatch.setattr(ci.audit, 'record_account_event', lambda *a, **k: None)
-    monkeypatch.setattr(ci, '_copy_homedir', fail)
+    monkeypatch.setattr(ci, '_copy_homedir', (lambda *args: 'copied') if failure == 'primary_success' else fail)
+    monkeypatch.setattr(ci, '_reassert_docroot_perms_step', lambda *args: 'permissions verified')
     with write_session() as db:
         job = CpanelImportJob(username='importqa', source='url', source_ref='https://example.com/a', status='pending', results=[])
         db.add(job)
@@ -84,8 +87,14 @@ def test_worker_rolls_back_new_account_on_failure(isolated_db, tmp_path, monkeyp
         job_id = job.id
     ci._run_import_job(job_id, {'source': 'url', 'source_ref': 'https://example.com/a'})
     with write_session() as db:
-        assert db.scalar(select(Account)) is None
         job = db.get(CpanelImportJob, job_id)
+        if failure == 'primary_success':
+            assert db.scalar(select(Account)) is not None
+            assert job.status == 'completed'
+            assert not any(item['status'] == 'failed' for item in job.results)
+            assert any(item['item'] == 'domain:example.com' and item['status'] == 'ok' for item in job.results)
+            return
+        assert db.scalar(select(Account)) is None
         assert job.status == 'failed'
         assert job.initial_password is None
         assert job.results[-1]['item'] == 'cleanup'
