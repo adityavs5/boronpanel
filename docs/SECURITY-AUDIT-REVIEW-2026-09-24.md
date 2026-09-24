@@ -456,3 +456,93 @@ wrong/revoked/expired/disabled/wrong-owner proof, scoped-session expiry, replay
 and concurrent redemption. Separately 273 administrator-surface, notification
 and MFA cases passed. This fix requires the coordinated API/daemon release;
 it must not be copied onto the primary's old authentication protocol alone.
+
+The paired authentication files and reporting/outbound fixes were deployed to
+the disposable VM with a protected file backup. Both services are active.
+The actual HTTPS test confirmed a copied scoped cookie cannot restore admin
+access, the original browser can return with its separate proof, and logout
+revokes access. The first request preceded API readiness and was retried after
+startup completed; this was not an authentication test failure.
+
+Repository history: official Gitleaks v8.30.1 was downloaded with its published
+SHA-256 checksum verified. A redacted scan of all local Git refs examined 390
+commits / 26.87 MB and reported no findings. This is a scanner result, not a
+guarantee that every possible secret pattern is absent. Raw redacted report
+and tool checksums are retained in the protected evidence directory.
+
+
+## Scanner resource limits and PHP extension paths
+
+Malware scans count every directory entry, bound directory depth and elapsed
+walk time, and enforce the file-size limit again while hashing or copying.
+A file that grows after the initial stat cannot make root consume unlimited
+input or fill the quarantine destination. Scan reservations are serialized,
+with one active job per account and a bounded global pending/running queue.
+The final scanner/Cloudflare/PHP configuration suite passed all 119 cases.
+
+PHP extension materialization previously followed `.php` ancestor symlinks
+while operating as root. Creation, cleanup, snippet links and file replacement
+now use no-follow directory descriptors. Reset removes only the account's
+anchored tree, using Python's descriptor-based recursive removal, or unlinks
+a planted root symlink without traversing it. Twenty-five PHP extension and
+safe-I/O tests passed, including three ancestor positions, a live directory
+swap after opening, ordinary enable/reset and preservation of outside canaries.
+
+Cloudflare pool/zone source review covered token encryption and non-disclosure,
+context-local token selection, administrative pool/fleet operations, DNS-owner
+per-zone operations, serialized zone changes, seeding compensation, activation
+resync and validated DNS labels. External API calls were mocked in this suite;
+no changes were made to the user's Cloudflare account. Failed remote deletion
+is reported and may leave an upstream zone requiring operator cleanup. PHP
+configuration review covered fixed directive names, typed/bounded values and
+administrator-only disable_functions overrides.
+
+The previous PHP implementation was executed against an isolated symlink fixture:
+it deleted an outside `conf.d` canary and changed the outside directory from
+0700 to 0755. The fixed tests preserve that boundary. After VM deployment and
+HTTPS health, the primary received six compatible files (PHP extensions,
+malware, usage, statistics, webhooks and destination validation) with protected
+backups and matching source hashes. Both services are active and trusted
+HTTPS health passed after startup readiness. Authentication protocol migration
+is still reserved for the coordinated signed update.
+
+
+## Import, backup, process and snapshot boundaries
+
+cPanel and portable imports now treat imported initial passwords as one-time
+secrets: legacy plaintext rows are migrated to encrypted storage, workers seal
+new secrets before persistence, and retrieval uses a write transaction so only
+one caller can reveal the value. The import filesystem review also tightened
+root-owned home copies, WordPress config rewrites, DirectAdmin username handling,
+domain ownership checks, certificate import ordering and nested database
+expansion. Validation evidence: `import-boundary-tests.log` with 66 passing
+cases, `import-link-cycle-test.log`, and the VM import-path acceptance canary.
+
+Process signalling now re-resolves the account's current Unix identity and
+executes `kill` as that UID/GID, leaving stale PID or stale account identity
+changes to the kernel permission boundary. Validation evidence: 57 focused
+process/DNS/namespace tests and the VM process-signal acceptance canary, where
+the tenant process was terminated and the root-owned process survived.
+
+Account backup and restore workers now authorize every granular database,
+mailbox and file item against the target account before queueing and again
+inside the worker. Home archive creation runs with the tenant identity, and
+restore extraction validates tar metadata, path prefixes, type limits and
+expansion budgets before extracting under the tenant or mail service identity.
+Validation evidence: `tests/test_backup.py` passed all 58 cases, `tests/test_procutil.py`
+passed all nine cases, and the VM backup-path canary preserved root-only files
+while exercising actual tenant archive I/O.
+
+Snapshot backup had a separate high-severity root-read flaw. A controlled
+pre-fix canary validated a nested account include path, swapped an ancestor to
+a symlink into a root-only directory, then restored `SECRET_CANARY` from the
+root-owned restic snapshot. Revision `ef847ae` confines restic backup under a
+Landlock policy. The policy grants read access to stable account/mail/private
+roots, read/write access to the repository/cache, exact executable/runtime
+allowances, and passes the restic password through the child environment so no
+password file is granted inside the sandbox. `TMPDIR` is redirected to the
+approved cache. Validation evidence: the new symlink-ancestor regression,
+normal local backup/restore, repository exclusion, queued snapshot execution
+and SSH transport all passed in `tests/test_snapshot_storage.py` and
+`tests/test_snapshot_jobs.py` (25 tests total). This is source-fixed and still
+requires exact release deployment/fresh-install/update acceptance.
