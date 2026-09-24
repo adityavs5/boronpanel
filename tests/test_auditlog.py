@@ -1,3 +1,6 @@
+import asyncio
+import csv
+import io
 import pytest
 from fastapi import HTTPException
 
@@ -111,7 +114,7 @@ def test_export_csv_contains_all_rows(isolated_db):
     _seed(isolated_db)
     admin_identity = sec.Identity(1, "admin1", "admin", None, "session")
     response = auditlog.export_csv(identity=admin_identity)
-    body = response.body.decode()
+    body = _body(response)
     assert "actor" in body.splitlines()[0]  # header row
     assert body.count("\n") >= 4  # header + 4 data rows (trailing newline tolerant)
     assert "admin1" in body
@@ -122,7 +125,7 @@ def test_export_csv_respects_filters(isolated_db):
     _seed(isolated_db)
     admin_identity = sec.Identity(1, "admin1", "admin", None, "session")
     response = auditlog.export_csv(actor="admin1", identity=admin_identity)
-    body = response.body.decode()
+    body = _body(response)
     assert "cust1" not in body
     assert "cust2" not in body
 
@@ -144,3 +147,30 @@ def test_no_delete_route_exists():
     assert "DELETE" not in all_methods
     assert "PUT" not in all_methods
     assert "PATCH" not in all_methods
+
+
+def _body(response):
+    async def collect():
+        return ''.join([chunk async for chunk in response.body_iterator])
+    return asyncio.run(collect())
+
+
+@pytest.mark.parametrize('value', ['=1+1', '+1+1', '-1+1', '@SUM(A1)', ' \t=1+1', '\n=1+1'])
+def test_csv_formula_values_are_literal(value):
+    assert auditlog._csv_cell(value) == "'" + value
+    assert auditlog._csv_cell('normal text') == 'normal text'
+
+
+def test_csv_stream_pages_without_duplicates_and_preserves_quoting(isolated_db):
+    from shared.models import AuditLog
+    from shared.db import write_session
+    with write_session() as db:
+        for index in range(501):
+            db.add(AuditLog(actor='customer', role='customer', op='test',
+                           target='=1+1', result='failed', detail='line one,\nline two'))
+    identity = sec.Identity(1, 'admin', 'admin', None, 'session')
+    response = auditlog.export_csv(identity=identity)
+    rows = list(csv.DictReader(io.StringIO(_body(response))))
+    assert len(rows) == len({row['id'] for row in rows}) == 501
+    assert all(row['target'] == "'=1+1" and row['detail'] == 'line one,\nline two' for row in rows)
+    assert response.headers['cache-control'] == 'no-store'

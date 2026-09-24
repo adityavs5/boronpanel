@@ -17,7 +17,7 @@ import csv
 import io
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from starlette.requests import Request
 
@@ -150,6 +150,43 @@ def list_account_events(
         }
 
 
+def _csv_cell(value):
+    if isinstance(value, str):
+        # Quoting a CSV cell does not disable spreadsheet formulas. Preserve
+        # audit text as literal data, including whitespace/control prefixes.
+        if value.lstrip(' \t\r\n').startswith(('=', '+', '-', '@')) or value.startswith(('\t', '\r', '\n')):
+            return "'" + value
+        return value
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    return '' if value is None else value
+
+
+def _csv_response(model, query, fields, filename):
+    def chunks():
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(fields)
+        yield buffer.getvalue()
+        before = None
+        while True:
+            batch = query if before is None else query.where(model.id < before)
+            with read_session() as db:
+                rows = db.scalars(batch.order_by(model.id.desc()).limit(250)).all()
+            if not rows:
+                return
+            buffer.seek(0)
+            buffer.truncate(0)
+            for row in rows:
+                writer.writerow([_csv_cell(getattr(row, field)) for field in fields])
+            before = rows[-1].id
+            yield buffer.getvalue()
+    return StreamingResponse(chunks(), media_type='text/csv', headers={
+        'Content-Disposition': f'attachment; filename={filename}',
+        'Cache-Control': 'no-store',
+    })
+
+
 @api_router.get("/account-events/export.csv")
 def export_account_events_csv(
     action: str = "",
@@ -157,35 +194,14 @@ def export_account_events_csv(
     identity: Identity = Depends(get_identity),
 ):
     require_admin(identity)
-    with read_session() as db:
-        base = select(AccountEvent)
-        if action:
-            base = base.where(AccountEvent.action == action)
-        if username:
-            base = base.where(AccountEvent.username.contains(username))
-        rows = db.scalars(base.order_by(AccountEvent.id.desc())).all()
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["id", "created_at", "action", "username", "actor", "actor_role", "ip", "detail"])
-    for row in rows:
-        writer.writerow(
-            [
-                row.id,
-                row.created_at.isoformat() if row.created_at else "",
-                row.action,
-                row.username,
-                row.actor,
-                row.actor_role,
-                row.ip or "",
-                row.detail or "",
-            ]
-        )
-    return Response(
-        content=buf.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=boron-account-events.csv"},
-    )
+    query = select(AccountEvent)
+    if action:
+        query = query.where(AccountEvent.action == action)
+    if username:
+        query = query.where(AccountEvent.username.contains(username))
+    return _csv_response(AccountEvent, query,
+        ['id', 'created_at', 'action', 'username', 'actor', 'actor_role', 'ip', 'detail'],
+        'boron-account-events.csv')
 
 
 @api_router.get("/export.csv")
@@ -198,23 +214,10 @@ def export_csv(
     identity: Identity = Depends(get_identity),
 ):
     require_admin(identity)
-    with read_session() as db:
-        base = select(AuditLog)
-        base = _apply_filters(base, actor, op, result, target, q)
-        rows = db.scalars(base.order_by(AuditLog.id.desc())).all()
-
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["id", "created_at", "actor", "role", "op", "target", "result", "detail"])
-    for row in rows:
-        writer.writerow(
-            [row.id, row.created_at.isoformat() if row.created_at else "", row.actor, row.role, row.op, row.target or "", row.result, row.detail or ""]
-        )
-    return Response(
-        content=buf.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=boron-audit-log.csv"},
-    )
+    query = _apply_filters(select(AuditLog), actor, op, result, target, q)
+    return _csv_response(AuditLog, query,
+        ['id', 'created_at', 'actor', 'role', 'op', 'target', 'result', 'detail'],
+        'boron-audit-log.csv')
 
 
 # --- server-rendered UI ------------------------------------------------------

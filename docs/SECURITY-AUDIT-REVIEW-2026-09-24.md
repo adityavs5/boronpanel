@@ -324,3 +324,29 @@ state, preserved home contents in rollback argv, and normal lifecycle behavior.
 
 All 77 current account/package/sysops tests passed. These changes are not yet
 deployed on the primary.
+
+
+## Administrator review and audit exports
+
+Completed router-to-handler review for service control, firewall, fail2ban,
+IP bans/whitelist, packages, site templates, IP management, OLS administration,
+mail queue, slow-query/database monitors and audit/admin logs. Root policies
+restrict these operations to administrators; the explicit HTTP/legacy matrix
+rejects customer and reseller callers before data/RPC access. Queries bind
+values, service actions use allowlists/fixed argv, destructive actions retain
+their existing confirmations, and IP allocation enforces host-address and
+ownership rules. The database monitor checks hosted database ownership before
+killing a numeric thread ID. Root-controlled configured database usernames are
+trusted configuration, not tenant SQL input. Thirty-six monitor/audit tests
+passed after source review.
+
+CSV export previously materialized the complete log and emitted arbitrary
+cell text. It now streams 250-row keyset batches, closes the DB session between
+batches, sends no-store, and prefixes formula-like cells so spreadsheet imports
+treat them as text. Regression checks cover 501 rows without duplicates,
+filters, quoting, formula/control prefixes and retained role denials. All 251
+export/admin access tests passed. This is hardening against untrusted log text;
+no spreadsheet code execution was attempted.
+
+The coverage ledger now records 128 additional individually selected entry
+points in these reviewed families. Unrelated handlers remain pending.
