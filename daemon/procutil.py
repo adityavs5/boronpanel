@@ -50,7 +50,7 @@ class ProcResult:
 MAX_TENANT_OUTPUT = 4 * 1024 * 1024
 
 
-def _bounded_run(args, *, input_text, source, discard_stdout, timeout, cwd, privileges, limit):
+def _bounded_run(args, *, input_text, source, discard_stdout, timeout, cwd, privileges, limit, env):
     """Drain both pipes incrementally; never buffer unlimited tenant output.
 
     A dedicated process group permits timeout/overflow cleanup of children
@@ -64,7 +64,7 @@ def _bounded_run(args, *, input_text, source, discard_stdout, timeout, cwd, priv
         args, stdin=subprocess.PIPE if input_text is not None else source,
         stdout=subprocess.DEVNULL if discard_stdout else subprocess.PIPE,
         stderr=subprocess.PIPE, shell=False, cwd=cwd,
-        start_new_session=True, **privileges,
+        start_new_session=True, env=env, **privileges,
     ) as proc:
         try:
             with selectors.DefaultSelector() as selector:
@@ -120,6 +120,7 @@ def run(
     input_path: str | None = None, discard_stdout: bool = False,
     uid: int | None = None, gid: int | None = None,
     output_limit: int | None = None,
+    env: dict[str, str] | None = None,
 ) -> ProcResult:
     """Run an argv command. redact masks known secrets in the logged argv,
     but cannot hide them from process listings; prefer input_text for secrets.
@@ -149,7 +150,7 @@ def run(
                 raise ValueError('output_limit must be positive')
             proc = _bounded_run(args, input_text=input_text, source=source,
                 discard_stdout=discard_stdout, timeout=timeout, cwd=cwd,
-                privileges=privilege_args, limit=output_limit)
+                privileges=privilege_args, limit=output_limit, env=env)
         else:
             proc = subprocess.run(
                 args,
@@ -161,6 +162,7 @@ def run(
                 timeout=timeout,
                 shell=False,
                 cwd=cwd,
+                env=env,
                 **privilege_args,
             )
     result = ProcResult(args=args, returncode=proc.returncode, stdout=proc.stdout or "", stderr=proc.stderr or "")

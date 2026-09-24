@@ -316,6 +316,16 @@ def sources(account, options):
     return paths+[str(stage)]
 
 
+def sandbox_roots(account, paths):
+    home = Path(settings.home_base) / account.username
+    roots = [str(home)]
+    for value in paths:
+        path = Path(value)
+        if not path.is_relative_to(home):
+            roots.append(str(path))
+    return list(dict.fromkeys(roots))
+
+
 @serialized_worker
 def _mail_sources(account, stage):
     # Read registrations only after excluding mail provisioning/deletion; keep
@@ -377,7 +387,8 @@ def execute_run(ident):
             repo=repository(_row(SnapshotDestination,row.destination_id))
             summary=storage.backup(repo,account.id,paths,policy_id=row.policy_id,
                 excludes=row.options['exclude_patterns'],full_scan=row.options['mode']=='full',
-                exclude_mail_staging='mail' in row.options['components'])
+                exclude_mail_staging='mail' in row.options['components'],
+                sandbox_roots=sandbox_roots(account, paths))
             _update(ident,snapshot_id=summary['snapshot_id'],summary=summary,progress_message='Applying retention')
             items=[s for s in storage.snapshots(repo,account.id) if f'policy:{row.policy_id}' in s.get('tags',[])]
             items.sort(key=lambda s:s['time'],reverse=True)

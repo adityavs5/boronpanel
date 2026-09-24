@@ -61,6 +61,32 @@ def test_local_incremental_filter_and_verified_restore(repo,tmp_path):
     exercise_repository(repo,tmp_path)
 
 
+def test_landlock_sandbox_blocks_swapped_symlink_ancestor(repo, tmp_path):
+    home = tmp_path / 'home' / 'alpha'
+    selected = home / 'sub' / 'deep'
+    selected.mkdir(parents=True)
+    (selected / 'safe.txt').write_text('safe content')
+    storage.initialize(repo)
+
+    first = storage.backup(repo, 1, [str(selected)], sandbox_roots=[str(home)])
+    restored = storage.restore_to(repo, 1, first['snapshot_id'], str(tmp_path / 'restore-safe'))
+    assert (restored / str(selected / 'safe.txt').lstrip('/')).read_text() == 'safe content'
+
+    assert selected.resolve().is_relative_to(home)
+    shutil.rmtree(home / 'sub')
+    protected = tmp_path / 'protected'
+    (protected / 'deep').mkdir(parents=True)
+    (protected / 'deep' / 'root-secret.txt').write_text('SECRET_CANARY')
+    (home / 'sub').symlink_to(protected, target_is_directory=True)
+
+    with pytest.raises(storage.SnapshotStorageError):
+        storage.backup(repo, 1, [str(selected)], sandbox_roots=[str(home)])
+    snapshots = storage.snapshots(repo, 1)
+    latest = max(snapshots, key=lambda item: item['time'])
+    raced = storage.restore_to(repo, 1, latest['id'], str(tmp_path / 'restore-raced'))
+    assert not (raced / str(selected / 'root-secret.txt').lstrip('/')).exists()
+
+
 def test_thousand_mailbox_paths_fit_safety_backup_and_use_one_listing(repo, tmp_path, monkeypatch):
     source = tmp_path / 'mail'
     source.mkdir()
