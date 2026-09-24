@@ -20,18 +20,21 @@ over-a-daemon-function shape.
 from __future__ import annotations
 
 import datetime as dt
+import logging
+import time
 import re
 from collections import Counter
 from pathlib import Path
 
 from sqlalchemy import select
 
+from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, SiteStatsDaily, utcnow
 from shared.validation import validate_domain
 
-from daemon import geoip, ols
-from daemon.usage import _all_access_log_files  # reuse the exact log-file-glob convention
+from daemon import geoip, ols, safeio
+from daemon.usage import _all_access_log_files, access_log_lines  # reuse the exact log-file-glob convention
 
 # IP - - [01/Jul/2026:06:35:50 +0000] "METHOD /path HTTP/1.1" status bytes "referer" "user-agent"
 _ACCESS_LOG_RE = re.compile(
@@ -58,11 +61,15 @@ def _parse_log_line(line: str) -> dict | None:
         return None
     ip, day, mon, year, method, path, status, byte_str, referer, ua = m.groups()
     month_num = _MONTHS.get(mon)
-    if month_num is None:
+    if month_num is None or len(status) > 3 or len(byte_str) > 18:
+        return None
+    try:
+        date = dt.date(int(year), month_num, int(day))
+    except ValueError:
         return None
     return {
         "ip": ip,
-        "date": f"{year}-{month_num:02d}-{day}",
+        "date": date.isoformat(),
         "method": method,
         "path": path.split("?", 1)[0],
         "status": int(status),
@@ -77,64 +84,85 @@ def _referrer_host(url: str, own_domain: str) -> str | None:
         return None
     import urllib.parse
 
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except ValueError:
+        return None
     if not host or host == own_domain or host.endswith(f".{own_domain}"):
         return None  # internal navigation, not a real referrer
     return host
 
 
-def _compute_domain_day_stats(lines: list[dict], domain_name: str) -> dict:
-    pageviews = 0
-    visitors: set[str] = set()
-    bytes_served = 0
-    error_404 = 0
-    page_counter: Counter = Counter()
-    referrer_counter: Counter = Counter()
-    country_counter: Counter = Counter()
+MAX_STAT_KEYS = 200_000
+MAX_STAT_KEY_BYTES = 16 * 1024 * 1024
 
-    for entry in lines:
-        bytes_served += entry["bytes"]
-        visitors.add(entry["ip"])
-        if entry["status"] == 404:
-            error_404 += 1
-        is_asset = bool(_STATIC_ASSET_RE.search(entry["path"]))
-        if entry["status"] < 400 and not is_asset:
-            pageviews += 1
-            page_counter[entry["path"]] += 1
-        ref_host = _referrer_host(entry["referer"], domain_name)
-        if ref_host:
-            referrer_counter[ref_host] += 1
-        country = geoip.lookup_country(entry["ip"])
+
+class _DayStats:
+    def __init__(self, domain, budget):
+        self.domain, self.budget = domain, budget
+        self.pageviews = self.bytes = self.errors = 0
+        self.visitors = set()
+        self.pages, self.referrers, self.countries = Counter(), Counter(), Counter()
+
+    def _remember(self, collection, key):
+        if key not in collection:
+            self.budget[0] += 1
+            self.budget[1] += len(key.encode('utf-8'))
+            if self.budget[0] > MAX_STAT_KEYS or self.budget[1] > MAX_STAT_KEY_BYTES:
+                raise ValueError('Site statistics exceeded the distinct-key budget')
+        if isinstance(collection, set):
+            collection.add(key)
+        else:
+            collection[key] += 1
+
+    def add(self, entry):
+        self.bytes += entry['bytes']
+        if self.bytes > 2**63 - 1:
+            raise ValueError('Site statistics byte total exceeds database limits')
+        self._remember(self.visitors, entry['ip'])
+        self.errors += entry['status'] == 404
+        if entry['status'] < 400 and not _STATIC_ASSET_RE.search(entry['path']):
+            self.pageviews += 1
+            self._remember(self.pages, entry['path'])
+        referrer = _referrer_host(entry['referer'], self.domain)
+        if referrer:
+            self._remember(self.referrers, referrer)
+        country = geoip.lookup_country(entry['ip'])
         if country:
-            country_counter[country] += 1
+            self._remember(self.countries, country)
 
-    return {
-        "pageviews": pageviews,
-        "unique_visitors": len(visitors),
-        "bytes_served": bytes_served,
-        "error_404_count": error_404,
-        "top_pages": [{"path": p, "count": c} for p, c in page_counter.most_common(TOP_N)],
-        "top_referrers": [{"referrer": r, "count": c} for r, c in referrer_counter.most_common(TOP_N)],
-        "top_countries": [{"country_code": cc, "count": c} for cc, c in country_counter.most_common(TOP_N)],
-    }
+    def result(self):
+        return dict(pageviews=self.pageviews, unique_visitors=len(self.visitors),
+            bytes_served=self.bytes, error_404_count=self.errors,
+            top_pages=[dict(path=p, count=c) for p, c in self.pages.most_common(TOP_N)],
+            top_referrers=[dict(referrer=p, count=c) for p, c in self.referrers.most_common(TOP_N)],
+            top_countries=[dict(country_code=p, count=c) for p, c in self.countries.most_common(TOP_N)])
 
 
-def _parse_domain_logs(home_dir: str, domain_name: str) -> dict[str, list[dict]]:
-    """Groups every parsed log line for this domain by calendar date --
-    mirrors daemon/usage.refresh_bandwidth's own "one pass over every log
-    file, bucket by date" shape."""
+def _compute_domain_day_stats(lines: list[dict], domain_name: str) -> dict:
+    stats = _DayStats(domain_name, [0, 0])
+    for entry in lines:
+        stats.add(entry)
+    return stats.result()
+
+
+def _parse_domain_logs(home_dir: str, domain_name: str) -> dict[str, _DayStats]:
     vhost_name = ols._vhost_name(domain_name)
-    by_date: dict[str, list[dict]] = {}
+    by_date = {}
+    budget = [0, 0]
+    deadline = time.monotonic() + 30
+    oldest = (utcnow().date() - dt.timedelta(days=366)).isoformat()
+    newest = (utcnow().date() + dt.timedelta(days=1)).isoformat()
     for log_file in _all_access_log_files(home_dir, vhost_name):
-        try:
-            with Path(log_file).open("r", errors="replace") as f:
-                for line in f:
-                    entry = _parse_log_line(line)
-                    if entry is None:
-                        continue
-                    by_date.setdefault(entry["date"], []).append(entry)
-        except OSError:
-            continue
+        for line in access_log_lines(log_file):
+            if time.monotonic() > deadline:
+                raise ValueError('Site statistics scan exceeded its resource budget')
+            entry = _parse_log_line(line)
+            if entry is None or not oldest <= entry['date'] <= newest:
+                continue
+            if entry['date'] not in by_date:
+                by_date[entry['date']] = _DayStats(domain_name, budget)
+            by_date[entry['date']].add(entry)
     return by_date
 
 
@@ -149,20 +177,24 @@ def refresh_domain(domain_name: str) -> dict:
             raise RuntimeError(f"domain '{domain_name}' has no owning account")
         account_id, username = account.id, account.username
 
-    home_dir = f"/home/{username}"
+    home_dir = str(Path(settings.home_base) / username)
     by_date = _parse_domain_logs(home_dir, domain_name)
     if not by_date:
         return {"domain": domain_name, "days_updated": 0}
 
     with write_session() as session:
-        for date_key, lines in by_date.items():
-            stats = _compute_domain_day_stats(lines, domain_name)
+        current = session.scalar(select(Domain).where(Domain.domain == domain_name))
+        if current is None or current.account_id != account_id:
+            raise RuntimeError('Site ownership changed during statistics scan')
+        for date_key, accumulator in by_date.items():
+            stats = accumulator.result()
             existing = session.scalar(
                 select(SiteStatsDaily).where(SiteStatsDaily.domain == domain_name, SiteStatsDaily.date == date_key)
             )
             if existing is None:
                 existing = SiteStatsDaily(account_id=account_id, domain=domain_name, date=date_key)
                 session.add(existing)
+            existing.account_id = account_id
             for key, value in stats.items():
                 setattr(existing, key, value)
     return {"domain": domain_name, "days_updated": len(by_date)}
@@ -177,7 +209,8 @@ def refresh_all() -> int:
         try:
             refresh_domain(domain_name)
             count += 1
-        except RuntimeError:
+        except (RuntimeError, OSError, ValueError, safeio.UnsafePathError):
+            logging.getLogger(__name__).exception('Site statistics scan failed for %s', domain_name)
             continue  # domain removed mid-run, or no owning account -- skip, not fatal
     return count
 
@@ -212,8 +245,12 @@ def get_stats(params: dict) -> dict:
     cutoff = (utcnow().date() - dt.timedelta(days=_PERIOD_LOOKBACK_DAYS[period])).isoformat()
 
     with write_session() as session:
+        owner = session.scalar(select(Domain.account_id).where(Domain.domain == domain_name))
+        if owner is None:
+            raise RuntimeError('Site is no longer provisioned')
         rows = session.scalars(
-            select(SiteStatsDaily).where(SiteStatsDaily.domain == domain_name, SiteStatsDaily.date >= cutoff).order_by(SiteStatsDaily.date)
+            select(SiteStatsDaily).where(SiteStatsDaily.domain == domain_name,
+                SiteStatsDaily.account_id == owner, SiteStatsDaily.date >= cutoff).order_by(SiteStatsDaily.date)
         ).all()
 
     buckets: dict[str, dict] = {}

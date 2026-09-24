@@ -384,3 +384,29 @@ which lacks SQLAlchemy; it was rerun successfully with the installed panel venv.
 Primary services and trusted HTTPS health passed. Startup server changes await
 the unified root-authority release. No public CA issuance was attempted by these
 challenge tests, so they do not constitute a new end-to-end ACME issuance test.
+
+
+## Usage and site-statistics file and ownership boundaries
+
+Both reporting readers now use the same no-follow directory/file descriptors,
+nonblocking regular-file checks, bounded lines/files and scan time budgets.
+Oversized scans fail without committing partial totals. Directory enumeration
+is bounded. Statistics aggregate incrementally rather than retaining every
+request; distinct keys have count/byte budgets, repeated hits consume no new
+key memory. Dates, integer totals and malformed referrers are checked. One
+malformed account/domain does not stop the remaining periodic report scans.
+
+A reassigned domain no longer returns a previous owner's retained statistics.
+Refresh verifies current ownership again before committing. These figures are
+parsed from tenant-controlled logs and are not independently trusted billing
+measurements; this change does not make log-derived bandwidth tamper-proof.
+
+Validation: 43 existing usage/statistics tests and 24 focused boundary tests
+passed; the final combined 47 cases passed on the disposable VM. Tests cover
+symlinked parents/leaves, FIFOs, overlong records, file/time/key budgets,
+repeated-hit aggregation, correct ordinary statistics and reassignment denial.
+Twenty-five SSL/reporting HTTP/root ownership cases passed. The certificate,
+reporting and cron source paths were also reviewed for ownership scoping,
+parameterized queries, configured paths, certificate metadata, root-controlled
+log destinations and bounded result periods. Full exact-artifact acceptance
+remains separate from this source-review disposition.

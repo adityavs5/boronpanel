@@ -15,6 +15,10 @@ trend data keeps accumulating even if nobody opens the usage page).
 from __future__ import annotations
 
 import datetime as dt
+import logging
+import os
+import stat
+import time
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -25,7 +29,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, AccountResourceLimits, BandwidthDaily, BandwidthDailyDomain, DatabaseGrant, Domain, FtpAccount, MailDomain, MailUser, UsageSnapshot, utcnow
 
-from daemon import mariadb, ols
+from daemon import mariadb, ols, safeio
 from daemon.procutil import run
 
 SNAPSHOT_MAX_AGE_SECONDS = 15 * 60
@@ -114,37 +118,98 @@ def compute_live_usage(account: Account) -> dict:
 
 def _all_access_log_files(home_dir: str, vhost_name: str) -> list[Path]:
     logs_dir = Path(home_dir) / "logs"
-    if not logs_dir.exists():
+    try:
+        directory = safeio.open_dir_beneath(str(logs_dir))
+    except FileNotFoundError:
         return []
-    # Glob, not just the current file: OLS rotates access logs (rollingSize/
-    # keepDays in vhost.conf.j2) with a suffix this project doesn't control
-    # the exact format of -- matching every file that starts with this
-    # vhost's access log name catches rotated ones too.
-    return sorted(logs_dir.glob(f"{vhost_name}-access.log*"))
+    files = []
+    try:
+        with os.scandir(directory) as entries:
+            for index, entry in enumerate(entries):
+                if index >= 8192:
+                    raise ValueError('Too many entries in access log directory')
+                if entry.name.startswith(f'{vhost_name}-access.log'):
+                    files.append(logs_dir / entry.name)
+                    if len(files) > 1024:
+                        raise ValueError('Too many rotated access logs')
+    finally:
+        os.close(directory)
+    return sorted(files)
+
+
+ACCESS_LOG_MAX_BYTES = 256 * 1024 * 1024
+ACCESS_LOG_MAX_LINE = 64 * 1024
+ACCESS_LOG_MAX_SECONDS = 10
+
+
+def access_log_lines(path: Path):
+    """Bounded parsing through no-follow descriptors, including all parents.
+
+    Reject oversized files instead of committing a partial bandwidth total.
+    Tenant logs are reporting input, not an independent billing authority.
+    """
+    try:
+        directory = safeio.open_dir_beneath(str(path.parent))
+    except FileNotFoundError:
+        return
+    try:
+        try:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=directory)
+        except FileNotFoundError:
+            return
+    finally:
+        os.close(directory)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError('Access log must be a regular file')
+        if info.st_size > ACCESS_LOG_MAX_BYTES:
+            raise ValueError('Access log exceeds the safe scan size')
+        deadline = time.monotonic() + ACCESS_LOG_MAX_SECONDS
+        consumed = 0
+        discarding = False
+        while True:
+            raw = stream.readline(ACCESS_LOG_MAX_LINE + 1)
+            if not raw:
+                break
+            consumed += len(raw)
+            if consumed > ACCESS_LOG_MAX_BYTES or time.monotonic() > deadline:
+                raise ValueError('Access log scan exceeded its resource budget')
+            if discarding or len(raw) > ACCESS_LOG_MAX_LINE:
+                discarding = not raw.endswith(b'\n')
+                continue
+            yield raw.decode('utf-8', errors='replace')
 
 
 def _parse_access_log(path: Path) -> dict[str, int]:
     totals: dict[str, int] = defaultdict(int)
-    try:
-        with path.open("r", errors="replace") as f:
-            for line in f:
-                m = _ACCESS_LOG_RE.match(line)
-                if not m:
-                    continue
-                day, mon, year, byte_str = m.groups()
-                if byte_str == "-":
-                    continue
-                month_num = _MONTHS.get(mon)
-                if month_num is None:
-                    continue
-                totals[f"{year}-{month_num:02d}-{day}"] += int(byte_str)
-    except OSError:
-        pass
+    oldest = utcnow().date() - dt.timedelta(days=366)
+    newest = utcnow().date() + dt.timedelta(days=1)
+    for line in access_log_lines(path):
+        m = _ACCESS_LOG_RE.match(line)
+        if not m:
+            continue
+        day, mon, year, byte_str = m.groups()
+        if byte_str == '-' or len(byte_str) > 18:
+            continue
+        try:
+            date = dt.date(int(year), _MONTHS.get(mon, 0), int(day))
+        except ValueError:
+            continue
+        if not oldest <= date <= newest:
+            continue
+        key = date.isoformat()
+        total = totals[key] + int(byte_str)
+        if total > 2**63 - 1:
+            raise ValueError('Access log byte total exceeds database limits')
+        totals[key] = total
     return totals
 
 
 def refresh_bandwidth(account: Account) -> None:
     home_dir = _account_home(account.username)
+    deadline = time.monotonic() + 30
     aggregate: dict[str, int] = defaultdict(int)
     # Phase 7b feature 2: bandwidth graphs need "top 5 domains by bandwidth"
     # -- per_domain keeps the identical (date -> bytes) breakdown the
@@ -154,9 +219,13 @@ def refresh_bandwidth(account: Account) -> None:
     for domain_name in _domains_for_account(account.id):
         vhost_name = ols._vhost_name(domain_name)
         for log_file in _all_access_log_files(home_dir, vhost_name):
+            if time.monotonic() > deadline:
+                raise ValueError('Account access log scan exceeded its resource budget')
             for date_key, byte_count in _parse_access_log(log_file).items():
                 aggregate[date_key] += byte_count
                 per_domain[(domain_name, date_key)] += byte_count
+                if aggregate[date_key] > 2**63 - 1:
+                    raise ValueError('Account bandwidth total exceeds database limits')
 
     if not aggregate:
         return
@@ -420,6 +489,10 @@ def refresh_all_accounts() -> int:
 
     count = 0
     for account in account_snapshots:
-        refresh_snapshot(account)
+        try:
+            refresh_snapshot(account)
+        except (OSError, ValueError, safeio.UnsafePathError):
+            logging.getLogger(__name__).exception('Usage scan failed for %s', account.username)
+            continue
         count += 1
     return count

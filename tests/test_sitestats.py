@@ -152,3 +152,46 @@ def test_get_stats_rejects_bad_period(isolated_db):
 
     with pytest.raises(ValueError):
         ss.get_stats({"domain": "demo1.example", "period": "yearly"})
+
+
+def test_reassigned_domain_does_not_show_previous_owner_statistics(domain_with_logs):
+    from shared.db import write_session
+    from shared.models import Account, Domain
+    ss.refresh_domain(domain_with_logs)
+    with write_session() as session:
+        other = Account(username='otherowner', uid=6001, gid=6001, status='active')
+        session.add(other)
+        session.flush()
+        site = session.query(Domain).filter_by(domain=domain_with_logs).one()
+        site.account_id = other.id
+    assert ss.get_stats({'domain': domain_with_logs})['total_pageviews'] == 0
+
+
+def test_stats_reject_symlink_log(domain_with_logs, tmp_path, monkeypatch):
+    protected = tmp_path / 'protected.log'
+    protected.write_text('private canary')
+    link = tmp_path / 'malicious.log'
+    link.symlink_to(protected)
+    monkeypatch.setattr(ss, '_all_access_log_files', lambda *args: [link])
+    with pytest.raises(OSError):
+        ss.refresh_domain(domain_with_logs)
+    assert protected.read_text() == 'private canary'
+
+
+def test_stats_distinct_key_budget_and_repeated_hits(monkeypatch):
+    monkeypatch.setattr(ss, 'MAX_STAT_KEYS', 3)
+    monkeypatch.setattr(ss.geoip, 'lookup_country', lambda ip: None)
+    entry = dict(ip='192.0.2.1', path='/', status=200, bytes=10, referer='')
+    accumulator = ss._DayStats('demo.example', [0, 0])
+    for _ in range(10000):
+        accumulator.add(entry)
+    assert accumulator.result()['pageviews'] == 10000
+    assert accumulator.budget[0] == 2
+    accumulator.add({**entry, 'path': '/second'})
+    with pytest.raises(ValueError, match='distinct-key'):
+        accumulator.add({**entry, 'path': '/third'})
+
+
+def test_stats_ignore_invalid_date_and_byte_lengths():
+    assert ss._parse_log_line('1.2.3.4 - - [99/Sep/2026:00:00:00 +0000] "GET / HTTP/1.1" 200 1 "-" "ua"') is None
+    assert ss._referrer_host('http://[invalid', 'demo.example') is None
