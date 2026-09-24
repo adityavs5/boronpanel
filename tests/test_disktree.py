@@ -18,6 +18,13 @@ def account_tree(isolated_db, tmp_path, monkeypatch):
     this machine's real production database instead of a throwaway one (a
     real mistake made and caught once already this phase, in a different
     test file -- docs/CHECKPOINT-phase4-0b-cross-account-idor.md)."""
+    # Exercise real du/find parsing with fixture files; verify every command
+    # requests the tenant identity before substituting the fixture owner.
+    original_run = disktree.run
+    def fixture_run(args, **kwargs):
+        assert args[:4] == ['runuser', '-u', 'demo1', '--']
+        return original_run(args[4:], **kwargs)
+    monkeypatch.setattr(disktree, 'run', fixture_run)
     home_base = tmp_path / "home"
     home_base.mkdir()
     monkeypatch.setattr(disktree.filemanager.settings, "home_base", str(home_base))
@@ -106,3 +113,13 @@ def test_get_disk_tree_root_uses_cached_snapshot_when_fresh(isolated_db, account
 
     result = disktree.get_disk_tree({"username": "demo1", "path": ""})
     assert result["total_bytes"] == 123456789  # the cached figure, not a fresh du
+
+
+def test_filename_newlines_do_not_inject_disk_tree_rows(account_tree):
+    name = 'line\n999999\tinjected.txt'
+    (account_tree / 'public_html' / name).write_bytes(b'123')
+    result = disktree.get_disk_tree({'username': 'demo1', 'path': 'public_html'})
+    entries = [c for c in result['children'] if c['name'] == name]
+    assert len(entries) == 1 and entries[0]['size_bytes'] == 3
+    top = disktree.get_top_files({'username': 'demo1'})
+    assert any(f['path'] == 'public_html/' + name and f['size_bytes'] == 3 for f in top['files'])

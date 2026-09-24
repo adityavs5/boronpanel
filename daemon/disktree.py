@@ -57,12 +57,12 @@ def _resolve_dir(username: str, relative_path: str) -> tuple[str, str]:
     return resolved, home
 
 
-def _immediate_subdirs(path: str) -> list[dict]:
-    result = run(["du", "--max-depth=1", "-b", path], timeout=DU_TIMEOUT)
+def _immediate_subdirs(path: str, username: str) -> list[dict]:
+    result = run(["runuser", "-u", username, "--", "du", "--max-depth=1", "-b", "-0", path], timeout=DU_TIMEOUT)
     if not result.ok:
         raise DiskTreeError(f"du failed: {result.stderr.strip() or result.stdout.strip()}")
     entries = []
-    for line in result.stdout.splitlines():
+    for line in result.stdout.split("\0"):
         if not line.strip():
             continue
         size_str, _, entry_path = line.partition("\t")
@@ -72,12 +72,12 @@ def _immediate_subdirs(path: str) -> list[dict]:
     return entries
 
 
-def _immediate_files(path: str) -> list[dict]:
-    result = run(["find", path, "-maxdepth", "1", "-type", "f", "-printf", "%s\t%f\n"], timeout=FIND_TIMEOUT)
+def _immediate_files(path: str, username: str) -> list[dict]:
+    result = run(["runuser", "-u", username, "--", "find", path, "-maxdepth", "1", "-type", "f", "-printf", "%s\t%f\\0"], timeout=FIND_TIMEOUT)
     if not result.ok:
         raise DiskTreeError(f"find failed: {result.stderr.strip() or result.stdout.strip()}")
     entries = []
-    for line in result.stdout.splitlines():
+    for line in result.stdout.split("\0"):
         if not line.strip():
             continue
         size_str, _, name = line.partition("\t")
@@ -85,8 +85,8 @@ def _immediate_files(path: str) -> list[dict]:
     return entries
 
 
-def _total_size(path: str) -> int:
-    result = run(["du", "-sb", path], timeout=DU_TIMEOUT)
+def _total_size(path: str, username: str) -> int:
+    result = run(["runuser", "-u", username, "--", "du", "-sb", path], timeout=DU_TIMEOUT)
     if not result.ok:
         raise DiskTreeError(f"du failed: {result.stderr.strip() or result.stdout.strip()}")
     return int(result.stdout.split(None, 1)[0])
@@ -124,11 +124,11 @@ def get_disk_tree(params: dict) -> dict:
     if resolved == home:
         total = _cached_account_total_bytes(username)
         if total is None:
-            total = _total_size(resolved)
+            total = _total_size(resolved, username)
     else:
-        total = _total_size(resolved)
+        total = _total_size(resolved, username)
 
-    children = _immediate_subdirs(resolved) + _immediate_files(resolved)
+    children = _immediate_subdirs(resolved, username) + _immediate_files(resolved, username)
     children.sort(key=lambda e: e["size_bytes"], reverse=True)
 
     return {
@@ -144,14 +144,14 @@ def get_top_files(params: dict) -> dict:
     resolved, home = _resolve_dir(username, relative_path)
 
     result = run(
-        ["find", resolved, "-type", "f", "-printf", "%s\t%p\n"],
+        ["runuser", "-u", username, "--", "find", resolved, "-type", "f", "-printf", "%s\t%p\\0"],
         timeout=TOP_FILES_TIMEOUT,
     )
     if not result.ok:
         raise DiskTreeError(f"find failed: {result.stderr.strip() or result.stdout.strip()}")
 
     files = []
-    for line in result.stdout.splitlines():
+    for line in result.stdout.split("\0"):
         if not line.strip():
             continue
         size_str, _, full_path = line.partition("\t")

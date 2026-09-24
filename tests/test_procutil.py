@@ -43,3 +43,51 @@ def test_streamed_input_and_discarded_output(tmp_path):
     assert result.ok and int(result.stdout.strip())==len(source.read_bytes())
     result=run(['/usr/bin/cat'],input_path=str(source),discard_stdout=True)
     assert result.ok and result.stdout==''
+
+
+def test_bounded_command_preserves_input_and_both_output_streams():
+    import sys
+    payload = 'test-data' * 100_000
+    result = run([sys.executable, '-c', 'import sys; sys.stderr.write("ready"); data=sys.stdin.read(); sys.stdout.write(data)'],
+                 input_text=payload, output_limit=2_000_000)
+    assert result.ok and result.stdout == payload and result.stderr == 'ready'
+
+
+def test_bounded_command_rejects_excess_output():
+    import sys
+    import pytest
+    with pytest.raises(RuntimeError, match='capture limit'):
+        run([sys.executable, '-c', 'import os; os.write(2, b"x"*100000)'], output_limit=4096)
+
+
+def test_bounded_command_timeout_cleans_up_pipe_holding_child(tmp_path):
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+    import pytest
+    pidfile = tmp_path / 'pid'
+    code = 'import os,time; p=os.fork(); open(sys.argv[1],"w").write(str(os.getpid())) if p == 0 else None; time.sleep(30)'
+    with pytest.raises(subprocess.TimeoutExpired):
+        run([sys.executable, '-c', 'import sys; ' + code, str(pidfile)], output_limit=4096, timeout=2.0)
+    child = int(pidfile.read_text())
+    for _ in range(50):
+        path = __import__('pathlib').Path(f'/proc/{child}/stat')
+        if not path.exists() or path.read_text().split()[2] == 'Z':
+            break
+        time.sleep(0.01)
+    else:
+        os.kill(child, signal.SIGKILL)
+        pytest.fail('timed out command left a child running')
+
+
+def test_tenant_wrapper_automatically_enforces_capture_limit(monkeypatch):
+    import pytest
+    from daemon import procutil
+    def bounded(args, **kwargs):
+        assert kwargs['limit'] == procutil.MAX_TENANT_OUTPUT
+        raise RuntimeError('bounded runner reached')
+    monkeypatch.setattr(procutil, '_bounded_run', bounded)
+    with pytest.raises(RuntimeError, match='bounded runner reached'):
+        run(['/usr/sbin/runuser', '-u', 'tenant', '--', '/bin/true'])

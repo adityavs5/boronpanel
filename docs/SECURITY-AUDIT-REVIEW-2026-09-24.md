@@ -226,3 +226,20 @@ bounded tail reader, rejecting symlinked ancestors, symlinked leaf files and
 nonregular files. Tests swap either the parent or leaf after resolution and
 verify that a protected canary is not returned; normal logs and oversized tails
 remain functional. All 29 log/viewer safety tests passed.
+
+
+## Bounded tenant command output and disk inspection
+
+The shared process runner now drains stdout/stderr incrementally for commands
+run under a tenant UID or through runuser. Its combined four-MiB limit applies
+before buffering; overflow and timeout kill the dedicated process group,
+including children holding pipes open. This closes the root daemon memory
+exhaustion path where package hooks could emit unbounded output before a caller
+truncated it. Input pumping avoids pipe deadlock. Root backup dumps retain their
+existing separate behavior; this is not a claim that every root subprocess has
+bounded output.
+
+Disk-tree du/find probes now run as the account user, so path swaps cannot
+use root privileges to list private peer files. NUL-delimited records preserve
+filenames containing newlines instead of interpreting them as new entries.
+The ten disk-tree tests and forty process/command/Composer/WP-CLI tests passed.
