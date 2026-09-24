@@ -136,6 +136,7 @@ def _run_step(job_id: int, item: str, fn) -> None:
     individual item's exception escape and abort the whole job (goal:
     "fail gracefully on unsupported items, import rest")."""
     try:
+        _update_job(job_id, progress_message=f"restoring {item}")
         detail = fn()
         _append_result(job_id, item, "ok", detail or "")
     except _Skip as skip:

@@ -291,8 +291,10 @@ def fetch_archive(job_id, params, work_dir):
             deadline = time.monotonic() + 7200
             last = {}
             stable = {}
+            backup_started = time.monotonic()
             while time.monotonic() < deadline:
                 time.sleep(10)
+                _update_job(job_id, progress_message=f'waiting for source backup — {int(time.monotonic() - backup_started)}s elapsed')
                 current = source.admin_backups(admin_directory, user) if admin_directory else source.backups(user)
                 for path, signature in current.items():
                     if signature == before.get(path) or signature[0] <= 0:
@@ -305,12 +307,16 @@ def fetch_archive(job_id, params, work_dir):
                     _update_job(job_id, progress_message='transferring DirectAdmin backup')
                     dest = work_dir / 'directadmin.tar.gz'
                     total = 0
+                    last_progress = time.monotonic()
                     with source.stream('CMD_FILE_MANAGER', {'path': path}, None if admin_directory else user) as chunks, dest.open('wb') as output:
                         for chunk in chunks:
                             total += len(chunk)
                             if total > settings.cpanel_import_max_upload_bytes:
                                 raise ValidationError('Source backup exceeds the configured import size limit')
                             output.write(chunk)
+                            if time.monotonic() - last_progress >= 2:
+                                _update_job(job_id, progress_message=f'transferring backup — {total / 1048576:.1f} / {signature[0] / 1048576:.1f} MiB')
+                                last_progress = time.monotonic()
                     after = source.admin_backups(admin_directory, user) if admin_directory else source.backups(user)
                     if total != signature[0] or after.get(path) != signature:
                         dest.unlink(missing_ok=True)

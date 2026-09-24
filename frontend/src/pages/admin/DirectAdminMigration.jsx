@@ -8,7 +8,7 @@ import { toast } from '@/components/ui/Toast'
 
 const initial = { mode: 'admin', host: '', port: 2222, login: 'admin', password: '', host_key: '' }
 
-export default function DirectAdminMigration({ onClose }) {
+export default function DirectAdminMigration({ onClose, onQueued }) {
   const qc = useQueryClient()
   const [connection, setConnection] = useState(initial)
   const [preview, setPreview] = useState(null)
@@ -48,6 +48,7 @@ export default function DirectAdminMigration({ onClose }) {
       if (!errors.length) {
         setConnection(current => ({ ...current, password: '' }))
         setPreview(null)
+        if (jobs.length) onQueued?.(jobs[0])
       }
     },
   })
@@ -57,13 +58,13 @@ export default function DirectAdminMigration({ onClose }) {
 
   return <section className="mb-6 rounded-panel border border-border bg-card p-5 space-y-5" aria-label="DirectAdmin server migration">
     <div className="flex items-center justify-between gap-4"><div><h2 className="text-lg font-semibold">Import from a DirectAdmin server</h2><p className="text-sm text-muted-foreground">Connect, select accounts, then let Boron create and transfer their backups.</p></div><Button variant="secondary" onClick={onClose} disabled={busy}>Close</Button></div>
-    <form onSubmit={event => { event.preventDefault(); inspect.mutate() }}>
+    <form autoComplete="off" data-bwignore="true" onSubmit={event => { event.preventDefault(); inspect.mutate() }}>
       <fieldset disabled={busy} className="grid gap-4 md:grid-cols-2">
         <FormField label="Connection method" htmlFor="da-mode"><Select id="da-mode" value={connection.mode} onChange={event => { setConnection(current => ({ ...current, mode: event.target.value, port: event.target.value === 'root' ? 22 : 2222 })); setPreview(null); setSelected({}) }}><option value="admin">DirectAdmin administrator · HTTPS</option><option value="root">Server root · SSH</option></Select></FormField>
         <FormField label="Source server" htmlFor="da-host" hint={connection.mode === 'admin' ? 'Use the hostname covered by the source TLS certificate.' : 'Public hostname or IPv4 address.'}><Input id="da-host" value={connection.host} onChange={event => change('host', event.target.value)} placeholder="server.example.com" required autoComplete="off" /></FormField>
         <FormField label="Port" htmlFor="da-port"><Input id="da-port" type="number" min="1" max="65535" value={connection.port} onChange={event => change('port', Number(event.target.value))} required /></FormField>
         {connection.mode === 'admin' && <FormField label="DirectAdmin administrator" htmlFor="da-login"><Input id="da-login" value={connection.login} onChange={event => change('login', event.target.value)} required autoComplete="off" /></FormField>}
-        <FormField label={connection.mode === 'root' ? 'Root SSH password' : 'Admin password or login key'} htmlFor="da-password"><Input id="da-password" type="password" value={connection.password} onChange={event => change('password', event.target.value)} required autoComplete="new-password" /></FormField>
+        <FormField label={connection.mode === 'root' ? 'Root SSH password' : 'Admin password or login key'} htmlFor="da-password"><Input id="da-password" data-bwignore="true" data-1p-ignore="true" data-lpignore="true" type="password" value={connection.password} onChange={event => change('password', event.target.value)} required autoComplete="off" /></FormField>
         {connection.mode === 'root' && <FormField label="SSH host-key fingerprint" htmlFor="da-host-key" hint="Obtain the SHA256 fingerprint from your source server console (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)."><Input id="da-host-key" value={connection.host_key} onChange={event => change('host_key', event.target.value)} placeholder="SHA256:…" required autoComplete="off" /></FormField>}
       </fieldset>
       <p className="mt-3 text-sm text-muted-foreground">Passwords are used for this migration only and are not saved. Restarting Boron interrupts transfers; reconnect to retry. Source accounts and backups are retained.</p>

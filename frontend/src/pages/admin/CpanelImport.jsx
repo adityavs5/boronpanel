@@ -1,7 +1,7 @@
 import DirectAdminMigration from './DirectAdminMigration'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, DownloadCloud, FileArchive, Link2, Plus, Upload } from 'lucide-react'
+import { Copy, DownloadCloud, FileArchive, Link2, Plus, Upload, Loader2, RefreshCw } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -27,6 +27,14 @@ export default function AccountImports() {
   const [remoteOpen, setRemoteOpen] = useState(false)
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState(null)
+  const [accountPassword, setAccountPassword] = useState(null)
+  const [now, setNow] = useState(Date.now())
+  const openDetails = row => { setRemoteOpen(false); setAccountPassword(null); setSelected(row) }
+  useEffect(() => {
+    if (!selected) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [selected?.id])
   const [file, setFile] = useState(null)
   const [form, setForm] = useState({ username: '', panel: 'cpanel', source: 'upload', url: '' })
   const external = useQuery({
@@ -50,9 +58,20 @@ export default function AccountImports() {
       ? get(`/api/v1/admin/import/boron/${selected.id}`)
       : get(`/api/v1/admin/import/accounts/${selected.id}?username=${encodeURIComponent(selected.username)}`),
     enabled: !!selected,
-    refetchInterval: query => ['pending', 'running'].includes(query.state.data?.status) ? 3000 : false,
+    refetchInterval: selected ? 3000 : false,
+    refetchIntervalInBackground: true,
+    gcTime: 0,
   })
-  const shown = detail.data ? { ...selected, ...detail.data } : selected
+  useEffect(() => {
+    if (detail.data?.initial_password) setAccountPassword(detail.data.initial_password)
+  }, [detail.data])
+  const latestRow = rows.find(row => row.rowKey === selected?.rowKey) || selected
+  const shown = detail.data ? { ...latestRow, ...detail.data } : latestRow
+  const running = shown && ['pending', 'running'].includes(shown.status)
+  const completedItems = shown?.results?.length || 0
+  const failedItems = shown?.results?.filter(item => item.status === 'failed').length || 0
+  const startTime = shown?.started_at ? Date.parse(/(?:Z|[+-]\d\d:\d\d)$/.test(shown.started_at) ? shown.started_at : `${shown.started_at}Z`) : null
+  const elapsed = startTime ? Math.max(0, Math.floor(((shown.completed_at ? Date.parse(/(?:Z|[+-]\d\d:\d\d)$/.test(shown.completed_at) ? shown.completed_at : `${shown.completed_at}Z`) : now) - startTime) / 1000)) : null
 
   const reset = () => {
     setForm({ username: '', panel: 'cpanel', source: 'upload', url: '' })
@@ -65,6 +84,7 @@ export default function AccountImports() {
       qc.invalidateQueries({ queryKey: ['account-imports'] })
       qc.invalidateQueries({ queryKey: ['boron-archive-imports'] })
       setOpen(false)
+      openDetails({ ...job, panel: form.panel, rowKey: `${form.panel === 'boron' ? 'boron' : 'external'}-${job.id}` })
       reset()
     },
     onError: error => toast.error('Could not start import', error.message),
@@ -98,8 +118,8 @@ export default function AccountImports() {
       <Button variant="secondary" onClick={() => setRemoteOpen(value => !value)}>From DirectAdmin server</Button>
       <Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />New migration</Button>
     </PageHeader>
-    {remoteOpen && <DirectAdminMigration onClose={() => setRemoteOpen(false)} />}
-    <DataTable columns={columns} data={rows} loading={external.isLoading || native.isLoading} error={external.error || native.error} onRetry={() => { external.refetch(); native.refetch() }} filterable searchPlaceholder="Search migrations…" pageSize={15} initialSort={{ key: 'started_at', dir: 'desc' }} getRowKey={row => row.rowKey} onRowClick={setSelected} emptyTitle="No account migrations" emptyDescription="Upload a full account archive to migrate it to this server." emptyIcon={FileArchive} emptyAction={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />New migration</Button>} />
+    {remoteOpen && <DirectAdminMigration onClose={() => setRemoteOpen(false)} onQueued={job => openDetails({ ...job, panel: 'directadmin', rowKey: `external-${job.id}` })} />}
+    <DataTable columns={columns} data={rows} loading={external.isLoading || native.isLoading} error={external.error || native.error} onRetry={() => { external.refetch(); native.refetch() }} filterable searchPlaceholder="Search migrations…" pageSize={15} initialSort={{ key: 'started_at', dir: 'desc' }} getRowKey={row => row.rowKey} onRowClick={openDetails} emptyTitle="No account migrations" emptyDescription="Upload a full account archive to migrate it to this server." emptyIcon={FileArchive} emptyAction={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />New migration</Button>} />
 
     <Dialog open={open} onOpenChange={value => { setOpen(value); if (!value) reset() }}>
       <DialogContent size="md"><DialogHeader><DialogTitle>New account migration</DialogTitle><DialogDescription>Choose the panel that created the archive. Boron archives include checksums and restore the original account username.</DialogDescription></DialogHeader>
@@ -114,16 +134,23 @@ export default function AccountImports() {
       </DialogContent>
     </Dialog>
 
-    <Dialog open={!!selected} onOpenChange={value => { if (!value) setSelected(null) }}>
+    <Dialog open={!!selected} onOpenChange={value => { if (!value) { setSelected(null); setAccountPassword(null) } }}>
       <DialogContent size="lg"><DialogHeader><DialogTitle>Migration #{shown?.id} · {shown?.username}</DialogTitle><DialogDescription>{panelLabels[shown?.panel]}{shown?.started_at ? ` · started ${formatDate(shown.started_at)}` : ''}</DialogDescription></DialogHeader>
         <DialogBody className="space-y-5">
-          {shown && <><div className="flex items-center gap-3"><StatusBadge status={shown.status} /><Progress row={shown} /></div>
-            {shown.initial_password && <div className="rounded-panel border border-warning/40 bg-warning/10 p-4"><p className="font-semibold">New account password</p><p className="mt-1 text-sm text-muted-foreground">Save this now. It is displayed only once.</p><div className="mt-3 flex gap-2"><Input readOnly value={shown.initial_password} className="font-mono" /><Button variant="secondary" onClick={() => copy(shown.initial_password)}><Copy className="h-4 w-4" />Copy</Button></div></div>}
+          {shown && <>
+            <section className="rounded-btn border border-border bg-muted/30 p-4 space-y-3" aria-label="Migration progress">
+              <div className="flex flex-wrap items-center gap-3"><StatusBadge status={shown.status} />{running && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}<p role="status" aria-live="polite" className="font-semibold">{shown.progress_message || (running ? 'Waiting for the worker…' : shown.status)}</p></div>
+              <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted-foreground"><span>{completedItems} items processed</span><span>{failedItems} failed</span>{elapsed !== null && <span>Elapsed: {Math.floor(elapsed / 60)}m {elapsed % 60}s</span>}</div>
+              {running && <p className="text-sm text-muted-foreground">Updates automatically every 3 seconds. Source backup creation can take several minutes; per-item results appear once restoration begins. You can close this window without stopping the migration.</p>}
+              <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>{detail.isFetching ? 'Checking latest progress…' : detail.dataUpdatedAt ? `Last checked ${new Date(detail.dataUpdatedAt).toLocaleTimeString()}` : 'Loading progress…'}</span><Button variant="secondary" size="sm" onClick={() => detail.refetch()} disabled={detail.isFetching}><RefreshCw className="h-3.5 w-3.5" />Refresh progress</Button></div>
+            </section>
+            {detail.error && <div role="alert" className="text-danger text-sm">Could not refresh progress: {detail.error.message}. Retrying automatically; last known status is shown.</div>}
+            {accountPassword && <div className="rounded-panel border border-warning/40 bg-warning/10 p-4"><p className="font-semibold">New account password</p><p className="mt-1 text-sm text-muted-foreground">Save this now. It is displayed only once.</p><div className="mt-3 flex gap-2"><code className="min-w-0 flex-1 select-all break-all rounded-btn border border-border bg-card p-2 font-mono" data-bwignore="true">{accountPassword}</code><Button variant="secondary" onClick={() => copy(accountPassword)}><Copy className="h-4 w-4" />Copy</Button></div></div>}
             {shown.panel === 'boron' && <div className="grid gap-3 sm:grid-cols-2"><div className="rounded-btn border border-border p-3"><p className="text-xs text-muted-foreground">Archive version</p><p className="font-semibold">{shown.archive_version || '—'}</p></div><div className="rounded-btn border border-border p-3"><p className="text-xs text-muted-foreground">Verified components</p><p className="font-semibold">{shown.components_verified ?? '—'}</p></div></div>}
             {shown.error && <div className="rounded-btn border border-danger/30 bg-danger/10 p-3 text-sm text-danger">{shown.error}</div>}
-            {shown.panel !== 'boron' && <div><h3 className="mb-2 text-sm font-semibold">Per-item report</h3>{shown.results?.length ? <div className="max-h-80 overflow-auto rounded-btn border border-border"><Table><THead><TR><TH>Item</TH><TH>Status</TH><TH>Detail</TH></TR></THead><TBody>{shown.results.map((result, index) => <TR key={index}><TD className="whitespace-nowrap font-mono text-xs">{result.item}</TD><TD><StatusBadge status={result.status} /></TD><TD className="text-sm text-muted-foreground">{result.detail || '—'}</TD></TR>)}</TBody></Table></div> : <p className="text-sm text-muted-foreground">No items processed yet.</p>}</div>}
+            {shown.panel !== 'boron' && <div><h3 className="mb-2 text-sm font-semibold">Per-item report</h3>{shown.results?.length ? <div className="max-h-80 overflow-auto rounded-btn border border-border"><Table><THead><TR><TH>Item</TH><TH>Status</TH><TH>Detail</TH></TR></THead><TBody>{shown.results.map((result, index) => <TR key={index}><TD className="whitespace-nowrap font-mono text-xs">{result.item}</TD><TD><StatusBadge status={result.status} /></TD><TD className="text-sm text-muted-foreground">{result.detail || '—'}</TD></TR>)}</TBody></Table></div> : <p className="text-sm text-muted-foreground">{running ? 'Preparing the source archive. No restoration items have completed yet.' : 'No items were processed.'}</p>}</div>}
           </>}
-        </DialogBody><DialogFooter><Button variant="secondary" onClick={() => setSelected(null)}>Close</Button></DialogFooter>
+        </DialogBody><DialogFooter><Button variant="secondary" onClick={() => { setSelected(null); setAccountPassword(null) }}>Close</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   </div>
