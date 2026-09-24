@@ -177,3 +177,64 @@ def test_remote_failure_identifies_stage_without_exposing_details(method, stage)
     assert stage in str(error.value)
     assert 'rejected the account domain' in str(error.value)
     assert 'secret-password' not in str(error.value)
+
+
+def test_disabled_user_backups_have_typed_error():
+    source = source_with_response('error=1&text=User+backups+have+been+disabled.&details=Allowance+threshold+is+0%25')
+    with pytest.raises(remote.UserBackupsDisabled):
+        source.request('CMD_API_SITE_BACKUP', method='POST')
+
+
+def test_admin_backup_is_one_account_and_preserves_config():
+    source = object.__new__(remote.Source)
+    source.p = {'login': 'admin'}
+    calls = []
+    def request(endpoint, data=None, **kwargs):
+        calls.append((endpoint, data, kwargs))
+        return {'location': '/home/admin'} if data is None else {'error': '0'}
+    source.request = request
+    directory = source.start_admin_backup('alice')
+    assert directory.startswith('/admin_backups/boron-')
+    _, data, kwargs = calls[-1]
+    assert data['who'] == 'selected' and data['select0'] == 'alice'
+    assert data['write_backup_conf'] == 'no'
+    assert data['local_path'] == '/home/admin' + directory
+    assert kwargs == {'method': 'POST'}
+
+
+def test_admin_listing_only_accepts_selected_account_regular_archives():
+    source = object.__new__(remote.Source)
+    directory = '/admin_backups/boron-test'
+    source.request = lambda *a: {
+        directory + '/user.admin.alice.tar.zst': {'type': 'file', 'size': '123', 'mtime': '2'},
+        directory + '/user.admin.bob.tar.gz': {'type': 'file', 'size': '123'},
+        directory + '/user.admin.alice.tar.gz': {'type': 'file', 'size': '123', 'linkpath': '/etc/shadow'},
+    }
+    assert source.admin_backups(directory, 'alice') == {directory + '/user.admin.alice.tar.zst': (123, '2')}
+
+
+def test_disabled_user_backups_fall_back_to_admin_transfer(tmp_path, monkeypatch):
+    from daemon import cpanel_import
+    monkeypatch.setattr(cpanel_import, '_update_job', lambda *a, **k: None)
+    monkeypatch.setattr(remote.time, 'sleep', lambda *a: None)
+    class FakeSource:
+        def __init__(self, params): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def accounts(self): return ['alice']
+        def backups(self, user): return {}
+        def backup_domain(self, user): return 'example.com'
+        def request(self, *args): raise remote.UserBackupsDisabled('disabled')
+        def start_admin_backup(self, user):
+            assert user == 'alice'
+            return '/admin_backups/boron-test'
+        def admin_backups(self, directory, user):
+            return {directory + '/user.admin.alice.tar.zst': (4, '123')}
+        @contextmanager
+        def stream(self, endpoint, payload, user):
+            assert user is None  # Admin archive must not use customer impersonation.
+            yield iter([b'data'])
+    monkeypatch.setattr(remote, 'Source', FakeSource)
+    params = {'remote_user': 'alice', 'remote': {'password': 'test'}}
+    assert remote.fetch_archive(1, params, tmp_path).read_bytes() == b'data'
+    assert 'password' not in params['remote']

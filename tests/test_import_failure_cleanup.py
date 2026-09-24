@@ -52,7 +52,7 @@ def test_cleanup_never_deletes_unowned_or_incompletely_terminated_account(isolat
 def test_worker_rolls_back_new_account_on_failure(isolated_db, tmp_path, monkeypatch, failure):
     monkeypatch.setattr(ci.settings, 'cpanel_import_staging_dir', str(tmp_path / 'staging'))
     monkeypatch.setattr(ci, '_obtain_archive', lambda *args: tmp_path / 'source.tar.gz')
-    monkeypatch.setattr(ci, '_extract_archive', lambda *args: None)
+    monkeypatch.setattr(ci, '_extract_archive', lambda *args, **kwargs: None)
     monkeypatch.setattr(ci, '_find_content_root', lambda path: path)
     monkeypatch.setattr(ci, '_parse_account_info', lambda path: {})
     monkeypatch.setattr(ci, '_parse_domains', lambda *args: [])

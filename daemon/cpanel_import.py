@@ -46,6 +46,7 @@ import os
 import pwd
 import re
 import shutil
+import subprocess
 import tarfile
 import tempfile
 from urllib.parse import urlparse
@@ -269,7 +270,42 @@ def _obtain_archive(job_id: int, source: str, source_ref: str, work_dir: Path) -
     return dest
 
 
-def _extract_archive(archive_path: Path, extract_dir: Path) -> None:
+def _decompress_zstd(source: Path, target: Path, limit: int) -> None:
+    """Bound output before parsing; never ask an external tar to extract files."""
+    executable = shutil.which('zstd')
+    if not executable:
+        raise CpanelImportError('Install zstd on the Boron server to import DirectAdmin zstd backups')
+    process = subprocess.Popen([executable, '-d', '-q', '--stdout', '--memory=256MB', '--', str(source)],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    total = 0
+    try:
+        with target.open('wb') as output:
+            while chunk := process.stdout.read(1024 * 1024):
+                total += len(chunk)
+                if total > limit:
+                    raise CpanelImportError('Zstd backup exceeds the extraction limit')
+                output.write(chunk)
+        if process.wait(timeout=30) != 0:
+            raise CpanelImportError('Unreadable zstd backup')
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        process.stdout.close()
+
+
+def _extract_archive(archive_path: Path, extract_dir: Path, *, directadmin: bool = False) -> None:
+    with archive_path.open('rb') as probe:
+        is_zstd = probe.read(4) == b'\x28\xb5\x2f\xfd'
+    if is_zstd:
+        with tempfile.TemporaryDirectory(dir=extract_dir.parent, prefix='zstd-') as temporary:
+            unpacked = Path(temporary) / 'archive.tar'
+            _decompress_zstd(archive_path, unpacked, settings.cpanel_import_max_extracted_bytes)
+            _extract_archive(unpacked, extract_dir, directadmin=directadmin)
+        return
     try:
         with tarfile.open(archive_path) as tf:
             # Security-audit-2 (Medium): bound the *decompressed* size before
@@ -283,14 +319,22 @@ def _extract_archive(archive_path: Path, extract_dir: Path) -> None:
             total = 0
             count = 0
             file_names: set[str] = set()
+            members = []
             for member in tf:
+                count += 1
+                if count > MAX_IMPORT_MEMBERS:
+                    raise CpanelImportError("backup contains too many archive members")
+                # DirectAdmin's standard HTTPS alias is redundant: Boron serves
+                # public_html for both protocols. Never create/follow this link.
+                if (directadmin and member.issym()
+                        and re.fullmatch(r'domains/[a-zA-Z0-9.-]+/private_html', member.name)
+                        and member.linkname in ('public_html', './public_html')):
+                    continue
+                members.append(member)
                 # Normalization recursively copies this private tree. Links
                 # can create cycles or aliases even when confined by data_filter.
                 if not (member.isreg() or member.isdir()):
                     raise CpanelImportError("backup contains unsupported links or special files")
-                count += 1
-                if count > MAX_IMPORT_MEMBERS:
-                    raise CpanelImportError("backup contains too many archive members")
                 if (len(member.name.encode("utf-8", errors="replace")) > MAX_IMPORT_PATH_BYTES
                         or len(Path(member.name).parts) > MAX_IMPORT_PATH_DEPTH):
                     raise CpanelImportError("backup contains an excessively long or deep path")
@@ -311,7 +355,7 @@ def _extract_archive(archive_path: Path, extract_dir: Path) -> None:
             # backup is a third-party file this daemon did not produce
             # itself, extracted as root before anything is chowned away
             # from root).
-            tf.extractall(extract_dir, filter="data")
+            tf.extractall(extract_dir, members=members, filter="data")
     except tarfile.TarError as exc:
         raise CpanelImportError(f"'{archive_path}' is not a readable tar/tar.gz archive: {exc}") from exc
 
@@ -1026,6 +1070,10 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
     for dump in sorted((source / "backup").glob("*.sql*")):
         if dump.name.endswith(".sql"):
             shutil.copy2(dump, mysql_dir / dump.name)
+        elif dump.name.endswith('.sql.zst'):
+            target = mysql_dir / dump.name.removesuffix('.zst')
+            _decompress_zstd(dump, target, settings.cpanel_import_max_extracted_bytes - expanded)
+            expanded += target.stat().st_size
         elif dump.name.endswith((".sql.gz", ".sql.tgz")):
             target = mysql_dir / dump.name.removesuffix(".gz").removesuffix(".tgz")
             try:
@@ -1269,7 +1317,7 @@ def _run_import_job(job_id: int, params: dict) -> None:
             _update_job(job_id, progress_message="extracting backup archive", source_ref=None)
             extract_dir = work_dir / "extracted"
             extract_dir.mkdir()
-            _extract_archive(archive_path, extract_dir)
+            _extract_archive(archive_path, extract_dir, directadmin=panel == "directadmin")
             if panel == "directadmin":
                 normalized = work_dir / "normalized"
                 normalized.mkdir()

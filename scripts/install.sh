@@ -276,7 +276,7 @@ preflight() {
 readonly BASE_PKGS=(
     python3 python3-venv python3-pip python3-dev build-essential libssl-dev
     curl wget jq sqlite3 ufw acl quota quotatool git ca-certificates
-    rsync openssl cron logrotate apache2-utils geoipupdate
+    rsync zstd openssl cron logrotate apache2-utils geoipupdate
     nodejs npm composer sudo php-cli php-mysql
 )
 readonly STACK_PKGS=(

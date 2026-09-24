@@ -12,6 +12,7 @@ import json
 import re
 import shlex
 import time
+import uuid
 from contextlib import contextmanager
 from urllib.parse import parse_qs, urlencode
 
@@ -21,6 +22,10 @@ import paramiko
 from daemon import webhooks
 from shared.config import settings
 from shared.validation import ValidationError, validate_domain
+
+class UserBackupsDisabled(ValidationError):
+    pass
+
 
 DA = '/usr/local/directadmin/directadmin'
 BACKUP_ITEMS = ('domain', 'subdomain', 'email', 'forwarder', 'autoresponder',
@@ -158,11 +163,14 @@ class Source:
             # Do not reflect arbitrary source output: it can contain credentials.
             stage = {
                 'CMD_API_SHOW_ALL_USERS': 'listing source accounts',
+                'CMD_API_ADMIN_BACKUP': 'creating the administrator backup' if method == 'POST' else 'reading administrator backup settings',
                 'CMD_API_SHOW_DOMAINS': 'listing the selected account domains',
                 'CMD_API_SITE_BACKUP': 'creating the source backup' if method == 'POST' else 'listing source backups',
                 'CMD_API_FILE_MANAGER': 'reading the source backup directory',
             }.get(endpoint, 'requesting source data')
             detail = ' '.join(str(result.get(k, '')) for k in ('text', 'details')).lower()
+            if 'user backups have been disabled' in detail:
+                raise UserBackupsDisabled('Source DirectAdmin has disabled user-level backups; administrator backup is required')
             reason = 'check its task/message log and API permissions'
             if 'domain' in detail and any(word in detail for word in ('invalid', 'exist', 'owned', 'belong')):
                 reason = 'the source rejected the account domain; verify its ownership and status'
@@ -206,7 +214,40 @@ class Source:
                 item = {k: v[-1] for k, v in parse_qs(item, keep_blank_values=True).items()}
             if not isinstance(item, dict) or item.get('type') != 'file' or item.get('linkpath'):
                 continue
-            files[path] = (int(item.get('size', 0)), str(item.get('date', '')))
+            files[path] = (int(item.get('size', 0)), str(item.get('mtime', item.get('date', ''))))
+        return files
+
+
+    def start_admin_backup(self, user):
+        """Run one full admin backup without altering saved schedules/settings."""
+        config = self.request('CMD_API_ADMIN_BACKUP')
+        login = self.p['login']
+        location = config.get('location', '')
+        # File Manager is relative to the admin home. Derive only a known
+        # home path, never follow FTP destinations or arbitrary source paths.
+        match = re.match(r'^(/home[0-9]*/' + re.escape(login) + r')(?:/|$)', location)
+        if not match:
+            raise ValidationError('Administrator backup location must be under its /home directory for HTTPS transfer')
+        relative = '/admin_backups/boron-' + uuid.uuid4().hex
+        self.request('CMD_API_ADMIN_BACKUP', {
+            'action': 'create', 'when': 'now', 'who': 'selected', 'select0': user,
+            'what': 'all', 'where': 'local', 'local_path': match[1] + relative,
+            'append_to_path': 'nothing', 'write_backup_conf': 'no', 'form_version': '4',
+        }, method='POST')
+        return relative
+
+    def admin_backups(self, directory, user):
+        listing = self.request('CMD_API_FILE_MANAGER', {'path': directory})
+        files = {}
+        pattern = re.escape(directory) + r'/user\.[a-z][a-z0-9]*\.' + re.escape(user) + r'\.tar(?:\.gz|\.zst)?'
+        for path, item in listing.items():
+            if not re.fullmatch(pattern, path):
+                continue
+            if isinstance(item, str):
+                item = {k: v[-1] for k, v in parse_qs(item, keep_blank_values=True).items()}
+            if not isinstance(item, dict) or item.get('type') != 'file' or item.get('linkpath'):
+                continue
+            files[path] = (int(item.get('size', 0)), str(item.get('mtime', item.get('date', ''))))
         return files
 
 
@@ -236,17 +277,23 @@ def fetch_archive(job_id, params, work_dir):
         with Source(params['remote']) as source:
             if user not in source.accounts():
                 raise ValidationError('Selected account is not available on the source')
+            admin_directory = None
             before = source.backups(user)
             _update_job(job_id, progress_message='creating DirectAdmin source backup')
             payload = {'action': 'backup', 'domain': source.backup_domain(user)}
             payload.update({f'select{i}': item for i, item in enumerate(BACKUP_ITEMS)})
-            source.request('CMD_API_SITE_BACKUP', payload, user, 'POST')
+            try:
+                source.request('CMD_API_SITE_BACKUP', payload, user, 'POST')
+            except UserBackupsDisabled:
+                _update_job(job_id, progress_message='creating administrator backup (source user backups disabled)')
+                admin_directory = source.start_admin_backup(user)
+                before = {}
             deadline = time.monotonic() + 7200
             last = {}
             stable = {}
             while time.monotonic() < deadline:
                 time.sleep(10)
-                current = source.backups(user)
+                current = source.admin_backups(admin_directory, user) if admin_directory else source.backups(user)
                 for path, signature in current.items():
                     if signature == before.get(path) or signature[0] <= 0:
                         continue
@@ -258,13 +305,14 @@ def fetch_archive(job_id, params, work_dir):
                     _update_job(job_id, progress_message='transferring DirectAdmin backup')
                     dest = work_dir / 'directadmin.tar.gz'
                     total = 0
-                    with source.stream('CMD_FILE_MANAGER', {'path': path}, user) as chunks, dest.open('wb') as output:
+                    with source.stream('CMD_FILE_MANAGER', {'path': path}, None if admin_directory else user) as chunks, dest.open('wb') as output:
                         for chunk in chunks:
                             total += len(chunk)
                             if total > settings.cpanel_import_max_upload_bytes:
                                 raise ValidationError('Source backup exceeds the configured import size limit')
                             output.write(chunk)
-                    if total != signature[0] or source.backups(user).get(path) != signature:
+                    after = source.admin_backups(admin_directory, user) if admin_directory else source.backups(user)
+                    if total != signature[0] or after.get(path) != signature:
                         dest.unlink(missing_ok=True)
                         raise ValidationError('Source backup changed during transfer; retry after the backup completes')
                     return dest
