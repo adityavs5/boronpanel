@@ -179,3 +179,39 @@ def test_bootstrap_jails_raises_on_reload_failure(monkeypatch):
     monkeypatch.setattr(fail2ban, "run", lambda args, timeout=30: ProcResult(args=args, returncode=1, stdout="", stderr="config error"))
     with pytest.raises(RuntimeError):
         fail2ban.bootstrap_jails({})
+
+
+
+def test_panel_jail_uses_actual_listener_ports(monkeypatch):
+    monkeypatch.setattr(fail2ban.settings, 'api_bind_port', 2222)
+    monkeypatch.setattr(fail2ban.settings, 'api_customer_port', 2083)
+    config = fail2ban._render_jail_conf([])
+    assert 'port = 2083,2222' in config
+    assert '9443' not in config
+    monkeypatch.setattr(fail2ban.settings, 'api_customer_port', 2222)
+    assert 'port = 2222\n' in fail2ban._render_jail_conf([])
+
+
+def test_panel_failregex_covers_password_and_second_factor():
+    import re
+    pattern = fail2ban._PANEL_LOGIN_FILTER.split('failregex = ', 1)[1].splitlines()[0]
+    pattern = pattern.replace('<HOST>', r'(?P<host>[0-9.]+)')
+    for route in ('/login', '/login/2fa'):
+        for status in (401, 429):
+            assert re.match(pattern, f'INFO:     198.51.100.20:34567 - "POST {route} HTTP/1.1" {status}')
+        assert not re.match(pattern, f'INFO:     198.51.100.20:34567 - "POST {route} HTTP/1.1" 200')
+
+
+
+def test_reconcile_existing_jail_replaces_stale_port_and_is_idempotent(tmp_path, monkeypatch):
+    paths = {'JAIL_D_PATH': 'jail.conf', 'FILTER_PANEL_LOGIN_PATH': 'login.conf', 'FILTER_OLS_SCAN_PATH': 'ols.conf'}
+    for attr, name in paths.items():
+        monkeypatch.setattr(fail2ban, attr, str(tmp_path / name))
+    monkeypatch.setattr(fail2ban, '_cloudflare_ranges', lambda: [])
+    calls = []
+    monkeypatch.setattr(fail2ban, 'run', lambda args, **kwargs: calls.append(args) or ProcResult(args, 0, '', ''))
+    assert fail2ban.reconcile_managed_jails() is False
+    (tmp_path / 'jail.conf').write_text('port = 9443')
+    assert fail2ban.reconcile_managed_jails() is True
+    assert fail2ban.reconcile_managed_jails() is False
+    assert calls == [['fail2ban-client', 'reload']]

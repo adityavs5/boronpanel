@@ -278,3 +278,34 @@ simulated a tenant with UID 0, which the hardened ACL subprocess correctly
 rejects. The mode-restoration unit test now records its ACL invocation;
 separate real-UID safe-I/O tests verify that boundary. The repaired test and
 five metadata cases passed together. Production privilege checks were retained.
+
+
+## Administrative network and service controls
+
+The fail2ban panel jail used a hard-coded 9443 even on this host's 2222
+listener. It now derives configured listener ports and includes failed second
+factor submissions. Startup reconciles existing managed jail definitions.
+The isolated VM regex check matched eight failed IPv4/IPv6 login/2FA requests
+and ignored four successful requests. Both hosts received the updated jail;
+the primary live nftables action reports port 2222, with HTTPS and services
+healthy. No customer traffic was used to trigger bans.
+
+Firewall activation now refuses to continue after a failed prerequisite allow
+rule, and reads sshd's effective configuration (including drop-ins/multiple
+ports). Cloudflare unlock retains existing scoped rules if restoring general
+allows fails. This does not claim discovery of arbitrary systemd socket port
+overrides. Failed IP unban preserves its database record for retry; root RPC
+stamps the ban actor from the authenticated principal. All 81 grouped network
+regressions and 23 reconciliation/dispatch tests passed. The compatible
+network modules are hotfixed on the primary; the root server protocol changes
+await the complete release. No live UFW activation was attempted here.
+
+An explicit matrix of administrative route modules denies both customer and
+reseller callers before RPC/database access, covering API and legacy routes.
+The matrix plus service/whitelist tests passed 247 cases. Source review traced
+service allowlists, fixed argv, CIDR validation, OLS settings/password controls,
+root-only credential storage and non-cacheable reveal responses, package
+validation, suspension template interpolation and sandboxed preview, IP
+allocation ownership, and mail queue identifier/command validation. Fifty-seven
+mail queue/template/IP/OLS behavioral tests also passed. This evidence does not
+stand in for reviewing unrelated privileged handlers.

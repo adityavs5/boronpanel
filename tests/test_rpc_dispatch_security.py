@@ -82,3 +82,12 @@ def test_note_author_comes_from_verified_principal(monkeypatch):
     monkeypatch.setattr(server.audit, 'record', lambda *args: None)
     asyncio.run(server.dispatch('notes.add', {'username': 'tenant', 'author': 'forged-admin', 'body': 'note'}))
     assert seen[0]['author'] == 'admin'
+
+
+
+def test_ip_ban_actor_comes_from_verified_principal(monkeypatch):
+    seen = []
+    monkeypatch.setitem(server.OP_TABLE, 'ipban.add', lambda params: seen.append(dict(params)) or {})
+    monkeypatch.setattr(server.audit, 'record', lambda *args: None)
+    asyncio.run(server.dispatch('ipban.add', {'value': '203.0.113.5', 'actor': 'forged-admin'}))
+    assert seen[0]['actor'] == 'admin'

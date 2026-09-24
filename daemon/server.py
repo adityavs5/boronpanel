@@ -823,6 +823,8 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
         role = current.role if current else "anonymous"
         if op == "notes.add":
             handler_params["author"] = actor
+        elif op == "ipban.add":
+            handler_params["actor"] = actor
         return handler(handler_params)
 
     try:
@@ -946,6 +948,10 @@ async def amain() -> None:
     except Exception:
         logger.exception("cgroup slice bootstrap failed at startup")
     asyncio.create_task(_cgroup_reconcile_loop())
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, fail2ban.reconcile_managed_jails)
+    except Exception:
+        logger.exception("Managed fail2ban reconciliation failed at startup")
     try:
         await asyncio.get_running_loop().run_in_executor(None, nodeapps.bootstrap_all_node_apps)
     except Exception:

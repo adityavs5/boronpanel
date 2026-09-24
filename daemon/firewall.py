@@ -41,28 +41,28 @@ _BYPASS_RULE_RE = re.compile(
 BYPASS_COMMENT = "boron-full-access-bypass"
 
 
-def _ssh_port() -> int:
-    """The real configured SSH port -- defaults to 22 if unset/commented,
-    matching sshd's own documented default. Read from the live config
-    rather than hardcoded, since an operator who has already moved SSH
-    off 22 would otherwise have port 22 "protected" for nothing while
-    their real SSH port stayed unprotected."""
-    try:
-        with open("/etc/ssh/sshd_config") as f:
-            for line in f:
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                if stripped.lower().startswith("port "):
-                    return int(stripped.split()[1])
-    except (OSError, ValueError, IndexError):
-        pass
-    return 22
+def _ssh_ports() -> set[int]:
+    """Read effective SSH configuration, including drop-ins and extra ports.
+
+    Guessing port 22 on a probe failure is unsafe before activating a default
+    deny firewall. Refuse the operation until the effective config is known.
+    """
+    from daemon.procutil import run as probe
+    result = probe(['/usr/sbin/sshd', '-T'], timeout=10)
+    result.raise_if_failed('Read effective SSH configuration')
+    ports = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0].lower() == 'port':
+            ports.add(_validate_port(fields[1]))
+    if not ports:
+        raise RuntimeError('Cannot determine SSH listener ports; firewall changes refused')
+    return ports
 
 
 def protected_ports() -> set[int]:
     from shared.panel_ports import listener_ports
-    return {_ssh_port(), *listener_ports(), 80, 443, 25, 587, 993}
+    return {*_ssh_ports(), *listener_ports(), 80, 443, 25, 587, 993}
 
 
 def _validate_port(port) -> int:
@@ -300,7 +300,7 @@ def apply_cf_lockdown(cf_ranges: list[str]) -> None:
         for cidr in cf_ranges:
             if (port, cidr) not in have:
                 run(["ufw", "allow", "from", cidr, "to", "any", "port", str(port), "proto", "tcp",
-                     "comment", CF_LOCKDOWN_COMMENT], timeout=20)
+                     "comment", CF_LOCKDOWN_COMMENT], timeout=20).raise_if_failed("Firewall prerequisite")
     # Re-read AFTER the adds so the general-allow removal is gated on the
     # scoped rules actually being in place. Removing the general (from-any)
     # allow while no scoped CF allow exists for that port would blackhole the
@@ -331,7 +331,7 @@ def remove_cf_lockdown() -> None:
     (so web is reachable even if the scoped-rule cleanup below fails partway),
     then deletes every scoped lockdown rule."""
     for port in CF_LOCKDOWN_PORTS:
-        run(["ufw", "allow", str(port)], timeout=20)  # idempotent restore
+        run(["ufw", "allow", str(port)], timeout=20).raise_if_failed("Firewall prerequisite")  # idempotent restore
     for r in _current_rules():
         if (
             r["action"] == "allow"
@@ -358,7 +358,7 @@ def _ensure_baseline_allow_rules() -> None:
     covered = {r["port"] for r in current if r["action"] == "allow"}
     for port in sorted(protected_ports()):
         if port not in covered:
-            run(["ufw", "allow", str(port), "comment", "boron-baseline-protected-port"], timeout=20)
+            run(["ufw", "allow", str(port), "comment", "boron-baseline-protected-port"], timeout=20).raise_if_failed("Firewall prerequisite")
 
 
 def enable_firewall(params: dict) -> dict:

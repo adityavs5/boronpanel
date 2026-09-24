@@ -91,3 +91,12 @@ def test_unban_ip_deletes_ufw_rule_and_row(isolated_db, fake_ufw):
 def test_unban_ip_missing_id_raises(isolated_db, fake_ufw):
     with pytest.raises(ipban.IpBanError):
         ipban.unban_ip({"id": 999999})
+
+
+
+def test_unban_failure_retains_record_for_retry(isolated_db, fake_ufw, monkeypatch):
+    created = ipban.ban_ip({'value': '203.0.113.5', 'actor': 'admin'})
+    monkeypatch.setattr(ipban, 'run', lambda args, **kwargs: ProcResult(args, 1, '', 'backend unavailable'))
+    with pytest.raises(RuntimeError, match='backend unavailable'):
+        ipban.unban_ip({'id': created['id']})
+    assert ipban.list_bans({})['bans'][0]['id'] == created['id']

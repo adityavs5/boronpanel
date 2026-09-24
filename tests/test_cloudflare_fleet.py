@@ -294,7 +294,8 @@ def test_lockdown_keeps_general_allow_if_scoped_adds_fail(cf, monkeypatch):
         return ProcResult(args=args, returncode=1, stdout="", stderr="ERROR: could not add rule")
 
     monkeypatch.setattr(firewall, "run", fake_run)
-    firewall.apply_cf_lockdown(["173.245.48.0/20"])
+    with pytest.raises(RuntimeError, match="could not add rule"):
+        firewall.apply_cf_lockdown(["173.245.48.0/20"])
     # general allows for 80 and 443 must still be present
     assert ["allow", "80"] in rules
     assert ["allow", "443"] in rules
@@ -305,3 +306,8 @@ def _write_ranges():
     import time
     with open(settings.cloudflare_ranges_file, "w") as f:
         json.dump({"ipv4_cidrs": ["173.245.48.0/20"], "ipv6_cidrs": ["2400:cb00::/32"], "fetched_at": int(time.time())}, f)
+
+
+@pytest.fixture(autouse=True)
+def isolated_firewall_ssh_ports(monkeypatch):
+    monkeypatch.setattr(firewall, '_ssh_ports', lambda: {22})

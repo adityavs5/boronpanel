@@ -15,11 +15,14 @@ ufw allow from 198.51.100.42 comment 'boron-full-access-bypass-office'
 SHOW_ADDED_EMPTY = "Added user rules (see 'ufw status' for running firewall):\n(None)\n"
 
 
+_REAL_SSH_PORTS = firewall._ssh_ports
+
+
 @pytest.fixture(autouse=True)
 def fixed_ssh_port(monkeypatch):
     # Deterministic across environments -- don't depend on this sandbox's
     # real /etc/ssh/sshd_config contents.
-    monkeypatch.setattr(firewall, "_ssh_port", lambda: 22)
+    monkeypatch.setattr(firewall, "_ssh_ports", lambda: {22})
 
 
 def test_protected_ports_includes_ssh_panel_web_mail():
@@ -281,3 +284,43 @@ def test_add_rule_raises_on_ufw_failure(monkeypatch):
     monkeypatch.setattr(firewall, "run", lambda args, timeout=20: ProcResult(args=args, returncode=1, stdout="", stderr="ERROR"))
     with pytest.raises(RuntimeError):
         firewall.add_rule({"action": "allow", "port": 8080})
+
+
+
+def test_failed_baseline_rule_prevents_firewall_enable(monkeypatch):
+    calls = []
+    def failed(args, **kwargs):
+        calls.append(args)
+        if args[:2] == ['ufw', 'allow']:
+            return ProcResult(args, 1, '', 'baseline rule failed')
+        return ProcResult(args, 0, '', '')
+    monkeypatch.setattr(firewall, 'run', failed)
+    with pytest.raises(RuntimeError, match='baseline rule failed'):
+        firewall.enable_firewall({'confirm': True})
+    assert not any('enable' in args for args in calls)
+
+
+def test_failed_cf_restore_does_not_remove_existing_scoped_rules(monkeypatch):
+    calls = []
+    def failed(args, **kwargs):
+        calls.append(args)
+        assert args[:2] == ['ufw', 'allow']
+        return ProcResult(args, 1, '', 'restore failed')
+    monkeypatch.setattr(firewall, 'run', failed)
+    with pytest.raises(RuntimeError, match='restore failed'):
+        firewall.remove_cf_lockdown()
+    assert len(calls) == 1
+
+
+
+def test_effective_ssh_ports_preserve_multiple_configured_listeners(monkeypatch):
+    from daemon import procutil
+    monkeypatch.setattr(procutil, 'run', lambda args, **kwargs: ProcResult(args, 0, 'port 22222\nport 2200\n', ''))
+    assert _REAL_SSH_PORTS() == {22222, 2200}
+
+
+def test_unknown_effective_ssh_ports_fail_closed(monkeypatch):
+    from daemon import procutil
+    monkeypatch.setattr(procutil, 'run', lambda args, **kwargs: ProcResult(args, 1, '', 'invalid config'))
+    with pytest.raises(RuntimeError, match='effective SSH'):
+        _REAL_SSH_PORTS()

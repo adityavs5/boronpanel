@@ -56,7 +56,7 @@ _PANEL_LOGIN_FILTER = """# Managed by Boron (daemon/fail2ban.py).
 # (`journalctl -u boron-api -o cat`) before writing this regex, not
 # assumed from uvicorn's documentation.
 [Definition]
-failregex = ^INFO:\\s+<HOST>:\\d+ - "POST /login HTTP/1\\.1" (401|429)
+failregex = ^INFO:\\s+<HOST>:\\d+ - "POST /login(?:/2fa)? HTTP/1\\.[01]" (401|429)
 ignoreregex =
 """
 
@@ -102,7 +102,7 @@ enabled = true
 filter = boron-panel-login
 backend = systemd
 journalmatch = _SYSTEMD_UNIT=boron-api.service
-port = 9443
+port = {panel_ports}
 maxretry = 5
 findtime = 300
 bantime = 900
@@ -149,7 +149,9 @@ def _render_jail_conf(cf_ranges: list[str]) -> str:
         "# Phase 2+3 feature 4: never ban localhost or a Cloudflare edge IP.\n"
         f"ignoreip = {ignoreip}\n\n"
     )
-    return default_block + _JAIL_D_CONF_BODY
+    from shared.panel_ports import listener_ports
+    ports = ",".join(str(port) for port in sorted(set(listener_ports())))
+    return default_block + _JAIL_D_CONF_BODY.replace("{panel_ports}", ports)
 
 
 def bootstrap_jails(params: dict | None = None) -> dict:
@@ -165,6 +167,20 @@ def bootstrap_jails(params: dict | None = None) -> dict:
         raise RuntimeError(f"fail2ban-client reload failed: {result.stderr.strip() or result.stdout.strip()}")
     return {"status": "ok", "jails": sorted(MANAGED_JAILS)}
 
+
+
+def reconcile_managed_jails() -> bool:
+    """Upgrade an existing managed installation when daemon code changes."""
+    if not Path(JAIL_D_PATH).exists():
+        return False  # The installer owns first-time fail2ban activation.
+    expected = {JAIL_D_PATH: _render_jail_conf(_cloudflare_ranges()),
+                FILTER_PANEL_LOGIN_PATH: _PANEL_LOGIN_FILTER,
+                FILTER_OLS_SCAN_PATH: _OLS_SCAN_FILTER}
+    if all(Path(path).is_file() and Path(path).read_text() == content
+           for path, content in expected.items()):
+        return False
+    bootstrap_jails()
+    return True
 
 def refresh_cloudflare_ignoreip() -> bool:
     """Rewrite jail.d/boron.conf with the current Cloudflare ranges and

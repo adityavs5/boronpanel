@@ -118,9 +118,8 @@ def unban_ip(params: dict) -> dict:
         if row is None:
             raise IpBanError(f"no permanent ban with id {ban_id}")
         value = row.value
+        result = run(["ufw", "--force", "delete"] + _ufw_deny_args(value), timeout=20)
+        if not result.ok and "could not find" not in (result.stderr or result.stdout or "").lower():
+            raise RuntimeError(f"ufw delete deny from {value} failed: {result.stderr.strip() or result.stdout.strip()}")
         session.delete(row)
-
-    result = run(["ufw", "--force", "delete"] + _ufw_deny_args(value), timeout=20)
-    if not result.ok and "could not find" not in (result.stderr or result.stdout or "").lower():
-        raise RuntimeError(f"ufw delete deny from {value} failed: {result.stderr.strip() or result.stdout.strip()}")
     return {"id": ban_id, "value": value, "status": "unbanned"}
