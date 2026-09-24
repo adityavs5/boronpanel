@@ -601,7 +601,7 @@ def test_render_httpd_config_waf_domain_override_generates_rule_engine_off():
         "waf_custom_rules": [],
     }
     content = ols.render_httpd_config([], [], waf=waf)
-    assert '@streq example.com' in content
+    assert '@rx ^example[.]com[.]?(?::[0-9]{1,5})?$' in content
     assert "ctl:ruleEngine=Off" in content
 
 
@@ -614,7 +614,7 @@ def test_render_httpd_config_waf_custom_rule_generates_scoped_chain():
         "waf_custom_rules": [{"id": 7, "domain": "shop.example.com", "target": "ARGS", "pattern": "badbot"}],
     }
     content = ols.render_httpd_config([], [], waf=waf)
-    assert '@streq shop.example.com' in content
+    assert '@rx ^shop[.]example[.]com[.]?(?::[0-9]{1,5})?$' in content
     assert 'SecRule ARGS "@rx badbot"' in content
     assert "boron-custom-rule-7" in content
 
@@ -972,3 +972,21 @@ def test_pma_bootstrap_includes_token_mount_in_config_transaction(tmp_path, monk
     (conf / 'nsconf.conf').write_text(captured['contents']['namespace'])
     ols.bootstrap_pma()
     assert captured['contents']['namespace'].count('/var/lib/boron-pma-tokens,bind-try') == 1
+
+
+@pytest.mark.parametrize('host,expected', [('shop.example.com', True), ('SHOP.EXAMPLE.COM', True),
+    ('shop.example.com:443', True), ('shop.example.com.:80', True), ('evilshop.example.com', False),
+    ('shop.example.com.attacker.example', False), ('shopXexample.com', False)])
+def test_waf_host_scope_and_chain_actions(host, expected):
+    import re
+    waf={'waf_enabled':True,'waf_audit_log':'/tmp/audit.log','waf_rules_file':'/tmp/rules.conf',
+         'waf_domain_overrides':[], 'waf_custom_rules':[{'id':7,'domain':'shop.example.com','target':'ARGS','pattern':'badbot'}]}
+    content=ols.render_httpd_config([],[],waf=waf)
+    lines=[line for line in content.splitlines() if line.startswith('SecRule ')]
+    host_rule, target_rule=lines
+    pattern=host_rule.split('"')[1].removeprefix('@rx ')
+    assert bool(re.fullmatch(pattern,host.lower())) is expected
+    assert 't:none,t:lowercase' in host_rule
+    assert 'deny,status:403' in host_rule
+    assert 'chain' in host_rule
+    assert target_rule.endswith('"t:none"')
