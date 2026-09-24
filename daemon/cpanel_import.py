@@ -73,11 +73,12 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import audit, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, mariadb, ols, webhooks
+from daemon import audit, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, jobcredentials, mariadb, ols, safeio, webhooks
 from daemon.procutil import run
 from daemon.wordpress import _php_str
 
 logger = logging.getLogger("borond.cpanel_import")
+IMPORTED_CERT_ROOT = Path("/etc/letsencrypt/live")
 
 _executor = ThreadPoolExecutor(max_workers=settings.cpanel_import_concurrency, thread_name_prefix="cpanel-import")
 
@@ -198,12 +199,13 @@ def get_job(params: dict) -> dict:
     job_id = int(params["job_id"])
     username = validate_username(params["username"])
     with write_session() as session:
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         job = session.get(CpanelImportJob, job_id)
         if job is None or job.username != username:
             raise CpanelImportError(f"cPanel import job {job_id} not found")
         result = _job_to_dict(job)
         if job.initial_password:
-            result["initial_password"] = job.initial_password
+            result["initial_password"] = jobcredentials.reveal(job.initial_password)
             job.initial_password = None
         return result
 
@@ -275,6 +277,10 @@ def _extract_archive(archive_path: Path, extract_dir: Path) -> None:
             count = 0
             file_names: set[str] = set()
             for member in tf:
+                # Normalization recursively copies this private tree. Links
+                # can create cycles or aliases even when confined by data_filter.
+                if not (member.isreg() or member.isdir()):
+                    raise CpanelImportError("backup contains unsupported links or special files")
                 count += 1
                 if count > MAX_IMPORT_MEMBERS:
                     raise CpanelImportError("backup contains too many archive members")
@@ -447,7 +453,7 @@ def _copy_homedir(root: Path, username: str) -> str:
     if not homedir.is_dir():
         raise _Skip("backup has no homedir/ directory -- nothing to copy")
     home_base = Path(settings.home_base) / username
-    copied = 0
+    entries = []
     for entry in homedir.iterdir():
         # mail/ is handled separately by _import_mailboxes (moved into
         # /var/vmail, owned by the vmail user, not left under the account's
@@ -457,15 +463,20 @@ def _copy_homedir(root: Path, username: str) -> str:
         # recursive copy rather than dumped as-is into the new account's home.
         if entry.name in ("mail", "etc", ".cpanel"):
             continue
-        dest = home_base / entry.name
-        if entry.is_dir():
-            shutil.copytree(entry, dest, dirs_exist_ok=True)
-        else:
-            shutil.copy2(entry, dest)
-        copied += 1
+        entries.append(entry)
     pw = pwd.getpwnam(username)
-    run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", str(home_base)], timeout=1800, check=True)
-    return f"copied {copied} top-level homedir entries to {home_base}"
+    if pw.pw_uid < 1000 or pw.pw_gid <= 0:
+        raise CpanelImportError("refusing import into a system identity")
+    # The source is private root-owned staging. Pass its bytes over stdin;
+    # all writes into the live, mutable account tree run as that account.
+    with tempfile.TemporaryDirectory(prefix="boron-home-copy-") as scratch:
+        bundle = Path(scratch) / "home.tar"
+        with tarfile.open(bundle, "w", dereference=False) as archive:
+            for entry in entries:
+                archive.add(entry, arcname=entry.name)
+        run(["tar", "-x", "--no-same-owner", "--no-same-permissions", "-C", str(home_base)],
+            input_path=str(bundle), timeout=1800, uid=pw.pw_uid, gid=pw.pw_gid, check=True)
+    return f"copied {len(entries)} top-level homedir entries to {home_base}"
 
 
 def _relocate_addon_docroot(root: Path, username: str, domain: str, docroot: str) -> str | None:
@@ -500,15 +511,8 @@ def _relocate_addon_docroot(root: Path, username: str, domain: str, docroot: str
         return None
     if not source.is_dir() or source_real == target.resolve():
         return None
-    target.mkdir(parents=True, exist_ok=True)
-    for item in source.iterdir():
-        dest = target / item.name
-        if item.is_dir():
-            shutil.copytree(item, dest, dirs_exist_ok=True)
-        else:
-            shutil.copy2(item, dest)
-    pw = pwd.getpwnam(username)
-    run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", str(target)], timeout=600, check=True)
+    from daemon.staging import _copy_files
+    _copy_files(str(source), str(target), username)
     return f"relocated '{relative}' -> '{docroot}'"
 
 
@@ -629,9 +633,11 @@ def _rewrite_wp_config(docroot: str, db_name: str, db_user: str, db_password: st
     string interpolation corrupt (the exact bug documented in
     wordpress._php_str's own docstring)."""
     path = os.path.join(docroot, "wp-config.php")
-    if not os.path.isfile(path):
+    content = safeio.secure_read_text(docroot, "wp-config.php", 1024 * 1024 + 1)
+    if content is None:
         raise _Skip("no wp-config.php found -- not a WordPress site (or not at this docroot)")
-    content = Path(path).read_text(errors="replace")
+    if len(content.encode()) > 1024 * 1024:
+        raise CpanelImportError("wp-config.php exceeds the supported size")
     replacements = {"DB_NAME": db_name, "DB_USER": db_user, "DB_PASSWORD": db_password, "DB_HOST": f"localhost:{settings.mariadb_socket}"}
     changed = []
     missing = []
@@ -669,7 +675,12 @@ def _rewrite_wp_config(docroot: str, db_name: str, db_user: str, db_password: st
             f"wp-config.php is missing an expected define() for: {', '.join(missing)} -- "
             "refusing to leave it with inconsistent database credentials"
         )
-    Path(path).write_text(content)
+    directory = safeio.open_dir_beneath(docroot)
+    try:
+        owner = os.fstat(directory)
+        safeio._replace_file_at_fd(directory, "wp-config.php", content, owner.st_uid, owner.st_gid, 0o640)
+    finally:
+        os.close(directory)
     return f"rewrote {', '.join(changed)} in wp-config.php"
 
 
@@ -752,6 +763,7 @@ def _parse_ssl_certs(root: Path) -> list[tuple[str, Path, Path]]:
 
 
 def _import_ssl_cert(username: str, domain: str, cert_path: Path, key_path: Path) -> str:
+    domain = validate_domain(domain)
     cert_bytes = cert_path.read_bytes()
     key_bytes = key_path.read_bytes()
     try:
@@ -788,7 +800,8 @@ def _import_ssl_cert(username: str, domain: str, cert_path: Path, key_path: Path
     if cert_public_numbers != key_public_numbers:
         raise _Skip("certificate and private key do not match -- not imported")
 
-    cert_dir = Path(f"/etc/letsencrypt/live/{domain}")
+    _domain_docroot(username, domain)  # authorize before any certificate write
+    cert_dir = IMPORTED_CERT_ROOT / domain
     cert_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
     (cert_dir / "fullchain.pem").write_bytes(cert_bytes)
     (cert_dir / "privkey.pem").write_bytes(key_bytes)
@@ -950,6 +963,8 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
     source = _directadmin_content_root(extract_dir)
     metadata = _directadmin_kv(source / "backup" / "user.conf")
     old_username = metadata.get("username") or metadata.get("user")
+    if old_username:
+        old_username = validate_username(old_username)
 
     listed_domains: list[str] = []
     domains_list = source / "backup" / "domains.list"
@@ -999,6 +1014,7 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
 
     mysql_dir = destination / "mysql"
     mysql_dir.mkdir()
+    expanded = 0
     for dump in sorted((source / "backup").glob("*.sql*")):
         if dump.name.endswith(".sql"):
             shutil.copy2(dump, mysql_dir / dump.name)
@@ -1006,7 +1022,11 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
             target = mysql_dir / dump.name.removesuffix(".gz").removesuffix(".tgz")
             try:
                 with gzip.open(dump, "rb") as compressed, target.open("wb") as output:
-                    shutil.copyfileobj(compressed, output)
+                    while chunk := compressed.read(1024 * 1024):
+                        expanded += len(chunk)
+                        if expanded > settings.cpanel_import_max_extracted_bytes:
+                            raise CpanelImportError("DirectAdmin database exceeds the extraction limit")
+                        output.write(chunk)
             except OSError as exc:
                 raise CpanelImportError(f"could not decompress DirectAdmin database dump {dump.name}: {exc}") from exc
 
@@ -1125,8 +1145,8 @@ def _wordpress_rewrite_step(username: str, domain: str, db_name_map: dict[str, s
     docroot = _domain_docroot(username, domain)
     wp_config = Path(docroot) / "wp-config.php"
     chosen = None
-    if wp_config.is_file():
-        original = wp_config.read_text(errors="replace")
+    original = safeio.secure_read_text(docroot, "wp-config.php")
+    if original is not None:
         m = re.search(r"define\(\s*['\"]DB_NAME['\"]\s*,\s*['\"]([^'\"]+)['\"]", original)
         if m and m.group(1) in db_name_map:
             chosen = db_name_map[m.group(1)]
@@ -1316,7 +1336,7 @@ def _run_import_job(job_id: int, params: dict) -> None:
             job_id,
             status="completed",
             progress_message="completed",
-            initial_password=account_password,
+            initial_password=jobcredentials.seal(account_password),
             completed_at=utcnow(),
         )
     finally:
@@ -1325,7 +1345,8 @@ def _run_import_job(job_id: int, params: dict) -> None:
 
 def _domain_docroot(username: str, domain: str) -> str:
     with write_session() as session:
-        row = session.scalar(select(Domain).where(Domain.domain == domain))
+        account = session.scalar(select(Account).where(Account.username == username))
+        row = session.scalar(select(Domain).where(Domain.domain == domain, Domain.account_id == account.id)) if account else None
         if row is None:
             raise CpanelImportError(f"domain '{domain}' has no Domain row")
         return row.docroot

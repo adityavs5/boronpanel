@@ -440,6 +440,7 @@ def stub_ols_refresh(monkeypatch):
 
 
 def test_import_ssl_cert_accepts_valid_matching_cert(isolated_db, tmp_path, monkeypatch, stub_ols_refresh):
+    monkeypatch.setattr(ci, "IMPORTED_CERT_ROOT", tmp_path / "certificates")
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
     monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
@@ -454,12 +455,7 @@ def test_import_ssl_cert_accepts_valid_matching_cert(isolated_db, tmp_path, monk
     cert_path.write_bytes(cert_bytes)
     key_path.write_bytes(key_bytes)
 
-    # _import_ssl_cert hardcodes /etc/letsencrypt/live/<domain> (matching
-    # daemon/ols.py's own letsencrypt_cert_paths convention) -- this test
-    # necessarily writes there for real and cleans up afterward rather than
-    # mocking Path, since faking a hardcoded absolute path well would just
-    # be testing the mock instead of the real install location every other
-    # domain's cert already lives at.
+    # Exercise real file writes in an isolated certificate directory.
     detail = ci._import_ssl_cert("demo1", "example.com", cert_path, key_path)
     assert "installed" in detail
 
@@ -467,11 +463,7 @@ def test_import_ssl_cert_accepts_valid_matching_cert(isolated_db, tmp_path, monk
         row = session.scalar(select(Domain).where(Domain.domain == "example.com"))
         assert row.ssl_status == "active"
 
-    # cleanup: this test necessarily wrote to the real /etc/letsencrypt path
-    # (the function hardcodes it) -- remove what it created.
-    import shutil as _shutil
-
-    _shutil.rmtree("/etc/letsencrypt/live/example.com", ignore_errors=True)
+    assert (ci.IMPORTED_CERT_ROOT / 'example.com/privkey.pem').read_bytes() == key_bytes
 
 
 def test_import_ssl_cert_rejects_expired(tmp_path):
@@ -726,3 +718,52 @@ def test_extract_archive_bounds_member_count_and_duplicate_files(tmp_path, monke
             tf.addfile(info)
     with pytest.raises(ci.CpanelImportError, match="duplicate file path"):
         ci._extract_archive(duplicate, tmp_path / "duplicate-out")
+
+
+def test_directadmin_username_cannot_escape_private_normalization(tmp_path):
+    source = tmp_path / 'source'
+    (source / 'backup').mkdir(parents=True)
+    (source / 'backup/user.conf').write_text('username=../../outside\ndomain=example.com\n')
+    dest = tmp_path / 'normalized'
+    dest.mkdir()
+    with pytest.raises(Exception, match='username'):
+        ci._normalize_directadmin_archive(source, dest)
+    assert not (tmp_path / 'outside.yaml').exists()
+
+
+def test_directadmin_nested_database_expansion_is_bounded(tmp_path, monkeypatch):
+    import gzip
+    source = tmp_path / 'source'
+    (source / 'backup').mkdir(parents=True)
+    (source / 'backup/user.conf').write_text('username=olduser\ndomain=example.com\n')
+    with gzip.open(source / 'backup/olduser_db.sql.gz', 'wb') as output:
+        output.write(b'x' * 100)
+    dest = tmp_path / 'normalized'
+    dest.mkdir()
+    monkeypatch.setattr(ci.settings, 'cpanel_import_max_extracted_bytes', 50)
+    with pytest.raises(ci.CpanelImportError, match='extraction limit'):
+        ci._normalize_directadmin_archive(source, dest)
+
+
+def test_import_wordpress_rewrite_refuses_outside_symlink(tmp_path):
+    outside = tmp_path / 'private'
+    original = "<?php\ndefine('DB_NAME','victim');\ndefine('DB_USER','victim');\ndefine('DB_PASSWORD','secret');\ndefine('DB_HOST','localhost');\n"
+    outside.write_text(original)
+    site = tmp_path / 'site';site.mkdir()
+    (site / 'wp-config.php').symlink_to(outside)
+    with pytest.raises(ci._Skip):
+        ci._rewrite_wp_config(str(site),'new','new','new')
+    assert outside.read_text() == original
+
+
+def test_import_rejects_internal_symlink_cycle_before_extraction(tmp_path):
+    archive = tmp_path / 'cycle.tar'
+    with tarfile.open(archive, 'w') as output:
+        entry = tarfile.TarInfo('homedir/cycle')
+        entry.type = tarfile.SYMTYPE
+        entry.linkname = '.'
+        output.addfile(entry)
+    destination = tmp_path / 'output';destination.mkdir()
+    with pytest.raises(ci.CpanelImportError, match='unsupported links'):
+        ci._extract_archive(archive,destination)
+    assert not list(destination.iterdir())

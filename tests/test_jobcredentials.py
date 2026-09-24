@@ -86,3 +86,26 @@ def test_reset_password_is_encrypted_before_worker_and_revealed_once(isolated_db
     with ThreadPoolExecutor(max_workers=2) as pool:
         values = list(pool.map(lambda _: consume(), range(2)))
     assert values.count(password) == 1 and values.count(None) == 1
+
+
+@pytest.mark.parametrize('kind', ['cpanel', 'portable'])
+def test_import_credentials_migrate_and_reveal_to_only_one_reader(isolated_db, kind):
+    from daemon import cpanel_import, portable_archive
+    from shared.models import CpanelImportJob, AccountArchiveImportJob
+    model, handler = (CpanelImportJob, cpanel_import) if kind == 'cpanel' else (AccountArchiveImportJob, portable_archive)
+    secret = 'Imported-account-canary-42!'
+    with write_session() as session:
+        row = model(username='demo1', status='completed', initial_password=secret,
+                    **({'source': 'upload'} if kind == 'cpanel' else {}))
+        session.add(row);session.flush();job_id=row.id
+    assert jobcredentials.migrate() == 1
+    with write_session() as session:
+        stored=session.get(model,job_id).initial_password
+        assert stored.startswith(jobcredentials.PREFIX) and secret not in stored
+    barrier=Barrier(2)
+    def consume(_):
+        barrier.wait()
+        return handler.get_job({'username':'demo1','job_id':job_id}).get('initial_password')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results=list(pool.map(consume,range(2)))
+    assert results.count(secret)==1 and results.count(None)==1

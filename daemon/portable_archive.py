@@ -19,7 +19,7 @@ from shared.db import write_session
 from shared.models import Account, AccountArchiveImportJob, BackupDestination, BackupJob, PanelUser, utcnow
 from shared.validation import ValidationError, validate_username
 
-from daemon import backup
+from daemon import backup, jobcredentials
 
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="account-archive")
 
@@ -85,10 +85,11 @@ def trigger_import(params: dict) -> dict:
 def get_job(params: dict) -> dict:
     job_id = int(params["job_id"])
     with write_session() as session:
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         job = session.get(AccountArchiveImportJob, job_id)
         if job is None:
             raise PortableArchiveError(f"archive import job {job_id} not found")
-        password = job.initial_password
+        password = jobcredentials.reveal(job.initial_password)
         result = _job_dict(job, password=password)
         if password:
             job.initial_password = None
@@ -269,7 +270,7 @@ def _run_import(job_id: int, username: str, source_ref: str) -> None:
             job_id,
             status="completed",
             progress_message="restored",
-            initial_password=summary.get("initial_password"),
+            initial_password=jobcredentials.seal(summary.get("initial_password")),
             completed_at=utcnow(),
         )
     except Exception as exc:  # noqa: BLE001
