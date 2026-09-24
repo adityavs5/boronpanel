@@ -358,10 +358,10 @@ def ensure_docroot(username: str, docroot: str, domain_name: str | None = None) 
     # default ACL _grant_webserver_acl just set recursively on docroot.
     safeio.secure_mkdirs(docroot, ".well-known/acme-challenge", pw.pw_uid, pw.pw_gid, 0o755)
 
-    # Shared with sysops.create_linux_user (account-creation time) and
-    # ols.refresh_all_vhosts's migration pass (pre-existing accounts) --
-    # one place owns this directory's creation/perms.
-    sysops.ensure_web_logs(username)
+    # Account creation owns the log directory and refresh_all_vhosts repairs
+    # ACLs for pre-existing accounts.  Keep docroot reassertion independent:
+    # import/staging paths call this helper while operating as the tenant and
+    # must not mutate the separate server-owned logging surface.
     sysops.ensure_tmp_dir(username)
 
     # Missing-features batch, goal feature 4: every domain's vhost
