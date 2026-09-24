@@ -19,6 +19,8 @@ best-effort deletes stay best-effort whichever backend serves the zone.
 """
 from __future__ import annotations
 
+import logging
+
 from daemon import dns_operations
 
 from sqlalchemy import select
@@ -31,6 +33,21 @@ from daemon.cloudflare import CloudflareError
 from daemon.powerdns import DEFAULT_TTL, PowerDnsError  # re-exported for callers
 
 DnsError = (PowerDnsError, CloudflareError)
+logger = logging.getLogger("borond.dnsprovider")
+
+
+def _cluster_notify(zone: str, action: str = "upsert") -> None:
+    """Queue a convergent full-zone update after the authoritative write.
+
+    A queue-storage problem cannot roll PowerDNS back, so returning a false
+    mutation failure would invite a duplicate user retry. Log it and let the
+    explicit cluster Sync all repair the gap.
+    """
+    try:
+        from daemon import dnscluster
+        dnscluster.enqueue_zone(zone, action)
+    except Exception:
+        logger.exception("Could not queue DNS cluster update for %s", zone)
 
 
 def cloudflare_zone_row(zone: str) -> CloudflareZone | None:
@@ -77,7 +94,9 @@ def create_zone(zone: str, ns_records: list[str]) -> dict:
     """New zones are always created in PowerDNS: it is the local provider,
     the fallback, and the revert target (plan SS0/SS1.9). Moving a zone to
     Cloudflare is a separate, explicit lifecycle op (cf.zone_enable)."""
-    return powerdns.create_zone(zone, ns_records)
+    result = powerdns.create_zone(zone, ns_records)
+    _cluster_notify(zone)
+    return result
 
 
 @dns_operations.serialized
@@ -104,6 +123,7 @@ def delete_zone(zone: str) -> None:
                 session.flush()
                 cloudflare_accounts._sync_zone_count(session, cf_account_pk)
     powerdns.delete_zone(zone)
+    _cluster_notify(zone, "delete")
 
 
 def get_zone(zone: str) -> dict:
@@ -129,6 +149,7 @@ def upsert_record(
         cloudflare.upsert_record(zone, subdomain, rtype, values, ttl=ttl, proxied=proxied, zone_id=row.cf_zone_id)
     else:
         powerdns.upsert_record(zone, subdomain, rtype, values, ttl=ttl)
+        _cluster_notify(zone)
 
 
 @dns_operations.serialized
@@ -138,6 +159,7 @@ def delete_record(zone: str, subdomain: str, rtype: str) -> None:
         cloudflare.delete_record(zone, subdomain, rtype, zone_id=row.cf_zone_id)
     else:
         powerdns.delete_record(zone, subdomain, rtype)
+        _cluster_notify(zone)
 
 
 def list_records(zone: str) -> list[dict]:

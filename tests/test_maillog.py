@@ -93,3 +93,46 @@ def test_get_delivery_log_missing_file(isolated_db, monkeypatch, tmp_path):
     monkeypatch.setattr(maillog.settings, "mail_log_path", str(tmp_path / "nope.log"))
     result = maillog.get_delivery_log({"username": "demo1"})
     assert result["entries"] == []
+
+
+def test_parse_attributes_local_submission_uid():
+    lines = [
+        "Sep 24 10:00:00 host postfix/pickup[1]: ABC123: uid=5001 from=<site>",
+        "Sep 24 10:00:01 host postfix/qmgr[2]: ABC123: from=<wordpress@mydomain.com>, size=10, nrcpt=1 (queue active)",
+        "Sep 24 10:00:02 host postfix/smtp[3]: ABC123: to=<person@remote.test>, relay=x, status=sent (250 OK)",
+    ]
+    result = maillog.parse_maillog(lines, {"mydomain.com"}, uid_to_username={5001: "demo1"})
+    assert result[0]["source_user"] == "demo1"
+
+
+def test_php_mail_script_attribution_stays_inside_account_home(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    script = home / "demo1" / "public_html" / "wp-content" / "plugin.php"
+    script.parent.mkdir(parents=True)
+    script.write_text("<?php")
+    monkeypatch.setattr(maillog.settings, "home_base", str(home))
+    lines = [
+        f"[24-Sep-2026] mail() on [{script}:42]: To: victim@example.net -- Headers: From: x",
+        "[24-Sep-2026] mail() on [/tmp/foreign.php:1]: To: victim@example.net",
+    ]
+    result = maillog.parse_php_mail_log(lines, "demo1")
+    assert result == [{"username": "demo1", "script": str(script), "line": 42, "to": "victim@example.net"}]
+
+
+def test_admin_stats_aggregates_account_sender_domain_and_script(isolated_db, monkeypatch, tmp_path):
+    _setup_account(monkeypatch, tmp_path)
+    home = tmp_path / "home"
+    script = home / "demo1" / "public_html" / "send.php"
+    script.parent.mkdir(parents=True)
+    script.write_text("<?php")
+    logs = home / "demo1" / "logs"
+    logs.mkdir()
+    (logs / "php-mail.log").write_text(
+        f"[24-Sep-2026] mail() on [{script}:7]: To: bob@external.com -- Headers: From: alice@mydomain.com\n"
+    )
+    monkeypatch.setattr(maillog.settings, "home_base", str(home))
+    result = maillog.get_admin_stats({})
+    assert result["summary"]["sent"] >= 1
+    assert {row["account"] for row in result["by_account"]} == {"demo1"}
+    assert any(row["sender"] == "alice@mydomain.com" for row in result["by_sender"])
+    assert result["scripts"][0]["script"] == str(script)

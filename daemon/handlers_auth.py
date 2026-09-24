@@ -11,12 +11,12 @@ import hashlib
 import secrets
 import string
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from shared.db import write_session
 from shared.models import Account, ApiToken, LoginAttempt, LoginChallenge, PanelUser, Session, TotpCredential, utcnow
 from shared.passwords import hash_password, verify_password
-from shared.validation import ValidationError, validate_password_strength
+from shared.validation import ValidationError, generate_strong_password, validate_password_strength, validate_username
 from shared.session_ids import session_digest
 
 from daemon import events
@@ -73,6 +73,48 @@ def create_panel_user(params: dict) -> dict:
             account_id=account_id,
         )
         session.add(user)
+        session.flush()
+        return _panel_user_dict(user)
+
+
+def list_administrators(params: dict | None = None) -> dict:
+    with write_session() as session:
+        rows = session.scalars(
+            select(PanelUser).where(PanelUser.role == "admin").order_by(PanelUser.username)
+        ).all()
+        return {"administrators": [_panel_user_dict(row) for row in rows]}
+
+
+def create_administrator(params: dict) -> dict:
+    username = validate_username(params["username"])
+    password = params.get("password") or generate_strong_password()
+    result = create_panel_user({"username": username, "password": password, "role": "admin"})
+    result["initial_password"] = password
+    return result
+
+
+def set_administrator_status(params: dict) -> dict:
+    username = validate_username(params["username"])
+    actor_username = str(params.get("actor_username") or "")
+    disabled = bool(params["disabled"])
+    with write_session() as session:
+        user = session.scalar(select(PanelUser).where(PanelUser.username == username, PanelUser.role == "admin"))
+        if user is None:
+            raise RuntimeError(f"administrator '{username}' not found")
+        if disabled and username == actor_username:
+            raise ValidationError("you cannot disable your own administrator login")
+        if disabled and not user.disabled:
+            enabled_count = session.scalar(select(func.count()).select_from(PanelUser).where(
+                PanelUser.role == "admin", PanelUser.disabled.is_(False)
+            )) or 0
+            if enabled_count <= 1:
+                raise ValidationError("at least one administrator must remain enabled")
+        user.disabled = disabled
+        if disabled:
+            for row in session.scalars(select(Session).where(
+                Session.panel_user_id == user.id, Session.revoked.is_(False)
+            )).all():
+                row.revoked = True
         session.flush()
         return _panel_user_dict(user)
 

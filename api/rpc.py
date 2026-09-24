@@ -46,3 +46,16 @@ def call_daemon_anonymous(op: str, **params) -> dict:
         raise HTTPException(status_code=status, detail=exc.message) from exc
     except (ConnectionError, OSError) as exc:
         raise HTTPException(status_code=503, detail=f"provisioning daemon unreachable: {exc}") from exc
+
+
+def call_daemon_cluster(op: str, token: str, **params) -> dict:
+    """Forward a narrow DNS-cluster bearer credential for daemon validation."""
+    if op not in ("dnscluster.apply", "dnscluster.ping"):
+        raise ValueError("operation is not part of the DNS cluster protocol")
+    try:
+        return _client.call(op, credential={"type": "cluster", "value": token}, **params)
+    except RpcError as exc:
+        status = {"bad_request": 400, "forbidden": 403, "unauthenticated": 401}.get(exc.code, 502)
+        raise HTTPException(status_code=status, detail=exc.message) from exc
+    except (ConnectionError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=f"provisioning daemon unreachable: {exc}") from exc

@@ -25,10 +25,11 @@ from sqlalchemy import select
 from shared.config import require_secure_session_secret, settings
 from shared.db import read_session
 from shared.models import IpWhitelistEntry
+from shared import telemetry
 
 from api import logsetup, ratelimit
 from api.security import Identity, get_identity, require_admin
-from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, malware, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
+from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, dnscluster, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, malware, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
 
 
 @asynccontextmanager
@@ -89,6 +90,8 @@ _OPENAPI_TAGS = [
     {"name": "branding", "description": "White-label panel name/logo/favicon (Run A f3)."},
     {"name": "onboarding", "description": "First-login customer onboarding wizard state (Run A f4)."},
 ]
+
+telemetry.initialize("boron-api")
 
 app = FastAPI(
     title="Boron",
@@ -317,12 +320,18 @@ app.include_router(impersonation.admin_api_router)
 app.include_router(impersonation.api_router)
 # Phase 8 feature 2: admin account editor (identity + passwords).
 app.include_router(identity_admin.api_router)
+app.include_router(identity_admin.administrator_router)
+app.include_router(nodeapps.admin_router)
+app.include_router(pythonapps.admin_router)
+app.include_router(dnscluster.admin_router)
+app.include_router(dnscluster.peer_router)
 # Phase 8 feature 3/4: parked domains + whole-domain forwarding.
 app.include_router(parked.api_router)
 app.include_router(forwarding.api_router)
 # Phase 8 feature 5/6: email delivery log + per-domain email routing.
 app.include_router(email_extras.delivery_log_router)
 app.include_router(email_extras.routing_router)
+app.include_router(email_extras.admin_router)
 # Phase 8 feature 7: web terminal (WebSocket + a small session-count endpoint).
 app.include_router(terminal.router)
 app.include_router(terminal.http_router)

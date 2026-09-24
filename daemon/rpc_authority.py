@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, ApiToken, Domain, ImpersonationSession, MailDomain, PanelUser, ResellerAccount, ResellerProfile, RestoreJob, Session, TotpCredential
+from shared.models import Account, ApiToken, DnsClusterPeer, Domain, ImpersonationSession, MailDomain, PanelUser, ResellerAccount, ResellerProfile, RestoreJob, Session, TotpCredential
 from shared.session_ids import session_digest
 from shared.passwords import verify_password
 from shared.validation import ValidationError, validate_domain
@@ -47,10 +47,20 @@ def resolve_principal(credential: object) -> Principal:
     if not isinstance(credential, dict) or set(credential) != {"type", "value"}:
         raise AuthenticationError("panel credential required")
     kind, raw = credential.get("type"), credential.get("value")
-    if kind not in ("session", "token") or not isinstance(raw, str) or not raw or len(raw) > 512:
+    if kind not in ("session", "token", "cluster") or not isinstance(raw, str) or not raw or len(raw) > 4096:
         raise AuthenticationError("invalid panel credential")
     now = dt.datetime.now(dt.timezone.utc)
     with write_session() as db:
+        if kind == "cluster":
+            digest = hashlib.sha256(raw.encode()).hexdigest()
+            peer = db.scalar(select(DnsClusterPeer).where(
+                DnsClusterPeer.credential_hash == digest,
+                DnsClusterPeer.peer_type == "boron",
+                DnsClusterPeer.enabled.is_(True),
+            ))
+            if peer is None:
+                raise AuthenticationError("invalid DNS cluster credential")
+            return Principal("cluster", peer.name, None, None, "cluster")
         if kind == "session":
             digest = session_digest(raw)
             session = db.scalar(select(Session).where(Session.session_id == digest))
@@ -147,6 +157,10 @@ def authorize(op: str, params: dict, principal: Principal | None) -> None:
     if disposition == "login_protocol":
         if principal is not None:
             raise AuthorizationError("login protocol requires an anonymous request")
+        return
+    if disposition == "cluster_protocol":
+        if principal is None or principal.role != "cluster" or principal.auth_method != "cluster":
+            raise AuthorizationError("DNS cluster credential required")
         return
     if principal is None:
         raise AuthenticationError("panel credential required")

@@ -361,7 +361,7 @@ def ensure_docroot(username: str, docroot: str, domain_name: str | None = None) 
     # Shared with sysops.create_linux_user (account-creation time) and
     # ols.refresh_all_vhosts's migration pass (pre-existing accounts) --
     # one place owns this directory's creation/perms.
-    safeio.secure_mkdirs(home, "logs", pw.pw_uid, pw.pw_gid, 0o750)
+    sysops.ensure_web_logs(username)
     sysops.ensure_tmp_dir(username)
 
     # Missing-features batch, goal feature 4: every domain's vhost

@@ -10,10 +10,17 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from api.rpc import call_daemon
-from api.security import Identity, get_identity, require_account_access, require_domain_access
+from api.security import Identity, get_identity, require_account_access, require_admin, require_domain_access
 
 delivery_log_router = APIRouter(prefix="/api/v1/accounts/{username}/email", tags=["email-delivery-log"])
 routing_router = APIRouter(prefix="/api/v1/accounts/{username}/domains/{domain}/email", tags=["email-routing"])
+admin_router = APIRouter(prefix="/api/v1/admin/mail", tags=["mail-tracking"])
+
+
+@admin_router.get("/tracking")
+def mail_tracking(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("maillog.admin_stats", identity)
 
 
 @delivery_log_router.get("/delivery-log")

@@ -1,6 +1,7 @@
 import os
 import pwd as real_pwd
 import stat
+import subprocess
 
 import pytest
 
@@ -66,3 +67,43 @@ def test_delete_linux_user_preserves_home_during_provisioning_rollback(monkeypat
     sysops.delete_linux_user("demo1", remove_home=remove_home)
     assert calls[0] == ["pkill", "-9", "-u", "demo1"]
     assert calls[1] == ["userdel", *(["--remove"] if remove_home else []), "--force", "demo1"]
+    assert calls[1][0] == "userdel"
+
+
+def test_delete_linux_user_finishes_home_after_userdel_timeout(monkeypatch, tmp_path):
+    home = tmp_path / "demo1"
+    home.mkdir()
+    exists = iter([True, False])
+    calls = []
+    monkeypatch.setattr(sysops.settings, "home_base", str(tmp_path))
+    monkeypatch.setattr(sysops, "user_exists", lambda username: next(exists))
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args[0] == "userdel":
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+    monkeypatch.setattr(sysops, "run", fake_run)
+    sysops.delete_linux_user("demo1")
+    assert calls[1][0] == ["userdel", "--remove", "--force", "demo1"]
+    assert calls[1][1]["timeout"] == 600
+    assert calls[2][0] == ["find", str(home), "-xdev", "-depth", "-delete"]
+
+
+def test_retry_cleans_home_when_linux_identity_is_already_gone(monkeypatch, tmp_path):
+    home = tmp_path / "demo1"
+    home.mkdir()
+    calls = []
+    monkeypatch.setattr(sysops.settings, "home_base", str(tmp_path))
+    monkeypatch.setattr(sysops, "user_exists", lambda username: False)
+    monkeypatch.setattr(sysops, "run", lambda args, **kwargs: calls.append(args))
+    sysops.delete_linux_user("demo1")
+    assert calls == [["find", str(home), "-xdev", "-depth", "-delete"]]
+
+
+def test_ensure_web_logs_grants_only_ols_named_acl(account_with_home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(sysops, "run", lambda args, **kwargs: calls.append((args, kwargs)))
+    logs = sysops.ensure_web_logs("demo1")
+    assert logs == str(account_with_home / "logs")
+    assert stat.S_IMODE(os.stat(logs).st_mode) == 0o750
+    assert calls == [(["setfacl", "-m", "u:nobody:rwx", "-m", "d:u:nobody:rwX", logs],
+                      {"uid": os.getuid(), "gid": os.getgid(), "check": True})]

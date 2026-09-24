@@ -620,6 +620,7 @@ function DeliveryLogTab({ username }) {
     { key: 'from', header: 'From', searchable: true, render: (r) => <span className="break-all font-mono text-xs">{r.from || '—'}</span> },
     { key: 'to', header: 'To', searchable: true, render: (r) => <span className="break-all font-mono text-xs">{r.to}</span> },
     { key: 'status', header: 'Status', render: (r) => <Badge variant={STATUS_VARIANT[r.status] || 'neutral'}>{r.status}</Badge> },
+    { key: 'source_user', header: 'Source', render: (r) => r.source_user ? <span className="font-mono text-xs">Local user: {r.source_user}</span> : <span className="text-muted-foreground">SMTP</span> },
     { key: 'reason', header: 'Reason', render: (r) => <span className="break-all text-xs text-muted-foreground">{r.reason}</span> },
   ]
 

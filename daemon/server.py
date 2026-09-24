@@ -22,7 +22,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import panel_jobs, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import panel_config, panel_jobs, panel_tls, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, dnscluster, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 from daemon.rpc_authority import AuthenticationError, AuthorizationError, authorize, resolve_principal
 from daemon import directadmin_remote
@@ -76,9 +76,18 @@ OP_TABLE = {
     "reseller.create": resellers.create_reseller,
     "reseller.list": resellers.list_resellers,
     "reseller.update": resellers.update_reseller,
+    "reseller.account.move": resellers.move_account,
     "reseller.dashboard": resellers.dashboard,
     "reseller.account.create": resellers.create_account,
     "reseller.account.lifecycle": resellers.lifecycle,
+    "admin_user.list": handlers_auth.list_administrators,
+    "admin_user.create": handlers_auth.create_administrator,
+    "admin_user.set_status": handlers_auth.set_administrator_status,
+    "apps.node.admin_list": nodeapps.list_all_apps,
+    "apps.python.admin_list": pythonapps.list_all_apps,
+    "panel.config.hostname": lambda params: panel_config.apply_hostname(params["hostname"]),
+    "panel.tls.status": panel_tls.certificate_status,
+    "panel.tls.issue": panel_tls.issue_from_rpc,
     "templates.suspension_designs.get": site_templates.get_suspension_designs,
     "templates.suspension_designs.apply": site_templates.apply_suspension_design,
     "cron.list": handlers_cron.list_cron_jobs,
@@ -118,6 +127,14 @@ OP_TABLE = {
     "dns.list_records": handlers_dns.list_records,
     "dns.set_record": handlers_dns.set_record,
     "dns.delete_record": handlers_dns.delete_record,
+    "dnscluster.peer.list": dnscluster.list_peers,
+    "dnscluster.peer.create": dnscluster.create_peer,
+    "dnscluster.peer.update": dnscluster.update_peer,
+    "dnscluster.peer.delete": dnscluster.delete_peer,
+    "dnscluster.peer.test": dnscluster.test_peer,
+    "dnscluster.sync_all": dnscluster.sync_all,
+    "dnscluster.apply": dnscluster.apply_incoming,
+    "dnscluster.ping": lambda params: {"ok": True},
     "nameservers.list": nameservers.list_nameservers,
     "nameservers.set": nameservers.set_nameservers,
     "nameservers.reset": nameservers.reset_nameservers,
@@ -434,6 +451,7 @@ OP_TABLE = {
     "forwarding.delete": forwarding.delete_forwarding,
     # Phase 8 feature 5: email delivery log (Postfix log, scoped per account)
     "maillog.delivery": maillog.get_delivery_log,
+    "maillog.admin_stats": maillog.get_admin_stats,
     # Phase 8 feature 6: per-domain email routing (Local/Remote/Backup MX)
     "email_routing.get": handlers_email_routing.get_routing,
     "email_routing.set": handlers_email_routing.set_routing,
@@ -1061,6 +1079,10 @@ async def amain() -> None:
         await asyncio.get_running_loop().run_in_executor(None, panel_jobs.recover_jobs)
     except Exception:
         logger.exception("Panel configuration recovery failed at startup")
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, dnscluster.recover_and_start_worker)
+    except Exception:
+        logger.exception("DNS cluster recovery failed at startup")
     async with server:
         await server.serve_forever()
 
@@ -1073,6 +1095,8 @@ def main() -> None:
 
     require_secure_session_secret()
     configure_logging(settings.log_dir)
+    from shared import telemetry
+    telemetry.initialize("borond")
     asyncio.run(amain())
 
 

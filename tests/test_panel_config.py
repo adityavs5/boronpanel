@@ -28,6 +28,34 @@ def test_reject_nested_config_instead_of_editing_wrong_key():
         panel.render_ports('[nested]\napi_bind_port = 9443\n', 2222, 3333)
 
 
+def test_render_hostname_preserves_other_flat_settings_and_comments():
+    original = '# panel\napi_bind_port = 2222\npanel_hostname = "old.example" # keep\n'
+    rendered = panel.render_hostname(original, 'panel.example.com')
+    assert '# panel' in rendered and '# keep' in rendered
+    assert tomllib.loads(rendered) == {'api_bind_port': 2222, 'panel_hostname': 'panel.example.com'}
+
+
+def test_hostname_route_failure_restores_config_and_runtime_setting(tmp_path, monkeypatch):
+    from daemon import panel_tls
+    path = tmp_path / 'boron.toml'
+    original = 'api_bind_port = 2222\npanel_hostname = "old.example"\n'
+    path.write_text(original)
+    monkeypatch.setattr(settings, 'backup_dir', str(tmp_path / 'backup'))
+    monkeypatch.setattr(settings, 'panel_hostname', 'old.example')
+    calls = []
+    def bootstrap():
+        calls.append(settings.panel_hostname)
+        if settings.panel_hostname == 'new.example':
+            raise RuntimeError('route validation failed')
+        return {}
+    monkeypatch.setattr(panel_tls, 'bootstrap_challenge', bootstrap)
+    with pytest.raises(RuntimeError, match='previous hostname restored'):
+        panel.apply_hostname('new.example', config_path=path)
+    assert path.read_text() == original
+    assert settings.panel_hostname == 'old.example'
+    assert calls == ['new.example', 'old.example']
+
+
 def test_real_conflict_check_allows_current_ports_only():
     with socket.socket() as blocker:
         blocker.bind(('127.0.0.1', 0))

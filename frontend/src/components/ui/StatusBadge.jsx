@@ -21,6 +21,8 @@ const STATUS_MAP = {
   queued: { variant: 'warning', dot: 'bg-warning' },
   deferred: { variant: 'warning', dot: 'bg-warning' },
   expiring: { variant: 'warning', dot: 'bg-warning' },
+  warning: { variant: 'warning', dot: 'bg-warning' },
+  healthy: { variant: 'success', dot: 'bg-success' },
   running_job: { variant: 'info', dot: 'bg-info' },
   terminated: { variant: 'neutral', dot: 'bg-gray-400' },
   stopped: { variant: 'neutral', dot: 'bg-gray-400' },

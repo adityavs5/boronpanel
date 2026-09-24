@@ -43,6 +43,10 @@ class AccountCreateBody(BaseModel):
     password: str | None = None
 
 
+class AccountMoveBody(BaseModel):
+    reseller_id: int | None = None
+
+
 @admin_router.get("/plans")
 def plans(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -83,6 +87,12 @@ def create_reseller(body: ResellerCreateBody, identity: Identity = Depends(get_i
 def update_reseller(reseller_id: int, body: ResellerUpdateBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("reseller.update", identity, reseller_id=reseller_id, **body.model_dump(exclude_none=True))
+
+
+@admin_router.patch("/accounts/{username}")
+def move_account(username: str, body: AccountMoveBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("reseller.account.move", identity, username=username, **body.model_dump())
 
 
 @panel_router.get("/dashboard")

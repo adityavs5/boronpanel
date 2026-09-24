@@ -106,6 +106,31 @@ def test_reassign_plan_rejects_insufficient_capacity(isolated_db):
         resellers.update_reseller({"reseller_id": profile_id, "plan_id": small["id"]})
 
 
+def test_admin_can_move_account_between_resellers_and_back(isolated_db):
+    plan = make_plan(max_accounts=4, max_total_disk_mb=30000)
+    _, first = make_profile(plan["id"], "sellerone")
+    _, second = make_profile(plan["id"], "sellertwo")
+    account_id = make_owned_account(first, "moveme")
+    moved = resellers.move_account({"username": "moveme", "reseller_id": second})
+    assert moved["reseller_id"] == second and moved["reseller_username"] == "sellertwo"
+    with write_session() as db:
+        assert db.scalar(select(ResellerAccount.reseller_id).where(ResellerAccount.account_id == account_id)) == second
+    released = resellers.move_account({"username": "moveme", "reseller_id": None})
+    assert released["reseller_id"] is None
+    with write_session() as db:
+        assert db.scalar(select(ResellerAccount.id).where(ResellerAccount.account_id == account_id)) is None
+
+
+def test_move_account_enforces_target_capacity(isolated_db):
+    plan = make_plan(max_accounts=1, max_total_disk_mb=7000)
+    _, target = make_profile(plan["id"], "targetone")
+    make_owned_account(target, "alreadyone", hard_mb=5000)
+    with write_session() as db:
+        db.add(Account(username="unassigned", status="active", quota_hard_mb=1000))
+    with pytest.raises(resellers.ResellerError, match="account limit"):
+        resellers.move_account({"username": "unassigned", "reseller_id": target})
+
+
 def test_dashboard_only_lists_owned_nonterminated_accounts(isolated_db):
     plan = make_plan()
     _, profile_id = make_profile(plan["id"])

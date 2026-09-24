@@ -15,10 +15,11 @@ from starlette.requests import Request
 from shared.config import settings
 
 from api.rpc import call_daemon
-from api.security import Identity, get_identity, require_account_access
+from api.security import Identity, get_identity, require_account_access, require_admin
 from api.templates import templates
 
 api_router = APIRouter(prefix="/api/v1/accounts/{username}/apps/node", tags=["apps:node"])
+admin_router = APIRouter(prefix="/api/v1/admin/software/node-apps", tags=["apps:node:admin"])
 ui_router = APIRouter(prefix="/ui/accounts/{username}/apps/node", tags=["ui:apps:node"])
 
 
@@ -34,6 +35,12 @@ class UpdateNodeAppBody(BaseModel):
     entry_point: str | None = None
     node_version: str | None = None
     env_vars: dict[str, str] | None = None
+
+
+@admin_router.get("")
+def list_all_node_apps(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("apps.node.admin_list", identity)
 
 
 def _parse_env_text(text: str) -> dict[str, str]:

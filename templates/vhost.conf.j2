@@ -196,6 +196,7 @@ END_boron_maint_headers
        ini settings. #}
     php_admin_value log_errors "On"
     php_admin_value error_log "{{ home_dir }}/logs/php-error.log"
+    php_admin_value mail.log "{{ home_dir }}/logs/php-mail.log"
 {% if php_ini %}
     {# Phase 3 feature 6: per-account PHP ini overrides, rendered ONLY
        into this account's own vhost context -- OLS's native per-context

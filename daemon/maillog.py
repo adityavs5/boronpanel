@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import Counter
 from typing import Iterable
 
 from sqlalchemy import select
@@ -31,6 +32,10 @@ _FROM_RE = re.compile(r"\bfrom=<(?P<addr>[^>]*)>")
 _TO_RE = re.compile(r"\bto=<(?P<addr>[^>]*)>")
 # status=<word> optionally followed by a "(...)" reason.
 _STATUS_RE = re.compile(r"\bstatus=(?P<status>\S+)(?:\s+(?P<reason>.*))?$")
+_UID_RE = re.compile(r"\buid=(?P<uid>\d+)\b")
+_PHP_MAIL_RE = re.compile(
+    r"mail\(\) on \[(?P<script>.+?):(?P<line>\d+)\]:\s+To:\s*(?P<to>.+?)(?:\s+--\s+Headers:|$)", re.I
+)
 
 
 def _domain_of(addr: str) -> str:
@@ -41,12 +46,15 @@ def _domain_of(addr: str) -> str:
     return addr.rsplit("@", 1)[1].strip().lower()
 
 
-def parse_maillog(lines: Iterable[str], account_domains: set[str], limit: int = 500) -> list[dict]:
+def parse_maillog(lines: Iterable[str], account_domains: set[str], limit: int = 500,
+                  uid_to_username: dict[int, str] | None = None) -> list[dict]:
     """Return delivery events (most recent first) where the sender or the
     recipient is on one of `account_domains`. Correlates each recipient/status
     line with its message's `from=` (logged earlier by qmgr) via the queue id."""
     account_domains = {d.lower() for d in account_domains}
     from_by_qid: dict[str, str] = {}
+    user_by_qid: dict[str, str] = {}
+    uid_to_username = uid_to_username or {}
     events: list[dict] = []
 
     for raw in lines:
@@ -58,6 +66,11 @@ def parse_maillog(lines: Iterable[str], account_domains: set[str], limit: int = 
         ts = m.group("ts").strip()
 
         fm = _FROM_RE.search(rest)
+        uid = _UID_RE.search(rest)
+        if uid:
+            source_user = uid_to_username.get(int(uid.group("uid")))
+            if source_user:
+                user_by_qid[qid] = source_user
         if fm and "to=" not in rest:
             # A pure from-line (qmgr) -- remember it for this queue id.
             from_by_qid[qid] = fm.group("addr")
@@ -81,6 +94,7 @@ def parse_maillog(lines: Iterable[str], account_domains: set[str], limit: int = 
                 "to": to_addr,
                 "status": sm.group("status"),
                 "reason": reason,
+                "source_user": user_by_qid.get(qid),
             })
 
     # Most recent first; cap to the limit.
@@ -123,7 +137,10 @@ def get_delivery_log(params: dict) -> dict:
         return {"entries": [], "count": 0, "scoped_domains": sorted(account_domains)}
 
     lines = _tail_bytes(path, settings.mail_log_scan_max_bytes)
-    events = parse_maillog(lines, account_domains, limit=limit if not search else settings.mail_delivery_log_max_entries)
+    with write_session() as session:
+        uid_map = {row.uid: row.username for row in session.scalars(select(Account)).all() if row.uid is not None}
+    events = parse_maillog(lines, account_domains, limit=limit if not search else settings.mail_delivery_log_max_entries,
+                           uid_to_username=uid_map)
 
     if search:
         events = [
@@ -133,3 +150,80 @@ def get_delivery_log(params: dict) -> dict:
         ][:limit]
 
     return {"entries": events, "count": len(events), "scoped_domains": sorted(account_domains)}
+
+
+def parse_php_mail_log(lines: Iterable[str], username: str) -> list[dict]:
+    events = []
+    home = os.path.realpath(f"{settings.home_base}/{username}") + os.sep
+    for raw in lines:
+        match = _PHP_MAIL_RE.search(raw)
+        if not match:
+            continue
+        script = os.path.realpath(match.group("script"))
+        if not script.startswith(home):
+            continue
+        events.append({"username": username, "script": script, "line": int(match.group("line")),
+                       "to": match.group("to").strip()[:320]})
+    return events
+
+
+def get_admin_stats(params: dict | None = None) -> dict:
+    """On-demand bounded mail overview; no background database or realtime load."""
+    with write_session() as session:
+        accounts = session.scalars(select(Account).where(Account.status != "terminated")).all()
+        account_by_id = {row.id: row.username for row in accounts}
+        uid_map = {row.uid: row.username for row in accounts if row.uid is not None}
+        domain_owner = {
+            domain.lower(): account_by_id[account_id]
+            for domain, account_id in session.execute(select(Domain.domain, Domain.account_id))
+            if account_id in account_by_id
+        }
+        domain_owner.update({
+            domain.lower(): account_by_id[account_id]
+            for domain, account_id in session.execute(select(MailDomain.domain, MailDomain.account_id))
+            if account_id in account_by_id
+        })
+
+    events = []
+    if domain_owner and os.path.exists(settings.mail_log_path):
+        events = parse_maillog(
+            _tail_bytes(settings.mail_log_path, settings.mail_log_scan_max_bytes),
+            set(domain_owner), limit=settings.mail_delivery_log_max_entries,
+            uid_to_username=uid_map,
+        )
+    by_account = Counter()
+    by_sender = Counter()
+    by_domain = Counter()
+    by_status = Counter()
+    for event in events:
+        sender_domain = _domain_of(event["from"])
+        username = event.get("source_user") or domain_owner.get(sender_domain) or domain_owner.get(_domain_of(event["to"]))
+        event["account"] = username
+        if username:
+            by_account[username] += 1
+        if event["from"]:
+            by_sender[event["from"]] += 1
+        if sender_domain:
+            by_domain[sender_domain] += 1
+        by_status[event["status"]] += 1
+
+    script_counts = Counter()
+    for account in accounts:
+        path = f"{settings.home_base}/{account.username}/logs/php-mail.log"
+        if not os.path.exists(path):
+            continue
+        for item in parse_php_mail_log(_tail_bytes(path, min(settings.mail_log_scan_max_bytes, 2 * 1024 * 1024)), account.username):
+            script_counts[(item["username"], item["script"], item["to"])] += 1
+
+    ranked = lambda counter, key_names: [dict(zip(key_names, key if isinstance(key, tuple) else (key,)), count=count)
+                                         for key, count in counter.most_common(50)]
+    return {
+        "summary": {"total": len(events), "sent": by_status.get("sent", 0),
+                    "bounced": by_status.get("bounced", 0), "deferred": by_status.get("deferred", 0),
+                    "rejected": by_status.get("rejected", 0)},
+        "by_account": ranked(by_account, ("account",)),
+        "by_sender": ranked(by_sender, ("sender",)),
+        "by_domain": ranked(by_domain, ("domain",)),
+        "scripts": ranked(script_counts, ("account", "script", "to")),
+        "entries": events,
+    }

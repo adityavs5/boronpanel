@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Copy, Plus, Users, ShieldCheck, Play, ArrowUpCircle } from 'lucide-react'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
 import { useVersion } from '@/hooks/useVersion'
-import { get, post } from '@/lib/api'
+import { get, patch, post } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
@@ -123,6 +123,16 @@ export default function Accounts() {
     ? 'Use 12+ characters with upper, lower, number, and symbol.'
     : undefined
 
+  useEffect(() => {
+    if (searchParams.get('new') !== '1') return
+    setOpen(true)
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous)
+      next.delete('new')
+      return next
+    }, { replace: true })
+  }, [searchParams, setSearchParams])
+
   function setListParam(key, value, defaultValue = '') {
     setSearchParams((previous) => {
       const next = new URLSearchParams(previous)
@@ -146,6 +156,16 @@ export default function Accounts() {
     queryFn: () => get('/api/v1/admin/ip-management'),
   })
   const availableIps = (ipData?.ips || []).filter((entry) => entry.active && entry.present_on_host)
+  const { data: resellerData } = useQuery({
+    queryKey: ['resellers'],
+    queryFn: () => get('/api/v1/admin/resellers'),
+  })
+  const resellers = resellerData?.resellers || []
+  const moveReseller = useMutation({
+    mutationFn: ({ username, resellerId }) => patch(`/api/v1/admin/resellers/accounts/${username}`, { reseller_id: resellerId || null }),
+    onSuccess: () => { toast.success('Reseller assignment updated'); qc.invalidateQueries({ queryKey: ['accounts'] }) },
+    onError: error => toast.error('Could not move account', error.message),
+  })
 
   const toggle = (username) => setSelected((prev) => {
     const next = new Set(prev)
@@ -270,6 +290,7 @@ export default function Accounts() {
     { key: 'status', header: 'Status', sortable: true, render: (r) => <StatusBadge status={r.status} /> },
     { key: 'primary_domain', header: 'Primary domain', searchable: true, render: (r) => r.primary_domain || <span className="text-muted-foreground">—</span> },
     { key: 'server_ip', header: 'Server IP', searchable: true, render: (r) => <span className="font-mono text-xs">{r.server_ip || '—'}</span> },
+    { key: 'reseller', header: 'Reseller', searchable: true, searchValue: r => r.reseller?.username || 'admin', render: r => <Select aria-label={`Reseller for ${r.username}`} value={r.reseller?.id || ''} disabled={moveReseller.isPending} onChange={event => moveReseller.mutate({ username: r.username, resellerId: event.target.value ? Number(event.target.value) : null })}><option value="">Admin owned</option>{resellers.filter(item => item.status === 'active' || item.id === r.reseller?.id).map(item => <option key={item.id} value={item.id}>{item.username}</option>)}</Select> },
     { key: 'created_at', header: 'Created', sortable: true, render: (r) => (r.created_at ? formatDate(r.created_at) : '—') },
   ]
 

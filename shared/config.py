@@ -382,6 +382,14 @@ class Settings:
         the same auto-provisioning appcrypto.py documents."""
         return self.secrets.get("APP_ENV_KEY", "")
 
+    @property
+    def sentry_dsn(self) -> str:
+        return self.secrets.get("SENTRY_DSN", "").strip()
+
+    @property
+    def telemetry_environment(self) -> str:
+        return self.secrets.get("SENTRY_ENVIRONMENT", "production").strip() or "production"
+
 
 # The session-signing key falls back to this well-known value only so the
 # codebase can be imported/tested/run in dev without a secrets file. It signs

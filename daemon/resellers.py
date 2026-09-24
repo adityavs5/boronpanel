@@ -216,6 +216,44 @@ def update_reseller(params: dict) -> dict:
         return _profile_dict(session, profile)
 
 
+def move_account(params: dict) -> dict:
+    """Assign an account to a reseller, move it, or return it to admin ownership."""
+    username = validate_username(params["username"])
+    raw_target = params.get("reseller_id")
+    target_id = int(raw_target) if raw_target is not None else None
+    with _state_lock, write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None or account.status == "terminated":
+            raise ResellerError(f"account '{username}' not found")
+        current = session.scalar(select(ResellerAccount).where(ResellerAccount.account_id == account.id))
+        if current is not None and current.reseller_id == target_id:
+            target = session.get(ResellerProfile, target_id) if target_id is not None else None
+            return {"username": username, "reseller_id": target_id,
+                    "reseller_username": _profile_dict(session, target)["username"] if target else None}
+
+        target = None
+        if target_id is not None:
+            target = session.get(ResellerProfile, target_id)
+            if target is None:
+                raise ResellerError(f"reseller {target_id} not found")
+            if target.status != "active":
+                raise ResellerError("accounts can only be assigned to an active reseller")
+            plan = session.get(ResellerPlan, target.plan_id)
+            count, disk_mb = _profile_usage(session, target.id)
+            if count + 1 > plan.max_accounts:
+                raise ResellerError("target reseller account limit reached")
+            if disk_mb + account.quota_hard_mb > plan.max_total_disk_mb:
+                raise ResellerError("target reseller disk allocation limit reached")
+
+        if current is not None:
+            session.delete(current)
+            session.flush()
+        if target is not None:
+            session.add(ResellerAccount(reseller_id=target.id, account_id=account.id))
+        return {"username": username, "reseller_id": target_id,
+                "reseller_username": _profile_dict(session, target)["username"] if target else None}
+
+
 def _profile_for_username(session, username: str, *, active: bool = True) -> ResellerProfile:
     profile = session.scalar(select(ResellerProfile).join(PanelUser, PanelUser.id == ResellerProfile.panel_user_id).where(
         PanelUser.username == username

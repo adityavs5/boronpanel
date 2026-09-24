@@ -115,6 +115,64 @@ class DnsZone(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class DnsClusterPeer(Base):
+    """A remote authoritative DNS peer.
+
+    Credentials are write-only Fernet ciphertext. ``credential_hash`` lets a
+    Boron peer authenticate inbound replication without exposing or
+    decrypting the stored secret in the API process.
+    """
+
+    __tablename__ = "dns_cluster_peers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    peer_type: Mapped[str] = mapped_column(String(20))  # boron | directadmin | cpanel
+    endpoint: Mapped[str] = mapped_column(String(2048))
+    username: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    credential_enc: Mapped[str] = mapped_column(String(1024))
+    credential_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    verify_tls: Mapped[bool] = mapped_column(default=True)
+    enabled: Mapped[bool] = mapped_column(default=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    last_success_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class DnsClusterOutbox(Base):
+    """Durable, coalescing full-zone replication queue."""
+
+    __tablename__ = "dns_cluster_outbox"
+    __table_args__ = (UniqueConstraint("peer_id", "zone", name="uq_dns_cluster_peer_zone"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    peer_id: Mapped[int] = mapped_column(ForeignKey("dns_cluster_peers.id"), index=True)
+    zone: Mapped[str] = mapped_column(String(253), index=True)
+    action: Mapped[str] = mapped_column(String(16))  # upsert | delete
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    event_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    last_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class DnsClusterReceipt(Base):
+    """Received event IDs retained for idempotency and loop prevention."""
+
+    __tablename__ = "dns_cluster_receipts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    peer_id: Mapped[int | None] = mapped_column(ForeignKey("dns_cluster_peers.id"), nullable=True)
+    zone: Mapped[str] = mapped_column(String(253))
+    received_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 class CloudflareZone(Base):
     """docs/PLAN-cloudflare.md SS1.1: a DNS zone served by Cloudflare
     instead of local PowerDNS. Absence of a row = local (the project-wide

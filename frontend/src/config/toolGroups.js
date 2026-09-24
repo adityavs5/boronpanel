@@ -22,26 +22,25 @@ const customerGroups = {
 }
 const adminGroups = {
   evolution: [
-    ['Account Manager', ['/accounts', '/resellers', '/plans', '/change-password']],
-    ['Server Manager', ['/health', '/services', '/openlitespeed', '/db-monitor', '/slow-queries', '/cloudflare', '/ip-management']],
-    ['Email', ['/mail-queue', '/imap-migrations', '/notifications']],
-    ['Software & Websites', ['/wordpress', '/templates', '/maintenance-mode']],
+    ['Account Manager', ['/accounts?new=1', '/accounts', '/resellers', '/administrators', '/plans']],
+    ['Server Manager', ['/health', '/services', '/openlitespeed', '/db-monitor', '/slow-queries', '/cloudflare', '/dns-cluster', '/ip-management']],
+    ['Email', ['/mail-queue', '/mail-tracking', '/imap-migrations', '/notifications']],
+    ['Software & Websites', ['/wordpress', '/software/node-apps', '/software/python-apps', '/templates', '/maintenance-mode']],
     ['Backups & Updates', ['/backup-jobs', '/updates', '/import/accounts']],
     ['Security & Network', ['/ssl', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
-    ['Metrics & Logs', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log']],
-    ['Integrations', ['/webhooks']],
+    ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/webhooks', '/notifications']],
     ['Account & Preferences', ['/panel-settings', '/branding', '/appearance', '/security', '/api/docs']],
   ],
   'paper-lantern': [
-    ['Accounts', ['/accounts', '/resellers', '/plans']],
+    ['Account Manager', ['/accounts?new=1', '/accounts', '/resellers', '/administrators', '/plans']],
     ['Server & Databases', ['/health', '/services', '/openlitespeed', '/db-monitor', '/slow-queries']],
-    ['Domains & Network', ['/cloudflare', '/ip-management']],
-    ['Email', ['/mail-queue', '/imap-migrations', '/notifications']],
-    ['Metrics', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log']],
+    ['Domains & Network', ['/cloudflare', '/dns-cluster', '/ip-management']],
+    ['Email', ['/mail-queue', '/mail-tracking', '/imap-migrations', '/notifications']],
+    ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/webhooks', '/notifications']],
     ['Security', ['/ssl', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens', '/security']],
-    ['Software & Websites', ['/wordpress', '/templates', '/maintenance-mode']],
+    ['Software & Websites', ['/wordpress', '/software/node-apps', '/software/python-apps', '/templates', '/maintenance-mode']],
     ['Backups & Updates', ['/backup-jobs', '/updates', '/import/accounts']],
-    ['Integrations', ['/webhooks', '/api/docs']],
+    ['Developer Tools', ['/api/docs']],
     ['Preferences', ['/branding', '/change-password', '/appearance']],
   ],
 }
@@ -52,6 +51,8 @@ const labels = {
   '/git': 'Git Version Control', '/apps': 'Applications', '/node-apps': 'Node.js App', '/python-apps': 'Python App', '/redis': 'Redis',
   '/accounts': 'Manage Accounts', '/health': 'Server Information', '/services': 'Service Monitor',
   '/resellers': 'Reseller Management',
+  '/accounts?new=1': 'Add New User', '/administrators': 'Administrators',
+  '/software/node-apps': 'Node.js Applications', '/software/python-apps': 'Python Applications',
   '/updates': 'Panel Updates', '/appearance': 'Change Style',
 }
 const tones = ['sky', 'green', 'amber', 'violet', 'rose', 'teal']

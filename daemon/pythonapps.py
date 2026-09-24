@@ -356,6 +356,27 @@ def list_apps(params: dict) -> dict:
         return {"apps": [_row_to_dict(r, username) for r in rows]}
 
 
+def list_all_apps(params: dict | None = None) -> dict:
+    """Administrator inventory without exposing decrypted environment data."""
+    with write_session() as session:
+        rows = session.execute(
+            select(PythonApp, Account.username)
+            .join(Account, Account.id == PythonApp.account_id)
+            .order_by(Account.username, PythonApp.name)
+        ).all()
+        apps = []
+        for row, username in rows:
+            state = appunits.status(appunits.unit_name(KIND, username, row.id))
+            apps.append({
+                "id": row.id, "username": username, "name": row.name,
+                "domain": row.domain, "entry_point": row.entry_point,
+                "port": row.port, "app_type": row.app_type,
+                "enabled": row.enabled, "active": state["active"],
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            })
+        return {"apps": apps}
+
+
 def get_logs(params: dict) -> dict:
     username = validate_username(params["username"])
     app_id = int(params["id"])

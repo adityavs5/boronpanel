@@ -11,7 +11,7 @@ from starlette.requests import Request
 
 from shared.config import settings
 from shared.db import read_session
-from shared.models import Account, ServerIp, ServerIpAssignment
+from shared.models import Account, PanelUser, ResellerAccount, ResellerProfile, ServerIp, ServerIpAssignment
 
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_account_access, require_admin
@@ -93,6 +93,14 @@ def list_accounts(identity: Identity = Depends(get_identity)):
                 .join(ServerIp, ServerIp.id == ServerIpAssignment.server_ip_id)
             )
         }
+        reseller_assignments = {
+            account_id: {"id": reseller_id, "username": reseller_username}
+            for account_id, reseller_id, reseller_username in db.execute(
+                select(ResellerAccount.account_id, ResellerProfile.id, PanelUser.username)
+                .join(ResellerProfile, ResellerProfile.id == ResellerAccount.reseller_id)
+                .join(PanelUser, PanelUser.id == ResellerProfile.panel_user_id)
+            )
+        }
         return [
             {
                 "id": a.id,
@@ -100,6 +108,7 @@ def list_accounts(identity: Identity = Depends(get_identity)):
                 "status": a.status,
                 "primary_domain": a.primary_domain,
                 "server_ip": assignments.get(a.id) or settings.server_public_ip or None,
+                "reseller": reseller_assignments.get(a.id),
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             }
             for a in accounts

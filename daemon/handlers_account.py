@@ -366,7 +366,11 @@ def get_account(params: dict) -> dict:
 
 def list_accounts(params: dict) -> dict:
     with write_session() as session:
-        accounts = session.scalars(select(Account).order_by(Account.username)).all()
+        # Terminated rows remain as restore/audit tombstones, but they are not
+        # active accounts and must not linger in the management list.
+        accounts = session.scalars(
+            select(Account).where(Account.status != "terminated").order_by(Account.username)
+        ).all()
         return {"accounts": [_account_to_dict(a) for a in accounts]}
 
 
@@ -442,6 +446,11 @@ def _terminate_account(params: dict) -> dict:
         if account is None:
             raise RuntimeError(f"account '{username}' not found")
         if account.status == "terminated":
+            # A successful retry may have converged after an earlier teardown
+            # timeout. Do not keep displaying that obsolete error forever.
+            if account.last_error is not None:
+                account.last_error = None
+                session.flush()
             return _account_to_dict(account)
         for model in (BackupJob, RestoreJob, SnapshotRun, SnapshotRestore):
             if session.scalar(select(model.id).where(model.account_id == account.id,
@@ -481,6 +490,7 @@ def _terminate_account(params: dict) -> dict:
         else:
             account.status = "terminated"
             account.terminated_at = utcnow()
+            account.last_error = None
 
         # Security audit finding F3: every *system* resource above is torn
         # down by TERMINATE_HOOKS, but nothing ever touched this account's

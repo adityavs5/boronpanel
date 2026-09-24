@@ -977,7 +977,7 @@ def refresh_all_vhosts() -> None:
     template security fix (per-account /tmp + allowSymbolLink hardening,
     Phase 6a research findings): re-renders every active/suspended
     account's own vhost.conf(s) + httpd_config.conf from the current
-    templates, and backfills sysops.ensure_tmp_dir for every one of them --
+    templates, and backfills private tmp and OLS log ACLs for every one --
     so an account created before this fix picks up both the new template
     content and the private tmp dir it now depends on, not just accounts
     created after. Same category as bootstrap_webmail/bootstrap_pma: run
@@ -995,6 +995,7 @@ def refresh_all_vhosts() -> None:
         ).all())
     for account in accounts:
         sysops.ensure_tmp_dir(account.username)
+        sysops.ensure_web_logs(account.username)
         refresh_vhost(account)
 
 

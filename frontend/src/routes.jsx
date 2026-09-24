@@ -76,6 +76,10 @@ const MaintenanceOverview = lazy(() => import('@/pages/admin/Maintenance'))
 const SiteStats = lazy(() => import('@/pages/admin/SiteStats'))
 const ImapMigrations = lazy(() => import('@/pages/admin/ImapMigrations'))
 const Resellers = lazy(() => import('@/pages/Resellers'))
+const Administrators = lazy(() => import('@/pages/admin/Administrators'))
+const SoftwareInventory = lazy(() => import('@/pages/admin/SoftwareInventory'))
+const MailTracking = lazy(() => import('@/pages/admin/MailTracking'))
+const DnsCluster = lazy(() => import('@/pages/admin/DnsCluster'))
 
 function IndexRedirect() {
   const role = useAuth.getState().role
@@ -168,6 +172,9 @@ export const router = createBrowserRouter(
         { path: 'plans/new', element: admin(<PlanEditor />) },
         { path: 'plans/:planId/edit', element: admin(<PlanEditor />) },
         { path: 'resellers', element: admin(<Resellers />) },
+        { path: 'administrators', element: admin(<Administrators />) },
+        { path: 'software/node-apps', element: admin(<SoftwareInventory type="node" />) },
+        { path: 'software/python-apps', element: admin(<SoftwareInventory type="python" />) },
         { path: 'panel-settings', element: admin(<PanelSettings />) },
         { path: 'branding', element: admin(<Branding />) },
         { path: 'templates', element: admin(<Templates />) },
@@ -176,6 +183,7 @@ export const router = createBrowserRouter(
         { path: 'services', element: admin(<Services />) },
         { path: 'bandwidth', element: admin(<BandwidthRanking />) },
         { path: 'mail-queue', element: admin(<MailQueue />) },
+        { path: 'mail-tracking', element: admin(<MailTracking />) },
         { path: 'firewall', element: admin(<Firewall />) },
         { path: 'openlitespeed', element: admin(<OpenLiteSpeed />) },
         { path: 'ip-management', element: admin(<IpManagement />) },
@@ -183,6 +191,7 @@ export const router = createBrowserRouter(
         { path: 'fail2ban', element: admin(<Fail2ban />) },
         { path: 'ip-whitelist', element: admin(<IpWhitelist />) },
         { path: 'cloudflare', element: admin(<Cloudflare />) },
+        { path: 'dns-cluster', element: admin(<DnsCluster />) },
         { path: 'audit-log', element: admin(<AuditLog />) },
         { path: 'account-log', element: admin(<AccountLog />) },
         { path: 'error-log', element: admin(<ErrorLog />) },

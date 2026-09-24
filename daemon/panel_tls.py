@@ -1,7 +1,9 @@
 """Dedicated panel HTTP-01 routing, independent of hosted customer sites."""
 import os
 import pwd
+import datetime as dt
 from pathlib import Path
+from cryptography import x509
 from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
@@ -72,3 +74,33 @@ def issue_certificate(email):
         '--webroot','-w',route['webroot'],'--keep-until-expiring','--deploy-hook',hook],timeout=1200)
     result.raise_if_failed('Issue panel certificate')
     return {'hostname':route['hostname'],'status':'issued'}
+
+
+def certificate_status(params=None):
+    path = Path('/etc/boron/ssl/api/panel.crt')
+    result = {'hostname': settings.panel_hostname, 'configured': bool(settings.panel_hostname),
+              'certificate_present': path.is_file(), 'valid_for_hostname': False,
+              'issuer': None, 'expires_at': None, 'days_remaining': None}
+    if not path.is_file():
+        return result
+    try:
+        cert = x509.load_pem_x509_certificate(path.read_bytes())
+        expiry = cert.not_valid_after_utc
+        names = set()
+        try:
+            names.update(cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName))
+        except x509.ExtensionNotFound:
+            pass
+        result.update({
+            'valid_for_hostname': settings.panel_hostname in names,
+            'issuer': cert.issuer.rfc4514_string(),
+            'expires_at': expiry.isoformat(),
+            'days_remaining': max(0, int((expiry - dt.datetime.now(dt.timezone.utc)).total_seconds() // 86400)),
+        })
+    except (ValueError, OSError):
+        result['error'] = 'Installed certificate could not be parsed'
+    return result
+
+
+def issue_from_rpc(params):
+    return issue_certificate(params['email'])

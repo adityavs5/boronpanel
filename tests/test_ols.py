@@ -720,13 +720,16 @@ def test_refresh_all_vhosts_bootstraps_tmp_dir_and_refreshes_active_accounts(iso
         session.add(AccountModel(username="terminated1", uid=5003, gid=5003, status="terminated", php_version="8.3"))
 
     tmp_dir_calls = []
+    log_dir_calls = []
     refresh_calls = []
     monkeypatch.setattr(ols.sysops, "ensure_tmp_dir", lambda username: tmp_dir_calls.append(username))
+    monkeypatch.setattr(ols.sysops, "ensure_web_logs", lambda username: log_dir_calls.append(username))
     monkeypatch.setattr(ols, "refresh_vhost", lambda account: refresh_calls.append(account.username))
 
     ols.refresh_all_vhosts()
 
     assert sorted(tmp_dir_calls) == ["active1", "suspended1"]
+    assert sorted(log_dir_calls) == ["active1", "suspended1"]
     assert sorted(refresh_calls) == ["active1", "suspended1"]
 
 

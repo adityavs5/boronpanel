@@ -30,6 +30,8 @@ def status(params):
         jobs = session.scalars(select(PanelConfigJob).order_by(PanelConfigJob.id.desc()).limit(10)).all()
         admin, customer = listener_ports()
         return {'admin_port': admin, 'customer_port': customer, 'hostname': settings.panel_hostname,
+                'telemetry': {'provider': 'sentry', 'enabled': bool(settings.sentry_dsn),
+                              'environment': settings.telemetry_environment},
                 'jobs': [serialize(job) for job in jobs]}
 
 

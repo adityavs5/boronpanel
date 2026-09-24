@@ -20,6 +20,7 @@ from daemon.configtx import ConfigWriter, StepResult
 from daemon.procutil import run
 from shared.config import CONFIG_PATH, Settings, settings
 from shared.validation import ValidationError
+from shared.validation import validate_domain
 
 
 def validate_ports(admin_port, customer_port):
@@ -45,6 +46,60 @@ def render_ports(content, admin_port, customer_port):
         raise ValidationError('Panel configuration is not flat TOML; port settings cannot be safely edited')
     Settings(**expected)  # Reject unknown configuration keys before restarting.
     return updated
+
+
+def render_hostname(content: str, hostname: str) -> str:
+    hostname = validate_domain(hostname)
+    before = tomllib.loads(content)
+    expected = dict(before, panel_hostname=hostname)
+    pattern = r'(?m)^([ \t]*panel_hostname[ \t]*=[ \t]*)[^\n#]*(.*)$'
+    updated, count = re.subn(pattern, lambda m: f'{m[1]}"{hostname}" {m[2]}'.rstrip(), content)
+    if count == 0:
+        updated = f'panel_hostname = "{hostname}"\n' + updated
+    if tomllib.loads(updated) != expected:
+        raise ValidationError('Panel configuration is not flat TOML; hostname cannot be safely edited')
+    Settings(**expected)
+    return updated
+
+
+def apply_hostname(hostname: str, *, config_path=CONFIG_PATH) -> dict:
+    """Atomically change the panel hostname and its dedicated ACME route."""
+    from daemon import panel_tls
+
+    hostname = validate_domain(hostname)
+    target = Path(config_path)
+    if not target.is_file() or target.is_symlink():
+        raise ValidationError('Panel configuration must be an existing regular file')
+    original = target.read_text()
+    current = Settings(**tomllib.loads(original)).panel_hostname
+    if hostname == current:
+        return {'status': 'unchanged', 'hostname': hostname}
+    updated = render_hostname(original, hostname)
+    metadata = target.stat()
+
+    def validate(path):
+        Settings(**tomllib.loads(path.read_text()))
+        os.chmod(path, metadata.st_mode & 0o777)
+        os.chown(path, metadata.st_uid, metadata.st_gid)
+        return StepResult(True)
+
+    def reload_route():
+        try:
+            settings.panel_hostname = Settings(**tomllib.loads(target.read_text())).panel_hostname
+            panel_tls.bootstrap_challenge()
+            return StepResult(True)
+        except Exception as exc:
+            return StepResult(False, f'Panel hostname routing failed: {type(exc).__name__}: {exc}')
+
+    writer = ConfigWriter(
+        str(target), validate=validate, reload=reload_route,
+        verify=lambda: StepResult(True), backup_dir=settings.backup_dir,
+        subsystem='panel-hostname',
+    )
+    result = writer.apply(updated)
+    if not result.ok:
+        raise RuntimeError('Panel hostname change failed; previous hostname restored. ' + result.summary())
+    return {'status': 'completed', 'hostname': hostname, 'previous_hostname': current}
 
 
 def check_available(host, old_ports, new_ports):

@@ -17,6 +17,37 @@ from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_admin
 
 api_router = APIRouter(prefix="/api/v1/admin/accounts", tags=["admin-identity"])
+administrator_router = APIRouter(prefix="/api/v1/admin/administrators", tags=["administrators"])
+
+
+class AdministratorCreateBody(BaseModel):
+    username: str
+    password: str | None = None
+
+
+class AdministratorStatusBody(BaseModel):
+    disabled: bool
+
+
+@administrator_router.get("")
+def list_administrators(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("admin_user.list", identity)
+
+
+@administrator_router.post("")
+def create_administrator(body: AdministratorCreateBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("admin_user.create", identity, **body.model_dump(exclude_none=True))
+
+
+@administrator_router.patch("/{username}")
+def set_administrator_status(username: str, body: AdministratorStatusBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon(
+        "admin_user.set_status", identity, username=username,
+        actor_username=identity.username, disabled=body.disabled,
+    )
 
 
 class IdentityBody(BaseModel):

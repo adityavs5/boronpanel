@@ -12,6 +12,8 @@ from __future__ import annotations
 import grp
 import os
 import pwd
+import stat
+import subprocess
 
 from shared.config import settings
 from shared.validation import ValidationError, generate_strong_password, validate_username
@@ -102,6 +104,24 @@ def ensure_tmp_dir(username: str) -> str:
     return secure_mkdirs(home, "tmp", pw.pw_uid, pw.pw_gid, 0o750)
 
 
+def ensure_web_logs(username: str) -> str:
+    """Keep tenant logs private while allowing OLS to create/rotate them.
+
+    OLS opens per-vhost access/error logs as ``nobody``.  A 0750 directory
+    owned by the tenant prevents the worker from reopening those logs after a
+    restart, which silently freezes bandwidth accounting.  A named ACL grants
+    only the web-server identity access and a default ACL covers rotations.
+    """
+    _assert_safe_username(username)
+    pw = pwd.getpwnam(username)
+    home = f"{settings.home_base}/{username}"
+    logs = secure_mkdirs(home, "logs", pw.pw_uid, pw.pw_gid, 0o750)
+    run([
+        "setfacl", "-m", "u:nobody:rwx", "-m", "d:u:nobody:rwX", logs,
+    ], uid=pw.pw_uid, gid=pw.pw_gid, check=True)
+    return logs
+
+
 def set_initial_password(username: str, password: str) -> None:
     _assert_safe_username(username)
     run(["chpasswd"], input_text=f"{username}:{password}\n", check=True)
@@ -181,6 +201,8 @@ def recycle_php_workers(username: str) -> None:
 def delete_linux_user(username: str, *, remove_home: bool = True) -> None:
     _assert_safe_username(username)
     if not user_exists(username):
+        if remove_home:
+            _remove_orphaned_home(username)
         return
     # `userdel` never kills running processes owned by the user on its
     # own -- a real, previously-latent gap this project's own Phase 1
@@ -191,7 +213,28 @@ def delete_linux_user(username: str, *, remove_home: bool = True) -> None:
     # confirmed live. `pkill -9 -u` first, so `userdel` always removes a
     # genuinely process-free account.
     run(["pkill", "-9", "-u", username], timeout=15)
-    run(["userdel", *(["--remove"] if remove_home else []), "--force", username], check=True)
+    try:
+        # WordPress/plugin trees can contain many thousands of files.  The
+        # generic 30-second command limit can expire after userdel has already
+        # removed passwd/group entries but while it is still removing $HOME.
+        run(["userdel", *(["--remove"] if remove_home else []), "--force", username], timeout=600, check=True)
+    except subprocess.TimeoutExpired:
+        if user_exists(username):
+            raise
+        if remove_home:
+            _remove_orphaned_home(username)
+
+
+def _remove_orphaned_home(username: str) -> None:
+    """Finish a timed-out userdel without following links or crossing mounts."""
+    expected = os.path.join(settings.home_base, username)
+    try:
+        info = os.lstat(expected)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode) or os.path.dirname(expected) != os.path.normpath(settings.home_base):
+        raise RuntimeError('Refusing to remove an unsafe account home path')
+    run(["find", expected, "-xdev", "-depth", "-delete"], timeout=600, check=True)
 
 
 def set_quota(username: str, soft_mb: int, hard_mb: int, mount: str = "/") -> None:

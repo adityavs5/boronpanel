@@ -278,9 +278,21 @@ def test_reactivate_account_re_enables_panel_user(isolated_db, stub_sysops):
 def test_list_accounts(isolated_db, stub_sysops):
     ha.create_account({"username": "demo1"})
     ha.create_account({"username": "demo2"})
+    ha.terminate_account({"username": "demo2"})
     result = ha.list_accounts({})
     usernames = {a["username"] for a in result["accounts"]}
-    assert usernames == {"demo1", "demo2"}
+    assert usernames == {"demo1"}
+
+
+def test_repeated_termination_clears_obsolete_error(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo1"})
+    from shared.models import Account
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        account.last_error = "old userdel timeout"
+    result = ha.terminate_account({"username": "demo1"})
+    assert result["status"] == "terminated" and result["last_error"] is None
 
 
 def test_set_php_version_happy_path(isolated_db, stub_sysops):
