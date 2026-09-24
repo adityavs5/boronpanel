@@ -146,11 +146,20 @@ the page renders, scripts cannot execute, parent DOM access fails, forms
 cannot submit, and no extra window opens. This is defense in depth; no bypass
 of the original panel CSP was established. The frontend build passed.
 
-Coverage now records 902 entry points: 158 reviewed-fixed, four reviewed-tested,
-11 reviewed-public and 729 pending. Entries are not closed merely because a
+Coverage now records 902 entry points: 158 reviewed-fixed, five reviewed-tested,
+11 reviewed-public and 728 pending. Entries are not closed merely because a
 shared authorization test exists.
 
 ## Remaining scope
+
+The native mail-restore gate was reviewed for fd-3 parsing bounds, return-code
+semantics, marker paths, ownership checks and deployment privileges. The helper
+is installed root-owned mode 0755, without setuid, and never authenticates a
+password. Dovecot configuration verification enforces its failure/delegation
+semantics. All 39 gate/config tests passed on the disposable VM, with the test
+binary built under undefined-behavior sanitization and 359 deterministic
+binary-input cases added. Real isolated Dovecot tests verified normal lookup,
+mailbox-specific temporary denial and recovery; no production mail was sent.
 
 The primary has selected fixes, not the complete new root-authorization
 protocol. Full migration, remaining entry-point/resource review, exact

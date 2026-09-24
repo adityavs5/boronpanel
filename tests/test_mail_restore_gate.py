@@ -1,6 +1,7 @@
 """Compile the actual Dovecot guard and exercise its fd-3 protocol."""
 import os
 import hashlib
+import random
 from pathlib import Path
 import shutil
 import smtplib
@@ -27,6 +28,7 @@ def gate(tmp_path):
         binary = root / 'gate'
         source = Path(__file__).parents[1] / 'daemon/mail_restore_gate.c'
         compiled = subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                                   '-fsanitize=undefined', '-fno-sanitize-recover=all',
                                    f'-DBORON_MAIL_RESTORE_GATES="{directory}"', str(source), '-o', str(binary), '-lcrypto'],
                                   capture_output=True, text=True, timeout=30)
         assert compiled.returncode == 0, compiled.stderr
@@ -82,6 +84,18 @@ def test_malformed_names_temporarily_fail(gate, user):
 def test_helper_cannot_authenticate_passwords(gate):
     assert gate[1](authorized='') == 111
     assert gate[1](authorized='2') == 111
+
+
+def test_bounded_binary_protocol_fuzz_never_authenticates(gate):
+    _, lookup = gate
+    generator = random.Random(20260924)
+    for length in (0, 1, 2, 3, 63, 64, 254, 255, 318, 319, 320, 321, 512):
+        for _ in range(8):
+            payload = bytes(generator.randrange(256) for _ in range(length))
+            assert lookup(payload) in (3, 111)
+    for byte in range(1, 256):
+        payload = b'inbox' + bytes([byte]) + b'@example.test'
+        assert lookup(payload) in (3, 111)
 
 
 @pytest.mark.parametrize('kind', ['missing', 'writable', 'symlink'])

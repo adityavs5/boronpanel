@@ -18,7 +18,7 @@ dynamic-service,per-account Node.js unit,daemon/nodeapps.py,generated systemd un
 dynamic-service,per-account Python unit,daemon/pythonapps.py,generated systemd unit,account owner and unit template pending review,pending,
 dynamic-service,per-account Redis unit,daemon/redisacct.py,generated systemd unit,account owner and unit template pending review,pending,
 dynamic-service,trusted FileBrowser frontend unit,daemon/filebrowser_accounts.py,generated systemd unit,account owner and unit template pending review,reviewed-fixed,BSA-2026-036; b8ec15d; 43 focused tests; VM hostile backend canary; primary trusted frontend service smoke
-native-helper,mail_restore_gate.c,daemon/mail_restore_gate.c,mail_restore_gate.c,setuid/capabilities and caller pending review,pending,
+native-helper,mail_restore_gate.c,daemon/mail_restore_gate.c,mail_restore_gate.c,setuid/capabilities and caller pending review,reviewed-tested,Source/parser/UID/config review; 39 VM native gate/config tests pass; undefined-behavior sanitizer; 359 bounded binary-input cases; real isolated Dovecot delegation/temporary failure
 python-script,app_exec.py,scripts/app_exec.py,app_exec.py,invocation and effective UID pending review,reviewed-fixed,BSA-2026-048; tests/test_app_log_security.py; real VM log canary; 594e465
 python-script,app_files.py,scripts/app_files.py,app_files.py,invocation and effective UID pending review,reviewed-fixed,BSA-2026-034/035; 7edecb9; 41 focused tests; VM 10 UID canaries; VM static API install; primary hotfix hash/service/login smoke
 python-script,backup_scheduler.py,scripts/backup_scheduler.py,backup_scheduler.py,invocation and effective UID pending review,pending,

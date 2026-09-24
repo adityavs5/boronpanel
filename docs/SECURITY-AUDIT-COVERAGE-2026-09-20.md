@@ -7,7 +7,7 @@ It currently lists 430 HTTP/WebSocket route-method entries, 414 root RPC
 operations, 14 cron entries, three static services, five generated account
 services, seven shell scripts, 28 Python scripts, and one native helper: 902 total. Eleven
 route entries are marked `reviewed-public` and locked by
-`tests/test_public_route_inventory.py`; 162 entries are reviewed with fix/test evidence, and 729 entries remain
+`tests/test_public_route_inventory.py`; 163 entries are reviewed with fix/test evidence, and 728 entries remain
 pending until their authorization, ownership, side effects, and negative tests
 have been individually reviewed.
 In particular, a declared FastAPI dependency is not evidence that the
