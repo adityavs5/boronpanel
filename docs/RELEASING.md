@@ -31,7 +31,7 @@ ships); everything else tracked in git is included.
   (or pass `--repo OWNER/REPO` / set `FH_RELEASE_REPO`).
 - [`gh`](https://cli.github.com/) installed and authenticated
   (`gh auth login`) with permission to create releases.
-- Node 18+ / npm (frontend build) and the repo `.venv` (test suite).
+- Node 20.19+ or 22.12+ / npm (frontend build) and the repo `.venv` (test suite).
 - Set `BORON_RELEASE_SIGNING_KEY_FILE` to the protected Ed25519 private PEM
   matching `deploy/release-ed25519-public.hex`. The private PEM must never
   enter Git, release archives, backups shipped with the panel, or logs. Keep

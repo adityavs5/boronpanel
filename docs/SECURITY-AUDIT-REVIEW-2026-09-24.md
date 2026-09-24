@@ -263,3 +263,18 @@ canary (after correcting its initial use of a reserved system username). The
 primary received the tested log/process/disk modules; Redis INFO and PHP-log
 RPCs passed after daemon startup completed, with both services active and
 trusted HTTPS returning 200. Protected backups retain the previous modules.
+
+
+## Vendor release metadata and full-suite fixture correction
+
+Joomla, Drupal and PrestaShop release metadata now streams with a one-MiB cap
+before parsing. Drupal accepts ordinary UTF-8 XML, comments and CDATA but
+rejects DTD/entity declarations, NUL/alternate-encoding tricks and malformed
+XML. Five negative/positive metadata tests passed. This is defense in depth
+for vendor HTTPS input, not a demonstrated remote takeover.
+
+The full VM suite exposed an outdated cPanel mode-restoration fixture: it
+simulated a tenant with UID 0, which the hardened ACL subprocess correctly
+rejects. The mode-restoration unit test now records its ACL invocation;
+separate real-UID safe-I/O tests verify that boundary. The repaired test and
+five metadata cases passed together. Production privilege checks were retained.

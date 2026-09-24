@@ -552,9 +552,16 @@ def test_reassert_docroot_perms_restores_mode_after_simulated_widening(isolated_
     _shutil.copytree(src, docroot, dirs_exist_ok=True)
     assert oct(os.stat(docroot).st_mode & 0o777) == "0o755", "sanity check: the simulated widening actually happened"
 
+    # This fixture deliberately owns files as the test runner (root in the
+    # lab). Real ACL subprocesses now refuse UID 0; their tenant-UID behavior
+    # is covered by the separate safe-I/O integration tests.
+    acl_calls = []
+    monkeypatch.setattr(ci.handlers_domain, "_grant_webserver_acl",
+                        lambda path, uid, gid: acl_calls.append((path, uid, gid)))
     ci._reassert_docroot_perms_step("demo1", str(docroot))
 
     assert oct(os.stat(docroot).st_mode & 0o777) == "0o750"
+    assert acl_calls == [(str(docroot), os.getuid(), os.getgid())]
 
 
 # --- trigger_import / get_job guards ----------------------------------------

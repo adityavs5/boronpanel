@@ -306,10 +306,25 @@ def _install_static(username: str, domain_name: str, title: str, admin_user: str
 JOOMLA_RELEASES_API = "https://api.github.com/repos/joomla/joomla-cms/releases/latest"
 
 
+
+MAX_RELEASE_METADATA_BYTES = 1024 * 1024
+
+
+def _release_metadata(url: str, *, headers=None) -> bytes:
+    # Vendor metadata is remote input too: stream with a cap before JSON/XML
+    # parsing rather than allowing httpx.get to buffer an arbitrary response.
+    chunks = bytearray()
+    with httpx.stream('GET', url, timeout=20.0, headers=headers) as response:
+        response.raise_for_status()
+        for chunk in response.iter_bytes():
+            if len(chunks) + len(chunk) > MAX_RELEASE_METADATA_BYTES:
+                raise AppInstallError('Release metadata exceeds the size limit')
+            chunks.extend(chunk)
+    return bytes(chunks)
+
 def fetch_joomla_latest_version_and_url() -> tuple[str, str]:
-    resp = httpx.get(JOOMLA_RELEASES_API, timeout=20.0, headers={"Accept": "application/vnd.github+json"})
-    resp.raise_for_status()
-    data = resp.json()
+    data = json.loads(_release_metadata(JOOMLA_RELEASES_API,
+        headers={"Accept": "application/vnd.github+json"}))
     version = data["tag_name"]
     for asset in data.get("assets", []):
         if asset["name"].endswith("Stable-Full_Package.zip"):
@@ -475,11 +490,17 @@ DRUPAL_RELEASE_HISTORY_URL = "https://updates.drupal.org/release-history/drupal/
 
 
 def fetch_drupal_latest_version_and_url() -> tuple[str, str]:
-    resp = httpx.get(DRUPAL_RELEASE_HISTORY_URL, timeout=20.0)
-    resp.raise_for_status()
+    metadata = _release_metadata(DRUPAL_RELEASE_HISTORY_URL)
+    # Accept UTF-8 only and reject DTD/entity declarations before parsing.
+    # NUL rejection also prevents an alternate UTF-16 encoding bypass.
+    if b"\0" in metadata or b"<!DOCTYPE" in metadata.upper() or b"<!ENTITY" in metadata.upper():
+        raise AppInstallError('XML declarations are not allowed in release metadata')
     import xml.etree.ElementTree as ET
 
-    root = ET.fromstring(resp.text)
+    try:
+        root = ET.fromstring(metadata.decode('utf-8-sig'))
+    except (UnicodeError, ET.ParseError) as exc:
+        raise AppInstallError('Invalid Drupal release metadata') from exc
     release = root.find("./releases/release")
     if release is None:
         raise AppInstallError("could not parse Drupal release history feed")
@@ -549,13 +570,10 @@ def install_drupal(username: str, domain_name: str, title: str, admin_user: str,
 
 
 def fetch_prestashop_latest_version_and_url() -> tuple[str, str]:
-    resp = httpx.get(
+    data = json.loads(_release_metadata(
         "https://api.github.com/repos/PrestaShop/PrestaShop/releases/latest",
-        timeout=20.0,
         headers={"Accept": "application/vnd.github+json"},
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    ))
     version = data["tag_name"]
     for asset in data.get("assets", []):
         if asset["name"].lower() == f"prestashop_{version}.zip".lower() or "prestashop.zip" in asset["name"].lower():

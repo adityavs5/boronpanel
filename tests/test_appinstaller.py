@@ -536,3 +536,35 @@ def test_joomla_configuration_replaces_symlink_without_writing_target(tmp_path):
     ai._write_joomla_configuration(str(root), 'db', 'user', 'password', 'jos_', 'Site')
     assert canary.read_text() == 'UNCHANGED'
     assert not (root / 'configuration.php').is_symlink()
+
+
+@pytest.mark.parametrize('metadata', [
+    b'<!DOCTYPE project [<!ENTITY x "boom">]><project>&x;</project>',
+    '<project/>'.encode('utf-16'),
+    b'<project><broken>',
+])
+def test_drupal_metadata_rejects_unsafe_xml(monkeypatch, metadata):
+    monkeypatch.setattr(ai, '_release_metadata', lambda url: metadata)
+    with pytest.raises(ai.AppInstallError):
+        ai.fetch_drupal_latest_version_and_url()
+
+
+def test_drupal_metadata_normal_release(monkeypatch):
+    metadata = b'<project><!-- Vendor comment --><description><![CDATA[release details]]></description><releases><release><version>11.0.0</version><download_link>https://ftp.drupal.org/files/drupal.tar.gz</download_link></release></releases></project>'
+    monkeypatch.setattr(ai, '_release_metadata', lambda url: metadata)
+    assert ai.fetch_drupal_latest_version_and_url() == ('11.0.0', 'https://ftp.drupal.org/files/drupal.tar.gz')
+
+
+def test_release_metadata_stream_is_bounded(monkeypatch):
+    from contextlib import contextmanager
+    class Response:
+        def raise_for_status(self): pass
+        def iter_bytes(self):
+            yield b'x' * (ai.MAX_RELEASE_METADATA_BYTES + 1)
+            pytest.fail('oversized stream was not stopped')
+    @contextmanager
+    def stream(*args, **kwargs):
+        yield Response()
+    monkeypatch.setattr(ai.httpx, 'stream', stream)
+    with pytest.raises(ai.AppInstallError, match='size limit'):
+        ai._release_metadata('https://vendor.example/metadata')
