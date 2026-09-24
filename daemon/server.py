@@ -955,6 +955,10 @@ async def amain() -> None:
     # scheduled Certbot process currently owns its configuration lock.
     asyncio.create_task(_reconcile_acme_renewals())
     try:
+        await asyncio.get_running_loop().run_in_executor(None, waf.bootstrap_rules)
+    except Exception:
+        logger.exception("failed to initialize packaged WAF rules")
+    try:
         from daemon.snapshot_databases import cleanup_abandoned_logins
         cleanup_abandoned_logins()
         snapshot_jobs.recover_runs()

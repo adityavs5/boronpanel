@@ -6,6 +6,15 @@ from shared.db import write_session
 from shared.models import WafCustomRule, WafDomainOverride, WafSettings
 from shared.validation import ValidationError
 
+
+@pytest.fixture(autouse=True)
+def isolated_crs_files(tmp_path, monkeypatch):
+    setup=tmp_path/'crs/crs-setup.conf';setup.parent.mkdir();setup.write_text('# setup\n')
+    rules=tmp_path/'rules';rules.mkdir();(rules/'rule.conf').write_text('# rule\n')
+    monkeypatch.setattr(waf,'CRS_SETUP',setup)
+    monkeypatch.setattr(waf,'CRS_RULES',rules)
+    monkeypatch.setattr(waf,'WAF_RULES_FILE',str(tmp_path/'modsec_includes.conf'))
+
 # Captured live from this server's own real ModSecurity audit log (a
 # genuine blocked XSS + SQLi probe against a real vhost,
 # docs/CHECKPOINT-phase5-7-waf.md) -- parsed against the real format.
@@ -174,3 +183,29 @@ def test_delete_custom_rule_rejects_unknown_id(isolated_db, monkeypatch):
     monkeypatch.setattr(waf.ols, "refresh_main_config", lambda: None)
     with pytest.raises(ValidationError):
         waf.delete_custom_rule({"rule_id": 999999})
+
+
+
+def test_bootstrap_creates_libmodsecurity_compatible_include():
+    from pathlib import Path
+    waf.bootstrap_rules()
+    content=Path(waf.WAF_RULES_FILE).read_text()
+    assert 'IncludeOptional' not in content
+    assert f'Include {waf.CRS_SETUP}' in content
+    assert f'Include {waf.CRS_RULES}/*.conf' in content
+
+
+def test_bootstrap_preserves_existing_operator_include():
+    from pathlib import Path
+    path=Path(waf.WAF_RULES_FILE);path.write_text('# operator custom rules\n')
+    waf.bootstrap_rules()
+    assert path.read_text()=='# operator custom rules\n'
+
+
+def test_missing_crs_fails_before_enabling(isolated_db, monkeypatch):
+    monkeypatch.setattr(waf,'is_available',lambda: True)
+    waf.CRS_SETUP.unlink()
+    with pytest.raises(RuntimeError,match='package files are missing'):
+        waf.set_enabled({'enabled':True})
+    with write_session() as session:
+        assert session.get(WafSettings,1) is None

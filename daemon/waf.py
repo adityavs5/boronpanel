@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 
 from sqlalchemy import delete, select
 
@@ -39,7 +40,8 @@ from shared.db import write_session
 from shared.validation import ValidationError, validate_domain
 
 from daemon import ols
-from daemon.ols import WAF_AUDIT_LOG
+from daemon.ols import WAF_AUDIT_LOG, WAF_RULES_FILE
+from daemon.safeio import secure_replace_file
 from daemon.procutil import run
 from shared.models import WafCustomRule, WafDomainOverride, WafSettings
 
@@ -62,6 +64,35 @@ ALLOWED_TARGETS = {
 # intended string context and inject arbitrary additional config/rule
 # lines into a server-wide file every domain shares.
 WAF_PATTERN_RE = re.compile(r'\A[^`"\n\r]{1,300}\Z')
+
+
+CRS_SETUP = Path('/etc/modsecurity/crs/crs-setup.conf')
+CRS_RULES = Path('/usr/share/modsecurity-crs/rules')
+
+
+def bootstrap_rules() -> None:
+    """Create the missing libModSecurity-compatible packaged CRS include.
+
+    Ubuntu's Apache loader uses IncludeOptional, which libModSecurity rejects.
+    Preserve an existing operator-managed include; create only the absent file.
+    """
+    destination = Path(WAF_RULES_FILE)
+    if destination.is_file():
+        return
+    if not CRS_SETUP.is_file() or not CRS_RULES.is_dir():
+        raise RuntimeError('OWASP CRS package files are missing; install modsecurity-crs')
+    before = CRS_SETUP.parent / 'REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf'
+    after = CRS_SETUP.parent / 'RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf'
+    includes = [str(CRS_SETUP)]
+    if before.is_file():
+        includes.append(str(before))
+    includes.append(str(CRS_RULES / '*.conf'))
+    if after.is_file():
+        includes.append(str(after))
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    content = '# Boron: packaged OWASP CRS for libModSecurity\n' + ''.join(
+        'Include ' + name + '\n' for name in includes)
+    secure_replace_file(str(destination.parent), destination.name, content.encode(), 0, 0, 0o644)
 
 
 def is_available() -> bool:
@@ -87,6 +118,8 @@ def set_enabled(params: dict) -> dict:
     if not is_available():
         raise ValidationError("ModSecurity module is not installed on this server")
     enabled = bool(params["enabled"])
+    if enabled:
+        bootstrap_rules()
     with write_session() as session:
         row = session.get(WafSettings, 1)
         if row is None:
