@@ -8,24 +8,35 @@ from __future__ import annotations
 
 import logging
 import os
+import pwd
 from pathlib import Path
+
+from daemon import safeio
+
+
+def prepare_log_directory(log_dir: str) -> None:
+    """Root owns log names; the API may append only to its precreated files."""
+    Path(log_dir).mkdir(parents=True, exist_ok=True, mode=0o750)
+    fd = safeio._open_dir_nofollow(log_dir)
+    try:
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid():
+            raise PermissionError('log directory must be owned by the daemon identity')
+        api = pwd.getpwnam('boron-api')
+        os.fchown(fd, os.geteuid(), api.pw_gid)
+        # Revoke name replacement before inspecting or opening any log file.
+        os.fchmod(fd, 0o750)
+    finally:
+        os.close(fd)
+    for name in ('api-access.log', 'api-error.log'):
+        safeio.secure_ensure_file_beneath(log_dir, '.', name, api.pw_uid, api.pw_gid, 0o640)
+    safeio.secure_ensure_file_beneath(log_dir, '.', 'daemon.log', os.geteuid(), api.pw_gid, 0o640)
 
 
 def configure_logging(log_dir: str) -> None:
     os.umask(0o027)
-    Path(log_dir).mkdir(parents=True, exist_ok=True)
-    # Keep the installer's setgid + group-write contract: boron-api must be
-    # able to create request logs through its service group. Some hardened
-    # service environments deny chmod even to the daemon's root process; the
-    # installer remains the authority for ownership/mode, and that denial
-    # must not put this critical daemon into a restart loop.
-    try:
-        Path(log_dir).chmod(0o2770)
-    except PermissionError:
-        pass
+    prepare_log_directory(log_dir)
     daemon_log = Path(log_dir) / "daemon.log"
-    daemon_log.touch(exist_ok=True, mode=0o640)
-    daemon_log.chmod(0o640)
     """Split borond.proc (daemon/procutil.py's run()) away from the
     journal/stdout sink.
 

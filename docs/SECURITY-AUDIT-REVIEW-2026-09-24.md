@@ -150,7 +150,7 @@ Coverage now records 902 entry points: 158 reviewed-fixed, five reviewed-tested,
 11 reviewed-public and 728 pending. Entries are not closed merely because a
 shared authorization test exists.
 
-## Remaining scope
+## Native mail-restore gate
 
 The native mail-restore gate was reviewed for fd-3 parsing bounds, return-code
 semantics, marker paths, ownership checks and deployment privileges. The helper
@@ -160,6 +160,34 @@ semantics. All 39 gate/config tests passed on the disposable VM, with the test
 binary built under undefined-behavior sanitization and 359 deterministic
 binary-input cases added. Real isolated Dovecot tests verified normal lookup,
 mailbox-specific temporary denial and recovery; no production mail was sent.
+
+## Frontend dependency candidate
+
+The initial npm scan reported ten affected entries (including dependency
+parents). Patched the router to 7.18.4, Vite to 7.3.6 with its compatible React
+plugin, Monaco to 0.56.0 with DOMPurify pinned to 3.4.16, and compatible
+transitives. The final locked graph reports zero known npm advisories.
+The production build passed under managed Node 20.19.6. All 23 Chromium tests
+passed across both themes, admin/customer navigation, internal forms, mobile
+layouts and the sandboxed preview. This does not establish that every original
+package advisory was exploitable in the deployed configuration.
+
+## Root log-directory ownership boundary
+
+The shared log directory was writable by the API service group, allowing that
+identity to replace a root cron/daemon log filename with a symlink. A protected
+VM canary reproduced a root append outside the log directory through that
+replacement. Root now owns directory entries without group write access; the
+API owns only its precreated access/error files. No-follow regular-file checks
+prevent startup from following malicious daemon/API log links. The installer
+uses the same preparation function rather than recreating mode 2770.
+
+All 23 daemon/request logging tests passed. The VM reproduced the old write,
+then verified the fixed permissions deny API name replacement while preserving
+both API append and normal root logging, with the protected canary unchanged.
+Live deployment and sustained service checks are recorded separately.
+
+## Remaining scope
 
 The primary has selected fixes, not the complete new root-authorization
 protocol. Full migration, remaining entry-point/resource review, exact

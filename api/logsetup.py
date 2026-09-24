@@ -80,10 +80,9 @@ def configure(log_dir: str | None = None) -> None:
     try:
         directory = Path(log_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        # Production creates this directory as root:boron-api so root-owned
-        # services and the unprivileged API can share it. The API may write
-        # there through the group bit but cannot chmod a root-owned directory;
-        # that harmless EPERM must not disable request logging.
+        # Root precreates API-owned files in a root-owned, non-writable
+        # directory. The API may append to its files but cannot replace names
+        # used by root cron jobs. A harmless chmod EPERM must not disable logs.
         try:
             directory.chmod(0o750)
         except PermissionError:

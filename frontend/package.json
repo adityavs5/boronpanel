@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.5.0",
   "type": "module",
-  "description": "Boron control panel \u2014 React SPA (replaces the legacy Jinja2 UI)",
+  "description": "Boron control panel — React SPA (replaces the legacy Jinja2 UI)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -30,23 +30,26 @@
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
     "lucide-react": "^0.363.0",
-    "monaco-editor": "^0.55.1",
+    "monaco-editor": "0.56.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.22.3",
+    "react-router-dom": "7.18.4",
     "recharts": "^2.12.3",
     "tailwind-merge": "^2.2.2",
     "zustand": "^4.5.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
-    "@vitejs/plugin-react": "^4.2.1",
+    "@vitejs/plugin-react": "5.2.0",
     "autoprefixer": "^10.4.19",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.3",
-    "vite": "^5.2.6"
+    "vite": "7.3.6"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "overrides": {
+    "dompurify": "3.4.16"
   }
 }

@@ -664,11 +664,10 @@ deploy_app() {
     ok "web UI built from frontend source"
 
     # Security: logs contain cross-tenant operational data and must never be
-    # readable by hosted accounts. The API writes through its service group;
-    # the daemon's umask and explicit file modes keep files group-readable
-    # only. Never make the directory world-readable/traversable.
-    run chgrp boron-api "$LOG_DIR"
-    run chmod 2770 "$LOG_DIR"
+    # readable by hosted accounts. Root controls directory entries; the API
+    # owns only its two precreated request logs, so it cannot replace a root
+    # job's log path with a symlink.
+    run env PYTHONPATH="$DEST" "${VENV}/bin/python" -c 'import sys; from daemon.logsetup import prepare_log_directory; prepare_log_directory(sys.argv[1])' "$LOG_DIR"
     run find "$LOG_DIR" -type f -exec chmod 0640 {} +
     ok "log dir ${LOG_DIR} restricted to root and boron-api"
 }

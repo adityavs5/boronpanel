@@ -17,6 +17,7 @@ the module boundary to actually be side-effect-free, not just usually so)."""
 import logging
 import os
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,7 +25,8 @@ from daemon.logsetup import configure_logging
 
 
 @pytest.fixture(autouse=True)
-def _reset_proc_logger():
+def _reset_proc_logger(monkeypatch):
+    monkeypatch.setattr('daemon.logsetup.pwd.getpwnam', lambda _: SimpleNamespace(pw_uid=os.geteuid(), pw_gid=os.getegid()))
     proc_logger = logging.getLogger("borond.proc")
     original_handlers = list(proc_logger.handlers)
     original_propagate = proc_logger.propagate
@@ -40,7 +42,7 @@ def test_proc_logger_does_not_propagate_to_root(tmp_path):
     configure_logging(str(tmp_path))
     proc_logger = logging.getLogger("borond.proc")
     assert proc_logger.propagate is False
-    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o2770
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o750
 
 
 def test_proc_logger_has_only_a_file_handler_no_stream_handler(tmp_path):
@@ -70,16 +72,24 @@ def test_configure_logging_is_idempotent_no_duplicate_handlers(tmp_path):
     assert len(proc_logger.handlers) == 1
 
 
-def test_chmod_denial_does_not_prevent_daemon_logging(tmp_path, monkeypatch):
-    original_chmod = type(tmp_path).chmod
+def test_cannot_leave_a_group_writable_directory_on_permission_failure(tmp_path, monkeypatch):
+    tmp_path.chmod(0o2770)
+    def deny(*args):
+        raise PermissionError
+    monkeypatch.setattr('daemon.logsetup.os.fchmod', deny)
+    with pytest.raises(PermissionError):
+        configure_logging(str(tmp_path))
+    assert not (tmp_path / 'daemon.log').exists()
 
-    def deny_directory_only(path, mode):
-        if path == tmp_path:
-            raise PermissionError
-        return original_chmod(path, mode)
 
-    monkeypatch.setattr("daemon.logsetup.Path.chmod", deny_directory_only)
-
-    configure_logging(str(tmp_path))
-
-    assert (tmp_path / "daemon.log").is_file()
+@pytest.mark.parametrize('name', ['daemon.log', 'api-access.log', 'api-error.log'])
+def test_existing_log_symlink_cannot_write_or_chown_protected_file(tmp_path, name):
+    protected = tmp_path.parent / 'protected-log-canary'
+    protected.write_text('unchanged')
+    protected.chmod(0o600)
+    (tmp_path / name).symlink_to(protected)
+    with pytest.raises(Exception):
+        configure_logging(str(tmp_path))
+    assert protected.read_text() == 'unchanged'
+    assert stat.S_IMODE(protected.stat().st_mode) == 0o600
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o750
