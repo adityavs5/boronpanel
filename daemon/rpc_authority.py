@@ -77,8 +77,10 @@ def resolve_principal(credential: object) -> Principal:
                 ))
                 if reseller_id is None:
                     raise AuthenticationError("reseller unavailable")
-            if user.role == "customer" and (user.account_id is None or db.get(Account, user.account_id) is None):
-                raise AuthenticationError("customer account unavailable")
+            if user.role == "customer":
+                account = db.get(Account, user.account_id) if user.account_id is not None else None
+                if account is None or account.status != "active":
+                    raise AuthenticationError("customer account unavailable")
             return Principal(user.role, user.username, user.account_id, user.id,
                              "session", digest, reseller_id)
 
@@ -88,8 +90,10 @@ def resolve_principal(credential: object) -> Principal:
             raise AuthenticationError("invalid or expired API token")
         if token.role not in ("admin", "customer"):
             raise AuthenticationError("invalid API token role")
-        if token.role == "customer" and (token.account_id is None or db.get(Account, token.account_id) is None):
-            raise AuthenticationError("API token account unavailable")
+        if token.role == "customer":
+            account = db.get(Account, token.account_id) if token.account_id is not None else None
+            if account is None or account.status != "active":
+                raise AuthenticationError("API token account unavailable")
         return Principal(token.role, token.label, token.account_id, None, "token")
 
 

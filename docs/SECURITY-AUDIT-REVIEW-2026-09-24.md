@@ -101,6 +101,19 @@ Validation: 71 tests passed across root RPC authority/error handling, terminal,
 safe-I/O, custom pages and application log/configuration helpers, including
 revocation and username reassignment before worker execution.
 
+## Suspended-account credentials
+
+Customer session and bearer-token resolution now requires an active account
+at both HTTP and root RPC boundaries. Reseller HTTP authentication also checks
+the active profile, matching the root policy. Administrator recovery and
+scoped administrator impersonation remain available. This concerns panel
+credentials; comprehensive suspension of already-running tenant processes,
+SSH connections and services remains a separate lifecycle review item.
+
+Validation: 40 authentication/impersonation tests passed, including both proof
+types across suspension/termination and subsequent reactivation. These
+changes are source-only pending the complete authorization migration.
+
 ## Dependency candidate — not yet deployed
 
 The initial Python dependency scan reported seven advisories in four packages.

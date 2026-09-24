@@ -84,7 +84,7 @@ def _identity_from_session_cookie(cookie_value: str) -> Identity | None:
         if row.expires_at.replace(tzinfo=dt.timezone.utc) < dt.datetime.now(dt.timezone.utc):
             return None
         user = db.get(PanelUser, row.panel_user_id)
-        if user is None or user.disabled:
+        if user is None or user.disabled or user.role not in ("admin", "reseller", "customer"):
             return None
         # Phase 8 feature 1: if this session is an active impersonation, the
         # underlying PanelUser is the ADMIN, but the identity must be
@@ -98,13 +98,21 @@ def _identity_from_session_cookie(cookie_value: str) -> Identity | None:
         )
         if imp is not None:
             account = db.get(Account, imp.account_id)
-            if account is None:
+            if account is None or user.role != "admin" or imp.admin_panel_user_id != user.id:
                 return None
             return Identity(
                 panel_user_id=user.id, username=imp.admin_username, role="customer",
                 account_id=imp.account_id, auth_method="session", rpc_credential=session_id,
                 impersonator=imp.admin_username, impersonated_account=account.username,
             )
+        if user.role == "customer":
+            account = db.get(Account, user.account_id) if user.account_id is not None else None
+            if account is None or account.status != "active":
+                return None
+        if user.role == "reseller" and db.scalar(select(ResellerProfile.id).where(
+            ResellerProfile.panel_user_id == user.id, ResellerProfile.status == "active",
+        )) is None:
+            return None
         return Identity(user.id, user.username, user.role, user.account_id, "session", rpc_credential=session_id)
 
 
@@ -117,6 +125,12 @@ def _identity_from_bearer_token(token: str) -> Identity | None:
         created = row.created_at.replace(tzinfo=dt.timezone.utc) if row.created_at.tzinfo is None else row.created_at
         if (dt.datetime.now(dt.timezone.utc) - created).total_seconds() > API_TOKEN_MAX_AGE_SECONDS:
             return None
+        if row.role not in ("admin", "customer"):
+            return None
+        if row.role == "customer":
+            account = db.get(Account, row.account_id) if row.account_id is not None else None
+            if account is None or account.status != "active":
+                return None
         return Identity(panel_user_id=-1, username=row.label, role=row.role, account_id=row.account_id,
                         auth_method="token", rpc_credential=token)
 
