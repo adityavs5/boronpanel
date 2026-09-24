@@ -308,6 +308,78 @@ def test_terminate_account_drops_mail_domains_and_mailboxes(isolated_db, stub_sy
 # --- Forwarders ----------------------------------------------------------
 
 
+@pytest.mark.parametrize("terminate", [False, True])
+def test_domain_delete_cleans_rules_and_prefs(isolated_db, stub_sysops, stub_mail, stub_dkim, monkeypatch, tmp_path, terminate):
+    from sqlalchemy import select
+    from shared.db import write_session
+    from shared.models import Account, MailDomain, SpamFilterEntry
+
+    monkeypatch.setattr(hm.spamfilter, "VIRTUAL_CONFIG_BASE", str(tmp_path / "prefs"))
+    monkeypatch.setattr(hm.spamfilter, "_refresh_global_sieve", lambda: None)
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    hm.spamfilter.apply_domain_spam_settings("demo1.example", enabled=False, threshold=None)
+    hm.spamfilter.add_entry({"domain": "demo1.example", "local_part": "orphan", "kind": "whitelist", "pattern": "vip.com"})
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+    if terminate:
+        hm.terminate_account_mail(account)
+    else:
+        hm.delete_mail_domain({"domain": "demo1.example"})
+    with write_session() as session:
+        assert session.scalar(select(MailDomain)) is None
+        assert session.scalar(select(SpamFilterEntry)) is None
+    assert not (tmp_path / "prefs" / "demo1.example").exists()
+
+
+def test_domain_cleanup_failure_retains_owner_for_retry(isolated_db, stub_sysops, stub_mail, stub_dkim, monkeypatch, tmp_path):
+    from sqlalchemy import select
+    from shared.db import write_session
+    from shared.models import MailDomain
+
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    monkeypatch.setattr(hm.spamfilter, "VIRTUAL_CONFIG_BASE", str(tmp_path / "prefs"))
+    cleanup = hm.spamfilter.remove_domain_spam_settings
+
+    def fail(domain):
+        raise PermissionError("prefs cleanup failed")
+
+    monkeypatch.setattr(hm.spamfilter, "remove_domain_spam_settings", fail)
+    with pytest.raises(PermissionError, match="prefs cleanup failed"):
+        hm.delete_mail_domain({"domain": "demo1.example"})
+    with write_session() as session:
+        assert session.scalar(select(MailDomain)).account_id is not None
+    monkeypatch.setattr(hm.spamfilter, "remove_domain_spam_settings", cleanup)
+    hm.delete_mail_domain({"domain": "demo1.example"})
+    with write_session() as session:
+        assert session.scalar(select(MailDomain)) is None
+
+
+def test_mailbox_cleanup_failure_retains_cache_for_retry(isolated_db, stub_sysops, stub_mail, stub_dkim, monkeypatch):
+    from sqlalchemy import select
+    from shared.db import write_session
+    from shared.models import MailUser
+
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
+    cleanup = hm.spamfilter.delete_entries_for_mailbox
+
+    def fail(*args):
+        raise RuntimeError("rule cleanup failed")
+
+    monkeypatch.setattr(hm.spamfilter, "delete_entries_for_mailbox", fail)
+    with pytest.raises(RuntimeError, match="rule cleanup failed"):
+        hm.delete_mailbox({"domain": "demo1.example", "local_part": "john"})
+    with write_session() as session:
+        assert session.scalar(select(MailUser)) is not None
+    monkeypatch.setattr(hm.spamfilter, "delete_entries_for_mailbox", cleanup)
+    hm.delete_mailbox({"domain": "demo1.example", "local_part": "john"})
+    with write_session() as session:
+        assert session.scalar(select(MailUser)) is None
+
+
 def test_create_and_list_forward(isolated_db, stub_mail):
     result = hm.create_forward({"domain": "demo1.example", "local_part": "sales", "destination": "ext@gmail.com"})
     assert result["destination"] == "ext@gmail.com"

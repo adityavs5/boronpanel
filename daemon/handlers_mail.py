@@ -117,6 +117,10 @@ def _delete_mail_domain_cache(domain_name: str) -> None:
 def delete_mail_domain(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     mail.delete_mail_domain(domain_name)
+    # Keep ownership/cache rows until cleanup succeeds, so a failed delete
+    # remains authorized and discoverable for retry (including termination).
+    spamfilter.delete_entries_for_domain(domain_name)
+    spamfilter.remove_domain_spam_settings(domain_name)
     _delete_mail_domain_cache(domain_name)
     try:
         dkim.teardown_dns_signing(domain_name)
@@ -204,17 +208,13 @@ def delete_mailbox(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
     mail.delete_mailbox(domain_name, local_part)
+    spamfilter.delete_entries_for_mailbox(domain_name, local_part)
     with write_session() as session:
         row = session.scalar(
             select(MailUser).where(MailUser.domain == domain_name, MailUser.local_part == local_part)
         )
         if row is not None:
             session.delete(row)
-    # Missing-features batch, goal feature 5: drop any per-mailbox spam
-    # filter entries (regenerates the global Sieve script if any existed).
-    from daemon import spamfilter
-
-    spamfilter.delete_entries_for_mailbox(domain_name, local_part)
     return {"domain": domain_name, "local_part": local_part, "status": "deleted"}
 
 
@@ -240,13 +240,7 @@ def terminate_account_mail(account: Account) -> None:
     with write_session() as session:
         domains = session.scalars(select(MailDomain.domain).where(MailDomain.account_id == account.id)).all()
     for domain_name in domains:
-        mail.delete_mail_domain(domain_name)
-        _delete_mail_domain_cache(domain_name)
-        spamfilter.remove_domain_spam_settings(domain_name)
-        try:
-            dkim.teardown_dns_signing(domain_name)
-        except Exception:
-            logger.exception("DKIM teardown failed for '%s'", domain_name)
+        delete_mail_domain({"domain": domain_name})
 
 
 # --- Forwarders (Phase 3 feature 4) -----------------------------------

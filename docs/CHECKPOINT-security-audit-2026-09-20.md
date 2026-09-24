@@ -767,3 +767,35 @@ source; a live canary used a temporary `/var/vmail` mailbox path, forced row set
 and delete failures, and verified new-file removal plus old-file restoration.
 The same daemon file is installed on the development panel with matching hashes
 and `boron-provisiond` active.
+
+### 2026-09-24 mail-domain deletion isolation and reload verification
+
+BSA-2026-045: mail-domain deletion and account termination left per-mailbox
+spam rules behind; direct mail-domain deletion also left SpamAssassin prefs.
+Reusing the domain could inherit the old owner's whitelist/blacklist or disabled
+spam threshold. Both deletion paths now remove all domain rules (including
+orphaned mailbox entries), regenerate Sieve, remove preferences, then remove
+the ownership cache. Cleanup failures retain cache ownership for retry; rule
+refresh failures restore the prior rows. Mailbox deletion similarly retains its
+cache until rule cleanup succeeds. Preference cleanup propagates permission
+errors rather than silently reporting success.
+
+The real VM check also exposed a transient Dovecot `reloading` state after a
+successful reload. Verification now polls that state with a bounded retry and
+continues to reject failed/inactive services.
+
+Validation: the five-module focused run passed 115 tests with two newly added
+tests failing due to a test helper typo. After correction, all seven selected
+cleanup tests passed, including those two and three additional cases. Three
+new reload-verification cases also passed. This covers 123 distinct tests
+across the runs. The disposable VM canary used real MariaDB and Sieve
+compilation/reload, injected refresh failure, verified retained ownership and
+restored rules, then retried and verified cache, preferences and live Sieve
+cleanup. Its six assertions passed. The initial failed canary's exact synthetic
+domain was also removed. Evidence: `vm/mail-domain-cleanup-canary-result.json`.
+
+Both daemon modules are hotfixed on the VM and development host. Development
+host hashes match source and `boron-provisiond` is active. No release was
+published. The coverage totals remain 135 reviewed-fixed, 11 reviewed-public,
+755 pending; these fixes strengthen entries already reviewed. Full account
+termination crash recovery and domain reassignment paths remain pending.

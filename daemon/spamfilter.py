@@ -36,6 +36,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from sqlalchemy import select
@@ -114,7 +115,11 @@ def remove_domain_spam_settings(domain: str) -> None:
     """TERMINATE_HOOKS-adjacent cleanup (called from handlers_domain's
     domain-removal path, mirroring redirects/DNS-zone per-domain cleanup)
     -- idempotent, safe even if the domain never had an override."""
-    shutil.rmtree(Path(VIRTUAL_CONFIG_BASE) / domain, ignore_errors=True)
+    domain = validate_domain(domain)
+    try:
+        shutil.rmtree(Path(VIRTUAL_CONFIG_BASE) / domain)
+    except FileNotFoundError:
+        pass
 
 
 # --- global admin default -------------------------------------------------
@@ -474,10 +479,16 @@ def _dovecot_reload() -> StepResult:
 
 
 def _dovecot_verify() -> StepResult:
-    result = run(["systemctl", "is-active", "dovecot"], timeout=10)
-    if result.stdout.strip() != "active":
-        return StepResult(False, f"dovecot not active after reload: {result.stdout.strip()}")
-    return StepResult(True)
+    # Dovecot can still report reloading briefly after systemctl reload
+    # returns. Wait for that transition, but never accept failed/inactive.
+    for attempt in range(20):
+        result = run(["systemctl", "is-active", "dovecot"], timeout=1)
+        state = result.stdout.strip()
+        if result.ok and state == "active":
+            return StepResult(True)
+        if state != "reloading" or attempt == 19:
+            return StepResult(False, f"dovecot not active after reload: {state}")
+        time.sleep(0.25)
 
 
 def _ensure_dovecot_sieve_wiring():
@@ -716,9 +727,24 @@ def delete_entries_for_mailbox(domain: str, local_part: str) -> None:
     """Called from handlers_mail.delete_mailbox -- this project's manual-
     cascade convention (no DB-level ON DELETE CASCADE anywhere in this
     schema)."""
+    domain = validate_domain(domain)
+    local_part = validate_mailbox_local_part(local_part)
+    _delete_entries(domain, local_part)
+
+
+@serialized
+def delete_entries_for_domain(domain: str) -> None:
+    """Remove rules for every mailbox, including orphaned mailbox rules."""
+    _delete_entries(validate_domain(domain))
+
+
+def _delete_entries(domain: str, local_part: str | None = None) -> None:
     with write_session() as session:
+        query = select(SpamFilterEntry).where(SpamFilterEntry.domain == domain)
+        if local_part is not None:
+            query = query.where(SpamFilterEntry.local_part == local_part)
         rows = session.scalars(
-            select(SpamFilterEntry).where(SpamFilterEntry.domain == domain, SpamFilterEntry.local_part == local_part)
+            query
         ).all()
         snapshots = [_entry_snapshot(row) for row in rows]
         any_deleted = bool(rows)

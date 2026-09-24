@@ -65,6 +65,37 @@ def test_remove_domain_spam_settings_is_idempotent(fake_virtual_config_base):
     sf.remove_domain_spam_settings("demo1.example")  # second call, still no-op
 
 
+def test_remove_domain_spam_settings_propagates_permission_failure(fake_virtual_config_base, monkeypatch):
+    def denied(path):
+        raise PermissionError("denied")
+    monkeypatch.setattr(sf.shutil, "rmtree", denied)
+    with pytest.raises(PermissionError):
+        sf.remove_domain_spam_settings("demo1.example")
+
+
+def test_remove_domain_spam_settings_rejects_traversal(fake_virtual_config_base):
+    with pytest.raises(ValidationError):
+        sf.remove_domain_spam_settings("../peer")
+
+
+@pytest.mark.parametrize("states, expected, count", [
+    (["reloading", "active"], True, 2),
+    (["failed"], False, 1),
+    (["reloading"], False, 20),
+])
+def test_dovecot_verify_waits_only_for_bounded_reload(monkeypatch, states, expected, count):
+    from daemon.procutil import ProcResult
+    calls = []
+    def run(args, **kwargs):
+        state = states[min(len(calls), len(states) - 1)]
+        calls.append(state)
+        return ProcResult(args, 0 if state == "active" else 3, state, "")
+    monkeypatch.setattr(sf, "run", run)
+    monkeypatch.setattr(sf.time, "sleep", lambda seconds: None)
+    assert sf._dovecot_verify().ok is expected
+    assert len(calls) == count
+
+
 def test_global_sieve_script_is_valid_sieve(isolated_db):
     """Real sievec compile (fast, offline, no root) -- same "compile the
     generated script before trusting it" discipline

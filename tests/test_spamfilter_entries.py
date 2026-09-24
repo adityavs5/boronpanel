@@ -160,6 +160,34 @@ def test_delete_entries_for_mailbox_cascades(isolated_db):
     assert result["entries"] == []
 
 
+def test_delete_domain_entries_preserves_other_domains(isolated_db):
+    for domain, mailbox in [("example.com", "sales"), ("example.com", "orphan"), ("peer.com", "sales")]:
+        sf.add_entry({"domain": domain, "local_part": mailbox, "kind": "whitelist", "pattern": "vip.com"})
+    sf.delete_entries_for_domain("example.com")
+    source = sf.build_global_sieve_source()
+    assert "sales@example.com" not in source
+    assert "orphan@example.com" not in source
+    assert "sales@peer.com" in source
+    sf.delete_entries_for_domain("example.com")  # Retry is harmless.
+
+
+def test_delete_domain_entries_restores_on_refresh_failure(isolated_db, monkeypatch):
+    first = sf.add_entry({"domain": "example.com", "local_part": "sales", "kind": "whitelist", "pattern": "vip.com"})
+    calls = []
+
+    def refresh():
+        calls.append(sf.build_global_sieve_source())
+        if len(calls) == 1:
+            raise sf.SpamFilterError("refresh failed")
+
+    monkeypatch.setattr(sf, "_refresh_global_sieve", refresh)
+    with pytest.raises(sf.SpamFilterError, match="refresh failed"):
+        sf.delete_entries_for_domain("example.com")
+    assert "sales@example.com" not in calls[0]
+    assert "sales@example.com" in calls[1]
+    assert sf.list_entries({"domain": "example.com", "local_part": "sales"})["entries"][0]["id"] == first["id"]
+
+
 def test_delete_entries_for_mailbox_refresh_failure_restores_rows(isolated_db, monkeypatch):
     first = sf.add_entry({"domain": "example.com", "local_part": "sales", "kind": "blacklist", "pattern": "evil.com"})
     second = sf.add_entry({"domain": "example.com", "local_part": "sales", "kind": "whitelist", "pattern": "vip.com"})

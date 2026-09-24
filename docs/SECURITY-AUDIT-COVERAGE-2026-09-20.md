@@ -50,6 +50,16 @@ underlying root handler enforces account ownership.
 
 ## Entry-point classification still required
 
+2026-09-24 follow-up (BSA-2026-045): mail-domain deletion and termination now
+clear domain-wide spam rules and preferences before removing ownership cache;
+mailbox deletion retains its cache until rule cleanup succeeds. Failures remain
+retryable, and rule refresh failures restore rows. The real VM test additionally
+found and fixed premature failure on Dovecot's transient `reloading` state.
+123 distinct focused tests passed across the initial run and corrected/new test
+reruns; six real VM cleanup/retry assertions passed. Both daemon modules are
+hotfixed on the development host with matching hashes and an active daemon.
+This strengthens existing reviewed entries without reducing the pending count.
+
 The route inventory found 405 route-method entries with direct
 `get_identity` dependencies, 14 FileBrowser proxy methods and one WebSocket
 with manual authentication, and 10 unauthenticated/public entries (login,
