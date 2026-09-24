@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 from pathlib import Path
 
 from sqlalchemy import select
@@ -42,6 +43,7 @@ from shared.validation import (
 )
 
 from daemon import ols
+from daemon.safeio import open_dir_beneath, UnsafePathError
 
 CACHE_STORE_ROOT = Path("/usr/local/lsws/cachedata")
 WP_CONFIG_MARKER = "wp-config.php"
@@ -136,13 +138,25 @@ def _clear_storage_dir(domain_name: str) -> None:
     `purge()` RPC and the suspend/unsuspend hooks below -- both need the
     exact same filesystem operation, only the enabled-check and
     bookkeeping around it differ."""
-    storage_dir = cache_storage_path(domain_name)
-    if storage_dir.exists():
-        for entry in storage_dir.iterdir():
-            if entry.is_dir() and not entry.is_symlink():
-                shutil.rmtree(entry, ignore_errors=True)
-            else:
-                entry.unlink(missing_ok=True)
+    try:
+        directory_fd = open_dir_beneath(str(cache_storage_path(domain_name)))
+    except FileNotFoundError:
+        return
+    try:
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise UnsafePathError("safe cache removal is unavailable")
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                try:
+                    info = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                    if stat.S_ISDIR(info.st_mode):
+                        shutil.rmtree(entry.name, dir_fd=directory_fd)
+                    else:
+                        os.unlink(entry.name, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    continue
+    finally:
+        os.close(directory_fd)
 
 
 def purge(params: dict) -> dict:
@@ -213,10 +227,28 @@ def get_stats(params: dict) -> dict:
         _domain_row, _account = _get_domain_and_account(session, domain_name)
         row = session.scalar(select(LscacheSettings).where(LscacheSettings.domain == domain_name))
 
-    storage_dir = cache_storage_path(domain_name)
     cached_object_count = 0
-    if storage_dir.exists():
-        cached_object_count = sum(1 for p in storage_dir.rglob("*") if p.is_file())
+    try:
+        directory_fd = open_dir_beneath(str(cache_storage_path(domain_name)))
+    except FileNotFoundError:
+        directory_fd = None
+    if directory_fd is not None:
+        try:
+            entries_seen = 0
+            for relative, directories, files, current_fd in os.fwalk('.', dir_fd=directory_fd, follow_symlinks=False):
+                if relative.count('/') > 64:
+                    raise RuntimeError("cache statistics exceed the directory depth limit")
+                entries_seen += len(directories) + len(files)
+                if entries_seen > 200_000:
+                    raise RuntimeError("cache statistics exceed the entry limit")
+                for name in files:
+                    try:
+                        if stat.S_ISREG(os.stat(name, dir_fd=current_fd, follow_symlinks=False).st_mode):
+                            cached_object_count += 1
+                    except FileNotFoundError:
+                        continue
+        finally:
+            os.close(directory_fd)
 
     return {
         "domain": domain_name,
@@ -226,7 +258,7 @@ def get_stats(params: dict) -> dict:
 
 
 def cache_storage_path(domain_name: str) -> Path:
-    return CACHE_STORE_ROOT / ols._vhost_name(domain_name)
+    return CACHE_STORE_ROOT / ols._vhost_name(validate_domain(domain_name))
 
 
 def delete_settings_for_domain(domain_name: str) -> None:
@@ -237,7 +269,24 @@ def delete_settings_for_domain(domain_name: str) -> None:
         row = session.scalar(select(LscacheSettings).where(LscacheSettings.domain == domain_name))
         if row is not None:
             session.delete(row)
-    shutil.rmtree(cache_storage_path(domain_name), ignore_errors=True)
+    try:
+        root_fd = open_dir_beneath(str(CACHE_STORE_ROOT))
+    except FileNotFoundError:
+        return
+    try:
+        name = cache_storage_path(domain_name).name
+        try:
+            info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                if not shutil.rmtree.avoids_symlink_attacks:
+                    raise UnsafePathError("safe cache removal is unavailable")
+                shutil.rmtree(name, dir_fd=root_fd)
+            else:
+                os.unlink(name, dir_fd=root_fd)
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(root_fd)
 
 
 def terminate_account_lscache(account: Account) -> None:

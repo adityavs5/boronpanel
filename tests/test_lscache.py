@@ -270,3 +270,39 @@ class TestPurgeAccountDomains:
             lscache.purge_account_domains(account)
         result = lscache.get_settings({"domain": "demo1.example"})
         assert result["last_purged_at"] is None
+
+
+@pytest.mark.parametrize('action', ['purge', 'stats', 'delete'])
+def test_cache_root_symlink_never_reaches_outside_files(account_with_domain, tmp_path, action):
+    lscache.set_settings({'domain':'demo1.example','enabled':True})
+    outside=tmp_path/'protected';outside.mkdir()
+    marker=outside/'keep';marker.write_text('outside canary')
+    storage=lscache.cache_storage_path('demo1.example')
+    storage.parent.mkdir(parents=True,exist_ok=True)
+    storage.symlink_to(outside,target_is_directory=True)
+    if action=='delete':
+        lscache.delete_settings_for_domain('demo1.example')
+        assert not storage.is_symlink()
+    else:
+        fn=lscache.purge if action=='purge' else lscache.get_stats
+        with pytest.raises((OSError,lscache.UnsafePathError)):
+            fn({'domain':'demo1.example'})
+    assert marker.read_text()=='outside canary'
+
+
+def test_purge_stays_anchored_after_cache_directory_swap(account_with_domain, tmp_path, monkeypatch):
+    lscache.set_settings({'domain':'demo1.example','enabled':True})
+    storage=lscache.cache_storage_path('demo1.example');storage.mkdir(parents=True)
+    (storage/'object').write_text('cache')
+    outside=tmp_path/'protected';outside.mkdir()
+    marker=outside/'keep';marker.write_text('outside canary')
+    original=lscache.open_dir_beneath
+    def swap(path):
+        fd=original(path)
+        storage.rename(storage.with_name('retained'))
+        storage.symlink_to(outside,target_is_directory=True)
+        return fd
+    monkeypatch.setattr(lscache,'open_dir_beneath',swap)
+    lscache.purge({'domain':'demo1.example'})
+    assert marker.read_text()=='outside canary'
+    assert not list(storage.with_name('retained').iterdir())
