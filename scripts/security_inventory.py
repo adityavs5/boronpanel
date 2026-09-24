@@ -30,7 +30,7 @@ def _dependencies(dependant) -> list[str]:
 
 def _source(value) -> str:
     try:
-        path = Path(inspect.getsourcefile(value) or "").resolve()
+        path = Path(inspect.getsourcefile(inspect.unwrap(value)) or "").resolve()
         return str(path.relative_to(Path(__file__).resolve().parent.parent))
     except (TypeError, OSError, ValueError):
         return ""

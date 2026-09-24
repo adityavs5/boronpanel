@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from daemon import ols
 from shared.models import Account
@@ -990,3 +991,39 @@ def test_waf_host_scope_and_chain_actions(host, expected):
     assert 'deny,status:403' in host_rule
     assert 'chain' in host_rule
     assert target_rule.endswith('"t:none"')
+
+
+def test_error_page_migration_updates_all_vhosts_atomically(tmp_path, monkeypatch):
+    from daemon.configtx import ConfigTxResult, StepResult
+    monkeypatch.setattr(ols, 'OLS_SERVER_BASE', str(tmp_path))
+    for name, version in [('one', '1.1.3'), ('two', '1.4.0')]:
+        path = tmp_path / 'conf/vhosts' / name / 'vhconf.conf'
+        path.parent.mkdir(parents=True)
+        path.write_text(f'context /errors {{\n  location /opt/boron-{version}/templates/error_pages/\n}}\n')
+    calls = []
+    class Writer:
+        def __init__(self, **kwargs):
+            self.targets = kwargs['targets']
+        def apply(self, contents):
+            calls.append(contents)
+            assert set(contents) == {'one', 'two'}
+            for key, content in contents.items():
+                assert '/opt/boron/templates/error_pages/\n}' in content
+                Path(self.targets[key]).write_text(content)
+            return ConfigTxResult(True, False, [('verify', StepResult(True))])
+    monkeypatch.setattr(ols, 'ConfigWriterMulti', Writer)
+    assert ols.migrate_error_page_paths() == 2
+    assert len(calls) == 1
+    assert ols.migrate_error_page_paths() == 0
+
+
+def test_error_page_migration_rejects_symlink(tmp_path, monkeypatch):
+    monkeypatch.setattr(ols, 'OLS_SERVER_BASE', str(tmp_path))
+    path = tmp_path / 'conf/vhosts/one/vhconf.conf'
+    path.parent.mkdir(parents=True)
+    outside = tmp_path / 'outside'
+    outside.write_text('do not touch')
+    path.symlink_to(outside)
+    with pytest.raises(RuntimeError, match='symlink'):
+        ols.migrate_error_page_paths()
+    assert outside.read_text() == 'do not touch'

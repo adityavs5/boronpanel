@@ -24,16 +24,24 @@ ACCOUNT_EVENTS_LOG = Path("/var/log/boron/account-events.log")
 # Erring toward redaction is deliberate -- a false positive (e.g. a redirect's
 # "status_code") only loses a low-value field, a false negative leaks a secret.
 _SENSITIVE_KEY_PARTS = ("password", "secret", "token", "session_id", "code", "private_key", "api_key")
+_PRIVATE_PAYLOAD_KEYS = {
+    "env", "env_vars", "environment", "content", "contents", "body",
+    "content_base64", "headers", "authorization", "credential", "credentials",
+}
 
 
 def _sanitize(key: str, value):
     lowered = key.lower()
-    if any(part in lowered for part in _SENSITIVE_KEY_PARTS):
+    if lowered in _PRIVATE_PAYLOAD_KEYS or any(part in lowered for part in _SENSITIVE_KEY_PARTS):
         return "***"
     if isinstance(value, dict):
         return {str(k): _sanitize(str(k), v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_sanitize(key, item) for item in value]
+    # URLs may contain basic-auth credentials, signed queries or fragments.
+    # Preserve operation/target metadata, not a second copy of the secret.
+    if isinstance(value, str) and "://" in value and any(marker in value for marker in ("@", "?", "#")):
+        return "***"
     if isinstance(value, str) and len(value) > MAX_PARAM_VALUE_LEN:
         # File contents (file.read/file.write) and similarly bulky values
         # don't belong verbatim in the audit log -- truncate rather than

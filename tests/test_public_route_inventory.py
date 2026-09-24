@@ -2,6 +2,11 @@
 from scripts.security_inventory import inventory_rows
 
 
+def test_decorated_rpc_inventory_points_to_actual_handler():
+    rows = {row["name"]: row for row in inventory_rows() if row["kind"] == "rpc"}
+    assert rows["account.create"]["source"] == "daemon/handlers_account.py"
+
+
 EXPECTED_PUBLIC_ROUTES = {
     "GET /",
     "GET /app",

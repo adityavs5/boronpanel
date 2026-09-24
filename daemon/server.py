@@ -951,6 +951,7 @@ async def amain() -> None:
     init_db()
     from daemon import jobcredentials
     jobcredentials.migrate()
+    await asyncio.get_running_loop().run_in_executor(None, ols.migrate_error_page_paths)
     # Reconcile HTTP renewal writers without taking the API down if a
     # scheduled Certbot process currently owns its configuration lock.
     asyncio.create_task(_reconcile_acme_renewals())

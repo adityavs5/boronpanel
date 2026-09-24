@@ -40,7 +40,9 @@ _env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), undefined=Strict
 # Missing-features batch, goal feature 4: shared, server-wide Boron-branded
 # default error pages, shipped with the app -- see daemon/custom_pages.py's
 # module docstring for the full context/resolution story.
-DEFAULT_ERROR_PAGES_DIR = TEMPLATES_DIR / "error_pages"
+# Generated configurations outlive the release that rendered them. Resolve
+# assets through the live installation link so pruning old releases is safe.
+DEFAULT_ERROR_PAGES_DIR = Path("/opt/boron/templates/error_pages")
 
 HTTPD_CONFIG_PATH = "/usr/local/lsws/conf/httpd_config.conf"
 VHOST_CONF_TEMPLATE = "{base}/conf/vhosts/{name}/vhconf.conf"
@@ -994,6 +996,34 @@ def refresh_all_vhosts() -> None:
     for account in accounts:
         sysops.ensure_tmp_dir(account.username)
         refresh_vhost(account)
+
+
+def migrate_error_page_paths() -> int:
+    """Repair generated paths before old release directories are pruned.
+
+    Apply all affected vhosts together: a single stale vhost can otherwise
+    make validation of every unrelated configuration transaction fail.
+    """
+    targets, contents = {}, {}
+    pattern = re.compile(r"(?m)^([ \t]*location[ \t]+)/opt/boron-\d+\.\d+\.\d+/templates/error_pages/[ \t]*$")
+    for path in sorted((Path(OLS_SERVER_BASE) / "conf/vhosts").glob("*/vhconf.conf")):
+        if path.is_symlink() or path.parent.is_symlink():
+            raise RuntimeError("Refusing symlink in managed vhost configuration")
+        old = path.read_text()
+        new = pattern.sub(lambda match: match[1] + str(DEFAULT_ERROR_PAGES_DIR) + "/", old)
+        if new != old:
+            targets[path.parent.name] = str(path)
+            contents[path.parent.name] = new
+    if not targets:
+        return 0
+    writer = ConfigWriterMulti(
+        targets=targets, validate=_validate_multi, reload=_reload, verify=_verify,
+        backup_dir=settings.backup_dir, subsystem="ols",
+    )
+    result = writer.apply(contents)
+    if not result.ok:
+        raise RuntimeError(f"OLS error-page migration failed: {result.summary()}")
+    return len(targets)
 
 
 def bootstrap_baseline() -> None:
