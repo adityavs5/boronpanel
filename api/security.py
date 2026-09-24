@@ -26,6 +26,7 @@ from shared.validation import ValidationError, validate_domain
 from shared.session_ids import session_digest
 
 COOKIE_NAME = "fh_session"
+ADMIN_RETURN_COOKIE_NAME = "__Host-boron-admin-return"
 COOKIE_MAX_AGE_SECONDS = 7 * 24 * 3600
 API_TOKEN_MAX_AGE_SECONDS = 90 * 24 * 3600
 

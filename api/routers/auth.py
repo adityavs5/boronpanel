@@ -123,7 +123,9 @@ def logout(request: Request, identity: Identity = Depends(get_identity)):
             call_daemon("auth.revoke_session", identity, session_id=session_id)
 
     response = JSONResponse({"status": "logged_out"})
-    response.delete_cookie(COOKIE_NAME)
+    response.delete_cookie(COOKIE_NAME, secure=True, httponly=True, samesite="lax")
+    from api.security import ADMIN_RETURN_COOKIE_NAME
+    response.delete_cookie(ADMIN_RETURN_COOKIE_NAME, secure=True, httponly=True, samesite="strict")
     return response
 
 

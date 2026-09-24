@@ -5,8 +5,8 @@ An admin mints a single-use, 5-minute token for an account
 opens a customer-scoped session for that account, recorded in an
 ImpersonationSession row that api/security.get_identity uses to DOWNSCOPE the
 underlying admin-owned session to a customer identity. "Return to admin"
-(`impersonation.end`) revokes the impersonation session and hands back the
-admin's original session id to restore.
+(`impersonation.end`) revokes the impersonation session and validates separate
+proof of the original admin session without returning its credential.
 
 Every op here routes through server.py's dispatch(), so issuance, redemption,
 and end are all audit-logged automatically; and because the impersonation
@@ -21,7 +21,7 @@ import hashlib
 import secrets
 import string
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from shared.db import write_session
 from shared.session_ids import session_digest
@@ -100,6 +100,7 @@ def redeem_token(params: dict) -> dict:
     now = utcnow()
 
     with write_session() as session:
+        session.execute(text("BEGIN IMMEDIATE"))
         row = session.scalar(select(ImpersonationToken).where(ImpersonationToken.token_hash == token_hash))
         if row is None:
             raise RuntimeError("impersonation token is invalid")
@@ -126,7 +127,7 @@ def redeem_token(params: dict) -> dict:
         row.used_at = now
 
         admin_user = session.get(PanelUser, admin_panel_user_id)
-        if admin_user is None or admin_user.role != "admin":
+        if admin_user is None or admin_user.disabled or admin_user.role != "admin" or admin_user.username != admin_username:
             raise RuntimeError("redeeming panel user is not an admin")
 
         session_id = secrets.token_urlsafe(32)
@@ -154,29 +155,46 @@ def redeem_token(params: dict) -> dict:
 
 
 def end(params: dict) -> dict:
-    """End the impersonation session identified by `session_id` (the current
-    impersonation cookie's session id): revoke it and return the admin's
-    original session id to restore. Idempotent -- ending an already-ended or
-    unknown session just reports no admin session to restore."""
+    """End the scoped session; never disclose the original admin credential.
+
+    Restoration requires separate proof of that original session, retained by
+    the browser in a distinct HttpOnly cookie. A stolen scoped cookie alone
+    must never be an exchange ticket for full administrator access.
+    """
     session_id = session_digest(params["session_id"])
+    proof = params.get('admin_session_id')
     with write_session() as session:
-        imp = session.scalar(
-            select(ImpersonationSession).where(ImpersonationSession.session_id == session_id)
-        )
+        session.execute(text('BEGIN IMMEDIATE'))
+        imp = session.scalar(select(ImpersonationSession).where(ImpersonationSession.session_id == session_id))
         if imp is None:
-            return {"admin_session_id": None, "account_username": None, "status": "not_impersonating"}
-        admin_session_id = decrypt_secret(imp.admin_session_enc) if imp.admin_session_enc else None
+            return {'restored': False, 'account_username': None, 'status': 'not_impersonating'}
+        scoped = session.scalar(select(Session).where(Session.session_id == session_id))
+        restored = False
+        scoped_expires = scoped.expires_at if scoped is not None else utcnow()
+        if scoped_expires.tzinfo is None:
+            scoped_expires = scoped_expires.replace(tzinfo=dt.timezone.utc)
+        if (imp.ended_at is None and scoped is not None and not scoped.revoked
+                and scoped_expires > utcnow()
+                and isinstance(proof, str) and proof and imp.admin_session_enc):
+            expected = decrypt_secret(imp.admin_session_enc)
+            if expected and secrets.compare_digest(proof, expected):
+                parent = session.scalar(select(Session).where(Session.session_id == session_digest(proof)))
+                user = session.get(PanelUser, imp.admin_panel_user_id)
+                if parent is not None:
+                    expires = parent.expires_at
+                    if expires.tzinfo is None:
+                        expires = expires.replace(tzinfo=dt.timezone.utc)
+                    parent_is_scoped = session.scalar(select(ImpersonationSession.id).where(
+                        ImpersonationSession.session_id == parent.session_id)) is not None
+                    restored = bool(not parent.revoked and expires > utcnow()
+                        and parent.panel_user_id == imp.admin_panel_user_id
+                        and user is not None and user.role == 'admin' and not user.disabled
+                        and not parent_is_scoped)
         account = session.get(Account, imp.account_id)
-        account_username = account.username if account else None
-        if imp.ended_at is None:
-            imp.ended_at = utcnow()
-        # Revoke the impersonation session itself so its cookie is dead the
-        # instant we return, regardless of whether the admin session restores.
-        sess = session.scalar(select(Session).where(Session.session_id == session_id))
-        if sess is not None:
-            sess.revoked = True
-        return {
-            "admin_session_id": admin_session_id,
-            "account_username": account_username,
-            "status": "ended",
-        }
+        imp.ended_at = imp.ended_at or utcnow()
+        imp.admin_session_enc = None
+        imp.admin_session_id = None
+        if scoped is not None:
+            scoped.revoked = True
+        return {'restored': restored,
+                'account_username': account.username if account else None, 'status': 'ended'}

@@ -435,3 +435,24 @@ corresponding isolated regression group passed all 140 cases. The real VM
 quota canary also passed: failed quota application removed only its newly
 created Unix identity, retained the pre-created home canary and committed no
 active account; normal quota provisioning and termination succeeded.
+
+
+## Impersonation return proof
+
+Confirmed a high-severity privilege-boundary flaw: presenting an impersonation
+session alone to the return handler disclosed the original administrator
+session. The handler now never returns that credential. Restoration requires
+a distinct signed, Secure, HttpOnly, host-prefixed, SameSite=Strict cookie; the
+root handler verifies the supplied original session against its retained proof,
+current owner, role, enabled state, expiry and revocation. Missing or invalid
+proof ends the scoped session without granting administrator access. Returning
+wipes retained proof, and logout clears the browser's separate return cookie.
+Token redemption now obtains an immediate database write transaction so two
+concurrent redemptions cannot both consume one token.
+
+Validation: all 76 authentication, API security, root-authority, session
+migration and destination checks passed, including cookie attributes, missing/
+wrong/revoked/expired/disabled/wrong-owner proof, scoped-session expiry, replay
+and concurrent redemption. Separately 273 administrator-surface, notification
+and MFA cases passed. This fix requires the coordinated API/daemon release;
+it must not be copied onto the primary's old authentication protocol alone.

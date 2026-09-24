@@ -24,6 +24,7 @@ from starlette.requests import Request
 from api.rpc import call_daemon
 from api.security import (
     COOKIE_MAX_AGE_SECONDS,
+    ADMIN_RETURN_COOKIE_NAME,
     COOKIE_NAME,
     Identity,
     get_identity,
@@ -78,6 +79,11 @@ def redeem(body: RedeemBody, request: Request, identity: Identity = Depends(get_
             "impersonator": identity.username,
         }
     )
+    response.headers['Cache-Control'] = 'no-store'
+    if admin_session_id:
+        response.set_cookie(ADMIN_RETURN_COOKIE_NAME, sign_session_id(admin_session_id),
+                            max_age=2 * 60 * 60, secure=True, httponly=True,
+                            samesite='strict', path='/')
     # Swap the cookie to the new customer-scoped impersonation session. The
     # admin session is intentionally left intact (not revoked) so it can be
     # restored on return.
@@ -101,14 +107,18 @@ def return_to_admin(request: Request, identity: Identity = Depends(get_identity)
     if session_id is None:
         raise HTTPException(status_code=400, detail="no active session to end")
 
-    result = call_daemon("impersonation.end", identity, session_id=session_id)
-    admin_session_id = result.get("admin_session_id")
-
-    response = JSONResponse({"status": "returned", "restored": bool(admin_session_id)})
-    if admin_session_id:
-        # Restore the admin's original session. If it has since expired/been
-        # revoked, the SPA's next request 401s and bounces to login -- an
-        # acceptable, safe fallback rather than silently keeping any access.
+    proof_cookie = request.cookies.get(ADMIN_RETURN_COOKIE_NAME)
+    admin_session_id = unsign_session_id(proof_cookie) if proof_cookie else None
+    result = call_daemon("impersonation.end", identity, session_id=session_id,
+                         admin_session_id=admin_session_id)
+    restored = bool(result.get('restored') and admin_session_id)
+    response = JSONResponse({"status": "returned", "restored": restored})
+    response.headers['Cache-Control'] = 'no-store'
+    response.delete_cookie(ADMIN_RETURN_COOKIE_NAME, secure=True, httponly=True,
+                           samesite='strict', path='/')
+    if restored:
+        # Restore only the independently supplied credential, after root has
+        # checked its owner, expiry, revocation and administrator status.
         response.set_cookie(
             COOKIE_NAME,
             sign_session_id(admin_session_id),
@@ -118,5 +128,5 @@ def return_to_admin(request: Request, identity: Identity = Depends(get_identity)
             secure=True,
         )
     else:
-        response.delete_cookie(COOKIE_NAME)
+        response.delete_cookie(COOKIE_NAME, secure=True, httponly=True, samesite="lax")
     return response
