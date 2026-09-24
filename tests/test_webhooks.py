@@ -356,3 +356,32 @@ def test_test_webhook_bypasses_event_subscription(isolated_db, monkeypatch):
     result = wh.test_webhook({"webhook_id": created["id"]})
     assert result["status"] == "queued"
     assert len(submitted) == 1
+
+
+def test_pinned_post_never_reads_response_body(monkeypatch):
+    calls = []
+    class Body(httpx.SyncByteStream):
+        def __iter__(self):
+            raise AssertionError('Webhook status check must not read remote body')
+        def close(self):
+            calls.append('closed')
+    def transport(request):
+        assert request.url.host == '93.184.216.34'
+        assert request.headers['host'] == 'example.com:8443'
+        assert request.extensions['sni_hostname'] == 'example.com'
+        return httpx.Response(204, stream=Body())
+    real_client = httpx.Client
+    def client(**kwargs):
+        assert kwargs['trust_env'] is False and kwargs['follow_redirects'] is False
+        return real_client(transport=httpx.MockTransport(transport), **kwargs)
+    monkeypatch.setattr(wh, '_assert_public_destination', lambda url: '93.184.216.34')
+    monkeypatch.setattr(wh.httpx, 'Client', client)
+    assert wh._pinned_post('https://example.com:8443/hook', b'{}', {}, 5).status_code == 204
+    assert calls == ['closed']
+
+
+@pytest.mark.parametrize('ip', ['100.64.0.1', '100.100.100.200', '100.127.255.254'])
+def test_shared_address_space_is_not_a_public_webhook_destination(monkeypatch, ip):
+    monkeypatch.setattr(wh.socket, 'getaddrinfo', lambda *args: [(0, 0, 0, '', (ip, 0))])
+    with pytest.raises(wh.WebhookError):
+        wh._assert_public_destination('https://not-public.example/hook')

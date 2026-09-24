@@ -230,9 +230,15 @@ def validate_redirect_target(url: str) -> str:
 
     if not isinstance(url, str) or len(url) > 2000 or any(c in url for c in ("\n", "\r", "\t", "[", "]", " ")):
         raise ValidationError(f"'{url}' is not a valid redirect target URL")
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValidationError(f"'{url}' must be an absolute http:// or https:// URL")
+    try:
+        parsed = urllib.parse.urlparse(url)
+        port = parsed.port
+    except ValueError:
+        raise ValidationError('Webhook URL has an invalid port') from None
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or (port is not None and not 1 <= port <= 65535)):
+        raise ValidationError('Webhook URL must be an absolute HTTP(S) URL without embedded credentials')
     return url
 
 
@@ -601,11 +607,17 @@ RESERVED_ENV_KEYS = {"PORT"}
 def validate_webhook_url(url: str) -> str:
     import urllib.parse
 
-    if not isinstance(url, str) or len(url) > 2000 or any(c in url for c in ("\n", "\r", "\t", " ")):
-        raise ValidationError(f"'{url}' is not a valid webhook URL")
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValidationError(f"'{url}' must be an absolute http:// or https:// URL")
+    if not isinstance(url, str) or len(url) > 2000 or any(ord(c) <= 32 or ord(c) == 127 for c in url):
+        raise ValidationError("Webhook URL is too long or contains invalid characters")
+    try:
+        parsed = urllib.parse.urlparse(url)
+        port = parsed.port
+    except ValueError:
+        raise ValidationError('Webhook URL has an invalid port') from None
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or (port is not None and not 1 <= port <= 65535)):
+        raise ValidationError('Webhook URL must be an absolute HTTP(S) URL without embedded credentials')
     # Security-audit-2 (Medium) SSRF guard, creation-time half: reject an
     # obvious literal internal IP up front for immediate operator feedback.
     # daemon/webhooks.py additionally re-resolves + re-checks the destination
@@ -619,8 +631,7 @@ def validate_webhook_url(url: str) -> str:
         except ValueError:
             ip = None
         if ip is not None and (
-            ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+            not ip.is_global or ip.is_multicast
         ):
             raise ValidationError(
                 f"'{url}' points at a non-public address -- internal/loopback/link-local/"
@@ -783,7 +794,7 @@ def resolve_public_imap_source(value: str) -> tuple[str, str]:
     if not addresses:
         raise ValidationError(f"source host '{value}' has no usable addresses")
     for addr in addresses:
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
+        if not addr.is_global or addr.is_multicast:
             raise ValidationError(
                 f"'{value}' resolves to a non-public address ({addr}) -- internal/loopback/link-local/"
                 "reserved hosts are not allowed as an IMAP migration source"

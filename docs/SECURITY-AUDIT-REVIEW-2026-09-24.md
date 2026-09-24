@@ -410,3 +410,28 @@ reporting and cron source paths were also reviewed for ownership scoping,
 parameterized queries, configured paths, certificate metadata, root-controlled
 log destinations and bounded result periods. Full exact-artifact acceptance
 remains separate from this source-review disposition.
+
+
+## Outbound destination and response boundaries
+
+Webhook and external IMAP destination validation now rejects shared-address
+space (100.64.0.0/10), alongside all other non-global and multicast addresses.
+Webhook URLs reject embedded credentials, invalid ports and control characters.
+The pinned HTTP transport disables environment proxies and redirects, streams
+the response and closes it without consuming a remote-controlled body. Delivery
+history pages have a 500-row cap. Existing public-destination IP pinning and
+original-host TLS verification are retained.
+
+Validation: 227 webhook, IMAP and destination-validation cases passed. These
+checks use controlled transports and resolver fixtures; no third-party internal
+endpoint was contacted. Queue saturation and cancellation of a delivery already
+in flight are operational limitations, not claimed fixed by this change.
+
+Account/DNS lifecycle source review: reseller ownership and capacity checks,
+cron execution under the target Unix identity, parked-domain reservation,
+wildcard parent ownership, validated nameserver/glue records, monitoring's
+service allowlist and usage-alert suspension sequencing were reviewed. The
+corresponding isolated regression group passed all 140 cases. The real VM
+quota canary also passed: failed quota application removed only its newly
+created Unix identity, retained the pre-created home canary and committed no
+active account; normal quota provisioning and termination succeeded.

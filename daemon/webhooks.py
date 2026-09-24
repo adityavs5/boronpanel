@@ -143,14 +143,7 @@ def _ip_is_blocked(ip: ipaddress._BaseAddress) -> bool:
     # Covers loopback (127/8, ::1), private (10/8, 172.16/12, 192.168/16, fc00::/7),
     # link-local INCLUDING the 169.254.169.254 cloud-metadata endpoint
     # (169.254/16, fe80::/10), reserved, multicast, and 0.0.0.0/::.
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    return not ip.is_global or ip.is_multicast
 
 
 def _assert_public_destination(url: str) -> str:
@@ -210,9 +203,13 @@ def _pinned_post(url: str, body: bytes, headers: dict, timeout: float) -> httpx.
     pinned_url = parsed._replace(netloc=f"{netloc_ip}:{port}").geturl()
     req_headers = {**headers, "Host": parsed.netloc}
     extensions = {"sni_hostname": host} if parsed.scheme == "https" else {}
-    with httpx.Client(timeout=timeout) as client:
+    with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False) as client:
         request = client.build_request("POST", pinned_url, content=body, headers=req_headers, extensions=extensions)
-        return client.send(request)
+        response = client.send(request, stream=True)
+        # Delivery only needs the status. Never buffer an endpoint-controlled
+        # response body (which could be huge or never end).
+        response.close()
+        return response
 
 
 def _sign(secret: str, body: bytes) -> str:
@@ -243,7 +240,7 @@ def list_deliveries(params: dict) -> dict:
             select(WebhookDelivery)
             .where(WebhookDelivery.webhook_id == webhook_id)
             .order_by(WebhookDelivery.created_at.desc())
-            .limit(int(params.get("limit", 100)))
+            .limit(max(1, min(int(params.get("limit", 100)), 500)))
         ).all()
         return {"deliveries": [_delivery_to_dict(d) for d in rows]}
 
