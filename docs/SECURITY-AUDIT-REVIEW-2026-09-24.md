@@ -243,3 +243,23 @@ Disk-tree du/find probes now run as the account user, so path swaps cannot
 use root privileges to list private peer files. NUL-delimited records preserve
 filenames containing newlines instead of interpreting them as new entries.
 The ten disk-tree tests and forty process/command/Composer/WP-CLI tests passed.
+
+
+## Application, domain-tool and telemetry entry-point disposition
+
+204 grouped tests passed for explicit HTTP/legacy route denial before RPC,
+owner/peer/mixed-domain root policies, and normal redirect/forwarding/hotlink/
+IP-block/maintenance/health behavior. Manual source review traced resource
+binding, validator-to-OLS interpolation, escaped maintenance HTML, custom-page
+writes and cron authority. Node/Python/Redis review additionally traced app ID
+ownership, tenant command execution, environment encryption and root-owned
+unit configuration, shared port allocation inside BEGIN IMMEDIATE transactions,
+and lifecycle cleanup. Desired domain settings remain in the database if an
+OLS application returns an error; this review does not assert transactional
+rollback of those settings or runtime suspension beyond the defined hooks.
+
+The VM passed 34 updated process/disk/log tests and the separate real disk UID
+canary (after correcting its initial use of a reserved system username). The
+primary received the tested log/process/disk modules; Redis INFO and PHP-log
+RPCs passed after daemon startup completed, with both services active and
+trusted HTTPS returning 200. Protected backups retain the previous modules.
