@@ -27,11 +27,9 @@ Structure" layout:
 (a full `cpmove-<user>.tar.gz` and a WHM "backup-<ts>_<user>.tar.gz" differ
 here) -- _find_content_root handles both.
 
-Every import step is wrapped so one failing/unsupported item is recorded and
-skipped rather than aborting the whole job (goal: "fail gracefully on
-unsupported items, import rest") -- only a handful of genuinely fatal, early
-steps (fetching/extracting the archive, creating the target account) abort
-the job outright, since nothing else is meaningful without them.
+Import steps collect a per-item report. Genuine item failures fail the job
+and roll back its newly created account; deliberately unsupported/skipped
+items remain warnings. Pre-existing destination accounts are never modified.
 
 This module runs inside borond (root) and therefore calls the same
 handlers_*.py functions directly that backup.py's own full-restore path
@@ -59,7 +57,7 @@ import yaml
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import NameOID
-from sqlalchemy import select
+from sqlalchemy import select, or_
 
 from shared.config import settings
 from shared.db import write_session
@@ -1180,7 +1178,54 @@ def _add_cron_step(username: str, schedule: str, command: str) -> str:
     return "added"
 
 
+def _cleanup_failed_import(job_id, username, ownership):
+    """Only tear down the exact account created by this worker, never a name match."""
+    if ownership is None:
+        return
+    account_id, created_at = ownership
+    from daemon import database_operations, snapshot_jobs
+    from shared.models import Base
+    try:
+        _update_job(job_id, progress_message="removing failed import account", initial_password=None)
+        with database_operations.mutation_lock(blocking=True), snapshot_jobs.lock(f'account-{account_id}', blocking=False):
+            with write_session() as session:
+                account = session.get(Account, account_id)
+                if account is None:
+                    return
+                if account.username != username or account.created_at != created_at:
+                    raise CpanelImportError("Account identity changed; automatic cleanup refused")
+            result = handlers_account._terminate_account({"username": username})
+            if result['status'] != 'terminated':
+                raise CpanelImportError("Account teardown incomplete; inspect account errors before retrying")
+            # Teardown removed service resources and revoked credentials. Remove
+            # only database rows owned through foreign keys by this new account.
+            # Keep the independent migration job/report for administrator review.
+            with write_session() as session:
+                predicates = {'accounts': Account.__table__.c.id == account_id}
+                tables = list(Base.metadata.sorted_tables)
+                for table in tables:
+                    if table.name == 'accounts':
+                        continue
+                    clauses = []
+                    for fk in table.foreign_keys:
+                        parent = fk.column.table
+                        if parent.name in predicates:
+                            clauses.append(fk.parent.in_(select(fk.column).where(predicates[parent.name])))
+                    if clauses:
+                        predicates[table.name] = or_(*clauses)
+                for table in reversed(tables):
+                    if table.name in predicates:
+                        session.execute(table.delete().where(predicates[table.name]))
+        _append_result(job_id, "cleanup", "ok", "Removed the newly created destination account and its resources; the username can be retried.")
+        _update_job(job_id, progress_message="failed — new account removed", initial_password=None)
+    except Exception as exc:
+        logger.exception("cpanel import job %d: rollback failed", job_id)
+        _append_result(job_id, "cleanup", "failed", str(exc))
+        _update_job(job_id, progress_message="failed — cleanup needs attention", initial_password=None)
+
+
 def _run_import_job(job_id: int, params: dict) -> None:
+    ownership = None
     try:
         with write_session() as session:
             job = session.get(CpanelImportJob, job_id)
@@ -1259,7 +1304,22 @@ def _run_import_job(job_id: int, params: dict) -> None:
         _update_job(job_id, progress_message="creating account")
         account_password = generate_strong_password()
         try:
-            created_account = handlers_account.create_account({"username": username, "password": account_password, "primary_domain": primary_domain})
+            from daemon import database_operations
+            # Serialize the absence check with account creation so that even a
+            # provisioning exception can be attributed to this worker safely.
+            with database_operations.mutation_lock(blocking=True):
+                with write_session() as session:
+                    if session.scalar(select(Account.id).where(Account.username == username)) is not None:
+                        raise CpanelImportError("Destination account appeared during import; refusing to overwrite")
+                    if session.scalar(select(PanelUser.id).where(PanelUser.username == username)) is not None:
+                        raise CpanelImportError("Destination login appeared during import; refusing to overwrite")
+                try:
+                    created_account = handlers_account.create_account({"username": username, "password": account_password, "primary_domain": primary_domain})
+                finally:
+                    with write_session() as session:
+                        account = session.scalar(select(Account).where(Account.username == username))
+                        if account is not None:
+                            ownership = (account.id, account.created_at)
             handlers_auth.create_panel_user({
                 "username": username,
                 "password": account_password,
@@ -1362,13 +1422,21 @@ def _run_import_job(job_id: int, params: dict) -> None:
             item_failures = any(item.get("status") == "failed" for item in finished_job.results)
         _update_job(
             job_id,
-            status="failed" if source == "directadmin_remote" and item_failures else "completed",
+            status="failed" if item_failures else "completed",
             progress_message="completed with failed items — review migration report" if item_failures else "completed",
-            error="Some migration items failed. The destination account exists; inspect individual results before cutover." if source == "directadmin_remote" and item_failures else None,
+            error="Some migration items failed. See the per-item and cleanup reports." if item_failures else None,
             initial_password=jobcredentials.seal(account_password),
             completed_at=utcnow(),
         )
+    except Exception as exc:
+        logger.exception("cpanel import job %d: unexpected worker failure", job_id)
+        _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
     finally:
+        with write_session() as session:
+            final_job = session.get(CpanelImportJob, job_id)
+            failed = final_job is not None and final_job.status == "failed"
+        if failed:
+            _cleanup_failed_import(job_id, username, ownership)
         params.get("remote", {}).pop("password", None)
         shutil.rmtree(work_dir, ignore_errors=True)
 
