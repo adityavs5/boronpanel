@@ -16,10 +16,12 @@ Server sends raw terminal output as text frames.
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import paramiko
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -48,6 +50,20 @@ MAX_RESIZE_ROWS = 120
 # Terminal I/O blocks a thread while recv()'ing; a dedicated pool keeps that off
 # the request-serving executors.
 _TERMINAL_IO = ThreadPoolExecutor(max_workers=64, thread_name_prefix="terminal-io")
+SSH_HOST_KEY_DIR = Path('/etc/ssh')
+
+
+def _local_host_keys():
+    keys = []
+    for path in sorted(SSH_HOST_KEY_DIR.glob('ssh_host_*_key.pub')):
+        try:
+            parts = path.read_text().split()
+            keys.append(paramiko.PKey.from_type_string(parts[0], base64.b64decode(parts[1], validate=True)))
+        except (OSError, ValueError, IndexError, paramiko.SSHException, paramiko.UnknownKeyType):
+            continue
+    if not keys:
+        raise RuntimeError('No trusted local SSH host keys are available')
+    return keys
 
 
 def _bounded_terminal_input(value: object) -> str:
@@ -113,8 +129,13 @@ def _authorized(identity: Identity, username: str) -> bool:
 
 
 def _connect_ssh(username: str, private_key_pem: str, host: str, port: int, quiet=False):
+    if host != '127.0.0.1' or type(port) is not int or not 1 <= port <= 65535:
+        raise RuntimeError('Terminal SSH must use the local server')
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    hostname = host if port == 22 else f'[{host}]:{port}'
+    for key in _local_host_keys():
+        client.get_host_keys().add(hostname, key.get_name(), key)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     pkey = paramiko.Ed25519Key.from_private_key(io.StringIO(private_key_pem))
     client.connect(
         host, port=port, username=username, pkey=pkey, timeout=10,

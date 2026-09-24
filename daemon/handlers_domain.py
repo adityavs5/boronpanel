@@ -347,8 +347,8 @@ def ensure_docroot(username: str, docroot: str, domain_name: str | None = None) 
     for parent in Path(docroot).parents:
         if str(parent)==home:break
         if str(parent).startswith(home+'/'):
-            run(['setfacl','-m','u:nobody:--x',str(parent)],check=True)
-    _grant_webserver_acl(docroot)
+            run(['setfacl','-m','u:nobody:--x',str(parent)],uid=pw.pw_uid,gid=pw.pw_gid,check=True)
+    _grant_webserver_acl(docroot, pw.pw_uid, pw.pw_gid)
 
     # vhost.conf.j2 always declares a context for this path (ACME HTTP-01
     # webroot, Phase f) -- OLS's `-t` rejects a context whose location
@@ -376,7 +376,7 @@ def ensure_docroot(username: str, docroot: str, domain_name: str | None = None) 
         custom_pages.ensure_pages_dir(username, domain_name)
 
 
-def _grant_webserver_acl(docroot: str) -> None:
+def _grant_webserver_acl(docroot: str, uid: int, gid: int) -> None:
     """Read+traverse ACL for OLS's worker uid ("nobody", per
     httpd_config.conf.j2's top-level `user`/`group`), recursively and as a
     default ACL so files/dirs created later (uploads, file manager, deploys)
@@ -386,10 +386,11 @@ def _grant_webserver_acl(docroot: str) -> None:
 
     run(
         [
-            "setfacl", "-R",
+            "setfacl", "-R", "-P",
             "-m", "u:nobody:rX",
             "-d", "-m", "u:nobody:rX",
             docroot,
         ],
         check=True,
+        uid=uid, gid=gid,
     )

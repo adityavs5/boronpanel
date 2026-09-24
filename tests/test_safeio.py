@@ -99,3 +99,26 @@ def test_replace_handles_short_writes_and_removes_failed_temporary_files(tmp_pat
         safeio.secure_replace_file(str(tmp_path), 'config', b'replacement', os.getuid(), os.getgid())
     assert (tmp_path / 'config').read_bytes() == b'complete content'
     assert list(tmp_path.iterdir()) == [tmp_path / 'config']
+
+
+def test_all_path_components_reject_symlinks(tmp_path):
+    from daemon import safeio
+    import os
+    protected = tmp_path / 'protected'
+    (protected / 'inner').mkdir(parents=True)
+    canary = protected / 'inner/canary'
+    canary.write_text('private')
+    link = tmp_path / 'tenant-link'
+    link.symlink_to(protected, target_is_directory=True)
+    assert safeio.secure_read_text(str(link / 'inner'), 'canary') is None
+    safeio.secure_unlink(str(link / 'inner'), 'canary')
+    with pytest.raises(OSError):
+        safeio.secure_replace_file(str(link / 'inner'), 'canary', b'changed', os.getuid(), os.getgid())
+    assert canary.read_text() == 'private'
+
+
+def test_text_reader_rejects_fifo_without_blocking(tmp_path):
+    from daemon import safeio
+    import os
+    os.mkfifo(tmp_path / 'pipe')
+    assert safeio.secure_read_text(str(tmp_path), 'pipe') is None

@@ -799,13 +799,13 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
         audit.record("unknown", "unknown", op, None, params, "failed", "unknown op")
         raise LookupError(f"unknown op '{op}'")
 
-    # Resolve and enforce on the daemon side before allocating a worker or
-    # entering a privileged handler. Client labels never supply authority.
+    # Reject invalid credentials before allocating a worker. Resolve again and
+    # authorize inside the worker: queue wait must not preserve revoked access
+    # or obsolete resource ownership. Consume second factors only once.
     principal = None
     try:
         if op not in ("auth.login.begin", "auth.login.finish"):
             principal = resolve_principal(credential)
-        authorize(op, params, principal)
     except (AuthenticationError, AuthorizationError) as exc:
         audit.record("unknown", "unknown", op, params.get("username"), params, "failed", type(exc).__name__)
         raise
@@ -814,8 +814,20 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
 
     loop = asyncio.get_running_loop()
     executor = REPORTING_EXECUTOR if op in REPORTING_OPS else None
+    def authorized_handler(handler_params):
+        nonlocal actor, role
+        current = (None if op in ("auth.login.begin", "auth.login.finish")
+                   else resolve_principal(credential))
+        authorize(op, handler_params, current)
+        actor = current.username if current else "login"
+        role = current.role if current else "anonymous"
+        return handler(handler_params)
+
     try:
-        result = await loop.run_in_executor(executor, handler, params)
+        result = await loop.run_in_executor(executor, authorized_handler, params)
+    except (AuthenticationError, AuthorizationError) as exc:
+        audit.record(actor, role, op, params.get("username"), params, "failed", type(exc).__name__)
+        raise
     except ValidationError as exc:
         detail = _redact_request_secrets(str(exc), params)
         audit.record(actor, role, op, params.get("username"), params, "failed", detail)

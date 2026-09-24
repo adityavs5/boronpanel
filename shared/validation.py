@@ -555,6 +555,8 @@ def validate_app_entry_point(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValidationError("entry point must not be empty")
     value = value.strip()
+    if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_./@-]*', value):
+        raise ValidationError("entry point must be a plain relative script path without spaces or command syntax")
     if "\x00" in value or "\n" in value:
         raise ValidationError("entry point must not contain a NUL byte or newline")
     if value.startswith("/") or value.startswith("~"):
@@ -812,7 +814,7 @@ def validate_env_vars(value) -> dict[str, str]:
             raise ValidationError(f"env var name '{key}' is reserved by Boron")
         if not isinstance(val, str):
             raise ValidationError(f"env var '{key}' value must be a string")
-        if "\x00" in val or "\n" in val:
+        if "\x00" in val or "\n" in val or "\r" in val:
             raise ValidationError(f"env var '{key}' value must not contain a NUL byte or newline")
         if len(val) > 4000:
             raise ValidationError(f"env var '{key}' value is too long (max 4000 characters)")

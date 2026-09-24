@@ -31,8 +31,22 @@ class UnsafePathError(Exception):
 
 
 def _open_dir_nofollow(path: str, *, dir_fd: int | None = None) -> int:
-    """Open a directory without following a symlink at its final component."""
-    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+    """Open every path component without following symlinks, not only the leaf."""
+    path = os.fspath(path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parts = [part for part in path.split('/') if part and part != '.']
+    if '..' in parts:
+        raise OSError('parent traversal is not a safe directory')
+    current = os.open('/' if path.startswith('/') else '.', flags, dir_fd=dir_fd)
+    try:
+        for part in parts:
+            child = os.open(part, flags, dir_fd=current)
+            os.close(current)
+            current = child
+        return current
+    except Exception:
+        os.close(current)
+        raise
 
 
 def _reject_name(name: str) -> None:
@@ -198,7 +212,7 @@ def secure_read_text(dir_path: str, name: str, max_bytes: int = 1024 * 1024) -> 
         return None
     try:
         try:
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=dir_fd)
         except OSError:
             return None
         try:

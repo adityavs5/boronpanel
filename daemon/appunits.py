@@ -23,6 +23,7 @@ import stat
 from pathlib import Path
 
 from shared.config import settings
+from shared.validation import ENV_VAR_KEY_RE
 
 from daemon.procutil import run
 from daemon import safeio
@@ -54,17 +55,19 @@ def write_env_file(name: str, env: dict[str, str]) -> Path:
     dropping to the unit's own User=, so a decrypted secret is never
     written anywhere the hosting account's own uid can read it."""
     path = env_file_path(name)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     lines = []
     for key, value in env.items():
         # systemd EnvironmentFile syntax: KEY=VALUE, one per line, no shell
         # expansion -- but embedded newlines would still break the format,
         # so they're rejected rather than silently truncated/corrupted.
-        if "\n" in key or "\n" in value:
-            raise ValueError(f"env var '{key}' must not contain a newline")
-        lines.append(f"{key}={value}")
-    path.write_text("\n".join(lines) + ("\n" if lines else ""))
-    os.chmod(path, 0o600)
+        if (not isinstance(key, str) or not ENV_VAR_KEY_RE.fullmatch(key)
+                or not isinstance(value, str) or any(c in value for c in ('\0', '\r', '\n'))):
+            raise ValueError("invalid environment assignment")
+        escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+        lines.append(f'{key}="{escaped}"')
+    content = "\n".join(lines) + ("\n" if lines else "")
+    safeio.secure_replace_file(str(path.parent), path.name, content.encode(), os.geteuid(), os.getegid(), 0o600)
     return path
 
 

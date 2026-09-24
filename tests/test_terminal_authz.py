@@ -94,8 +94,11 @@ def test_terminal_uses_quiet_interactive_shell(monkeypatch):
             return Channel()
 
     class Client:
+        def get_host_keys(self):
+            return terminal.paramiko.HostKeys()
+
         def set_missing_host_key_policy(self, _policy):
-            pass
+            assert isinstance(_policy, terminal.paramiko.RejectPolicy)
 
         def connect(self, *args, **kwargs):
             observed["connect"] = (args, kwargs)
@@ -104,7 +107,7 @@ def test_terminal_uses_quiet_interactive_shell(monkeypatch):
             return Transport()
 
     monkeypatch.setattr(terminal.paramiko, "SSHClient", Client)
-    monkeypatch.setattr(terminal.paramiko, "AutoAddPolicy", lambda: object())
+    monkeypatch.setattr(terminal, "_local_host_keys", lambda: [terminal.paramiko.RSAKey.generate(1024)])
     monkeypatch.setattr(terminal.paramiko.Ed25519Key, "from_private_key", lambda _stream: object())
 
     _, channel = terminal._connect_ssh("alice", "key", "127.0.0.1", 22, quiet=True)
@@ -114,3 +117,19 @@ def test_terminal_uses_quiet_interactive_shell(monkeypatch):
     assert observed["command"] == "exec /bin/bash --noprofile --norc -i"
     assert observed["timeout"] == terminal._RECV_TIMEOUT
     assert isinstance(channel, Channel)
+
+
+def test_local_ssh_host_keys_are_pinned(tmp_path, monkeypatch):
+    key = terminal.paramiko.RSAKey.generate(1024)
+    (tmp_path / 'ssh_host_rsa_key.pub').write_text(f'{key.get_name()} {key.get_base64()} fixture\n')
+    monkeypatch.setattr(terminal, 'SSH_HOST_KEY_DIR', tmp_path)
+    assert terminal._local_host_keys()[0] == key
+
+
+def test_missing_host_keys_and_remote_terminal_fail_closed(tmp_path, monkeypatch):
+    import pytest
+    monkeypatch.setattr(terminal, 'SSH_HOST_KEY_DIR', tmp_path)
+    with pytest.raises(RuntimeError, match='No trusted'):
+        terminal._connect_ssh('alice', 'unused', '127.0.0.1', 22)
+    with pytest.raises(RuntimeError, match='local server'):
+        terminal._connect_ssh('alice', 'unused', 'example.com', 22)

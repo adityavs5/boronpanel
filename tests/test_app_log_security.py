@@ -67,3 +67,22 @@ def test_log_exec_refuses_root_before_open(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match='tenant identity'):
         module.main(['--log', str(target), '--', '/bin/true'])
     assert not target.exists()
+
+
+def test_environment_file_is_atomic_private_and_quoted(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, 'app_env_dir', str(tmp_path / 'env'))
+    env = {'VALUE': ' spaces "quotes" and trailing\\', 'PORT': '3001'}
+    path = appunits.write_env_file('test.service', env)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_text() == 'VALUE=" spaces \\"quotes\\" and trailing\\\\"\nPORT="3001"\n'
+    original = path.read_bytes()
+    with pytest.raises(ValueError):
+        appunits.write_env_file('test.service', {'VALUE': 'bad\rPORT=1'})
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('entry', ['server.js ; +/bin/true', 'server.js\rUser=root', 'server.js\\', '${COMMAND}', '%h/server.js', '-e code', 'dir with spaces/server.js'])
+def test_node_entry_rejects_service_command_syntax(entry):
+    from shared.validation import ValidationError, validate_app_entry_point
+    with pytest.raises(ValidationError):
+        validate_app_entry_point(entry)

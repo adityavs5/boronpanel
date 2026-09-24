@@ -107,8 +107,8 @@ def test_create_node_app_writes_systemd_unit_and_env_file(account_with_domain):
     assert "Restart=on-failure" in content
     env_path = nodeapps.appunits.env_file_path(result["unit"])
     env_content = env_path.read_text()
-    assert "SECRET=hunter2" in env_content
-    assert f"PORT={result['port']}" in env_content
+    assert 'SECRET="hunter2"' in env_content
+    assert f'PORT="{result["port"]}"' in env_content
     # env file must be root-only -- the whole point of encrypting at rest
     import stat
     assert stat.S_IMODE(os.stat(env_path).st_mode) == 0o600

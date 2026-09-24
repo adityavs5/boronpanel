@@ -26,7 +26,8 @@ def safe_fs(tmp_path, monkeypatch):
     import pwd as real_pwd
 
     monkeypatch.setattr(real_pwd, "getpwnam", fake_getpwnam)
-    monkeypatch.setattr(cp, "_grant_webserver_acl", lambda path: None)
+    monkeypatch.setattr(cp, "_grant_webserver_acl", lambda *args: None)
+    monkeypatch.setattr(cp, "_grant_traversal_acl", lambda *args: None)
     return fake_home
 
 
@@ -56,6 +57,32 @@ def test_set_error_page_rejects_empty_content(safe_fs):
 
 def test_get_error_page_absent_returns_none(safe_fs):
     assert cp.get_error_page("demo1", "demo1.example", 500) is None
+
+
+def test_error_page_read_delete_deny_symlink_ancestor(safe_fs, tmp_path):
+    protected = tmp_path / 'protected'
+    (protected / 'error_pages').mkdir(parents=True)
+    canary = protected / 'error_pages/404.html'
+    canary.write_text('private canary')
+    (safe_fs / 'demo1.example').symlink_to(protected, target_is_directory=True)
+    assert cp.get_error_page('demo1', 'demo1.example', 404) is None
+    cp.delete_error_page('demo1', 'demo1.example', 404)
+    assert canary.read_text() == 'private canary'
+
+
+def test_acl_helpers_drop_privileges(monkeypatch):
+    from daemon import handlers_domain, procutil
+    calls = []
+    def capture(args, **kwargs):
+        calls.append((args, kwargs))
+    monkeypatch.setattr(cp, 'run', capture)
+    monkeypatch.setattr(procutil, 'run', capture)
+    cp._grant_webserver_acl('/fixture/pages', 1234, 1234)
+    cp._grant_traversal_acl('/fixture/domain', 1234, 1234)
+    handlers_domain._grant_webserver_acl('/fixture/docroot', 1234, 1234)
+    assert len(calls) == 3
+    assert all(kwargs['uid'] == 1234 and kwargs['gid'] == 1234 for _, kwargs in calls)
+    assert all('-P' in args for args, _ in calls if '-R' in args)
 
 
 def test_delete_error_page_removes_it(safe_fs):

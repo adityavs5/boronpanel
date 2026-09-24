@@ -50,6 +50,36 @@ def _credential(raw):
     return {"type": "session", "value": raw}
 
 
+@pytest.mark.parametrize("change", ["revoke", "reassign"])
+def test_queued_request_rechecks_current_authority(isolated_db, monkeypatch, change):
+    _, customer_session = _setup_users()
+    called = []
+    monkeypatch.setitem(server.OP_TABLE, "account.get", lambda _: called.append(True))
+
+    def queued(loop, _executor, handler, params):
+        with write_session() as db:
+            if change == "revoke":
+                row = db.scalar(select(Session).where(Session.session_id == session_digest(customer_session)))
+                row.revoked = True
+            else:
+                alice = db.scalar(select(Account).where(Account.username == "alice"))
+                bob = db.scalar(select(Account).where(Account.username == "bob"))
+                alice.username = "former-alice"
+                db.flush()
+                bob.username = "alice"
+        future = loop.create_future()
+        try:
+            future.set_result(handler(params))
+        except Exception as exc:
+            future.set_exception(exc)
+        return future
+
+    monkeypatch.setattr(asyncio.BaseEventLoop, "run_in_executor", queued)
+    with pytest.raises((AuthenticationError, AuthorizationError)):
+        asyncio.run(server.dispatch("account.get", {"username": "alice"}, _credential(customer_session)))
+    assert called == []
+
+
 def test_forged_metadata_without_credential_never_enters_handler(isolated_db, monkeypatch):
     called = []
     monkeypatch.setitem(server.OP_TABLE, "account.create", lambda _: called.append(True))

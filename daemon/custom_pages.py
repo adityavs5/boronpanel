@@ -87,16 +87,16 @@ def page_dir(username: str, domain: str) -> str:
     return f"{settings.home_base}/{username}/{domain}/{PAGES_DIR_NAME}"
 
 
-def _grant_webserver_acl(path: str) -> None:
+def _grant_webserver_acl(path: str, uid: int, gid: int) -> None:
     """Same recipe as daemon/handlers_domain.py's _grant_webserver_acl
     (read+traverse ACL, recursive + default, for OLS's shared "nobody"
     worker uid) -- small enough, and specific enough to this directory, that
     duplicating the six-line setfacl call is clearer than adding a cross-
     module import for it."""
-    run(["setfacl", "-R", "-m", "u:nobody:rX", "-d", "-m", "u:nobody:rX", path], check=True)
+    run(["setfacl", "-R", "-P", "-m", "u:nobody:rX", "-d", "-m", "u:nobody:rX", path], uid=uid, gid=gid, check=True)
 
 
-def _grant_traversal_acl(path: str) -> None:
+def _grant_traversal_acl(path: str, uid: int, gid: int) -> None:
     """Execute-only (traversal without listing) ACL for OLS's "nobody"
     worker on a directory that only exists to CONTAIN error_pages/ --
     same "711 home dir: owner full, group/other execute-only" convention
@@ -112,7 +112,7 @@ def _grant_traversal_acl(path: str) -> None:
     its own generic default page. Found by a real curl against a real
     vhost during this feature's live verification, not by unit tests
     (which mock the filesystem and can't catch a real ACL gap)."""
-    run(["setfacl", "-m", "u:nobody:x", path], check=True)
+    run(["setfacl", "-m", "u:nobody:x", path], uid=uid, gid=gid, check=True)
 
 
 def ensure_pages_dir(username: str, domain: str) -> str:
@@ -128,8 +128,8 @@ def ensure_pages_dir(username: str, domain: str) -> str:
     home = f"{settings.home_base}/{username}"
     relative = f"{domain}/{PAGES_DIR_NAME}"
     path = safeio.secure_mkdirs(home, relative, pw.pw_uid, pw.pw_gid, 0o750)
-    _grant_traversal_acl(f"{home}/{domain}")
-    _grant_webserver_acl(path)
+    _grant_traversal_acl(f"{home}/{domain}", pw.pw_uid, pw.pw_gid)
+    _grant_webserver_acl(path, pw.pw_uid, pw.pw_gid)
     return path
 
 
