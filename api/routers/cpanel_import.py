@@ -17,6 +17,7 @@ import tempfile
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
 from starlette.requests import Request
+from pydantic import BaseModel, Field
 
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_admin
@@ -110,6 +111,38 @@ def trigger_account_import(
 def list_account_imports(username: str | None = None, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("cpanel_import.list", identity, username=username)
+
+
+# Static paths precede the job route.
+
+
+class DirectAdminConnection(BaseModel):
+    mode: str = "admin"
+    host: str = Field(min_length=1, max_length=253)
+    port: int = Field(default=2222, ge=1, le=65535)
+    login: str = "admin"
+    password: str = Field(min_length=1, max_length=4096)
+    host_key: str = ""
+
+
+class DirectAdminImport(BaseModel):
+    remote: DirectAdminConnection
+    remote_user: str
+    username: str
+    db_compatibility: str = "strict"
+
+
+@accounts_api_router.post("/directadmin/inspect")
+def inspect_directadmin(body: DirectAdminConnection, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("directadmin_remote.inspect", identity, **body.model_dump())
+
+
+@accounts_api_router.post("/directadmin/migrate")
+def migrate_directadmin(body: DirectAdminImport, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("cpanel_import.trigger", identity, panel="directadmin",
+                       source="directadmin_remote", **body.model_dump())
 
 
 @accounts_api_router.get("/{job_id}")

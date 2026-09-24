@@ -29,10 +29,11 @@ for(const role of ['admin','customer']) for(const skin of ['evolution','paper-la
     sizes:[...document.querySelectorAll('.tool-label')].map(el=>parseFloat(getComputedStyle(el).fontSize)),
     fonts:performance.getEntriesByType('resource').filter(r=>r.name.includes('.woff2')).map(r=>({url:r.name,bytes:r.encodedBodySize}))}
   })
-  expect(metrics.family).toContain(skin==='evolution'?'Inter Variable':'Arial')
+  expect(metrics.family).toContain('Open Sans')
   expect(metrics.sizes.every(size=>size>=14)).toBe(true)
-  expect(metrics.fonts.length).toBe(skin==='evolution'?1:0)
-  expect(metrics.fonts.reduce((sum,font)=>sum+font.bytes,0)).toBeLessThanOrEqual(50000)
+  expect(metrics.fonts.length).toBeGreaterThan(0)
+  expect(metrics.fonts.length).toBeLessThanOrEqual(4)
+  expect(metrics.fonts.reduce((sum,font)=>sum+font.bytes,0)).toBeLessThanOrEqual(80000)
   expect(remote).toEqual([])
   await page.setViewportSize({width:390,height:844})
   expect(await labels.first().evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(13)

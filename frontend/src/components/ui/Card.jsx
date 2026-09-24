@@ -17,7 +17,7 @@ export function CardDescription({ className, ...props }) {
 }
 
 export function CardContent({ className, ...props }) {
-  return <div className={cn('px-6 py-4', className)} {...props} />
+  return <div className={cn('panel-card-content px-6 py-4', className)} {...props} />
 }
 
 export function CardFooter({ className, ...props }) {

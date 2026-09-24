@@ -159,9 +159,18 @@ def trigger_import(params: dict) -> dict:
     if panel not in ("cpanel", "directadmin"):
         raise ValidationError("panel must be 'cpanel' or 'directadmin'")
     source = params.get("source", "upload")
-    if source not in ("upload", "url"):
-        raise ValidationError("source must be 'upload' or 'url'")
+    if source not in ("upload", "url", "directadmin_remote"):
+        raise ValidationError("source must be upload, url, or directadmin_remote")
     source_ref = params.get("source_ref") or params.get("url") or params.get("upload_path")
+    if source == "directadmin_remote":
+        if panel != "directadmin":
+            raise ValidationError("Remote imports require DirectAdmin format")
+        from daemon.directadmin_remote import validate, source_username
+        validate(params.get("remote", {}))
+        source_username(params.get("remote_user", ""))
+        source_ref = "DirectAdmin server"
+    if params.get("db_compatibility", "strict") not in ("strict", "adapt"):
+        raise ValidationError("Choose strict or adapt database compatibility")
     if not source_ref:
         raise ValidationError("source_ref (uploaded file path or URL) is required")
 
@@ -964,7 +973,8 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
     metadata = _directadmin_kv(source / "backup" / "user.conf")
     old_username = metadata.get("username") or metadata.get("user")
     if old_username:
-        old_username = validate_username(old_username)
+        from daemon.directadmin_remote import source_username
+        old_username = source_username(old_username)
 
     listed_domains: list[str] = []
     domains_list = source / "backup" / "domains.list"
@@ -1124,16 +1134,18 @@ def _relocate_docroot_step(root: Path, username: str, domain: str) -> str:
 
 
 @serialized_worker
-def _import_database_step(username: str, dump_path: Path, old_username: str | None, db_name_map: dict) -> str:
+def _import_database_step(username: str, dump_path: Path, old_username: str | None, db_name_map: dict, db_credentials: dict | None = None) -> str:
     suffix = _db_suffix_from_dump(dump_path, old_username)
     grant = handlers_database.create_database({"username": username, "name": suffix})
     _import_mysql_dump(grant["db_name"], dump_path, grant["db_user"], grant["password"])
     db_name_map[dump_path.stem] = grant["db_name"]
+    if db_credentials is not None:
+        db_credentials[grant["db_name"]] = (grant["db_user"], grant["password"])
     return f"imported into '{grant['db_name']}'"
 
 
 @serialized_worker
-def _wordpress_rewrite_step(username: str, domain: str, db_name_map: dict[str, str]) -> str:
+def _wordpress_rewrite_step(username: str, domain: str, db_name_map: dict[str, str], db_credentials: dict | None = None) -> str:
     """Only one imported database is realistically guessable without
     actually reading the pre-rewrite wp-config.php's own DB_NAME -- try
     that first, then fall back to the single-database case (the
@@ -1154,6 +1166,9 @@ def _wordpress_rewrite_step(username: str, domain: str, db_name_map: dict[str, s
         chosen = next(iter(db_name_map.values()))
     if chosen is None:
         raise _Skip("multiple databases imported and none could be matched to this site's wp-config.php")
+    if db_credentials is not None and chosen in db_credentials:
+        db_user, new_password = db_credentials[chosen]
+        return _rewrite_wp_config(docroot, chosen, db_user, new_password)
     db_user = chosen  # Boron's own 1-DB-1-user convention (handlers_database.create_database)
     new_password = mariadb.generate_password()
     mariadb.set_password(db_user, new_password)
@@ -1201,7 +1216,11 @@ def _run_import_job(job_id: int, params: dict) -> None:
         return
     try:
         try:
-            archive_path = _obtain_archive(job_id, source, source_ref, work_dir)
+            if source == "directadmin_remote":
+                from daemon.directadmin_remote import fetch_archive
+                archive_path = fetch_archive(job_id, params, work_dir)
+            else:
+                archive_path = _obtain_archive(job_id, source, source_ref, work_dir)
             _update_job(job_id, progress_message="extracting backup archive", source_ref=None)
             extract_dir = work_dir / "extracted"
             extract_dir.mkdir()
@@ -1213,6 +1232,11 @@ def _run_import_job(job_id: int, params: dict) -> None:
             else:
                 root = _find_content_root(extract_dir)
             info = _parse_account_info(root)
+            if source == "directadmin_remote":
+                from daemon.import_compat import preflight_dumps
+                _update_job(job_id, progress_message="checking database compatibility")
+                for note in preflight_dumps(_parse_mysql_dumps(root), params.get("db_compatibility") == "adapt"):
+                    _append_result(job_id, "database-preflight", "ok", note)
         except Exception as exc:  # noqa: BLE001 - fatal: nothing else in this job is possible without a readable archive
             logger.exception("cpanel import job %d: failed to fetch/extract archive", job_id)
             _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
@@ -1294,12 +1318,13 @@ def _run_import_job(job_id: int, params: dict) -> None:
 
             dumps = _parse_mysql_dumps(root)
             db_name_map: dict[str, str] = {}
+            db_credentials: dict = {}
             for dump_path in dumps:
-                _run_step(job_id, f"database:{dump_path.stem}", lambda p=dump_path: _import_database_step(username, p, old_username, db_name_map))
+                _run_step(job_id, f"database:{dump_path.stem}", lambda p=dump_path: _import_database_step(username, p, old_username, db_name_map, db_credentials))
 
             if dumps:
                 for domain_entry in domains:
-                    _run_step(job_id, f"wordpress:{domain_entry['domain']}", lambda d=domain_entry["domain"]: _wordpress_rewrite_step(username, d, db_name_map))
+                    _run_step(job_id, f"wordpress:{domain_entry['domain']}", lambda d=domain_entry["domain"]: _wordpress_rewrite_step(username, d, db_name_map, db_credentials))
 
             certs = _parse_ssl_certs(root)
             imported_domains = {d["domain"] for d in domains}
@@ -1332,14 +1357,19 @@ def _run_import_job(job_id: int, params: dict) -> None:
             _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
             return
 
+        with write_session() as session:
+            finished_job = session.get(CpanelImportJob, job_id)
+            item_failures = any(item.get("status") == "failed" for item in finished_job.results)
         _update_job(
             job_id,
-            status="completed",
-            progress_message="completed",
+            status="failed" if source == "directadmin_remote" and item_failures else "completed",
+            progress_message="completed with failed items — review migration report" if item_failures else "completed",
+            error="Some migration items failed. The destination account exists; inspect individual results before cutover." if source == "directadmin_remote" and item_failures else None,
             initial_password=jobcredentials.seal(account_password),
             completed_at=utcnow(),
         )
     finally:
+        params.get("remote", {}).pop("password", None)
         shutil.rmtree(work_dir, ignore_errors=True)
 
 

@@ -7,7 +7,7 @@ export function PageHeader({ title, description, children, className, icon: Icon
     <div className={cn('panel-page-heading flex flex-wrap items-start justify-between gap-4 mb-6', className)}>
       <div className="flex items-start gap-3 min-w-0">
         {Icon && (
-          <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-btn bg-accent-50 text-accent-600 dark:bg-accent-950 dark:text-accent-300">
+          <div className="page-heading-icon mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-btn bg-accent-50 text-accent-600 dark:bg-accent-950 dark:text-accent-300">
             <Icon className="h-5 w-5" />
           </div>
         )}
@@ -16,7 +16,7 @@ export function PageHeader({ title, description, children, className, icon: Icon
           {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
         </div>
       </div>
-      {children && <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">{children}</div>}
+      {children && <div className="page-heading-actions flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">{children}</div>}
     </div>
   )
 }

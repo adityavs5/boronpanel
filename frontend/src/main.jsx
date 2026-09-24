@@ -12,6 +12,7 @@ import { TooltipProvider } from './components/ui/Tooltip'
 import { Toaster } from './components/ui/Toast'
 import { BrandingBootstrap } from './components/layout/BrandingBootstrap'
 import './index.css'
+import './theme-features.css'
 import './themes.css'
 
 // Apply persisted theme before first paint.

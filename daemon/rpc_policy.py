@@ -258,6 +258,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'cf.settings_get': 'global_admin',
     'cf.settings_set': 'global_admin',
     'cf.zones_overview': 'global_admin',
+    'directadmin_remote.inspect': 'global_admin',
     'cpanel_import.get': 'global_admin',
     'cpanel_import.list': 'global_admin',
     'cpanel_import.trigger': 'global_admin',

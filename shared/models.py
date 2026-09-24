@@ -1068,7 +1068,7 @@ class CpanelImportJob(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(16), index=True)
     panel: Mapped[str] = mapped_column(String(16), default="cpanel")  # cpanel | directadmin
-    source: Mapped[str] = mapped_column(String(8))  # upload | url
+    source: Mapped[str] = mapped_column(String(32))  # upload | url | directadmin_remote
     source_ref: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
     progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)

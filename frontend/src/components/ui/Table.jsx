@@ -144,11 +144,11 @@ export function DataTable({
   const renderCell = (col, row) => col.render ? col.render(row) : row[col.key] ?? '—'
 
   return (
-    <div className={cn('rounded-card border border-border bg-card overflow-hidden', className)}>
+    <div className={cn('panel-data-table rounded-card border border-border bg-card overflow-hidden', className)}>
       {(filterable || toolbar) && (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="table-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
           {filterable ? (
-            <div className="relative w-full max-w-xs">
+            <div className="table-search relative w-full max-w-xs">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={query}
@@ -156,6 +156,7 @@ export function DataTable({
                   updateQuery(e.target.value)
                   updatePage(1)
                 }}
+                aria-label={searchPlaceholder}
                 placeholder={searchPlaceholder}
                 className="pl-8"
               />
@@ -253,7 +254,7 @@ export function DataTable({
       )}
 
       {pageSize > 0 && !loading && !error && filtered.length > 0 && (
-        <div className="flex items-center justify-between border-t border-border px-4 py-3 text-sm text-muted-foreground">
+        <div className="table-pagination flex items-center justify-between border-t border-border px-4 py-3 text-sm text-muted-foreground">
           <span>
             {(clampedPage - 1) * pageSize + 1}–{Math.min(clampedPage * pageSize, filtered.length)} of {filtered.length}
           </span>

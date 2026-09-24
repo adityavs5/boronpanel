@@ -165,7 +165,7 @@ export default function Ssl() {
 
       <DataTable
         columns={columns}
-        data={data?.domains}
+        data={domains.filter(row => row.cert_status && !['missing', 'none'].includes(row.cert_status))}
         loading={isLoading}
         error={error}
         onRetry={refetch}
@@ -174,8 +174,26 @@ export default function Ssl() {
         pageSize={15}
         initialSort={{ key: 'domain', dir: 'asc' }}
         getRowKey={(r) => r.domain}
-        emptyTitle="No domains yet"
-        emptyDescription="Add a domain to issue an SSL certificate for it."
+        emptyTitle="No installed certificates"
+        emptyDescription="Issue a certificate for one of your domains below."
+        emptyIcon={ShieldCheck}
+        className="ssl-domain-table"
+      />
+
+      <div className="ssl-section-title mt-6"><div><h2>Issue a new certificate</h2><p>Choose an unsecured domain. Confirm its DNS points to this server before issuing.</p></div></div>
+      <DataTable
+        columns={columns}
+        data={domains.filter(row => !row.cert_status || ['missing', 'none'].includes(row.cert_status))}
+        loading={isLoading}
+        error={error}
+        onRetry={refetch}
+        filterable
+        searchPlaceholder="Search domains…"
+        pageSize={15}
+        initialSort={{ key: 'domain', dir: 'asc' }}
+        getRowKey={(r) => r.domain}
+        emptyTitle="No unsecured domains"
+        emptyDescription="All listed domains have certificates, or no domains have been added yet."
         emptyIcon={ShieldCheck}
         className="ssl-domain-table"
       />

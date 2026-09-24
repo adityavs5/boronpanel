@@ -21,7 +21,6 @@ import { toast } from '@/components/ui/Toast'
 export default function Databases() {
   const username = useAccountUsername()
   const qc = useQueryClient()
-  const [createOpen, setCreateOpen] = useState(false)
   const [selected, setSelected] = useState(null)
   const [form, setForm] = useState({ name: '', password: '' })
   const [toDelete, setToDelete] = useState(null)
@@ -38,7 +37,6 @@ export default function Databases() {
     onSuccess: (res) => {
       toast.success('Database created', `${res?.db_name || form.name} is ready to use.`)
       qc.invalidateQueries({ queryKey: ['databases', username] })
-      setCreateOpen(false)
       if (res?.password) {
         setCreds({ title: 'Database created', db_name: res.db_name, db_user: res.db_user, password: res.password })
       }
@@ -155,18 +153,22 @@ export default function Databases() {
 
   return (
     <div>
-      <PageHeader title="Databases" description="MySQL databases and their users on your account." icon={Database}>
-        <div className="flex gap-2">
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="h-4 w-4" /> Create database
-          </Button>
-        </div>
-      </PageHeader>
-      {(data?.databases?.length ?? 0) > 0 && (
-        <p className="mb-4 -mt-2 text-sm text-muted-foreground">
-          Select a database to open phpMyAdmin, manage credentials, or remove it.
-        </p>
-      )}
+      <PageHeader title="Databases" description="Create and manage MySQL databases, users and application credentials." icon={Database} />
+      <section className="database-create-section" aria-labelledby="database-create-title">
+        <h2 id="database-create-title">Create New Database</h2>
+        <p className="mb-4 text-sm text-muted-foreground">A database and its matching user are created together. Save the credentials shown after creation.</p>
+        <form onSubmit={event => { event.preventDefault(); createMut.mutate({ name: form.name.trim(), password: form.password || undefined }) }}>
+          <FormField label="New database" htmlFor="database-name" required hint="Enter a short suffix, such as shop. Your account prefix is added automatically.">
+            <div className="database-name-input"><span aria-hidden="true">{username}_</span><Input id="database-name" value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))} placeholder="shop" required aria-describedby="database-prefix" /></div>
+          </FormField>
+          <span id="database-prefix" className="sr-only">Database name will start with {username} underscore.</span>
+          <FormField label="Database password" htmlFor="database-password" hint="Leave blank to generate a strong password.">
+            <Input id="database-password" type="password" value={form.password} onChange={event => setForm(current => ({ ...current, password: event.target.value }))} autoComplete="new-password" placeholder="Generate automatically" />
+          </FormField>
+          <Button type="submit" loading={createMut.isPending} disabled={!form.name.trim()}>Create database</Button>
+        </form>
+      </section>
+      <h2 className="interior-section-title">Current Databases</h2>
 
       <DataTable
         columns={columns}
@@ -182,49 +184,7 @@ export default function Databases() {
         emptyTitle="No databases yet"
         emptyDescription="Create a MySQL database to power your applications."
         emptyIcon={Database}
-        emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create database</Button>}
       />
-
-      {/* Create database */}
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent size="sm">
-          <DialogHeader>
-            <DialogTitle>Create database</DialogTitle>
-            <DialogDescription>A MySQL database and a matching user are created together.</DialogDescription>
-          </DialogHeader>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              createMut.mutate({ name: form.name.trim(), password: form.password || undefined })
-            }}
-          >
-            <DialogBody className="space-y-4">
-              <FormField label="Name" required hint="A short suffix (e.g. shop). It is prefixed with your username.">
-                <Input
-                  autoFocus
-                  value={form.name}
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                  placeholder="shop"
-                  required
-                />
-              </FormField>
-              <FormField label="Password" hint="Optional — leave blank to auto-generate a strong password.">
-                <Input
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                  placeholder="Auto-generated if blank"
-                  autoComplete="new-password"
-                />
-              </FormField>
-            </DialogBody>
-            <DialogFooter>
-              <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
-              <Button type="submit" loading={createMut.isPending} disabled={!form.name.trim()}>Create database</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
 
       {/* Credentials reveal (after create / reset) */}
       <Dialog open={!!creds} onOpenChange={(v) => { if (!v) setCreds(null) }}>

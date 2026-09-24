@@ -12,8 +12,10 @@ import { formatBytes, formatMB } from '@/lib/utils'
 import { ThemeSelector } from './ThemeSelector'
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard'
 import { DashboardSearch } from './DashboardSearch'
+import { HostingIcon, hostingArtwork } from '@/components/icons/HostingIcon'
 
-export function ToolIcon({ icon: Icon, tone = 'sky' }) {
+export function ToolIcon({ icon: Icon, tone = 'sky', to, skin }) {
+  if (skin === 'evolution' && hostingArtwork[to]) return <span className={`tool-icon tone-${tone}`} aria-hidden="true"><HostingIcon kind={hostingArtwork[to]} /></span>
   return <span className={`tool-icon tone-${tone}`} aria-hidden="true"><Icon strokeWidth={1.7} /><span className="icon-detail" /></span>
 }
 
@@ -21,17 +23,18 @@ function ToolGroup({ group, role, skin }) {
   const key = `${skin}:${role}:${group.title}`
   const closed = useUI((s) => !!s.closedToolGroups[key])
   const toggle = useUI((s) => s.toggleToolGroup)
+  const GroupIcon = group.items[0]?.icon
   const expanded = !closed
   const id = `tools-${group.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
   return <section className="tool-group" aria-label={group.title}>
     <h2><button type="button" className="tool-group-heading" aria-expanded={expanded} aria-controls={id} onClick={() => toggle(key)}>
-      <span>{group.title}</span>
+      <>{GroupIcon && <GroupIcon className="group-symbol" aria-hidden="true" />}<span className="group-title">{group.title}</span></>
       <span className="group-count">{group.items.length} tools</span>
       {skin === 'paper-lantern' ? (expanded ? <Minus size={16} /> : <Plus size={16} />) : <ChevronDown size={16} className={expanded ? '' : '-rotate-90'} />}
     </button></h2>
     <div id={id} className="tool-grid" hidden={!expanded}>
       {group.items.map((item) => {
-        const content = <><ToolIcon icon={item.icon} tone={item.tone} /><span className="tool-label">{item.label}</span>{item.external && <ExternalLink className="tool-external" size={11} aria-label="Opens in a new tab" />}</>
+        const content = <><ToolIcon icon={item.icon} tone={item.tone} to={item.to} skin={skin} /><span className="tool-label">{item.label}</span>{item.external && <ExternalLink className="tool-external" size={11} aria-label="Opens in a new tab" />}</>
         return item.external
           ? <a key={item.to} href={item.to} target="_blank" rel="noopener noreferrer" className="tool-link">{content}</a>
           : <Link key={item.to} to={item.to} className="tool-link">{content}</Link>
@@ -51,8 +54,8 @@ function UsageRow({ label, value, pct, detail }) {
     {detail && <small>{detail}</small>}
   </div>
 }
-function StatsPanel({ title, children, link }) {
-  return <section className="stats-panel" aria-label={title}><h2 className="stats-heading">{title}</h2><div className="stats-body">{children}</div>{link && <Link className="stats-link" to={link.to}>{link.label}<ArrowUpRight size={14} /></Link>}</section>
+function StatsPanel({ title, children, link, kind = 'info' }) {
+  return <section className={`stats-panel stats-${kind}`} aria-label={title}><h2 className="stats-heading">{title}</h2><div className="stats-body">{children}</div>{link && <Link className="stats-link" to={link.to}>{link.label}<ArrowUpRight size={14} /></Link>}</section>
 }
 function QueryNotice({ query, label }) {
   if (query.isError) return <div className="query-notice" role="status"><span>{label} unavailable.</span><button type="button" onClick={() => query.refetch()} aria-label={`Retry ${label.toLowerCase()}`}><RefreshCw size={13} /> Retry</button></div>
@@ -98,9 +101,9 @@ export default function ToolDashboard() {
     {!isAdmin && username && <OnboardingWizard username={username} account={acc} />}
     <div className="dashboard-heading"><div><h1>{isAdmin ? 'Admin Dashboard' : 'Hosting Dashboard'}</h1><p>{isAdmin ? 'Manage your server, accounts, and hosting services.' : `Welcome${username ? `, ${username}` : ''}. Everything you need to manage your hosting.`}</p></div><span className="dashboard-role"><Server size={14} /> {isAdmin ? 'Administrator' : 'User account'}</span></div>
     {!isAdmin && alerts.data?.active?.length > 0 && <div className="dashboard-alert" role="status"><AlertTriangle size={18} /><div><strong>Resource usage needs attention</strong>{alerts.data.active.map((alert, index) => <p key={alert.id ?? index}>{alert.resource}: {alert.threshold_pct}% threshold reached.</p>)}<Link to="/disk-usage">Review resource usage</Link></div></div>}
+    <DashboardSearch />
     <div className="dashboard-columns">
       <div className="tools-column">
-        <DashboardSearch />
         {allGroups.map((group) => <ToolGroup key={group.title} group={group} role={role} skin={skin} />)}
       </div>
       <aside className="dashboard-stats" aria-label="Account and resource overview">
@@ -111,7 +114,7 @@ export default function ToolDashboard() {
             <InfoRow label="Theme"><ThemeSelector /></InfoRow>
           </dl>
         </StatsPanel>
-        <StatsPanel title={skin === 'evolution' ? 'Resource Usage' : 'Statistics'}>
+        <StatsPanel kind="resources" title={skin === 'evolution' ? 'Resource Usage' : 'Statistics'}>
           {isAdmin ? <><QueryNotice query={health} label="Server statistics" />
             {health.isSuccess && <><UsageRow label="CPU Usage" value={health.data.cpu_pct != null ? `${Math.round(health.data.cpu_pct)}%` : '—'} pct={health.data.cpu_pct} /><UsageRow label="Memory Usage" value={health.data.mem_pct != null ? `${Math.round(health.data.mem_pct)}%` : '—'} pct={health.data.mem_pct} /><UsageRow label="Disk Space" value={disk?.pct != null ? `${Math.round(disk.pct)}%` : '—'} pct={disk?.pct} /></>}
             <QueryNotice query={accounts} label="Accounts" />

@@ -1,3 +1,4 @@
+import DirectAdminMigration from './DirectAdminMigration'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, DownloadCloud, FileArchive, Link2, Plus, Upload } from 'lucide-react'
@@ -23,6 +24,7 @@ function Progress({ row }) {
 
 export default function AccountImports() {
   const qc = useQueryClient()
+  const [remoteOpen, setRemoteOpen] = useState(false)
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState(null)
   const [file, setFile] = useState(null)
@@ -85,7 +87,7 @@ export default function AccountImports() {
   const columns = [
     { key: 'username', header: 'New account', sortable: true, searchable: true, render: row => <span className="font-medium">{row.username}</span> },
     { key: 'panel', header: 'Archive format', sortable: true, render: row => panelLabels[row.panel] || row.panel },
-    { key: 'source', header: 'Source', render: row => <span className="inline-flex items-center gap-1.5 text-muted-foreground">{row.source === 'url' ? <Link2 className="h-3.5 w-3.5" /> : <Upload className="h-3.5 w-3.5" />}{row.source === 'url' ? 'URL' : 'Upload'}</span> },
+    { key: 'source', header: 'Source', render: row => <span className="inline-flex items-center gap-1.5 text-muted-foreground">{row.source === 'url' ? <Link2 className="h-3.5 w-3.5" /> : <Upload className="h-3.5 w-3.5" />}{row.source === 'directadmin_remote' ? 'DirectAdmin server' : row.source === 'url' ? 'URL' : 'Upload'}</span> },
     { key: 'status', header: 'Status', sortable: true, render: row => <StatusBadge status={row.status} /> },
     { key: 'progress_message', header: 'Progress', render: row => <Progress row={row} /> },
     { key: 'started_at', header: 'Started', sortable: true, render: row => row.started_at ? formatDate(row.started_at) : '—' },
@@ -93,8 +95,10 @@ export default function AccountImports() {
 
   return <div>
     <PageHeader title="Account migrations" description="Move complete accounts from cPanel, DirectAdmin, or another Boron server. Each item is verified and reported while the import runs." icon={DownloadCloud}>
+      <Button variant="secondary" onClick={() => setRemoteOpen(value => !value)}>From DirectAdmin server</Button>
       <Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />New migration</Button>
     </PageHeader>
+    {remoteOpen && <DirectAdminMigration onClose={() => setRemoteOpen(false)} />}
     <DataTable columns={columns} data={rows} loading={external.isLoading || native.isLoading} error={external.error || native.error} onRetry={() => { external.refetch(); native.refetch() }} filterable searchPlaceholder="Search migrations…" pageSize={15} initialSort={{ key: 'started_at', dir: 'desc' }} getRowKey={row => row.rowKey} onRowClick={setSelected} emptyTitle="No account migrations" emptyDescription="Upload a full account archive to migrate it to this server." emptyIcon={FileArchive} emptyAction={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />New migration</Button>} />
 
     <Dialog open={open} onOpenChange={value => { setOpen(value); if (!value) reset() }}>

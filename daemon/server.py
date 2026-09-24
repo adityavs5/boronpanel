@@ -25,6 +25,7 @@ from shared.validation import ValidationError
 from daemon import panel_jobs, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 from daemon.rpc_authority import AuthenticationError, AuthorizationError, authorize, resolve_principal
+from daemon import directadmin_remote
 from daemon.rpc_policy import POLICY_BY_OPERATION
 
 logger = logging.getLogger("borond")
@@ -393,6 +394,7 @@ OP_TABLE = {
     "lscache.purge": lscache.purge,
     "lscache.stats": lscache.get_stats,
     # Phase 7b feature 1: cPanel backup import
+    "directadmin_remote.inspect": directadmin_remote.inspect_source,
     "cpanel_import.trigger": cpanel_import.trigger_import,
     "cpanel_import.get": cpanel_import.get_job,
     "cpanel_import.list": cpanel_import.list_jobs,
@@ -987,6 +989,11 @@ async def amain() -> None:
         await asyncio.get_running_loop().run_in_executor(None, redisacct.bootstrap_all_redis)
     except Exception:
         logger.exception("Redis bootstrap failed at startup")
+
+    try:
+        directadmin_remote.recover_interrupted()
+    except Exception:
+        logger.exception("DirectAdmin migration recovery failed at startup")
 
     try:
         malware.recover_interrupted()
