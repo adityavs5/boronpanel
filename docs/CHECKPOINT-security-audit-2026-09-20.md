@@ -799,3 +799,44 @@ host hashes match source and `boron-provisiond` is active. No release was
 published. The coverage totals remain 135 reviewed-fixed, 11 reviewed-public,
 755 pending; these fixes strengthen entries already reviewed. Full account
 termination crash recovery and domain reassignment paths remain pending.
+
+
+## 2026-09-24 — completed continuation and current limits
+
+Detailed source, test and deployment evidence is in
+`SECURITY-AUDIT-REVIEW-2026-09-24.md`. The current continuation committed:
+
+- `c4f3b91`: shared no-follow path traversal, tenant-UID ACL operations,
+  private/quoted application environment files, pinned local SSH host keys,
+  and authorization rechecks after RPC queue wait.
+- `ab131c8`: inactive customer credentials denied by HTTP and root resolution.
+- `7605102`: patched Python dependencies and all resolved transitive pins;
+  zero known advisories in the resolved 89-package set, successful isolated
+  installation/pip check and 62 focused compatibility tests.
+- `cd952f9`: sandboxed customer HTML previews, verified note attribution and
+  four-feature access review; 43 feature tests, five attribution/error tests,
+  and two independent Chromium preview checks passed.
+- `41f4a89`: 39 real-VM native mail-guard/config tests, with undefined-behavior
+  sanitization and 359 deterministic malformed-input cases.
+- `093e92b`: patched frontend graph (zero known npm advisories), successful
+  managed-Node production build and 23 Chromium regression tests; root log
+  filenames protected from API replacement, with 23 logging tests and a real
+  VM old-vulnerability/new-denial canary.
+
+The root logging fix is deployed to both servers. Primary verification used
+an actual health RPC and hostname-verified HTTPS 200 on configured port 2222,
+not the obsolete 9443 assumption. Both primary services remain active;
+source/deployed hashes match. The API can append its two request logs but
+cannot change log-directory entries. VM HTTP smoke and protected directory
+permissions passed too. Earlier shared-file/ACL/environment/terminal hotfixes
+also passed sustained primary checks and VM integration.
+
+The full authorization migration and new dependency/frontend bundles are NOT
+published or fully deployed on the primary. The audit is not complete. The
+coverage ledger has 902 entries: 158 reviewed-fixed, five reviewed-tested,
+11 reviewed-public and 728 pending. Remaining work includes resource/role and
+asynchronous lifecycle review, unresolved host/restore/import acceptance,
+final signed-candidate installation/update/rollback, signing-key recovery and
+publication. The existing disposable VM remains usable; no replacement VM is
+required. Do not turn passing policy or regression tests into a blanket audit
+completion claim.
