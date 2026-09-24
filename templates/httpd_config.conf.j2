@@ -440,19 +440,6 @@ module cache {
 module mod_security {
     ls_enabled          1
     modsecurity         on
-    modsecurity_rules   `SecRuleEngine On
-SecRequestBodyAccess On
-SecAuditEngine RelevantOnly
-SecAuditLogParts ABCEFHJKZ
-SecAuditLogType Serial
-SecAuditLog {{ waf_audit_log }}
-{% for override in waf_domain_overrides %}
-SecRule REQUEST_HEADERS:Host "@rx ^{{ override.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9000000 + loop.index }},phase:1,t:none,t:lowercase,pass,nolog,ctl:ruleEngine=Off"
-{% endfor %}
-{% for rule in waf_custom_rules %}
-SecRule REQUEST_HEADERS:Host "@rx ^{{ rule.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9100000 + loop.index }},phase:2,t:none,t:lowercase,deny,status:403,msg:'boron-custom-rule-{{ rule.id }}',chain"
-SecRule {{ rule.target }} "@rx {{ rule.pattern }}" "t:none"
-{% endfor %}`
-    modsecurity_rules_file   {{ waf_rules_file }}
+    modsecurity_rules_file   {{ waf_runtime_file }}
 }
 {% endif %}

@@ -35,7 +35,7 @@ def test_rendered_custom_rule_enforces_host_and_payload(host,value,blocked):
         getattr(lib,name).argtypes=args;getattr(lib,name).restype=result
     context={'waf_enabled':True,'waf_audit_log':'/tmp/unused','waf_rules_file':'/tmp/unused',
         'waf_domain_overrides':[], 'waf_custom_rules':[{'id':7,'domain':'shop.example.com','target':'ARGS','pattern':'badbot'}]}
-    rendered=ols.render_httpd_config([],[],waf=context)
+    rendered=ols.render_waf_rules(context)
     rules='SecRuleEngine On\nSecAuditEngine Off\n'+ '\n'.join(line for line in rendered.splitlines() if line.startswith('SecRule '))
     engine=lib.msc_init();rule_set=lib.msc_create_rules_set();transaction=None
     intervention=Intervention(status=200)

@@ -588,8 +588,8 @@ def test_render_httpd_config_includes_modsecurity_module_when_waf_enabled():
     content = ols.render_httpd_config([], [], waf=waf)
     assert "module mod_security {" in content
     assert "modsecurity         on" in content
-    assert "modsecurity_rules_file   /etc/modsecurity/modsec_includes.conf" in content
-    assert "SecAuditLog /var/log/boron/modsecurity-audit.log" in content
+    assert "modsecurity_rules_file   /etc/modsecurity/boron-runtime.conf" in content
+    assert "SecAuditLog /var/log/boron/modsecurity-audit.log" in ols.render_waf_rules(waf)
 
 
 def test_render_httpd_config_waf_domain_override_generates_rule_engine_off():
@@ -600,7 +600,7 @@ def test_render_httpd_config_waf_domain_override_generates_rule_engine_off():
         "waf_domain_overrides": [{"domain": "example.com"}],
         "waf_custom_rules": [],
     }
-    content = ols.render_httpd_config([], [], waf=waf)
+    content = ols.render_waf_rules(waf)
     assert '@rx ^example[.]com[.]?(?::[0-9]{1,5})?$' in content
     assert "ctl:ruleEngine=Off" in content
 
@@ -613,7 +613,7 @@ def test_render_httpd_config_waf_custom_rule_generates_scoped_chain():
         "waf_domain_overrides": [],
         "waf_custom_rules": [{"id": 7, "domain": "shop.example.com", "target": "ARGS", "pattern": "badbot"}],
     }
-    content = ols.render_httpd_config([], [], waf=waf)
+    content = ols.render_waf_rules(waf)
     assert '@rx ^shop[.]example[.]com[.]?(?::[0-9]{1,5})?$' in content
     assert 'SecRule ARGS "@rx badbot"' in content
     assert "boron-custom-rule-7" in content
@@ -981,7 +981,7 @@ def test_waf_host_scope_and_chain_actions(host, expected):
     import re
     waf={'waf_enabled':True,'waf_audit_log':'/tmp/audit.log','waf_rules_file':'/tmp/rules.conf',
          'waf_domain_overrides':[], 'waf_custom_rules':[{'id':7,'domain':'shop.example.com','target':'ARGS','pattern':'badbot'}]}
-    content=ols.render_httpd_config([],[],waf=waf)
+    content=ols.render_waf_rules(waf)
     lines=[line for line in content.splitlines() if line.startswith('SecRule ')]
     host_rule, target_rule=lines
     pattern=host_rule.split('"')[1].removeprefix('@rx ')

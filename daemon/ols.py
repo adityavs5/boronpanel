@@ -511,6 +511,7 @@ def _webmail_ssl_paths(session) -> tuple[str, str]:
 # this function's context -- daemon/waf.py imports these path constants
 # rather than duplicating them.
 WAF_RULES_FILE = "/etc/modsecurity/modsec_includes.conf"
+WAF_RUNTIME_FILE = "/etc/modsecurity/boron-runtime.conf"
 WAF_AUDIT_LOG = "/var/log/boron/modsecurity-audit.log"
 
 
@@ -559,6 +560,16 @@ def cloudflare_trusted_ips() -> list[str]:
     return list(data.get("ipv4_cidrs") or []) + list(data.get("ipv6_cidrs") or [])
 
 
+def render_waf_rules(waf: dict) -> str:
+    return _env.get_template('modsecurity_rules.conf.j2').render(**waf)
+
+
+def _attach_waf_config(targets: dict, contents: dict, waf: dict) -> None:
+    if waf.get('waf_enabled'):
+        targets['__boron_waf_rules'] = WAF_RUNTIME_FILE
+        contents['__boron_waf_rules'] = render_waf_rules(waf)
+
+
 def render_httpd_config(
     domain_vhosts: list[dict],
     account_procs: list[dict],
@@ -569,6 +580,7 @@ def render_httpd_config(
     template = _env.get_template("httpd_config.conf.j2")
     return template.render(
         server_name="boron",
+        waf_runtime_file=WAF_RUNTIME_FILE,
         cloudflare_trusted_ips=cloudflare_trusted_ips() if cloudflare_ranges is None else cloudflare_ranges,
         admin_email="root@localhost",
         min_uid=11,
@@ -627,15 +639,18 @@ def bootstrap_webmail() -> None:
     httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings)
     webmail_content = render_webmail_vhost_conf(ssl_key_file, ssl_cert_file)
 
+    targets = {"main": HTTPD_CONFIG_PATH, "webmail": _webmail_vhost_conf_path()}
+    contents = {"main": httpd_content, "webmail": webmail_content}
+    _attach_waf_config(targets, contents, waf)
     writer = ConfigWriterMulti(
-        targets={"main": HTTPD_CONFIG_PATH, "webmail": _webmail_vhost_conf_path()},
+        targets=targets,
         validate=_validate_multi,
         reload=_reload,
         verify=_verify,
         backup_dir=settings.backup_dir,
         subsystem="ols",
     )
-    result = writer.apply({"main": httpd_content, "webmail": webmail_content})
+    result = writer.apply(contents)
     if not result.ok:
         raise RuntimeError(f"OLS config transaction failed during bootstrap_webmail: {result.summary()}")
 
@@ -707,6 +722,7 @@ def bootstrap_pma() -> None:
         targets["namespace"] = str(namespace_path)
         contents["namespace"] = namespace_content
 
+    _attach_waf_config(targets, contents, waf)
     writer = ConfigWriterMulti(
         targets=targets,
         validate=_validate_multi,
@@ -734,6 +750,11 @@ def _static_precheck(content: str) -> StepResult:
 
 def _validate_multi(tmp_paths: dict[str, Path]) -> StepResult:
     for name, path in tmp_paths.items():
+        # ModSecurity regex braces are not OLS configuration block delimiters.
+        if name == "__boron_waf_rules":
+            if not path.read_text().strip():
+                return StepResult(False, "empty WAF rules")
+            continue
         result = _static_precheck(path.read_text())
         if not result.ok:
             return StepResult(False, f"{name}: {result.message}")
@@ -824,6 +845,7 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
             error_pages=error_pages_by_domain[domain["domain"]],
         )
 
+    _attach_waf_config(targets, content, waf)
     writer = ConfigWriterMulti(
         targets=targets,
         validate=_validate_multi,
@@ -921,15 +943,18 @@ def _apply_main_only(domain_vhosts: list[dict], account_procs: list[dict], conte
         waf = waf_template_context(session)
         ols_settings = _ols_settings_from_session(session)
     httpd_content = render_httpd_config(domain_vhosts, account_procs, waf=waf, ols_settings=ols_settings)
+    targets = {"main": HTTPD_CONFIG_PATH}
+    contents = {"main": httpd_content}
+    _attach_waf_config(targets, contents, waf)
     writer = ConfigWriterMulti(
-        targets={"main": HTTPD_CONFIG_PATH},
+        targets=targets,
         validate=_validate_multi,
         reload=_reload,
         verify=_verify,
         backup_dir=settings.backup_dir,
         subsystem="ols",
     )
-    result = writer.apply({"main": httpd_content})
+    result = writer.apply(contents)
     if not result.ok:
         raise RuntimeError(f"OLS config transaction failed during {context}: {result.summary()}")
 
@@ -1047,6 +1072,7 @@ def bootstrap_baseline() -> None:
             *_webmail_ssl_paths(None)
         )
 
+    _attach_waf_config(targets, contents, waf)
     writer = ConfigWriterMulti(
         targets=targets,
         validate=_validate_multi,
