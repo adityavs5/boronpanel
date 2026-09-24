@@ -77,6 +77,7 @@ def test_remote_error_details_are_not_reflected():
 def test_backup_listing_ignores_symlinks_and_unexpected_paths(monkeypatch):
     source = object.__new__(remote.Source)
     responses = iter([
+        {'list[]': ['alice.example.com']},
         {'list[]': ['backup.tar.gz']},
         {'/backups/backup.tar.gz': urlencode({'type': 'file', 'size': 123, 'date': '1', 'linkpath': ''}),
          '/backups/linked.tar.gz': urlencode({'type': 'file', 'size': 123, 'linkpath': '/etc/shadow'}),
@@ -116,12 +117,14 @@ def test_remote_transfer_waits_for_new_stable_archive_and_clears_password(tmp_pa
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def accounts(self): return ['alice']
+        def backup_domain(self, user): return 'alice.example.com'
         def backups(self, user):
             self.count += 1
             return {} if self.count == 1 else {'/backups/new.tar.gz': (4, '123')}
         def request(self, endpoint, payload, user, method):
             assert endpoint == 'CMD_API_SITE_BACKUP'
             assert payload['action'] == 'backup'
+            assert payload['domain'] == 'alice.example.com'
             assert 'database' in payload.values()
         @contextmanager
         def stream(self, endpoint, payload, user):
@@ -146,3 +149,31 @@ def test_shared_wordpress_database_reuses_imported_credentials(tmp_path, monkeyp
         ci._wordpress_rewrite_step.__wrapped__('alice', domain, {'old_shop': 'alice_shop'}, {'alice_shop': ('alice_shop', 'test-secret')})
     assert len(calls) == 2
     assert all(args[1:] == ('alice_shop', 'alice_shop', 'test-secret') for args in calls)
+
+
+def test_backup_domain_is_real_owned_domain_and_cached():
+    source = object.__new__(remote.Source)
+    calls = []
+    def request(endpoint, **kwargs):
+        calls.append((endpoint, kwargs))
+        return {'list[]': ['alice.example.com']}
+    source.request = request
+    assert source.backup_domain('alice') == 'alice.example.com'
+    assert source.backup_domain('alice') == 'alice.example.com'
+    assert calls == [('CMD_API_SHOW_DOMAINS', {'user': 'alice'})]
+
+
+def test_domain_less_account_fails_without_fake_domain():
+    source = source_with_response('')
+    with pytest.raises(ValidationError, match='no domain available'):
+        source.backup_domain('alice')
+
+
+@pytest.mark.parametrize('method,stage', [('GET', 'listing source backups'), ('POST', 'creating the source backup')])
+def test_remote_failure_identifies_stage_without_exposing_details(method, stage):
+    source = source_with_response('error=1&text=Domain+does+not+exist&details=secret-password')
+    with pytest.raises(ValidationError) as error:
+        source.request('CMD_API_SITE_BACKUP', method=method)
+    assert stage in str(error.value)
+    assert 'rejected the account domain' in str(error.value)
+    assert 'secret-password' not in str(error.value)

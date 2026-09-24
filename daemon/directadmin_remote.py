@@ -20,7 +20,7 @@ import paramiko
 
 from daemon import webhooks
 from shared.config import settings
-from shared.validation import ValidationError
+from shared.validation import ValidationError, validate_domain
 
 DA = '/usr/local/directadmin/directadmin'
 BACKUP_ITEMS = ('domain', 'subdomain', 'email', 'forwarder', 'autoresponder',
@@ -155,7 +155,22 @@ class Source:
         if not isinstance(result, (dict, list)):
             raise ValidationError('Unrecognized DirectAdmin API response')
         if isinstance(result, dict) and str(result.get('error', '0')).lower() not in ('0', 'false', ''):
-            raise ValidationError('DirectAdmin reported an error; check its task/message log')
+            # Do not reflect arbitrary source output: it can contain credentials.
+            stage = {
+                'CMD_API_SHOW_ALL_USERS': 'listing source accounts',
+                'CMD_API_SHOW_DOMAINS': 'listing the selected account domains',
+                'CMD_API_SITE_BACKUP': 'creating the source backup' if method == 'POST' else 'listing source backups',
+                'CMD_API_FILE_MANAGER': 'reading the source backup directory',
+            }.get(endpoint, 'requesting source data')
+            detail = ' '.join(str(result.get(k, '')) for k in ('text', 'details')).lower()
+            reason = 'check its task/message log and API permissions'
+            if 'domain' in detail and any(word in detail for word in ('invalid', 'exist', 'owned', 'belong')):
+                reason = 'the source rejected the account domain; verify its ownership and status'
+            elif any(word in detail for word in ('permission', 'not allowed', 'access denied', 'not permitted')):
+                reason = 'the source denied permission; check login-key commands and user backup permissions'
+            elif any(word in detail for word in ('disk space', 'quota', 'no space')):
+                reason = 'the source has insufficient disk space or backup quota'
+            raise ValidationError(f'DirectAdmin failed while {stage}: {reason}')
         return result
 
     def accounts(self):
@@ -165,8 +180,21 @@ class Source:
             raise ValidationError('DirectAdmin did not return an account list; use an administrator login')
         return sorted({source_username(name) for name in names})
 
+    def backup_domain(self, user):
+        # DA validates the domain context even though backups include all domains.
+        # Cache it for the polling loop; never invent a domain for this account.
+        if not hasattr(self, '_backup_domains'):
+            self._backup_domains = {}
+        if user not in self._backup_domains:
+            result = self.request('CMD_API_SHOW_DOMAINS', user=user)
+            names = result if isinstance(result, list) else result.get('list[]', result.get('list', []))
+            if not isinstance(names, list) or not names:
+                raise ValidationError('The selected DirectAdmin account has no domain available for a user backup')
+            self._backup_domains[user] = validate_domain(names[0])
+        return self._backup_domains[user]
+
     def backups(self, user):
-        listing = self.request('CMD_API_SITE_BACKUP', {'domain': 'migration.invalid'}, user)
+        listing = self.request('CMD_API_SITE_BACKUP', {'domain': self.backup_domain(user)}, user)
         if not listing or (isinstance(listing, dict) and not listing.get('list[]', listing.get('list', []))):
             return {}
         result = self.request('CMD_API_FILE_MANAGER', {'path': '/backups'}, user)
@@ -210,7 +238,7 @@ def fetch_archive(job_id, params, work_dir):
                 raise ValidationError('Selected account is not available on the source')
             before = source.backups(user)
             _update_job(job_id, progress_message='creating DirectAdmin source backup')
-            payload = {'action': 'backup', 'domain': 'migration.invalid'}
+            payload = {'action': 'backup', 'domain': source.backup_domain(user)}
             payload.update({f'select{i}': item for i, item in enumerate(BACKUP_ITEMS)})
             source.request('CMD_API_SITE_BACKUP', payload, user, 'POST')
             deadline = time.monotonic() + 7200
