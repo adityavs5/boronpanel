@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from daemon.database_operations import serialized_worker
 import logging
+import json
 import gzip
 import os
 import pwd
@@ -786,16 +787,13 @@ def _parse_bind_zone_records(zone_path: Path, domain: str) -> list[dict]:
 def _import_dns_zone(username: str, domain: str, zone_path: Path) -> str:
     handlers_dns.create_zone({"username": username, "domain": domain})
     records = _parse_bind_zone_records(zone_path, domain)
-    imported = 0
+    grouped = {}
     for rec in records:
-        try:
-            handlers_dns.set_record(
-                {"domain": domain, "subdomain": rec["subdomain"], "type": rec["type"], "values": [rec["value"]]}
-            )
-            imported += 1
-        except Exception:  # noqa: BLE001 - one bad record must not drop the whole zone
-            logger.exception("cpanel import: failed to import %s record for '%s'", rec["type"], domain)
-    return f"created managed zone '{domain}' with {imported}/{len(records)} records imported"
+        grouped.setdefault((rec['subdomain'], rec['type']), []).append(rec['value'])
+    for (label, kind), values in grouped.items():
+        handlers_dns.set_record({'domain': domain, 'subdomain': label, 'type': kind, 'values': list(dict.fromkeys(values))})
+    return f"created managed zone '{domain}' with {len(records)} records imported"
+
 
 
 # --- SSL certificates -----------------------------------------------------------
@@ -840,7 +838,7 @@ def _import_ssl_cert(username: str, domain: str, cert_path: Path, key_path: Path
         pass
     covered = {common_name, *sans}
     if domain not in covered and not any(
-        name.startswith("*.") and domain.endswith(name[1:]) for name in covered
+        name.startswith("*.") and domain.endswith(name[1:]) and domain.count(".") == name.count(".") for name in covered
     ):
         raise _Skip(f"certificate does not cover '{domain}' (covers: {sorted(n for n in covered if n)})")
 
@@ -1004,7 +1002,7 @@ def _copy_tree_contents(source: Path, destination: Path) -> None:
             shutil.copy2(item, target)
 
 
-def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path:
+def _normalize_directadmin_archive(extract_dir: Path, destination: Path, runtime: dict | None = None) -> Path:
     """Translate DirectAdmin's portable user archive into our import model.
 
     The normalized directory is private staging data. It lets the mature
@@ -1065,6 +1063,14 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
         _copy_tree_contents(public_html, normalized_docroot)
         (userdata / f"{domain}.yaml").write_text(yaml.safe_dump({"documentroot": recorded_docroot}))
 
+    for nested_name in ('home.tar.gz', 'home.tar.zst', 'home.tar'):
+        nested = source / 'backup' / nested_name
+        if nested.is_file():
+            _extract_archive(nested, homedir, directadmin=True)
+            break
+    if domains_dir.is_dir():
+        _copy_tree_contents(domains_dir, homedir / 'domains')
+
     mysql_dir = destination / "mysql"
     mysql_dir.mkdir()
     expanded = 0
@@ -1091,6 +1097,8 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
     dns_dir.mkdir()
     for domain in valid_domains:
         candidates = [
+            source / "backup" / domain / f"{domain}.db",
+            source / "backup" / domain / "domain.db",
             source / "backup" / f"{domain}.db",
             source / "backup" / "dns" / f"{domain}.db",
             source / "backup" / "domains" / f"{domain}.db",
@@ -1105,12 +1113,16 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
     ssl_keys.mkdir(parents=True)
     for domain in valid_domains:
         domain_base = domains_dir / domain
-        cert_candidates = [domain_base / "cert.pem", domain_base / "certificate.pem", source / "backup" / f"{domain}.cert"]
-        key_candidates = [domain_base / "key.pem", domain_base / "private.key", source / "backup" / f"{domain}.key"]
+        cert_candidates = [domain_base / "cert.pem", domain_base / "certificate.pem", source / "backup" / f"{domain}.cert", source / "backup" / domain / "domain.cert"]
+        key_candidates = [domain_base / "key.pem", domain_base / "private.key", source / "backup" / f"{domain}.key", source / "backup" / domain / "domain.key"]
         cert = next((path for path in cert_candidates if path.is_file()), None)
         key = next((path for path in key_candidates if path.is_file()), None)
         if cert and key:
-            shutil.copy2(cert, ssl_certs / f"{domain}.crt")
+            cert_target = ssl_certs / f"{domain}.crt"
+            shutil.copy2(cert, cert_target)
+            chain = source / 'backup' / domain / 'domain.cacert'
+            if chain.is_file() and chain.stat().st_size:
+                cert_target.write_bytes(cert_target.read_bytes().rstrip() + b'\n' + chain.read_bytes())
             shutil.copy2(key, ssl_keys / f"{domain}.key")
 
     imap = source / "imap"
@@ -1125,6 +1137,15 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
                 maildir = mailbox / "Maildir" if (mailbox / "Maildir").is_dir() else mailbox
                 if any((maildir / folder).is_dir() for folder in ("cur", "new", "tmp")):
                     _copy_tree_contents(maildir, homedir / "mail" / domain / mailbox.name)
+
+    for domain in valid_domains:
+        native_mail = source / 'backup' / domain / 'email' / 'data' / 'imap'
+        if native_mail.is_dir():
+            for mailbox in native_mail.iterdir():
+                if not mailbox.is_dir(): continue
+                maildir = mailbox / 'Maildir' if (mailbox / 'Maildir').is_dir() else mailbox
+                if any((maildir / folder).is_dir() for folder in ('cur', 'new', 'tmp')):
+                    _copy_tree_contents(maildir, homedir / 'mail' / domain / mailbox.name)
 
     cron_source = next((path for path in (
         source / "backup" / "cron.conf",
@@ -1144,6 +1165,16 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path) -> Path
         ftp_target = homedir / "etc" / primary
         ftp_target.mkdir(parents=True)
         shutil.copy2(ftp_source, ftp_target / "passwd")
+    from daemon.directadmin_fidelity import build
+    manifest = build(source, destination, old_username or 'directadmin', valid_domains, runtime)
+    (destination / 'directadmin-manifest.json').write_text(json.dumps(manifest))
+    (userdata / 'main.yaml').write_text(yaml.safe_dump({
+        'main_domain': primary,
+        'addon_domains': {item['domain']: {} for item in manifest['domains'] if item['kind'] == 'addon'},
+        'sub_domains': [item['domain'] for item in manifest['domains'] if item['kind'] == 'subdomain'],
+    }))
+    for item in manifest['domains']:
+        (userdata / f"{item['domain']}.yaml").write_text(yaml.safe_dump({'documentroot': f"/home/{old_username or 'directadmin'}/{item['docroot']}"}))
     return destination
 
 
@@ -1286,6 +1317,7 @@ def _cleanup_failed_import(job_id, username, ownership):
 
 def _run_import_job(job_id: int, params: dict) -> None:
     ownership = None
+    da_manifest = None
     try:
         with write_session() as session:
             job = session.get(CpanelImportJob, job_id)
@@ -1333,11 +1365,27 @@ def _run_import_job(job_id: int, params: dict) -> None:
             if panel == "directadmin":
                 normalized = work_dir / "normalized"
                 normalized.mkdir()
-                root = _normalize_directadmin_archive(extract_dir, normalized)
+                runtime_path = work_dir / 'directadmin-runtime.json'
+                runtime = json.loads(runtime_path.read_text()) if runtime_path.is_file() else None
+                root = _normalize_directadmin_archive(extract_dir, normalized, runtime)
+                da_manifest = json.loads((root / 'directadmin-manifest.json').read_text())
+                if da_manifest['apps'] and any(app.get('source_username') != username for app in da_manifest['apps']):
+                    da_manifest['blockers'].append('Keep the original username for application migrations; source absolute paths cannot be safely rewritten automatically')
+                from daemon.directadmin_fidelity import map_application_databases
+                map_application_databases(root, da_manifest, {dump.stem for dump in _parse_mysql_dumps(root)})
+                for note in da_manifest['warnings']:
+                    _append_result(job_id, 'preflight', 'skipped', note)
+                for note in da_manifest['blockers']:
+                    _append_result(job_id, 'preflight', 'failed', note)
+                if da_manifest['blockers']:
+                    raise CpanelImportError('DirectAdmin compatibility preflight blocked account creation; resolve the reported items and retry')
+                for entry in da_manifest['domains']:
+                    _append_result(job_id, f"preflight:{entry['domain']}", 'ok', f"PHP {entry['php_version'] or 'static site'}; document root {entry['docroot']}")
+                _append_result(job_id, 'preflight', 'ok', f"Verified {len(da_manifest['domains'])} domains, {len(da_manifest['mailboxes'])} mailboxes and {len(da_manifest['apps'])} applications")
             else:
                 root = _find_content_root(extract_dir)
             info = _parse_account_info(root)
-            if source == "directadmin_remote":
+            if panel == "directadmin":
                 from daemon.import_compat import preflight_dumps
                 _update_job(job_id, progress_message="checking database compatibility")
                 for note in preflight_dumps(_parse_mysql_dumps(root), params.get("db_compatibility") == "adapt"):
@@ -1357,6 +1405,10 @@ def _run_import_job(job_id: int, params: dict) -> None:
             # /tmp indefinitely.
             if source == "upload":
                 Path(source_ref).unlink(missing_ok=True)
+
+        if params.get('preflight_only'):
+            _update_job(job_id, status='completed', progress_message='compatibility analysis completed — no destination account created', completed_at=utcnow())
+            return
 
         domains = _parse_domains(root, info)
         primary_domain = domains[0]["domain"] if domains and domains[0]["kind"] == "primary" else None
@@ -1425,7 +1477,12 @@ def _run_import_job(job_id: int, params: dict) -> None:
 
             _run_step(job_id, "files", lambda: _copy_homedir(root, username))
 
-            for domain_entry in domains:
+            if da_manifest:
+                from daemon.directadmin_restore import apply_domain
+                for entry in da_manifest['domains']:
+                    _run_step(job_id, f"settings:{entry['domain']}", lambda entry=entry: apply_domain(username, entry))
+
+            for domain_entry in ([] if da_manifest else domains):
                 if domain_entry["kind"] == "primary":
                     continue
                 _run_step(job_id, f"docroot-relocate:{domain_entry['domain']}", lambda d=domain_entry["domain"]: _relocate_docroot_step(root, username, d))
@@ -1453,7 +1510,19 @@ def _run_import_job(job_id: int, params: dict) -> None:
                     continue
                 _run_step(job_id, f"ssl:{domain_name}", lambda dn=domain_name, cp=cert_path, kp=key_path: _import_ssl_cert(username, dn, cp, kp))
 
-            mailboxes = _parse_mailboxes(root, [d["domain"] for d in domains])
+            if da_manifest:
+                from daemon.directadmin_restore import restore_mail, restore_app
+                for domain in {entry['domain'] for entry in da_manifest['mailboxes'] + da_manifest['forwards'] + da_manifest['catchalls']}:
+                    _run_step(job_id, f'mail-domain:{domain}', lambda domain=domain: handlers_mail.create_mail_domain({'username': username, 'domain': domain}) and 'created')
+                for entry in da_manifest['mailboxes']:
+                    _run_step(job_id, f"mailbox:{entry['local_part']}@{entry['domain']}", lambda entry=entry: restore_mail(root, entry))
+                for entry in da_manifest['forwards']:
+                    _run_step(job_id, f"forward:{entry['local_part']}@{entry['domain']}", lambda entry=entry: handlers_mail.create_forward(entry) and 'restored')
+                for entry in da_manifest['catchalls']:
+                    _run_step(job_id, f"catchall:{entry['domain']}", lambda entry=entry: handlers_mail.set_catchall(entry) and 'restored')
+                for entry in da_manifest['apps']:
+                    _run_step(job_id, f"application:{entry['domain']}", lambda entry=entry: restore_app(root, username, entry, db_name_map, db_credentials))
+            mailboxes = [] if da_manifest else _parse_mailboxes(root, [d["domain"] for d in domains])
             mail_domains_created: set[str] = set()
             for domain_name, local_part in mailboxes:
                 if domain_name not in mail_domains_created:

@@ -117,6 +117,7 @@ def test_remote_transfer_waits_for_new_stable_archive_and_clears_password(tmp_pa
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def accounts(self): return ['alice']
+        def runtime_inventory(self, user): return {}
         def backup_domain(self, user): return 'alice.example.com'
         def backups(self, user):
             self.count += 1
@@ -222,6 +223,7 @@ def test_disabled_user_backups_fall_back_to_admin_transfer(tmp_path, monkeypatch
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def accounts(self): return ['alice']
+        def runtime_inventory(self, user): return {}
         def backups(self, user): return {}
         def backup_domain(self, user): return 'example.com'
         def request(self, *args): raise remote.UserBackupsDisabled('disabled')
@@ -238,3 +240,25 @@ def test_disabled_user_backups_fall_back_to_admin_transfer(tmp_path, monkeypatch
     params = {'remote_user': 'alice', 'remote': {'password': 'test'}}
     assert remote.fetch_archive(1, params, tmp_path).read_bytes() == b'data'
     assert 'password' not in params['remote']
+
+
+def test_runtime_inventory_uses_selected_option_text_and_readonly_selector():
+    source = object.__new__(remote.Source)
+    source.ssh = None
+    calls = []
+    def request(endpoint, data=None, user=None, method='GET'):
+        calls.append((endpoint, method))
+        if endpoint == 'CMD_API_SHOW_DOMAINS': return {'list[]': ['example.com']}
+        if endpoint == 'CMD_ADDITIONAL_DOMAINS':
+            return {'php1_ver': '8.3', 'php1_select': {'0': {'value': '1', 'text': 'PHP 8.3'}, '5': {'value': '6', 'text': 'PHP 8.0', 'selected': 'yes'}}}
+        if endpoint == 'CMD_API_FILE_MANAGER':
+            return {'/.cl.selector': {}} if data['path'] == '/' else {'/.cl.selector/node-selector.json': {}}
+        if endpoint == 'CMD_FILE_MANAGER':
+            return {'nodeapps/backend': {'domain': 'example.com', 'nodejs_version': '20', 'startup_file': 'server.js', 'app_status': 'started', 'app_mode': 'production', 'env_vars': {}}}
+        raise AssertionError(endpoint)
+    source.request = request
+    result = source.runtime_inventory('alice')
+    assert result['example.com']['selected'] == '8.0'
+    assert result['example.com']['slots']['6'] == '8.0'
+    assert result['__applications'][0]['version'] == '20'
+    assert all(method == 'GET' for _, method in calls)

@@ -14,6 +14,7 @@ export default function DirectAdminMigration({ onClose, onQueued }) {
   const [preview, setPreview] = useState(null)
   const [selected, setSelected] = useState({})
   const [compatibility, setCompatibility] = useState('strict')
+  const [analyzeOnly, setAnalyzeOnly] = useState(false)
   const [queued, setQueued] = useState([])
   const [failures, setFailures] = useState([])
   const change = (name, value) => {
@@ -32,7 +33,7 @@ export default function DirectAdminMigration({ onClose, onQueued }) {
       for (const [remote_user, username] of Object.entries(selected)) {
         try {
           const job = await post('/api/v1/admin/import/accounts/directadmin/migrate', {
-            remote: connection, remote_user, username, db_compatibility: compatibility,
+            remote: connection, remote_user, username, db_compatibility: compatibility, preflight_only: analyzeOnly,
           })
           jobs.push(job)
           setSelected(current => { const next = { ...current }; delete next[remote_user]; return next })
@@ -77,7 +78,9 @@ export default function DirectAdminMigration({ onClose, onQueued }) {
       <div className="max-h-80 overflow-auto rounded-btn border border-border"><table className="w-full text-left"><thead className="bg-muted"><tr><th className="p-3">Source account</th><th className="p-3">New Boron username</th></tr></thead><tbody>{preview.accounts.map(row => <tr key={row.username} className="border-t border-border"><td className="p-3"><label className="flex items-center gap-2"><input type="checkbox" disabled={busy} checked={Object.hasOwn(selected, row.username)} onChange={event => setSelected(current => { const next = { ...current }; if (event.target.checked) next[row.username] = row.available ? row.username : ''; else delete next[row.username]; return next })} />{row.username}</label>{!row.available && <span className="text-sm text-muted-foreground">Destination name is occupied or has an active import; choose a different name.</span>}</td><td className="p-3">{Object.hasOwn(selected, row.username) && <Input aria-label={`Destination username for ${row.username}`} disabled={busy} value={selected[row.username]} onChange={event => setSelected(current => ({ ...current, [row.username]: event.target.value }))} />}</td></tr>)}</tbody></table>{!preview.accounts.length && <p className="p-4">No source accounts found.</p>}</div>
       <FormField label="Database compatibility" htmlFor="da-compat"><Select id="da-compat" disabled={busy} value={compatibility} onChange={event => setCompatibility(event.target.value)}><option value="strict">Strict — stop before account creation on detected incompatibilities</option><option value="adapt">Allow supported collation mappings and destination object definers</option></Select></FormField>
       {compatibility === 'adapt' && <p className="rounded-btn border border-warning/40 bg-warning/10 p-3 text-sm">Collation conversions can change sorting and unique-key comparisons. Views, routines and triggers will use the destination database user. Review the per-database report and verify your applications before changing DNS. Other unsupported SQL is never silently skipped.</p>}
-      <Button onClick={() => migrate.mutate()} disabled={!valid || busy} loading={migrate.isPending}>Import {selectedNames.length || ''} selected account{selectedNames.length === 1 ? '' : 's'}</Button>
+      <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={analyzeOnly} onChange={event => setAnalyzeOnly(event.target.checked)} disabled={busy} /><span>Analyze compatibility only. This creates and reads a source backup, but does not create an account on Boron. The report checks PHP versions, document roots, mail credentials and supported applications.</span></label>
+      <p className="text-sm text-muted-foreground">Boron preserves matching PHP versions; unavailable or unknown runtimes block migration. Supported CloudLinux Node apps can be detected through administrator access; root SSH provides additional application inventory. Source accounts and DNS stay unchanged. Review application behavior and mail delivery before switching traffic.</p>
+      <Button onClick={() => migrate.mutate()} disabled={!valid || busy} loading={migrate.isPending}>{analyzeOnly ? 'Analyze' : 'Import'} {selectedNames.length || ''} selected account{selectedNames.length === 1 ? '' : 's'}</Button>
     </div>}
     {!!failures.length && <div role="alert" className="text-danger space-y-1">{failures.map(message => <p key={message}>{message}</p>)}</div>}
     {!!queued.length && <p role="status">Submitted: {queued.map(job => `${job.username} (#${job.id})`).join(', ')}. Check current status in the migration history below. To retry a failed import, re-enter the source password, connect again and select the account.</p>}

@@ -130,6 +130,7 @@ class DirectAdminImport(BaseModel):
     remote_user: str
     username: str
     db_compatibility: str = "strict"
+    preflight_only: bool = False
 
 
 @accounts_api_router.post("/directadmin/inspect")

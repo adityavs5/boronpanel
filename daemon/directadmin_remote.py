@@ -218,6 +218,58 @@ class Source:
         return files
 
 
+    def runtime_inventory(self, user):
+        result = self.request('CMD_API_SHOW_DOMAINS', user=user)
+        domains = result if isinstance(result, list) else result.get('list[]', result.get('list', []))
+        inventory = {}
+        for domain in domains:
+            domain = validate_domain(domain)
+            data = self.request('CMD_ADDITIONAL_DOMAINS', {'domain': domain, 'action': 'view', 'json': 'yes'}, user)
+            slots = {str(i): str(data[f'php{i}_ver']) for i in range(1, 10) if data.get(f'php{i}_ver')}
+            selector = data.get('php1_select', {})
+            selected = None
+            if isinstance(selector, dict):
+                from daemon.directadmin_fidelity import php_version
+                for option in selector.values():
+                    if isinstance(option, dict):
+                        version = php_version(option.get('text', ''))
+                        if version and str(option.get('value', '')).isdigit():
+                            slots[str(option['value'])] = version
+                        if option.get('selected') == 'yes':
+                            selected = slots.get(str(option.get('value')))
+            elif str(selector) in slots:
+                selected = slots[str(selector)]
+            inventory[domain] = {'slots': slots, 'selected': selected}
+        if not self.ssh:
+            # CloudLinux stores Node Selector state in the account home. Reading
+            # it through File Manager needs no source command or backup mutation.
+            from daemon.directadmin_fidelity import selector_file_applications
+            listing = self.request('CMD_API_FILE_MANAGER', {'path': '/'}, user)
+            if '/.cl.selector' in listing:
+                listing = self.request('CMD_API_FILE_MANAGER', {'path': '/.cl.selector'}, user)
+                path = '/.cl.selector/node-selector.json'
+                if path in listing:
+                    data = self.request('CMD_FILE_MANAGER', {'path': path}, user)
+                    inventory['__applications'] = selector_file_applications(data, user)
+                    inventory['__selector_checked'] = ['node-selector.json']
+        if self.ssh:
+            from daemon.directadmin_fidelity import selector_applications
+            apps = []
+            for interpreter in ('nodejs', 'python'):
+                command = 'if command -v cloudlinux-selector >/dev/null 2>&1; then cloudlinux-selector get --json --interpreter ' + interpreter + ' --user ' + shlex.quote(source_username(user)) + "; else printf '{}'; fi"
+                stdin, stdout, stderr = self.ssh.exec_command(command, timeout=60)
+                stdin.close()
+                try:
+                    raw = stdout.read(4 * 1024 * 1024 + 1)
+                    if len(raw) > 4 * 1024 * 1024 or stdout.channel.recv_exit_status() != 0:
+                        raise ValidationError('Could not read CloudLinux application inventory')
+                    apps.extend(selector_applications(json.loads(raw), user, interpreter))
+                finally:
+                    stdout.channel.close()
+            inventory['__applications'] = apps
+            inventory['__cloudlinux_checked'] = True
+        return inventory
+
     def start_admin_backup(self, user):
         """Run one full admin backup without altering saved schedules/settings."""
         config = self.request('CMD_API_ADMIN_BACKUP')
@@ -277,6 +329,8 @@ def fetch_archive(job_id, params, work_dir):
         with Source(params['remote']) as source:
             if user not in source.accounts():
                 raise ValidationError('Selected account is not available on the source')
+            runtime = source.runtime_inventory(user)
+            (work_dir / 'directadmin-runtime.json').write_text(json.dumps(runtime))
             admin_directory = None
             before = source.backups(user)
             _update_job(job_id, progress_message='creating DirectAdmin source backup')
