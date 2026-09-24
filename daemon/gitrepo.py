@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import pwd
+import stat
 
 from sqlalchemy import select
 
@@ -133,9 +134,6 @@ def set_deploy_target(params: dict) -> dict:
         row = session.scalar(select(GitRepo).where(GitRepo.account_id == account.id, GitRepo.name == name))
         if row is None:
             raise GitRepoError(f"repo '{name}' not found for account '{username}'")
-        row.deploy_target = normalized_relative
-        session.flush()
-        result = _repo_to_dict(row)
 
     pw = pwd.getpwnam(username)
     # Symlink-safe create+chown. _resolve() jail-checked the target, but that
@@ -155,22 +153,20 @@ def set_deploy_target(params: dict) -> dict:
     # actually applies here: there's no service to reload, just a script git
     # invokes on the next push, so a syntax error would otherwise only
     # surface at that point, silently breaking every future deploy.
-    hooks_dir = os.path.join(repo_path, "hooks")
-    tmp_hook = os.path.join(hooks_dir, f".post-receive.tmp.{os.getpid()}")
-    os.makedirs(hooks_dir, exist_ok=True)
-    with open(tmp_hook, "w") as f:
-        f.write(hook_content)
-    check = run(["bash", "-n", tmp_hook], timeout=10)
+    check = run(["bash", "-n"], input_text=hook_content, timeout=10)
     if not check.ok:
-        os.unlink(tmp_hook)
         raise GitRepoError(f"generated post-receive hook failed syntax check: {check.stderr.strip()}")
-
-    hook_path = os.path.join(hooks_dir, "post-receive")
-    os.chmod(tmp_hook, 0o750)
-    os.chown(tmp_hook, pw.pw_uid, pw.pw_gid)
-    os.replace(tmp_hook, hook_path)
-
-    return result
+    safeio.secure_write_file_beneath(
+        home, f"{REPOS_SUBDIR}/{name}.git/hooks/post-receive",
+        hook_content.encode(), pw.pw_uid, pw.pw_gid, 0o750,
+    )
+    with write_session() as session:
+        row = session.scalar(select(GitRepo).where(GitRepo.account_id == account.id, GitRepo.name == name))
+        if row is None:
+            raise GitRepoError("repository was removed while updating deployment")
+        row.deploy_target = normalized_relative
+        session.flush()
+        return _repo_to_dict(row)
 
 
 def get_push_log(params: dict) -> dict:
@@ -182,12 +178,28 @@ def get_push_log(params: dict) -> dict:
         if row is None:
             raise GitRepoError(f"repo '{name}' not found for account '{username}'")
 
-    push_log_path = os.path.join(_repo_path(username, name), PUSH_LOG_FILENAME)
-    if not os.path.isfile(push_log_path):
-        return {"name": name, "lines": []}
-    with open(push_log_path, errors="replace") as f:
-        lines = f.readlines()
-    return {"name": name, "lines": [ln.rstrip("\n") for ln in lines[-MAX_PUSH_LOG_LINES:]]}
+    directory = safeio.open_dir_beneath(_account_home(username), f"{REPOS_SUBDIR}/{name}.git")
+    try:
+        try:
+            fd = os.open(PUSH_LOG_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+        except FileNotFoundError:
+            return {"name": name, "lines": []}
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise GitRepoError("push log must be a regular file")
+            limit = 256 * 1024
+            start = max(0, info.st_size - limit)
+            os.lseek(fd, start, os.SEEK_SET)
+            text = os.read(fd, limit).decode('utf-8', errors='replace')
+            lines = text.splitlines()
+            if start and lines:
+                lines.pop(0)  # Discard the potentially partial first line.
+            return {"name": name, "lines": lines[-MAX_PUSH_LOG_LINES:]}
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory)
 
 
 def delete_repo(params: dict) -> dict:
@@ -199,11 +211,16 @@ def delete_repo(params: dict) -> dict:
         row = session.scalar(select(GitRepo).where(GitRepo.account_id == account.id, GitRepo.name == name))
         if row is None:
             raise GitRepoError(f"repo '{name}' not found for account '{username}'")
+        import shutil
+        directory = safeio.open_dir_beneath(_account_home(username), REPOS_SUBDIR)
+        try:
+            try:
+                shutil.rmtree(f"{name}.git", dir_fd=directory)
+            except FileNotFoundError:
+                pass
+        finally:
+            os.close(directory)
         session.delete(row)
-
-    import shutil
-
-    shutil.rmtree(_repo_path(username, name), ignore_errors=True)
     return {"name": name, "status": "deleted"}
 
 

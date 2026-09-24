@@ -120,3 +120,63 @@ def test_delete_repo_removes_row_and_directory(account_with_home):
 def test_delete_repo_rejects_unknown_repo(account_with_home):
     with pytest.raises(gitrepo.GitRepoError):
         gitrepo.delete_repo({"username": "demo1", "name": "does-not-exist"})
+
+
+@pytest.mark.parametrize('component', ['repos', 'my-site.git', 'hooks'])
+def test_deploy_hook_rejects_symlink_ancestors(account_with_home, tmp_path, component):
+    import shutil
+    gitrepo.create_repo({'username': 'demo1', 'name': 'my-site'})
+    home = account_with_home['home']
+    root_target = tmp_path / 'protected'
+    root_target.mkdir()
+    canary = root_target / 'post-receive'
+    canary.write_text('protected content')
+    path = home / 'repos'
+    if component != 'repos':
+        path /= 'my-site.git'
+    if component == 'hooks':
+        path /= 'hooks'
+    if path.exists():
+        shutil.rmtree(path)
+    path.symlink_to(root_target, target_is_directory=True)
+    with pytest.raises((gitrepo.safeio.UnsafePathError, OSError)):
+        gitrepo.set_deploy_target({'username': 'demo1', 'name': 'my-site', 'deploy_target': 'public_html'})
+    assert canary.read_text() == 'protected content'
+    assert gitrepo.list_repos({'username': 'demo1'})['repos'][0]['deploy_target'] is None
+
+
+def test_push_log_rejects_symlink_and_fifo(account_with_home, tmp_path):
+    gitrepo.create_repo({'username': 'demo1', 'name': 'my-site'})
+    secret = tmp_path / 'protected'
+    secret.write_text('private canary')
+    log = account_with_home['home'] / 'repos/my-site.git/push-log.txt'
+    log.symlink_to(secret)
+    with pytest.raises(OSError):
+        gitrepo.get_push_log({'username': 'demo1', 'name': 'my-site'})
+    log.unlink()
+    os.mkfifo(log)
+    with pytest.raises(gitrepo.GitRepoError, match='regular file'):
+        gitrepo.get_push_log({'username': 'demo1', 'name': 'my-site'})
+
+
+def test_push_log_reads_bounded_tail(account_with_home):
+    gitrepo.create_repo({'username': 'demo1', 'name': 'my-site'})
+    log = account_with_home['home'] / 'repos/my-site.git/push-log.txt'
+    log.write_text('x' * (1024 * 1024) + '\nlast push\n')
+    assert gitrepo.get_push_log({'username': 'demo1', 'name': 'my-site'})['lines'] == ['last push']
+
+
+def test_repo_delete_rejects_symlink_parent(account_with_home, tmp_path):
+    import shutil
+    gitrepo.create_repo({'username': 'demo1', 'name': 'my-site'})
+    repos = account_with_home['home'] / 'repos'
+    shutil.rmtree(repos)
+    protected = tmp_path / 'protected'
+    (protected / 'my-site.git').mkdir(parents=True)
+    canary = protected / 'my-site.git/canary'
+    canary.write_text('protected')
+    repos.symlink_to(protected, target_is_directory=True)
+    with pytest.raises(gitrepo.safeio.UnsafePathError):
+        gitrepo.delete_repo({'username': 'demo1', 'name': 'my-site'})
+    assert canary.read_text() == 'protected'
+    assert len(gitrepo.list_repos({'username': 'demo1'})['repos']) == 1
