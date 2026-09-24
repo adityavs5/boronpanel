@@ -160,3 +160,53 @@ def test_bootstrap_rematerializes_missing_dirs(account, stub_apply):
     shutil.rmtree(f"{settings.home_base}/demo1/.php")
     phpext.bootstrap_all_php_extensions()
     assert Path(f"{settings.home_base}/demo1/.php/83/conf.d/mysqli.ini").is_symlink()
+
+
+@pytest.mark.parametrize('component', ['.php', '.php/81', '.php/81/conf.d'])
+def test_extension_materialization_rejects_symlink_ancestors(account, stub_apply, tmp_path, component):
+    home=Path(settings.home_base)/'demo1'
+    outside=tmp_path/'protected'
+    (outside/'81/conf.d').mkdir(parents=True)
+    marker=outside/'81/conf.d/keep.ini'
+    marker.write_text('protected canary')
+    outside.chmod(0o700)
+    link=home/component
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(phpext.UnsafePathError):
+        phpext.set_extensions({'username':'demo1','enabled':['mysqli','pgsql']})
+    assert marker.read_text()=='protected canary'
+    assert outside.stat().st_mode & 0o777 == 0o700
+    assert not (outside/'pgsql.ini').exists()
+
+
+def test_reset_unlinks_scan_root_symlink_without_following(account, stub_apply, tmp_path):
+    home=Path(settings.home_base)/'demo1'
+    outside=tmp_path/'protected';outside.mkdir()
+    marker=outside/'keep.ini';marker.write_text('protected canary')
+    (home/'.php').symlink_to(outside, target_is_directory=True)
+    phpext.reset_extensions({'username':'demo1'})
+    assert marker.read_text()=='protected canary'
+    assert not (home/'.php').is_symlink()
+
+
+def test_extension_writes_stay_on_open_directory_after_swap(account, stub_apply, monkeypatch, tmp_path):
+    home=Path(settings.home_base)/'demo1'
+    outside=tmp_path/'protected';outside.mkdir()
+    marker=outside/'keep.ini';marker.write_text('protected canary')
+    original=phpext.open_dir_beneath
+    swapped=False
+    def swap(root, relative='.'):
+        nonlocal swapped
+        fd=original(root, relative)
+        if relative.endswith('83/conf.d') and not swapped:
+            directory=Path(root)/relative
+            directory.rename(directory.with_name('conf.retained'))
+            directory.symlink_to(outside, target_is_directory=True)
+            swapped=True
+        return fd
+    monkeypatch.setattr(phpext,'open_dir_beneath',swap)
+    phpext.set_extensions({'username':'demo1','enabled':['mysqli','pgsql']})
+    assert swapped and marker.read_text()=='protected canary'
+    assert sorted(p.name for p in outside.iterdir())==['keep.ini']
+    assert (home/'.php/83/conf.retained/pgsql.ini').read_text()=='extension=pgsql.so\n'

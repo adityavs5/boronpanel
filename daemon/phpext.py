@@ -35,9 +35,11 @@ import logging
 import os
 import re
 import shutil
+import stat
 from pathlib import Path
 
 from daemon import account_mutation
+from daemon.safeio import open_dir_beneath, secure_mkdirs, _replace_file_at_fd, UnsafePathError
 
 from sqlalchemy import select
 
@@ -141,34 +143,58 @@ def _materialize(username: str) -> None:
     if enabled is None:
         return
 
+    home = str(Path(settings.home_base) / validate_username(username))
     for version in settings.php_versions:
-        scan_dir = Path(php_scan_dir(username, version))
+        relative = f".php/{version.replace('.', '')}/conf.d"
         stock = _stock_inis(version)
         so_names = _so_names(version)
-        if scan_dir.exists():
-            shutil.rmtree(scan_dir)
-        scan_dir.mkdir(parents=True)
-        # Root-owned on purpose (see module docstring); parents inherit
-        # root:root from mkdir as this daemon runs as root. 0755 so the
-        # account's own lsphp (running as its uid) can read through it.
-        for parent in (scan_dir, scan_dir.parent, scan_dir.parent.parent):
-            os.chmod(parent, 0o755)
-        for name in enabled:
-            if name in stock:
-                (scan_dir / stock[name].name).symlink_to(stock[name])
-            elif name in so_names:
-                directive = "zend_extension" if name in ZEND_EXTENSIONS else "extension"
-                snippet = scan_dir / f"{name}.ini"
-                snippet.write_text(f"{directive}={name}.so\n")
-                os.chmod(snippet, 0o644)
-            # else: not built for this version (e.g. redis on lsphp8.1) --
-            # skipped for this version only, still active on the others.
+        secure_mkdirs(home, relative, 0, 0, 0o755)
+        directory_fd = open_dir_beneath(home, relative)
+        try:
+            # This directory contains only snippets. Never recursively walk
+            # attacker-supplied subdirectories or follow any path component.
+            names = []
+            with os.scandir(directory_fd) as entries:
+                for entry in entries:
+                    if len(names) >= 1024:
+                        raise UnsafePathError("PHP scan directory has too many entries")
+                    names.append(entry.name)
+            for name in names:
+                info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    raise UnsafePathError("PHP scan directory contains an unexpected directory")
+            for name in names:
+                os.unlink(name, dir_fd=directory_fd)
+            for name in enabled:
+                if name in stock:
+                    os.symlink(str(stock[name]), stock[name].name, dir_fd=directory_fd)
+                elif name in so_names:
+                    directive = "zend_extension" if name in ZEND_EXTENSIONS else "extension"
+                    _replace_file_at_fd(directory_fd, f"{name}.ini",
+                        f"{directive}={name}.so\n".encode(), 0, 0, 0o644)
+        finally:
+            os.close(directory_fd)
 
 
 def _remove_scan_dirs(username: str) -> None:
-    base = Path(f"{settings.home_base}/{username}/.php")
-    if base.exists():
-        shutil.rmtree(base, ignore_errors=True)
+    home = str(Path(settings.home_base) / validate_username(username))
+    try:
+        home_fd = open_dir_beneath(home)
+    except FileNotFoundError:
+        return
+    try:
+        try:
+            info = os.stat('.php', dir_fd=home_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if stat.S_ISDIR(info.st_mode):
+            if not shutil.rmtree.avoids_symlink_attacks:
+                raise UnsafePathError("safe recursive removal is unavailable")
+            shutil.rmtree('.php', dir_fd=home_fd)
+        else:
+            os.unlink('.php', dir_fd=home_fd)
+    finally:
+        os.close(home_fd)
 
 
 def _status(session, account: Account) -> dict:
