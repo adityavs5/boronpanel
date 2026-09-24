@@ -194,3 +194,20 @@ protocol. Full migration, remaining entry-point/resource review, exact
 candidate installation/update/rollback and publication remain open. The
 coverage ledger still has substantial pending review and must not be inferred
 complete from a passing policy-registry or regression suite.
+
+
+## Redis management and failed service cleanup
+
+Redis FLUSHALL and INFO clients now drop supplementary groups and run as the
+hosting account UID/GID. A tenant-controlled socket symlink must not let a
+root management client bypass another account's private socket permissions.
+The disposable VM reproduced a root connection through that link, rejected
+it under the tenant identity, and accepted the tenant's own socket command.
+The 66 Redis/Node/Python/service-teardown tests passed, including UID selection,
+failed-stop/disable handling, retained recovery metadata and normal teardown.
+
+Node/Python/Redis teardown now retains database rows until service removal
+succeeds. A failed stop cannot erase its unit/environment files. Account
+termination keeps the Unix identity and quotas reserved when cleanup hooks
+fail, while the existing authentication revocation still blocks panel access.
+This prevents premature name/UID reuse and preserves a retry path.

@@ -445,11 +445,15 @@ def _terminate_account(params: dict) -> dict:
             logger.exception("terminate hook %s failed for %s", hook, username)
             errors.append(f"{hook.__module__}.{hook.__qualname__}: {exc}")
 
-    try:
-        sysops.remove_quota(username)
-        sysops.delete_linux_user(username)
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"linux user teardown: {exc}")
+    # Keep the identity reserved while any service still needs cleanup.
+    # Removing it after a failed hook can strand processes/configuration and
+    # allow a later Unix UID/name reuse to transfer access to another owner.
+    if not errors:
+        try:
+            sysops.remove_quota(username)
+            sysops.delete_linux_user(username)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"linux user teardown: {exc}")
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))

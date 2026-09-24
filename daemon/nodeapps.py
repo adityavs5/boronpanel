@@ -273,11 +273,10 @@ def delete_app(params: dict) -> dict:
     with write_session() as session:
         account, row = _get_row(session, username, app_id)
         domain_name, name = row.domain, row.name
+        appunits.remove_unit(appunits.unit_name(KIND, username, app_id))
         session.delete(row)
         account_snapshot = account
 
-    unit = appunits.unit_name(KIND, username, app_id)
-    appunits.remove_unit(unit)
     ols.refresh_vhost(account_snapshot)
     # App code under app_dir is deliberately left on disk -- same "delete
     # the routing, not the customer's content" convention
@@ -378,12 +377,9 @@ def terminate_account_node_apps(account: Account) -> None:
     etc.)."""
     with write_session() as session:
         rows = session.scalars(select(NodeApp).where(NodeApp.account_id == account.id)).all()
-        ids = [r.id for r in rows]
         for row in rows:
+            appunits.remove_unit(appunits.unit_name(KIND, account.username, row.id))
             session.delete(row)
-
-    for app_id in ids:
-        appunits.remove_unit(appunits.unit_name(KIND, account.username, app_id))
 
 
 def bootstrap_all_node_apps() -> None:

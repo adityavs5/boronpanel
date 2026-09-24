@@ -227,3 +227,20 @@ def test_terminate_account_python_apps(account_with_domain):
     assert not unit_path.exists()
     with write_session() as session:
         assert session.scalar(select(PythonApp).where(PythonApp.account_id == account.id)) is None
+
+
+@pytest.mark.parametrize("terminate", [False, True])
+def test_failed_teardown_retains_recovery_metadata(account_with_domain, monkeypatch, terminate):
+    created = pythonapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "app:app"})
+    def fail(name):
+        raise RuntimeError("stop failed")
+    monkeypatch.setattr(pythonapps.appunits, "remove_unit", fail)
+    with pytest.raises(RuntimeError, match="stop failed"):
+        if terminate:
+            with write_session() as session:
+                account = session.scalar(select(Account).where(Account.username == "demo1"))
+            pythonapps.terminate_account_python_apps(account)
+        else:
+            pythonapps.delete_app({"username": "demo1", "id": created["id"]})
+    with write_session() as session:
+        assert session.get(PythonApp, created["id"]) is not None

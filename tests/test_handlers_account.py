@@ -185,8 +185,9 @@ def test_terminate_continues_past_failing_hook_and_marks_error(isolated_db, stub
         result = ha.terminate_account({"username": "demo1"})
         assert result["status"] == "error"
         assert "vhost teardown exploded" in result["last_error"]
-        # linux user teardown must still have been attempted despite the hook failure
-        assert ("delete_linux_user", "demo1") in stub_sysops
+        # Preserve the identity until every service has been removed.
+        assert ("delete_linux_user", "demo1") not in stub_sysops
+        assert ("remove_quota", "demo1") not in stub_sysops
     finally:
         ha.TERMINATE_HOOKS.clear()
 

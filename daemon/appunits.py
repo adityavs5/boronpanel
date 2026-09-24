@@ -123,8 +123,14 @@ def status(name: str) -> dict:
 def remove_unit(name: str) -> None:
     """Idempotent full teardown -- safe even if the unit was never
     successfully started (e.g. a create() that failed partway)."""
-    run(["systemctl", "stop", name], timeout=30)
-    run(["systemctl", "disable", name], timeout=30)
+    stopped = run(["systemctl", "stop", name], timeout=30)
+    if not stopped.ok:
+        state = run(["systemctl", "is-active", name], timeout=10)
+        if state.stdout.strip() not in ('inactive', 'failed', 'unknown'):
+            raise RuntimeError('Application service could not be stopped safely')
+    disabled = run(["systemctl", "disable", name], timeout=30)
+    if not disabled.ok and unit_path(name).exists():
+        raise RuntimeError('Application service could not be disabled safely')
     remove_unit_file(name)
     remove_env_file(name)
     daemon_reload()

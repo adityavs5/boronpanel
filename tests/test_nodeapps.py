@@ -300,3 +300,20 @@ def test_terminate_account_node_apps_is_idempotent_with_no_apps(account_with_dom
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == "demo1"))
         nodeapps.terminate_account_node_apps(account)  # must not raise
+
+
+@pytest.mark.parametrize("terminate", [False, True])
+def test_failed_teardown_retains_recovery_metadata(account_with_domain, monkeypatch, terminate):
+    created = nodeapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "server.js"})
+    def fail(name):
+        raise RuntimeError("stop failed")
+    monkeypatch.setattr(nodeapps.appunits, "remove_unit", fail)
+    with pytest.raises(RuntimeError, match="stop failed"):
+        if terminate:
+            with write_session() as session:
+                account = session.scalar(select(Account).where(Account.username == "demo1"))
+            nodeapps.terminate_account_node_apps(account)
+        else:
+            nodeapps.delete_app({"username": "demo1", "id": created["id"]})
+    with write_session() as session:
+        assert session.get(NodeApp, created["id"]) is not None

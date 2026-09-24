@@ -246,7 +246,9 @@ def flush(params: dict) -> dict:
         if row is None:
             raise RuntimeError(f"Redis is not enabled for account '{username}'")
 
-    result = run([settings.redis_cli_bin, "-s", socket_path(username), "FLUSHALL"], timeout=30)
+    owner = pwd.getpwnam(username)
+    result = run([settings.redis_cli_bin, "-s", socket_path(username), "FLUSHALL"],
+                 uid=owner.pw_uid, gid=owner.pw_gid, timeout=30)
     if not result.ok:
         raise RuntimeError(f"FLUSHALL failed: {result.stderr.strip() or result.stdout.strip()}")
     return {"username": username, "status": "flushed"}
@@ -268,7 +270,9 @@ def get_status(params: dict) -> dict:
             return {"username": username, "enabled": False, "provisioned": False}
         result = _row_to_dict(row, username)
 
-    info = run([settings.redis_cli_bin, "-s", socket_path(username), "INFO", "memory"], timeout=10)
+    owner = pwd.getpwnam(username)
+    info = run([settings.redis_cli_bin, "-s", socket_path(username), "INFO", "memory"],
+               uid=owner.pw_uid, gid=owner.pw_gid, timeout=10)
     if info.ok:
         result["used_memory_human"] = _parse_info_field(info.stdout, "used_memory_human")
         result["used_memory_bytes"] = _parse_info_field(info.stdout, "used_memory")
@@ -304,10 +308,9 @@ def terminate_account_redis(account: Account) -> None:
         if row is None:
             return
         instance_id = row.id
+        appunits.remove_unit(appunits.unit_name(KIND, account.username, instance_id))
+        _conf_path(appunits.unit_name(KIND, account.username, instance_id)).unlink(missing_ok=True)
         session.delete(row)
-
-    appunits.remove_unit(appunits.unit_name(KIND, account.username, instance_id))
-    _conf_path(appunits.unit_name(KIND, account.username, instance_id)).unlink(missing_ok=True)
 
 
 def bootstrap_all_redis() -> None:

@@ -181,3 +181,32 @@ def test_terminate_account_redis_is_idempotent_when_never_enabled(account_with_h
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == "demo1"))
         redisacct.terminate_account_redis(account)  # must not raise
+
+
+def test_management_clients_drop_to_tenant_uid(account_with_home, monkeypatch):
+    redisacct.enable_redis({"username": "demo1"})
+    calls = []
+    owner = real_pwd.struct_passwd(("demo1", "x", 5001, 5001, "", str(account_with_home["home"]), "/bin/false"))
+    monkeypatch.setattr(redisacct.pwd, "getpwnam", lambda name: owner)
+    def client(args, **kwargs):
+        calls.append((args, kwargs))
+        return ProcResult(args=args, returncode=0, stdout="OK", stderr="")
+    monkeypatch.setattr(redisacct, "run", client)
+    redisacct.flush({"username": "demo1"})
+    redisacct.get_status({"username": "demo1"})
+    assert len(calls) == 2
+    assert all(options["uid"] == 5001 and options["gid"] == 5001 for _, options in calls)
+
+
+def test_failed_redis_teardown_retains_recovery_metadata(account_with_home, monkeypatch):
+    created = redisacct.enable_redis({"username": "demo1"})
+    def fail(name):
+        raise RuntimeError("stop failed")
+    monkeypatch.setattr(redisacct.appunits, "remove_unit", fail)
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+    with pytest.raises(RuntimeError, match="stop failed"):
+        redisacct.terminate_account_redis(account)
+    with write_session() as session:
+        assert session.get(RedisInstance, created["id"]) is not None
+    assert redisacct._conf_path(created["unit"]).exists()
