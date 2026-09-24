@@ -56,3 +56,13 @@ def test_recycle_php_workers_scopes_to_username_and_lsphp(monkeypatch):
     monkeypatch.setattr(sysops, "run", lambda args, **kw: calls.append(args))
     sysops.recycle_php_workers("demo1")
     assert calls == [["pkill", "-u", "demo1", "-f", "lsphp"]]
+
+
+@pytest.mark.parametrize("remove_home", [False, True])
+def test_delete_linux_user_preserves_home_during_provisioning_rollback(monkeypatch, remove_home):
+    calls = []
+    monkeypatch.setattr(sysops, "user_exists", lambda username: True)
+    monkeypatch.setattr(sysops, "run", lambda args, **kw: calls.append(args))
+    sysops.delete_linux_user("demo1", remove_home=remove_home)
+    assert calls[0] == ["pkill", "-9", "-u", "demo1"]
+    assert calls[1] == ["userdel", *(["--remove"] if remove_home else []), "--force", "demo1"]

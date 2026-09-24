@@ -209,10 +209,7 @@ def apply_plan(params: dict) -> dict:
     # External side effects: cgroups, quota, Redis.
     for hook in handlers_account.LIMITS_HOOKS:
         hook(account_snapshot)
-    try:
-        sysops.set_quota(username, plan_values["quota_soft_mb"], plan_values["quota_hard_mb"])
-    except Exception:
-        logger.exception("quota apply failed for %s during plan apply (continuing)", username)
+    sysops.set_quota(username, plan_values["quota_soft_mb"], plan_values["quota_hard_mb"])
 
     if plan_values["redis_enabled"]:
         redisacct.enable_redis({"username": username})

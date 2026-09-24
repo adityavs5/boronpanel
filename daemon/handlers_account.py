@@ -88,6 +88,17 @@ def _validate_limits(cpu_pct: int, mem_mb: int, io_mb: int, pids_max: int) -> No
         raise ValidationError("pids_max must be between 10 and 10000")
 
 
+def _rollback_new_linux_user(username: str) -> None:
+    try:
+        sysops.lock_user(username)
+    except Exception:
+        logger.exception("Could not lock newly provisioned identity %s during rollback", username)
+    try:
+        sysops.delete_linux_user(username, remove_home=False)
+    except Exception:
+        logger.exception("New identity %s requires administrator cleanup after provisioning failure", username)
+
+
 @database_operations.serialized
 def create_account(params: dict) -> dict:
     username = validate_username(params["username"])
@@ -135,12 +146,14 @@ def create_account(params: dict) -> dict:
     uid, gid = sysops.create_linux_user(username)
 
     password = password or sysops.generate_password()
-    sysops.set_initial_password(username, password)
-
     try:
+        sysops.set_initial_password(username, password)
         sysops.set_quota(username, quota_soft_mb, quota_hard_mb)
     except Exception:
-        logger.exception("quota setup failed for %s (continuing - account usable without enforced quota)", username)
+        # No hosting resource or credential row has been created yet. Do not
+        # activate an account whose mandatory identity/quota setup failed.
+        _rollback_new_linux_user(username)
+        raise
 
     with write_session() as session:
         account = Account(
@@ -262,11 +275,14 @@ def reactivate_account(params: dict) -> dict:
 
     uid, gid = sysops.create_linux_user(username)
     password = password or sysops.generate_password()
-    sysops.set_initial_password(username, password)
     try:
+        sysops.set_initial_password(username, password)
         sysops.set_quota(username, quota_soft_mb, quota_hard_mb)
     except Exception:
-        logger.exception("quota setup failed for %s during reactivation (continuing)", username)
+        # No hosting resource or credential row has been created yet. Do not
+        # activate an account whose mandatory identity/quota setup failed.
+        _rollback_new_linux_user(username)
+        raise
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))

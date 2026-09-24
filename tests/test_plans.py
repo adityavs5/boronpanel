@@ -219,3 +219,14 @@ def test_apply_plan_rejects_terminated_account(isolated_db, stub_sysops):
         account.status = "terminated"
     with pytest.raises(Exception):
         plans.apply_plan({"username": "demo1", "plan_id": created["id"]})
+
+
+
+def test_plan_quota_failure_is_not_reported_as_success(isolated_db, stub_sysops, stub_redis, monkeypatch):
+    ha.create_account({'username': 'demo1'})
+    created = plans.create_plan({'name': 'Test quota'})
+    def fail(*args):
+        raise RuntimeError('quota unavailable')
+    monkeypatch.setattr(plans.sysops, 'set_quota', fail)
+    with pytest.raises(RuntimeError, match='quota unavailable'):
+        plans.apply_plan({'username': 'demo1', 'plan_id': created['id']})

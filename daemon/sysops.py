@@ -178,7 +178,7 @@ def recycle_php_workers(username: str) -> None:
     run(["pkill", "-u", username, "-f", "lsphp"], timeout=15)
 
 
-def delete_linux_user(username: str) -> None:
+def delete_linux_user(username: str, *, remove_home: bool = True) -> None:
     _assert_safe_username(username)
     if not user_exists(username):
         return
@@ -191,7 +191,7 @@ def delete_linux_user(username: str) -> None:
     # confirmed live. `pkill -9 -u` first, so `userdel` always removes a
     # genuinely process-free account.
     run(["pkill", "-9", "-u", username], timeout=15)
-    run(["userdel", "--remove", "--force", username], check=True)
+    run(["userdel", *(["--remove"] if remove_home else []), "--force", username], check=True)
 
 
 def set_quota(username: str, soft_mb: int, hard_mb: int, mount: str = "/") -> None:

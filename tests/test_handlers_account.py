@@ -3,7 +3,7 @@ from sqlalchemy import select
 
 from daemon import handlers_account as ha
 from shared.db import write_session
-from shared.models import Domain
+from shared.models import Account, Domain
 from shared.validation import ValidationError
 
 
@@ -31,8 +31,10 @@ def stub_sysops(monkeypatch):
     def unlock_user(username):
         calls.append(("unlock_user", username))
 
-    def delete_linux_user(username):
+    def delete_linux_user(username, *, remove_home=True):
         calls.append(("delete_linux_user", username))
+        if not remove_home:
+            calls.append(("preserve_home", username))
 
     def remove_quota(username):
         calls.append(("remove_quota", username))
@@ -562,3 +564,21 @@ def test_termination_waits_for_live_account_worker(isolated_db, stub_sysops):
             ha.terminate_account({'username': 'demo1'})
     assert ('delete_linux_user', 'demo1') not in stub_sysops
     assert ha.terminate_account({'username': 'demo1'})['status'] == 'terminated'
+
+
+@pytest.mark.parametrize('reactivate', [False, True])
+def test_quota_failure_never_activates_account(isolated_db, stub_sysops, monkeypatch, reactivate):
+    if reactivate:
+        with write_session() as session:
+            session.add(Account(username='demo1', status='terminated', uid=5001, gid=5001))
+    def fail(*args):
+        raise RuntimeError('quota unavailable')
+    monkeypatch.setattr(ha.sysops, 'set_quota', fail)
+    with pytest.raises(RuntimeError, match='quota unavailable'):
+        (ha.reactivate_account if reactivate else ha.create_account)({'username': 'demo1'})
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == 'demo1'))
+        assert account is None or account.status == 'terminated'
+    assert ('delete_linux_user', 'demo1') in stub_sysops
+
+    assert ('preserve_home', 'demo1') in stub_sysops

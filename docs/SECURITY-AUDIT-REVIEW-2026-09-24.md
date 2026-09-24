@@ -309,3 +309,18 @@ validation, suspension template interpolation and sandboxed preview, IP
 allocation ownership, and mail queue identifier/command validation. Fifty-seven
 mail queue/template/IP/OLS behavioral tests also passed. This evidence does not
 stand in for reviewing unrelated privileged handlers.
+
+
+## Quota failures during provisioning
+
+Creation/reactivation no longer swallow Unix password/quota errors and return
+an active account. Before any hosting credential row is created, failure locks
+and removes the newly created identity while preserving home contents. Failed
+cleanup is logged for administrator recovery. Applying a package now reports
+quota failure instead of success; desired database limits may already have
+changed, so this does not claim a transaction spanning the kernel and SQLite.
+Regression coverage checks failed creation/reactivation, retained terminated
+state, preserved home contents in rollback argv, and normal lifecycle behavior.
+
+All 77 current account/package/sysops tests passed. These changes are not yet
+deployed on the primary.
