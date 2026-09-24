@@ -350,3 +350,37 @@ no spreadsheet code execution was attempted.
 
 The coverage ledger now records 128 additional individually selected entry
 points in these reviewed families. Unrelated handlers remain pending.
+
+
+## HTTP certificate challenge privilege boundary
+
+Certbot's root webroot plugin writes into customer-controlled directory trees.
+The VM reproduced an inert root-owned challenge file outside the hosting home
+through a planted ancestor symlink. Hosted-site and Roundcube HTTP challenges
+now use Certbot's manual hooks, with the file helper run under the site's Unix
+UID/GID (www-data for Roundcube), empty supplementary groups and isolated Python.
+The helper rejects root, walks directories without following symlinks, preserves
+existing directory permissions, and atomically writes only the public challenge.
+The certificate/key operations remain in the privileged Certbot process. DNS
+provider credential files now use private atomic replacement from creation.
+
+Existing managed webroot renewal configurations migrate to the hooks while
+preserving protected originals and holding Certbot's own configuration lock.
+Startup retries a busy lock without taking the API down. Root-controlled panel
+and phpMyAdmin challenge trees retain their existing webroot plugin. LiteSpeed
+restrained customer vhosts remain enabled; challenge files remain inside their
+existing document root. The vendor documents that restrained vhosts deny static
+contexts outside the virtual-host root:
+https://www.litespeedtech.com/docs/webserver/config/vhostbasic
+
+Validation: 41 SSL/hook tests passed locally plus one VM-only test skipped there;
+71 combined SSL/usage tests passed on the VM, followed by all eight final hook
+cases including the real old-write/new-denial proof. Actual HTTP requests on the
+VM retrieved both hosted-site and webmail challenges, and cleanup passed. One
+existing VM webmail renewal migrated; a second migration made no changes. The
+primary received the tested four hook/SSL files and its existing webmail renewal
+also migrated idempotently. The first migration command used system Python,
+which lacks SQLAlchemy; it was rerun successfully with the installed panel venv.
+Primary services and trusted HTTPS health passed. Startup server changes await
+the unified root-authority release. No public CA issuance was attempted by these
+challenge tests, so they do not constitute a new end-to-end ACME issuance test.

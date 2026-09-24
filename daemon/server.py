@@ -932,10 +932,28 @@ async def _cgroup_reconcile_loop() -> None:
         await asyncio.sleep(CGROUP_RECONCILE_INTERVAL_SECONDS)
 
 
+async def _reconcile_acme_renewals() -> None:
+    from certbot.errors import LockError
+    from daemon.acme_http import migrate_renewals
+    while True:
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, migrate_renewals)
+            return
+        except LockError:
+            logger.info("Certbot is active; retrying HTTP renewal migration shortly")
+            await asyncio.sleep(30)
+        except Exception:
+            logger.exception("HTTP renewal migration failed; retrying in 60 seconds")
+            await asyncio.sleep(60)
+
+
 async def amain() -> None:
     init_db()
     from daemon import jobcredentials
     jobcredentials.migrate()
+    # Reconcile HTTP renewal writers without taking the API down if a
+    # scheduled Certbot process currently owns its configuration lock.
+    asyncio.create_task(_reconcile_acme_renewals())
     try:
         from daemon.snapshot_databases import cleanup_abandoned_logins
         cleanup_abandoned_logins()

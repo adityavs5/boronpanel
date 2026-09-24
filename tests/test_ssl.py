@@ -28,8 +28,9 @@ def test_challenge_plan_http01_when_zone_not_managed(isolated_db, stub_sysops, s
 
     mode, args = fssl._challenge_plan("demo1.example")
     assert mode == "http-01"
-    assert "--webroot" in args
-    assert "/home/demo1/public_html" in args
+    assert "--manual-auth-hook" in args
+    assert "manual" in args
+    assert "/home/demo1/public_html" not in args
 
 
 def test_challenge_plan_dns01_when_zone_managed(isolated_db, stub_sysops, stub_filesystem):
@@ -193,8 +194,8 @@ def test_challenge_plan_webmail_hostname_uses_http01_with_webmail_docroot(isolat
 
     mode, args = fssl._challenge_plan("webmail.example.com")
     assert mode == "http-01"
-    assert "--webroot" in args
-    assert "/var/lib/roundcube/public_html" in args
+    assert "--manual-auth-hook" in args
+    assert "manual" in args
 
 
 def test_issue_certificate_force_adds_force_renewal_flag(isolated_db, stub_sysops, stub_filesystem, monkeypatch):

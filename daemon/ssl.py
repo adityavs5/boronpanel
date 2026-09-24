@@ -1,10 +1,10 @@
 """SSL automation via certbot (Phase f).
 
 ARCHITECTURE.md SS8: DNS-01 (via the `certbot-dns-powerdns` plugin) when
-Boron manages the domain's zone, HTTP-01 webroot otherwise -- the
-webroot path already exists from Phase b (every vhost declares a
+Boron manages the domain's zone, HTTP-01 with an unprivileged file hook otherwise -- every vhost declares a
 `/.well-known/acme-challenge/` context pointed at the account's docroot, no
-extra vhost config needed here). `--deploy-hook` points at
+extra vhost config needed here. The Certbot process retains root-only key
+access; only challenge-file creation/cleanup runs as the owning account. `--deploy-hook` points at
 `scripts/ssl_deploy_hook.py`, a standalone script (not a daemon method)
 because certbot's own renewal timer invokes it outside borond's
 process -- it reuses the same shared/daemon modules directly rather than
@@ -14,6 +14,7 @@ borond, so there's no privilege boundary to cross).
 from __future__ import annotations
 
 import datetime as dt
+import os
 from pathlib import Path
 
 from cryptography import x509
@@ -24,7 +25,7 @@ from shared.db import write_session
 from shared.models import Account, Domain, DnsZone, SslExpiryNotice, WordPressSiteState
 from shared.validation import validate_domain, validate_username
 
-from daemon import cloudflare_accounts, dnsprovider, events
+from daemon import cloudflare_accounts, dnsprovider, events, safeio
 from daemon.ols import letsencrypt_cert_paths
 from daemon.procutil import run
 
@@ -70,8 +71,8 @@ def _ensure_cf_credentials(row) -> str:
         raise SslError(f"no Cloudflare API token available for zone '{row.zone}' -- cannot issue via DNS-01")
     path = Path(_cf_credentials_path(getattr(row, "cf_account_id", None)))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"dns_cloudflare_api_token = {token}\n")
-    path.chmod(0o600)  # certbot refuses world/group-readable credentials files
+    safeio.secure_replace_file(str(path.parent), path.name,
+                              f"dns_cloudflare_api_token = {token}\n".encode(), os.geteuid(), os.getegid())
     return str(path)
 
 
@@ -107,7 +108,8 @@ def _challenge_plan(domain: str) -> tuple[str, list[str]]:
     # as the panel's own TLS cert. Its webroot is settings.webmail_docroot,
     # not something looked up from the accounts/domains tables.
     if domain == settings.webmail_hostname:
-        return "http-01", ["--webroot", "-w", settings.webmail_docroot]
+        from daemon.acme_http import challenge_args
+        return "http-01", challenge_args()
 
     if domain == settings.pma_hostname:
         return "http-01", ["--webroot", "-w", settings.pma_docroot]
@@ -120,7 +122,8 @@ def _challenge_plan(domain: str) -> tuple[str, list[str]]:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain))
     if domain_row is None:
         raise SslError(f"domain '{domain}' is not provisioned in Boron")
-    return "http-01", ["--webroot", "-w", domain_row.docroot]
+    from daemon.acme_http import challenge_args
+    return "http-01", challenge_args()
 
 
 def issue_certificate(params: dict) -> dict:
