@@ -128,6 +128,28 @@ unpinned transitive packages are now pinned to this audited resolution.
 The running panel's dependency environment has not been replaced; full
 candidate deployment remains a release gate.
 
+## Git, error-page, notes and onboarding surface review
+
+Reviewed account/domain lookup, parameter validation, root policy, file sinks,
+query scoping and frontend output handling in these four features. Forty-three
+feature authorization/behavior tests passed outside sandbox restrictions,
+including owner success and denial before RPC for foreign accounts. Five RPC
+error/attribution tests passed; note authors are now stamped from the verified
+root principal rather than accepted from the request. Legacy HTML routes were
+checked for denial before dispatch, not for successful template rendering.
+
+Custom error-page preview previously opened a same-origin HTML blob. The
+panel CSP mitigates inline scripts, but the preview lacked document isolation.
+It now renders in an iframe with an empty sandbox permissions list and no
+referrer. Chromium checks passed both with normal CSP and with CSP bypassed:
+the page renders, scripts cannot execute, parent DOM access fails, forms
+cannot submit, and no extra window opens. This is defense in depth; no bypass
+of the original panel CSP was established. The frontend build passed.
+
+Coverage now records 902 entry points: 158 reviewed-fixed, four reviewed-tested,
+11 reviewed-public and 729 pending. Entries are not closed merely because a
+shared authorization test exists.
+
 ## Remaining scope
 
 The primary has selected fixes, not the complete new root-authorization

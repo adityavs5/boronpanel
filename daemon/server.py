@@ -821,6 +821,8 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
         authorize(op, handler_params, current)
         actor = current.username if current else "login"
         role = current.role if current else "anonymous"
+        if op == "notes.add":
+            handler_params["author"] = actor
         return handler(handler_params)
 
     try:

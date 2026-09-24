@@ -1837,6 +1837,7 @@ export function ErrorPagesTab({ username, domain }) {
   const [activeCode, setActiveCode] = useState(404)
   const [content, setContent] = useState(null)
   const [loadedCode, setLoadedCode] = useState(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
 
   const pageQ = useQuery({
     queryKey: [...listKey, activeCode],
@@ -1862,13 +1863,6 @@ export function ErrorPagesTab({ username, domain }) {
     onSuccess: () => { toast.success(`Reverted to the default ${activeCode} page`); invalidate() },
     onError: (e) => toast.error('Could not reset page', e.message),
   })
-
-  const preview = () => {
-    const blob = new Blob([content ?? ''], { type: 'text/html' })
-    const url = URL.createObjectURL(blob)
-    window.open(url, '_blank', 'noopener,noreferrer')
-    setTimeout(() => URL.revokeObjectURL(url), 60_000)
-  }
 
   if (isLoading) return <CardSkeleton />
   if (error) return <ErrorState error={error} onRetry={refetch} />
@@ -1907,7 +1901,7 @@ export function ErrorPagesTab({ username, domain }) {
           <Button loading={saveMut.isPending} disabled={!content?.trim()} onClick={() => saveMut.mutate()}>
             <Save className="h-4 w-4" /> Save {activeCode} page
           </Button>
-          <Button variant="outline" onClick={preview}><Eye className="h-4 w-4" /> Preview</Button>
+          <Button variant="outline" onClick={() => setPreviewOpen(true)}><Eye className="h-4 w-4" /> Preview</Button>
           {activeInfo?.has_custom && (
             <Button variant="ghost" loading={resetMut.isPending} onClick={() => resetMut.mutate()}>
               <RotateCcw className="h-4 w-4" /> Revert to default
@@ -1915,6 +1909,16 @@ export function ErrorPagesTab({ username, domain }) {
           )}
         </CardFooter>
       </Card>
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent size="xl">
+          <DialogHeader><DialogTitle>Preview {activeCode} error page</DialogTitle></DialogHeader>
+          <DialogBody>
+            <iframe title="Error page preview" sandbox="" referrerPolicy="no-referrer"
+              srcDoc={content ?? ''} className="h-[60vh] w-full border-0 bg-white" />
+          </DialogBody>
+          <DialogFooter><Button variant="outline" onClick={() => setPreviewOpen(false)}>Close</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

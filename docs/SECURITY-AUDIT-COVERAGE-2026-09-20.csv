@@ -19,6 +19,7 @@ dynamic-service,per-account Python unit,daemon/pythonapps.py,generated systemd u
 dynamic-service,per-account Redis unit,daemon/redisacct.py,generated systemd unit,account owner and unit template pending review,pending,
 dynamic-service,trusted FileBrowser frontend unit,daemon/filebrowser_accounts.py,generated systemd unit,account owner and unit template pending review,reviewed-fixed,BSA-2026-036; b8ec15d; 43 focused tests; VM hostile backend canary; primary trusted frontend service smoke
 native-helper,mail_restore_gate.c,daemon/mail_restore_gate.c,mail_restore_gate.c,setuid/capabilities and caller pending review,pending,
+python-script,app_exec.py,scripts/app_exec.py,app_exec.py,invocation and effective UID pending review,reviewed-fixed,BSA-2026-048; tests/test_app_log_security.py; real VM log canary; 594e465
 python-script,app_files.py,scripts/app_files.py,app_files.py,invocation and effective UID pending review,reviewed-fixed,BSA-2026-034/035; 7edecb9; 41 focused tests; VM 10 UID canaries; VM static API install; primary hotfix hash/service/login smoke
 python-script,backup_scheduler.py,scripts/backup_scheduler.py,backup_scheduler.py,invocation and effective UID pending review,pending,
 python-script,cloudflare_ranges.py,scripts/cloudflare_ranges.py,cloudflare_ranges.py,invocation and effective UID pending review,pending,
@@ -54,7 +55,7 @@ route,DELETE /api/v1/accounts/{username}/domains/{domain},api/routers/domains.py
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/email/autoresponders/{local_part},api/routers/email.py,delete_autoresponder,get_identity,reviewed-fixed,autoresponder Sieve rollback hardening: 82 handler/autoresponder/mail-mutation/RPC-authority tests; VM canary forced row set/delete failures and verified .dovecot.sieve new-file removal and old-file restoration; primary handlers_mail.py hash deployed
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/email/catchall,api/routers/email.py,delete_catchall,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/email/forwarders,api/routers/email.py,delete_forwarder,get_identity,pending,
-route,DELETE /api/v1/accounts/{username}/domains/{domain}/error-pages/{code},api/routers/errorpages.py,delete_error_page,get_identity,pending,
+route,DELETE /api/v1/accounts/{username}/domains/{domain}/error-pages/{code},api/routers/errorpages.py,delete_error_page,get_identity,reviewed-fixed,Shared no-follow file/tenant ACL fix; sandboxed HTML preview; test_feature_scope_review.py; test_custom_pages.py; Chromium error-preview-security.spec.js normal CSP and bypassCSP cases passed
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/forwarding,api/routers/forwarding.py,delete_forwarding,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/ip-block,api/routers/ipblock.py,remove_ip_block,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/domains/{domain}/nameservers,api/routers/nameservers.py,reset_nameservers,get_identity,pending,
@@ -64,7 +65,7 @@ route,DELETE /api/v1/accounts/{username}/email/{mailbox}/spam-filters,api/router
 route,DELETE /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,disable_protection,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,DELETE /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,delete_user,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,DELETE /api/v1/accounts/{username}/ftp/{label},api/routers/ftp.py,delete_ftp_account,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
-route,DELETE /api/v1/accounts/{username}/git/{name},api/routers/git.py,delete_repo,get_identity,pending,
+route,DELETE /api/v1/accounts/{username}/git/{name},api/routers/git.py,delete_repo,get_identity,reviewed-fixed,BSA-2026-047; source filesystem/role review; tests/test_feature_scope_review.py and test_gitrepo.py; VM Git canary; 9aa8d30
 route,DELETE /api/v1/accounts/{username}/parked-domains/{parked_domain},api/routers/parked.py,remove_parked,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/php-extensions,api/routers/php_ini.py,reset_php_extensions,get_identity,pending,
 route,DELETE /api/v1/accounts/{username}/php-ini,api/routers/php_ini.py,reset_php_ini,get_identity,pending,
@@ -134,8 +135,8 @@ route,GET /api/v1/accounts/{username}/domains/{domain}/email/catchall,api/router
 route,GET /api/v1/accounts/{username}/domains/{domain}/email/forwarders,api/routers/email.py,list_forwarders,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/email/routing,api/routers/email_extras.py,get_routing,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/email/spam-filter,api/routers/email.py,get_spam_filter,get_identity,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
-route,GET /api/v1/accounts/{username}/domains/{domain}/error-pages,api/routers/errorpages.py,list_error_pages,get_identity,pending,
-route,GET /api/v1/accounts/{username}/domains/{domain}/error-pages/{code},api/routers/errorpages.py,get_error_page,get_identity,pending,
+route,GET /api/v1/accounts/{username}/domains/{domain}/error-pages,api/routers/errorpages.py,list_error_pages,get_identity,reviewed-fixed,Shared no-follow file/tenant ACL fix; sandboxed HTML preview; test_feature_scope_review.py; test_custom_pages.py; Chromium error-preview-security.spec.js normal CSP and bypassCSP cases passed
+route,GET /api/v1/accounts/{username}/domains/{domain}/error-pages/{code},api/routers/errorpages.py,get_error_page,get_identity,reviewed-fixed,Shared no-follow file/tenant ACL fix; sandboxed HTML preview; test_feature_scope_review.py; test_custom_pages.py; Chromium error-preview-security.spec.js normal CSP and bypassCSP cases passed
 route,GET /api/v1/accounts/{username}/domains/{domain}/forwarding,api/routers/forwarding.py,get_forwarding,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/hotlink-protection,api/routers/hotlink.py,get_hotlink_protection,get_identity,pending,
 route,GET /api/v1/accounts/{username}/domains/{domain}/ip-block,api/routers/ipblock.py,list_ip_blocks,get_identity,pending,
@@ -159,15 +160,15 @@ route,GET /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,list_pro
 route,GET /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,list_users,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,GET /api/v1/accounts/{username}/files/launch,api/routers/filebrowser.py,launch,get_identity,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,GET /api/v1/accounts/{username}/ftp,api/routers/ftp.py,list_ftp_accounts,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
-route,GET /api/v1/accounts/{username}/git,api/routers/git.py,list_repos,get_identity,pending,
-route,GET /api/v1/accounts/{username}/git/{name}/push-log,api/routers/git.py,get_push_log,get_identity,pending,
+route,GET /api/v1/accounts/{username}/git,api/routers/git.py,list_repos,get_identity,reviewed-fixed,BSA-2026-047; source filesystem/role review; tests/test_feature_scope_review.py and test_gitrepo.py; VM Git canary; 9aa8d30
+route,GET /api/v1/accounts/{username}/git/{name}/push-log,api/routers/git.py,get_push_log,get_identity,reviewed-fixed,BSA-2026-047; source filesystem/role review; tests/test_feature_scope_review.py and test_gitrepo.py; VM Git canary; 9aa8d30
 route,GET /api/v1/accounts/{username}/logs/{type},api/routers/logs_router.py,get_log,get_identity,pending,
 route,GET /api/v1/accounts/{username}/malware/findings,api/routers/malware.py,findings,get_identity,pending,
 route,GET /api/v1/accounts/{username}/malware/scans,api/routers/malware.py,scans,get_identity,pending,
 route,GET /api/v1/accounts/{username}/malware/scans/{scan_id},api/routers/malware.py,scan,get_identity,pending,
 route,GET /api/v1/accounts/{username}/namespace,api/routers/accounts.py,get_namespace_status,get_identity,pending,
 route,GET /api/v1/accounts/{username}/notification-prefs,api/routers/notifications.py,get_prefs,get_identity,pending,
-route,GET /api/v1/accounts/{username}/onboarding,api/routers/onboarding.py,get_onboarding,get_identity,pending,
+route,GET /api/v1/accounts/{username}/onboarding,api/routers/onboarding.py,get_onboarding,get_identity,reviewed-tested,Source account/query/output review; tests/test_feature_scope_review.py and test_onboarding.py; owner success; peer and anonymous denial
 route,GET /api/v1/accounts/{username}/parked-domains,api/routers/parked.py,list_parked,get_identity,pending,
 route,GET /api/v1/accounts/{username}/php-extensions,api/routers/php_ini.py,list_php_extensions,get_identity,pending,
 route,GET /api/v1/accounts/{username}/php-ini,api/routers/php_ini.py,get_php_ini,get_identity,pending,
@@ -184,7 +185,7 @@ route,GET /api/v1/accounts/{username}/wordpress/wpcli/runs,api/routers/devtools.
 route,GET /api/v1/accounts/{username}/wordpress/wpcli/runs/{job_id},api/routers/devtools.py,get_wpcli_run,get_identity,pending,
 route,GET /api/v1/admin/account-archives/{job_id}/download,api/routers/portable_archive.py,download_archive,get_identity,pending,
 route,GET /api/v1/admin/accounts/bulk-action/{job_id},api/routers/bulkops.py,bulk_action_status,get_identity,pending,
-route,GET /api/v1/admin/accounts/{username}/notes,api/routers/notes.py,list_notes,get_identity,pending,
+route,GET /api/v1/admin/accounts/{username}/notes,api/routers/notes.py,list_notes,get_identity,reviewed-fixed,Source role/query/output review; author stamped by verified root principal; tests/test_feature_scope_review.py; test_notes.py; test_rpc_dispatch_security.py
 route,GET /api/v1/admin/accounts/{username}/php-functions,api/routers/php_functions.py,get_overrides,get_identity,pending,
 route,GET /api/v1/admin/bandwidth/ranking,api/routers/bandwidth.py,get_bandwidth_ranking,get_identity,pending,
 route,GET /api/v1/admin/branding,api/routers/branding.py,get_admin_branding,get_identity,pending,
@@ -291,11 +292,11 @@ route,PATCH /api/v1/accounts/{username}/domains/{domain}/wildcard,api/routers/wi
 route,PATCH /api/v1/accounts/{username}/email/{local_part}/password,api/routers/mail.py,change_mailbox_password,get_identity,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
 route,PATCH /api/v1/accounts/{username}/ftp/{label},api/routers/ftp.py,set_ftp_path,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 route,PATCH /api/v1/accounts/{username}/ftp/{label}/password,api/routers/ftp.py,change_ftp_password,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
-route,PATCH /api/v1/accounts/{username}/git/{name}/deploy-target,api/routers/git.py,set_deploy_target,get_identity,pending,
+route,PATCH /api/v1/accounts/{username}/git/{name}/deploy-target,api/routers/git.py,set_deploy_target,get_identity,reviewed-fixed,BSA-2026-047; source filesystem/role review; tests/test_feature_scope_review.py and test_gitrepo.py; VM Git canary; 9aa8d30
 route,PATCH /api/v1/accounts/{username}/limits,api/routers/accounts.py,set_limits,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/namespace,api/routers/accounts.py,set_namespace,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/notification-prefs,api/routers/notifications.py,set_prefs,get_identity,pending,
-route,PATCH /api/v1/accounts/{username}/onboarding,api/routers/onboarding.py,set_onboarding,get_identity,pending,
+route,PATCH /api/v1/accounts/{username}/onboarding,api/routers/onboarding.py,set_onboarding,get_identity,reviewed-tested,Source account/query/output review; tests/test_feature_scope_review.py and test_onboarding.py; owner success; peer and anonymous denial
 route,PATCH /api/v1/accounts/{username}/php-ini,api/routers/php_ini.py,set_php_ini,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/php-version,api/routers/accounts.py,set_php_version,get_identity,pending,
 route,PATCH /api/v1/accounts/{username}/redis,api/routers/redis_router.py,set_redis_mem_limit,get_identity,pending,
@@ -365,7 +366,7 @@ route,POST /api/v1/accounts/{username}/email/{mailbox}/spam-filters/import,api/r
 route,POST /api/v1/accounts/{username}/file-auth,api/routers/fileauth.py,enable_protection,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,POST /api/v1/accounts/{username}/file-auth/users,api/routers/fileauth.py,add_user,get_identity,reviewed-fixed,"fileauth symlink-safe htpasswd hardening: 31 fileauth/RPC-authority tests; VM canary enabled temp docroot dir, added/listed/deleted bcrypt user, rejected swapped .htpasswd symlink without touching canary, disabled row and cleaned temp dir; primary hash deployed"
 route,POST /api/v1/accounts/{username}/ftp,api/routers/ftp.py,create_ftp_account,get_identity,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
-route,POST /api/v1/accounts/{username}/git,api/routers/git.py,create_repo,get_identity,pending,
+route,POST /api/v1/accounts/{username}/git,api/routers/git.py,create_repo,get_identity,reviewed-fixed,BSA-2026-047; source filesystem/role review; tests/test_feature_scope_review.py and test_gitrepo.py; VM Git canary; 9aa8d30
 route,POST /api/v1/accounts/{username}/malware/findings/{finding_id}/ignore,api/routers/malware.py,ignore,get_identity,pending,
 route,POST /api/v1/accounts/{username}/malware/findings/{finding_id}/quarantine,api/routers/malware.py,quarantine,get_identity,pending,
 route,POST /api/v1/accounts/{username}/malware/findings/{finding_id}/restore,api/routers/malware.py,restore,get_identity,pending,
@@ -381,7 +382,7 @@ route,POST /api/v1/accounts/{username}/wordpress/{wp_id}/wpcli,api/routers/devto
 route,POST /api/v1/admin/accounts/bulk-action,api/routers/bulkops.py,bulk_action,get_identity,pending,
 route,POST /api/v1/admin/accounts/{username}/apply-plan/{plan_id},api/routers/plans.py,apply_plan,get_identity,pending,
 route,POST /api/v1/admin/accounts/{username}/impersonate,api/routers/impersonation.py,impersonate,get_identity,pending,
-route,POST /api/v1/admin/accounts/{username}/notes,api/routers/notes.py,add_note,get_identity,pending,
+route,POST /api/v1/admin/accounts/{username}/notes,api/routers/notes.py,add_note,get_identity,reviewed-fixed,Source role/query/output review; author stamped by verified root principal; tests/test_feature_scope_review.py; test_notes.py; test_rpc_dispatch_security.py
 route,POST /api/v1/admin/branding/favicon,api/routers/branding.py,upload_favicon,get_identity,pending,
 route,POST /api/v1/admin/branding/logo,api/routers/branding.py,upload_logo,get_identity,pending,
 route,POST /api/v1/admin/db/kill-privilege/bootstrap,api/routers/dbmonitor.py,bootstrap_kill_privilege,get_identity,pending,
@@ -456,7 +457,7 @@ route,POST /login,api/routers/auth.py,login_submit,,reviewed-public,public login
 route,POST /login/2fa,api/routers/auth.py,login_2fa_submit,,reviewed-public,public login endpoints reviewed: public-route inventory plus 82 auth/session/TOTP/RPC authority tests; cross-origin form guard and root-side login protocol
 route,POST /logout,api/routers/auth.py,logout,get_identity,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 route,PUT /api/v1/accounts/{username}/crons/{job_id},api/routers/cron.py,update_cron,get_identity,pending,
-route,PUT /api/v1/accounts/{username}/domains/{domain}/error-pages/{code},api/routers/errorpages.py,set_error_page,get_identity,pending,
+route,PUT /api/v1/accounts/{username}/domains/{domain}/error-pages/{code},api/routers/errorpages.py,set_error_page,get_identity,reviewed-fixed,Shared no-follow file/tenant ACL fix; sandboxed HTML preview; test_feature_scope_review.py; test_custom_pages.py; Chromium error-preview-security.spec.js normal CSP and bypassCSP cases passed
 route,PUT /api/v1/accounts/{username}/domains/{domain}/forwarding,api/routers/forwarding.py,set_forwarding,get_identity,pending,
 route,PUT /api/v1/accounts/{username}/domains/{domain}/lscache,api/routers/lscache_router.py,set_lscache,get_identity,pending,
 route,PUT /api/v1/accounts/{username}/domains/{domain}/nameservers,api/routers/nameservers.py,set_nameservers,get_identity,pending,
@@ -476,7 +477,7 @@ route,PUT /api/v1/dns/zones/{domain}/records,api/routers/dns.py,set_record,get_i
 route,PUT /files,api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,PUT /files/{path:path},api/routers/filebrowser.py,proxy,manual-auth-inside-handler,reviewed-fixed,BSA-2026-030/BSA-2026-036; 46547ff/112ed30/b8ec15d; 92+43 focused tests; VM own/cross-account/write and hostile-backend canaries; Chromium HTML/SVG isolation; primary smoke
 route,WEBSOCKET /ws/accounts/{username}/terminal,api/routers/terminal.py,terminal_ws,manual-auth-inside-handler,reviewed-fixed,"terminal local-only key hardening: 44 focused terminal/RPC-authority tests; VM real sshd canary proved localhost generated-key login, public-host key rejection by sshd from= restriction, close removed key; primary hashes deployed"
-rpc,account.create,daemon/handlers_account.py,create_account,kernel-peer-uid; root-credential; policy=global_admin,pending,
+rpc,account.create,daemon/database_operations.py,create_account,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,account.get,daemon/handlers_account.py,get_account,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,account.list,daemon/handlers_account.py,list_accounts,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,account.reactivate,daemon/account_mutation.py,reactivate_account,kernel-peer-uid; root-credential; policy=root_internal,pending,
@@ -485,7 +486,7 @@ rpc,account.set_contact_email,daemon/identity_admin.py,set_contact_email,kernel-
 rpc,account.set_limits,daemon/handlers_account.py,set_limits,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,account.set_password,daemon/identity_admin.py,set_account_password,kernel-peer-uid; root-credential; policy=admin_account_username,pending,
 rpc,account.set_php_version,daemon/account_mutation.py,set_php_version,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,account.set_primary_domain,daemon/identity_admin.py,set_primary_domain,kernel-peer-uid; root-credential; policy=global_admin,pending,
+rpc,account.set_primary_domain,daemon/database_operations.py,set_primary_domain,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,account.suspend,daemon/account_mutation.py,suspend_account,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,account.terminate,daemon/handlers_account.py,terminate_account,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,account.unsuspend,daemon/account_mutation.py,unsuspend_account,kernel-peer-uid; root-credential; policy=global_admin,pending,
@@ -591,16 +592,16 @@ rpc,dns.delete_record,daemon/dns_operations.py,delete_record,kernel-peer-uid; ro
 rpc,dns.delete_zone,daemon/dns_operations.py,delete_zone,kernel-peer-uid; root-credential; policy=root_internal,pending,
 rpc,dns.list_records,daemon/handlers_dns.py,list_records,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,dns.set_record,daemon/dns_operations.py,set_record,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,domain.add,daemon/account_mutation.py,add_domain,kernel-peer-uid; root-credential; policy=account_username,pending,
+rpc,domain.add,daemon/database_operations.py,add_domain,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,domain.list,daemon/handlers_domain.py,list_domains,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,domain.remove,daemon/account_mutation.py,remove_domain,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,domain.set_php_version,daemon/account_mutation.py,set_domain_php_version,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,email_routing.get,daemon/handlers_email_routing.py,get_routing,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,email_routing.set,daemon/database_operations.py,set_routing,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,errorpages.delete,daemon/custom_pages.py,rpc_delete_error_page,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,errorpages.get,daemon/custom_pages.py,rpc_get_error_page,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,errorpages.list,daemon/custom_pages.py,rpc_list_error_pages,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
-rpc,errorpages.set,daemon/custom_pages.py,rpc_set_error_page,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
+rpc,errorpages.delete,daemon/custom_pages.py,rpc_delete_error_page,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,Shared no-follow file/tenant ACL fix; sandboxed HTML preview; test_feature_scope_review.py; test_custom_pages.py; Chromium error-preview-security.spec.js normal CSP and bypassCSP cases passed
+rpc,errorpages.get,daemon/custom_pages.py,rpc_get_error_page,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,Shared no-follow file/tenant ACL fix; sandboxed HTML preview; test_feature_scope_review.py; test_custom_pages.py; Chromium error-preview-security.spec.js normal CSP and bypassCSP cases passed
+rpc,errorpages.list,daemon/custom_pages.py,rpc_list_error_pages,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,Shared no-follow file/tenant ACL fix; sandboxed HTML preview; test_feature_scope_review.py; test_custom_pages.py; Chromium error-preview-security.spec.js normal CSP and bypassCSP cases passed
+rpc,errorpages.set,daemon/custom_pages.py,rpc_set_error_page,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,Shared no-follow file/tenant ACL fix; sandboxed HTML preview; test_feature_scope_review.py; test_custom_pages.py; Chromium error-preview-security.spec.js normal CSP and bypassCSP cases passed
 rpc,fail2ban.bootstrap,daemon/fail2ban.py,bootstrap_jails,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,fail2ban.get_jail,daemon/fail2ban.py,get_jail,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,fail2ban.list_jails,daemon/fail2ban.py,list_jails,kernel-peer-uid; root-credential; policy=global_admin,pending,
@@ -636,11 +637,11 @@ rpc,ftp.create,daemon/account_mutation.py,create_ftp_account,kernel-peer-uid; ro
 rpc,ftp.delete,daemon/handlers_ftp.py,delete_ftp_account,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 rpc,ftp.list,daemon/handlers_ftp.py,list_ftp_accounts,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
 rpc,ftp.set_path,daemon/handlers_ftp.py,set_ftp_path,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,"database/FTP lifecycle hardening: 47 database/FTP/RPC-authority tests; VM canary forced post-create bookkeeping failures and external delete failures, proving created DB/FTP objects are cleaned up or rows retained for retry; primary hashes deployed"
-rpc,git.repo.create,daemon/gitrepo.py,create_repo,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,git.repo.delete,daemon/gitrepo.py,delete_repo,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,git.repo.list,daemon/gitrepo.py,list_repos,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,git.repo.push_log,daemon/gitrepo.py,get_push_log,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,git.repo.set_deploy_target,daemon/gitrepo.py,set_deploy_target,kernel-peer-uid; root-credential; policy=account_username,pending,
+rpc,git.repo.create,daemon/gitrepo.py,create_repo,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,BSA-2026-047; source filesystem/role review; tests/test_feature_scope_review.py and test_gitrepo.py; VM Git canary; 9aa8d30
+rpc,git.repo.delete,daemon/gitrepo.py,delete_repo,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,BSA-2026-047; source filesystem/role review; tests/test_feature_scope_review.py and test_gitrepo.py; VM Git canary; 9aa8d30
+rpc,git.repo.list,daemon/gitrepo.py,list_repos,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,BSA-2026-047; source filesystem/role review; tests/test_feature_scope_review.py and test_gitrepo.py; VM Git canary; 9aa8d30
+rpc,git.repo.push_log,daemon/gitrepo.py,get_push_log,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,BSA-2026-047; source filesystem/role review; tests/test_feature_scope_review.py and test_gitrepo.py; VM Git canary; 9aa8d30
+rpc,git.repo.set_deploy_target,daemon/gitrepo.py,set_deploy_target,kernel-peer-uid; root-credential; policy=account_username,reviewed-fixed,BSA-2026-047; source filesystem/role review; tests/test_feature_scope_review.py and test_gitrepo.py; VM Git canary; 9aa8d30
 rpc,health.get,daemon/health.py,get_live,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,health.history,daemon/health.py,get_history,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,health.snapshot,daemon/health.py,take_snapshot,kernel-peer-uid; root-credential; policy=root_internal,pending,
@@ -692,7 +693,7 @@ rpc,mail.forward.delete,daemon/database_operations.py,delete_forward,kernel-peer
 rpc,mail.forward.list,daemon/handlers_mail.py,list_forwards,kernel-peer-uid; root-credential; policy=account_and_domain,pending,
 rpc,mail.list_mailboxes,daemon/handlers_mail.py,list_mailboxes,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,mail lifecycle hardening: 63 mail/mutation/RPC-authority tests; VM canary forced post-create cache failures and verified external mail domain/mailbox/maildir/cache cleanup; no-owner domain create now fails before external create; primary handlers_mail.py hash matches and boron-provisiond active
 rpc,mail.spamfilter.get,daemon/handlers_mail.py,get_spam_filter,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
-rpc,mail.spamfilter.set,daemon/handlers_mail.py,set_spam_filter,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
+rpc,mail.spamfilter.set,daemon/database_operations.py,set_spam_filter,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
 rpc,maillog.delivery,daemon/maillog.py,get_delivery_log,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,mailqueue.delete,daemon/mailqueue.py,delete_message,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,mailqueue.delete_all,daemon/mailqueue.py,delete_all,kernel-peer-uid; root-credential; policy=global_admin,pending,
@@ -724,8 +725,8 @@ rpc,namespace.disable,daemon/nsisolation.py,disable_namespace,kernel-peer-uid; r
 rpc,namespace.enable,daemon/nsisolation.py,enable_namespace,kernel-peer-uid; root-credential; policy=admin_account_username,pending,
 rpc,namespace.health_summary,daemon/nsisolation.py,health_summary,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,namespace.status,daemon/nsisolation.py,namespace_status,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,notes.add,daemon/handlers_notes.py,add_note,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,notes.list,daemon/handlers_notes.py,list_notes,kernel-peer-uid; root-credential; policy=global_admin,pending,
+rpc,notes.add,daemon/handlers_notes.py,add_note,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,Source role/query/output review; author stamped by verified root principal; tests/test_feature_scope_review.py; test_notes.py; test_rpc_dispatch_security.py
+rpc,notes.list,daemon/handlers_notes.py,list_notes,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,Source role/query/output review; author stamped by verified root principal; tests/test_feature_scope_review.py; test_notes.py; test_rpc_dispatch_security.py
 rpc,notifications.prefs.get,daemon/notifications.py,get_prefs,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,notifications.prefs.set,daemon/notifications.py,set_prefs,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,notifications.settings.get,daemon/notifications.py,get_settings,kernel-peer-uid; root-credential; policy=global_admin,pending,
@@ -735,13 +736,13 @@ rpc,ols.admin.password.reveal,daemon/ols.py,reveal_admin_password,kernel-peer-ui
 rpc,ols.admin.reload,daemon/ols.py,graceful_reload,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,ols.admin.settings.update,daemon/ols.py,update_admin_settings,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,ols.admin.status,daemon/ols.py,admin_status,kernel-peer-uid; root-credential; policy=global_admin,pending,
-rpc,onboarding.get,daemon/onboarding.py,get_onboarding,kernel-peer-uid; root-credential; policy=account_username,pending,
-rpc,onboarding.set,daemon/onboarding.py,set_onboarding,kernel-peer-uid; root-credential; policy=account_username,pending,
+rpc,onboarding.get,daemon/onboarding.py,get_onboarding,kernel-peer-uid; root-credential; policy=account_username,reviewed-tested,Source account/query/output review; tests/test_feature_scope_review.py and test_onboarding.py; owner success; peer and anonymous denial
+rpc,onboarding.set,daemon/onboarding.py,set_onboarding,kernel-peer-uid; root-credential; policy=account_username,reviewed-tested,Source account/query/output review; tests/test_feature_scope_review.py and test_onboarding.py; owner success; peer and anonymous denial
 rpc,panel.config.start,daemon/panel_jobs.py,start,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,panel.config.status,daemon/panel_jobs.py,status,kernel-peer-uid; root-credential; policy=global_admin,pending,
 rpc,panel_user.create,daemon/handlers_auth.py,create_panel_user,kernel-peer-uid; root-credential; policy=root_internal,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
 rpc,panel_user.set_password,daemon/handlers_auth.py,set_panel_user_password,kernel-peer-uid; root-credential; policy=self_with_current_password_or_admin,reviewed-fixed,"auth/session/TOTP/RPC authority: 82 focused tests passed; hashed sessions, root-side login protocol, token admin checks, TOTP replay/recovery serialization, live VM login smoke"
-rpc,parked.add,daemon/parked.py,add_parked_domain,kernel-peer-uid; root-credential; policy=account_username,pending,
+rpc,parked.add,daemon/database_operations.py,add_parked_domain,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,parked.list,daemon/parked.py,list_parked_domains,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,parked.remove,daemon/parked.py,remove_parked_domain,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,php_ext.list,daemon/phpext.py,list_extensions,kernel-peer-uid; root-credential; policy=account_username,pending,
@@ -812,9 +813,9 @@ rpc,snapshot.restore.trigger,daemon/snapshot_restores.py,trigger,kernel-peer-uid
 rpc,snapshot.restore.undo,daemon/snapshot_restores.py,undo,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,snapshot.run.browse,daemon/snapshot_jobs.py,browse,kernel-peer-uid; root-credential; policy=account_username,pending,
 rpc,snapshot.run.list,daemon/snapshot_jobs.py,runs,kernel-peer-uid; root-credential; policy=mixed_admin_or_account,pending,
-rpc,spamfilter.entries.add,daemon/spamfilter.py,add_entry,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,spamfilter entry rollback hardening: 93 spamfilter/mail/RPC-authority tests; VM canary forced global Sieve refresh failures on add/delete/import/mailbox cleanup and verified DB rows rolled back or restored; primary spamfilter.py hash deployed
-rpc,spamfilter.entries.delete,daemon/spamfilter.py,delete_entry,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,spamfilter entry rollback hardening: 93 spamfilter/mail/RPC-authority tests; VM canary forced global Sieve refresh failures on add/delete/import/mailbox cleanup and verified DB rows rolled back or restored; primary spamfilter.py hash deployed
-rpc,spamfilter.entries.import,daemon/spamfilter.py,import_entries,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,spamfilter entry rollback hardening: 93 spamfilter/mail/RPC-authority tests; VM canary forced global Sieve refresh failures on add/delete/import/mailbox cleanup and verified DB rows rolled back or restored; primary spamfilter.py hash deployed
+rpc,spamfilter.entries.add,daemon/database_operations.py,add_entry,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,spamfilter entry rollback hardening: 93 spamfilter/mail/RPC-authority tests; VM canary forced global Sieve refresh failures on add/delete/import/mailbox cleanup and verified DB rows rolled back or restored; primary spamfilter.py hash deployed
+rpc,spamfilter.entries.delete,daemon/database_operations.py,delete_entry,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,spamfilter entry rollback hardening: 93 spamfilter/mail/RPC-authority tests; VM canary forced global Sieve refresh failures on add/delete/import/mailbox cleanup and verified DB rows rolled back or restored; primary spamfilter.py hash deployed
+rpc,spamfilter.entries.import,daemon/database_operations.py,import_entries,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,spamfilter entry rollback hardening: 93 spamfilter/mail/RPC-authority tests; VM canary forced global Sieve refresh failures on add/delete/import/mailbox cleanup and verified DB rows rolled back or restored; primary spamfilter.py hash deployed
 rpc,spamfilter.entries.list,daemon/spamfilter.py,list_entries,kernel-peer-uid; root-credential; policy=account_and_domain,reviewed-fixed,spamfilter entry rollback hardening: 93 spamfilter/mail/RPC-authority tests; VM canary forced global Sieve refresh failures on add/delete/import/mailbox cleanup and verified DB rows rolled back or restored; primary spamfilter.py hash deployed
 rpc,spamfilter.global_default.get,daemon/server.py,<lambda>,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"
 rpc,spamfilter.global_default.set,daemon/server.py,<lambda>,kernel-peer-uid; root-credential; policy=global_admin,reviewed-fixed,"spam-filter consistency hardening: 89 mail/spamfilter/RPC-authority tests; VM canary verified per-domain prefs/DB rollback, global local.cf lint-before-apply, global DB failure restore, and primary hashes deployed"

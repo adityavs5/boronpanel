@@ -74,3 +74,11 @@ def test_dispatch_retains_safe_validation_feedback(monkeypatch):
     with pytest.raises(ValidationError, match="domain name is invalid"):
         asyncio.run(server.dispatch("test.safe_validation", {"_actor": "admin", "_role": "admin"}))
     assert records[0][-1] == "domain name is invalid"
+
+
+def test_note_author_comes_from_verified_principal(monkeypatch):
+    seen = []
+    monkeypatch.setitem(server.OP_TABLE, 'notes.add', lambda params: seen.append(dict(params)) or {})
+    monkeypatch.setattr(server.audit, 'record', lambda *args: None)
+    asyncio.run(server.dispatch('notes.add', {'username': 'tenant', 'author': 'forged-admin', 'body': 'note'}))
+    assert seen[0]['author'] == 'admin'
