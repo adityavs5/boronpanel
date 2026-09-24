@@ -11,7 +11,7 @@ from api.security import Identity
 MODULES = ['services', 'firewall', 'fail2ban', 'ipban', 'ipwhitelist',
            'slowquery', 'dbmonitor', 'auditlog', 'adminlogs', 'health',
            'plans', 'site_templates', 'webhooks', 'mailqueue', 'waf',
-           'olsadmin', 'ipmanager']
+           'olsadmin', 'ipmanager', 'monitoring']
 CASES = []
 for name in MODULES:
     module = importlib.import_module('api.routers.' + name)
