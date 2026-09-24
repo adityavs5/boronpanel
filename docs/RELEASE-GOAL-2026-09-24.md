@@ -26,7 +26,7 @@ production build verification and a rendered/live check where applicable.
       cPanel/WHM peers, encrypted credentials, health/status, retryable full
       zone synchronization, deletion propagation, loop protection and an
       explicit sync-all action. Preserve existing DA/cPanel nameservers.
-- [ ] Run focused backend/security/browser tests, production build, install on
+- [x] Run focused backend/security/browser tests, production build, install on
       the development panel, inspect both themes, push master, publish release
       artifacts, and verify the panel self-update path.
 
