@@ -18,6 +18,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain
 from shared.validation import ValidationError, validate_domain, validate_username
+from daemon import appunits, safeio
 
 MAX_LINES = 500
 LOG_TYPES = ("ols", "php")
@@ -69,11 +70,12 @@ def _vhost_name(domain: str) -> str:
 
 
 def _tail_lines(path: str, max_lines: int) -> list[str]:
-    if not os.path.isfile(path):
-        return []
-    with open(path, "r", errors="replace") as f:
-        lines = f.readlines()
-    return [ln.rstrip("\n") for ln in lines[-max_lines:]]
+    # Open through anchored directory descriptors, never follow a path that a
+    # tenant can replace between validation and reading, and bound bytes.
+    try:
+        return appunits.tail_log_file(path, max_lines)
+    except (safeio.UnsafePathError, OSError, ValueError) as exc:
+        raise LogsError("log path is not a safe regular file") from exc
 
 
 def _matches_severity(line: str, severity: str | None) -> bool:
@@ -88,7 +90,7 @@ def get_log(params: dict) -> dict:
     if log_type not in LOG_TYPES:
         raise ValidationError(f"log type must be one of {LOG_TYPES}")
     severity = params.get("severity") or None
-    lines_requested = min(int(params.get("lines", MAX_LINES)), MAX_LINES)
+    lines_requested = max(1, min(int(params.get("lines", MAX_LINES)), MAX_LINES))
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))

@@ -112,3 +112,29 @@ def test_jailed_log_path_rejects_traversal_attempt(fake_account_home):
 def test_get_log_requires_existing_account(isolated_db):
     with pytest.raises(RuntimeError):
         logs.get_log({"username": "nosuchaccount", "type": "php"})
+
+
+@pytest.mark.parametrize("replace_parent", [False, True])
+def test_log_swap_after_resolution_cannot_read_other_account(account_with_domain, fake_account_home, tmp_path, monkeypatch, replace_parent):
+    private = tmp_path / 'private'
+    private.mkdir()
+    (private / 'php-error.log').write_text('PROTECTED CANARY')
+    original = logs._jailed_log_path
+    def swap(username, filename):
+        path = original(username, filename)
+        if replace_parent:
+            (fake_account_home / 'logs').rmdir()
+            (fake_account_home / 'logs').symlink_to(private, target_is_directory=True)
+        else:
+            (fake_account_home / 'logs' / filename).symlink_to(private / filename)
+        return path
+    monkeypatch.setattr(logs, '_jailed_log_path', swap)
+    with pytest.raises(logs.LogsError):
+        logs.get_log({'username': 'demo1', 'type': 'php'})
+
+
+def test_large_log_read_is_bounded(account_with_domain, fake_account_home):
+    path = fake_account_home / 'logs' / 'php-error.log'
+    path.write_bytes(b'x' * (2 * 1024 * 1024) + b'\nlast line\n')
+    result = logs.get_log({'username': 'demo1', 'type': 'php'})
+    assert result['lines'] == ['last line']

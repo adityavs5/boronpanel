@@ -211,3 +211,18 @@ succeeds. A failed stop cannot erase its unit/environment files. Account
 termination keeps the Unix identity and quotas reserved when cleanup hooks
 fail, while the existing authentication revocation still blocks panel access.
 This prevents premature name/UID reuse and preserves a retry path.
+
+
+The account lifecycle regression suite also passed (54 tests). The Redis UID
+fix was installed on the primary development server with a protected rollback
+copy; both panel services, trusted HTTPS and the real Redis INFO memory probe
+passed. The remaining lifecycle changes await the unified release.
+
+## Site log viewer descriptor safety
+
+The PHP/OLS log viewer previously checked a pathname and then reopened it as
+root, with an unbounded readlines call. It now uses the shared descriptor-based
+bounded tail reader, rejecting symlinked ancestors, symlinked leaf files and
+nonregular files. Tests swap either the parent or leaf after resolution and
+verify that a protected canary is not returned; normal logs and oversized tails
+remain functional. All 29 log/viewer safety tests passed.
