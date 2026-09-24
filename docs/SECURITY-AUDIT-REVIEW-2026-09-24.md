@@ -121,8 +121,12 @@ AnyIO, cryptography, setuptools and soupsieve were updated; pyOpenSSL also
 needed an update for compatibility. Resolution produced 89 packages and a
 scan of that complete resolved set found no known advisories. This is a
 database-based dependency check, not proof that the application is secure.
-Candidate environment installation and compatibility testing remain release
-gates. The running panel's dependency environment has not been replaced.
+The isolated candidate environment installed successfully and `pip check`
+reported no broken requirements. All 62 focused crypto, release-signature,
+TLS, terminal and account-state tests passed against it. All 12 previously
+unpinned transitive packages are now pinned to this audited resolution.
+The running panel's dependency environment has not been replaced; full
+candidate deployment remains a release gate.
 
 ## Remaining scope
 
