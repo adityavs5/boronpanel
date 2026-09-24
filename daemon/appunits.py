@@ -3,10 +3,9 @@
 regardless of what's actually being supervised: unit file naming
 (`boron-{kind}-{username}-{id}.service`, the goal's own explicit
 convention), writing/starting/stopping/removing a unit, and tailing an
-app's own log file instead of the system journal (goal: "logs under
-~/logs/{type}/, not system journal" -- achieved by each unit's own
-StandardOutput/StandardError pointing directly at that file, so "read the
-log" is just reading a file, never `journalctl`).
+app's own log file instead of the system journal. A trusted launcher opens
+the log after systemd drops to the hosting user; systemd must not open a
+tenant-controlled log path with root privileges.
 
 Each app is assigned directly to its account's existing cgroup slice via
 `Slice=boron-<username>.slice` in the unit itself -- daemon/cgroups.py
@@ -20,13 +19,22 @@ cgroup first.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 from shared.config import settings
 
 from daemon.procutil import run
+from daemon import safeio
 
 UNITS_DIR = Path("/etc/systemd/system")
+
+
+def logged_exec(command: str, log_path: str) -> str:
+    # Paths and commands here are generated from validated app fields. The
+    # helper is root-owned but executes under the unit's User=, before opening
+    # any tenant-controlled path. systemd must never open these logs itself.
+    return f"/usr/bin/python3 -I /opt/boron/scripts/app_exec.py --log {log_path} -- {command}"
 
 
 def unit_name(kind: str, username: str, app_id: int) -> str:
@@ -125,9 +133,27 @@ def tail_log_file(path: str, lines: int = 100) -> list[str]:
     logged anything yet, or was just created) returns an empty list rather
     than raising, since "no output yet" is the expected common case right
     after create()."""
-    p = Path(path)
-    if not p.exists():
+    relative = Path(path).relative_to(settings.home_base)
+    try:
+        directory = safeio.open_dir_beneath(settings.home_base, str(relative.parent))
+    except FileNotFoundError:
         return []
-    with open(p, "r", errors="replace") as f:
-        content = f.readlines()
-    return [line.rstrip("\n") for line in content[-lines:]]
+    try:
+        try:
+            fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+        except FileNotFoundError:
+            return []
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise safeio.UnsafePathError('app log must be a regular file')
+            start = max(0, info.st_size - 256 * 1024)
+            os.lseek(fd, start, os.SEEK_SET)
+            content = os.read(fd, 256 * 1024).decode('utf-8', errors='replace').splitlines()
+            if start and content:
+                content.pop(0)
+            return content[-max(1, min(int(lines), 1000)):]
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory)

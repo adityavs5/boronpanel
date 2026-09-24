@@ -71,11 +71,12 @@ def secure_ensure_file_beneath(
     dir_fd = open_dir_beneath(trusted_root, relative_dir)
     try:
         try:
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CREAT | os.O_CLOEXEC, mode, dir_fd=dir_fd)
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CREAT | os.O_CLOEXEC | os.O_NONBLOCK, mode, dir_fd=dir_fd)
         except OSError as exc:
             raise UnsafePathError(f"'{name}' is not a safe regular file") from exc
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise UnsafePathError(f"'{name}' is not a regular file")
             os.fchown(fd, uid, gid)
             os.fchmod(fd, mode)
@@ -166,13 +167,16 @@ def secure_ensure_file(dir_path: str, name: str, uid: int, gid: int, mode: int =
         try:
             fd = os.open(
                 name,
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_CREAT | os.O_CLOEXEC,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CREAT | os.O_CLOEXEC | os.O_NONBLOCK,
                 mode,
                 dir_fd=dir_fd,
             )
         except OSError as exc:
             raise UnsafePathError(f"'{name}' in '{dir_path}' is not a regular file") from exc
         try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise UnsafePathError(f"'{name}' is not a single-link regular file")
             os.fchown(fd, uid, gid)
             os.fchmod(fd, mode)
         finally:

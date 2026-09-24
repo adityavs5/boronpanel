@@ -109,6 +109,8 @@ def _provision_filesystem(username: str) -> None:
     home = os.path.realpath(f"{settings.home_base}/{username}")
     rel = os.path.relpath(_data_dir(username), home)
     safeio.secure_mkdirs(home, rel, pw.pw_uid, pw.pw_gid, 0o700)
+    safeio.secure_mkdirs(home, "logs/redis", pw.pw_uid, pw.pw_gid, 0o750)
+    safeio.secure_ensure_file_beneath(home, "logs/redis", f"{username}.log", pw.pw_uid, pw.pw_gid, 0o640)
 
 
 def _render_conf(username: str, mem_mb: int) -> str:
@@ -140,11 +142,7 @@ def _write_unit(username: str, instance_id: int, mem_mb: int) -> str:
     conf_path.write_text(_render_conf(username, mem_mb))
     os.chmod(conf_path, 0o644)
 
-    pw = pwd.getpwnam(username)
-    home = os.path.realpath(f"{settings.home_base}/{username}")
-    log_dir = safeio.secure_mkdirs(home, "logs/redis", pw.pw_uid, pw.pw_gid, 0o750)
-    safeio.secure_ensure_file(log_dir, f"{username}.log", pw.pw_uid, pw.pw_gid, 0o640)
-    log_path = f"{log_dir}/{username}.log"
+    log_path = f"{settings.home_base}/{username}/logs/redis/{username}.log"
 
     content = (
         "[Unit]\n"
@@ -156,12 +154,12 @@ def _write_unit(username: str, instance_id: int, mem_mb: int) -> str:
         f"User={username}\n"
         f"Group={username}\n"
         f"WorkingDirectory={_data_dir(username)}\n"
-        f"ExecStart={settings.redis_bin} {conf_path}\n"
+        f"ExecStart={appunits.logged_exec(f'{settings.redis_bin} {conf_path}', log_path)}\n"
         f"Slice=boron-{username}.slice\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
-        f"StandardOutput=append:{log_path}\n"
-        f"StandardError=append:{log_path}\n"
+        "StandardOutput=null\n"
+        "StandardError=journal\n"
         "\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n"
@@ -326,8 +324,8 @@ def bootstrap_all_redis() -> None:
         if username is None:
             continue
         try:
-            _provision_filesystem(username)
             unit = _write_unit(username, instance_id, mem_mb)
+            _provision_filesystem(username)
             if enabled:
                 appunits.enable_start(unit)
         except Exception:

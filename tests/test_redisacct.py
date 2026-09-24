@@ -42,6 +42,10 @@ def fake_redis_cli(monkeypatch):
 
 @pytest.fixture()
 def account_with_home(isolated_db, tmp_path, monkeypatch, fake_systemctl, fake_redis_cli):
+    units = tmp_path / 'units'
+    units.mkdir()
+    monkeypatch.setattr(redisacct.appunits, 'UNITS_DIR', units)
+    monkeypatch.setattr(redisacct.settings, 'app_env_dir', str(tmp_path / 'app-env'))
     home_base = tmp_path / "home"
     home_base.mkdir()
     monkeypatch.setattr(redisacct.settings, "home_base", str(home_base))
@@ -86,6 +90,9 @@ def test_enable_redis_writes_conf_with_unix_socket_and_no_tcp_port(account_with_
     assert "unixsocketperm 700" in content
     assert "maxmemory 96mb" in content
     assert 'save ""' in content
+    unit = redisacct.appunits.unit_path(result['unit']).read_text()
+    assert 'StandardOutput=append:' not in unit
+    assert '/usr/bin/python3 -I /opt/boron/scripts/app_exec.py --log ' in unit
 
 
 def test_enable_redis_rejects_out_of_range_mem(account_with_home):

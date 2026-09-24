@@ -123,7 +123,7 @@ def _provision_filesystem(username: str, name: str) -> None:
     safeio.secure_mkdirs(home, app_rel, pw.pw_uid, pw.pw_gid, 0o750)
 
     log_dir = safeio.secure_mkdirs(home, "logs/python", pw.pw_uid, pw.pw_gid, 0o750)
-    safeio.secure_ensure_file(log_dir, os.path.basename(_log_path(username, name)), pw.pw_uid, pw.pw_gid, 0o640)
+    safeio.secure_ensure_file_beneath(home, "logs/python", os.path.basename(_log_path(username, name)), pw.pw_uid, pw.pw_gid, 0o640)
 
 
 def _create_venv(username: str, name: str) -> None:
@@ -174,12 +174,12 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, app_typ
         f"Group={username}\n"
         f"WorkingDirectory={app_dir}\n"
         f"EnvironmentFile={appunits.env_file_path(unit)}\n"
-        f"ExecStart={_exec_start(venv_dir, app_type, entry_point, port)}\n"
+        f"ExecStart={appunits.logged_exec(_exec_start(venv_dir, app_type, entry_point, port), log_path)}\n"
         f"Slice=boron-{username}.slice\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
-        f"StandardOutput=append:{log_path}\n"
-        f"StandardError=append:{log_path}\n"
+        "StandardOutput=null\n"
+        "StandardError=journal\n"
         "\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n"
@@ -400,8 +400,8 @@ def bootstrap_all_python_apps() -> None:
             continue
         try:
             env_vars = appcrypto.decrypt_env(env_vars_enc) if env_vars_enc else {}
-            _provision_filesystem(username, name)
             unit = _write_unit(username, app_id, name, entry_point, app_type, port, env_vars)
+            _provision_filesystem(username, name)
             if enabled:
                 appunits.enable_start(unit)
         except Exception:
