@@ -23,6 +23,8 @@ import hashlib
 import json
 import logging
 import os
+import stat
+import subprocess
 import secrets
 import shutil
 import tarfile
@@ -49,7 +51,7 @@ from shared.models import (
     SnapshotRestore,
     utcnow,
 )
-from shared.validation import ValidationError, validate_domain, validate_username
+from shared.validation import ValidationError, validate_domain, validate_username, validate_mailbox_local_part
 
 from daemon import cron, dnsprovider, events, mariadb, rclone
 from daemon.procutil import run
@@ -284,6 +286,32 @@ def trigger_backup(params: dict) -> dict:
         return _trigger_backup_locked(params)
 
 
+def _authorize_item(session, account, kind, item_ref):
+    if kind in ("full", "databases"):
+        return
+    if not isinstance(item_ref, str) or not item_ref:
+        raise BackupError("a backup item is required")
+    if kind == "database":
+        if session.scalar(select(DatabaseGrant.id).where(
+                DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == item_ref)) is None:
+            raise BackupError("choose a database owned by this account")
+    elif kind == "mailbox":
+        local, separator, domain = item_ref.partition("@")
+        if not separator:
+            raise BackupError("mailbox must be local_part@domain")
+        validate_mailbox_local_part(local)
+        validate_domain(domain)
+        if session.scalar(select(MailUser.id).join(MailDomain, MailDomain.id == MailUser.mail_domain_id).where(
+                MailDomain.account_id == account.id, MailUser.domain == domain, MailUser.local_part == local)) is None:
+            raise BackupError("choose a mailbox owned by this account")
+    elif kind == "file":
+        path = Path(item_ref)
+        if path.is_absolute() or '..' in path.parts or item_ref.startswith('-') or '\x00' in item_ref:
+            raise BackupError("file path must stay inside the account home")
+    else:
+        raise BackupError("unsupported backup kind")
+
+
 def _trigger_backup_locked(params: dict) -> dict:
     username = validate_username(params["username"])
     kind = params.get("kind", "full")
@@ -298,6 +326,8 @@ def _trigger_backup_locked(params: dict) -> dict:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise BackupError(f"account '{username}' not found")
+
+        _authorize_item(session, account, kind, item_ref)
 
         owned_databases = set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id == account.id)).all())
         if kind == "database" and item_ref not in owned_databases:
@@ -419,6 +449,21 @@ def _pwnam(username: str):
     return pwd.getpwnam(username)
 
 
+def _build_user_tar(username, output, directory, item):
+    owner = _pwnam(username)
+    if owner.pw_uid <= 0 or owner.pw_gid <= 0:
+        raise BackupError("refusing file backup as root")
+    # Only the root-owned output descriptor crosses the privilege boundary.
+    # Mutable source paths are opened by the hosting identity itself.
+    with open(output, 'xb') as archive, tempfile.TemporaryFile() as errors:
+        os.fchmod(archive.fileno(), 0o600)
+        result = subprocess.run(['tar','czf','-','-C',str(directory),'--',item],
+            stdout=archive, stderr=errors, timeout=1800, user=owner.pw_uid,
+            group=owner.pw_gid, extra_groups=())
+        if result.returncode:
+            raise BackupError("account-privileged file backup failed")
+
+
 def _as_aware_utc(value):
     import datetime as dt
 
@@ -511,9 +556,7 @@ def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
     _update_job(job_id, progress_message="backing up files (1/3)")
     home_dir = f"{settings.home_base}/{username}"
     if Path(home_dir).exists():
-        result = run(["tar", "czf", str(staging_dir / "home.tar.gz"), "-C", settings.home_base, username], timeout=1800)
-        if not result.ok:
-            raise BackupError(f"tar of home directory failed: {result.stderr.strip()}")
+        _build_user_tar(username, staging_dir / "home.tar.gz", settings.home_base, username)
 
     _update_job(job_id, progress_message="backing up databases (2/3)")
     if manifest["databases"]:
@@ -570,9 +613,7 @@ def _build_file_backup(username: str, item_ref: str, staging_dir: Path, job_id: 
         raise BackupError(f"'{item_ref}' does not exist")
     _update_job(job_id, progress_message=f"backing up {item_ref}")
     artifact = staging_dir / "file.tar.gz"
-    result = run(["tar", "czf", str(artifact), "-C", str(home_dir), item_ref], timeout=600)
-    if not result.ok:
-        raise BackupError(f"tar of '{item_ref}' failed: {result.stderr.strip()}")
+    _build_user_tar(username, artifact, home_dir, item_ref)
     return artifact
 
 
@@ -638,6 +679,7 @@ def _run_backup_job(job_id: int) -> None:
             username = account.username
             kind = job.kind
             item_ref = job.item_ref
+            _authorize_item(session, account, kind, item_ref)
             dest_kind = destination.kind
             dest_local_path = destination.local_path
             dest_remote = destination.rclone_remote
@@ -868,6 +910,7 @@ def _trigger_restore_locked(params: dict) -> dict:
             raise BackupError("a non-full backup artifact can only restore its own kind")
         if backup_job.kind not in ("full", "databases") and not item_ref:
             item_ref = backup_job.item_ref
+        _authorize_item(session, account, effective_kind, item_ref)
 
         # Same guard trigger_backup applies (F9): a restore rewrites the
         # account's home dir and databases in place, so two concurrent restores
@@ -1011,6 +1054,21 @@ def _restore_full(
     if not manifest_path.exists():
         raise BackupError("backup artifact has no manifest.json")
     manifest = json.loads(manifest_path.read_text())
+    if manifest.get("username") != username:
+        raise BackupError("backup manifest belongs to another account")
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        names = [entry['domain'] for entry in manifest.get('domains', [])]
+        names += list(manifest.get('mail_domains', []))
+        names += [entry['domain'] for entry in manifest.get('mail_users', [])]
+        if manifest.get('dns_zone'):
+            names.append(manifest['dns_zone']['zone'])
+        for name in names:
+            validate_domain(name)
+            for model, field in ((Domain, Domain.domain), (MailDomain, MailDomain.domain), (DnsZone, DnsZone.zone)):
+                row = session.scalar(select(model).where(field == name))
+                if row is not None and row.account_id != account.id:
+                    raise BackupError("backup manifest references another account's domain")
 
     from daemon import handlers_account, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_mail
     from daemon.dns_zone_lookup import label_within_zone
@@ -1135,9 +1193,8 @@ def _restore_full(
     report("restoring files")
     home_tar = content_dir / "home.tar.gz"
     if home_tar.exists():
-        _safe_extract_tar(home_tar, settings.home_base)
         pw = _pwnam(username)
-        run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", f"{settings.home_base}/{username}"], timeout=600)
+        _restore_tree(home_tar, Path(settings.home_base) / username, pw, prefix=username)
 
     if account_status in ("terminated", "error"):
         # Now that home.tar.gz has actually been extracted, redo the parts
@@ -1175,6 +1232,9 @@ def _restore_full(
     if db_dir.exists():
         for dump in db_dir.glob("*.sql.gz"):
             db_name = dump.name[: -len(".sql.gz")]
+            with write_session() as session:
+                account = session.scalar(select(Account).where(Account.username == username))
+                _authorize_item(session, account, "database", db_name)
             _restore_database_dump(db_name, dump)
 
     report("restoring mail")
@@ -1182,8 +1242,12 @@ def _restore_full(
     if mail_dir.exists():
         for tarball in mail_dir.glob("*.tar.gz"):
             domain = tarball.name[: -len(".tar.gz")]
-            _safe_extract_tar(tarball, settings.mail_base)
-            run(["chown", "-R", "vmail:vmail", f"{settings.mail_base}/{domain}"], timeout=600)
+            validate_domain(domain)
+            with write_session() as session:
+                account = session.scalar(select(Account).where(Account.username == username))
+                if session.scalar(select(MailDomain.id).where(MailDomain.account_id == account.id, MailDomain.domain == domain)) is None:
+                    raise BackupError("mail domain is not owned by this account")
+            _restore_tree(tarball, Path(settings.mail_base) / domain, _pwnam('vmail'), prefix=domain)
     return summary
 
 
@@ -1192,11 +1256,63 @@ def _restore_file(username: str, item_ref: str, local_artifact: str, restore_job
     home_dir = Path(settings.home_base) / username
     if not home_dir.exists():
         raise BackupError(f"account '{username}' has no home directory to restore into")
-    result = run(["tar", "xzf", local_artifact, "-C", str(home_dir)], timeout=600)
-    if not result.ok:
-        raise BackupError(f"failed to restore file '{item_ref}': {result.stderr.strip()}")
     pw = _pwnam(username)
-    run(["chown", "-R", f"{pw.pw_uid}:{pw.pw_gid}", str(home_dir / item_ref)], timeout=120)
+    _restore_tree(local_artifact, home_dir, pw)
+
+
+def _restore_tree(artifact, destination, owner, prefix=None):
+    """Validate a private archive copy, then extract with destination privileges."""
+    if owner.pw_uid <= 0 or owner.pw_gid <= 0:
+        raise BackupError("refusing restore as root")
+    with tempfile.TemporaryDirectory(prefix="boron-tree-restore-") as scratch:
+        private = Path(scratch) / "archive"
+        fd = os.open(artifact, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise BackupError("restore archive is not a regular file")
+            total = 0
+            with os.fdopen(fd, "rb", closefd=False) as source, private.open("wb") as output:
+                while chunk := source.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > settings.cpanel_import_max_upload_bytes:
+                        raise BackupError("restore archive exceeds the compressed-size limit")
+                    output.write(chunk)
+        finally:
+            os.close(fd)
+        expanded = 0
+        with tarfile.open(private) as archive:
+            for count, member in enumerate(archive, 1):
+                parts = Path(member.name).parts
+                if not parts and member.isdir() and prefix is None:
+                    continue
+                if (count > MAX_BACKUP_ARCHIVE_MEMBERS or not parts or Path(member.name).is_absolute()
+                        or '..' in parts or len(parts) > MAX_BACKUP_ARCHIVE_PATH_DEPTH
+                        or len(member.name.encode()) > MAX_BACKUP_ARCHIVE_PATH_BYTES
+                        or not (member.isreg() or member.isdir() or member.issym() or member.islnk())):
+                    raise BackupError("unsupported or unsafe restore archive member")
+                if prefix is not None and parts[0] != prefix:
+                    raise BackupError("restore archive contains another account or mail domain")
+                checked = member.replace(name=str(Path(*parts[1:])) if prefix else member.name)
+                if prefix and member.islnk():
+                    link_parts = Path(member.linkname).parts
+                    if not link_parts or link_parts[0] != prefix:
+                        raise BackupError("restore hard link references another account")
+                    checked = checked.replace(linkname=str(Path(*link_parts[1:])))
+                try:
+                    tarfile.data_filter(checked, str(destination))
+                except (tarfile.FilterError, OSError) as exc:
+                    raise BackupError("unsafe restore archive path or link") from exc
+                expanded += member.size if member.isreg() else 0
+                if expanded > settings.cpanel_import_max_extracted_bytes:
+                    raise BackupError("restore archive exceeds the expansion limit")
+        with private.open('rb') as stream:
+            compressed = stream.read(2) == b'\x1f\x8b'
+        argv = ['tar', '-xz' if compressed else '-x', '-f', '-', '--no-same-owner', '--no-same-permissions', '-C', str(destination)]
+        if prefix is not None:
+            argv.append('--strip-components=1')
+        result = run(argv, input_path=str(private), uid=owner.pw_uid, gid=owner.pw_gid, timeout=600)
+        if not result.ok:
+            raise BackupError("account-privileged archive extraction failed")
 
 
 def _restore_database(item_ref: str, local_artifact: str, restore_job_id: int) -> None:
@@ -1230,10 +1346,7 @@ def _restore_mailbox(item_ref: str, local_artifact: str, restore_job_id: int) ->
     mail_dir = Path(settings.mail_base) / domain
     if not mail_dir.exists():
         raise BackupError(f"mail domain '{domain}' does not exist -- create it before restoring a mailbox into it")
-    result = run(["tar", "xzf", local_artifact, "-C", str(mail_dir)], timeout=600)
-    if not result.ok:
-        raise BackupError(f"failed to restore mailbox '{item_ref}': {result.stderr.strip()}")
-    run(["chown", "-R", "vmail:vmail", str(mail_dir / local_part)], timeout=120)
+    _restore_tree(local_artifact, mail_dir / local_part, _pwnam('vmail'), prefix=local_part)
 
 
 def _run_restore_job(restore_job_id: int) -> None:
@@ -1254,6 +1367,7 @@ def _run_restore_job(restore_job_id: int) -> None:
             account_status = account.status
             kind = restore_job.kind
             item_ref = restore_job.item_ref
+            _authorize_item(session, account, kind, item_ref)
             artifact_path = backup_job.artifact_path
             dest_kind = destination.kind
             restore_job.status = "running"

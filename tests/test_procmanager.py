@@ -52,6 +52,26 @@ def test_kill_owned_process_terminates(isolated_db, monkeypatch):
 
     monkeypatch.setattr(procmanager.psutil, "Process", lambda pid: FakeProc())
     monkeypatch.setattr(procmanager, "_proc_uid", lambda p: 5001)  # owned by the account
+    monkeypatch.setattr(procmanager.pwd, 'getpwnam', lambda name: types.SimpleNamespace(pw_uid=5001,pw_gid=5001))
+    def signal(argv, **kwargs):
+        assert argv == ['/bin/kill','-TERM','--','4242']
+        assert kwargs['uid'] == kwargs['gid'] == 5001
+        calls['terminate'] = True
+        return types.SimpleNamespace(ok=True)
+    monkeypatch.setattr(procmanager, 'run', signal)
     result = procmanager.kill_process({"username": "demo1", "pid": 4242})
     assert result == {"pid": 4242, "status": "killed"}
     assert calls.get("terminate") is True
+
+
+def test_process_uid_change_cannot_bypass_kernel_permissions(isolated_db, monkeypatch):
+    _account(uid=5001)
+    monkeypatch.setattr(procmanager.psutil,'Process',lambda pid: types.SimpleNamespace(is_running=lambda:True))
+    monkeypatch.setattr(procmanager,'_proc_uid',lambda p:5001)
+    monkeypatch.setattr(procmanager.pwd,'getpwnam',lambda name:types.SimpleNamespace(pw_uid=5001,pw_gid=5001))
+    def denied(argv,**kwargs):
+        assert kwargs['uid']==5001
+        return types.SimpleNamespace(ok=False)
+    monkeypatch.setattr(procmanager,'run',denied)
+    with pytest.raises(RuntimeError,match='could not signal'):
+        procmanager.kill_process({'username':'demo1','pid':4242})

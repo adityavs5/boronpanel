@@ -8,6 +8,7 @@ process, and an admin acting on account {u} only ever touches {u}'s processes.
 from __future__ import annotations
 
 import time
+import pwd
 
 import psutil
 from sqlalchemy import select
@@ -15,6 +16,7 @@ from sqlalchemy import select
 from shared.db import write_session
 from shared.models import Account
 from shared.validation import validate_username
+from daemon.procutil import run
 
 # A safety floor: never operate on system/service uids even if an Account row
 # somehow carried one -- account uids are >= 1000 (useradd default range).
@@ -87,12 +89,23 @@ def kill_process(params: dict) -> dict:
     if _proc_uid(proc) != uid:
         raise RuntimeError(f"process {pid} is not owned by account '{username}'")
 
+    account = pwd.getpwnam(username)
+    if account.pw_uid != uid or account.pw_gid <= 0:
+        raise RuntimeError("account identity changed during process lookup")
+
+    def signal_as_owner(signal):
+        # Kernel permission checks must still apply if the target exits or
+        # changes identity between inspection and signalling.
+        result = run(["/bin/kill", signal, "--", str(pid)], uid=uid, gid=account.pw_gid, timeout=5)
+        if not result.ok and proc.is_running():
+            raise RuntimeError(f"could not signal process {pid} as its hosting account")
+
     try:
-        proc.terminate()  # SIGTERM
+        signal_as_owner("-TERM")
         try:
             proc.wait(timeout=3)
         except psutil.TimeoutExpired:
-            proc.kill()  # SIGKILL if it didn't exit gracefully
+            signal_as_owner("-KILL")
     except psutil.NoSuchProcess:
         pass  # already gone -- effectively success
     except psutil.AccessDenied as exc:

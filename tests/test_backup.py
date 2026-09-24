@@ -219,7 +219,7 @@ def test_set_schedule_rejects_bad_frequency(isolated_db, tmp_path):
 # --- building backup artifacts ---------------------------------------------------
 
 
-def test_build_full_backup_creates_manifest_and_tar(isolated_db, fake_home, fake_mail_base, fake_staging, stub_dump_database, stub_cron_and_dns):
+def test_build_full_backup_creates_manifest_and_tar(isolated_db, fake_home, fake_mail_base, fake_staging, stub_dump_database, stub_cron_and_dns, stub_tenant_tar):
     with write_session() as session:
         account = make_account(session)
         session.add(Domain(account_id=account.id, domain="demo1.example", kind="primary", docroot=f"{fake_home}/demo1/public_html"))
@@ -271,7 +271,7 @@ def test_build_file_backup_rejects_path_traversal(isolated_db, fake_home, fake_s
         backup._build_file_backup("demo1", "../../../etc/passwd", staging_dir, job_id=2)
 
 
-def test_build_file_backup_packages_one_file(isolated_db, fake_home, fake_staging):
+def test_build_file_backup_packages_one_file(isolated_db, fake_home, fake_staging, stub_tenant_tar):
     account_home = fake_home / "demo1" / "public_html"
     account_home.mkdir(parents=True)
     (account_home / "config.php").write_text("<?php\n")
@@ -331,7 +331,7 @@ def test_build_all_databases_backup_has_manifest_and_owned_dumps(isolated_db, fa
 # --- running backup jobs end to end (synchronous, no thread pool) -----------------
 
 
-def test_run_backup_job_full_to_local_destination(isolated_db, fake_home, fake_mail_base, fake_staging, stub_dump_database, stub_cron_and_dns, tmp_path):
+def test_run_backup_job_full_to_local_destination(isolated_db, fake_home, fake_mail_base, fake_staging, stub_dump_database, stub_cron_and_dns, tmp_path, stub_tenant_tar):
     with write_session() as session:
         account = make_account(session)
         session.add(Domain(account_id=account.id, domain="demo1.example", kind="primary", docroot=f"{fake_home}/demo1/public_html"))
@@ -357,7 +357,7 @@ def test_run_backup_job_full_to_local_destination(isolated_db, fake_home, fake_m
         assert completed.size_bytes > 0
 
 
-def test_run_backup_job_full_emits_backup_completed_event(isolated_db, fake_home, fake_mail_base, fake_staging, stub_dump_database, stub_cron_and_dns, tmp_path, monkeypatch):
+def test_run_backup_job_full_emits_backup_completed_event(isolated_db, fake_home, fake_mail_base, fake_staging, stub_dump_database, stub_cron_and_dns, tmp_path, monkeypatch, stub_tenant_tar):
     with write_session() as session:
         account = make_account(session)
         session.add(Domain(account_id=account.id, domain="demo1.example", kind="primary", docroot=f"{fake_home}/demo1/public_html"))
@@ -383,6 +383,7 @@ def test_run_backup_job_granular_does_not_emit_event(isolated_db, fake_home, fak
     not fire the "backup completed" channel."""
     with write_session() as session:
         account = make_account(session)
+        session.add(DatabaseGrant(account_id=account.id, db_name="demo1_app", db_user="demo1_app"))
     dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(tmp_path / "dest")})
 
     emitted = []
@@ -453,6 +454,7 @@ def test_run_backup_job_rechecks_active_account_before_build(isolated_db, fake_h
 def test_run_backup_job_uploads_to_rclone_destination(isolated_db, fake_home, fake_staging, stub_rclone, monkeypatch):
     with write_session() as session:
         account = make_account(session)
+        session.add(DatabaseGrant(account_id=account.id, db_name="demo1_shop", db_user="demo1_shop"))
     (fake_home / "demo1").mkdir()
 
     def fake_build_database_backup(item_ref, staging_dir, job_id):
@@ -783,6 +785,7 @@ def test_trigger_restore_requires_completed_backup(isolated_db, tmp_path, stub_e
 def test_trigger_restore_creates_row_and_submits(isolated_db, tmp_path, stub_executor):
     with write_session() as session:
         account = make_account(session)
+        session.add(DatabaseGrant(account_id=account.id, db_name="demo1_shop", db_user="demo1_shop"))
     dest = backup.create_destination({"name": "d1", "kind": "local", "local_path": str(tmp_path / "d1")})
     with write_session() as session:
         job = BackupJob(account_id=account.id, kind="database", item_ref="demo1_shop", destination_id=dest["id"], status="completed", artifact_path="/tmp/x.sql.gz")
@@ -972,6 +975,7 @@ def test_restore_full_reapplies_docroot_permissions_for_preexisting_domain(isola
 def test_run_restore_job_database_end_to_end(isolated_db, tmp_path, fake_staging, monkeypatch):
     with write_session() as session:
         account = make_account(session)
+        session.add(DatabaseGrant(account_id=account.id, db_name="demo1_shop", db_user="demo1_shop"))
     dest_path = tmp_path / "dest"
     dest_path.mkdir()
     dump = dest_path / "demo1_shop.sql.gz"
@@ -1153,3 +1157,14 @@ def test_run_scheduled_backups_skips_disabled_schedule(isolated_db, tmp_path, mo
     monkeypatch.setattr(backup, "trigger_backup", lambda params: triggered.append(params))
     count = backup.run_scheduled_backups()
     assert count == 0
+
+
+@pytest.fixture()
+def stub_tenant_tar(monkeypatch):
+    # Artifact-layout tests have no real Unix demo1 account. UID separation
+    # is tested independently with actual tenant/root canaries on the VM.
+    def package(username, output, directory, item):
+        assert username == 'demo1'
+        with tarfile.open(output, 'w:gz') as archive:
+            archive.add(Path(directory) / item, arcname=item)
+    monkeypatch.setattr(backup, '_build_user_tar', package)
