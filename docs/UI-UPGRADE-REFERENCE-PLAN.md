@@ -87,5 +87,5 @@ Screenshots and detailed logs remain outside the repository in
 
 New DirectAdmin backend regression cases: 17 passed. Existing importer coverage
 also passed. Real source-server migration acceptance remains unperformed; see
-`DIRECTADMIN-SERVER-MIGRATION.md` for the operator checklist. Signed publication
-and live self-update are gated by the full release pipeline.
+`DIRECTADMIN-SERVER-MIGRATION.md` for the operator checklist. The full release gate passed, v1.6.0 was published, and the primary panel
+completed self-update job 12. See `RELEASE-VERIFICATION-1.6.0.md`.

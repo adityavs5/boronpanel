@@ -1,6 +1,6 @@
 # DirectAdmin server pull migration
 
-Included in the 1.6.0 release candidate. Offline importer regression tests and the
+Shipped in Boron 1.6.0. Offline importer regression tests and the
 frontend production build pass. Real DirectAdmin source-server acceptance remains
 an operator test: no source-server credentials were supplied for that check.
 
