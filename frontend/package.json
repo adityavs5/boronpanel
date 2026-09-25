@@ -1,7 +1,7 @@
 {
   "name": "boron-frontend",
   "private": true,
-  "version": "1.6.1",
+  "version": "1.6.2",
   "type": "module",
   "description": "Boron control panel \u2014 React SPA (replaces the legacy Jinja2 UI)",
   "scripts": {
