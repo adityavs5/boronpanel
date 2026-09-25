@@ -14,6 +14,12 @@ function password() { const bytes = crypto.getRandomValues(new Uint8Array(22)); 
 function ErrorNotice({ error }) { return error ? <div className="wp-notice wp-error" role="alert"><AlertCircle size={18} /><span>{error.message || String(error)}</span></div> : null }
 function Progress({ job }) { return job ? <div className={`wp-notice ${job.status === 'failed' ? 'wp-error' : ''}`} role="status">{['pending','running'].includes(job.status) ? <Loader2 size={18} className="animate-spin" /> : job.status === 'failed' ? <AlertCircle size={18} /> : <Check size={18} />}<div><strong>{job.status === 'completed' ? 'Ready' : job.status === 'failed' ? 'This operation could not finish' : 'Working on your site…'}</strong><p>{job.error || job.message || job.progress_message || (job.status === 'completed' ? 'Your changes have been saved.' : 'You can keep this window open. Larger sites take a little longer.')}</p></div></div> : null }
 
+function parseWpResult(job) {
+  if (!job || job.status !== 'completed') return null
+  try { return JSON.parse(job.stdout || 'null') }
+  catch { throw new Error(job.stderr?.trim() || 'WordPress returned an unreadable response. Review the site PHP error log and try again.') }
+}
+
 function InstallWizard({ domains, onClose, onInstalled }) {
   const [step, setStep] = useState(0)
   const [form, setForm] = useState({ choice: '', path: '', address: 'https', title: '', admin_user: 'siteadmin', admin_email: '', admin_password: password() })
@@ -61,7 +67,24 @@ function SiteManager({ site, domains, onClose, onChanged }) {
     } catch(e) {setError(e)} finally {setPending(false)}
   }
   const polling = useQuery({ queryKey: ['wp-operation',site.username,job?.id], queryFn: () => get(`${base(site)}/actions/runs/${job.id}`), enabled: !!job?.id && ['pending','running'].includes(job.status), refetchInterval: 2000 })
-  useEffect(() => { if (!polling.data) return; setJob(polling.data); if (polling.data.status === 'completed') { let data; try { data=JSON.parse(polling.data.stdout) } catch { data={message:polling.data.stdout} } setResult(data); if (['plugins','themes'].includes(tab) && !Array.isArray(data)) act(tab==='plugins'?'plugin_list':'theme_list',{},true); if (data.backups) setBackups(data.backups); else if (data.name && data.created_at) setBackups(items=>[data,...items.filter(b=>b.name!==data.name)]); onChanged() } }, [polling.data])
+  useEffect(() => {
+    if (!polling.data) return
+    setJob(polling.data)
+    if (polling.data.status !== 'completed') return
+    try {
+      const data = parseWpResult(polling.data)
+      if (['plugins','themes'].includes(tab) && !Array.isArray(data)) {
+        throw new Error(`WordPress did not return an installed ${tab} list. Try again or review the site PHP error log.`)
+      }
+      setResult(data)
+      if (data?.backups) setBackups(data.backups)
+      else if (data?.name && data?.created_at) setBackups(items=>[data,...items.filter(b=>b.name!==data.name)])
+      onChanged()
+    } catch (e) {
+      setResult(null)
+      setError(e)
+    }
+  }, [polling.data])
   const busy = pending || ['pending','running'].includes(job?.status)
   async function act(action, fields={}, cli=false) { setPending(true); setError(null); setResult(null); try { setJob(await post(`${base(site)}/${cli?'actions':'manage'}`,{path:site.path,action,...fields})) } catch(e) { setError(e) } finally { setPending(false) } }
   function choose(value) { setTab(value);setResult(null);setJob(null); if(value==='backups') act('backups'); if(value==='plugins') act('plugin_list',{},true); if(value==='themes') act('theme_list',{},true) }

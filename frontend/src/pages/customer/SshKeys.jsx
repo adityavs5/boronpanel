@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Plus, Trash2 } from 'lucide-react'
 import { get, post, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useAuth } from '@/store/auth'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
@@ -16,6 +17,7 @@ import { toast } from '@/components/ui/Toast'
 
 export default function SshKeys() {
   const username = useAccountUsername()
+  const impersonating = useAuth((state) => state.impersonating)
   const qc = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [keyText, setKeyText] = useState('')
@@ -25,7 +27,7 @@ export default function SshKeys() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['ssh-keys', username],
     queryFn: () => get(`/api/v1/accounts/${username}/ssh-keys`),
-    enabled: !!username,
+    enabled: !!username && !impersonating,
   })
 
   const createMut = useMutation({
@@ -116,6 +118,12 @@ export default function SshKeys() {
         </Button>
       </PageHeader>
 
+      {impersonating ? (
+        <div className="rounded-btn border border-border bg-muted p-5 text-sm">
+          SSH keys grant real shell access. Sign in directly as this customer to view or change their authorized keys.
+        </div>
+      ) : <>
+
       <DataTable
         columns={columns}
         data={data?.keys}
@@ -188,6 +196,7 @@ export default function SshKeys() {
         loading={deleteMut.isPending}
         onConfirm={() => toDelete && deleteMut.mutate(toDelete)}
       />
+      </>}
     </div>
   )
 }

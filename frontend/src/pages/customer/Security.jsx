@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ShieldCheck, ShieldOff, ShieldAlert, Copy, Download, Smartphone } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useAuth } from '@/store/auth'
 import { copyToClipboard } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
@@ -18,6 +19,7 @@ import { toast } from '@/components/ui/Toast'
 
 export default function Security() {
   const username = useAccountUsername()
+  const impersonating = useAuth((state) => state.impersonating)
   const qc = useQueryClient()
 
   // Enrollment is stateful across three server round-trips: setup returns a
@@ -35,7 +37,7 @@ export default function Security() {
   const { data: status, isLoading, error, refetch } = useQuery({
     queryKey: ['2fa-status', username],
     queryFn: () => get('/api/v1/2fa/status'),
-    enabled: !!username,
+    enabled: !!username && !impersonating,
   })
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['2fa-status', username] })
@@ -106,6 +108,17 @@ export default function Security() {
   }
 
   const enabled = !!status?.enabled
+
+  if (impersonating) return <div>
+    <PageHeader
+      title="Two-factor authentication"
+      description="Protect your account with a time-based one-time code from an authenticator app in addition to your password."
+      icon={ShieldCheck}
+    />
+    <Card><CardContent className="py-6 text-sm text-muted-foreground">
+      Two-factor authentication protects the customer’s panel login. Sign in directly as the customer to enroll, disable, or view its status.
+    </CardContent></Card>
+  </div>
 
   return (
     <div>

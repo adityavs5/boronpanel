@@ -220,14 +220,13 @@ async def terminal_ws(websocket: WebSocket, username: str):
         return
 
     try:
-        if identity.role=="admin":
-            from shared.db import read_session
-            from shared.models import BrandingSettings
-            from shared.terminal_welcome import render_terminal_banner
-            with read_session() as db:
-                branding=db.get(BrandingSettings,1)
-                banner=render_terminal_banner(branding.terminal_banner if branding else None)
-            if banner:await websocket.send_text(banner)
+        from shared.db import read_session
+        from shared.models import BrandingSettings
+        from shared.terminal_welcome import render_terminal_banner
+        with read_session() as db:
+            branding=db.get(BrandingSettings,1)
+            banner=render_terminal_banner(branding.terminal_banner if branding else None)
+        if banner:await websocket.send_text(banner)
         await _pump(websocket, chan, loop)
     finally:
         try:
