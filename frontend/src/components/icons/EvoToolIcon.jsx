@@ -91,10 +91,14 @@ const exactIcons = {
   '/backups?action=create&kind=databases': FcAddDatabase,
   '/backups?action=create&kind=mailbox': FcFeedback,
   '/backups?view=restores': FcDataRecovery,
+  '/backups?component=files': FcOpenedFolder,
+  '/backups?component=databases': FcAcceptDatabase,
+  '/backups?component=mail': FcFeedback,
   '/backup-jobs': FcDataBackup,
   '/backup-jobs?tab=jobs&action=create': FcOvertime,
   '/backup-jobs?tab=destinations&action=create': FcUpload,
   '/backup-jobs?tab=history': FcDataRecovery,
+  '/backup-jobs?tab=notifications': FcCustomerSupport,
 }
 
 export function EvoToolIcon({ to, fallback: Fallback }) {

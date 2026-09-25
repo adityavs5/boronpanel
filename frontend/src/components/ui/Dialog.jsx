@@ -10,7 +10,7 @@ export const DialogTrigger = DialogPrimitive.Trigger
 export const DialogClose = DialogPrimitive.Close
 
 export function DialogContent({ className, children, size = 'md', showClose = true, ...props }) {
-  const sizes = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl' }
+  const sizes = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl', full: 'max-w-6xl' }
   return (
     <DialogPrimitive.Portal>
       {/* Run A feature 2: no backdrop-blur (goal: remove all blur/glass) —

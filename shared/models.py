@@ -2137,6 +2137,29 @@ class SnapshotDestinationOperation(Base):
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class BackupTelegramSettings(Base):
+    """Server-wide Telegram channel for backup events; bot token is encrypted."""
+    __tablename__ = 'backup_telegram_settings'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    chat_id: Mapped[str] = mapped_column(String(128), default='')
+    token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    events: Mapped[list] = mapped_column(JSON, default=lambda: ['backup.completed','backup.failed'])
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BackupNotificationDelivery(Base):
+    __tablename__ = 'backup_notification_deliveries'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    channel: Mapped[str] = mapped_column(String(16))
+    event: Mapped[str] = mapped_column(String(64))
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default='pending')
+    detail: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class PanelConfigJob(Base):
     __tablename__ = 'panel_config_jobs'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

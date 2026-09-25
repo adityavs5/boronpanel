@@ -189,6 +189,13 @@ class SnapshotPolicyBody(BaseModel):
     timezone: str = 'UTC'
 
 
+class TelegramPluginBody(BaseModel):
+    enabled: bool = False
+    chat_id: str = ''
+    token: str = ''
+    events: list[str] = ['backup.completed','backup.failed']
+
+
 @api_router.get('/snapshots/destinations')
 def snapshot_destinations(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -285,3 +292,27 @@ def snapshot_retry_run(run_id: int, identity: Identity = Depends(get_identity)):
 def snapshot_account_catalog(identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon('snapshot.catalog.accounts', identity)
+
+
+@api_router.get('/snapshots/notifications')
+def snapshot_notification_plugins(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.notifications.status',identity)
+
+
+@api_router.put('/snapshots/notifications/telegram')
+def snapshot_save_telegram(body: TelegramPluginBody,identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.notifications.telegram.save',identity,**body.model_dump())
+
+
+@api_router.post('/snapshots/notifications/telegram/test')
+def snapshot_test_telegram(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.notifications.telegram.test',identity)
+
+
+@api_router.get('/snapshots/notification-deliveries')
+def snapshot_notification_deliveries(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.notifications.deliveries',identity)

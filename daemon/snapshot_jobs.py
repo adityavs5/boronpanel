@@ -725,12 +725,14 @@ def _database_sources(account, stage):
 
 
 def _notify(row,account):
-    from daemon import notifications,webhooks
+    from daemon import backup_notifications,notifications,webhooks
     result={}
     event='backup.completed' if row.status=='completed' else 'backup.failed'
     for channel in row.options['notification_channels']:
         try:
-            response=(notifications.maybe_send if channel=='email' else webhooks.maybe_trigger)(event,account,job_id=row.id,error=row.error)
+            sender={'email':notifications.maybe_send,'telegram':backup_notifications.send_telegram,
+                'webhook':webhooks.maybe_trigger}[channel]
+            response=sender(event,account,job_id=row.id,error=row.error)
             result[channel]='dispatched' if response else 'not dispatched (check channel settings and account preferences)'
         except Exception:
             logger.exception('Snapshot notification failed');result[channel]='failed'

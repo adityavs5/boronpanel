@@ -1,5 +1,5 @@
 import { adminNav, customerNav } from './nav'
-import { Archive, CalendarClock, Cloud, DatabaseBackup, FileArchive, HardDriveDownload, History, Mail, RotateCcw } from 'lucide-react'
+import { Archive, CalendarClock, Cloud, DatabaseBackup, Download, FileArchive, HardDriveDownload, ListChecks, Mail, RotateCcw, BellRing } from 'lucide-react'
 
 const customerGroups = {
   evolution: [
@@ -72,26 +72,24 @@ export function getToolGroups(role, skin) {
   const remaining = [...lookup.values()].filter((item) => !used.has(item.to))
   if (remaining.length) groups.push({ title: 'More tools', items: remaining.map((item) => ({ ...item, tone: 'sky' })) })
   const backupTool = lookup.get(role === 'admin' ? '/backup-jobs' : '/backups')
-  const backupGroup = groups.find((group) => group.items.some((item) => item.to === backupTool?.to))
-  if (backupGroup && backupTool) {
-    const backupIndex = backupGroup.items.findIndex((item) => item.to === backupTool.to)
+  if (backupTool) {
+    for (const group of groups) group.items=group.items.filter(item=>item.to!==backupTool.to)
     const shortcuts = role === 'admin' ? [
       { ...backupTool, to: '/backup-jobs', label: 'Backup Manager', icon: Archive, tone: 'sky' },
       { ...backupTool, to: '/backup-jobs?tab=jobs&action=create', label: 'New Backup Job', icon: CalendarClock, tone: 'green' },
       { ...backupTool, to: '/backup-jobs?tab=destinations&action=create', label: 'Storage Destinations', icon: Cloud, tone: 'violet' },
-      { ...backupTool, to: '/backup-jobs?tab=history', label: 'Run History', icon: History, tone: 'amber' },
+      { ...backupTool, to: '/backup-jobs?tab=history', label: 'Restore & Downloads', icon: RotateCcw, tone: 'amber' },
+      { ...backupTool, to: '/backup-jobs?tab=history', label: 'Queue & Logs', icon: ListChecks, tone: 'teal' },
+      { ...backupTool, to: '/backup-jobs?tab=notifications', label: 'Notification Plugins', icon: BellRing, tone: 'rose' },
     ] : [
-      { ...backupTool, to: '/backups?action=create&kind=full', label: 'Full Account Backup', icon: HardDriveDownload, tone: 'green' },
-      { ...backupTool, to: '/backups?action=create&kind=file', label: 'Files Backup', icon: FileArchive, tone: 'amber' },
-      { ...backupTool, to: '/backups?action=create&kind=database', label: 'Database Backup', icon: DatabaseBackup, tone: 'violet' },
-      { ...backupTool, to: '/backups?action=create&kind=databases', label: 'All Databases', icon: DatabaseBackup, tone: 'teal' },
-      { ...backupTool, to: '/backups?view=restores', label: 'Restore History', icon: RotateCcw, tone: 'sky' },
+      { ...backupTool, to: '/backups', label: 'Backup Manager', icon: Archive, tone: 'sky' },
+      { ...backupTool, to: '/backups?component=files', label: 'File Backups', icon: FileArchive, tone: 'amber' },
+      { ...backupTool, to: '/backups?component=databases', label: 'Database Backups', icon: DatabaseBackup, tone: 'violet' },
+      { ...backupTool, to: '/backups?component=mail', label: 'Email Backups', icon: Mail, tone: 'teal' },
+      { ...backupTool, to: '/backups?action=create&kind=full', label: 'Full Account Backups', icon: HardDriveDownload, tone: 'green' },
+      { ...backupTool, to: '/backups?view=restores', label: 'Downloads & Activity', icon: Download, tone: 'rose' },
     ]
-    backupGroup.items.splice(backupIndex, 1, ...shortcuts)
-    if (role !== 'admin') {
-      const emailGroup = groups.find((group) => group.title === 'E-mail Manager' || group.title === 'Email')
-      emailGroup?.items.push({ ...backupTool, to: '/backups?action=create&kind=mailbox', label: 'Mailbox Backup', icon: Mail, tone: 'rose' })
-    }
+    groups.push({title:'Backups',items:shortcuts})
   }
-  return groups
+  return groups.filter(group=>group.items.length)
 }

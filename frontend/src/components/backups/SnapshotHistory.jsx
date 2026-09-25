@@ -4,7 +4,7 @@ import { SnapshotRoutingRestore } from './SnapshotRoutingRestore'
 import { SnapshotMailRestore } from './SnapshotMailRestore'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Archive, ArrowUp, Folder, File, RefreshCw } from 'lucide-react'
+import { Archive, ArrowUp, Folder, File, RefreshCw, Download } from 'lucide-react'
 import { get } from '@/lib/api'
 import { formatBytes, formatDate } from '@/lib/utils'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
@@ -26,7 +26,7 @@ function RunDialog({ run, username, onClose }) {
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{[['Files processed',run.summary?.total_files_processed??'—'],['Total size',formatBytes(run.summary?.total_bytes_processed||0)],['New data stored',formatBytes(run.summary?.data_added||0)],['Unchanged files',run.summary?.files_unmodified??'—']].map(([label,value])=><div key={label} className="rounded-btn border border-border p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-lg font-semibold">{value}</p></div>)}</div>
     <div><h3 className="mb-2 text-sm font-semibold">Included components</h3><div className="flex flex-wrap gap-2">{(run.options?.components||[]).map(c=><Badge key={c} variant="outline">{({files:'Files',databases:'Databases',mail:'Email messages and settings',config:'Configuration'})[c]||c}</Badge>)}</div></div>
     {!!Object.keys(run.notification_results||{}).length&&<div><h3 className="mb-2 text-sm font-semibold">Notifications</h3>{Object.entries(run.notification_results).map(([channel,result])=><p key={channel} className="text-sm text-muted-foreground"><span className="capitalize">{channel}</span>: {result}</p>)}</div>}
-    {run.snapshot_id&&run.status!=='expired'&&username&&<div className="space-y-3 border-t border-border pt-4"><Button variant="secondary" onClick={()=>setBrowsing(true)}><Folder className="h-4 w-4"/>Browse backed-up files</Button>
+    {run.snapshot_id&&run.status!=='expired'&&username&&<div className="space-y-3 border-t border-border pt-4"><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={()=>setBrowsing(true)}><Folder className="h-4 w-4"/>Browse backed-up files</Button>{run.summary?.portable_archive&&<Button variant="secondary" onClick={()=>window.open(`/api/v1/accounts/${encodeURIComponent(username)}/backups/snapshots/runs/${run.id}/download`,'_blank','noopener')}><Download className="h-4 w-4"/>Download {run.summary.portable_archive.format}</Button>}</div>
       {browsing&&<><div className="flex items-center gap-3"><Button size="sm" variant="ghost" disabled={directory==='/'} onClick={()=>setDirectory(directory.split('/').slice(0,-1).join('/')||'/')}><ArrowUp className="h-4 w-4"/>Up</Button><code className="min-w-0 break-all text-xs text-muted-foreground">{directory}</code></div><DataTable loading={files.isLoading} error={files.error} onRetry={files.refetch} data={files.data?.entries} getRowKey={r=>r.path} pageSize={20} emptyTitle="This folder is empty" onRowClick={r=>r.type==='dir'&&setDirectory(r.path)} columns={[
         {key:'name',header:'Name',render:r=><span className="flex items-center gap-2">{r.type==='dir'?<Folder className="h-4 w-4 text-accent"/>:<File className="h-4 w-4 text-muted-foreground"/>}{r.type==='dir'?<button className="text-accent-600 dark:text-accent-300 hover:underline" onClick={()=>setDirectory(r.path)}>{r.name}</button>:r.name}</span>},
         {key:'type',header:'Type',render:r=>r.type==='dir'?'Folder':r.type==='symlink'?'Symbolic link':'File'},
@@ -45,7 +45,7 @@ function RunDialog({ run, username, onClose }) {
 
 export function SnapshotHistory({ admin=false, username }) {
   const [selected,setSelected]=useState(null)
-  const history=useQuery({queryKey:['snapshot-runs',admin?'admin':username],queryFn:()=>get(admin?'/api/v1/backups/snapshots/runs':`/api/v1/accounts/${encodeURIComponent(username)}/backups/snapshots/runs`),enabled:admin||!!username,refetchInterval:query=>(query.state.data?.runs||[]).some(r=>['pending','running'].includes(r.status))?3000:false})
+  const history=useQuery({queryKey:['snapshot-runs',admin?'admin':username,username],queryFn:()=>get(admin?`/api/v1/backups/snapshots/runs${username?`?username=${encodeURIComponent(username)}`:''}`:`/api/v1/accounts/${encodeURIComponent(username)}/backups/snapshots/runs`),enabled:admin||!!username,refetchInterval:query=>(query.state.data?.runs||[]).some(r=>['pending','running'].includes(r.status))?3000:false})
   const columns=[
     {key:'id',header:'Recovery point',render:r=><button className="font-semibold text-accent-600 dark:text-accent-300 hover:underline" onClick={()=>setSelected(r)}>Backup #{r.id}</button>},
     ...(admin?[{key:'username',header:'Account',render:r=>r.username||`Account #${r.account_id}`}]:[]),
