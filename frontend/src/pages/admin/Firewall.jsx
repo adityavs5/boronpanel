@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Flame, Plus, Trash2, ShieldCheck, ShieldOff, Network, RotateCcw, TimerReset } from 'lucide-react'
+import { Flame, Plus, Trash2, ShieldCheck, ShieldOff, Network, RotateCcw, TimerReset, Download, Upload, Ban, History } from 'lucide-react'
 import { get, post, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
 
-const EMPTY_FORM = { action: 'allow', port: '', protocol: 'any', from_addr: '', comment: '' }
+const EMPTY_FORM = { action: 'allow', port: '', protocol: 'any', direction: 'in', from_addr: '', to_addr: '', comment: '' }
 
 export default function Firewall() {
   const username = useAccountUsername()
@@ -29,6 +29,14 @@ export default function Firewall() {
   const [deleteBypass, setDeleteBypass] = useState(null)
   const [confirmationToken, setConfirmationToken] = useState('')
   const [now, setNow] = useState(() => Date.now())
+  const [preset, setPreset] = useState({ preset_id: '', action: 'allow', address: '' })
+  const [banOpen, setBanOpen] = useState(false)
+  const [banForm, setBanForm] = useState({ value: '', duration_minutes: 60, reason: '' })
+  const [deleteBan, setDeleteBan] = useState(null)
+  const [importOpen, setImportOpen] = useState(false)
+  const [importText, setImportText] = useState('')
+  const [replaceImport, setReplaceImport] = useState(false)
+  const [importPreview, setImportPreview] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['firewall-rules', username],
@@ -100,6 +108,38 @@ export default function Firewall() {
     onError: (e) => toast.error('Could not remove bypass IP', e.message),
   })
 
+  const presetMut = useMutation({
+    mutationFn: () => post('/api/v1/firewall/presets', { ...preset, address: preset.address.trim() || 'any' }),
+    onSuccess: (res) => changeApplied(res, 'Service preset applied temporarily'),
+    onError: (e) => toast.error('Could not apply preset', e.message),
+  })
+
+  const banMut = useMutation({
+    mutationFn: () => post('/api/v1/firewall/temporary-bans', { ...banForm, duration_minutes: Number(banForm.duration_minutes) }),
+    onSuccess: (res) => { changeApplied(res, 'Temporary block applied'); setBanOpen(false); setBanForm({ value: '', duration_minutes: 60, reason: '' }) },
+    onError: (e) => toast.error('Could not block address', e.message),
+  })
+
+  const deleteBanMut = useMutation({
+    mutationFn: (id) => del(`/api/v1/firewall/temporary-bans/${id}`),
+    onSuccess: (res) => { changeApplied(res, 'Temporary block removed'); setDeleteBan(null) },
+    onError: (e) => toast.error('Could not remove block', e.message),
+  })
+
+  const parseImport = () => {
+    try { return JSON.parse(importText) } catch { throw new Error('Choose a valid Boron firewall JSON file.') }
+  }
+  const previewImportMut = useMutation({
+    mutationFn: () => post('/api/v1/firewall/configuration/preview', { configuration: parseImport(), replace: replaceImport }),
+    onSuccess: setImportPreview,
+    onError: (e) => toast.error('Could not preview import', e.message),
+  })
+  const importMut = useMutation({
+    mutationFn: () => post('/api/v1/firewall/configuration/import', { configuration: parseImport(), replace: replaceImport }),
+    onSuccess: (res) => { changeApplied(res, 'Firewall configuration imported temporarily'); setImportOpen(false); setImportPreview(null) },
+    onError: (e) => toast.error('Could not import configuration', e.message),
+  })
+
   const confirmMut = useMutation({
     mutationFn: () => post('/api/v1/firewall/pending/confirm', { confirmation_token: confirmationToken }),
     onSuccess: () => {
@@ -129,6 +169,13 @@ export default function Firewall() {
       render: (r) => <Badge variant={r.action === 'allow' ? 'success' : 'danger'}>{r.action}</Badge>,
     },
     {
+      key: 'direction',
+      header: 'Direction',
+      sortable: true,
+      searchable: true,
+      render: (r) => r.direction === 'out' ? 'Outbound' : 'Inbound',
+    },
+    {
       key: 'port',
       header: 'Port',
       sortable: true,
@@ -136,7 +183,7 @@ export default function Firewall() {
       render: (r) => <span className="tabular-nums">{r.port}</span>,
     },
     { key: 'protocol', header: 'Protocol', sortable: true, render: (r) => r.protocol },
-    { key: 'from', header: 'From', searchable: true, render: (r) => r.from || 'any' },
+    { key: 'endpoint', header: 'Address', searchable: true, render: (r) => r.direction === 'out' ? `to ${r.to || 'any'}` : `from ${r.from || 'any'}` },
     {
       key: 'comment',
       header: 'Comment',
@@ -175,6 +222,8 @@ export default function Firewall() {
           <Button onClick={() => setAddOpen(true)}>
             <Plus className="h-4 w-4" /> Add rule
           </Button>
+          <Button variant="outline" asChild><a href="/api/v1/firewall/configuration/export" download><Download className="h-4 w-4" /> Export</a></Button>
+          <Button variant="outline" onClick={() => setImportOpen(true)}><Upload className="h-4 w-4" /> Import</Button>
         </div>
       </PageHeader>
 
@@ -203,6 +252,20 @@ export default function Firewall() {
           </CardContent>
         </Card>
       )}
+
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Inbound rules</div><div className="mt-1 text-2xl font-semibold">{(data?.rules || []).filter((row) => row.direction !== 'out').length}</div></CardContent></Card>
+        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Outbound rules</div><div className="mt-1 text-2xl font-semibold">{(data?.rules || []).filter((row) => row.direction === 'out').length}</div></CardContent></Card>
+        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Trusted networks</div><div className="mt-1 text-2xl font-semibold">{(data?.bypass || []).length}</div></CardContent></Card>
+        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Network policy</div><div className="mt-2 flex flex-wrap gap-2"><Badge variant="success">IPv4</Badge><Badge variant={data?.ipv6 ? 'success' : 'neutral'}>IPv6 {data?.ipv6 ? 'on' : 'off'}</Badge><Badge variant={data?.outbound_default === 'accept' ? 'success' : 'warning'}>Outbound {data?.outbound_default || 'unknown'}</Badge></div></CardContent></Card>
+      </div>
+
+      <Card className="mb-6"><CardHeader><CardTitle>Service presets</CardTitle><CardDescription>Add the complete rule set for a common service. The same connectivity confirmation and automatic rollback apply.</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-[1fr_160px_1fr_auto] md:items-end">
+        <FormField label="Service"><Select value={preset.preset_id} onChange={(event) => setPreset((value) => ({ ...value, preset_id: event.target.value }))}><option value="">Select preset</option>{(data?.presets || []).map((item) => <option key={item.id} value={item.id}>{item.label} · {item.direction === 'out' ? 'outbound' : 'inbound'}</option>)}</Select></FormField>
+        <FormField label="Action"><Select value={preset.action} onChange={(event) => setPreset((value) => ({ ...value, action: event.target.value }))}><option value="allow">Allow</option><option value="deny">Block</option></Select></FormField>
+        <FormField label="Address" hint="Optional source for inbound or destination for outbound."><Input value={preset.address} onChange={(event) => setPreset((value) => ({ ...value, address: event.target.value }))} placeholder="any" /></FormField>
+        <Button disabled={!preset.preset_id} loading={presetMut.isPending} onClick={() => presetMut.mutate()}>Apply preset</Button>
+      </CardContent></Card>
 
       <DataTable
         columns={columns}
@@ -236,6 +299,13 @@ export default function Firewall() {
         </CardContent>
       </Card>
 
+      <Card className="mt-6">
+        <CardHeader className="flex-row items-start justify-between gap-4"><div><CardTitle>Temporary IP blocks</CardTitle><CardDescription>Time-bounded server-wide blocks expire automatically. Boron refuses the current administrator address and any network covered by a full-access bypass.</CardDescription></div><Button variant="outline" onClick={() => setBanOpen(true)}><Ban className="h-4 w-4" /> Block address</Button></CardHeader>
+        <CardContent>{(data?.temporary_bans || []).length ? <div className="divide-y divide-border rounded-panel border border-border">{data.temporary_bans.map((entry) => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 p-4"><div><div className="font-mono text-sm font-medium">{entry.value}</div><div className="text-xs text-muted-foreground">Until {new Date(entry.expires_at).toLocaleString()} · {entry.reason || 'No reason supplied'}</div></div><Button size="sm" variant="danger" onClick={() => setDeleteBan(entry)}>Unblock</Button></div>)}</div> : <div className="rounded-panel border border-dashed border-border p-6 text-center text-sm text-muted-foreground">No temporary blocks are active.</div>}</CardContent>
+      </Card>
+
+      <Card className="mt-6"><CardHeader><CardTitle><History className="h-5 w-5" /> Recent firewall changes</CardTitle><CardDescription>The complete request and result trail remains available in Audit Log.</CardDescription></CardHeader><CardContent>{(data?.recent_changes || []).length ? <div className="divide-y divide-border rounded-panel border border-border">{data.recent_changes.slice(0, 10).map((entry) => <div key={entry.id} className="grid gap-1 p-3 text-sm sm:grid-cols-[180px_1fr_auto]"><span className="text-muted-foreground">{new Date(entry.created_at).toLocaleString()}</span><span>{entry.operation} · {entry.actor}</span><Badge variant={entry.result === 'ok' ? 'success' : 'danger'}>{entry.result}</Badge></div>)}</div> : <p className="text-sm text-muted-foreground">No recorded firewall changes yet.</p>}</CardContent></Card>
+
       {/* Add rule dialog */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent size="sm">
@@ -249,7 +319,9 @@ export default function Firewall() {
                 action: form.action,
                 port: Number(form.port),
                 protocol: form.protocol,
+                direction: form.direction,
                 from_addr: form.from_addr.trim() || 'any',
+                to_addr: form.to_addr.trim() || 'any',
                 comment: form.comment.trim(),
               })
             }}
@@ -270,6 +342,7 @@ export default function Firewall() {
                   </Select>
                 </FormField>
               </div>
+              <FormField label="Direction" required><Select value={form.direction} onChange={(e) => setForm((f) => ({ ...f, direction: e.target.value }))}><option value="in">Inbound to this server</option><option value="out">Outbound from this server</option></Select></FormField>
               <FormField label="Port" required hint="Between 1 and 65535.">
                 <Input
                   type="number"
@@ -282,13 +355,14 @@ export default function Firewall() {
                   autoFocus
                 />
               </FormField>
-              <FormField label="From address" hint="IP or CIDR. Leave blank to allow from any source.">
+              <FormField label={form.direction === 'out' ? 'Destination address' : 'Source address'} hint={`IP or CIDR. Leave blank for any ${form.direction === 'out' ? 'destination' : 'source'}.`}>
                 <Input
-                  value={form.from_addr}
-                  onChange={(e) => setForm((f) => ({ ...f, from_addr: e.target.value }))}
+                  value={form.direction === 'out' ? form.to_addr : form.from_addr}
+                  onChange={(e) => setForm((f) => ({ ...f, [form.direction === 'out' ? 'to_addr' : 'from_addr']: e.target.value }))}
                   placeholder="any"
                 />
               </FormField>
+              {form.direction === 'out' && form.action === 'deny' && <p className="rounded-btn border border-warning/40 bg-warning/5 p-3 text-sm text-muted-foreground">Outbound blocks can interrupt DNS, package updates, backups, mail delivery, ACME, Cloudflare and external APIs. Review the selected port before applying.</p>}
               <FormField label="Comment" hint="Optional label for this rule.">
                 <Input
                   value={form.comment}
@@ -318,6 +392,20 @@ export default function Firewall() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={banOpen} onOpenChange={setBanOpen}><DialogContent size="sm"><DialogHeader><DialogTitle>Temporarily block an address</DialogTitle></DialogHeader>
+        <form onSubmit={(event) => { event.preventDefault(); banMut.mutate() }}><DialogBody className="space-y-4">
+          <FormField label="IP address or CIDR" required><Input required autoFocus value={banForm.value} onChange={(event) => setBanForm((value) => ({ ...value, value: event.target.value }))} placeholder="198.51.100.25" /></FormField>
+          <FormField label="Duration"><Select value={banForm.duration_minutes} onChange={(event) => setBanForm((value) => ({ ...value, duration_minutes: Number(event.target.value) }))}><option value="15">15 minutes</option><option value="60">1 hour</option><option value="360">6 hours</option><option value="1440">1 day</option><option value="10080">7 days</option><option value="43200">30 days</option></Select></FormField>
+          <FormField label="Reason"><Input value={banForm.reason} onChange={(event) => setBanForm((value) => ({ ...value, reason: event.target.value }))} placeholder="Repeated malicious requests" /></FormField>
+        </DialogBody><DialogFooter><Button type="button" variant="secondary" onClick={() => setBanOpen(false)}>Cancel</Button><Button type="submit" variant="danger" loading={banMut.isPending}>Block temporarily</Button></DialogFooter></form>
+      </DialogContent></Dialog>
+
+      <Dialog open={importOpen} onOpenChange={(open) => { setImportOpen(open); if (!open) setImportPreview(null) }}><DialogContent><DialogHeader><DialogTitle>Import firewall configuration</DialogTitle></DialogHeader><DialogBody className="space-y-4">
+        <FormField label="Boron firewall JSON" hint="Preview validates every entry and shows the exact additions and removals before applying."><Input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) file.text().then((value) => { setImportText(value); setImportPreview(null) }) }} /></FormField>
+        <label className="flex items-start gap-3 rounded-btn border border-border p-3 text-sm"><input type="checkbox" className="mt-1" checked={replaceImport} onChange={(event) => { setReplaceImport(event.target.checked); setImportPreview(null) }} /><span><span className="block font-medium">Replace manageable rules</span><span className="text-muted-foreground">Rules absent from the file are removed after imported rules are added. Unknown UFW rule types remain untouched.</span></span></label>
+        {importPreview && <div className="grid grid-cols-2 gap-3 rounded-btn bg-muted p-4 text-sm sm:grid-cols-4">{Object.entries(importPreview.summary).map(([key, value]) => <div key={key}><div className="text-muted-foreground">{key.replaceAll('_', ' ')}</div><div className="text-xl font-semibold">{value}</div></div>)}</div>}
+      </DialogBody><DialogFooter><Button variant="secondary" onClick={() => setImportOpen(false)}>Cancel</Button><Button variant="outline" disabled={!importText} loading={previewImportMut.isPending} onClick={() => previewImportMut.mutate()}>Preview</Button><Button disabled={!importPreview} loading={importMut.isPending} onClick={() => importMut.mutate()}>Apply import</Button></DialogFooter></DialogContent></Dialog>
+
       {/* Enable / disable confirmation */}
       <ConfirmDialog
         open={!!toggleAction}
@@ -334,6 +422,7 @@ export default function Firewall() {
         onConfirm={() => toggleMut.mutate(toggleAction)}
       />
       <ConfirmDialog open={!!deleteBypass} onOpenChange={(open) => !open && setDeleteBypass(null)} title="Remove full-access IP?" description={`Traffic from ${deleteBypass?.address || 'this address'} will follow the normal firewall rules again.`} confirmLabel="Remove trusted IP" variant="danger" loading={deleteBypassMut.isPending} onConfirm={() => deleteBypassMut.mutate(deleteBypass.bypass_id)} />
+      <ConfirmDialog open={!!deleteBan} onOpenChange={(open) => !open && setDeleteBan(null)} title="Remove temporary block?" description={`${deleteBan?.value || 'This address'} will be able to connect according to the remaining firewall rules.`} confirmLabel="Unblock address" variant="danger" loading={deleteBanMut.isPending} onConfirm={() => deleteBanMut.mutate(deleteBan.id)} />
 
       {/* Delete rule confirmation */}
       <ConfirmDialog

@@ -76,7 +76,15 @@ checkout or disable the checksum/TOTP gates.
 - **IP Bans** is the admin-wide permanent ban list. Add an address or CIDR for
   a hostile client and record the reason; remove it only after the incident is
   understood.
-- **Firewall** manages host-level UFW rules. Keep SSH 22, panel 9443, web,
+- **Firewall** manages host-level UFW rules. Every panel change remains pending
+  for 120 seconds and is reverted unless a fresh reachable session confirms it.
+  If the browser, API, or daemon is unavailable, run
+  `sudo /usr/local/sbin/boron-firewall-recover` from the provider console to
+  restore the most recent unconfirmed change. If Boron-managed bans or
+  Cloudflare-only origin filtering must also be removed while keeping UFW
+  enabled, run `sudo /usr/local/sbin/boron-firewall-recover --disable-boron-blocks`.
+  Operator-created port rules remain untouched. Keep
+  SSH, panel, web,
   mail, FTP 21, and passive FTP 30000–30100 open as appropriate. The installer
   already opens these and preserves SSH before enabling UFW.
 - **IP Whitelist** is for trusted administrative sources and controlled

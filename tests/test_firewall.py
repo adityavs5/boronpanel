@@ -23,6 +23,7 @@ def fixed_ssh_port(monkeypatch):
     # Deterministic across environments -- don't depend on this sandbox's
     # real /etc/ssh/sshd_config contents.
     monkeypatch.setattr(firewall, "_ssh_ports", lambda: {22})
+    monkeypatch.setattr(firewall, "_sync_fail2ban_bypass", lambda *args, **kwargs: None)
 
 
 def test_protected_ports_includes_ssh_panel_web_mail():
@@ -48,6 +49,34 @@ def test_parse_added_rules_plain_and_scoped_and_deny():
     deny = next(r for r in rules if r["port"] == 9999)
     assert deny["action"] == "deny"
     assert deny["protocol"] == "udp"
+
+
+def test_parse_and_create_outbound_rule(monkeypatch):
+    output = (
+        "Added user rules (see 'ufw status' for running firewall):\n"
+        "ufw deny out to 203.0.113.0/24 port 443 proto tcp comment 'restricted-api'\n"
+    )
+    parsed = firewall._parse_added_rules(output)
+    assert parsed[0]["direction"] == "out"
+    assert parsed[0]["to"] == "203.0.113.0/24"
+    assert "backups" in parsed[0]["affected_services"]
+
+    calls = []
+    monkeypatch.setattr(firewall, "run", lambda args, timeout=20: calls.append(args) or ProcResult(args, 0, "", ""))
+    result = firewall.add_rule({
+        "action": "allow", "direction": "out", "port": 443,
+        "protocol": "tcp", "to_addr": "203.0.113.0/24",
+    })
+    assert result["direction"] == "out"
+    assert calls == [["ufw", "allow", "out", "to", "203.0.113.0/24", "port", "443", "proto", "tcp"]]
+
+
+def test_outbound_rule_rejects_inbound_source_field():
+    with pytest.raises(ValidationError, match="from_addr"):
+        firewall.add_rule({
+            "action": "allow", "direction": "out", "port": 443,
+            "from_addr": "198.51.100.1",
+        })
 
 
 def test_parse_full_access_bypass_is_separate_from_port_rules():
@@ -260,6 +289,26 @@ def test_enable_firewall_skips_already_covered_ports(monkeypatch):
     assert baseline_ports.count(22) == 0  # already covered, not re-added
 
 
+def test_outbound_allow_does_not_satisfy_inbound_protected_baseline(monkeypatch):
+    outbound_only = (
+        "Added user rules (see 'ufw status' for running firewall):\n"
+        "ufw allow out to any port 22 proto tcp\n"
+    )
+    calls = []
+
+    def fake_run(args, timeout=20):
+        calls.append(args)
+        if args[:2] == ["ufw", "show"]:
+            return ProcResult(args=args, returncode=0, stdout=outbound_only, stderr="")
+        if args[:2] == ["ufw", "status"]:
+            return ProcResult(args=args, returncode=0, stdout="Status: active\n", stderr="")
+        return ProcResult(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(firewall, "run", fake_run)
+    firewall.enable_firewall({"confirm": True})
+    assert ["ufw", "allow", "22", "comment", "boron-baseline-protected-port"] in calls
+
+
 def test_disable_firewall_requires_confirm(monkeypatch):
     monkeypatch.setattr(firewall, "run", lambda args, timeout=20: ProcResult(args=args, returncode=0, stdout="Status: inactive\n", stderr=""))
     with pytest.raises(ValidationError):
@@ -400,3 +449,53 @@ def test_only_one_unconfirmed_change_can_exist(isolated_firewall_journal, monkey
     firewall.transactional_add_rule({"action": "allow", "port": 8443})
     with pytest.raises(ValidationError, match="pending firewall change"):
         firewall.transactional_add_rule({"action": "allow", "port": 9443})
+
+
+def test_temporary_ban_refuses_bypass_and_current_admin(monkeypatch):
+    monkeypatch.setattr(
+        firewall, "run",
+        lambda args, timeout=15: ProcResult(args, 0, (
+            "Added user rules (see 'ufw status' for running firewall):\n"
+            "ufw allow from 198.51.100.0/24 comment 'boron-full-access-bypass-office'\n"
+        ), ""),
+    )
+    with pytest.raises(ValidationError, match="overlaps"):
+        firewall.assert_address_can_be_banned("198.51.100.42")
+    with pytest.raises(ValidationError, match="administrator"):
+        firewall.assert_address_can_be_banned("203.0.113.0/24", "203.0.113.8")
+
+
+def test_temporary_ban_is_durable_and_removable(isolated_db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        firewall, "run",
+        lambda args, timeout=20: calls.append(args) or ProcResult(args, 0, SHOW_ADDED_EMPTY, ""),
+    )
+    added = firewall.add_temporary_ban({
+        "value": "203.0.113.44", "duration_minutes": 15,
+        "reason": "test", "actor": "admin", "actor_ip": "192.0.2.4",
+    })
+    assert added["value"] == "203.0.113.44"
+    assert any(call[:6] == ["ufw", "insert", "1", "deny", "from", "203.0.113.44"] for call in calls)
+    result = firewall.delete_temporary_ban({"id": added["id"]})
+    assert result["status"] == "unbanned"
+
+
+def test_firewall_configuration_round_trip_and_protected_port_validation(monkeypatch):
+    protected = sorted(firewall.protected_ports())
+    current = "Added user rules (see 'ufw status' for running firewall):\n" + "".join(
+        f"ufw allow {port}/tcp comment 'baseline'\n" for port in protected
+    )
+    monkeypatch.setattr(
+        firewall, "run",
+        lambda args, timeout=15: ProcResult(args, 0, current if args[:3] == ["ufw", "show", "added"] else "", ""),
+    )
+    exported = firewall.export_configuration({})
+    assert exported["format"] == "boron-firewall" and exported["version"] == 1
+    preview = firewall.preview_configuration_import({"configuration": exported, "replace": True})
+    assert preview["summary"] == {
+        "rules_to_add": 0, "rules_to_delete": 0, "bypass_to_add": 0, "bypass_to_delete": 0,
+    }
+    exported["rules"] = []
+    with pytest.raises(ValidationError, match="protected ports"):
+        firewall.preview_configuration_import({"configuration": exported, "replace": True})

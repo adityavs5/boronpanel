@@ -353,6 +353,12 @@ OP_TABLE = {
     "firewall.pending": firewall.pending_change,
     "firewall.confirm": firewall.confirm_change,
     "firewall.rollback": firewall.rollback_change,
+    "firewall.preset.apply": firewall.apply_service_preset,
+    "firewall.temporary_ban.add": firewall.transactional_add_temporary_ban,
+    "firewall.temporary_ban.delete": firewall.transactional_delete_temporary_ban,
+    "firewall.configuration.export": firewall.export_configuration,
+    "firewall.configuration.preview": firewall.preview_configuration_import,
+    "firewall.configuration.import": firewall.import_configuration,
     # Product expansion: account-scoped file/script malware scans. Scans run
     # on malware.py's own bounded executor; actions remain explicit.
     "malware.engine.status": malware.engine_status,
@@ -877,6 +883,10 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
             handler_params["author"] = actor
         elif op == "ipban.add":
             handler_params["actor"] = actor
+            handler_params["actor_ip"] = ip
+        elif op == "firewall.temporary_ban.add":
+            handler_params["actor"] = actor
+            handler_params["actor_ip"] = ip
         return handler(handler_params)
 
     try:
@@ -993,6 +1003,15 @@ async def _domain_log_level_loop() -> None:
         await asyncio.sleep(60)
 
 
+async def _temporary_firewall_ban_loop() -> None:
+    while True:
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, firewall.expire_temporary_bans, {})
+        except Exception:
+            logger.exception("temporary firewall ban expiry failed")
+        await asyncio.sleep(60)
+
+
 async def _reconcile_acme_renewals() -> None:
     from certbot.errors import LockError
     from daemon.acme_http import migrate_renewals
@@ -1037,6 +1056,7 @@ async def amain() -> None:
         logger.exception("cgroup slice bootstrap failed at startup")
     asyncio.create_task(_cgroup_reconcile_loop())
     asyncio.create_task(_domain_log_level_loop())
+    asyncio.create_task(_temporary_firewall_ban_loop())
     try:
         await asyncio.get_running_loop().run_in_executor(None, fail2ban.reconcile_managed_jails)
     except Exception:

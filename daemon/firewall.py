@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import datetime as dt
+import ipaddress
 import json
 import os
 import re
@@ -23,13 +25,38 @@ import threading
 import time
 from pathlib import Path
 
+from sqlalchemy import select
+
 from shared.config import settings
+from shared.db import write_session
+from shared.models import AuditLog, FirewallTemporaryBan, PermanentIpBan, utcnow
 from shared.validation import ValidationError, validate_ip_or_cidr
 
 from daemon.procutil import run
 
 ALLOWED_PROTOCOLS = {"tcp", "udp", "any"}
 ALLOWED_ACTIONS = {"allow", "deny"}
+ALLOWED_DIRECTIONS = {"in", "out"}
+
+SERVICE_PRESETS = {
+    "web": {"label": "Web hosting", "direction": "in", "rules": [(80, "tcp"), (443, "tcp")]},
+    "mail": {"label": "Secure mail", "direction": "in", "rules": [(25, "tcp"), (465, "tcp"), (587, "tcp"), (993, "tcp")]},
+    "dns": {"label": "Authoritative DNS", "direction": "in", "rules": [(53, "tcp"), (53, "udp")]},
+    "ftp": {"label": "FTP control", "direction": "in", "rules": [(21, "tcp")]},
+    "mysql": {"label": "Remote MySQL", "direction": "in", "rules": [(3306, "tcp")]},
+    "outbound_web": {"label": "Outbound web and APIs", "direction": "out", "rules": [(80, "tcp"), (443, "tcp")]},
+    "outbound_dns": {"label": "Outbound DNS", "direction": "out", "rules": [(53, "tcp"), (53, "udp")]},
+}
+
+OUTBOUND_SERVICE_IMPACT = {
+    53: "DNS resolution and DNS providers",
+    80: "package repositories, ACME and HTTP APIs",
+    123: "time synchronization",
+    443: "package updates, backups, Cloudflare, OAuth and HTTPS APIs",
+    25: "outbound SMTP delivery",
+    587: "authenticated SMTP relays",
+    22: "SSH/SFTP backup destinations",
+}
 
 # Matches "ufw show added"'s two real line shapes, confirmed against this
 # server's own actual output before writing this regex (a plain
@@ -45,7 +72,12 @@ _SCOPED_RULE_RE = re.compile(
 _BYPASS_RULE_RE = re.compile(
     r"\Aufw allow from (?P<from>\S+)(?:\s+comment\s+'(?P<comment>.*)')?\Z"
 )
+_OUTBOUND_RULE_RE = re.compile(
+    r"\Aufw (?P<action>allow|deny) out to (?P<to>\S+) port (?P<port>\d+)"
+    r"(?:\s+proto\s+(?P<proto>tcp|udp))?(?:\s+comment\s+'(?P<comment>.*)')?\Z"
+)
 BYPASS_COMMENT = "boron-full-access-bypass"
+TEMP_BAN_COMMENT = "boron-temporary-ban"
 CHANGE_CONFIRM_SECONDS = 120
 _change_lock = threading.RLock()
 _rollback_timer: threading.Timer | None = None
@@ -97,10 +129,23 @@ def _validate_action(action: str) -> str:
     return action
 
 
+def _validate_direction(direction: str) -> str:
+    direction = str(direction or "in").lower()
+    if direction not in ALLOWED_DIRECTIONS:
+        raise ValidationError(f"direction must be one of {sorted(ALLOWED_DIRECTIONS)}")
+    return direction
+
+
 def _validate_from_addr(from_addr: str | None) -> str:
     if not from_addr or from_addr.strip().lower() == "any":
         return "any"
     return validate_ip_or_cidr(from_addr)
+
+
+def _validate_to_addr(to_addr: str | None) -> str:
+    if not to_addr or str(to_addr).strip().lower() == "any":
+        return "any"
+    return validate_ip_or_cidr(str(to_addr))
 
 
 _COMMENT_RE = re.compile(r"\A[A-Za-z0-9 ._-]{0,200}\Z")
@@ -113,7 +158,13 @@ def _validate_comment(comment: str | None) -> str:
     return comment
 
 
-def _rule_spec_args(action: str, port: int, protocol: str, from_addr: str) -> list[str]:
+def _rule_spec_args(action: str, port: int, protocol: str, from_addr: str,
+                    direction: str = "in", to_addr: str = "any") -> list[str]:
+    if direction == "out":
+        args = [action, "out", "to", to_addr, "port", str(port)]
+        if protocol != "any":
+            args += ["proto", protocol]
+        return args
     if from_addr == "any":
         port_spec = f"{port}/{protocol}" if protocol != "any" else str(port)
         return [action, port_spec]
@@ -123,8 +174,11 @@ def _rule_spec_args(action: str, port: int, protocol: str, from_addr: str) -> li
     return args
 
 
-def _rule_id(action: str, port: int, protocol: str, from_addr: str) -> str:
+def _rule_id(action: str, port: int, protocol: str, from_addr: str,
+             direction: str = "in", to_addr: str = "any") -> str:
     raw = f"{action}|{port}|{protocol}|{from_addr}"
+    if direction != "in" or to_addr != "any":
+        raw += f"|{direction}|{to_addr}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -152,9 +206,24 @@ def _parse_bypass_rules(text: str) -> list[dict]:
 
 def _parse_added_rules(text: str) -> list[dict]:
     rules = []
+    protected = protected_ports()
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("Added user rules") or line == "(None)":
+            continue
+        outbound = _OUTBOUND_RULE_RE.match(line)
+        if outbound:
+            action = outbound.group("action")
+            port = int(outbound.group("port"))
+            protocol = outbound.group("proto") or "any"
+            to_addr = outbound.group("to")
+            rules.append({
+                "rule_id": _rule_id(action, port, protocol, "any", "out", to_addr),
+                "action": action, "port": port, "protocol": protocol,
+                "direction": "out", "from": "any", "to": to_addr,
+                "comment": outbound.group("comment") or "", "protected": False,
+                "affected_services": OUTBOUND_SERVICE_IMPACT.get(port) if action == "deny" else None,
+            })
             continue
         match = _PLAIN_RULE_RE.match(line)
         from_addr = "any"
@@ -173,12 +242,127 @@ def _parse_added_rules(text: str) -> list[dict]:
                 "action": action,
                 "port": port,
                 "protocol": protocol,
+                "direction": "in",
                 "from": from_addr,
+                "to": "any",
                 "comment": match.group("comment") or "",
-                "protected": port in protected_ports(),
+                "protected": port in protected,
+                "affected_services": None,
             }
         )
     return rules
+
+
+def _networks_overlap(left: str, right: str) -> bool:
+    a = ipaddress.ip_network(left, strict=False)
+    b = ipaddress.ip_network(right, strict=False)
+    return a.version == b.version and a.overlaps(b)
+
+
+def _bypass_addresses() -> list[str]:
+    output = run(["ufw", "show", "added"], timeout=15).stdout
+    return [entry["address"] for entry in _parse_bypass_rules(output)]
+
+
+def assert_address_can_be_banned(value: str, actor_ip: str | None = None) -> None:
+    network = ipaddress.ip_network(value, strict=False)
+    if network.prefixlen == 0 or network.is_loopback:
+        raise ValidationError("refusing to ban a global or loopback network")
+    if actor_ip:
+        try:
+            actor_address = ipaddress.ip_address(actor_ip)
+        except ValueError:
+            actor_address = None
+        if actor_address is not None and actor_address in network:
+            raise ValidationError("refusing to ban the administrator address making this request")
+    conflicts = [address for address in _bypass_addresses() if _networks_overlap(value, address)]
+    if conflicts:
+        raise ValidationError(
+            "the requested ban overlaps a full-access bypass: " + ", ".join(conflicts)
+        )
+
+
+def _temporary_ban_plain(row: FirewallTemporaryBan) -> dict:
+    return {
+        "id": row.id,
+        "value": row.value,
+        "reason": row.reason,
+        "banned_by": row.banned_by,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+    }
+
+
+def _temporary_ban_comment(ban_id: int) -> str:
+    return f"{TEMP_BAN_COMMENT}-{ban_id}"
+
+
+def add_temporary_ban(params: dict) -> dict:
+    value = validate_ip_or_cidr(params["value"])
+    actor = str(params.get("actor") or "admin")[:64]
+    reason = str(params.get("reason") or "").strip()[:200]
+    try:
+        duration_minutes = int(params.get("duration_minutes") or 60)
+    except (TypeError, ValueError):
+        raise ValidationError("duration_minutes must be an integer") from None
+    if not 1 <= duration_minutes <= 30 * 24 * 60:
+        raise ValidationError("duration_minutes must be between 1 and 43200")
+    assert_address_can_be_banned(value, params.get("actor_ip"))
+    expires_at = utcnow() + dt.timedelta(minutes=duration_minutes)
+    with write_session() as session:
+        if session.scalar(select(FirewallTemporaryBan).where(FirewallTemporaryBan.value == value)):
+            raise ValidationError(f"'{value}' already has a temporary ban")
+        row = FirewallTemporaryBan(
+            value=value, reason=reason or None, banned_by=actor, expires_at=expires_at
+        )
+        session.add(row)
+        session.flush()
+        ban_id = row.id
+    result = run(
+        ["ufw", "insert", "1", "deny", "from", value, "comment", _temporary_ban_comment(ban_id)],
+        timeout=20,
+    )
+    if not result.ok:
+        with write_session() as session:
+            row = session.get(FirewallTemporaryBan, ban_id)
+            if row is not None:
+                session.delete(row)
+        raise RuntimeError("ufw temporary ban failed: " + (result.stderr.strip() or result.stdout.strip()))
+    with write_session() as session:
+        return _temporary_ban_plain(session.get(FirewallTemporaryBan, ban_id))
+
+
+def delete_temporary_ban(params: dict) -> dict:
+    ban_id = int(params["id"])
+    with write_session() as session:
+        row = session.get(FirewallTemporaryBan, ban_id)
+        if row is None:
+            raise ValidationError(f"no temporary ban with id {ban_id}")
+        value = row.value
+        result = run(
+            ["ufw", "--force", "delete", "deny", "from", value, "comment", _temporary_ban_comment(ban_id)],
+            timeout=20,
+        )
+        combined = (result.stderr or result.stdout or "").lower()
+        if not result.ok and "could not find" not in combined and "non-existent" not in combined:
+            raise RuntimeError("ufw temporary unban failed: " + (result.stderr.strip() or result.stdout.strip()))
+        session.delete(row)
+    return {"id": ban_id, "value": value, "status": "unbanned"}
+
+
+def expire_temporary_bans(params: dict | None = None) -> dict:
+    now = utcnow()
+    with write_session() as session:
+        ids = list(session.scalars(
+            select(FirewallTemporaryBan.id).where(FirewallTemporaryBan.expires_at <= now)
+        ).all())
+    expired = []
+    for ban_id in ids:
+        try:
+            expired.append(delete_temporary_ban({"id": ban_id})["value"])
+        except Exception:
+            continue
+    return {"expired": expired, "count": len(expired)}
 
 
 def list_rules(params: dict) -> dict:
@@ -186,11 +370,42 @@ def list_rules(params: dict) -> dict:
     rules = _parse_added_rules(result.stdout)
     status = run(["ufw", "status"], timeout=15)
     active = status.stdout.strip().startswith("Status: active")
+    with write_session() as session:
+        temporary_bans = [_temporary_ban_plain(row) for row in session.scalars(
+            select(FirewallTemporaryBan).order_by(FirewallTemporaryBan.expires_at)
+        ).all()]
+        history = [
+            {
+                "id": row.id, "actor": row.actor, "operation": row.op,
+                "result": row.result, "detail": row.detail,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in session.scalars(
+                select(AuditLog).where(AuditLog.op.like("firewall.%"))
+                .order_by(AuditLog.created_at.desc()).limit(30)
+            ).all()
+        ]
+    try:
+        ufw_defaults = Path("/etc/default/ufw").read_text().splitlines()
+        ipv6 = any(line.strip().upper() == "IPV6=YES" for line in ufw_defaults)
+        output_policy = next((
+            line.split("=", 1)[1].strip().strip('"\'').lower()
+            for line in ufw_defaults if line.strip().startswith("DEFAULT_OUTPUT_POLICY=")
+        ), "unknown")
+    except OSError:
+        ipv6 = False
+        output_policy = "unknown"
     return {
         "rules": rules,
         "bypass": _parse_bypass_rules(result.stdout),
         "active": active,
         "pending_change": _public_pending(_read_pending()),
+        "temporary_bans": temporary_bans,
+        "presets": [{"id": key, **value} for key, value in SERVICE_PRESETS.items()],
+        "recent_changes": history,
+        "protected_ports": sorted(protected_ports()),
+        "ipv6": ipv6,
+        "outbound_default": output_policy,
     }
 
 
@@ -212,6 +427,7 @@ def add_bypass(params: dict) -> dict:
     result = run(args, timeout=20)
     if not result.ok:
         raise RuntimeError(f"ufw bypass add failed: {result.stderr.strip() or result.stdout.strip()}")
+    _sync_fail2ban_bypass(address, unban=True, strict=not params.get("_rollback"))
     return {"bypass_id": _bypass_id(address), "address": address, "label": label}
 
 
@@ -228,7 +444,22 @@ def delete_bypass(params: dict) -> dict:
     )
     if not result.ok:
         raise RuntimeError(f"ufw bypass delete failed: {result.stderr.strip() or result.stdout.strip()}")
+    _sync_fail2ban_bypass(target["address"], unban=False, strict=not params.get("_rollback"))
     return {"bypass_id": bypass_id, "status": "deleted"}
+
+
+def _sync_fail2ban_bypass(address: str, *, unban: bool, strict: bool) -> None:
+    """Keep the UFW recovery bypass and fail2ban's ignore list aligned."""
+    from daemon import fail2ban
+
+    if not Path(fail2ban.JAIL_D_PATH).exists():
+        return
+    if not fail2ban.refresh_cloudflare_ignoreip():
+        if strict:
+            raise RuntimeError("fail2ban could not apply the updated full-access bypass list")
+        return
+    if unban:
+        fail2ban.unban_network(address)
 
 
 def add_rule(params: dict) -> dict:
@@ -236,20 +467,30 @@ def add_rule(params: dict) -> dict:
     port = _validate_port(params["port"])
     protocol = _validate_protocol(params.get("protocol", "any"))
     from_addr = _validate_from_addr(params.get("from_addr"))
+    to_addr = _validate_to_addr(params.get("to_addr"))
+    direction = _validate_direction(params.get("direction", "in"))
     comment = _validate_comment(params.get("comment"))
 
-    if action == "deny" and port in protected_ports():
+    if direction == "in" and action == "deny" and port in protected_ports():
         raise ValidationError(
             f"port {port} is hard-protected (SSH/panel/web/mail) and cannot be denied via this UI"
         )
 
-    args = _rule_spec_args(action, port, protocol, from_addr)
+    if direction == "in" and to_addr != "any":
+        raise ValidationError("to_addr is only supported for outbound rules")
+    if direction == "out" and from_addr != "any":
+        raise ValidationError("from_addr is only supported for inbound rules")
+    args = _rule_spec_args(action, port, protocol, from_addr, direction, to_addr)
     if comment:
         args += ["comment", comment]
     result = run(["ufw"] + args, timeout=20)
     if not result.ok:
         raise RuntimeError(f"ufw {' '.join(args)} failed: {result.stderr.strip() or result.stdout.strip()}")
-    return {"rule_id": _rule_id(action, port, protocol, from_addr), "action": action, "port": port, "protocol": protocol, "from": from_addr}
+    return {
+        "rule_id": _rule_id(action, port, protocol, from_addr, direction, to_addr),
+        "action": action, "port": port, "protocol": protocol,
+        "direction": direction, "from": from_addr, "to": to_addr,
+    }
 
 
 def delete_rule(params: dict) -> dict:
@@ -259,10 +500,10 @@ def delete_rule(params: dict) -> dict:
     if target is None:
         raise ValidationError(f"no rule with id '{rule_id}' found")
 
-    if target["action"] == "allow" and target["port"] in protected_ports():
+    if target["direction"] == "in" and target["action"] == "allow" and target["port"] in protected_ports():
         remaining = [
             r for r in current
-            if r["rule_id"] != rule_id and r["action"] == "allow" and r["port"] == target["port"]
+            if r["rule_id"] != rule_id and r["direction"] == "in" and r["action"] == "allow" and r["port"] == target["port"]
         ]
         if not remaining:
             raise ValidationError(
@@ -270,7 +511,10 @@ def delete_rule(params: dict) -> dict:
                 "(SSH/panel/web/mail) -- this would expose it to the default deny policy once UFW is enabled"
             )
 
-    args = _rule_spec_args(target["action"], target["port"], target["protocol"], target["from"])
+    args = _rule_spec_args(
+        target["action"], target["port"], target["protocol"], target["from"],
+        target["direction"], target["to"],
+    )
     result = run(["ufw", "--force", "delete"] + args, timeout=20)
     if not result.ok:
         raise RuntimeError(f"ufw delete failed: {result.stderr.strip() or result.stdout.strip()}")
@@ -310,7 +554,10 @@ def apply_cf_lockdown(cf_ranges: list[str]) -> None:
         )
     wanted = set(cf_ranges)
     existing = _current_rules()
-    have = {(r["port"], r["from"]) for r in existing if r["action"] == "allow" and r["from"] != "any"}
+    have = {
+        (r["port"], r["from"]) for r in existing
+        if r["direction"] == "in" and r["action"] == "allow" and r["from"] != "any"
+    }
     for port in CF_LOCKDOWN_PORTS:
         for cidr in cf_ranges:
             if (port, cidr) not in have:
@@ -325,7 +572,7 @@ def apply_cf_lockdown(cf_ranges: list[str]) -> None:
     current = _current_rules()
     scoped_by_port: dict[int, list[dict]] = {p: [] for p in CF_LOCKDOWN_PORTS}
     for r in current:
-        if r["action"] == "allow" and r["port"] in CF_LOCKDOWN_PORTS and r["from"] != "any":
+        if r["direction"] == "in" and r["action"] == "allow" and r["port"] in CF_LOCKDOWN_PORTS and r["from"] != "any":
             scoped_by_port[r["port"]].append(r)
     for port in CF_LOCKDOWN_PORTS:
         if not scoped_by_port[port]:
@@ -333,7 +580,7 @@ def apply_cf_lockdown(cf_ranges: list[str]) -> None:
             # (fail safe: web stays reachable) rather than locking everyone out.
             continue
         for r in current:
-            if r["action"] == "allow" and r["port"] == port and r["from"] == "any":
+            if r["direction"] == "in" and r["action"] == "allow" and r["port"] == port and r["from"] == "any":
                 run(["ufw", "--force", "delete"] + _rule_spec_args("allow", port, r["protocol"], "any"), timeout=20)
         # prune stale scoped lockdown rules whose CIDR is no longer wanted
         for r in scoped_by_port[port]:
@@ -350,6 +597,7 @@ def remove_cf_lockdown() -> None:
     for r in _current_rules():
         if (
             r["action"] == "allow"
+            and r["direction"] == "in"
             and r["port"] in CF_LOCKDOWN_PORTS
             and r["from"] != "any"
             and r["comment"] == CF_LOCKDOWN_COMMENT
@@ -370,7 +618,10 @@ def _ensure_baseline_allow_rules() -> None:
     it took effect -- exactly the kind of self-inflicted outage "pick
     conservative/secure" exists to prevent, not merely a nice-to-have."""
     current = _parse_added_rules(run(["ufw", "show", "added"], timeout=15).stdout)
-    covered = {r["port"] for r in current if r["action"] == "allow"}
+    covered = {
+        r["port"] for r in current
+        if r["action"] == "allow" and r["direction"] == "in"
+    }
     for port in sorted(protected_ports()):
         if port not in covered:
             run(["ufw", "allow", str(port), "comment", "boron-baseline-protected-port"], timeout=20).raise_if_failed("Firewall prerequisite")
@@ -497,7 +748,10 @@ def _undo_one(step: dict) -> None:
         if target is not None:
             _run_checked(
                 ["ufw", "--force", "delete"]
-                + _rule_spec_args(target["action"], target["port"], target["protocol"], target["from"]),
+                + _rule_spec_args(
+                    target["action"], target["port"], target["protocol"], target["from"],
+                    target["direction"], target["to"],
+                ),
                 "firewall rollback could not delete rule",
             )
         return
@@ -509,18 +763,29 @@ def _undo_one(step: dict) -> None:
         current = _parse_bypass_rules(run(["ufw", "show", "added"], timeout=15).stdout)
         target = next((entry for entry in current if entry["address"] == step["address"]), None)
         if target is not None:
-            delete_bypass({"bypass_id": target["bypass_id"]})
+            delete_bypass({"bypass_id": target["bypass_id"], "_rollback": True})
         return
     if kind == "add_bypass":
         current = _parse_bypass_rules(run(["ufw", "show", "added"], timeout=15).stdout)
         if not any(entry["address"] == step["params"]["address"] for entry in current):
-            add_bypass(step["params"])
+            add_bypass({**step["params"], "_rollback": True})
         return
     if kind == "disable":
         disable_firewall({"confirm": True})
         return
     if kind == "enable":
         enable_firewall({"confirm": True})
+        return
+    if kind == "delete_temp_ban":
+        with write_session() as session:
+            row = session.scalar(select(FirewallTemporaryBan).where(
+                FirewallTemporaryBan.value == step["value"]
+            ))
+        if row is not None:
+            delete_temporary_ban({"id": row.id})
+        return
+    if kind == "add_temp_ban":
+        add_temporary_ban(step["params"])
         return
     raise RuntimeError(f"unsupported firewall rollback step: {kind!r}")
 
@@ -592,7 +857,10 @@ def _verify_protected_access() -> None:
     if not status.stdout.strip().startswith("Status: active"):
         return
     rules = _current_rules()
-    covered = {rule["port"] for rule in rules if rule["action"] == "allow"}
+    covered = {
+        rule["port"] for rule in rules
+        if rule["action"] == "allow" and rule["direction"] == "in"
+    }
     missing = sorted(protected_ports() - covered)
     if missing:
         raise RuntimeError(
@@ -645,10 +913,12 @@ def transactional_add_rule(params: dict) -> dict:
     port = _validate_port(params["port"])
     protocol = _validate_protocol(params.get("protocol", "any"))
     from_addr = _validate_from_addr(params.get("from_addr"))
-    rule_id = _rule_id(action, port, protocol, from_addr)
+    to_addr = _validate_to_addr(params.get("to_addr"))
+    direction = _validate_direction(params.get("direction", "in"))
+    rule_id = _rule_id(action, port, protocol, from_addr, direction, to_addr)
     return _start_change(
         "rule.add",
-        f"Add {action} rule for {port}/{protocol} from {from_addr}",
+        f"Add {direction}bound {action} rule for {port}/{protocol}",
         [{"kind": "delete_rule", "rule_id": rule_id}],
         lambda: add_rule(params),
     )
@@ -660,11 +930,12 @@ def transactional_delete_rule(params: dict) -> dict:
         raise ValidationError(f"no rule with id '{params['rule_id']}' found")
     restore = {
         "action": target["action"], "port": target["port"], "protocol": target["protocol"],
-        "from_addr": target["from"], "comment": target["comment"],
+        "direction": target["direction"], "from_addr": target["from"],
+        "to_addr": target["to"], "comment": target["comment"],
     }
     return _start_change(
         "rule.delete",
-        f"Delete {target['action']} rule for {target['port']}/{target['protocol']} from {target['from']}",
+        f"Delete {target['direction']}bound {target['action']} rule for {target['port']}/{target['protocol']}",
         [{"kind": "add_rule", "rule_id": target["rule_id"], "params": restore}],
         lambda: delete_rule(params),
     )
@@ -692,12 +963,213 @@ def transactional_delete_bypass(params: dict) -> dict:
     )
 
 
+def transactional_add_temporary_ban(params: dict) -> dict:
+    value = validate_ip_or_cidr(params["value"])
+    assert_address_can_be_banned(value, params.get("actor_ip"))
+    return _start_change(
+        "temporary_ban.add", f"Temporarily block {value}",
+        [{"kind": "delete_temp_ban", "value": value}],
+        lambda: add_temporary_ban(params),
+    )
+
+
+def transactional_delete_temporary_ban(params: dict) -> dict:
+    ban_id = int(params["id"])
+    with write_session() as session:
+        row = session.get(FirewallTemporaryBan, ban_id)
+        if row is None:
+            raise ValidationError(f"no temporary ban with id {ban_id}")
+        remaining = max(1, int((row.expires_at - utcnow()).total_seconds() // 60) + 1)
+        restore = {
+            "value": row.value, "reason": row.reason or "", "banned_by": row.banned_by,
+            "actor": row.banned_by, "duration_minutes": remaining,
+        }
+        value = row.value
+    return _start_change(
+        "temporary_ban.delete", f"Remove temporary block for {value}",
+        [{"kind": "add_temp_ban", "params": restore}],
+        lambda: delete_temporary_ban({"id": ban_id}),
+    )
+
+
+def apply_service_preset(params: dict) -> dict:
+    preset_id = str(params.get("preset_id") or "")
+    preset = SERVICE_PRESETS.get(preset_id)
+    if preset is None:
+        raise ValidationError("unknown firewall service preset")
+    action = _validate_action(params.get("action") or "allow")
+    address = _validate_to_addr(params.get("address")) if preset["direction"] == "out" else _validate_from_addr(params.get("address"))
+    existing = {rule["rule_id"] for rule in _current_rules()}
+    additions = []
+    for port, protocol in preset["rules"]:
+        from_addr = address if preset["direction"] == "in" else "any"
+        to_addr = address if preset["direction"] == "out" else "any"
+        rule_id = _rule_id(action, port, protocol, from_addr, preset["direction"], to_addr)
+        if rule_id not in existing:
+            additions.append({
+                "action": action, "port": port, "protocol": protocol,
+                "direction": preset["direction"], "from_addr": from_addr,
+                "to_addr": to_addr, "comment": f"boron-preset-{preset_id}",
+                "rule_id": rule_id,
+            })
+    if not additions:
+        raise ValidationError("all rules in this service preset already exist")
+    undo = [{"kind": "delete_rule", "rule_id": item["rule_id"]} for item in additions]
+
+    def apply():
+        for item in additions:
+            add_rule(item)
+        return {"preset_id": preset_id, "added": len(additions)}
+
+    return _start_change(
+        "preset.apply", f"Apply {preset['label']} service preset", undo, apply
+    )
+
+
+def _normalize_config_rule(raw: dict) -> dict:
+    if not isinstance(raw, dict):
+        raise ValidationError("each imported firewall rule must be an object")
+    action = _validate_action(str(raw.get("action") or ""))
+    port = _validate_port(raw.get("port"))
+    protocol = _validate_protocol(str(raw.get("protocol") or "any"))
+    direction = _validate_direction(str(raw.get("direction") or "in"))
+    from_addr = _validate_from_addr(raw.get("from_addr", raw.get("from", "any")))
+    to_addr = _validate_to_addr(raw.get("to_addr", raw.get("to", "any")))
+    comment = _validate_comment(raw.get("comment"))
+    if direction == "in":
+        to_addr = "any"
+    else:
+        from_addr = "any"
+    return {
+        "action": action, "port": port, "protocol": protocol, "direction": direction,
+        "from_addr": from_addr, "to_addr": to_addr, "comment": comment,
+        "rule_id": _rule_id(action, port, protocol, from_addr, direction, to_addr),
+    }
+
+
+def _normalize_firewall_config(raw: dict) -> dict:
+    if not isinstance(raw, dict) or raw.get("format") != "boron-firewall" or raw.get("version") != 1:
+        raise ValidationError("configuration must use boron-firewall format version 1")
+    raw_rules = raw.get("rules") or []
+    raw_bypass = raw.get("bypass") or []
+    if not isinstance(raw_rules, list) or not isinstance(raw_bypass, list):
+        raise ValidationError("configuration rules and bypass must be arrays")
+    if len(raw_rules) > 500 or len(raw_bypass) > 100:
+        raise ValidationError("configuration exceeds the supported rule limits")
+    rules = []
+    seen = set()
+    for raw_rule in raw_rules:
+        rule = _normalize_config_rule(raw_rule)
+        if rule["rule_id"] not in seen:
+            seen.add(rule["rule_id"])
+            rules.append(rule)
+    bypass = []
+    for item in raw_bypass:
+        item = item if isinstance(item, dict) else {"address": item}
+        address = validate_ip_or_cidr(str(item.get("address") or ""))
+        if address in ("0.0.0.0/0", "::/0"):
+            raise ValidationError("global bypass networks cannot be imported")
+        entry = {"address": address, "label": _validate_comment(item.get("label"))}
+        if entry not in bypass:
+            bypass.append(entry)
+    return {"format": "boron-firewall", "version": 1, "rules": rules, "bypass": bypass}
+
+
+def export_configuration(params: dict) -> dict:
+    output = run(["ufw", "show", "added"], timeout=15).stdout
+    rules = [
+        {
+            "action": row["action"], "port": row["port"], "protocol": row["protocol"],
+            "direction": row["direction"], "from_addr": row["from"], "to_addr": row["to"],
+            "comment": row["comment"],
+        }
+        for row in _parse_added_rules(output)
+    ]
+    bypass = [{"address": row["address"], "label": row["label"]} for row in _parse_bypass_rules(output)]
+    return {
+        "format": "boron-firewall", "version": 1,
+        "exported_at": utcnow().isoformat(), "rules": rules, "bypass": bypass,
+    }
+
+
+def _configuration_plan(raw: dict, replace: bool) -> dict:
+    config = _normalize_firewall_config(raw)
+    output = run(["ufw", "show", "added"], timeout=15).stdout
+    current_rules = _parse_added_rules(output)
+    current_bypass = _parse_bypass_rules(output)
+    wanted_rule_ids = {item["rule_id"] for item in config["rules"]}
+    current_rule_ids = {item["rule_id"] for item in current_rules}
+    wanted_bypass = {item["address"] for item in config["bypass"]}
+    current_bypass_values = {item["address"] for item in current_bypass}
+    add_rules = [item for item in config["rules"] if item["rule_id"] not in current_rule_ids]
+    delete_rules = [item for item in current_rules if replace and item["rule_id"] not in wanted_rule_ids]
+    add_bypass = [item for item in config["bypass"] if item["address"] not in current_bypass_values]
+    delete_bypass = [item for item in current_bypass if replace and item["address"] not in wanted_bypass]
+    final_rules = config["rules"] if replace else current_rules + add_rules
+    final_covered = {
+        item.get("port") for item in final_rules
+        if item.get("action") == "allow" and item.get("direction", "in") == "in"
+    }
+    missing = sorted(protected_ports() - final_covered)
+    if missing:
+        raise ValidationError(
+            "import would leave protected ports without inbound allow rules: "
+            + ", ".join(str(port) for port in missing)
+        )
+    return {
+        "config": config, "replace": bool(replace), "add_rules": add_rules,
+        "delete_rules": delete_rules, "add_bypass": add_bypass, "delete_bypass": delete_bypass,
+        "summary": {
+            "rules_to_add": len(add_rules), "rules_to_delete": len(delete_rules),
+            "bypass_to_add": len(add_bypass), "bypass_to_delete": len(delete_bypass),
+        },
+    }
+
+
+def preview_configuration_import(params: dict) -> dict:
+    plan = _configuration_plan(params.get("configuration"), bool(params.get("replace", False)))
+    return {key: plan[key] for key in ("replace", "summary", "add_rules", "delete_rules", "add_bypass", "delete_bypass")}
+
+
+def import_configuration(params: dict) -> dict:
+    plan = _configuration_plan(params.get("configuration"), bool(params.get("replace", False)))
+    if not any(plan[key] for key in ("add_rules", "delete_rules", "add_bypass", "delete_bypass")):
+        raise ValidationError("the imported configuration makes no changes")
+    undo = []
+    for item in plan["delete_rules"]:
+        undo.append({"kind": "add_rule", "rule_id": item["rule_id"], "params": {
+            "action": item["action"], "port": item["port"], "protocol": item["protocol"],
+            "direction": item["direction"], "from_addr": item["from"], "to_addr": item["to"],
+            "comment": item["comment"],
+        }})
+    for item in plan["delete_bypass"]:
+        undo.append({"kind": "add_bypass", "params": {"address": item["address"], "label": item["label"]}})
+    undo.extend({"kind": "delete_rule", "rule_id": item["rule_id"]} for item in plan["add_rules"])
+    undo.extend({"kind": "delete_bypass", "address": item["address"]} for item in plan["add_bypass"])
+
+    def apply():
+        for item in plan["add_rules"]:
+            add_rule(item)
+        for item in plan["add_bypass"]:
+            add_bypass(item)
+        for item in plan["delete_rules"]:
+            delete_rule({"rule_id": item["rule_id"]})
+        for item in plan["delete_bypass"]:
+            delete_bypass({"bypass_id": item["bypass_id"]})
+        return {"imported": plan["summary"]}
+
+    return _start_change("configuration.import", "Import firewall configuration", undo, apply)
+
+
 def transactional_enable(params: dict) -> dict:
     if not bool(params.get("confirm", False)):
         raise ValidationError("enabling the firewall requires confirm=true")
     if get_status({})["active"]:
         raise ValidationError("the firewall is already enabled")
-    covered = {rule["port"] for rule in _current_rules() if rule["action"] == "allow"}
+    covered = {
+        rule["port"] for rule in _current_rules()
+        if rule["action"] == "allow" and rule["direction"] == "in"
+    }
     added_baseline = sorted(protected_ports() - covered)
     undo = [{"kind": "disable"}]
     undo.extend(
@@ -764,3 +1236,41 @@ def recover_pending_changes() -> dict:
         if state is None:
             return {"status": "no_pending_change"}
         return _rollback_state(state, reason="daemon startup or local-console recovery")
+
+
+def disable_boron_managed_blocks() -> dict:
+    """Local-console recovery that keeps UFW enabled and removes Boron bans.
+
+    Operator-authored port rules are deliberately untouched. Cloudflare-only
+    web lockdown is reversed by restoring public 80/443 allows before its
+    scoped rules are removed.
+    """
+    temporary = []
+    with write_session() as session:
+        temporary_ids = list(session.scalars(select(FirewallTemporaryBan.id)).all())
+    for ban_id in temporary_ids:
+        temporary.append(delete_temporary_ban({"id": ban_id})["value"])
+
+    permanent = []
+    with write_session() as session:
+        bans = [(row.id, row.value) for row in session.scalars(select(PermanentIpBan)).all()]
+    for ban_id, value in bans:
+        result = run(["ufw", "--force", "delete", "deny", "from", value], timeout=20)
+        combined = (result.stderr or result.stdout or "").lower()
+        if not result.ok and "could not find" not in combined and "non-existent" not in combined:
+            raise RuntimeError("could not remove Boron IP ban: " + (result.stderr.strip() or result.stdout.strip()))
+        with write_session() as session:
+            row = session.get(PermanentIpBan, ban_id)
+            if row is not None:
+                session.delete(row)
+        permanent.append(value)
+
+    cloudflare_lockdown_removed = cf_lockdown_active()
+    if cloudflare_lockdown_removed:
+        remove_cf_lockdown()
+    return {
+        "status": "boron_blocks_disabled",
+        "temporary_bans_removed": temporary,
+        "permanent_bans_removed": permanent,
+        "cloudflare_lockdown_removed": cloudflare_lockdown_removed,
+    }

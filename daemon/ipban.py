@@ -91,6 +91,8 @@ def ban_ip(params: dict) -> dict:
     reason = (params.get("reason") or "").strip()[:200]
     actor = _validate_actor(params.get("actor") or "admin")
     _refuse_self_lockout(value)
+    from daemon.firewall import assert_address_can_be_banned
+    assert_address_can_be_banned(value, params.get("actor_ip"))
 
     with write_session() as session:
         existing = session.scalar(select(PermanentIpBan).where(PermanentIpBan.value == value))

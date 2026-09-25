@@ -1,8 +1,10 @@
 """Phase 5 feature 4: firewall UI (UFW). Admin-only, host-wide."""
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, Form
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 from starlette.requests import Request
 
@@ -19,6 +21,8 @@ class AddRuleBody(BaseModel):
     port: int
     protocol: str = "any"
     from_addr: str = "any"
+    to_addr: str = "any"
+    direction: str = "in"
     comment: str = ""
 
 
@@ -35,6 +39,23 @@ class ConfirmChangeBody(BaseModel):
     confirmation_token: str
 
 
+class PresetBody(BaseModel):
+    preset_id: str
+    action: str = "allow"
+    address: str = "any"
+
+
+class TemporaryBanBody(BaseModel):
+    value: str
+    duration_minutes: int = 60
+    reason: str = ""
+
+
+class ConfigurationImportBody(BaseModel):
+    configuration: dict
+    replace: bool = False
+
+
 @api_router.get("/rules")
 def list_rules(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -45,6 +66,46 @@ def list_rules(identity: Identity = Depends(get_identity)):
 def add_rule(body: AddRuleBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("firewall.add", identity, **body.model_dump())
+
+
+@api_router.post("/presets")
+def apply_preset(body: PresetBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("firewall.preset.apply", identity, **body.model_dump())
+
+
+@api_router.post("/temporary-bans")
+def add_temporary_ban(body: TemporaryBanBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("firewall.temporary_ban.add", identity, **body.model_dump())
+
+
+@api_router.delete("/temporary-bans/{ban_id}")
+def delete_temporary_ban(ban_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("firewall.temporary_ban.delete", identity, id=ban_id)
+
+
+@api_router.get("/configuration/export")
+def export_configuration(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    data = call_daemon("firewall.configuration.export", identity)
+    return Response(
+        json.dumps(data, indent=2) + "\n", media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="boron-firewall.json"', "Cache-Control": "no-store"},
+    )
+
+
+@api_router.post("/configuration/preview")
+def preview_configuration(body: ConfigurationImportBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("firewall.configuration.preview", identity, **body.model_dump())
+
+
+@api_router.post("/configuration/import")
+def import_configuration(body: ConfigurationImportBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("firewall.configuration.import", identity, **body.model_dump())
 
 
 @api_router.delete("/rules/{rule_id}")

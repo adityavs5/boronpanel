@@ -1013,6 +1013,19 @@ class PermanentIpBan(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class FirewallTemporaryBan(Base):
+    """A panel-created, server-wide UFW deny that expires automatically."""
+
+    __tablename__ = "firewall_temporary_bans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    banned_by: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class WelcomeEmailTemplate(Base):
     """QA round 2, item 10: single-row (id=1) admin-editable override of the
     "account created" welcome email's subject/body -- same single-row shape

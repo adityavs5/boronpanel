@@ -128,6 +128,23 @@ def test_unban_all_in_jail_unbans_every_currently_banned_ip(monkeypatch):
     assert set(result["unbanned"]) == {"45.148.10.157", "45.227.254.170"}
 
 
+def test_unban_network_removes_only_banned_ips_inside_new_bypass(monkeypatch):
+    calls = []
+
+    def fake_run(args, timeout=15):
+        calls.append(args)
+        if args == ["fail2ban-client", "status"]:
+            return ProcResult(args=args, returncode=0, stdout="Status\n`- Jail list:\tsshd\n", stderr="")
+        if args == ["fail2ban-client", "status", "sshd"]:
+            return ProcResult(args=args, returncode=0, stdout=SSHD_STATUS_SAMPLE, stderr="")
+        return ProcResult(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(fail2ban, "run", fake_run)
+    removed = fail2ban.unban_network("45.148.10.0/24")
+    assert removed == [{"jail": "sshd", "ip": "45.148.10.157"}]
+    assert ["fail2ban-client", "set", "sshd", "unbanip", "45.227.254.170"] not in calls
+
+
 def test_recent_events_parses_ban_and_unban_lines(monkeypatch):
     monkeypatch.setattr(fail2ban, "run", lambda args, timeout=15: ProcResult(args=args, returncode=0, stdout=LOG_SAMPLE, stderr=""))
     result = fail2ban.recent_events({})
