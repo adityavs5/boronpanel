@@ -21,10 +21,11 @@ from urllib.parse import urlparse
 import httpx
 from sqlalchemy import select
 
+from daemon.appcrypto import decrypt_secret, encrypt_secret
 from shared.config import settings
 from shared.db import write_session
 from shared.models import WEBHOOK_EVENT_TYPES, Webhook, WebhookDelivery, utcnow
-from shared.validation import validate_webhook_events, validate_webhook_url
+from shared.validation import ValidationError, validate_webhook_events, validate_webhook_url
 
 logger = logging.getLogger("borond.webhooks")
 
@@ -34,6 +35,17 @@ _executor = ThreadPoolExecutor(max_workers=settings.webhook_concurrency, thread_
 # always fires immediately. Exponential-ish, bounded (goal: "retry 3x with
 # exponential backoff").
 _BACKOFF_SECONDS = (5, 30)
+_ENCRYPTED_SECRET_PREFIX = "enc:v1:"
+
+
+def protected_secret(value: str) -> str:
+    return _ENCRYPTED_SECRET_PREFIX + encrypt_secret(value)
+
+
+def reveal_secret(value: str) -> str:
+    if str(value or "").startswith(_ENCRYPTED_SECRET_PREFIX):
+        return decrypt_secret(value[len(_ENCRYPTED_SECRET_PREFIX):])
+    return str(value or "")
 
 # Security-audit-2 (High): a webhook payload leaves the trust boundary
 # entirely (POSTed to an admin-configured *external* URL) and also persists in
@@ -54,26 +66,25 @@ class WebhookError(Exception):
     pass
 
 
-def _webhook_to_dict(w: Webhook, *, include_secret: bool = False) -> dict:
-    d = {
+def _webhook_to_dict(w: Webhook) -> dict:
+    return {
         "id": w.id,
         "url": w.url,
         "events": w.events,
         "enabled": w.enabled,
         "created_at": w.created_at.isoformat() if w.created_at else None,
     }
-    if include_secret:
-        d["secret"] = w.secret
-    return d
 
 
 def create_webhook(params: dict) -> dict:
     url = validate_webhook_url(params["url"])
     events_list = validate_webhook_events(params["events"], WEBHOOK_EVENT_TYPES)
-    secret = params.get("secret") or secrets.token_hex(32)
+    secret = params["secret"] if "secret" in params else secrets.token_hex(32)
+    if not isinstance(secret, str) or not 1 <= len(secret) <= 128:
+        raise ValidationError("Webhook signing secret must contain 1 to 128 characters")
     enabled = bool(params.get("enabled", True))
     with write_session() as session:
-        row = Webhook(url=url, secret=secret, events=events_list, enabled=enabled)
+        row = Webhook(url=url, secret=protected_secret(secret), events=events_list, enabled=enabled)
         session.add(row)
         session.flush()
         result = _webhook_to_dict(row)
@@ -250,7 +261,9 @@ def _deliver(delivery_id: int) -> None:
         delivery = session.get(WebhookDelivery, delivery_id)
         webhook = session.get(Webhook, delivery.webhook_id)
         url = webhook.url
-        secret = webhook.secret
+        secret = reveal_secret(webhook.secret)
+        if not webhook.secret.startswith(_ENCRYPTED_SECRET_PREFIX):
+            webhook.secret = protected_secret(secret)
         event = delivery.event
         payload = delivery.payload
 

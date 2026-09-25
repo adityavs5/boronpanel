@@ -1473,18 +1473,21 @@ WEBHOOK_EVENT_TYPES = (
 
 
 class Webhook(Base):
-    """Phase 7b feature 4: an admin-configured outbound webhook. `secret`
-    is stored in plain text (not hashed) -- unlike a login credential, it
-    has to be used to *compute* an HMAC on every delivery, not just
-    compared, so it can't be one-way-hashed; same documented tradeoff
-    TotpCredential.secret already accepts in this same file, protected by
-    the DB file's own root:boron-api permission boundary."""
+    """An admin-configured outbound webhook.
+
+    ``secret`` contains a versioned authenticated-encryption token. The root
+    daemon decrypts it only while signing a delivery; API responses never
+    expose it after the one-time creation response.
+    """
 
     __tablename__ = "webhooks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     url: Mapped[str] = mapped_column(String(2048))
-    secret: Mapped[str] = mapped_column(String(128))
+    # Fernet ciphertext for a 128-character cleartext secret can exceed 256
+    # characters. SQLite does not enforce VARCHAR widths, but other supported
+    # SQLAlchemy backends do, so keep enough room for the versioned envelope.
+    secret: Mapped[str] = mapped_column(String(512))
     events: Mapped[list] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

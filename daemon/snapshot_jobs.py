@@ -1089,7 +1089,15 @@ def execute_run(ident):
                 excludes=row.options['exclude_patterns'],full_scan=row.options['mode']=='full',
                 exclude_mail_staging='mail' in row.options['components'],
                 sandbox_roots=sandbox_roots(account, paths))
-            summary={**summary,'preflight':estimate}
+            with write_session() as session:
+                app_counts={
+                    'nodejs':len(session.scalars(select(NodeApp.id).where(NodeApp.account_id==account.id)).all()),
+                    'python':len(session.scalars(select(PythonApp.id).where(PythonApp.account_id==account.id)).all()),
+                }
+            limitations=[]
+            if app_counts['nodejs'] or app_counts['python']:
+                limitations.append('Node.js/Python files were captured, but service registrations and environment variables require manual recreation.')
+            summary={**summary,'preflight':estimate,'application_inventory':app_counts,'limitations':limitations}
             if archive_summary:summary={**summary,'portable_archive':archive_summary}
             if automatic_config:summary={**summary,'configuration_export':automatic_config}
             if _row(SnapshotRun,ident).cancel_requested:

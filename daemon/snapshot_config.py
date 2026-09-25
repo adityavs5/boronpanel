@@ -16,8 +16,9 @@ from sqlalchemy import select
 from daemon import snapshot_jobs as jobs
 from daemon.appcrypto import decrypt_env, encrypt_env
 from shared.db import write_session
-from shared.models import Account, BackupTelegramSettings, SnapshotDestination, SnapshotPolicy, SnapshotRun
-from shared.validation import ValidationError
+from shared.models import (Account, AccountNotificationPrefs, BackupTelegramSettings,
+    NotificationSettings, SnapshotDestination, SnapshotPolicy, SnapshotRun, Webhook)
+from shared.validation import ValidationError, validate_email_address
 
 
 def _b64(value):return base64.urlsafe_b64encode(value).decode('ascii')
@@ -37,12 +38,20 @@ def _secret_file(path):
 
 
 def export_configuration(params=None):
+    # Imported locally to keep webhook delivery initialization outside this
+    # module's import path while still exporting cleartext only inside the
+    # already encrypted disaster-recovery envelope.
+    from daemon import webhooks as webhook_ops
+
     with write_session() as session:
         destinations=session.scalars(select(SnapshotDestination).where(SnapshotDestination.status!='deleted')).all()
         policies=session.scalars(select(SnapshotPolicy)).all()
         runs=session.scalars(select(SnapshotRun).where(SnapshotRun.status.in_(['completed','expired']))).all()
         accounts={row.id:row.username for row in session.scalars(select(Account)).all()}
         telegram=session.get(BackupTelegramSettings,1)
+        email=session.get(NotificationSettings,1)
+        preferences=session.scalars(select(AccountNotificationPrefs)).all()
+        webhooks=session.scalars(select(Webhook)).all()
     destination_rows=[]
     for row in destinations:
         root=jobs.private_directory('repositories',row.namespace)
@@ -64,8 +73,15 @@ def export_configuration(params=None):
             'summary':row.summary,'started_at':row.started_at.isoformat(),
             'completed_at':row.completed_at.isoformat() if row.completed_at else None,'pinned':row.pinned}
             for row in runs if row.snapshot_id and accounts.get(row.account_id)],
-        'telegram':({'enabled':False,'chat_id':telegram.chat_id,'events':telegram.events,
-            'token':decrypt_env(telegram.token_enc).get('token','') if telegram.token_enc else ''} if telegram else None)}
+        'notifications':{
+            'email':({'sender_address':email.sender_address,'events':email.events} if email else None),
+            'account_preferences':[{'username':accounts.get(row.account_id),'customer_email':row.customer_email,
+                'events':row.events} for row in preferences if accounts.get(row.account_id)],
+            'telegram':({'enabled':telegram.enabled,'chat_id':telegram.chat_id,'events':telegram.events,
+                'token':decrypt_env(telegram.token_enc).get('token','') if telegram.token_enc else ''} if telegram else None),
+            'webhooks':[{'url':row.url,'secret':webhook_ops.reveal_secret(row.secret),
+                'events':row.events,'enabled':row.enabled} for row in webhooks],
+        }}
     supplied=(params or {}).get('_recovery_key')
     recovery_key=supplied or secrets.token_urlsafe(32);salt=os.urandom(16);nonce=os.urandom(12)
     ciphertext=AESGCM(_key(recovery_key,salt)).encrypt(nonce,json.dumps(bundle,separators=(',',':')).encode(),b'boron-backup-config-v1')
@@ -117,9 +133,17 @@ def import_configuration(params):
         existing_names=set(session.scalars(select(SnapshotDestination.name).where(SnapshotDestination.name.in_(names))).all())
         existing_ns=set(session.scalars(select(SnapshotDestination.namespace).where(SnapshotDestination.namespace.in_(namespaces))).all())
         existing_policies=set(session.scalars(select(SnapshotPolicy.name).where(SnapshotPolicy.name.in_([str(row.get('name','')) for row in policies]))).all())
+    notification_bundle=bundle.get('notifications') or ({'telegram':bundle.get('telegram')} if bundle.get('telegram') else {})
+    webhook_rows=notification_bundle.get('webhooks') or []
+    if not isinstance(webhook_rows,list) or len(webhook_rows)>100:
+        raise ValidationError('Backup notification configuration is invalid')
+    with write_session() as session:
+        existing_webhook_urls=set(session.scalars(select(Webhook.url).where(Webhook.url.in_([str(row.get('url','')) for row in webhook_rows]))).all()) if webhook_rows else set()
     preview={'destinations':len(destinations),'policies':len(policies),'catalog_entries':len(catalog),
+        'notification_plugins':len(webhook_rows)+sum(1 for key in ('email','telegram') if notification_bundle.get(key)),
         'conflicts':{'destinations':sorted(existing_names),'namespaces':sorted(existing_ns),'policies':sorted(existing_policies)},
         'jobs_will_be_disabled':True,'remote_data_will_not_be_modified':True,'reindex_required':len(destinations)}
+    if existing_webhook_urls:preview['conflicts']['webhooks']=sorted(existing_webhook_urls)
     if params.get('apply') is not True:return {'status':'preview',**preview}
     if any(preview['conflicts'].values()):raise ValidationError('Resolve the reported name or repository conflicts before import')
     created=[]
@@ -167,11 +191,41 @@ def import_configuration(params):
                     started_at=parsed(item['started_at']),completed_at=parsed(item.get('completed_at')),
                     pinned=bool(item.get('pinned',False))))
                 imported_catalog+=1
-            telegram=bundle.get('telegram')
+            email=notification_bundle.get('email')
+            if email:
+                sender=str(email.get('sender_address','')).strip()
+                events=email.get('events') or {}
+                if not isinstance(events,dict):raise ValidationError('Email notification configuration is invalid')
+                if sender:sender=validate_email_address(sender)
+                row=session.get(NotificationSettings,1) or NotificationSettings(id=1)
+                row.sender_address=sender;row.events=events;session.add(row)
+            for item in notification_bundle.get('account_preferences') or []:
+                account_id=accounts.get(item.get('username'))
+                if not account_id:continue
+                events=item.get('events') or {};address=item.get('customer_email')
+                if not isinstance(events,dict):
+                    raise ValidationError('Account notification preference is invalid')
+                address=validate_email_address(str(address).strip()) if address else None
+                row=session.scalar(select(AccountNotificationPrefs).where(AccountNotificationPrefs.account_id==account_id))
+                if row is None:row=AccountNotificationPrefs(account_id=account_id);session.add(row)
+                row.customer_email=address;row.events=events
+            telegram=notification_bundle.get('telegram')
             if telegram and telegram.get('token'):
                 row=session.get(BackupTelegramSettings,1) or BackupTelegramSettings(id=1)
                 row.enabled=False;row.chat_id=str(telegram.get('chat_id',''));row.events=telegram.get('events',[])
                 row.token_enc=encrypt_env({'token':telegram['token']});session.add(row)
+            for item in webhook_rows:
+                from daemon.webhooks import validate_webhook_url
+                from shared.models import WEBHOOK_EVENT_TYPES
+                from shared.validation import validate_webhook_events
+                url=validate_webhook_url(item.get('url'))
+                events=validate_webhook_events(item.get('events') or [],WEBHOOK_EVENT_TYPES)
+                secret=str(item.get('secret') or '')
+                if not 1<=len(secret)<=128:raise ValidationError('Webhook recovery secret is invalid')
+                # Imported delivery plugins start disabled until the operator
+                # tests the replacement server, preventing duplicate events.
+                from daemon.webhooks import protected_secret
+                session.add(Webhook(url=url,secret=protected_secret(secret),events=events,enabled=False))
         return {'status':'imported',**preview,'catalog_imported':imported_catalog,
             'unresolved_accounts':sorted(set(filter(None,unresolved)))}
     except Exception:
