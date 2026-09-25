@@ -245,6 +245,27 @@ def test_rejects_invalid_policy_options(environment,options,match):
     with pytest.raises(Exception,match=match):jobs.validate_options(options)
 
 
+def test_multi_destination_batch_reports_partial_once(environment,monkeypatch):
+    root,_=environment
+    first=jobs.create_destination({'name':'First','path':str(root/'repository-one')});jobs.initialize_destination({'id':first['id']})
+    second=jobs.create_destination({'name':'Second','path':str(root/'repository-two')});jobs.initialize_destination({'id':second['id']})
+    policy=make_policy(first,destination_ids=[first['id'],second['id']],notification_channels=['email'])
+    run_ids=jobs.queue_policy({'id':policy['id']})['run_ids']
+    calls=[]
+    from daemon import backup_notifications
+    monkeypatch.setattr(backup_notifications,'dispatch',lambda event,*args,**kwargs:calls.append((event,kwargs['job_id'])) or {'email':'queued'})
+    with write_session() as session:
+        session.get(SnapshotRun,run_ids[0]).status='completed'
+        session.get(SnapshotRun,run_ids[1]).status='running'
+    account=jobs._row(Account,jobs._row(SnapshotRun,run_ids[0]).account_id)
+    jobs._notify(jobs._row(SnapshotRun,run_ids[0]),account)
+    assert calls==[]
+    with write_session() as session:session.get(SnapshotRun,run_ids[1]).status='failed'
+    jobs._notify(jobs._row(SnapshotRun,run_ids[1]),account)
+    assert calls==[('backup.partial',min(run_ids))]
+    assert all(jobs._row(SnapshotRun,ident).notification_results=={'email':'queued'} for ident in run_ids)
+
+
 def test_source_symlink_escape_fails_and_marks_job_failed(environment,monkeypatch):
     root,_=environment
     dest=make_destination(root)

@@ -787,8 +787,9 @@ def retry_run(params):
         if source.status not in ('failed','cancelled'):raise ValidationError('Only failed or cancelled backups can be retried')
         if session.scalar(select(SnapshotRun.id).where(SnapshotRun.account_id==source.account_id,SnapshotRun.status.in_(ACTIVE))):
             raise ValidationError('This account already has active backup work')
+        retry_options={**source.options,'queue_batch_id':uuid.uuid4().hex}
         row=SnapshotRun(policy_id=source.policy_id,destination_id=source.destination_id,account_id=source.account_id,
-            options=source.options,status='pending',trigger='retry')
+            options=retry_options,status='pending',trigger='retry')
         session.add(row);session.flush();result=_run_dict(row);new_id=row.id
     _executor.submit(execute_run,new_id)
     return result
@@ -808,7 +809,7 @@ def queue_policy(params):
         destination_ids=policy.options.get('destination_ids') or [policy.destination_id]
         destination_rows=[session.get(SnapshotDestination,value) for value in destination_ids]
         if any(row is None or row.status!='ready' or not row.enabled for row in destination_rows): raise ValidationError('Every backup destination must be ready and enabled')
-        options=dict(policy.options)
+        options=dict(policy.options);options['queue_batch_id']=uuid.uuid4().hex
         if not scheduled:options['retention_count']=options.get('on_demand_retention',options['retention_count'])
         accounts=session.scalars(select(Account).where(Account.status=='active')).all()
         accounts=[a for a in accounts if (not options['accounts'] or a.username in options['accounts']) and a.username not in options['excluded_accounts']]
@@ -999,11 +1000,26 @@ def _database_sources(account, stage):
 
 def _notify(row,account):
     from daemon import backup_notifications
+    siblings=[];batch_id=row.options.get('queue_batch_id')
     event='backup.completed' if row.status=='completed' else 'backup.failed'
-    result=backup_notifications.dispatch(event,account,row.options['notification_channels'],job_id=row.id,
-        policy_id=row.policy_id,error=row.error,notification_events=row.options.get('notification_events'),
+    notification_job_id=row.id
+    if batch_id:
+        with write_session() as session:
+            siblings=[item for item in session.scalars(select(SnapshotRun).where(
+                SnapshotRun.account_id==row.account_id,SnapshotRun.policy_id==row.policy_id)).all()
+                if item.options.get('queue_batch_id')==batch_id]
+        if any(item.status in ACTIVE for item in siblings):return
+        statuses={item.status for item in siblings};notification_job_id=min(item.id for item in siblings)
+        if 'completed' in statuses and statuses & {'failed','cancelled'}:event='backup.partial'
+        elif statuses <= {'completed'}:event='backup.completed'
+        else:event='backup.failed'
+    result=backup_notifications.dispatch(event,account,row.options['notification_channels'],job_id=notification_job_id,
+        policy_id=row.policy_id,error=row.error,detail=f'{len(siblings)} destination results' if siblings else None,
+        notification_events=row.options.get('notification_events'),
         recipients=row.options.get('notification_recipients',[]),digest_frequency=row.options.get('digest_frequency','immediate'))
-    _update(row.id,notification_results=result)
+    if siblings:
+        for item in siblings:_update(item.id,notification_results=result)
+    else:_update(row.id,notification_results=result)
 
 
 def retained_snapshot_ids(items,options,protected=()):
@@ -1314,8 +1330,46 @@ def run_scheduled():
         try:count+=len(queue_policy({'id':ident,'trigger':'scheduled'})['run_ids'])
         except Exception:logger.exception('Could not queue scheduled snapshot policy %s',ident)
     from daemon import backup_notifications
+    check_health_alerts()
     backup_notifications.flush_digests()
     return count
+
+
+def check_health_alerts():
+    """Emit one deduplicated alert per currently unhealthy recovery point."""
+    pending=[];now=utcnow()
+    with write_session() as session:
+        policies=session.scalars(select(SnapshotPolicy).where(SnapshotPolicy.enabled==True)).all()
+        accounts=session.scalars(select(Account).where(Account.status=='active')).all()
+        destinations={row.id:row for row in session.scalars(select(SnapshotDestination)).all()}
+        runs=session.scalars(select(SnapshotRun).where(SnapshotRun.status=='completed')).all()
+        for policy in policies:
+            options=policy.options;destination_ids=options.get('destination_ids') or [policy.destination_id]
+            selected=[account for account in accounts if (not options.get('accounts') or account.username in options['accounts'])
+                and account.username not in options.get('excluded_accounts',[])]
+            for account in selected:
+                relevant=[row for row in runs if row.policy_id==policy.id and row.account_id==account.id]
+                relevant.sort(key=lambda row:row.completed_at or row.started_at,reverse=True)
+                latest=relevant[0] if relevant else None;threshold=int(options.get('freshness_hours',36))
+                stamp=(latest.completed_at or latest.started_at) if latest else policy.last_queued_at
+                if stamp:
+                    if stamp.tzinfo is None:stamp=stamp.replace(tzinfo=dt.timezone.utc)
+                    if (now-stamp).total_seconds()>threshold*3600:
+                        pending.append(('backup.overdue',account,policy,latest.id if latest else -(policy.id*1000000+account.id),
+                            f'No usable recovery point within {threshold} hours'))
+                for destination_id in destination_ids:
+                    destination=destinations.get(destination_id)
+                    if destination is None or not destination.enabled or destination.status!='ready' or destination.error:
+                        pending.append(('backup.destination_unavailable',account,policy,
+                            latest.id if latest else -(policy.id*1000000+account.id),f'Destination #{destination_id} is unavailable'))
+    from daemon import backup_notifications
+    for event,account,policy,job_id,detail in pending:
+        options=policy.options
+        backup_notifications.dispatch(event,account,options.get('notification_channels',[]),job_id=job_id,
+            policy_id=policy.id,notification_events=options.get('notification_events'),
+            recipients=options.get('notification_recipients',[]),digest_frequency=options.get('digest_frequency','immediate'),
+            detail=detail)
+    return {'alerts':len(pending)}
 
 
 def recover_runs():
