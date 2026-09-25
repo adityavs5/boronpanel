@@ -115,6 +115,7 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "pinned": "BOOLEAN NOT NULL DEFAULT 0",
     },
     "snapshot_destination_operations": {"options": "JSON NOT NULL DEFAULT '{}'"},
+    "database_user_grants": {"privilege_list": "VARCHAR(512)"},
     "waf_settings": {
         "mode": "VARCHAR(16) NOT NULL DEFAULT 'disabled'",
         "paranoia_level": "INTEGER NOT NULL DEFAULT 1",

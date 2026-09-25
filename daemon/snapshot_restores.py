@@ -654,6 +654,11 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
             database.restore_database(name,data/str(path).lstrip('/'),work,replace_tables=True)
             completed.append(name)
             _update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),'safety_databases':existing})
+        if metadata:
+            from daemon.snapshot_db_metadata import restore_access
+            access = restore_access(account.username, names, metadata)
+            _update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),
+                'safety_databases':existing,'database_users':access['users'],'database_grants':access['grants']})
         _update(ident,status='completed',progress_message='Selected databases restored',completed_at=utcnow())
     finally:
         shutil.rmtree(dumps,ignore_errors=True)

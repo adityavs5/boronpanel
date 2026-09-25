@@ -13,6 +13,8 @@ exists with the necessary CREATE/DROP/GRANT privileges.
 """
 from __future__ import annotations
 
+import ipaddress
+import re
 import pymysql
 
 from shared.config import settings
@@ -21,6 +23,23 @@ from shared.validation import ValidationError, generate_strong_password, validat
 
 class MariaDbError(Exception):
     pass
+
+
+def validate_database_host(host: str) -> str:
+    """Allow one exact client host/IP, never a MariaDB wildcard pattern."""
+    value = str(host or "localhost").strip().lower().rstrip(".")
+    if value == "localhost":
+        return value
+    if not value or len(value) > 253 or any(char in value for char in "%_'\"\\\0\r\n\t "):
+        raise ValidationError("Enter one exact database host or IP address; wildcards are not allowed")
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        pass
+    labels = value.split(".")
+    if any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels):
+        raise ValidationError("Enter a valid exact database hostname or IP address")
+    return value
 
 
 def _connect():
@@ -57,6 +76,7 @@ def database_exists(db_name: str) -> bool:
 
 def user_exists(db_user: str, host: str = "localhost") -> bool:
     validate_db_identifier(db_user)
+    host = validate_database_host(host)
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -88,6 +108,7 @@ def drop_database(db_name: str) -> None:
 
 def create_db_user(db_user: str, password: str, host: str = "localhost") -> None:
     validate_db_identifier(db_user)
+    host = validate_database_host(host)
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -102,8 +123,22 @@ def create_db_user(db_user: str, password: str, host: str = "localhost") -> None
         conn.close()
 
 
+def create_db_user_from_hash(db_user: str, password_hash: str, host: str = "localhost") -> None:
+    validate_db_identifier(db_user)
+    host = validate_database_host(host)
+    if not re.fullmatch(r"\*[0-9A-F]{40}", str(password_hash or "")):
+        raise ValidationError("Invalid database authentication hash")
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"CREATE USER '{db_user}'@'{host}' IDENTIFIED BY PASSWORD %s", (password_hash,))
+    finally:
+        conn.close()
+
+
 def set_password(db_user: str, password: str, host: str = "localhost") -> None:
     validate_db_identifier(db_user)
+    host = validate_database_host(host)
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -114,6 +149,7 @@ def set_password(db_user: str, password: str, host: str = "localhost") -> None:
 
 def drop_db_user(db_user: str, host: str = "localhost") -> None:
     validate_db_identifier(db_user)
+    host = validate_database_host(host)
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -143,6 +179,35 @@ HOSTED_DB_PRIVILEGES = (
     "CREATE TEMPORARY TABLES, LOCK TABLES"
 )
 
+HOSTED_DB_PRIVILEGE_NAMES = (
+    "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "INDEX",
+    "REFERENCES", "CREATE TEMPORARY TABLES", "LOCK TABLES",
+)
+READ_ONLY_DB_PRIVILEGES = ("SELECT",)
+
+
+def normalize_database_privileges(preset: str = "all", custom=None) -> tuple[str, tuple[str, ...]]:
+    preset = str(preset or "all").lower()
+    if preset == "all":
+        return preset, HOSTED_DB_PRIVILEGE_NAMES
+    if preset == "read_only":
+        return preset, READ_ONLY_DB_PRIVILEGES
+    if preset != "custom":
+        raise ValidationError("Choose full access, read-only access, or custom privileges")
+    if not isinstance(custom, (list, tuple)):
+        raise ValidationError("Choose at least one custom database privilege")
+    allowed = set(HOSTED_DB_PRIVILEGE_NAMES)
+    selected = []
+    for value in custom:
+        name = str(value).strip().upper().replace("_", " ")
+        if name not in allowed:
+            raise ValidationError(f"Unsupported hosted database privilege: {value}")
+        if name not in selected:
+            selected.append(name)
+    if not selected:
+        raise ValidationError("Choose at least one custom database privilege")
+    return preset, tuple(selected)
+
 
 def grant_all(db_name: str, db_user: str, host: str = "localhost") -> None:
     # Database-level GRANT patterns treat `_` and `%` as wildcards even in
@@ -160,13 +225,12 @@ def grant_exact_database(db_name: str, db_user: str, host: str = "localhost") ->
     """Database GRANT patterns treat underscores specially even inside backticks."""
     validate_db_identifier(db_name)
     validate_db_identifier(db_user)
-    if host != 'localhost':
-        raise ValueError('Temporary database access must be local')
+    host = validate_database_host(host)
     db_ident = _grant_database_pattern(db_name)
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(f"GRANT {HOSTED_DB_PRIVILEGES} ON {db_ident}.* TO '{db_user}'@'localhost'")
+            cur.execute(f"GRANT {HOSTED_DB_PRIVILEGES} ON {db_ident}.* TO '{db_user}'@'{host}'")
             cur.execute("FLUSH PRIVILEGES")
     finally:
         conn.close()
@@ -175,15 +239,103 @@ def grant_exact_database(db_name: str, db_user: str, host: str = "localhost") ->
 def revoke_all(db_name: str, db_user: str, host: str = "localhost") -> None:
     db_ident = _grant_database_pattern(db_name)
     validate_db_identifier(db_user)
-    if host != "localhost":
-        raise ValueError("Hosted database access must use the configured local account")
+    host = validate_database_host(host)
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(f"REVOKE ALL PRIVILEGES ON {db_ident}.* FROM '{db_user}'@'localhost'")
+            cur.execute(f"REVOKE ALL PRIVILEGES ON {db_ident}.* FROM '{db_user}'@'{host}'")
             cur.execute("FLUSH PRIVILEGES")
     finally:
         conn.close()
+
+
+def grant_database_privileges(db_name: str, db_user: str, host: str = "localhost", *, preset="all", custom=None):
+    validate_db_identifier(db_user)
+    host = validate_database_host(host)
+    preset, privileges = normalize_database_privileges(preset, custom)
+    db_ident = _grant_database_pattern(db_name)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            # Replacing the database-scoped grant prevents stale privileges
+            # surviving a preset change. User/global grants are untouched.
+            try:
+                cur.execute(f"REVOKE ALL PRIVILEGES ON {db_ident}.* FROM '{db_user}'@'{host}'")
+            except pymysql.err.OperationalError as exc:
+                if exc.args[0] not in (1141, 1269):
+                    raise
+            cur.execute(f"GRANT {', '.join(privileges)} ON {db_ident}.* TO '{db_user}'@'{host}'")
+            cur.execute("FLUSH PRIVILEGES")
+    finally:
+        conn.close()
+    return preset, privileges
+
+
+def rename_db_user(old_user: str, new_user: str, host: str = "localhost") -> None:
+    validate_db_identifier(old_user)
+    validate_db_identifier(new_user)
+    host = validate_database_host(host)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"RENAME USER '{old_user}'@'{host}' TO '{new_user}'@'{host}'")
+    finally:
+        conn.close()
+
+
+def database_statistics(db_names: list[str]) -> dict[str, dict]:
+    if not db_names:
+        return {}
+    for name in db_names:
+        validate_db_identifier(name)
+    result = {name: {"size_bytes": 0, "table_count": 0, "engines": []} for name in db_names}
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            placeholders = ", ".join(["%s"] * len(db_names))
+            cur.execute(
+                f"SELECT TABLE_SCHEMA, COUNT(*), COALESCE(SUM(DATA_LENGTH+INDEX_LENGTH),0) "
+                f"FROM information_schema.TABLES WHERE TABLE_SCHEMA IN ({placeholders}) GROUP BY TABLE_SCHEMA",
+                db_names,
+            )
+            for name, count, size in cur.fetchall():
+                result[name].update(table_count=int(count), size_bytes=int(size or 0))
+            cur.execute(
+                f"SELECT TABLE_SCHEMA, ENGINE FROM information_schema.TABLES "
+                f"WHERE TABLE_SCHEMA IN ({placeholders}) AND ENGINE IS NOT NULL GROUP BY TABLE_SCHEMA, ENGINE",
+                db_names,
+            )
+            for name, engine in cur.fetchall():
+                result[name]["engines"].append(engine)
+    finally:
+        conn.close()
+    return result
+
+
+def check_database(db_name: str, *, repair: bool = False) -> dict:
+    validate_db_identifier(db_name)
+    conn = _connect()
+    rows = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s AND TABLE_TYPE='BASE TABLE'", (db_name,))
+            tables = cur.fetchall()
+            for table, engine in tables:
+                ident = _quote_ident(db_name) + ".`" + table.replace("`", "``") + "`"
+                operation = "CHECK"
+                note = None
+                if repair:
+                    if str(engine or "").upper() not in {"MYISAM", "ARIA"}:
+                        rows.append({"table": table, "engine": engine, "operation": "skipped", "status": "not_applicable", "message": "InnoDB and this engine recover through transactions/crash recovery; REPAIR TABLE is not used."})
+                        continue
+                    operation = "REPAIR"
+                cur.execute(f"{operation} TABLE {ident}")
+                response = cur.fetchall()
+                final = response[-1] if response else (None, None, "error", "No result returned")
+                rows.append({"table": table, "engine": engine, "operation": operation.lower(), "status": final[2], "message": final[3], "note": note})
+    finally:
+        conn.close()
+    return {"database": db_name, "operation": "repair" if repair else "check", "tables": rows}
 
 
 def database_size_bytes(db_names: list[str]) -> int:

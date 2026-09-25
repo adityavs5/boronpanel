@@ -379,6 +379,11 @@ class DatabaseUserGrant(Base):
     database_grant_id: Mapped[int] = mapped_column(ForeignKey("database_grants.id"), index=True)
     database_user_id: Mapped[int] = mapped_column(ForeignKey("database_users.id"), index=True)
     privileges: Mapped[str] = mapped_column(String(16), default="all")
+    # Explicit allow-listed privileges for the ``custom`` preset. Keeping
+    # this separate preserves the compact legacy preset column and lets the
+    # additive migration upgrade existing installations without rewriting
+    # rows. It never stores raw SQL.
+    privilege_list: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

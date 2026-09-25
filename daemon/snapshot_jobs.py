@@ -548,13 +548,15 @@ def execute_destination_operation(operation_id):
             _update_operation(operation_id,status='running',progress_message='Connecting to destination')
             started=time.monotonic()
             if operation.action=='test':
-                storage.check(repo);result=_destination_probe(repo,operation_id,64*1024)
+                # An S3 capability check crosses the 5 MiB multipart threshold
+                # so a provider that permits only trivial PUTs cannot pass.
+                storage.check(repo);result=_destination_probe(repo,operation_id,8*1024*1024 if repo.kind=='s3' else 64*1024)
             elif operation.action=='reindex':
                 storage.check(repo);_update_operation(operation_id,progress_message='Reading repository manifests')
                 result=_reindex_destination(destination,repo,(operation.options or {}).get('account_mapping'))
             else:
                 _update_operation(operation_id,progress_message='Running bounded upload test')
-                result=_destination_probe(repo,operation_id,4*1024*1024)
+                result=_destination_probe(repo,operation_id,16*1024*1024)
                 elapsed=max(.001,time.monotonic()-started);result.update(
                     elapsed_seconds=round(elapsed,3),bytes_per_second=int(result['bytes']/elapsed))
             with write_session() as session:

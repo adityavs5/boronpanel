@@ -29,21 +29,21 @@ def stub_mariadb(monkeypatch):
         calls.append(("drop_database", db_name))
         state["databases"].discard(db_name)
 
-    def create_db_user(db_user, password):
+    def create_db_user(db_user, password, host="localhost"):
         calls.append(("create_db_user", db_user))
-        state["users"].add(db_user)
+        state["users"].add((db_user, host))
 
-    def user_exists(db_user):
-        return db_user in state["users"]
+    def user_exists(db_user, host="localhost"):
+        return (db_user, host) in state["users"]
 
-    def drop_db_user(db_user):
+    def drop_db_user(db_user, host="localhost"):
         calls.append(("drop_db_user", db_user))
-        state["users"].discard(db_user)
+        state["users"].discard((db_user, host))
 
     def grant_all(db_name, db_user):
         calls.append(("grant_all", db_name, db_user))
 
-    def set_password(db_user, password):
+    def set_password(db_user, password, host="localhost"):
         calls.append(("set_password", db_user))
 
     monkeypatch.setattr(hdb.mariadb, "database_exists", database_exists)
@@ -54,9 +54,13 @@ def stub_mariadb(monkeypatch):
     monkeypatch.setattr(hdb.mariadb, "drop_db_user", drop_db_user)
     monkeypatch.setattr(hdb.mariadb, "grant_all", grant_all)
     monkeypatch.setattr(hdb.mariadb, "grant_exact_database", grant_all)
-    monkeypatch.setattr(hdb.mariadb, "revoke_all", lambda db_name, db_user: calls.append(("revoke_all", db_name, db_user)))
+    monkeypatch.setattr(hdb.mariadb, "revoke_all", lambda db_name, db_user, host="localhost": calls.append(("revoke_all", db_name, db_user)))
     monkeypatch.setattr(hdb.mariadb, "set_password", set_password)
     monkeypatch.setattr(hdb.mariadb, "generate_password", lambda: "generated-pw")
+    monkeypatch.setattr(hdb.mariadb, "database_statistics", lambda names: {
+        name: {"size_bytes": 0, "table_count": 0, "engines": []} for name in names
+    })
+    monkeypatch.setattr(hdb.mariadb, "grant_database_privileges", lambda db, user, host="localhost", **kwargs: calls.append(("grant_all", db, user)))
     return calls
 
 

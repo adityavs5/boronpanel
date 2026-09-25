@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form
-from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+import os
+import shutil
+import tempfile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse
+from starlette.background import BackgroundTask
+from pydantic import BaseModel, Field
 
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_account_access
@@ -20,17 +24,31 @@ class ChangeDatabasePasswordBody(BaseModel):
     password: str | None = None
 
 
+class RenameDatabaseBody(BaseModel):
+    new_name: str
+
+
 class CreateDatabaseUserBody(BaseModel):
     name: str
     password: str | None = None
+    host: str = "localhost"
 
 
 class DatabaseUserGrantBody(BaseModel):
     user: str
+    host: str = "localhost"
+    preset: str = "all"
+    privileges: list[str] = Field(default_factory=list)
 
 
 class ChangeDatabaseUserPasswordBody(BaseModel):
     password: str | None = None
+    host: str = "localhost"
+
+
+class RenameDatabaseUserBody(BaseModel):
+    new_name: str
+    host: str = "localhost"
 
 
 @api_router.get("")
@@ -49,6 +67,40 @@ def create_database(username: str, body: CreateDatabaseBody, identity: Identity 
 def drop_database(username: str, name: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     return call_daemon("db.drop", identity, username=username, name=name)
+
+
+@api_router.patch("/{name}")
+def rename_database(username: str, name: str, body: RenameDatabaseBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("db.rename", identity, username=username, name=name, new_name=body.new_name)
+
+
+@api_router.get("/{name}/export")
+def export_database(username: str, name: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    result = call_daemon("db.export", identity, username=username, name=name)
+    return FileResponse(result["path"], filename=result["filename"], media_type="application/sql",
+        headers={"Cache-Control": "private, no-store"}, background=BackgroundTask(shutil.rmtree, result["cleanup_dir"], True))
+
+
+@api_router.post("/{name}/import")
+def import_database(username: str, name: str, file: UploadFile = File(...), identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    fd, path = tempfile.mkstemp(prefix="boron-db-upload-", suffix=".sql", dir="/tmp")
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as output:
+            while chunk := file.file.read(1024 * 1024):
+                total += len(chunk)
+                if total > 2 * 1024 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="SQL import exceeds the 2 GiB limit")
+                output.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="SQL import is empty")
+        return call_daemon("db.import", identity, username=username, name=name, path=path)
+    finally:
+        try: os.unlink(path)
+        except FileNotFoundError: pass
 
 
 @api_router.post("/{name}/password")
@@ -90,21 +142,39 @@ def change_database_user_password(username: str, user: str, body: ChangeDatabase
 
 
 @api_router.delete("/users/{user}")
-def delete_database_user(username: str, user: str, identity: Identity = Depends(get_identity)):
+def delete_database_user(username: str, user: str, host: str = Query("localhost"), identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon("db.user.drop", identity, username=username, user=user)
+    return call_daemon("db.user.drop", identity, username=username, user=user, host=host)
+
+
+@api_router.patch("/users/{user}")
+def rename_database_user(username: str, user: str, body: RenameDatabaseUserBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("db.user.rename", identity, username=username, user=user, **body.model_dump())
 
 
 @api_router.post("/{name}/users")
 def assign_database_user(username: str, name: str, body: DatabaseUserGrantBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon("db.user.grant", identity, username=username, database=name, user=body.user)
+    return call_daemon("db.user.grant", identity, username=username, database=name, **body.model_dump())
 
 
 @api_router.delete("/{name}/users/{user}")
-def unassign_database_user(username: str, name: str, user: str, identity: Identity = Depends(get_identity)):
+def unassign_database_user(username: str, name: str, user: str, host: str = Query("localhost"), identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon("db.user.revoke", identity, username=username, database=name, user=user)
+    return call_daemon("db.user.revoke", identity, username=username, database=name, user=user, host=host)
+
+
+@api_router.post("/{name}/check")
+def check_database(username: str, name: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("db.health", identity, username=username, name=name, repair=False)
+
+
+@api_router.post("/{name}/repair")
+def repair_database(username: str, name: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("db.health", identity, username=username, name=name, repair=True)
 
 
 @ui_router.post("")

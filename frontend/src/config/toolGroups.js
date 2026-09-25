@@ -34,7 +34,7 @@ const adminGroups = {
     ['Server & Databases', ['/health', '/services', '/openlitespeed', '/db-monitor', '/slow-queries', '/backup-jobs', '/updates']],
     ['Domains & Network', ['/dns-setup', '/cloudflare', '/dns-cluster', '/ip-management']],
     ['Email', ['/mail-queue', '/mail-tracking', '/imap-migrations', '/notifications']],
-    ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/webhooks', '/notifications']],
+    ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/webhooks']],
     ['Security', ['/ssl', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens', '/security']],
     ['Software & Websites', ['/wordpress', '/software/node-apps', '/software/python-apps', '/templates', '/maintenance-mode']],
     ['Developer Tools', ['/api/docs']],
@@ -76,8 +76,8 @@ export function getToolGroups(role, skin) {
     for (const group of groups) group.items=group.items.filter(item=>item.to!==backupTool.to)
     const shortcuts = role === 'admin' ? [
       { ...backupTool, to: '/backup-jobs', label: 'Backup Manager', icon: Archive, tone: 'sky' },
-      { ...backupTool, to: '/backup-jobs?tab=jobs&action=create', label: 'New Backup Job', icon: CalendarClock, tone: 'green' },
-      { ...backupTool, to: '/backup-jobs?tab=destinations&action=create', label: 'Storage Destinations', icon: Cloud, tone: 'violet' },
+      { ...backupTool, to: '/backup-jobs?tab=jobs', label: 'Backup Jobs', icon: CalendarClock, tone: 'green' },
+      { ...backupTool, to: '/backup-jobs?tab=destinations', label: 'Destinations', icon: Cloud, tone: 'violet' },
       { ...backupTool, to: '/backup-jobs?tab=history', label: 'Restore & Downloads', icon: RotateCcw, tone: 'amber' },
       { ...backupTool, to: '/backup-jobs?tab=history', label: 'Queue & Logs', icon: ListChecks, tone: 'teal' },
       { ...backupTool, to: '/backup-jobs?tab=notifications', label: 'Notification Plugins', icon: BellRing, tone: 'rose' },
