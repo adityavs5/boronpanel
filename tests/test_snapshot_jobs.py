@@ -299,3 +299,51 @@ def test_configuration_snapshot_preserves_complete_crontab(environment, monkeypa
     assert manifest['php_configuration']['enabled_extensions'] == []
     assert manifest['cron_jobs'][0]['schedule'] == '@hourly'
     assert manifest['cron_jobs'][0]['command'] == '/usr/bin/php /home/alpha/hourly.php'
+
+
+def test_policy_queues_each_account_to_multiple_destinations(environment):
+    root, queued = environment
+    first = make_destination(root)
+    second = jobs.create_destination({'name':'Second local','path':str(root/'repository-two')})
+    jobs.initialize_destination({'id':second['id']})
+    policy = jobs.save_policy({'name':'Mirrored','destination_id':first['id'],
+        'destination_ids':[first['id'],second['id']],'components':['files'],'accounts':['alpha']})
+    result = jobs.queue_policy({'id':policy['id']})
+    assert len(result['run_ids']) == 2
+    assert {jobs._row(SnapshotRun, ident).destination_id for ident in result['run_ids']} == {first['id'],second['id']}
+    assert len(queued) == 2
+
+
+def test_destination_visibility_disable_and_safe_delete(environment):
+    root, _ = environment
+    destination = jobs.create_destination({'name':'Disposable','path':str(root/'repository')})
+    changed = jobs.set_destination({'id':destination['id'],'enabled':False,'customer_visible':False})
+    assert changed['enabled'] is False and changed['customer_visible'] is False
+    result = jobs.delete_destination({'id':destination['id']})
+    assert result == {'id':destination['id'],'status':'configuration_removed','remote_data_deleted':False}
+    assert jobs.destinations({})['destinations'] == []
+
+
+def test_cancel_and_retry_persist_queue_state(environment):
+    root, queued = environment
+    destination = make_destination(root)
+    policy = make_policy(destination)
+    original = jobs.queue_policy({'id':policy['id']})['run_ids'][0]
+    cancelled = jobs.cancel_run({'id':original})
+    assert cancelled['status'] == 'cancelled'
+    retried = jobs.retry_run({'id':original})
+    assert retried['status'] == 'pending' and retried['trigger'] == 'retry'
+    assert len(queued) == 2
+
+
+def test_account_catalog_distinguishes_attempts_from_usable_points(environment):
+    root, _ = environment
+    destination = make_destination(root)
+    policy = make_policy(destination)
+    failed = jobs.queue_policy({'id':policy['id']})['run_ids'][0]
+    jobs._update(failed,status='failed',error='fixture failure',completed_at=jobs.utcnow())
+    rows = {row['username']:row for row in jobs.account_catalog({})['accounts']}
+    assert rows['alpha']['availability'] == 'no_backups'
+    assert rows['alpha']['latest_attempt_status'] == 'failed'
+    assert rows['alpha']['recovery_point_count'] == 0
+    assert rows['bravo']['availability'] == 'not_scheduled'

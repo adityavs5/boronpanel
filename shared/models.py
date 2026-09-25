@@ -2059,6 +2059,11 @@ class SnapshotDestination(Base):
     connection: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(16), default='draft')
     error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    customer_visible: Mapped[bool] = mapped_column(default=True)
+    capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_verified_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_speed_bps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -2088,6 +2093,7 @@ class SnapshotRun(Base):
     notification_results: Mapped[dict] = mapped_column(JSON, default=dict)
     progress_message: Mapped[str] = mapped_column(String(256), default='Queued')
     error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(default=False)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -2115,6 +2121,20 @@ class SnapshotMailRecovery(Base):
     work: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     journal: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SnapshotDestinationOperation(Base):
+    """Durable result/progress for destination maintenance actions."""
+    __tablename__ = 'snapshot_destination_operations'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    destination_id: Mapped[int] = mapped_column(ForeignKey('snapshot_destinations.id'), index=True)
+    action: Mapped[str] = mapped_column(String(24))
+    status: Mapped[str] = mapped_column(String(16), default='pending', index=True)
+    progress_message: Mapped[str] = mapped_column(String(256), default='Queued')
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PanelConfigJob(Base):

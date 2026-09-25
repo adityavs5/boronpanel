@@ -93,6 +93,14 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     # index change this column enables.
     "wordpress_installs": {"path": "VARCHAR(255) NOT NULL DEFAULT ''"},
     "domains": {"suspended": "BOOLEAN NOT NULL DEFAULT 0"},
+    "snapshot_destinations": {
+        "enabled": "BOOLEAN NOT NULL DEFAULT 1",
+        "customer_visible": "BOOLEAN NOT NULL DEFAULT 1",
+        "capabilities": "JSON NOT NULL DEFAULT '{}'",
+        "last_verified_at": "DATETIME",
+        "last_speed_bps": "INTEGER",
+    },
+    "snapshot_runs": {"cancel_requested": "BOOLEAN NOT NULL DEFAULT 0"},
     # Unified external-account importer. Existing rows are cPanel jobs.
     "cpanel_import_jobs": {
         "panel": "VARCHAR(16) NOT NULL DEFAULT 'cpanel'",

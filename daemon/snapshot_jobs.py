@@ -14,6 +14,8 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import tempfile
+import time
 import uuid
 
 from sqlalchemy import select
@@ -23,12 +25,12 @@ from daemon.procutil import run
 from daemon.database_operations import serialized_worker
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, BackupJob, RestoreJob, DatabaseGrant, Domain, MailDomain, SnapshotDestination, SnapshotPolicy, SnapshotRun, SnapshotRestore, utcnow
+from shared.models import Account, BackupJob, RestoreJob, DatabaseGrant, Domain, MailDomain, SnapshotDestination, SnapshotDestinationOperation, SnapshotPolicy, SnapshotRun, SnapshotRestore, utcnow
 from shared.validation import ValidationError, validate_username
 
 logger = logging.getLogger('borond.snapshot_jobs')
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='snapshots')
-FREQUENCIES = {'manual': 0, 'hourly': 3600, 'daily': 86400, 'weekly': 604800}
+FREQUENCIES = {'manual': 0, 'hourly': 3600, 'daily': 86400, 'weekly': 604800, 'monthly': 2592000}
 ACTIVE = ('pending', 'running')
 
 
@@ -104,7 +106,10 @@ def _destination_dict(row):
     credentials = private_directory('repositories',row.namespace)
     public = credentials/'ssh_key.pub'
     return {'id':row.id,'name':row.name,'kind':row.kind,'path':row.path,'connection':row.connection,
-        'namespace':row.namespace,'status':row.status,'error':row.error,
+        'namespace':row.namespace,'status':row.status,'error':row.error,'enabled':row.enabled,
+        'customer_visible':row.customer_visible,'capabilities':row.capabilities or {},
+        'last_verified_at':row.last_verified_at.isoformat() if row.last_verified_at else None,
+        'last_speed_bps':row.last_speed_bps,
         'ssh_public_key':public.read_text().strip() if public.exists() else None}
 
 
@@ -133,7 +138,8 @@ def create_destination(params):
         connection = {key:params.get('ssh_'+key,default) for key,default in [('host',''),('user',''),('port',22)]}
         path = params.get('path','')
     row = SnapshotDestination(name=name,kind=params.get('kind','local'),path=params.get('path',''),namespace=namespace,
-        connection=connection,status='draft')
+        connection=connection,status='draft',enabled=True,customer_visible=True,
+        capabilities={'incremental':True,'compressed':True,'archive':True})
     row.path = path
     host_key = params.get('ssh_host_key','').strip()
     if row.kind == 'ssh' and not re.fullmatch(r'(ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,3}(?: [^\r\n]*)?',host_key):
@@ -179,7 +185,7 @@ def initialize_destination(params):
             storage.initialize(spec)
         storage.check(spec)
         with write_session() as session:
-            row = session.get(SnapshotDestination,ident);row.status='ready';row.error=None
+            row = session.get(SnapshotDestination,ident);row.status='ready';row.error=None;row.last_verified_at=utcnow()
             return _destination_dict(row)
 
 
@@ -188,6 +194,175 @@ def recovery_key(params):
     spec = repository(row)
     return {'password':storage._private_file(spec.password_file).read_text().strip(),
         'namespace':row.namespace,'path':row.path,'kind':row.kind}
+
+
+def set_destination(params):
+    ident=storage._positive(params['id'])
+    allowed={key:params[key] for key in ('enabled','customer_visible') if key in params}
+    if not allowed or any(not isinstance(value,bool) for value in allowed.values()):
+        raise ValidationError('Choose a valid destination setting')
+    with lock('configuration'),write_session() as session:
+        row=session.get(SnapshotDestination,ident)
+        if row is None:raise ValidationError('Backup destination not found')
+        for key,value in allowed.items():setattr(row,key,value)
+        session.flush()
+        return _destination_dict(row)
+
+
+def delete_destination(params):
+    ident=storage._positive(params['id'])
+    with lock('configuration'),write_session() as session:
+        row=session.get(SnapshotDestination,ident)
+        if row is None:raise ValidationError('Backup destination not found')
+        policies=session.scalars(select(SnapshotPolicy).where(SnapshotPolicy.destination_id==ident)).all()
+        policies += [policy for policy in session.scalars(select(SnapshotPolicy)).all()
+                     if ident in (policy.options or {}).get('destination_ids',[]) and policy not in policies]
+        if policies:raise ValidationError('Remove this destination from backup jobs before deleting it')
+        if session.scalar(select(SnapshotRun.id).where(SnapshotRun.destination_id==ident,SnapshotRun.status.in_(ACTIVE))):
+            raise ValidationError('Wait for active backup or restore work to finish')
+        has_history=session.scalar(select(SnapshotRun.id).where(SnapshotRun.destination_id==ident)) is not None
+        namespace=row.namespace
+        if has_history:
+            row.enabled=False;row.customer_visible=False;row.status='deleted';row.error='Destination configuration removed; remote backup data was not deleted'
+            row.connection={};row.path='configuration-removed'
+        else:
+            operations=session.scalars(select(SnapshotDestinationOperation).where(SnapshotDestinationOperation.destination_id==ident)).all()
+            for operation in operations:session.delete(operation)
+            session.delete(row)
+    credentials=private_directory('repositories')/namespace
+    if credentials.exists() and not credentials.is_symlink():shutil.rmtree(credentials)
+    return {'id':ident,'status':'configuration_removed','remote_data_deleted':False}
+
+
+def _operation_dict(row):
+    return {'id':row.id,'destination_id':row.destination_id,'action':row.action,'status':row.status,
+        'progress_message':row.progress_message,'result':row.result,'error':row.error,
+        'started_at':row.started_at.isoformat() if row.started_at else None,
+        'completed_at':row.completed_at.isoformat() if row.completed_at else None}
+
+
+def destination_operations(params):
+    with write_session() as session:
+        query=select(SnapshotDestinationOperation).order_by(SnapshotDestinationOperation.id.desc()).limit(100)
+        if params.get('id'):query=query.where(SnapshotDestinationOperation.destination_id==storage._positive(params['id']))
+        return {'operations':[_operation_dict(row) for row in session.scalars(query).all()]}
+
+
+def queue_destination_operation(params):
+    ident=storage._positive(params['id']);action=params.get('action')
+    if action not in ('test','speed','reindex'):raise ValidationError('Choose test, speed, or reindex')
+    destination=_row(SnapshotDestination,ident)
+    if destination.status=='deleted':raise ValidationError('Destination configuration was removed')
+    with write_session() as session:
+        active=session.scalar(select(SnapshotDestinationOperation).where(
+            SnapshotDestinationOperation.destination_id==ident,SnapshotDestinationOperation.status.in_(ACTIVE)))
+        if active:raise ValidationError('A destination operation is already running')
+        row=SnapshotDestinationOperation(destination_id=ident,action=action)
+        session.add(row);session.flush();result=_operation_dict(row);operation_id=row.id
+    _executor.submit(execute_destination_operation,operation_id)
+    return result
+
+
+def _update_operation(ident,**values):
+    with write_session() as session:
+        row=session.get(SnapshotDestinationOperation,ident)
+        if row is None:return
+        for key,value in values.items():setattr(row,key,value)
+
+
+def _reindex_destination(destination,repo):
+    snapshots=storage.all_snapshots(repo)
+    prefix=f'boron:{destination.namespace}:account:'
+    with write_session() as session:
+        accounts={row.id:row for row in session.scalars(select(Account)).all()}
+        policy=session.scalar(select(SnapshotPolicy).where(SnapshotPolicy.name==f'Recovered {destination.name}'))
+        if policy is None:
+            policy=SnapshotPolicy(name=f'Recovered {destination.name}'[:100],destination_id=destination.id,
+                frequency='manual',enabled=False,options={'accounts':[],'excluded_accounts':[],
+                'components':['files','databases','mail','config'],'include_paths':[],'exclude_patterns':[],
+                'notification_channels':[],'retention_count':7,'mode':'incremental','destination_ids':[destination.id]})
+            session.add(policy);session.flush()
+        imported=0;unresolved=[]
+        for item in snapshots:
+            tag=next((str(tag) for tag in item.get('tags',[]) if str(tag).startswith(prefix)),None)
+            try:account_id=int(tag.removeprefix(prefix)) if tag else 0
+            except ValueError:account_id=0
+            if account_id not in accounts:
+                unresolved.append({'snapshot_id':item.get('id'),'account_id':account_id});continue
+            if session.scalar(select(SnapshotRun.id).where(SnapshotRun.destination_id==destination.id,SnapshotRun.snapshot_id==item.get('id'))):continue
+            when=item.get('time');started=utcnow()
+            if isinstance(when,str):
+                try:started=dt.datetime.fromisoformat(when.replace('Z','+00:00'))
+                except ValueError:pass
+            session.add(SnapshotRun(policy_id=policy.id,destination_id=destination.id,account_id=account_id,
+                options=policy.options,status='completed',trigger='reindex',snapshot_id=item.get('id'),
+                summary={'reindexed':True,'paths':item.get('paths',[])},progress_message='Recovered from destination index',
+                started_at=started,completed_at=utcnow()))
+            imported+=1
+        return {'discovered':len(snapshots),'imported':imported,'unresolved':unresolved}
+
+
+def execute_destination_operation(operation_id):
+    operation=_row(SnapshotDestinationOperation,operation_id)
+    try:
+        with lock(f'repository-{operation.destination_id}'):
+            destination=_row(SnapshotDestination,operation.destination_id);repo=repository(destination)
+            _update_operation(operation_id,status='running',progress_message='Connecting to destination')
+            started=time.monotonic()
+            if operation.action=='test':
+                storage.check(repo);result={'verified':True}
+            elif operation.action=='reindex':
+                storage.check(repo);_update_operation(operation_id,progress_message='Reading repository manifests')
+                result=_reindex_destination(destination,repo)
+            else:
+                _update_operation(operation_id,progress_message='Running bounded upload test')
+                probe=private_directory('probes',f'operation-{operation_id}')/'payload.bin'
+                with probe.open('wb') as handle:handle.write(os.urandom(4*1024*1024))
+                summary=storage.backup(repo,2147483647,[str(probe)],sandbox_roots=[str(probe.parent)])
+                elapsed=max(.001,time.monotonic()-started)
+                storage.forget(repo,2147483647,[summary['snapshot_id']],prune=True)
+                shutil.rmtree(probe.parent)
+                result={'bytes':4*1024*1024,'elapsed_seconds':round(elapsed,3),'bytes_per_second':int(4*1024*1024/elapsed)}
+            with write_session() as session:
+                row=session.get(SnapshotDestination,operation.destination_id)
+                row.last_verified_at=utcnow();row.error=None
+                if operation.action=='speed':row.last_speed_bps=result['bytes_per_second']
+            _update_operation(operation_id,status='completed',progress_message='Completed',result=result,completed_at=utcnow())
+    except Exception as exc:
+        logger.exception('Destination operation %s failed',operation_id)
+        with write_session() as session:
+            row=session.get(SnapshotDestination,operation.destination_id)
+            if row:row.error=str(exc)[-3000:]
+        _update_operation(operation_id,status='failed',progress_message='Failed',error=str(exc)[-3000:],completed_at=utcnow())
+
+
+def account_catalog(params):
+    now=utcnow()
+    with write_session() as session:
+        accounts=session.scalars(select(Account).order_by(Account.username)).all()
+        runs=session.scalars(select(SnapshotRun).order_by(SnapshotRun.id.desc())).all()
+        archives=session.scalars(select(BackupJob).order_by(BackupJob.id.desc())).all()
+        by_account={account.id:[] for account in accounts}
+        for run in runs:by_account.setdefault(run.account_id,[]).append(('snapshot',run))
+        for job in archives:by_account.setdefault(job.account_id,[]).append(('archive',job))
+        result=[]
+        for account in accounts:
+            items=by_account.get(account.id,[])
+            usable=[(kind,row) for kind,row in items if row.status=='completed']
+            usable.sort(key=lambda item:item[1].completed_at or item[1].started_at,reverse=True)
+            attempts=sorted(items,key=lambda item:item[1].started_at,reverse=True)
+            latest=usable[0][1] if usable else None;attempt=attempts[0][1] if attempts else None
+            age_hours=None
+            if latest:
+                stamp=latest.completed_at or latest.started_at
+                if stamp.tzinfo is None:stamp=stamp.replace(tzinfo=dt.timezone.utc)
+                age_hours=round((now-stamp).total_seconds()/3600,1)
+            result.append({'account_id':account.id,'username':account.username,'primary_domain':account.primary_domain,
+                'account_status':account.status,'recovery_point_count':len(usable),
+                'latest_recovery_at':(latest.completed_at or latest.started_at).isoformat() if latest else None,
+                'latest_attempt_status':attempt.status if attempt else None,'age_hours':age_hours,
+                'availability':'available' if usable else ('not_scheduled' if not attempts else 'no_backups')})
+        return {'accounts':result,'generated_at':now.isoformat()}
 
 
 def _strings(value, name, limit=200):
@@ -207,13 +382,22 @@ def validate_options(params):
         if Path(value).is_absolute() or '..' in Path(value).parts: raise ValidationError('Included paths must be relative to the account home')
     excludes = _strings(params.get('exclude_patterns',[]),'exclusion patterns')
     channels = _strings(params.get('notification_channels',[]),'notification channels')
-    if not set(channels)<= {'email','webhook'}: raise ValidationError('Choose email or webhook notifications')
+    if not set(channels)<= {'email','telegram','webhook'}: raise ValidationError('Choose email or webhook notifications, or Telegram')
     retention = params.get('retention_count',7)
     if isinstance(retention,bool) or not isinstance(retention,int) or not 1<=retention<=365: raise ValidationError('Keep between 1 and 365 snapshots')
     mode = params.get('mode','incremental')
-    if mode not in ('full','incremental'): raise ValidationError('Choose full or incremental backup')
+    if mode not in ('full','incremental','compressed','archive'): raise ValidationError('Choose full or incremental, compressed, or archive backup')
+    destination_ids = params.get('destination_ids') or [params.get('destination_id')]
+    if not isinstance(destination_ids,list) or not destination_ids or len(destination_ids)>8:
+        raise ValidationError('Choose between one and eight destinations')
+    destination_ids = list(dict.fromkeys(storage._positive(value) for value in destination_ids))
     return dict(accounts=accounts,excluded_accounts=excluded,components=components,include_paths=includes,
-        exclude_patterns=excludes,notification_channels=channels,retention_count=retention,mode=mode)
+        exclude_patterns=excludes,notification_channels=channels,retention_count=retention,mode=mode,
+        destination_ids=destination_ids,
+        timezone=str(params.get('timezone') or 'UTC')[:64],
+        retention_daily=max(0,min(365,int(params.get('retention_daily',retention)))),
+        retention_weekly=max(0,min(104,int(params.get('retention_weekly',4)))),
+        retention_monthly=max(0,min(120,int(params.get('retention_monthly',6)))))
 
 
 def _policy_dict(row):
@@ -227,9 +411,11 @@ def save_policy(params):
     frequency = params.get('frequency','manual')
     if frequency not in FREQUENCIES: raise ValidationError('Invalid backup frequency')
     if not isinstance(params.get('enabled',True),bool): raise ValidationError('Invalid enabled value')
-    destination = _row(SnapshotDestination,params['destination_id'])
-    if destination.status!='ready': raise ValidationError('Initialize the destination before creating a job')
     options = validate_options(params)
+    destination_rows=[_row(SnapshotDestination,value) for value in options['destination_ids']]
+    if any(row.status!='ready' or not row.enabled for row in destination_rows):
+        raise ValidationError('Every destination must be ready and enabled before creating a job')
+    destination = destination_rows[0]
     with lock('configuration'), write_session() as session:
         row = session.get(SnapshotPolicy,params['id']) if params.get('id') else SnapshotPolicy()
         if row is None: raise ValidationError('Backup job not found')
@@ -250,6 +436,7 @@ def _run_dict(row, customer=False):
     return dict(id=row.id,policy_id=row.policy_id,destination_id=row.destination_id,account_id=row.account_id,
         status=row.status,trigger=row.trigger,snapshot_id=row.snapshot_id,summary=row.summary,options=options,
         notification_results=row.notification_results,progress_message=row.progress_message,error=row.error,
+        cancel_requested=row.cancel_requested,
         started_at=row.started_at.isoformat(),completed_at=row.completed_at.isoformat() if row.completed_at else None)
 
 
@@ -263,6 +450,34 @@ def runs(params):
         return {'runs':[{**_run_dict(row,customer=account is not None),'username':names.get(row.account_id)} for row in rows]}
 
 
+def cancel_run(params):
+    ident=storage._positive(params['id'])
+    with write_session() as session:
+        row=session.get(SnapshotRun,ident)
+        if row is None:raise ValidationError('Backup run not found')
+        if row.status=='pending':
+            row.status='cancelled';row.cancel_requested=True;row.progress_message='Cancelled before start';row.completed_at=utcnow()
+        elif row.status=='running':
+            row.cancel_requested=True;row.progress_message='Cancellation requested; the current safe storage step will finish'
+        else:raise ValidationError('Only queued or running backups can be cancelled')
+        session.flush();return _run_dict(row)
+
+
+def retry_run(params):
+    ident=storage._positive(params['id'])
+    with lock('queue'),write_session() as session:
+        source=session.get(SnapshotRun,ident)
+        if source is None:raise ValidationError('Backup run not found')
+        if source.status not in ('failed','cancelled'):raise ValidationError('Only failed or cancelled backups can be retried')
+        if session.scalar(select(SnapshotRun.id).where(SnapshotRun.account_id==source.account_id,SnapshotRun.status.in_(ACTIVE))):
+            raise ValidationError('This account already has active backup work')
+        row=SnapshotRun(policy_id=source.policy_id,destination_id=source.destination_id,account_id=source.account_id,
+            options=source.options,status='pending',trigger='retry')
+        session.add(row);session.flush();result=_run_dict(row);new_id=row.id
+    _executor.submit(execute_run,new_id)
+    return result
+
+
 def queue_policy(params):
     ids=[]
     with lock('queue'), write_session() as session:
@@ -274,7 +489,9 @@ def queue_policy(params):
             last=policy.last_queued_at
             if last and last.tzinfo is None:last=last.replace(tzinfo=dt.timezone.utc)
             if not policy.enabled or not interval or (last and (utcnow()-last).total_seconds()<interval):return {'run_ids':[]}
-        if session.get(SnapshotDestination,policy.destination_id).status!='ready': raise ValidationError('Backup destination is not ready')
+        destination_ids=policy.options.get('destination_ids') or [policy.destination_id]
+        destination_rows=[session.get(SnapshotDestination,value) for value in destination_ids]
+        if any(row is None or row.status!='ready' or not row.enabled for row in destination_rows): raise ValidationError('Every backup destination must be ready and enabled')
         options=policy.options
         accounts=session.scalars(select(Account).where(Account.status=='active')).all()
         accounts=[a for a in accounts if (not options['accounts'] or a.username in options['accounts']) and a.username not in options['excluded_accounts']]
@@ -282,9 +499,10 @@ def queue_policy(params):
         for account in accounts:
             if any(session.scalar(select(model.id).where(model.account_id==account.id,model.status.in_(ACTIVE))) for model in (SnapshotRun,SnapshotRestore,BackupJob,RestoreJob)):
                 skipped.append(account.username);continue
-            row=SnapshotRun(policy_id=policy.id,destination_id=policy.destination_id,account_id=account.id,
-                options=options,status='pending',trigger='scheduled' if scheduled else 'manual')
-            session.add(row);session.flush();ids.append(row.id)
+            for destination_id in destination_ids:
+                row=SnapshotRun(policy_id=policy.id,destination_id=destination_id,account_id=account.id,
+                    options=options,status='pending',trigger='scheduled' if scheduled else 'manual')
+                session.add(row);session.flush();ids.append(row.id)
         if ids:policy.last_queued_at=utcnow()
     for ident in ids:_executor.submit(execute_run,ident)
     return {'run_ids':ids,'skipped_busy_accounts':skipped}
@@ -407,17 +625,24 @@ def execute_run(ident):
             # A second worker must not execute the same persisted run again.
             row=_row(SnapshotRun,ident)
             if row.status!='pending':return
+            if row.cancel_requested:
+                _update(ident,status='cancelled',progress_message='Cancelled before start',completed_at=utcnow());return
             should_notify=True
             account=_row(Account,row.account_id)
             if account.status!='active':raise ValidationError('Account is no longer active')
             _update(ident,status='running',progress_message='Preparing account files and databases')
             paths=sources(account,row.options)
+            if _row(SnapshotRun,ident).cancel_requested:
+                _update(ident,status='cancelled',progress_message='Cancelled after preparation',completed_at=utcnow());return
             _update(ident,progress_message='Saving encrypted snapshot')
             repo=repository(_row(SnapshotDestination,row.destination_id))
             summary=storage.backup(repo,account.id,paths,policy_id=row.policy_id,
                 excludes=row.options['exclude_patterns'],full_scan=row.options['mode']=='full',
                 exclude_mail_staging='mail' in row.options['components'],
                 sandbox_roots=sandbox_roots(account, paths))
+            if _row(SnapshotRun,ident).cancel_requested:
+                _update(ident,status='cancelled',snapshot_id=summary['snapshot_id'],summary=summary,
+                    progress_message='Backup point completed; later steps cancelled',completed_at=utcnow());return
             _update(ident,snapshot_id=summary['snapshot_id'],summary=summary,progress_message='Applying retention')
             items=[s for s in storage.snapshots(repo,account.id) if f'policy:{row.policy_id}' in s.get('tags',[])]
             items.sort(key=lambda s:s['time'],reverse=True)

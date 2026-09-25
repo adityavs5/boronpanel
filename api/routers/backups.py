@@ -157,9 +157,15 @@ class SnapshotDestinationBody(BaseModel):
     s3_session_token: str = ''
 
 
+class SnapshotDestinationSettingsBody(BaseModel):
+    enabled: bool | None = None
+    customer_visible: bool | None = None
+
+
 class SnapshotPolicyBody(BaseModel):
     name: str
     destination_id: int
+    destination_ids: list[int] = []
     frequency: str = 'manual'
     enabled: bool = True
     mode: str = 'incremental'
@@ -170,6 +176,10 @@ class SnapshotPolicyBody(BaseModel):
     exclude_patterns: list[str] = []
     notification_channels: list[str] = []
     retention_count: int = 7
+    retention_daily: int = 7
+    retention_weekly: int = 4
+    retention_monthly: int = 6
+    timezone: str = 'UTC'
 
 
 @api_router.get('/snapshots/destinations')
@@ -196,6 +206,30 @@ def snapshot_recovery_key(destination_id: int, identity: Identity = Depends(get_
     require_admin(identity)
     return JSONResponse(call_daemon('snapshot.destination.recovery_key', identity, id=destination_id),
         headers={'Cache-Control':'no-store','Pragma':'no-cache'})
+
+
+@api_router.patch('/snapshots/destinations/{destination_id}')
+def snapshot_destination_settings(destination_id: int, body: SnapshotDestinationSettingsBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.destination.set', identity, id=destination_id, **body.model_dump(exclude_none=True))
+
+
+@api_router.delete('/snapshots/destinations/{destination_id}')
+def snapshot_delete_destination(destination_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.destination.delete', identity, id=destination_id)
+
+
+@api_router.post('/snapshots/destinations/{destination_id}/{action}')
+def snapshot_destination_action(destination_id: int, action: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.destination.operation.queue', identity, id=destination_id, action=action)
+
+
+@api_router.get('/snapshots/destination-operations')
+def snapshot_destination_operations(destination_id: int | None = None, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.destination.operation.list', identity, id=destination_id)
 
 
 @api_router.get('/snapshots/policies')
@@ -226,3 +260,21 @@ def snapshot_run_policy(policy_id: int, identity: Identity = Depends(get_identit
 def snapshot_runs(username: str | None = None, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon('snapshot.run.list', identity, username=username)
+
+
+@api_router.post('/snapshots/runs/{run_id}/cancel')
+def snapshot_cancel_run(run_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.run.cancel', identity, id=run_id)
+
+
+@api_router.post('/snapshots/runs/{run_id}/retry')
+def snapshot_retry_run(run_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.run.retry', identity, id=run_id)
+
+
+@api_router.get('/snapshots/catalog/accounts')
+def snapshot_account_catalog(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.catalog.accounts', identity)

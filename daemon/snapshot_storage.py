@@ -248,6 +248,14 @@ def snapshots(repository, account_id):
     return [item for item in items if tag in item.get('tags',[])]
 
 
+def all_snapshots(repository):
+    """Administrator-only repository inventory used for catalog recovery."""
+    rows = _execute(repository, ['snapshots'], timeout=120)
+    items = next((row for row in rows if isinstance(row, list)), [])
+    prefix = f'boron:{repository.namespace}:account:'
+    return [item for item in items if any(str(tag).startswith(prefix) for tag in item.get('tags', []))]
+
+
 def owned_snapshot(repository, account_id, snapshot_id):
     if not isinstance(snapshot_id,str) or not re.fullmatch(r'[a-f0-9]{64}',snapshot_id):
         raise ValidationError('Invalid snapshot identifier')
