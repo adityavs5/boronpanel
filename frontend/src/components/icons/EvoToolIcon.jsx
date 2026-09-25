@@ -10,7 +10,7 @@ import {
   FcServices, FcSettings, FcStatistics, FcSynchronize, FcTemplate, FcTodoList,
   FcUpload, FcViewDetails, FcWorkflow,
 } from 'react-icons/fc'
-import { SiNodedotjs, SiPython } from 'react-icons/si'
+import { SiNodedotjs, SiPython, SiRedis, SiWordpress } from 'react-icons/si'
 
 const routeIcons = {
   '/domains': FcGlobe,
@@ -103,8 +103,8 @@ const exactIcons = {
 
 export function EvoToolIcon({ to, fallback: Fallback }) {
   const path = to?.split('?')[0]
-  if (path === '/wordpress') return <Fallback className="evo-brand-glyph" />
-  if (path === '/redis') return <Fallback className="evo-brand-glyph" />
+  if (path === '/wordpress') return <SiWordpress className="evo-brand-glyph brand-wordpress" />
+  if (path === '/redis') return <SiRedis className="evo-brand-glyph brand-redis" />
   if (path === '/node-apps' || path === '/software/node-apps') return <SiNodedotjs className="evo-brand-glyph brand-node" />
   if (path === '/python-apps' || path === '/software/python-apps') return <SiPython className="evo-brand-glyph brand-python" />
   const Icon = exactIcons[to] || routeIcons[path] || FcFile

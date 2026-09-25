@@ -53,6 +53,7 @@ class SetScheduleBody(BaseModel):
     pre_restore_retention: int = 7
     freshness_hours: int = 36
     minimum_free_mb: int = 2048
+    quiesce_apps: bool = False
     destination_id: int
     enabled: bool = True
 

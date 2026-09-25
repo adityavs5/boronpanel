@@ -119,3 +119,28 @@ def test_sweep_expired_leaves_manual_mode_alone(domain_row, monkeypatch):
     result = hm.sweep_expired()
     assert result["disabled"] == []
     assert hm.get_maintenance({"domain": "demo1.example"})["enabled"] is True
+
+
+def test_backup_quiesce_restores_customer_maintenance_settings(domain_row):
+    from shared.db import write_session
+    from shared.models import Account
+    hm.set_maintenance({'domain':'demo1.example','enabled':False,'title':'Customer title',
+        'message':'Customer message','estimated_time':'Tomorrow','auto_disable_minutes':60})
+    with write_session() as session:account=session.query(Account).filter_by(username='demo1').one()
+    states=hm.quiesce_account(account)
+    active=hm.get_maintenance({'domain':'demo1.example'})
+    assert active['enabled'] is True and 'consistent backup' in active['message']
+    hm.restore_quiesced_account(account,states)
+    restored=hm.get_maintenance({'domain':'demo1.example'})
+    assert restored['enabled'] is False
+    assert (restored['title'],restored['message'],restored['estimated_time'],restored['auto_disable_minutes']) == (
+        'Customer title','Customer message','Tomorrow',60)
+
+
+def test_backup_quiesce_does_not_change_existing_maintenance(domain_row):
+    from shared.db import write_session
+    from shared.models import Account
+    hm.set_maintenance({'domain':'demo1.example','enabled':True,'title':'Planned maintenance'})
+    with write_session() as session:account=session.query(Account).filter_by(username='demo1').one()
+    assert hm.quiesce_account(account)==[]
+    assert hm.get_maintenance({'domain':'demo1.example'})['title']=='Planned maintenance'

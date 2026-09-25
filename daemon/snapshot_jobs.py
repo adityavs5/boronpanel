@@ -673,6 +673,8 @@ def validate_options(params):
     recipients=list(dict.fromkeys(validate_email_address(value) for value in recipients))
     digest_frequency=params.get('digest_frequency','immediate')
     if digest_frequency not in ('immediate','daily','weekly'):raise ValidationError('Choose immediate, daily, or weekly notifications')
+    quiesce_apps=params.get('quiesce_apps',False)
+    if not isinstance(quiesce_apps,bool):raise ValidationError('Invalid application consistency option')
     retention = params.get('retention_count',7)
     if isinstance(retention,bool) or not isinstance(retention,int) or not 1<=retention<=365: raise ValidationError('Keep between 1 and 365 snapshots')
     mode = params.get('mode','incremental')
@@ -688,6 +690,7 @@ def validate_options(params):
         exclude_patterns=excludes,notification_channels=channels,notification_events=notification_events,
         notification_recipients=recipients,digest_frequency=digest_frequency,retention_count=retention,mode=mode,
         destination_ids=destination_ids,
+        quiesce_apps=quiesce_apps,
         timezone=timezone,
         on_demand_retention=max(1,min(365,int(params.get('on_demand_retention',retention)))),
         pre_restore_retention=max(1,min(365,int(params.get('pre_restore_retention',retention)))),
@@ -1049,7 +1052,7 @@ def execute_run(ident):
     row=_row(SnapshotRun,ident)
     account_id=row.account_id
     account=None
-    should_notify=False
+    should_notify=False;quiesced=[]
     try:
         with lock(f'account-{account_id}'),lock(f'repository-{row.destination_id}'):
             # A second worker must not execute the same persisted run again.
@@ -1060,6 +1063,10 @@ def execute_run(ident):
             should_notify=True
             account=_row(Account,row.account_id)
             if account.status!='active':raise ValidationError('Account is no longer active')
+            if row.options.get('quiesce_apps'):
+                from daemon import handlers_maintenance
+                _update(ident,progress_message='Pausing website requests for a consistent recovery point')
+                quiesced=handlers_maintenance.quiesce_account(account)
             _update(ident,status='running',progress_message='Preparing account files and databases')
             paths=sources(account,row.options)
             estimate=_preflight_capacity(paths,row.options)
@@ -1112,6 +1119,11 @@ def execute_run(ident):
         logger.exception('Snapshot run %s failed',ident)
         _update(ident,status='failed',error=str(exc)[-3000:],progress_message='Backup failed',completed_at=utcnow())
     finally:
+        if quiesced:
+            try:
+                from daemon import handlers_maintenance
+                handlers_maintenance.restore_quiesced_account(account,quiesced)
+            except Exception:logger.exception('Could not restore website availability after snapshot run %s',ident)
         export=Path(settings.snapshot_private_dir)/'exports'/f'run-{ident}'
         if export.exists() and not export.is_symlink():shutil.rmtree(export,ignore_errors=True)
         if should_notify and account is not None:_notify(_row(SnapshotRun,ident),account)

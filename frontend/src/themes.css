@@ -89,6 +89,8 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 [data-skin=evolution] .tool-icon>svg.evo-brand-glyph{fill:currentColor;stroke:none}
 [data-skin=evolution] .tool-icon>.brand-node{color:#5fa04e}
 [data-skin=evolution] .tool-icon>.brand-python{color:#3776ab}
+[data-skin=evolution] .tool-icon>.brand-wordpress{color:#21759b}
+[data-skin=evolution] .tool-icon>.brand-redis{color:#dc382d}
 [data-skin=evolution] .tool-icon .icon-detail{display:none}
 .dark .tool-icon:has(img[src$='wordpress.svg']){filter:brightness(1.6)}
 .tool-external{position:absolute;top:4px;right:4px;color:rgb(var(--muted-fg))}

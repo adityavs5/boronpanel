@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+import logging
 
 from sqlalchemy import select
 
@@ -42,6 +43,7 @@ from shared.validation import (
 from daemon import custom_pages, ols
 
 BYPASS_QUERY_PARAM = "fh_bypass"
+logger = logging.getLogger('borond.maintenance')
 
 _PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -168,6 +170,41 @@ def set_maintenance(params: dict) -> dict:
         )
     ols.refresh_vhost(account_snapshot)
     return result
+
+
+def quiesce_account(account: Account) -> list[dict]:
+    """Pause HTTP writes for a backup while preserving customer maintenance state."""
+    with write_session() as session:
+        domains=[row.domain for row in session.scalars(select(Domain).where(
+            Domain.account_id==account.id,Domain.kind!='alias')).all()]
+    changed=[]
+    try:
+        for domain in domains:
+            previous=get_maintenance({'domain':domain})
+            if previous['enabled']:continue
+            set_maintenance({'domain':domain,'enabled':True,'title':previous['title'],
+                'message':'A consistent backup is being captured. Please try again shortly.',
+                'estimated_time':'a few minutes','auto_disable_minutes':240})
+            changed.append(previous)
+        return changed
+    except Exception:
+        try:restore_quiesced_account(account,changed)
+        except Exception:logger.exception('Could not fully roll back backup maintenance state')
+        raise
+
+
+def restore_quiesced_account(account: Account, states: list[dict]) -> None:
+    """Restore only maintenance states Boron enabled for a backup."""
+    failed=[]
+    for previous in states:
+        try:
+            set_maintenance({'domain':previous['domain'],'enabled':False,'title':previous['title'],
+                'message':previous['message'],'estimated_time':previous['estimated_time'],
+                'auto_disable_minutes':previous['auto_disable_minutes']})
+        except Exception:
+            logger.exception('Could not restore maintenance state for %s after backup',previous['domain'])
+            failed.append(previous['domain'])
+    if failed:raise RuntimeError('Could not restore website availability for: '+', '.join(failed))
 
 
 def delete_maintenance_for_domain(domain_name: str) -> None:
