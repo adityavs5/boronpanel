@@ -4,14 +4,15 @@ from __future__ import annotations
 import logging
 import re
 import time
+import datetime as dt
 
 import httpx
 from sqlalchemy import select
 
 from daemon.appcrypto import decrypt_env, encrypt_env
 from shared.db import write_session
-from shared.models import (BackupNotificationDelivery, BackupTelegramSettings,
-    NotificationSettings, Webhook, utcnow)
+from shared.models import (AccountNotificationPrefs, BackupNotificationDelivery,
+    BackupNotificationDigest, BackupTelegramSettings, NotificationSettings, Webhook, utcnow)
 from shared.validation import ValidationError
 
 logger=logging.getLogger('borond.backup_notifications')
@@ -91,6 +92,100 @@ def _send(token,chat_id,text):
         raise RuntimeError(f'Telegram returned HTTP {response.status_code}')
 
 
+def _email_recipients(account,event,requested):
+    """Resolve explicit job recipients, or the account's permitted contact."""
+    with write_session() as session:
+        settings=session.get(NotificationSettings,1)
+        if not settings or not settings.sender_address or not settings.events.get(event,True):return []
+        if requested:return list(dict.fromkeys(requested))
+        if account is None:return []
+        prefs=session.scalar(select(AccountNotificationPrefs).where(AccountNotificationPrefs.account_id==account.id))
+        if not prefs or not prefs.customer_email or not prefs.events.get(event,True):return []
+        return [prefs.customer_email]
+
+
+def _due(frequency):
+    return utcnow()+dt.timedelta(days=1 if frequency=='daily' else 7)
+
+
+def _queue_digest(event,account,channels,context):
+    frequency=context['digest_frequency'];policy_id=context.get('policy_id');username=getattr(account,'username',None) or 'server'
+    item={'event':event,'account':username,'job_id':context.get('job_id'),
+        'detail':str(context.get('error') or context.get('detail') or '')[:500],'created_at':utcnow().isoformat()}
+    queued={}
+    for channel in dict.fromkeys(channels or []):
+        # Webhook consumers normally automate responses and therefore remain real-time.
+        if channel=='webhook':continue
+        recipients=_email_recipients(account,event,context.get('recipients',[])) if channel=='email' else [None]
+        if channel=='telegram':
+            with write_session() as session:
+                settings=_settings(session)
+                if not settings.enabled or event not in settings.events:recipients=[]
+        for recipient in recipients:
+            with write_session() as session:
+                row=session.scalar(select(BackupNotificationDigest).where(
+                    BackupNotificationDigest.policy_id==policy_id,BackupNotificationDigest.channel==channel,
+                    BackupNotificationDigest.recipient==recipient,BackupNotificationDigest.frequency==frequency,
+                    BackupNotificationDigest.status=='queued').order_by(BackupNotificationDigest.id.desc()))
+                if row is None:
+                    row=BackupNotificationDigest(policy_id=policy_id,channel=channel,recipient=recipient,
+                        frequency=frequency,items=[item],due_at=_due(frequency));session.add(row)
+                else:row.items=[*row.items,item]
+            queued[channel]='digest queued'
+    return queued
+
+
+def _digest_text(items):
+    lines=[f"Boron backup {len(items)}-event summary"]
+    for item in items:
+        line=f"- {item['event']} · {item['account']}"
+        if item.get('job_id') is not None:line+=f" · job {item['job_id']}"
+        if item.get('detail'):line+=f" · {item['detail']}"
+        lines.append(line)
+    return '\n'.join(lines)
+
+
+def flush_digests(now=None):
+    """Deliver due summaries. The hourly scheduler retries failed rows explicitly."""
+    now=now or utcnow()
+    with write_session() as session:
+        ids=list(session.scalars(select(BackupNotificationDigest.id).where(
+            BackupNotificationDigest.status.in_(('queued','failed')),BackupNotificationDigest.due_at<=now)))
+    delivered=failed=0
+    for ident in ids:
+        with write_session() as session:
+            row=session.get(BackupNotificationDigest,ident)
+            due=row.due_at.replace(tzinfo=dt.timezone.utc) if row and row.due_at.tzinfo is None else row.due_at if row else None
+            if row is None or row.status not in ('queued','failed') or due>now:continue
+            row.status='sending';channel=row.channel;recipient=row.recipient;items=list(row.items)
+        detail='';ok=False
+        try:
+            body=_digest_text(items)
+            if channel=='email':
+                from daemon import notifications
+                ok=notifications.send_backup_summary(recipient,f'Boron backup summary ({len(items)} events)',body)
+                detail='Accepted by local mail transport' if ok else 'Email sender is unavailable'
+            elif channel=='telegram':
+                with write_session() as session:
+                    settings=_settings(session);token=decrypt_env(settings.token_enc).get('token','') if settings.token_enc else ''
+                    chat_id=settings.chat_id
+                if token and chat_id:_send(token,chat_id,body);ok=True;detail='Delivered to Telegram'
+                else:detail='Telegram is no longer configured'
+            else:detail='Unsupported digest channel'
+        except Exception as exc:
+            detail=str(exc)[:1000];logger.exception('Backup digest delivery failed')
+        with write_session() as session:
+            row=session.get(BackupNotificationDigest,ident)
+            row.status='completed' if ok else 'failed';row.error=None if ok else detail
+            row.completed_at=utcnow() if ok else None
+            if not ok:row.due_at=utcnow()+dt.timedelta(hours=1)
+        delivery_id=_record('backup.digest',None,channel)
+        if delivery_id:_finish(delivery_id,'provider_accepted' if ok and channel=='email' else 'success' if ok else 'failed',detail)
+        if ok:delivered+=1
+        else:failed+=1
+    return {'delivered':delivered,'failed':failed}
+
+
 def send_telegram(event,account=None,**context):
     with write_session() as session:
         row=_settings(session)
@@ -115,8 +210,14 @@ def send_telegram(event,account=None,**context):
 def dispatch(event,account,channels,**context):
     """Route one deduplicated backup event through selected configured plugins."""
     from daemon import notifications,webhooks
+    selected=context.pop('notification_events',None)
+    if selected is not None and event not in selected:return {channel:'event disabled' for channel in channels or []}
+    frequency=context.get('digest_frequency','immediate')
+    digest_results=_queue_digest(event,account,channels,context) if frequency in ('daily','weekly') else {}
     results={}
     for channel in dict.fromkeys(channels or []):
+        if channel in digest_results:
+            results[channel]=digest_results[channel];continue
         if channel=='telegram':
             results[channel]='provider accepted' if send_telegram(event,account,**context) else 'not dispatched'
             continue
@@ -125,7 +226,13 @@ def dispatch(event,account,channels,**context):
             results[channel]='deduplicated';continue
         try:
             if channel=='email':
-                sent=notifications.maybe_send(event,account,**context)
+                requested=context.get('recipients',[])
+                if requested:
+                    resolved=_email_recipients(account,event,requested)
+                    subject=notifications._subjects('Boron').get(event,f'Boron notification: {event}')
+                    body=notifications._render_body(event,getattr(account,'username','server'),context)+'\n\n— Boron'
+                    sent=bool(resolved) and all(notifications.send_backup_summary(recipient,subject,body) for recipient in resolved)
+                else:sent=notifications.maybe_send(event,account,**context)
                 _finish(delivery_id,'provider_accepted' if sent else 'skipped',
                     'Accepted by local mail transport' if sent else 'No configured recipient or event disabled')
                 results[channel]='provider accepted' if sent else 'not dispatched'

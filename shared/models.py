@@ -2309,6 +2309,22 @@ class BackupNotificationDelivery(Base):
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class BackupNotificationDigest(Base):
+    """Durable daily/weekly backup summaries waiting for their delivery window."""
+    __tablename__ = 'backup_notification_digests'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    policy_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    channel: Mapped[str] = mapped_column(String(16))
+    recipient: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    frequency: Mapped[str] = mapped_column(String(16))
+    items: Mapped[list] = mapped_column(JSON, default=list)
+    due_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(16), default='queued', index=True)
+    error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class PanelConfigJob(Base):
     __tablename__ = 'panel_config_jobs'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

@@ -1,6 +1,8 @@
 from daemon import backup_notifications as notifications
 from shared.db import write_session
-from shared.models import BackupNotificationDelivery
+import datetime as dt
+
+from shared.models import BackupNotificationDelivery, BackupNotificationDigest, utcnow
 
 
 def test_telegram_configuration_encrypts_token(isolated_db):
@@ -35,3 +37,22 @@ def test_disabled_or_unselected_telegram_event_is_not_sent(isolated_db,monkeypat
     monkeypatch.setattr(notifications,'_send',lambda *_: (_ for _ in ()).throw(AssertionError('must not send')))
     assert notifications.send_telegram('backup.completed',None,job_id=8) is False
     assert notifications.deliveries({})['deliveries']==[]
+
+
+def test_daily_digest_is_durable_and_delivered_once(isolated_db,monkeypatch):
+    token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcd'
+    notifications.save_telegram({'enabled':True,'chat_id':'12345','token':token,
+        'events':['backup.completed']})
+    sent=[]
+    monkeypatch.setattr(notifications,'_send',lambda actual,chat,text:sent.append((actual,chat,text)))
+    account=type('Account',(),{'username':'alpha'})()
+    result=notifications.dispatch('backup.completed',account,['telegram'],job_id=7,policy_id=2,
+        digest_frequency='daily',notification_events=['backup.completed'])
+    assert result=={'telegram':'digest queued'} and sent==[]
+    with write_session() as session:
+        row=session.query(BackupNotificationDigest).one()
+        assert row.status=='queued' and row.items[0]['job_id']==7
+    flushed=notifications.flush_digests(utcnow()+dt.timedelta(days=2))
+    assert flushed=={'delivered':1,'failed':0}
+    assert len(sent)==1 and '1-event summary' in sent[0][2]
+    assert notifications.flush_digests(utcnow()+dt.timedelta(days=2))=={'delivered':0,'failed':0}

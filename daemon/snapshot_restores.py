@@ -781,7 +781,10 @@ def execute(ident):
             event='backup.restore_completed' if final.status=='completed' else 'backup.restore_failed'
             account=jobs._row(Account,final.account_id)
             backup_notifications.dispatch(event,account,source.options.get('notification_channels',[]),
-                job_id=-ident,error=final.error,detail=final.progress_message)
+                job_id=-ident,policy_id=source.policy_id,error=final.error,detail=final.progress_message,
+                notification_events=source.options.get('notification_events'),
+                recipients=source.options.get('notification_recipients',[]),
+                digest_frequency=source.options.get('digest_frequency','immediate'))
 
 
 def _execute_full(ident,row,source):
@@ -841,7 +844,10 @@ def _execute_full(ident,row,source):
         if final.status in ('completed','failed'):
             from daemon import backup_notifications
             backup_notifications.dispatch('backup.restore_completed' if final.status=='completed' else 'backup.restore_failed',
-                account,source.options.get('notification_channels',[]),job_id=-ident,error=final.error,detail=final.progress_message)
+                account,source.options.get('notification_channels',[]),job_id=-ident,policy_id=source.policy_id,
+                error=final.error,detail=final.progress_message,notification_events=source.options.get('notification_events'),
+                recipients=source.options.get('notification_recipients',[]),
+                digest_frequency=source.options.get('digest_frequency','immediate'))
 
 
 def recover_mail_restore(ident):

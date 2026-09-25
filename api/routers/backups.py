@@ -195,7 +195,18 @@ class SnapshotPolicyBody(BaseModel):
     include_paths: list[str] = []
     exclude_patterns: list[str] = []
     notification_channels: list[str] = []
+    notification_events: list[str] = [
+        'backup.completed', 'backup.failed', 'backup.partial', 'backup.overdue',
+        'backup.destination_unavailable', 'backup.restore_completed',
+        'backup.restore_failed', 'backup.download_ready',
+    ]
+    notification_recipients: list[str] = []
+    digest_frequency: str = 'immediate'
     retention_count: int = 7
+    on_demand_retention: int = 7
+    pre_restore_retention: int = 7
+    freshness_hours: int = 36
+    minimum_free_mb: int = 2048
     retention_daily: int = 7
     retention_weekly: int = 4
     retention_monthly: int = 6

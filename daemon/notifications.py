@@ -149,6 +149,22 @@ def _send_email(sender: str, recipient: str, subject: str, body: str) -> None:
         smtp.send_message(msg)
 
 
+def send_backup_summary(recipient: str, subject: str, body: str) -> bool:
+    """Send an operator-selected backup summary through the configured MTA."""
+    recipient = validate_email_address(recipient)
+    with write_session() as session:
+        settings_row = _get_settings(session)
+        if not settings_row.sender_address:
+            return False
+        sender = settings_row.sender_address
+    try:
+        _send_email(sender, recipient, subject, body)
+    except (OSError, smtplib.SMTPException):
+        logger.exception("failed to send backup summary to '%s'", recipient)
+        return False
+    return True
+
+
 def send_direct(account, subject: str, body: str) -> bool:
     """Phase 8 feature 12: send an ad-hoc admin notification to an account's
     contact email (used by the bulk 'notify' action). Uses the global sender;

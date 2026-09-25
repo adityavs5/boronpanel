@@ -665,6 +665,14 @@ def validate_options(params):
     excludes = _strings(params.get('exclude_patterns',[]),'exclusion patterns')
     channels = _strings(params.get('notification_channels',[]),'notification channels')
     if not set(channels)<= {'email','telegram','webhook'}: raise ValidationError('Choose email or webhook notifications, or Telegram')
+    from daemon.backup_notifications import EVENTS
+    notification_events=_strings(params.get('notification_events',list(EVENTS)),'notification events')
+    if not set(notification_events)<=set(EVENTS):raise ValidationError('Choose valid backup notification events')
+    from shared.validation import validate_email_address
+    recipients=_strings(params.get('notification_recipients',[]),'notification recipients',limit=25)
+    recipients=list(dict.fromkeys(validate_email_address(value) for value in recipients))
+    digest_frequency=params.get('digest_frequency','immediate')
+    if digest_frequency not in ('immediate','daily','weekly'):raise ValidationError('Choose immediate, daily, or weekly notifications')
     retention = params.get('retention_count',7)
     if isinstance(retention,bool) or not isinstance(retention,int) or not 1<=retention<=365: raise ValidationError('Keep between 1 and 365 snapshots')
     mode = params.get('mode','incremental')
@@ -677,7 +685,8 @@ def validate_options(params):
     try:ZoneInfo(timezone)
     except ZoneInfoNotFoundError:raise ValidationError('Choose a valid IANA time zone') from None
     return dict(accounts=accounts,excluded_accounts=excluded,components=components,include_paths=includes,
-        exclude_patterns=excludes,notification_channels=channels,retention_count=retention,mode=mode,
+        exclude_patterns=excludes,notification_channels=channels,notification_events=notification_events,
+        notification_recipients=recipients,digest_frequency=digest_frequency,retention_count=retention,mode=mode,
         destination_ids=destination_ids,
         timezone=timezone,
         on_demand_retention=max(1,min(365,int(params.get('on_demand_retention',retention)))),
@@ -991,7 +1000,9 @@ def _database_sources(account, stage):
 def _notify(row,account):
     from daemon import backup_notifications
     event='backup.completed' if row.status=='completed' else 'backup.failed'
-    result=backup_notifications.dispatch(event,account,row.options['notification_channels'],job_id=row.id,error=row.error)
+    result=backup_notifications.dispatch(event,account,row.options['notification_channels'],job_id=row.id,
+        policy_id=row.policy_id,error=row.error,notification_events=row.options.get('notification_events'),
+        recipients=row.options.get('notification_recipients',[]),digest_frequency=row.options.get('digest_frequency','immediate'))
     _update(row.id,notification_results=result)
 
 
@@ -1246,7 +1257,10 @@ def execute_download(ident):
                 completed_at=utcnow(),expires_at=utcnow()+dt.timedelta(hours=24))
             from daemon import backup_notifications
             backup_notifications.dispatch('backup.download_ready',account,run_row.options.get('notification_channels',[]),
-                job_id=run_row.id,detail=f'Download {filename} is ready for 24 hours')
+                job_id=run_row.id,policy_id=run_row.policy_id,detail=f'Download {filename} is ready for 24 hours',
+                notification_events=run_row.options.get('notification_events'),
+                recipients=run_row.options.get('notification_recipients',[]),
+                digest_frequency=run_row.options.get('digest_frequency','immediate'))
     except Exception as exc:
         logger.exception('Snapshot download %s failed',ident);shutil.rmtree(work,ignore_errors=True)
         _update_download(ident,status='failed',progress_message='Download preparation failed',error=str(exc)[-3000:],completed_at=utcnow())
@@ -1299,6 +1313,8 @@ def run_scheduled():
     for ident in ids:
         try:count+=len(queue_policy({'id':ident,'trigger':'scheduled'})['run_ids'])
         except Exception:logger.exception('Could not queue scheduled snapshot policy %s',ident)
+    from daemon import backup_notifications
+    backup_notifications.flush_digests()
     return count
 
 
