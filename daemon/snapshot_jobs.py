@@ -145,6 +145,10 @@ def create_destination(params):
         credentials = private_directory('repositories', namespace)
         try:
             _secret(credentials/'password', secrets.token_urlsafe(48)+'\n')
+            # Local and SSH repositories can be validated before their
+            # optional connection files exist. S3 validation must wait until
+            # its encrypted write-only credentials have been persisted.
+            spec = repository(row) if row.kind != 's3' else None
             if row.kind == 'ssh':
                 result = run(['/usr/bin/ssh-keygen','-q','-t','ed25519','-N','','-f',spec.ssh_key_file],timeout=30)
                 result.raise_if_failed('Generate backup SSH key')
@@ -152,8 +156,8 @@ def create_destination(params):
                 _secret(credentials/'known_hosts', f'{host} {host_key}\n')
             elif row.kind == 's3':
                 _secret(credentials/'s3_credentials.enc', encrypt_env(s3_secrets))
-            # Validate the complete connection only after its write-only credentials exist.
-            spec = repository(row)
+                # Validate the complete connection only after its write-only credentials exist.
+                spec = repository(row)
             with write_session() as session:
                 session.add(row); session.flush()
                 result = _destination_dict(row)
