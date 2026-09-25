@@ -136,6 +136,41 @@ def test_ssh_arguments_pin_host_and_disable_ambient_credentials(repo,tmp_path):
     assert 'test-only-encryption-key' not in ' '.join(args)
 
 
+def test_s3_arguments_and_environment_keep_credentials_off_command_line(repo, monkeypatch):
+    spec = replace(repo, kind='s3', path='daily/site-a',
+        s3_endpoint='https://objects.example.test', s3_bucket='hosting-backups', s3_region='eu-test-1',
+        s3_credentials={'access_key':'ACCESS-ONLY-IN-ENV','secret_key':'SECRET-ONLY-IN-ENV','session_token':'TOKEN-ONLY-IN-ENV'})
+    args = spec.arguments()
+    assert 's3:https://objects.example.test/hosting-backups/daily/site-a' in args
+    assert not any(secret in ' '.join(args) for secret in spec.s3_credentials.values())
+    captured = {}
+    def fake_run(command, **kwargs):
+        captured.update(command=command, env=kwargs['env'])
+        return type('Result', (), {'ok':True, 'stdout':'', 'stderr':''})()
+    monkeypatch.setattr(storage, 'run', fake_run)
+    storage._execute(spec, ['check'])
+    assert captured['env']['AWS_ACCESS_KEY_ID'] == 'ACCESS-ONLY-IN-ENV'
+    assert captured['env']['AWS_SECRET_ACCESS_KEY'] == 'SECRET-ONLY-IN-ENV'
+    assert captured['env']['AWS_SESSION_TOKEN'] == 'TOKEN-ONLY-IN-ENV'
+    assert captured['env']['AWS_REGION'] == 'eu-test-1'
+
+
+@pytest.mark.parametrize('changes,match', [
+    ({'s3_endpoint':'http://objects.example.test'}, 'HTTPS'),
+    ({'s3_endpoint':'https://user:pass@objects.example.test'}, 'HTTPS'),
+    ({'s3_bucket':'Bad_Bucket'}, 'bucket'),
+    ({'path':'../escape'}, 'prefix'),
+    ({'s3_credentials':{}}, 'access key'),
+])
+def test_s3_rejects_unsafe_configuration(repo, changes, match):
+    values = dict(kind='s3', path='boron', s3_endpoint='https://objects.example.test',
+        s3_bucket='hosting-backups', s3_region='us-east-1',
+        s3_credentials={'access_key':'access','secret_key':'secret'})
+    values.update(changes)
+    with pytest.raises(Exception, match=match):
+        replace(repo, **values)
+
+
 @pytest.fixture
 def ssh_environment(repo,tmp_path):
     import signal

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Archive, Plus, Play, Server, ShieldCheck, Clock, Download, Copy, Pencil } from 'lucide-react'
 import { get, post, put } from '@/lib/api'
@@ -18,6 +19,15 @@ const API = '/api/v1/backups/snapshots'
 const textAreaClass = 'min-h-24 w-full rounded-btn border border-border bg-background p-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring'
 const emptyPolicy = { name: '', destination_id: '', frequency: 'daily', enabled: true, mode: 'incremental', accounts: [], excluded_accounts: [], components: ['files','databases','mail','config'], include_paths: [], exclude_patterns: [], notification_channels: [], retention_count: 7 }
 const lines = text => text.split('\n').map(s => s.trim()).filter(Boolean)
+const S3_PROVIDERS = {
+  aws: { label: 'Amazon S3', endpoint: 'https://s3.amazonaws.com', region: 'us-east-1' },
+  cloudflare: { label: 'Cloudflare R2', endpoint: '', region: 'auto' },
+  backblaze: { label: 'Backblaze B2 (S3 API)', endpoint: '', region: '' },
+  wasabi: { label: 'Wasabi', endpoint: 'https://s3.wasabisys.com', region: 'us-east-1' },
+  digitalocean: { label: 'DigitalOcean Spaces', endpoint: '', region: '' },
+  minio: { label: 'MinIO', endpoint: '', region: 'us-east-1' },
+  custom: { label: 'Other S3-compatible storage', endpoint: '', region: '' },
+}
 
 function Check({ checked, onChange, children }) {
   return <label className="flex cursor-pointer items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 h-4 w-4 accent-accent" checked={checked} onChange={e => onChange(e.target.checked)} /><span>{children}</span></label>
@@ -56,10 +66,11 @@ function PolicyDialog({ policy, destinations, accounts, onClose, onSaved }) {
 }
 
 function DestinationDialog({ destination, onClose, onSaved }) {
-  const [form,setForm]=useState({name:'',kind:'local',path:'/var/backups/boron',ssh_host:'',ssh_user:'',ssh_port:22,ssh_host_key:''})
+  const [form,setForm]=useState({name:'',kind:'local',path:'/var/backups/boron',ssh_host:'',ssh_user:'',ssh_port:22,ssh_host_key:'',s3_provider:'aws',s3_endpoint:S3_PROVIDERS.aws.endpoint,s3_bucket:'',s3_prefix:'boron',s3_region:S3_PROVIDERS.aws.region,s3_access_key:'',s3_secret_key:'',s3_session_token:''})
   const [saved,setSaved]=useState(destination.id?destination:null)
   const [recovery,setRecovery]=useState(null)
   const set=(key,value)=>setForm(prev=>({...prev,[key]:value}))
+  const chooseProvider=value=>setForm(prev=>({...prev,s3_provider:value,s3_endpoint:S3_PROVIDERS[value].endpoint,s3_region:S3_PROVIDERS[value].region}))
   const create=useMutation({mutationFn:()=>post(`${API}/destinations`,{...form,ssh_port:Number(form.ssh_port)}),onSuccess:row=>{setSaved(row);onSaved()}})
   const initialize=useMutation({mutationFn:()=>post(`${API}/destinations/${saved.id}/initialize`),onSuccess:row=>{setSaved(row);onSaved();toast.success('Destination ready','Backups can now be stored here.')}})
   const exportKey=useMutation({mutationFn:()=>post(`${API}/destinations/${saved.id}/recovery-key`),onSuccess:setRecovery})
@@ -67,12 +78,13 @@ function DestinationDialog({ destination, onClose, onSaved }) {
   const download=()=>{const blob=new Blob([JSON.stringify({...recovery,name:saved.name,connection:saved.connection},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=`boron-backup-recovery-${saved.id}.json`;link.click();URL.revokeObjectURL(url)}
   const busy=create.isPending||initialize.isPending||exportKey.isPending
   return <Dialog open onOpenChange={open=>!open&&!busy&&onClose()}><DialogContent size="lg"><DialogHeader><DialogTitle>{saved?saved.name:'Add backup destination'}</DialogTitle><DialogDescription>{saved?'Connection setup and recovery information.':'Store encrypted backups on this server or a separate SSH server.'}</DialogDescription></DialogHeader>
-    <form className="flex min-h-0 flex-1 flex-col" onSubmit={e=>{e.preventDefault();create.mutate()}}><DialogBody className="space-y-5"><ErrorNotice error={create.error||initialize.error||exportKey.error}/>
-      {!saved?<><FormField label="Destination name" htmlFor="destination-name"><Input id="destination-name" required maxLength={100} value={form.name} onChange={e=>set('name',e.target.value)} placeholder="Offsite backup server"/></FormField><FormField label="Storage type" htmlFor="destination-kind"><Select id="destination-kind" value={form.kind} onChange={e=>set('kind',e.target.value)}><option value="local">Local disk</option><option value="ssh">Remote server over SSH</option></Select></FormField>
+    <form className="flex min-h-0 flex-1 flex-col" onSubmit={e=>{e.preventDefault();create.mutate()}} autoComplete="off"><DialogBody className="space-y-5"><ErrorNotice error={create.error||initialize.error||exportKey.error}/>
+      {!saved?<><FormField label="Destination name" htmlFor="destination-name"><Input id="destination-name" required maxLength={100} value={form.name} onChange={e=>set('name',e.target.value)} placeholder="Offsite backup storage"/></FormField><FormField label="Storage type" htmlFor="destination-kind"><Select id="destination-kind" value={form.kind} onChange={e=>set('kind',e.target.value)}><option value="local">Local disk</option><option value="ssh">Remote server over SSH</option><option value="s3">S3-compatible object storage</option></Select></FormField>
         {form.kind==='ssh'&&<><div className="grid gap-4 sm:grid-cols-2"><FormField label="SSH hostname or IP" htmlFor="ssh-host"><Input id="ssh-host" required value={form.ssh_host} onChange={e=>set('ssh_host',e.target.value)}/></FormField><FormField label="SSH port" htmlFor="ssh-port"><Input id="ssh-port" required type="number" min="1" max="65535" value={form.ssh_port} onChange={e=>set('ssh_port',e.target.value)}/></FormField></div><FormField label="SSH username" htmlFor="ssh-user"><Input id="ssh-user" required value={form.ssh_user} onChange={e=>set('ssh_user',e.target.value)}/></FormField><FormField label="Server public host key" htmlFor="ssh-host-key" hint="Obtain this from the backup server’s administrator or console, for example /etc/ssh/ssh_host_ed25519_key.pub. This verifies the server’s identity."><textarea id="ssh-host-key" required className={textAreaClass} value={form.ssh_host_key} onChange={e=>set('ssh_host_key',e.target.value)} placeholder="ssh-ed25519 AAAA…"/></FormField></>}
-        <FormField label="Repository directory" htmlFor="destination-path" hint="An absolute, empty directory on the selected server. The backup user needs write access."><Input id="destination-path" required value={form.path} onChange={e=>set('path',e.target.value)}/></FormField>
+        {form.kind==='s3'&&<><div className="grid gap-4 sm:grid-cols-2"><FormField label="Provider" htmlFor="s3-provider"><Select id="s3-provider" value={form.s3_provider} onChange={e=>chooseProvider(e.target.value)}>{Object.entries(S3_PROVIDERS).map(([value,item])=><option key={value} value={value}>{item.label}</option>)}</Select></FormField><FormField label="Region" htmlFor="s3-region"><Input id="s3-region" required value={form.s3_region} onChange={e=>set('s3_region',e.target.value)} placeholder="us-east-1"/></FormField></div><FormField label="HTTPS endpoint" htmlFor="s3-endpoint" hint={form.s3_provider==='cloudflare'?'Use https://ACCOUNT_ID.r2.cloudflarestorage.com':'Use the provider S3 API endpoint, including https://'}><Input id="s3-endpoint" type="url" required value={form.s3_endpoint} onChange={e=>set('s3_endpoint',e.target.value)} placeholder="https://s3.example.com"/></FormField><div className="grid gap-4 sm:grid-cols-2"><FormField label="Bucket" htmlFor="s3-bucket"><Input id="s3-bucket" required value={form.s3_bucket} onChange={e=>set('s3_bucket',e.target.value)} placeholder="hosting-backups"/></FormField><FormField label="Repository prefix" htmlFor="s3-prefix" hint="Keeps this panel’s repository in its own folder."><Input id="s3-prefix" value={form.s3_prefix} onChange={e=>set('s3_prefix',e.target.value)} placeholder="boron"/></FormField></div><div className="grid gap-4 sm:grid-cols-2"><FormField label="Access key ID" htmlFor="s3-access-key"><Input id="s3-access-key" name="s3-access-key" autoComplete="off" required value={form.s3_access_key} onChange={e=>set('s3_access_key',e.target.value)}/></FormField><FormField label="Secret access key" htmlFor="s3-secret-key"><Input id="s3-secret-key" name="s3-secret-key" type="password" autoComplete="new-password" required value={form.s3_secret_key} onChange={e=>set('s3_secret_key',e.target.value)}/></FormField></div><FormField label="Session token (optional)" htmlFor="s3-session-token"><Input id="s3-session-token" name="s3-session-token" type="password" autoComplete="new-password" value={form.s3_session_token} onChange={e=>set('s3_session_token',e.target.value)}/></FormField><p className="text-sm text-muted-foreground">Credentials are encrypted with the panel’s root-only key and never returned by the API.</p></>}
+        {form.kind!=='s3'&&<FormField label="Repository directory" htmlFor="destination-path" hint="An absolute, empty directory on the selected server. The backup user needs write access."><Input id="destination-path" required value={form.path} onChange={e=>set('path',e.target.value)}/></FormField>}
         {form.kind==='local'&&<p className="text-sm text-muted-foreground">A separate SSH server also protects against loss of this server or disk.</p>}</>:<>
-        <div className="rounded-btn border border-border bg-muted/30 p-4"><Badge variant={saved.status==='ready'?'success':'neutral'}>{saved.status==='ready'?'Ready for backups':'Setup required'}</Badge><p className="mt-2 break-all text-sm">{saved.kind==='ssh'?`${saved.connection.user}@${saved.connection.host}:`:''}{saved.path}</p></div>
+        <div className="rounded-btn border border-border bg-muted/30 p-4"><Badge variant={saved.status==='ready'?'success':'neutral'}>{saved.status==='ready'?'Ready for backups':'Setup required'}</Badge><p className="mt-2 break-all text-sm">{saved.kind==='ssh'?`${saved.connection.user}@${saved.connection.host}:`:saved.kind==='s3'?`${saved.connection.bucket}/${saved.path}`:''}{saved.kind==='s3'?'':saved.path}</p>{saved.kind==='s3'&&<p className="mt-1 break-all text-xs text-muted-foreground">{saved.connection.endpoint} · {saved.connection.region}</p>}</div>
         {saved.ssh_public_key&&<div className="space-y-3"><h3 className="text-sm font-semibold">1. Authorize this panel on the backup server</h3><p className="text-sm text-muted-foreground">Add this public key to the backup user’s <code>~/.ssh/authorized_keys</code> file. Enable the server’s SFTP subsystem.</p><textarea aria-label="Backup SSH public key" readOnly className={textAreaClass} value={saved.ssh_public_key}/><Button type="button" variant="secondary" onClick={()=>copy(saved.ssh_public_key)}><Copy className="h-4 w-4"/>Copy public key</Button></div>}
         <div><h3 className="mb-2 text-sm font-semibold">{saved.ssh_public_key?'2. ':''}Initialize and verify storage</h3><Button type="button" variant="secondary" loading={initialize.isPending} onClick={()=>initialize.mutate()}><ShieldCheck className="h-4 w-4"/>{saved.status==='ready'?'Verify connection':'Initialize destination'}</Button></div>
         <div className="space-y-3 border-t border-border pt-4"><h3 className="text-sm font-semibold">Keep your recovery key somewhere safe</h3><p className="text-sm text-muted-foreground">You need this key to recover encrypted backups if this panel is lost. Store it separately from the server.</p>{!recovery?<Button type="button" variant="secondary" loading={exportKey.isPending} onClick={()=>exportKey.mutate()}>Reveal recovery key</Button>:<><textarea readOnly aria-label="Backup recovery key" className={textAreaClass} value={recovery.password}/><Button type="button" variant="secondary" onClick={download}><Download className="h-4 w-4"/>Download recovery information</Button></>}</div>
@@ -83,9 +95,16 @@ function DestinationDialog({ destination, onClose, onSaved }) {
 
 export default function BackupJobs() {
   const qc=useQueryClient()
-  const [tab,setTab]=useState('jobs')
+  const [searchParams,setSearchParams]=useSearchParams()
+  const requestedTab=['jobs','destinations','history'].includes(searchParams.get('tab'))?searchParams.get('tab'):'jobs'
+  const [tab,setTab]=useState(requestedTab)
   const [policy,setPolicy]=useState(null)
   const [destination,setDestination]=useState(null)
+  useEffect(()=>{
+    setTab(requestedTab)
+    if(searchParams.get('action')==='create') requestedTab==='destinations'?setDestination({}):setPolicy({})
+    if(searchParams.get('action')) setSearchParams({tab:requestedTab}, {replace:true})
+  },[requestedTab,searchParams,setSearchParams])
   const destinations=useQuery({queryKey:['snapshot-destinations'],queryFn:()=>get(`${API}/destinations`)})
   const policies=useQuery({queryKey:['snapshot-policies'],queryFn:()=>get(`${API}/policies`)})
   const accounts=useQuery({queryKey:['accounts'],queryFn:()=>get('/api/v1/accounts')})
@@ -103,10 +122,10 @@ export default function BackupJobs() {
         {key:'mode',header:'Protection',render:r=><span className="capitalize">{r.options.mode} · {r.options.retention_count} points</span>},
         {key:'actions',header:'Actions',render:r=><div className="flex gap-2" onClick={e=>e.stopPropagation()}><Button size="sm" variant="secondary" onClick={()=>setPolicy(r)}><Pencil className="h-3.5 w-3.5"/>Edit</Button><Button size="sm" loading={run.isPending&&run.variables===r.id} disabled={run.isPending} onClick={()=>run.mutate(r.id)}><Play className="h-3.5 w-3.5"/>Run now</Button></div>},
       ]}/></TabsContent>
-      <TabsContent value="destinations"><DataTable data={destinations.data?.destinations} loading={destinations.isLoading} error={destinations.error} onRetry={destinations.refetch} onRowClick={setDestination} emptyTitle="No backup destinations" emptyDescription="Add local disk storage or connect an offsite SSH server." emptyAction={<Button onClick={()=>setDestination({})}>Add destination</Button>} columns={[
+      <TabsContent value="destinations"><DataTable data={destinations.data?.destinations} loading={destinations.isLoading} error={destinations.error} onRetry={destinations.refetch} onRowClick={setDestination} emptyTitle="No backup destinations" emptyDescription="Add local disk, SSH, or S3-compatible object storage." emptyAction={<Button onClick={()=>setDestination({})}>Add destination</Button>} columns={[
         {key:'name',header:'Destination',render:r=><button className="font-semibold text-accent-600 dark:text-accent-300 hover:underline" onClick={()=>setDestination(r)}>{r.name}</button>},
-        {key:'kind',header:'Storage',render:r=>r.kind==='ssh'?'SSH server':'Local disk'},
-        {key:'path',header:'Directory',render:r=><span className="break-all">{r.path}</span>},
+        {key:'kind',header:'Storage',render:r=>r.kind==='ssh'?'SSH server':r.kind==='s3'?'S3 object storage':'Local disk'},
+        {key:'path',header:'Location',render:r=><span className="break-all">{r.kind==='s3'?`${r.connection.bucket}/${r.path}`:r.path}</span>},
         {key:'status',header:'Status',render:r=><Badge variant={r.status==='ready'?'success':'neutral'}>{r.status==='ready'?'Ready':'Setup required'}</Badge>},
         {key:'actions',header:'Actions',render:r=><Button size="sm" variant="secondary" onClick={e=>{e.stopPropagation();setDestination(r)}}>Manage</Button>},
       ]}/></TabsContent>

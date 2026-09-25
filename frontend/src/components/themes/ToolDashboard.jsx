@@ -97,7 +97,7 @@ export default function ToolDashboard() {
   }, [counters?.sampled_at, counters?.cpu_usage_usec, counters?.read_bytes, counters?.write_bytes, counters?.read_ops, counters?.write_ops])
   const diskUsed = u?.current?.disk_total_bytes
   const diskQuota = u?.quota_hard_mb ?? acc?.quota_hard_mb
-  return <div className="tools-dashboard">
+  return <div className={`tools-dashboard dashboard-${isAdmin ? 'admin' : 'customer'}`}>
     {!isAdmin && username && <OnboardingWizard username={username} account={acc} />}
     <div className="dashboard-heading"><div><h1>{isAdmin ? 'Admin Dashboard' : 'Hosting Dashboard'}</h1><p>{isAdmin ? 'Manage your server, accounts, and hosting services.' : `Welcome${username ? `, ${username}` : ''}. Everything you need to manage your hosting.`}</p></div><span className="dashboard-role"><Server size={14} /> {isAdmin ? 'Administrator' : 'User account'}</span></div>
     {!isAdmin && alerts.data?.active?.length > 0 && <div className="dashboard-alert" role="status"><AlertTriangle size={18} /><div><strong>Resource usage needs attention</strong>{alerts.data.active.map((alert, index) => <p key={alert.id ?? index}>{alert.resource}: {alert.threshold_pct}% threshold reached.</p>)}<Link to="/disk-usage">Review resource usage</Link></div></div>}

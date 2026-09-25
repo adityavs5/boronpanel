@@ -18,6 +18,7 @@ import uuid
 
 from sqlalchemy import select
 from daemon import snapshot_storage as storage
+from daemon.appcrypto import decrypt_env, encrypt_env
 from daemon.procutil import run
 from daemon.database_operations import serialized_worker
 from shared.config import settings
@@ -85,10 +86,18 @@ def _account(username):
 def repository(destination):
     credentials = private_directory('repositories', destination.namespace)
     connection = destination.connection
+    s3_credentials = {}
+    s3_file = credentials/'s3_credentials.enc'
+    if destination.kind == 's3':
+        if not s3_file.exists() or s3_file.is_symlink() or s3_file.stat().st_uid != os.geteuid() or s3_file.stat().st_mode & 0o077:
+            raise ValidationError('S3 credentials are missing or have unsafe permissions')
+        s3_credentials = decrypt_env(s3_file.read_text())
     return storage.Repository(kind=destination.kind, path=destination.path, namespace=destination.namespace,
         password_file=str(credentials/'password'), cache_dir=str(credentials/'cache'),
         ssh_host=connection.get('host',''), ssh_user=connection.get('user',''), ssh_port=connection.get('port',22),
-        ssh_key_file=str(credentials/'ssh_key'), ssh_known_hosts_file=str(credentials/'known_hosts'))
+        ssh_key_file=str(credentials/'ssh_key'), ssh_known_hosts_file=str(credentials/'known_hosts'),
+        s3_endpoint=connection.get('endpoint',''), s3_bucket=connection.get('bucket',''),
+        s3_region=connection.get('region',''), s3_credentials=s3_credentials)
 
 
 def _destination_dict(row):
@@ -109,11 +118,23 @@ def create_destination(params):
     name = str(params.get('name','')).strip()
     if not 1 <= len(name) <= 100: raise ValidationError('Enter a destination name of up to 100 characters')
     namespace = uuid.uuid4().hex
-    connection = {key:params.get('ssh_'+key,default) for key,default in [('host',''),('user',''),('port',22)]}
+    kind = params.get('kind','local')
+    if kind == 's3':
+        provider = str(params.get('s3_provider','custom')).strip().lower()
+        if provider not in ('aws','cloudflare','backblaze','wasabi','digitalocean','minio','custom'):
+            raise ValidationError('Choose a supported S3 provider')
+        connection = {'provider':provider, 'endpoint':str(params.get('s3_endpoint','')).strip(),
+            'bucket':str(params.get('s3_bucket','')).strip().lower(), 'region':str(params.get('s3_region','')).strip()}
+        path = str(params.get('s3_prefix','')).strip().strip('/')
+        s3_secrets = {key:str(params.get('s3_'+key,'')).strip() for key in ('access_key','secret_key','session_token')}
+        if any(len(value) > 2048 or any(char in value for char in ('\0','\r','\n')) for value in s3_secrets.values()):
+            raise ValidationError('Invalid S3 credential value')
+    else:
+        connection = {key:params.get('ssh_'+key,default) for key,default in [('host',''),('user',''),('port',22)]}
+        path = params.get('path','')
     row = SnapshotDestination(name=name,kind=params.get('kind','local'),path=params.get('path',''),namespace=namespace,
         connection=connection,status='draft')
-    # Validate connection and path syntax before persisting credentials.
-    spec = repository(row)
+    row.path = path
     host_key = params.get('ssh_host_key','').strip()
     if row.kind == 'ssh' and not re.fullmatch(r'(ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,3}(?: [^\r\n]*)?',host_key):
         raise ValidationError('Paste the SSH server public host key, obtained from a trusted source')
@@ -121,7 +142,7 @@ def create_destination(params):
         with write_session() as session:
             if session.scalar(select(SnapshotDestination).where(SnapshotDestination.name==name)):
                 raise ValidationError('A destination with this name already exists')
-        credentials = Path(spec.password_file).parent
+        credentials = private_directory('repositories', namespace)
         try:
             _secret(credentials/'password', secrets.token_urlsafe(48)+'\n')
             if row.kind == 'ssh':
@@ -129,6 +150,10 @@ def create_destination(params):
                 result.raise_if_failed('Generate backup SSH key')
                 host = connection['host'] if connection['port']==22 else f"[{connection['host']}]:{connection['port']}"
                 _secret(credentials/'known_hosts', f'{host} {host_key}\n')
+            elif row.kind == 's3':
+                _secret(credentials/'s3_credentials.enc', encrypt_env(s3_secrets))
+            # Validate the complete connection only after its write-only credentials exist.
+            spec = repository(row)
             with write_session() as session:
                 session.add(row); session.flush()
                 result = _destination_dict(row)

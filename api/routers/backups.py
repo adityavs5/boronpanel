@@ -142,11 +142,19 @@ def ui_set_schedule(
 class SnapshotDestinationBody(BaseModel):
     name: str
     kind: str = 'local'
-    path: str
+    path: str = ''
     ssh_host: str = ''
     ssh_user: str = ''
     ssh_port: int = 22
     ssh_host_key: str = ''
+    s3_provider: str = 'custom'
+    s3_endpoint: str = ''
+    s3_bucket: str = ''
+    s3_prefix: str = ''
+    s3_region: str = ''
+    s3_access_key: str = ''
+    s3_secret_key: str = ''
+    s3_session_token: str = ''
 
 
 class SnapshotPolicyBody(BaseModel):

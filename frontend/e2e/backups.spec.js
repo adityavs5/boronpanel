@@ -119,3 +119,41 @@ for(const skin of ['evolution','paper-lantern']) {
   expect(errors).toEqual([])
  })
 }
+
+test('S3-compatible destination uses write-only credentials and provider fields',async({page})=>{
+ let submitted=null
+ await page.addInitScript(()=>{
+  localStorage.setItem('boron.ui',JSON.stringify({state:{skin:'evolution',theme:'light'},version:0}))
+  localStorage.setItem('boron.auth',JSON.stringify({state:{role:'admin',username:'admin'},version:0}))
+ })
+ await page.route('**/api/**',async route=>{
+  const p=new URL(route.request().url()).pathname;const method=route.request().method();let data={}
+  if(p.endsWith('/whoami'))data={role:'admin',username:'admin'}
+  else if(p.endsWith('/onboarding'))data={completed:true}
+  else if(p==='/api/v1/accounts')data={accounts:[]}
+  else if(p.endsWith('/snapshots/destinations')&&method==='POST'){
+   submitted=route.request().postDataJSON()
+   data={id:9,name:submitted.name,kind:'s3',path:submitted.s3_prefix,status:'draft',connection:{provider:submitted.s3_provider,endpoint:submitted.s3_endpoint,bucket:submitted.s3_bucket,region:submitted.s3_region},ssh_public_key:null}
+  }
+  else if(p.endsWith('/snapshots/destinations'))data={destinations:[]}
+  else if(p.endsWith('/snapshots/policies'))data={policies:[]}
+  else if(p.endsWith('/snapshots/runs'))data={runs:[]}
+  await route.fulfill({json:data})
+ })
+ await page.goto('/app/backup-jobs?tab=destinations&action=create')
+ const dialog=page.getByRole('dialog')
+ await expect(dialog).toBeVisible()
+ await dialog.getByLabel('Destination name').fill('Cloudflare archive')
+ await dialog.getByLabel('Storage type').selectOption('s3')
+ await dialog.getByLabel('Provider').selectOption('cloudflare')
+ await dialog.getByLabel('Region').fill('auto')
+ await dialog.getByLabel('HTTPS endpoint').fill('https://account.r2.cloudflarestorage.com')
+ await dialog.getByLabel('Bucket').fill('hosting-backups')
+ await dialog.getByLabel('Repository prefix').fill('boron/daily')
+ await dialog.getByLabel('Access key ID').fill('write-only-access')
+ await dialog.getByLabel('Secret access key').fill('write-only-secret')
+ await dialog.getByRole('button',{name:'Save destination'}).click()
+ await expect(dialog.getByText('hosting-backups/boron/daily')).toBeVisible()
+ expect(submitted).toMatchObject({kind:'s3',s3_provider:'cloudflare',s3_region:'auto',s3_bucket:'hosting-backups',s3_prefix:'boron/daily',s3_access_key:'write-only-access',s3_secret_key:'write-only-secret'})
+ await expect(page.getByText('write-only-secret')).toHaveCount(0)
+})

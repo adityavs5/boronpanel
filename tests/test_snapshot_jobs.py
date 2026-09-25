@@ -85,6 +85,28 @@ def test_credentials_never_in_list_or_database(environment):
     assert Path(spec.password_file).read_text().strip()==recovery['password']
 
 
+def test_s3_credentials_are_encrypted_and_write_only(environment):
+    root, _ = environment
+    access = 'test-access-key'
+    secret = 'test-secret-key-that-must-not-leak'
+    dest = jobs.create_destination({'name':'S3 offsite','kind':'s3','s3_provider':'custom',
+        's3_endpoint':'https://objects.example.test','s3_bucket':'hosting-backups','s3_prefix':'daily',
+        's3_region':'test-region-1','s3_access_key':access,'s3_secret_key':secret})
+    listed = jobs.destinations({})['destinations'][0]
+    assert listed['kind'] == 's3'
+    assert listed['connection']['bucket'] == 'hosting-backups'
+    assert access not in str(listed) and secret not in str(listed)
+    row = jobs._row(SnapshotDestination, dest['id'])
+    spec = jobs.repository(row)
+    credentials = Path(settings.snapshot_private_dir)/'repositories'/row.namespace/'s3_credentials.enc'
+    assert credentials.stat().st_mode & 0o777 == 0o600
+    assert access.encode() not in credentials.read_bytes()
+    assert secret.encode() not in credentials.read_bytes()
+    assert access.encode() not in Path(settings.db_path).read_bytes()
+    assert secret.encode() not in Path(settings.db_path).read_bytes()
+    assert spec.s3_credentials == {'access_key':access,'secret_key':secret,'session_token':''}
+
+
 @pytest.mark.parametrize('options,match',[
     ({'include_paths':['../../etc']},'relative'),
     ({'include_paths':['/etc']},'relative'),

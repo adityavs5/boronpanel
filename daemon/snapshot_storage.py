@@ -3,7 +3,7 @@
 Restores always land in an empty staging directory. Applying a restore to an
 account is a separate operation, after ownership and archive contents checks.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ipaddress
 import json
 import os
@@ -12,7 +12,7 @@ import re
 import shlex
 import stat
 import sys
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from daemon.procutil import run
 from shared.config import settings
@@ -56,11 +56,18 @@ class Repository:
     ssh_port: int = 22
     ssh_key_file: str = ''
     ssh_known_hosts_file: str = ''
+    s3_endpoint: str = ''
+    s3_bucket: str = ''
+    s3_region: str = ''
+    s3_credentials: dict = field(default_factory=dict, repr=False)
 
     def __post_init__(self):
-        if self.kind not in ('local','ssh'):
-            raise ValidationError('Choose local storage or SSH storage')
-        _absolute(self.path)
+        if self.kind not in ('local','ssh','s3'):
+            raise ValidationError('Choose local disk, SSH, or S3-compatible storage')
+        if self.kind in ('local','ssh'):
+            _absolute(self.path)
+        elif self.path and (self.path.startswith('/') or '..' in Path(self.path).parts or not re.fullmatch(r'[A-Za-z0-9._/-]{0,512}', self.path)):
+            raise ValidationError('Invalid S3 repository prefix')
         _absolute(self.cache_dir)
         if not re.fullmatch(r'[a-z0-9-]{8,64}', self.namespace):
             raise ValidationError('Invalid backup repository namespace')
@@ -74,6 +81,16 @@ class Repository:
                 raise ValidationError('Invalid SSH username')
             if isinstance(self.ssh_port, bool) or not isinstance(self.ssh_port, int) or not 1 <= self.ssh_port <= 65535:
                 raise ValidationError('SSH port must be between 1 and 65535')
+        if self.kind == 's3':
+            endpoint = urlsplit(self.s3_endpoint)
+            if endpoint.scheme != 'https' or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
+                raise ValidationError('S3 endpoint must be an HTTPS URL without credentials, query, or fragment')
+            if not re.fullmatch(r'[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]', self.s3_bucket) or '..' in self.s3_bucket:
+                raise ValidationError('Enter a valid S3 bucket name')
+            if self.s3_region and not re.fullmatch(r'[A-Za-z0-9-]{1,64}', self.s3_region):
+                raise ValidationError('Invalid S3 region')
+            if not self.s3_credentials.get('access_key') or not self.s3_credentials.get('secret_key'):
+                raise ValidationError('S3 access key and secret key are required')
 
     def owner_tag(self, account_id):
         return f'boron:{self.namespace}:account:{_positive(account_id)}'
@@ -105,6 +122,9 @@ class Repository:
                 '-o','GlobalKnownHostsFile=/dev/null','-o','ConnectTimeout=20',
                 '-o','ServerAliveInterval=30','-o','ServerAliveCountMax=6','-s',self.ssh_host,'sftp']
             extras = ['-o','sftp.command='+shlex.join(ssh)]
+        elif self.kind == 's3':
+            location = '/'.join(part for part in (self.s3_bucket, self.path.strip('/')) if part)
+            repository = f's3:{self.s3_endpoint.rstrip("/")}/{location}'
         args = [settings.restic_bin,'--repo',repository]
         if password_file:
             args += ['--password-file',str(password)]
@@ -124,6 +144,10 @@ def _landlock_command(repository, command, read_roots):
         wrapper += ['--ro', str(_private_file(repository.ssh_key_file))]
         wrapper += ['--ro', str(_private_file(repository.ssh_known_hosts_file))]
         wrapper += ['--exec', '/usr/bin/ssh']
+    elif repository.kind == 's3':
+        for certificates in ('/etc/ssl/certs', '/usr/share/ca-certificates'):
+            if Path(certificates).exists():
+                wrapper += ['--ro', certificates]
     for executable in ['/usr/bin/nice', '/usr/bin/ionice', settings.restic_bin]:
         wrapper += ['--exec', str(_absolute(executable))]
     return [*wrapper, '--', *command]
@@ -137,6 +161,15 @@ def _execute(repository, arguments, timeout=3600, sandbox_roots=None):
     command = ['/usr/bin/nice','-n','10','/usr/bin/ionice','-c','2','-n','7',
         *repository.arguments(password_file=not sandboxed),*arguments]
     env = {**os.environ, 'GOMAXPROCS': str(threads)}
+    if repository.kind == 's3':
+        env.update({
+            'AWS_ACCESS_KEY_ID': repository.s3_credentials['access_key'],
+            'AWS_SECRET_ACCESS_KEY': repository.s3_credentials['secret_key'],
+            'AWS_DEFAULT_REGION': repository.s3_region or 'us-east-1',
+            'AWS_REGION': repository.s3_region or 'us-east-1',
+        })
+        if repository.s3_credentials.get('session_token'):
+            env['AWS_SESSION_TOKEN'] = repository.s3_credentials['session_token']
     if sandboxed:
         env['RESTIC_PASSWORD'] = repository.password_value()
         env['TMPDIR'] = str(_absolute(repository.cache_dir))

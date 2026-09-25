@@ -51,6 +51,15 @@ for (const role of ['admin', 'customer']) {
         await expect(page.locator('.usage-row').filter({ hasText: 'Subdomains' })).toContainText('3 / 10')
         await expect(page.locator('.usage-row').filter({ hasText: 'Email Accounts' })).toContainText('8 / 25')
       }
+      if (skin === 'evolution') {
+        const iconSizes = await page.locator('.tool-icon').evaluateAll(items => items.map(item => {
+          const child = item.querySelector(':scope > svg, :scope > img')
+          const outer = item.getBoundingClientRect()
+          const inner = child?.getBoundingClientRect()
+          return [outer.width, outer.height, inner?.width, inner?.height]
+        }))
+        expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['46x46x40x40']))
+      }
       await noOverflow(page)
       const links = await page.locator('.tool-link').evaluateAll((items) => items.map((item) => item.getAttribute('href')))
       expect(links).toContain('/app/appearance')

@@ -1,5 +1,6 @@
 import { SnapshotHistory } from '@/components/backups/SnapshotHistory'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Archive, Plus, RotateCcw, History, FolderOpen, Download } from 'lucide-react'
 import { get, post } from '@/lib/api'
@@ -151,11 +152,25 @@ export default function Backups() {
   const username = useAccountUsername()
   const isAdmin = useAuth(state => state.role === 'admin')
   const qc = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const restoreHistoryRef = useRef(null)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({ kind: 'full', item_ref: '' })
   const [toRestore, setToRestore] = useState(null)
   const [toBrowse, setToBrowse] = useState(null)
+
+  useEffect(() => {
+    const kind = searchParams.get('kind')
+    if (searchParams.get('action') === 'create' && BACKUP_KINDS.some(option => option.value === kind)) {
+      setForm({ kind, item_ref: '' })
+      setCreateOpen(true)
+      setSearchParams({}, { replace: true })
+    } else if (searchParams.get('view') === 'restores') {
+      requestAnimationFrame(() => restoreHistoryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
 
   const backups = useQuery({
     queryKey: ['backups', username],
@@ -271,7 +286,7 @@ export default function Backups() {
         emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create backup</Button>}
       />
 
-      <div className="mt-8">
+      <div className="mt-8 scroll-mt-6" ref={restoreHistoryRef}>
         <div className="mb-3 flex items-center gap-2">
           <History className="h-4 w-4 text-muted-foreground" />
           <h2 className="text-base font-semibold text-foreground">Restore history</h2>
