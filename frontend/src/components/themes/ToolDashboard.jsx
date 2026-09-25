@@ -12,10 +12,8 @@ import { formatBytes, formatMB } from '@/lib/utils'
 import { ThemeSelector } from './ThemeSelector'
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard'
 import { DashboardSearch } from './DashboardSearch'
-import { HostingIcon, hostingArtwork } from '@/components/icons/HostingIcon'
 
-export function ToolIcon({ icon: Icon, tone = 'sky', to, skin }) {
-  if (skin === 'evolution' && hostingArtwork[to]) return <span className={`tool-icon tone-${tone}`} aria-hidden="true"><HostingIcon kind={hostingArtwork[to]} /></span>
+export function ToolIcon({ icon: Icon, tone = 'sky' }) {
   return <span className={`tool-icon tone-${tone}`} aria-hidden="true"><Icon strokeWidth={1.7} /><span className="icon-detail" /></span>
 }
 

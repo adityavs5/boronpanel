@@ -58,7 +58,7 @@ for (const role of ['admin', 'customer']) {
           const inner = child?.getBoundingClientRect()
           return [outer.width, outer.height, inner?.width, inner?.height]
         }))
-        expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['46x46x40x40']))
+        expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['46x46x26x26']))
       }
       await noOverflow(page)
       const links = await page.locator('.tool-link').evaluateAll((items) => items.map((item) => item.getAttribute('href')))
