@@ -119,7 +119,7 @@ export function Sidebar() {
   const [closedSections, setClosedSections] = useState(() => new Set(isAdmin
     ? ['Hosting Management', 'Panel Configuration', 'Mail & Network', 'Security & Logs', 'Integrations']
     : ['Advanced']))
-  const { panelName, logoUrl } = useBranding()
+  const { brandingReady, panelName, logoUrl } = useBranding()
   const version = useVersion()
   // Disabled (enabled: isAdmin) inside the hook for customers.
   const { data: updateStatus } = useUpdateStatus()
@@ -143,7 +143,7 @@ export function Sidebar() {
     >
       {/* Logo + version */}
       <div className={cn('flex h-16 items-center gap-2.5 border-b border-sidebar-border px-4', collapsed && 'justify-center px-0')}>
-        {logoUrl ? (
+        {!brandingReady ? <div className="h-8 w-8 shrink-0" aria-hidden="true" /> : logoUrl ? (
           <img src={logoUrl} alt={panelName} className="h-8 w-8 shrink-0 rounded-btn object-contain" />
         ) : (
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-accent text-accent-foreground font-bold">

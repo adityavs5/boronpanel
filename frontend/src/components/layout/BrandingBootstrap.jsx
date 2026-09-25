@@ -5,11 +5,11 @@ import { useBranding } from '@/hooks/useBranding'
 // (mounted once in main.jsx, alongside <Toaster/>) so it's active on every
 // route, including /login before any session exists. Renders nothing.
 export function BrandingBootstrap() {
-  const { panelName, faviconUrl } = useBranding()
+  const { brandingReady, panelName, faviconUrl } = useBranding()
 
   useEffect(() => {
-    document.title = panelName
-  }, [panelName])
+    if (brandingReady) document.title = panelName
+  }, [brandingReady, panelName])
 
   useEffect(() => {
     if (!faviconUrl) return

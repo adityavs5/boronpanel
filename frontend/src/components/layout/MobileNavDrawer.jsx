@@ -25,7 +25,7 @@ export function MobileNavDrawer() {
     enabled: isAdmin,
     retry: false,
   })
-  const { panelName, logoUrl } = useBranding()
+  const { brandingReady, panelName, logoUrl } = useBranding()
   const nav = isAdmin ? adminNav : role === 'reseller' ? resellerNav : customerNav
   const accounts = Array.isArray(accountsQuery.data) ? accountsQuery.data : []
   const matchingAccounts = (accountQuery.trim()
@@ -48,7 +48,7 @@ export function MobileNavDrawer() {
         >
           <DialogPrimitive.Title className="sr-only">Panel navigation</DialogPrimitive.Title>
           <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-4">
-            {logoUrl ? (
+            {!brandingReady ? <div className="h-8 w-8" aria-hidden="true" /> : logoUrl ? (
               <img src={logoUrl} alt="" className="h-8 w-8 rounded-btn object-contain" />
             ) : (
               <div className="flex h-8 w-8 items-center justify-center rounded-btn bg-accent font-bold text-accent-foreground">

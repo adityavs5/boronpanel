@@ -44,6 +44,7 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 .boron-brand-logo{position:relative;display:block;width:178px;height:52px;overflow:hidden;flex:none}
 .boron-brand-logo img{position:absolute;left:0;top:-13px;width:178px;height:auto;max-width:none;filter:brightness(0) invert(1)}
 .custom-brand-logo{width:auto;max-width:190px;height:43px;object-fit:contain}
+.brand-loading-placeholder{display:block;width:178px;height:43px}
 .panel-topbar button:not([role]),.panel-topbar .text-foreground,.panel-topbar .text-muted-foreground{color:inherit}
 .panel-topbar button:hover{background:rgb(255 255 255/.1)}
 .access-level{display:flex;align-items:center;gap:9px;font-size:13px;white-space:nowrap}
@@ -71,6 +72,8 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 .tool-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:4px 6px;padding:14px 12px}
 .tool-grid[hidden]{display:none}
 [data-skin=evolution] .tool-grid{grid-template-columns:repeat(6,minmax(0,1fr))}
+[data-skin=evolution] .tool-link{min-height:120px;border:1px solid rgb(var(--border));border-radius:3px;background:rgb(var(--surface));padding:12px 6px}
+[data-skin=evolution] .tool-link:hover{border-color:rgb(var(--accent));background:rgb(var(--muted));box-shadow:0 2px 7px rgb(20 40 60/.11)}
 .tool-link{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:10px;min-height:112px;padding:10px 6px;border-radius:3px;text-decoration:none;border:1px solid transparent;transition:background .12s}
 .tool-link:hover{background:rgb(var(--muted));border-color:rgb(var(--border))}
 .tool-label{text-align:center;font-size:14px;line-height:1.5;color:rgb(var(--link));max-width:150px;overflow-wrap:anywhere}
@@ -81,9 +84,11 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 .tone-green{--icon-color:#288b72;--icon-fill:#c5ebd9}.tone-amber{--icon-color:#b57524;--icon-fill:#ffe0aa}.tone-violet{--icon-color:#7264ad;--icon-fill:#ded9f6}.tone-rose{--icon-color:#c15579;--icon-fill:#f7d6e3}.tone-teal{--icon-color:#288c9b;--icon-fill:#c2edf1}
 .icon-detail{position:absolute;right:1px;bottom:2px;width:11px;height:11px;border-radius:50%;background:var(--icon-color);border:2px solid rgb(var(--card))}
 .tool-icon:has(img) .icon-detail{display:none}
-[data-skin=evolution] .tool-icon{width:46px;height:46px;min-width:46px;min-height:46px;max-width:46px;max-height:46px;border:1px solid color-mix(in srgb,var(--icon-color) 24%,transparent);border-radius:12px;background:color-mix(in srgb,var(--icon-color) 10%,rgb(var(--card)));box-shadow:0 1px 2px rgb(20 35 50/.08)}
-[data-skin=evolution] .tool-icon>svg,[data-skin=evolution] .tool-icon>img{display:block;width:26px!important;height:26px!important;min-width:26px;min-height:26px;max-width:26px;max-height:26px;aspect-ratio:1;object-fit:contain;box-sizing:border-box}
-[data-skin=evolution] .tool-icon>svg{fill:none;stroke:currentColor;stroke-width:1.7}
+[data-skin=evolution] .tool-icon{width:48px;height:48px;min-width:48px;min-height:48px;max-width:48px;max-height:48px;border:0;border-radius:0;background:transparent;box-shadow:none}
+[data-skin=evolution] .tool-icon>svg,[data-skin=evolution] .tool-icon>img{display:block;width:44px!important;height:44px!important;min-width:44px;min-height:44px;max-width:44px;max-height:44px;aspect-ratio:1;object-fit:contain;box-sizing:border-box}
+[data-skin=evolution] .tool-icon>svg.evo-brand-glyph{fill:currentColor;stroke:none}
+[data-skin=evolution] .tool-icon>.brand-node{color:#5fa04e}
+[data-skin=evolution] .tool-icon>.brand-python{color:#3776ab}
 [data-skin=evolution] .tool-icon .icon-detail{display:none}
 .dark .tool-icon:has(img[src$='wordpress.svg']){filter:brightness(1.6)}
 .tool-external{position:absolute;top:4px;right:4px;color:rgb(var(--muted-fg))}

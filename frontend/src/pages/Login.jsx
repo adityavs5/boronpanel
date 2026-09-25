@@ -10,7 +10,7 @@ import { useBranding } from '@/hooks/useBranding'
 
 export default function Login() {
   const { login, verify2fa, role, pending2fa } = useAuth()
-  const { panelName, logoUrl } = useBranding()
+  const { brandingReady, panelName, logoUrl } = useBranding()
   const navigate = useNavigate()
   const location = useLocation()
   const [username, setUsername] = useState('')
@@ -64,7 +64,7 @@ export default function Login() {
       {/* Brand panel (hidden on small screens) */}
       <div className="hidden w-1/2 flex-col justify-between bg-sidebar p-12 lg:flex">
         <div className="flex items-center gap-3">
-          {logoUrl ? (
+          {!brandingReady ? <div className="h-10 w-10" aria-hidden="true" /> : logoUrl ? (
             <img src={logoUrl} alt={panelName} className="h-10 w-10 rounded-btn object-contain" />
           ) : (
             <div className="flex h-10 w-10 items-center justify-center rounded-btn bg-accent text-lg font-bold text-accent-foreground">
@@ -91,7 +91,7 @@ export default function Login() {
         <div className="w-full max-w-sm">
           <div className="mb-8 lg:hidden">
             <div className="flex items-center gap-2.5">
-              {logoUrl ? (
+              {!brandingReady ? <div className="h-9 w-9" aria-hidden="true" /> : logoUrl ? (
                 <img src={logoUrl} alt={panelName} className="h-9 w-9 rounded-btn object-contain" />
               ) : (
                 <div className="flex h-9 w-9 items-center justify-center rounded-btn bg-accent font-bold text-accent-foreground">

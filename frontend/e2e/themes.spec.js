@@ -60,7 +60,7 @@ for (const role of ['admin', 'customer']) {
           const inner = child?.getBoundingClientRect()
           return [outer.width, outer.height, inner?.width, inner?.height]
         }))
-        expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['46x46x26x26']))
+        expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['48x48x44x44']))
         const gridRows = await page.locator('.tool-grid').evaluateAll(grids => grids.map(grid => {
           const left = grid.getBoundingClientRect().left
           const rows = new Map()
@@ -76,6 +76,14 @@ for (const role of ['admin', 'customer']) {
         expect(fullRows.length).toBeGreaterThan(0)
         expect(new Set(fullRows.map(row => row.join(','))).size).toBe(1)
         expect(Math.max(...gridRows.flat().map(row => row.length))).toBe(6)
+        if (role === 'customer') {
+          const heightGap = await page.evaluate(() => {
+            const tools = document.querySelector('.tools-column').getBoundingClientRect()
+            const stats = document.querySelector('.dashboard-stats').getBoundingClientRect()
+            return Math.abs(tools.height - stats.height)
+          })
+          expect(heightGap).toBeLessThan(24)
+        }
       }
       await noOverflow(page)
       const links = await page.locator('.tool-link').evaluateAll((items) => items.map((item) => item.getAttribute('href')))

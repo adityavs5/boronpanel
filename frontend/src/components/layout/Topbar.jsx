@@ -84,7 +84,7 @@ export function Topbar() {
   const isAdmin = role === 'admin'
   const isReseller = role === 'reseller'
   const home = isAdmin ? '/overview' : isReseller ? '/reseller' : '/dashboard'
-  const { panelName, logoUrl } = useBranding()
+  const { brandingReady, panelName, logoUrl } = useBranding()
 
   async function handleLogout() {
     await logout()
@@ -95,7 +95,9 @@ export function Topbar() {
     <header className="panel-topbar">
       <div className="flex items-center gap-3 min-w-0">
         <Link to={home} className="panel-brand" aria-label={`${panelName} home`}>
-          {logoUrl
+          {!brandingReady
+            ? <span className="brand-loading-placeholder" aria-hidden="true" />
+            : logoUrl
             ? <img className="custom-brand-logo" src={logoUrl} alt={panelName} />
             : <span className="boron-brand-logo"><img src="/static/dist/brand/boron-logo-source.png" alt="Boron" /></span>}
         </Link>

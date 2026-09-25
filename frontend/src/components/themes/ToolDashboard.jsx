@@ -12,8 +12,10 @@ import { formatBytes, formatMB } from '@/lib/utils'
 import { ThemeSelector } from './ThemeSelector'
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard'
 import { DashboardSearch } from './DashboardSearch'
+import { EvoToolIcon } from '@/components/icons/EvoToolIcon'
 
-export function ToolIcon({ icon: Icon, tone = 'sky' }) {
+export function ToolIcon({ icon: Icon, tone = 'sky', to, skin }) {
+  if (skin === 'evolution') return <span className={`tool-icon tone-${tone}`} aria-hidden="true"><EvoToolIcon to={to} fallback={Icon} /></span>
   return <span className={`tool-icon tone-${tone}`} aria-hidden="true"><Icon strokeWidth={1.7} /><span className="icon-detail" /></span>
 }
 
@@ -134,9 +136,9 @@ export default function ToolDashboard() {
             <UsageRow label="FTP Accounts" value={counters?.ftp_account_count != null ? `${counters.ftp_account_count} / ${counters.ftp_account_limit ?? '∞'}` : '—'} pct={counters?.ftp_account_limit ? counters.ftp_account_count / counters.ftp_account_limit * 100 : undefined} />
           </>}</>}
         </StatsPanel>
-        <StatsPanel title="Quick Links">
+        {skin !== 'evolution' && <StatsPanel title="Quick Links">
           <div className="stats-quick-links"><Link to={isAdmin ? '/accounts' : '/files'}>{isAdmin ? 'Manage accounts' : 'Open file manager'}<ArrowUpRight size={14} /></Link><Link to="/security">Secure your account<ArrowUpRight size={14} /></Link><Link to="/appearance">Customize your workspace<ArrowUpRight size={14} /></Link>{supportUrl && <a href={supportUrl} target="_blank" rel="noopener noreferrer">Contact support<ExternalLink size={14} /></a>}{!supportUrl && supportEmail && <a href={`mailto:${supportEmail}`}>Contact support<ExternalLink size={14} /></a>}</div>
-        </StatsPanel>
+        </StatsPanel>}
       </aside>
     </div>
     <footer className="dashboard-footer"><span>{panelName} web control panel</span><span>Version {version}</span></footer>
