@@ -110,7 +110,11 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "last_verified_at": "DATETIME",
         "last_speed_bps": "INTEGER",
     },
-    "snapshot_runs": {"cancel_requested": "BOOLEAN NOT NULL DEFAULT 0"},
+    "snapshot_runs": {
+        "cancel_requested": "BOOLEAN NOT NULL DEFAULT 0",
+        "pinned": "BOOLEAN NOT NULL DEFAULT 0",
+    },
+    "snapshot_destination_operations": {"options": "JSON NOT NULL DEFAULT '{}'"},
     "waf_settings": {
         "mode": "VARCHAR(16) NOT NULL DEFAULT 'disabled'",
         "paranoia_level": "INTEGER NOT NULL DEFAULT 1",

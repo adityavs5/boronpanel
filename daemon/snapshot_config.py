@@ -51,6 +51,7 @@ def export_configuration(params=None):
             'capabilities':row.capabilities,'repository_password':_secret_file(root/'password'),
             'ssh_key':_secret_file(root/'ssh_key'),'ssh_public_key':_secret_file(root/'ssh_key.pub'),
             'known_hosts':_secret_file(root/'known_hosts'),'rclone_config':_secret_file(root/'rclone.conf')}
+        if (root/'drive_client.enc').exists():item['drive_client']=decrypt_env((root/'drive_client.enc').read_text())
         if (root/'s3_credentials.enc').exists():item['s3_credentials']=decrypt_env((root/'s3_credentials.enc').read_text())
         if (root/'transport_credentials.enc').exists():item['transport_credentials']=decrypt_env((root/'transport_credentials.enc').read_text())
         destination_rows.append(item)
@@ -61,16 +62,33 @@ def export_configuration(params=None):
         'catalog':[{'policy_id':row.policy_id,'destination_id':row.destination_id,
             'username':accounts.get(row.account_id),'snapshot_id':row.snapshot_id,'options':row.options,
             'summary':row.summary,'started_at':row.started_at.isoformat(),
-            'completed_at':row.completed_at.isoformat() if row.completed_at else None}
+            'completed_at':row.completed_at.isoformat() if row.completed_at else None,'pinned':row.pinned}
             for row in runs if row.snapshot_id and accounts.get(row.account_id)],
         'telegram':({'enabled':False,'chat_id':telegram.chat_id,'events':telegram.events,
             'token':decrypt_env(telegram.token_enc).get('token','') if telegram.token_enc else ''} if telegram else None)}
-    recovery_key=secrets.token_urlsafe(32);salt=os.urandom(16);nonce=os.urandom(12)
+    supplied=(params or {}).get('_recovery_key')
+    recovery_key=supplied or secrets.token_urlsafe(32);salt=os.urandom(16);nonce=os.urandom(12)
     ciphertext=AESGCM(_key(recovery_key,salt)).encrypt(nonce,json.dumps(bundle,separators=(',',':')).encode(),b'boron-backup-config-v1')
     envelope={'format':'boron-backup-configuration','version':1,'salt':_b64(salt),'nonce':_b64(nonce),'ciphertext':_b64(ciphertext)}
     return {'filename':f'boron-backup-configuration-{dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")}.json',
         'payload':json.dumps(envelope,indent=2),'recovery_key':recovery_key,
         'summary':{'destinations':len(destination_rows),'policies':len(policies),'catalog_entries':len(bundle['catalog'])}}
+
+
+def automatic_export():
+    """Refresh the encrypted disaster-recovery bundle included in scheduled points.
+
+    Its stable recovery key remains root-only and outside every backup repository.
+    Operators can export a separate user-held bundle/key from the UI at any time.
+    """
+    root=jobs.private_directory('configuration-export');key_path=root/'recovery-key'
+    if not key_path.exists():jobs._secret(key_path,secrets.token_urlsafe(32)+'\n')
+    recovery_key=key_path.read_text().strip()
+    result=export_configuration({'_recovery_key':recovery_key})
+    target=root/'latest.json';temporary=root/'latest.tmp'
+    temporary.write_text(result['payload']);temporary.chmod(0o600);os.replace(temporary,target)
+    return {'path':str(target),'sha256':__import__('hashlib').sha256(target.read_bytes()).hexdigest(),
+            'filename':'boron-backup-configuration.json'}
 
 
 def _open(payload,recovery_key):
@@ -121,6 +139,7 @@ def import_configuration(params):
                 if item.get('transport_credentials') is not None:
                     jobs._secret(root/'transport_credentials.enc',encrypt_env(item['transport_credentials']))
                     jobs._secret(root/'ssh_askpass','#!/bin/sh\nprintf "%s\\n" "$BORON_SSH_PASSWORD"\n');(root/'ssh_askpass').chmod(0o700)
+                if item.get('drive_client') is not None:jobs._secret(root/'drive_client.enc',encrypt_env(item['drive_client']))
                 row=SnapshotDestination(name=item['name'],kind=item['kind'],path=item['path'],namespace=namespace,
                     connection=item.get('connection',{}),status='draft',enabled=False,
                     customer_visible=bool(item.get('customer_visible',True)),capabilities=item.get('capabilities',{}),
@@ -145,7 +164,8 @@ def import_configuration(params):
                     destination_id=destination_map[int(item['destination_id'])],account_id=accounts[item['username']],
                     options=item.get('options',{}),status='completed',trigger='config_import',snapshot_id=item['snapshot_id'],
                     summary=item.get('summary',{}),progress_message='Imported catalog entry; destination verification pending',
-                    started_at=parsed(item['started_at']),completed_at=parsed(item.get('completed_at'))))
+                    started_at=parsed(item['started_at']),completed_at=parsed(item.get('completed_at')),
+                    pinned=bool(item.get('pinned',False))))
                 imported_catalog+=1
             telegram=bundle.get('telegram')
             if telegram and telegram.get('token'):

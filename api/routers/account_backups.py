@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import FileResponse, RedirectResponse
-from starlette.background import BackgroundTask
-import shutil
 from pydantic import BaseModel
 from starlette.requests import Request
 
@@ -41,47 +39,65 @@ def list_account_jobs(username: str, identity: Identity = Depends(get_identity))
 @api_router.get('/snapshots/runs')
 def list_snapshot_runs(username: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon('snapshot.run.list', identity, username=username)
+    return call_daemon('snapshot.run.list', identity, username=username,
+                       customer_scope=identity.role=='customer')
 
 
 @api_router.get('/snapshots/runs/{run_id}/browse')
 def browse_snapshot(username: str, run_id: int, directory: str = '/', identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon('snapshot.run.browse', identity, username=username, run_id=run_id, directory=directory)
+    return call_daemon('snapshot.run.browse', identity, username=username, run_id=run_id, directory=directory,
+                       customer_scope=identity.role=='customer')
 
 
-@api_router.get('/snapshots/runs/{run_id}/download')
-def download_snapshot(username: str, run_id: int, identity: Identity = Depends(get_identity)):
+@api_router.post('/snapshots/runs/{run_id}/downloads')
+def prepare_snapshot_download(username: str, run_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    prepared=call_daemon('snapshot.run.download',identity,username=username,run_id=run_id,
-        customer_scope=identity.role=='customer')
+    return call_daemon('snapshot.download.queue',identity,username=username,run_id=run_id,
+                       customer_scope=identity.role=='customer')
+
+
+@api_router.get('/snapshots/downloads')
+def snapshot_downloads(username: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon('snapshot.download.list',identity,username=username,customer_scope=identity.role=='customer')
+
+
+@api_router.get('/snapshots/downloads/{download_id}/file')
+def download_snapshot_file(username: str, download_id: int, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    prepared=call_daemon('snapshot.download.file',identity,username=username,id=download_id,
+                         customer_scope=identity.role=='customer')
     return FileResponse(prepared['path'],filename=prepared['filename'],media_type='application/octet-stream',
-        headers={'X-Checksum-SHA256':prepared['sha256']},
-        background=BackgroundTask(shutil.rmtree,prepared['cleanup_dir'],ignore_errors=True))
+                        headers={'X-Checksum-SHA256':prepared['sha256'],'Cache-Control':'private, no-store'})
 
 
 @api_router.get('/snapshots/runs/{run_id}/databases')
 def snapshot_databases(username: str, run_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon('snapshot.restore.databases', identity, username=username, run_id=run_id)
+    return call_daemon('snapshot.restore.databases', identity, username=username, run_id=run_id,
+                       customer_scope=identity.role=='customer')
 
 
 @api_router.get('/snapshots/runs/{run_id}/mailboxes')
 def snapshot_mailboxes(username: str, run_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon('snapshot.restore.mailboxes', identity, username=username, run_id=run_id)
+    return call_daemon('snapshot.restore.mailboxes', identity, username=username, run_id=run_id,
+                       customer_scope=identity.role=='customer')
 
 
 @api_router.get('/snapshots/runs/{run_id}/configuration')
 def snapshot_configuration(username: str, run_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon('snapshot.restore.configuration', identity, username=username, run_id=run_id)
+    return call_daemon('snapshot.restore.configuration', identity, username=username, run_id=run_id,
+                       customer_scope=identity.role=='customer')
 
 
 @api_router.get('/snapshots/runs/{run_id}/mail-routing')
 def snapshot_mail_routing(username: str, run_id: int, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon('snapshot.restore.mail_routing', identity, username=username, run_id=run_id)
+    return call_daemon('snapshot.restore.mail_routing', identity, username=username, run_id=run_id,
+                       customer_scope=identity.role=='customer')
 
 
 class SnapshotRestoreBody(BaseModel):
@@ -99,7 +115,8 @@ class SnapshotRestoreBody(BaseModel):
 @api_router.post('/snapshots/runs/{run_id}/restore')
 def restore_snapshot(username: str, run_id: int, body: SnapshotRestoreBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon('snapshot.restore.trigger', identity, username=username, run_id=run_id, **body.model_dump())
+    return call_daemon('snapshot.restore.trigger', identity, username=username, run_id=run_id,
+                       customer_scope=identity.role=='customer', **body.model_dump())
 
 
 @api_router.get('/snapshots/restores')
@@ -112,7 +129,8 @@ def snapshot_restore_history(username: str, identity: Identity = Depends(get_ide
 def undo_snapshot_restore(username: str, restore_id: int, body: SnapshotRestoreBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     return call_daemon('snapshot.restore.undo', identity, username=username, restore_id=restore_id,
-                       confirmation=body.confirmation, mail_pause_acknowledged=body.mail_pause_acknowledged)
+                       confirmation=body.confirmation, mail_pause_acknowledged=body.mail_pause_acknowledged,
+                       customer_scope=identity.role=='customer')
 
 
 @api_router.get("/{job_id}")

@@ -63,6 +63,12 @@ def _subjects(panel_name: str, welcome_subject: str | None = None) -> dict:
         "account.terminated": f"Your {panel_name} hosting account has been terminated",
         "backup.completed": "Backup completed",
         "backup.failed": "Backup failed",
+        "backup.partial": "Backup completed with warnings",
+        "backup.overdue": "Backup is overdue",
+        "backup.destination_unavailable": "Backup destination unavailable",
+        "backup.restore_completed": "Backup restore completed",
+        "backup.restore_failed": "Backup restore failed",
+        "backup.download_ready": "Backup download ready",
         "ssl.expiring": "SSL certificate expiring soon",
         "usage.limit.reached": "Resource usage alert",
         "login.new": "New login to your hosting panel",
@@ -91,6 +97,9 @@ def _render_body(event_type: str, username: str, context: dict, welcome_body: st
         return f"A backup for account '{username}' completed successfully (job {context.get('job_id')})."
     if event_type == "backup.failed":
         return f"A backup for account '{username}' failed: {context.get('error', 'unknown error')}"
+    if event_type.startswith("backup."):
+        detail=context.get('error') or context.get('detail') or 'See the Backup Manager for details.'
+        return f"Backup event for account '{username}': {event_type}. {detail}"
     if event_type == "ssl.expiring":
         return (
             f"The SSL certificate for '{context.get('domain')}' expires in "

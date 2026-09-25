@@ -43,6 +43,11 @@ OP_TABLE = {
     "snapshot.destination.list": snapshot_jobs.destinations,
     "snapshot.destination.create": snapshot_jobs.create_destination,
     "snapshot.destination.initialize": snapshot_jobs.initialize_destination,
+    "snapshot.drive.oauth.start": snapshot_jobs.drive_oauth_start,
+    "snapshot.drive.oauth.callback": snapshot_jobs.drive_oauth_callback,
+    "snapshot.drive.folders": snapshot_jobs.drive_folders,
+    "snapshot.drive.folder.set": snapshot_jobs.set_drive_folder,
+    "snapshot.drive.revoke": snapshot_jobs.revoke_drive,
     "snapshot.destination.recovery_key": snapshot_jobs.recovery_key,
     "snapshot.destination.set": snapshot_jobs.set_destination,
     "snapshot.destination.delete": snapshot_jobs.delete_destination,
@@ -54,7 +59,10 @@ OP_TABLE = {
     "snapshot.policy.run": snapshot_jobs.queue_policy,
     "snapshot.run.list": snapshot_jobs.runs,
     "snapshot.run.browse": snapshot_jobs.browse,
-    "snapshot.run.download": snapshot_jobs.prepare_download,
+    "snapshot.download.queue": snapshot_jobs.queue_download,
+    "snapshot.download.list": snapshot_jobs.list_downloads,
+    "snapshot.download.file": snapshot_jobs.download_file,
+    "snapshot.run.pin": snapshot_jobs.set_run_pin,
     "snapshot.run.cancel": snapshot_jobs.cancel_run,
     "snapshot.run.retry": snapshot_jobs.retry_run,
     "snapshot.catalog.accounts": snapshot_jobs.account_catalog,
@@ -623,7 +631,7 @@ OP_TABLE = {
 # so a burst of usage polling can never starve the rest of the daemon.
 REPORTING_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reporting")
 REPORTING_OPS = {
-    "snapshot.destination.initialize", "snapshot.run.browse", "snapshot.restore.databases", "snapshot.restore.mailboxes", "snapshot.restore.configuration", "snapshot.restore.mail_routing",
+    "snapshot.destination.initialize", "snapshot.run.browse", "snapshot.drive.folders", "snapshot.restore.databases", "snapshot.restore.mailboxes", "snapshot.restore.configuration", "snapshot.restore.mail_routing",
     "snapshot.restore.trigger", "snapshot.restore.undo",  # Preflight may decrypt recovery metadata.
     "disktree.get", "disktree.top_files", "usage.get",
     # Phase 5: admin-only polling/dashboard ops that shell out or sample

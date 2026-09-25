@@ -106,6 +106,12 @@ def _owned_run(username,ident,allow_expired=False):
     return account,row
 
 
+def _require_customer_visible(source, customer_scope=False):
+    destination=jobs._row(SnapshotDestination,source.destination_id)
+    if customer_scope and not destination.customer_visible:
+        raise ValidationError('This recovery point is not available in the customer panel')
+
+
 def list_restores(params):
     account=jobs._account(params['username'])
     with write_session() as session:
@@ -156,6 +162,7 @@ def _mail_recovery_metadata(repo, account, snapshot_id):
 def mailbox_options(params):
     from daemon import mail
     account, source = _owned_run(params['username'], params['run_id'])
+    _require_customer_visible(source,params.get('customer_scope',False))
     if 'mail' not in source.options['components']:
         return {'mailboxes': []}
     try:
@@ -223,6 +230,7 @@ def _database_state(account, name, metadata):
 
 def database_options(params):
     account,source=_owned_run(params['username'],params['run_id'])
+    _require_customer_visible(source,params.get('customer_scope',False))
     if 'databases' not in source.options['components']:return {'databases':[]}
     directory=Path(settings.snapshot_private_dir)/'sources'/f'account-{account.id}'/'databases'
     try:
@@ -248,6 +256,7 @@ def database_options(params):
 
 def configuration_options(params):
     account, source = _owned_run(params['username'], params['run_id'])
+    _require_customer_visible(source,params.get('customer_scope',False))
     if 'config' not in source.options.get('components', []):
         return dict(cron_available=False, php_available=False, dns_available=False, dns_zones=[],
                     reason='This recovery point has no account configuration')
@@ -262,6 +271,7 @@ def configuration_options(params):
 
 def routing_options(params):
     account, source = _owned_run(params['username'], params['run_id'])
+    _require_customer_visible(source,params.get('customer_scope',False))
     if 'mail' not in source.options.get('components', []):
         return {'domains': [], 'reason': 'This recovery point has no mail routing settings'}
     from daemon.snapshot_mail_routing_recovery import catalog
@@ -276,6 +286,7 @@ def routing_options(params):
 def trigger(params):
     safety=jobs._row(SnapshotRestore,params['_safety']) if params.get('_safety') else None
     account,source=_owned_run(params['username'],params['run_id'],allow_expired=safety is not None)
+    _require_customer_visible(source,params.get('customer_scope',False))
     if safety and (safety.account_id!=account.id or safety.run_id!=source.id or not safety.safety_snapshot_id):
         raise ValidationError('Pre-restore recovery point not found for this account')
     if account.status!='active':raise ValidationError('Reactivate the account before restoring its data')
@@ -393,8 +404,11 @@ def undo(params):
     row=jobs._row(SnapshotRestore,params['restore_id'])
     if row.account_id!=account.id or not row.safety_snapshot_id:
         raise ValidationError('Pre-restore recovery point not found for this account')
+    source=jobs._row(SnapshotRun,row.run_id)
+    _require_customer_visible(source,params.get('customer_scope',False))
     return trigger({'username':account.username,'run_id':row.run_id,'confirmation':params.get('confirmation'),
-                    'mail_pause_acknowledged':params.get('mail_pause_acknowledged'),'_safety':row.id})
+                    'mail_pause_acknowledged':params.get('mail_pause_acknowledged'),'_safety':row.id,
+                    'customer_scope':params.get('customer_scope',False)})
 
 
 def _update(ident,**values):
@@ -695,6 +709,13 @@ def execute(ident):
     finally:
         if work:
             shutil.rmtree(work,ignore_errors=True)
+        final=jobs._row(SnapshotRestore,ident)
+        if final.status in ('completed','failed'):
+            from daemon import backup_notifications
+            event='backup.restore_completed' if final.status=='completed' else 'backup.restore_failed'
+            account=jobs._row(Account,final.account_id)
+            backup_notifications.dispatch(event,account,source.options.get('notification_channels',[]),
+                job_id=-ident,error=final.error,detail=final.progress_message)
 
 
 def recover_mail_restore(ident):

@@ -137,6 +137,7 @@ class Settings:
     rclone_bin: str = "/usr/bin/rclone"
     restic_bin: str = "/usr/bin/restic"
     snapshot_private_dir: str = "/var/lib/boron/snapshot-private"
+    snapshot_download_dir: str = "/var/lib/boron/downloads"
     mail_restore_guard_dir: str = "/var/lib/boron-mail-restore-gates"
     snapshot_cpu_threads: int = 2
     backup_staging_dir: str = "/var/lib/boron/backup-staging"

@@ -49,6 +49,10 @@ class SetScheduleBody(BaseModel):
     username: str | None = None
     frequency: str = "daily"
     retention_count: int = 7
+    on_demand_retention: int = 7
+    pre_restore_retention: int = 7
+    freshness_hours: int = 36
+    minimum_free_mb: int = 2048
     destination_id: int
     enabled: bool = True
 
@@ -150,6 +154,7 @@ class SnapshotDestinationBody(BaseModel):
     ssh_auth: str = 'key'
     ssh_password: str = ''
     ssh_private_key: str = ''
+    ssh_key_passphrase: str = ''
     s3_provider: str = 'custom'
     s3_endpoint: str = ''
     s3_bucket: str = ''
@@ -167,6 +172,14 @@ class SnapshotDestinationBody(BaseModel):
 class SnapshotDestinationSettingsBody(BaseModel):
     enabled: bool | None = None
     customer_visible: bool | None = None
+
+
+class DriveFolderBody(BaseModel):
+    path: str
+
+
+class DestinationOperationBody(BaseModel):
+    account_mapping: dict[str, str] = {}
 
 
 class SnapshotPolicyBody(BaseModel):
@@ -220,6 +233,39 @@ def snapshot_initialize_destination(destination_id: int, identity: Identity = De
     return call_daemon('snapshot.destination.initialize', identity, id=destination_id)
 
 
+@api_router.post('/snapshots/destinations/{destination_id}/drive/oauth/start')
+def snapshot_drive_oauth_start(destination_id: int, request: Request, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    callback=str(request.base_url).rstrip('/')+f'/api/v1/backups/snapshots/destinations/{destination_id}/drive/oauth/callback'
+    return call_daemon('snapshot.drive.oauth.start',identity,id=destination_id,redirect_uri=callback)
+
+
+@api_router.get('/snapshots/destinations/{destination_id}/drive/oauth/callback')
+def snapshot_drive_oauth_callback(destination_id: int, state: str, code: str,
+                                  identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    call_daemon('snapshot.drive.oauth.callback',identity,id=destination_id,state=state,code=code)
+    return RedirectResponse('/app/backup-jobs?drive=connected',status_code=303)
+
+
+@api_router.get('/snapshots/destinations/{destination_id}/drive/folders')
+def snapshot_drive_folders(destination_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.drive.folders',identity,id=destination_id)
+
+
+@api_router.put('/snapshots/destinations/{destination_id}/drive/folder')
+def snapshot_drive_folder(destination_id: int, body: DriveFolderBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.drive.folder.set',identity,id=destination_id,path=body.path)
+
+
+@api_router.post('/snapshots/destinations/{destination_id}/drive/revoke')
+def snapshot_drive_revoke(destination_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.drive.revoke',identity,id=destination_id)
+
+
 @api_router.post('/snapshots/destinations/{destination_id}/recovery-key')
 def snapshot_recovery_key(destination_id: int, identity: Identity = Depends(get_identity)):
     from fastapi.responses import JSONResponse
@@ -241,9 +287,11 @@ def snapshot_delete_destination(destination_id: int, identity: Identity = Depend
 
 
 @api_router.post('/snapshots/destinations/{destination_id}/{action}')
-def snapshot_destination_action(destination_id: int, action: str, identity: Identity = Depends(get_identity)):
+def snapshot_destination_action(destination_id: int, action: str, body: DestinationOperationBody | None = None,
+                                identity: Identity = Depends(get_identity)):
     require_admin(identity)
-    return call_daemon('snapshot.destination.operation.queue', identity, id=destination_id, action=action)
+    return call_daemon('snapshot.destination.operation.queue', identity, id=destination_id, action=action,
+                       **(body.model_dump() if body else {}))
 
 
 @api_router.get('/snapshots/destination-operations')
@@ -298,6 +346,16 @@ def snapshot_cancel_run(run_id: int, identity: Identity = Depends(get_identity))
 def snapshot_retry_run(run_id: int, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon('snapshot.run.retry', identity, id=run_id)
+
+
+class SnapshotPinBody(BaseModel):
+    pinned: bool
+
+
+@api_router.patch('/snapshots/runs/{run_id}/pin')
+def snapshot_pin_run(run_id: int, body: SnapshotPinBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.run.pin', identity, id=run_id, pinned=body.pinned)
 
 
 @api_router.get('/snapshots/catalog/accounts')

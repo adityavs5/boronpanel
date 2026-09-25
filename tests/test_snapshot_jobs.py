@@ -1,19 +1,23 @@
 from pathlib import Path
 from contextlib import contextmanager
+from urllib.parse import parse_qs, urlsplit
+from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 from daemon import snapshot_jobs as jobs, snapshot_storage as storage
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, SnapshotDestination, SnapshotPolicy, SnapshotRun
+from shared.models import Account, SnapshotDestination, SnapshotDownload, SnapshotPolicy, SnapshotRun, utcnow
 
 
 @pytest.fixture
 def environment(isolated_db,tmp_path,monkeypatch):
     monkeypatch.setattr(settings,'snapshot_private_dir',str(tmp_path/'private'))
+    monkeypatch.setattr(settings,'snapshot_download_dir',str(tmp_path/'downloads'))
     monkeypatch.setattr(settings,'home_base',str(tmp_path/'home'))
     queued=[]
     monkeypatch.setattr(jobs._executor,'submit',lambda fn,ident:queued.append((fn,ident)))
+    monkeypatch.setattr(jobs.pwd,'getpwnam',lambda _name:SimpleNamespace(pw_uid=__import__('os').geteuid(),pw_gid=__import__('os').getegid()))
     for name in ['alpha','bravo']:
         home=tmp_path/'home'/name;home.mkdir(parents=True)
         (home/'site.txt').write_text(name+' original content')
@@ -136,6 +140,75 @@ def test_drive_rejects_incremental_but_accepts_archive_policy(environment):
     assert policy['options']['mode']=='compressed'
 
 
+def test_drive_browser_oauth_folder_selection_and_revoke(environment,monkeypatch):
+    root,_=environment
+    client_secret='oauth-client-secret-never-in-database'
+    destination=jobs.create_destination({'name':'Drive OAuth','kind':'drive','drive_folder':'Boron backups',
+        'drive_client_id':'client.apps.test','drive_client_secret':client_secret})
+    assert destination['connection']['oauth_connected'] is False
+    assert client_secret.encode() not in Path(settings.db_path).read_bytes()
+
+    started=jobs.drive_oauth_start({'id':destination['id'],'redirect_uri':
+        f'https://panel.example.test/api/v1/backups/snapshots/destinations/{destination["id"]}/drive/oauth/callback'})
+    query=parse_qs(urlsplit(started['authorization_url']).query)
+    assert query['code_challenge_method']==['S256'] and query['access_type']==['offline']
+
+    class Response:
+        def raise_for_status(self):pass
+        def json(self):return {'access_token':'access-secret','refresh_token':'refresh-secret','expires_in':3600}
+    monkeypatch.setattr(jobs.httpx,'post',lambda *a,**k:Response())
+    connected=jobs.drive_oauth_callback({'id':destination['id'],'state':query['state'][0],'code':'one-time-code'})
+    assert connected['connection']['oauth_connected'] is True
+    config=Path(settings.snapshot_private_dir)/'repositories'/connected['namespace']/'rclone.conf'
+    assert config.stat().st_mode & 0o077==0 and 'refresh-secret' in config.read_text()
+
+    monkeypatch.setattr(jobs,'run',lambda *a,**k:SimpleNamespace(stdout='[{"Name":"Backups","Path":"Backups","ID":"folder-1","IsDir":true}]',raise_if_failed=lambda *_:None))
+    assert jobs.drive_folders({'id':destination['id']})['folders'][0]['path']=='Backups'
+    assert jobs.set_drive_folder({'id':destination['id'],'path':'Backups'})['path']=='Backups'
+    revoked=jobs.revoke_drive({'id':destination['id']})
+    assert revoked['connection']['oauth_connected'] is False and not config.exists()
+
+
+def test_download_is_queued_persistent_private_and_expires(environment):
+    root,queued=environment
+    destination=make_destination(root);policy=make_policy(destination)
+    run_id=jobs.queue_policy({'id':policy['id']})['run_ids'][0]
+    jobs.execute_run(run_id)
+
+    item=jobs.queue_download({'username':'alpha','run_id':run_id,'customer_scope':True})
+    assert item['status']=='pending'
+    assert queued[-1][0] is jobs.execute_download
+    assert jobs.queue_download({'username':'alpha','run_id':run_id})['id']==item['id']
+
+    jobs.execute_download(item['id'])
+    ready=jobs.list_downloads({'username':'alpha','customer_scope':True})['downloads'][0]
+    assert ready['status']=='ready' and ready['sha256'] and ready['size_bytes']>0
+    prepared=jobs.download_file({'username':'alpha','id':item['id'],'customer_scope':True})
+    path=Path(prepared['path'])
+    assert path.is_file() and path.is_relative_to(Path(settings.snapshot_download_dir))
+    assert '/tmp/boron-snapshot-download-' not in str(path)
+
+    with write_session() as session:
+        row=session.get(SnapshotDownload,item['id']);row.expires_at=utcnow()-__import__('datetime').timedelta(seconds=1)
+    assert jobs.cleanup_downloads()=={'removed':1}
+    assert not path.exists()
+    with pytest.raises(Exception,match='not ready or has expired'):
+        jobs.download_file({'username':'alpha','id':item['id']})
+
+
+def test_hidden_destination_is_absent_from_every_customer_recovery_surface(environment):
+    root,_=environment
+    destination=make_destination(root);policy=make_policy(destination)
+    run_id=jobs.queue_policy({'id':policy['id']})['run_ids'][0]
+    jobs.execute_run(run_id)
+    jobs.set_destination({'id':destination['id'],'customer_visible':False})
+    assert jobs.runs({'username':'alpha','customer_scope':True})['runs']==[]
+    with pytest.raises(Exception,match='not available in the customer panel'):
+        jobs.browse({'username':'alpha','run_id':run_id,'customer_scope':True})
+    with pytest.raises(Exception,match='not available in the customer panel'):
+        jobs.queue_download({'username':'alpha','run_id':run_id,'customer_scope':True})
+
+
 @pytest.mark.parametrize('mode,suffix', [('compressed','.boron.tar.gz'),('archive','.boron.tar')])
 def test_portable_modes_embed_verified_account_archive(environment,mode,suffix):
     root,_=environment
@@ -187,7 +260,7 @@ def test_source_symlink_escape_fails_and_marks_job_failed(environment,monkeypatc
     assert row['status']=='failed'
     assert 'outside' in row['error']
     assert calls==['email','webhook']
-    assert row['notification_results']=={'email':'dispatched','webhook':'dispatched'}
+    assert row['notification_results']=={'email':'provider accepted','webhook':'queued'}
     jobs.execute_run(ident)
     assert calls==['email','webhook']
 
@@ -254,10 +327,10 @@ def test_snapshot_api_authorization_and_customer_scope(environment,monkeypatch):
         assert client.post('/api/v1/backups/snapshots/destinations/1/recovery-key').status_code==403
         assert not calls
         assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs').status_code==200
-        assert calls[-1]==('snapshot.run.list',{'username':'alpha'})
+        assert calls[-1]==('snapshot.run.list',{'username':'alpha','customer_scope':True})
         assert client.get('/api/v1/accounts/bravo/backups/snapshots/runs').status_code==403
         assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs/1/configuration').status_code==200
-        assert calls[-1]==('snapshot.restore.configuration',{'username':'alpha','run_id':1})
+        assert calls[-1]==('snapshot.restore.configuration',{'username':'alpha','run_id':1,'customer_scope':True})
         assert client.get('/api/v1/accounts/bravo/backups/snapshots/runs/1/configuration').status_code==403
         response=client.post('/api/v1/accounts/alpha/backups/snapshots/runs/1/restore',json={'confirmation':'alpha','kind':'config','config_sections':['cron']})
         assert response.status_code==200
@@ -289,16 +362,16 @@ def test_snapshot_api_authorization_and_customer_scope(environment,monkeypatch):
         response=client.post('/api/v1/accounts/alpha/backups/snapshots/restores/1/undo',json={
             'confirmation':'alpha','mail_pause_acknowledged':True})
         assert response.status_code==200
-        assert calls[-1]==('snapshot.restore.undo',{'username':'alpha','restore_id':1,'confirmation':'alpha','mail_pause_acknowledged':True})
+        assert calls[-1]==('snapshot.restore.undo',{'username':'alpha','restore_id':1,'confirmation':'alpha','mail_pause_acknowledged':True,'customer_scope':True})
         assert client.post('/api/v1/accounts/bravo/backups/snapshots/runs/1/restore',json={
             'confirmation':'bravo','kind':'mail','mailboxes':['inbox@example.test'],'mail_pause_acknowledged':True}).status_code==403
         assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs/1/databases').status_code==200
-        assert calls[-1]==('snapshot.restore.databases',{'username':'alpha','run_id':1})
+        assert calls[-1]==('snapshot.restore.databases',{'username':'alpha','run_id':1,'customer_scope':True})
         assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs/1/mailboxes').status_code==200
-        assert calls[-1]==('snapshot.restore.mailboxes',{'username':'alpha','run_id':1})
+        assert calls[-1]==('snapshot.restore.mailboxes',{'username':'alpha','run_id':1,'customer_scope':True})
         assert client.get('/api/v1/accounts/bravo/backups/snapshots/runs/1/mailboxes').status_code==403
         assert client.get('/api/v1/accounts/alpha/backups/snapshots/runs/1/mail-routing').status_code==200
-        assert calls[-1]==('snapshot.restore.mail_routing',{'username':'alpha','run_id':1})
+        assert calls[-1]==('snapshot.restore.mail_routing',{'username':'alpha','run_id':1,'customer_scope':True})
         before_calls=len(calls)
         assert client.get('/api/v1/accounts/bravo/backups/snapshots/runs/1/mail-routing').status_code==403
         assert len(calls)==before_calls

@@ -21,7 +21,8 @@ def test_telegram_delivery_records_result(isolated_db,monkeypatch):
     monkeypatch.setattr(notifications,'_send',lambda actual,chat,text:sent.append((actual,chat,text)))
     account=type('Account',(),{'username':'alpha'})()
     assert notifications.send_telegram('backup.completed',account,job_id=7) is True
-    assert sent[0][0]==token and sent[0][1]=='12345' and 'alpha' in sent[0][2]
+    assert notifications.send_telegram('backup.completed',account,job_id=7) is True
+    assert len(sent)==1 and sent[0][0]==token and sent[0][1]=='12345' and 'alpha' in sent[0][2]
     with write_session() as session:
         row=session.query(BackupNotificationDelivery).one()
         assert row.status=='success' and row.run_id==7

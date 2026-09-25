@@ -135,7 +135,7 @@ class Repository:
                 '-o','ServerAliveInterval=30','-o','ServerAliveCountMax=6','-s',self.ssh_host,'sftp']
             if self.ssh_auth == 'key':
                 key = _private_file(self.ssh_key_file)
-                ssh[7:7] = ['-i',str(key),'-o','BatchMode=yes']
+                ssh[7:7] = ['-i',str(key),'-o',f'BatchMode={"no" if self.ssh_password else "yes"}']
             else:
                 askpass = _private_file(self.ssh_askpass_file)
                 ssh[7:7] = ['-o','BatchMode=no','-o','PreferredAuthentications=password',
@@ -164,7 +164,7 @@ def _landlock_command(repository, command, read_roots):
     if repository.kind in ('ssh','sftp'):
         if repository.ssh_auth == 'key':
             wrapper += ['--ro', str(_private_file(repository.ssh_key_file))]
-        else:
+        if repository.ssh_auth == 'password' or repository.ssh_password:
             wrapper += ['--ro', str(_private_file(repository.ssh_askpass_file))]
         wrapper += ['--ro', str(_private_file(repository.ssh_known_hosts_file))]
         wrapper += ['--exec', '/usr/bin/ssh']
@@ -173,7 +173,8 @@ def _landlock_command(repository, command, read_roots):
             if Path(certificates).exists():
                 wrapper += ['--ro', certificates]
     elif repository.kind == 'drive':
-        wrapper += ['--ro', str(_private_file(repository.rclone_config_file))]
+        # rclone refreshes OAuth access tokens in this exact private config.
+        wrapper += ['--rw', str(_private_file(repository.rclone_config_file))]
         wrapper += ['--exec', str(_absolute(settings.rclone_bin))]
         for certificates in ('/etc/ssl/certs', '/usr/share/ca-certificates'):
             if Path(certificates).exists():
@@ -200,7 +201,7 @@ def _execute(repository, arguments, timeout=3600, sandbox_roots=None):
         })
         if repository.s3_credentials.get('session_token'):
             env['AWS_SESSION_TOKEN'] = repository.s3_credentials['session_token']
-    elif repository.kind in ('ssh','sftp') and repository.ssh_auth == 'password':
+    elif repository.kind in ('ssh','sftp') and (repository.ssh_auth == 'password' or repository.ssh_password):
         env.update({'BORON_SSH_PASSWORD':repository.ssh_password,'SSH_ASKPASS':repository.ssh_askpass_file,
             'SSH_ASKPASS_REQUIRE':'force','DISPLAY':'boron:0'})
     elif repository.kind == 'drive':

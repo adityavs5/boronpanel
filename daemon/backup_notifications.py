@@ -66,9 +66,14 @@ def save_telegram(params):
     return status()
 
 
-def _record(event,run_id):
+def _record(event,run_id,channel='telegram'):
     with write_session() as session:
-        row=BackupNotificationDelivery(channel='telegram',event=event,run_id=run_id,status='pending')
+        if run_id is not None:
+            existing=session.scalar(select(BackupNotificationDelivery).where(
+                BackupNotificationDelivery.channel==channel,BackupNotificationDelivery.event==event,
+                BackupNotificationDelivery.run_id==run_id).order_by(BackupNotificationDelivery.id.desc()))
+            if existing:return None
+        row=BackupNotificationDelivery(channel=channel,event=event,run_id=run_id,status='queued')
         session.add(row);session.flush();return row.id
 
 
@@ -92,6 +97,7 @@ def send_telegram(event,account=None,**context):
         if not row.enabled or event not in row.events:return False
         token=decrypt_env(row.token_enc).get('token','');chat_id=row.chat_id
     delivery_id=_record(event,context.get('job_id'))
+    if delivery_id is None:return True
     username=getattr(account,'username',None) or context.get('username') or 'server'
     text=f'Boron backup notification\nEvent: {event}\nAccount: {username}'
     if context.get('job_id'):text+=f"\nRun: {context['job_id']}"
@@ -104,6 +110,35 @@ def send_telegram(event,account=None,**context):
                 _finish(delivery_id,'failed',exc);logger.warning('Telegram backup notification failed: %s',exc);return False
             time.sleep((.5,1.5)[attempt])
     return False
+
+
+def dispatch(event,account,channels,**context):
+    """Route one deduplicated backup event through selected configured plugins."""
+    from daemon import notifications,webhooks
+    results={}
+    for channel in dict.fromkeys(channels or []):
+        if channel=='telegram':
+            results[channel]='provider accepted' if send_telegram(event,account,**context) else 'not dispatched'
+            continue
+        delivery_id=_record(event,context.get('job_id'),channel)
+        if delivery_id is None:
+            results[channel]='deduplicated';continue
+        try:
+            if channel=='email':
+                sent=notifications.maybe_send(event,account,**context)
+                _finish(delivery_id,'provider_accepted' if sent else 'skipped',
+                    'Accepted by local mail transport' if sent else 'No configured recipient or event disabled')
+                results[channel]='provider accepted' if sent else 'not dispatched'
+            elif channel=='webhook':
+                queued=webhooks.maybe_trigger(event,account,**context)
+                _finish(delivery_id,'queued' if queued else 'skipped',
+                    f'{len(queued)} signed webhook delivery(s) queued' if queued else 'No enabled webhook selected this event')
+                results[channel]='queued' if queued else 'not dispatched'
+            else:
+                _finish(delivery_id,'failed','Unknown notification channel');results[channel]='failed'
+        except Exception as exc:
+            _finish(delivery_id,'failed',exc);logger.exception('Backup notification dispatch failed');results[channel]='failed'
+    return results
 
 
 def test_telegram(params=None):

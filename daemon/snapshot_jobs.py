@@ -22,16 +22,18 @@ import tempfile
 import tarfile
 import time
 import uuid
+from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
 from sqlalchemy import select
 from daemon import snapshot_storage as storage
-from daemon.appcrypto import decrypt_env, encrypt_env
+from daemon.appcrypto import decrypt_env, decrypt_secret, encrypt_env, encrypt_secret
 from daemon.procutil import run
 from daemon.database_operations import serialized_worker
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, BackupJob, RestoreJob, DatabaseGrant, Domain, MailDomain, SnapshotDestination, SnapshotDestinationOperation, SnapshotPolicy, SnapshotRun, SnapshotRestore, utcnow
+from shared.models import Account, AppInstall, BackupJob, RestoreJob, DatabaseGrant, Domain, FtpAccount, GitRepo, MailDomain, NodeApp, PythonApp, RedisInstance, SnapshotDestination, SnapshotDestinationOperation, SnapshotDownload, SnapshotOAuthState, SnapshotPolicy, SnapshotRun, SnapshotRestore, WordPressInstall, utcnow
 from shared.validation import ValidationError, validate_username
 
 logger = logging.getLogger('borond.snapshot_jobs')
@@ -58,6 +60,27 @@ def private_directory(*parts):
         target.mkdir(exist_ok=True, mode=0o700)
         if target.stat().st_uid != os.geteuid(): raise ValidationError('Private backup directory has an unexpected owner')
         target.chmod(0o700)
+    return target
+
+
+def download_directory(*parts):
+    """Private download staging traversable only by the API service group."""
+    base=Path(settings.snapshot_download_dir)
+    if not base.is_absolute() or '..' in base.parts or base==Path('/'):
+        raise ValidationError('Invalid backup download directory')
+    for path in [*reversed(base.parents),base]:
+        if path.is_symlink():raise ValidationError('Backup download directory cannot use symbolic links')
+    base.mkdir(parents=True,exist_ok=True,mode=0o710)
+    try:api=pwd.getpwnam('boron-api')
+    except KeyError:api=None
+    if base.stat().st_uid!=os.geteuid():raise ValidationError('Backup download directory has an unexpected owner')
+    if api:os.chown(base,os.geteuid(),api.pw_gid)
+    base.chmod(0o710)
+    target=base
+    for part in parts:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+',str(part)):raise ValidationError('Invalid download storage identifier')
+        target=target/str(part);target.mkdir(exist_ok=True,mode=0o700)
+        if target.is_symlink() or target.stat().st_uid!=os.geteuid():raise ValidationError('Unsafe backup download directory')
     return target
 
 
@@ -102,7 +125,7 @@ def repository(destination):
             raise ValidationError('S3 credentials are missing or have unsafe permissions')
         s3_credentials = decrypt_env(s3_file.read_text())
     transport_file = credentials/'transport_credentials.enc'
-    if destination.kind in ('ssh','sftp') and connection.get('auth') == 'password':
+    if destination.kind in ('ssh','sftp') and transport_file.exists():
         if not transport_file.exists() or transport_file.is_symlink() or transport_file.stat().st_mode & 0o077:
             raise ValidationError('SSH credentials are missing or have unsafe permissions')
         transport_credentials = decrypt_env(transport_file.read_text())
@@ -156,23 +179,22 @@ def create_destination(params):
         connection['auth']=auth
         path = params.get('path','')
         password=str(params.get('ssh_password',''))
+        passphrase=str(params.get('ssh_key_passphrase',''))
         supplied_key=str(params.get('ssh_private_key',''))
         if auth=='password' and (not password or len(password)>2048 or any(c in password for c in ('\0','\r','\n'))):
             raise ValidationError('Enter a valid SSH password')
         if auth=='key' and supplied_key and (len(supplied_key)>16384 or '\0' in supplied_key):
             raise ValidationError('Invalid SSH private key')
+        if passphrase and (len(passphrase)>2048 or any(c in passphrase for c in ('\0','\r','\n'))):
+            raise ValidationError('Invalid SSH key passphrase')
+        if passphrase and not supplied_key:raise ValidationError('A passphrase is only used with a supplied encrypted private key')
     elif kind == 'drive':
         path=str(params.get('drive_folder','')).strip().strip('/')
-        token=str(params.get('drive_token','')).strip()
         client_id=str(params.get('drive_client_id','')).strip()
         client_secret=str(params.get('drive_client_secret','')).strip()
-        try:parsed_token=json.loads(token)
-        except ValueError:raise ValidationError('Google Drive OAuth token must be valid JSON') from None
-        if not isinstance(parsed_token,dict) or not parsed_token.get('access_token') or not parsed_token.get('refresh_token'):
-            raise ValidationError('Google Drive OAuth token must contain access and refresh tokens')
-        if not client_id or not client_secret or max(map(len,(token,client_id,client_secret)))>16384:
-            raise ValidationError('Google Drive OAuth client and token are required')
-        connection={'provider':'google_drive'}
+        if not client_id or not client_secret or max(map(len,(client_id,client_secret)))>4096 or any(c in client_id+client_secret for c in '\0\r\n'):
+            raise ValidationError('Google Drive OAuth client ID and secret are required')
+        connection={'provider':'google_drive','oauth_connected':False}
     elif kind == 'local':
         connection={};path=params.get('path','')
     else:
@@ -199,7 +221,14 @@ def create_destination(params):
                 if connection['auth']=='key':
                     if supplied_key:
                         _secret(credentials/'ssh_key',supplied_key.rstrip('\n')+'\n')
-                        result=run(['/usr/bin/ssh-keygen','-y','-f',str(credentials/'ssh_key')],timeout=30)
+                        key_env=None
+                        if passphrase:
+                            _secret(credentials/'transport_credentials.enc',encrypt_env({'password':passphrase}))
+                            _secret(credentials/'ssh_askpass','#!/bin/sh\nprintf "%s\\n" "$BORON_SSH_PASSWORD"\n')
+                            (credentials/'ssh_askpass').chmod(0o700)
+                            key_env={**os.environ,'BORON_SSH_PASSWORD':passphrase,'SSH_ASKPASS':str(credentials/'ssh_askpass'),
+                                'SSH_ASKPASS_REQUIRE':'force','DISPLAY':'boron:0'}
+                        result=run(['/usr/bin/ssh-keygen','-y','-f',str(credentials/'ssh_key')],timeout=30,env=key_env)
                         result.raise_if_failed('Validate backup SSH key')
                         _secret(credentials/'ssh_key.pub',result.stdout.strip()+'\n')
                     else:
@@ -217,14 +246,7 @@ def create_destination(params):
                 # Validate the complete connection only after its write-only credentials exist.
                 spec = repository(row)
             elif row.kind == 'drive':
-                parser=configparser.RawConfigParser();parser.add_section('boron_drive')
-                parser.set('boron_drive','type','drive');parser.set('boron_drive','scope','drive.file')
-                parser.set('boron_drive','client_id',client_id);parser.set('boron_drive','client_secret',client_secret)
-                parser.set('boron_drive','token',json.dumps(parsed_token,separators=(',',':')))
-                config=credentials/'rclone.conf'
-                fd=os.open(config,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-                with os.fdopen(fd,'w') as handle:parser.write(handle)
-                spec=repository(row)
+                _secret(credentials/'drive_client.enc',encrypt_env({'client_id':client_id,'client_secret':client_secret}))
             with write_session() as session:
                 session.add(row); session.flush()
                 result = _destination_dict(row)
@@ -232,6 +254,117 @@ def create_destination(params):
             shutil.rmtree(credentials)
             raise
     return result
+
+
+def _drive_credentials(destination):
+    if destination.kind!='drive':raise ValidationError('This destination is not Google Drive')
+    path=private_directory('repositories',destination.namespace)/'drive_client.enc'
+    if not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o077:
+        raise ValidationError('Google Drive OAuth client configuration is missing')
+    return decrypt_env(path.read_text())
+
+
+def drive_oauth_start(params):
+    destination=_row(SnapshotDestination,params['id']);client=_drive_credentials(destination)
+    redirect_uri=str(params.get('redirect_uri',''))
+    parsed=urlsplit(redirect_uri)
+    if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValidationError('Google Drive callback must use this panel over HTTPS')
+    if not parsed.path.endswith(f'/api/v1/backups/snapshots/destinations/{destination.id}/drive/oauth/callback'):
+        raise ValidationError('Invalid Google Drive callback URL')
+    state=secrets.token_urlsafe(32);verifier=secrets.token_urlsafe(64)
+    challenge=__import__('base64').urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+    with write_session() as session:
+        for old in session.scalars(select(SnapshotOAuthState).where(
+                SnapshotOAuthState.destination_id==destination.id)).all():session.delete(old)
+        session.add(SnapshotOAuthState(destination_id=destination.id,state_hash=hashlib.sha256(state.encode()).hexdigest(),
+            verifier_enc=encrypt_secret(verifier),redirect_uri=redirect_uri,expires_at=utcnow()+dt.timedelta(minutes=10)))
+    query=urlencode({'client_id':client['client_id'],'redirect_uri':redirect_uri,'response_type':'code',
+        'scope':'https://www.googleapis.com/auth/drive.file','access_type':'offline','prompt':'consent',
+        'state':state,'code_challenge':challenge,'code_challenge_method':'S256'})
+    return {'authorization_url':'https://accounts.google.com/o/oauth2/v2/auth?'+query,'expires_in':600}
+
+
+def _write_drive_config(destination,client,token):
+    credentials=private_directory('repositories',destination.namespace);config=credentials/'rclone.conf'
+    parser=configparser.RawConfigParser();parser.add_section('boron_drive')
+    parser.set('boron_drive','type','drive');parser.set('boron_drive','scope','drive.file')
+    parser.set('boron_drive','client_id',client['client_id']);parser.set('boron_drive','client_secret',client['client_secret'])
+    parser.set('boron_drive','token',json.dumps(token,separators=(',',':')))
+    temporary=config.with_suffix('.tmp')
+    fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'w') as handle:parser.write(handle)
+    os.replace(temporary,config);config.chmod(0o600)
+
+
+def drive_oauth_callback(params):
+    raw_state=str(params.get('state',''));code=str(params.get('code',''))
+    if not raw_state or not code or len(raw_state)>256 or len(code)>4096:raise ValidationError('Google Drive authorization response is incomplete')
+    digest=hashlib.sha256(raw_state.encode()).hexdigest();now=utcnow()
+    expired=False
+    with write_session() as session:
+        state=session.scalar(select(SnapshotOAuthState).where(SnapshotOAuthState.state_hash==digest))
+        if state is None:raise ValidationError('Google Drive authorization state is invalid or already used')
+        expires=state.expires_at if state.expires_at.tzinfo else state.expires_at.replace(tzinfo=dt.timezone.utc)
+        expired=expires<=now
+        destination_id=state.destination_id;redirect_uri=state.redirect_uri;verifier='' if expired else decrypt_secret(state.verifier_enc)
+        if destination_id!=storage._positive(params['id']):raise ValidationError('Google Drive authorization state does not match this destination')
+        session.delete(state)
+    if expired:raise ValidationError('Google Drive authorization expired; connect again')
+    destination=_row(SnapshotDestination,destination_id);client=_drive_credentials(destination)
+    try:
+        response=httpx.post('https://oauth2.googleapis.com/token',data={'client_id':client['client_id'],
+            'client_secret':client['client_secret'],'code':code,'code_verifier':verifier,
+            'grant_type':'authorization_code','redirect_uri':redirect_uri},timeout=30)
+        response.raise_for_status();payload=response.json()
+    except Exception as exc:raise ValidationError('Google Drive rejected the authorization code') from exc
+    if not payload.get('access_token') or not payload.get('refresh_token'):
+        raise ValidationError('Google Drive did not provide a reusable refresh token; reconnect and approve access')
+    expiry=now+dt.timedelta(seconds=max(60,int(payload.get('expires_in',3600))))
+    token={'access_token':payload['access_token'],'token_type':payload.get('token_type','Bearer'),
+        'refresh_token':payload['refresh_token'],'expiry':expiry.isoformat().replace('+00:00','Z')}
+    _write_drive_config(destination,client,token)
+    with write_session() as session:
+        row=session.get(SnapshotDestination,destination.id);row.connection={**row.connection,'oauth_connected':True};row.error=None;session.flush()
+        return _destination_dict(row)
+
+
+def drive_folders(params):
+    destination=_row(SnapshotDestination,params['id'])
+    if not destination.connection.get('oauth_connected'):raise ValidationError('Connect Google Drive first')
+    config=private_directory('repositories',destination.namespace)/'rclone.conf'
+    result=run([settings.rclone_bin,'lsjson','--config',str(config),'--dirs-only','--max-depth','1','boron_drive:'],timeout=120)
+    result.raise_if_failed('List Google Drive folders')
+    try:items=json.loads(result.stdout)
+    except ValueError as exc:raise ValidationError('Google Drive returned an invalid folder listing') from exc
+    return {'folders':[{'name':item.get('Name',''),'path':item.get('Path',''),'id':item.get('ID','')}
+        for item in items if item.get('IsDir') and isinstance(item.get('Path'),str)]}
+
+
+def set_drive_folder(params):
+    destination=_row(SnapshotDestination,params['id'])
+    if destination.kind!='drive' or not destination.connection.get('oauth_connected'):raise ValidationError('Connect Google Drive first')
+    path=str(params.get('path','')).strip().strip('/')
+    if not path or len(path)>512 or path.startswith('/') or '..' in Path(path).parts or not re.fullmatch(r'[A-Za-z0-9._ /-]+',path):
+        raise ValidationError('Choose a valid Google Drive folder')
+    with write_session() as session:
+        row=session.get(SnapshotDestination,destination.id);row.path=path;row.status='draft';session.flush();return _destination_dict(row)
+
+
+def revoke_drive(params):
+    destination=_row(SnapshotDestination,params['id']);credentials=private_directory('repositories',destination.namespace)
+    config=credentials/'rclone.conf'
+    if config.is_file():
+        parser=configparser.RawConfigParser();parser.read(config);token={}
+        try:token=json.loads(parser.get('boron_drive','token'))
+        except (ValueError,configparser.Error):pass
+        value=token.get('refresh_token') or token.get('access_token')
+        if value:
+            try:httpx.post('https://oauth2.googleapis.com/revoke',data={'token':value},timeout=20)
+            except Exception:logger.warning('Google Drive token revocation request failed',exc_info=True)
+        config.unlink()
+    with write_session() as session:
+        row=session.get(SnapshotDestination,destination.id);row.connection={**row.connection,'oauth_connected':False};row.status='draft';row.error=None;session.flush();return _destination_dict(row)
 
 
 def initialize_destination(params):
@@ -281,6 +414,15 @@ def delete_destination(params):
         if policies:raise ValidationError('Remove this destination from backup jobs before deleting it')
         if session.scalar(select(SnapshotRun.id).where(SnapshotRun.destination_id==ident,SnapshotRun.status.in_(ACTIVE))):
             raise ValidationError('Wait for active backup or restore work to finish')
+        if session.scalar(select(SnapshotRestore.id).join(SnapshotRun,SnapshotRun.id==SnapshotRestore.run_id).where(
+                SnapshotRun.destination_id==ident,SnapshotRestore.status.in_(ACTIVE))):
+            raise ValidationError('Wait for active backup or restore work to finish')
+        if session.scalar(select(SnapshotDownload.id).join(SnapshotRun,SnapshotRun.id==SnapshotDownload.run_id).where(
+                SnapshotRun.destination_id==ident,SnapshotDownload.status.in_(ACTIVE))):
+            raise ValidationError('Wait for active backup or download work to finish')
+        if session.scalar(select(SnapshotDestinationOperation.id).where(
+                SnapshotDestinationOperation.destination_id==ident,SnapshotDestinationOperation.status.in_(ACTIVE))):
+            raise ValidationError('Wait for the destination operation to finish')
         has_history=session.scalar(select(SnapshotRun.id).where(SnapshotRun.destination_id==ident)) is not None
         namespace=row.namespace
         if has_history:
@@ -339,12 +481,18 @@ def queue_destination_operation(params):
     ident=storage._positive(params['id']);action=params.get('action')
     if action not in ('test','speed','reindex'):raise ValidationError('Choose test, speed, or reindex')
     destination=_row(SnapshotDestination,ident)
+    mapping=params.get('account_mapping') or {}
+    if not isinstance(mapping,dict) or len(mapping)>500 or any(
+            not str(key).isdigit() or not isinstance(value,str) for key,value in mapping.items()):
+        raise ValidationError('Account mapping must map source account IDs to destination usernames')
+    normalized_mapping={str(storage._positive(int(key))):validate_username(value) for key,value in mapping.items()}
+    for username in normalized_mapping.values():_account(username)
     if destination.status=='deleted':raise ValidationError('Destination configuration was removed')
     with write_session() as session:
         active=session.scalar(select(SnapshotDestinationOperation).where(
             SnapshotDestinationOperation.destination_id==ident,SnapshotDestinationOperation.status.in_(ACTIVE)))
         if active:raise ValidationError('A destination operation is already running')
-        row=SnapshotDestinationOperation(destination_id=ident,action=action)
+        row=SnapshotDestinationOperation(destination_id=ident,action=action,options={'account_mapping':normalized_mapping})
         session.add(row);session.flush();result=_operation_dict(row);operation_id=row.id
     _executor.submit(execute_destination_operation,operation_id)
     return result
@@ -357,11 +505,12 @@ def _update_operation(ident,**values):
         for key,value in values.items():setattr(row,key,value)
 
 
-def _reindex_destination(destination,repo):
+def _reindex_destination(destination,repo,mapping=None):
     snapshots=storage.all_snapshots(repo)
     prefix=f'boron:{destination.namespace}:account:'
     with write_session() as session:
         accounts={row.id:row for row in session.scalars(select(Account)).all()}
+        by_username={row.username:row for row in accounts.values()};mapping=mapping or {}
         policy=session.scalar(select(SnapshotPolicy).where(SnapshotPolicy.name==f'Recovered {destination.name}'))
         if policy is None:
             policy=SnapshotPolicy(name=f'Recovered {destination.name}'[:100],destination_id=destination.id,
@@ -374,14 +523,16 @@ def _reindex_destination(destination,repo):
             tag=next((str(tag) for tag in item.get('tags',[]) if str(tag).startswith(prefix)),None)
             try:account_id=int(tag.removeprefix(prefix)) if tag else 0
             except ValueError:account_id=0
-            if account_id not in accounts:
+            mapped=by_username.get(mapping.get(str(account_id)))
+            if mapped is None:
                 unresolved.append({'snapshot_id':item.get('id'),'account_id':account_id});continue
+            target_id=mapped.id
             if session.scalar(select(SnapshotRun.id).where(SnapshotRun.destination_id==destination.id,SnapshotRun.snapshot_id==item.get('id'))):continue
             when=item.get('time');started=utcnow()
             if isinstance(when,str):
                 try:started=dt.datetime.fromisoformat(when.replace('Z','+00:00'))
                 except ValueError:pass
-            session.add(SnapshotRun(policy_id=policy.id,destination_id=destination.id,account_id=account_id,
+            session.add(SnapshotRun(policy_id=policy.id,destination_id=destination.id,account_id=target_id,
                 options=policy.options,status='completed',trigger='reindex',snapshot_id=item.get('id'),
                 summary={'reindexed':True,'paths':item.get('paths',[])},progress_message='Recovered from destination index',
                 started_at=started,completed_at=utcnow()))
@@ -397,19 +548,15 @@ def execute_destination_operation(operation_id):
             _update_operation(operation_id,status='running',progress_message='Connecting to destination')
             started=time.monotonic()
             if operation.action=='test':
-                storage.check(repo);result={'verified':True}
+                storage.check(repo);result=_destination_probe(repo,operation_id,64*1024)
             elif operation.action=='reindex':
                 storage.check(repo);_update_operation(operation_id,progress_message='Reading repository manifests')
-                result=_reindex_destination(destination,repo)
+                result=_reindex_destination(destination,repo,(operation.options or {}).get('account_mapping'))
             else:
                 _update_operation(operation_id,progress_message='Running bounded upload test')
-                probe=private_directory('probes',f'operation-{operation_id}')/'payload.bin'
-                with probe.open('wb') as handle:handle.write(os.urandom(4*1024*1024))
-                summary=storage.backup(repo,2147483647,[str(probe)],sandbox_roots=[str(probe.parent)])
-                elapsed=max(.001,time.monotonic()-started)
-                storage.forget(repo,2147483647,[summary['snapshot_id']],prune=True)
-                shutil.rmtree(probe.parent)
-                result={'bytes':4*1024*1024,'elapsed_seconds':round(elapsed,3),'bytes_per_second':int(4*1024*1024/elapsed)}
+                result=_destination_probe(repo,operation_id,4*1024*1024)
+                elapsed=max(.001,time.monotonic()-started);result.update(
+                    elapsed_seconds=round(elapsed,3),bytes_per_second=int(result['bytes']/elapsed))
             with write_session() as session:
                 row=session.get(SnapshotDestination,operation.destination_id)
                 row.last_verified_at=utcnow();row.error=None
@@ -421,6 +568,27 @@ def execute_destination_operation(operation_id):
             row=session.get(SnapshotDestination,operation.destination_id)
             if row:row.error=str(exc)[-3000:]
         _update_operation(operation_id,status='failed',progress_message='Failed',error=str(exc)[-3000:],completed_at=utcnow())
+
+
+def _destination_probe(repo, operation_id, size):
+    """Bounded write/read/checksum/delete proof using only Boron's probe tag/path."""
+    work=private_directory('probes',f'operation-{operation_id}');probe=work/'payload.bin';restored=work/'restored'
+    snapshot_id=None
+    try:
+        probe.write_bytes(os.urandom(size));source_hash=hashlib.sha256(probe.read_bytes()).hexdigest()
+        summary=storage.backup(repo,2147483647,[str(probe)],sandbox_roots=[str(work)])
+        snapshot_id=summary['snapshot_id']
+        output=storage.restore_to(repo,2147483647,snapshot_id,str(restored),selected_paths=[str(probe)])
+        target=output/str(probe).lstrip('/')
+        if not target.is_file() or not secrets.compare_digest(source_hash,hashlib.sha256(target.read_bytes()).hexdigest()):
+            raise ValidationError('Destination probe download checksum did not match')
+        storage.forget(repo,2147483647,[snapshot_id],prune=True);snapshot_id=None
+        return {'verified':True,'write':True,'read':True,'delete':True,'sha256':source_hash,'bytes':size}
+    finally:
+        if snapshot_id:
+            try:storage.forget(repo,2147483647,[snapshot_id],prune=True)
+            except Exception:logger.exception('Could not clean destination probe snapshot %s',snapshot_id)
+        shutil.rmtree(work,ignore_errors=True)
 
 
 def account_catalog(params):
@@ -459,20 +627,24 @@ def account_catalog(params):
                 for ident in destination_ids)
             overdue=False
             if latest and scheduled:
-                intervals=[FREQUENCIES.get(policy.frequency,0) for policy in scheduled if FREQUENCIES.get(policy.frequency,0)]
-                overdue=bool(intervals and age_hours is not None and age_hours*3600>min(intervals)*1.5)
+                thresholds=[int(policy.options.get('freshness_hours',max(1,FREQUENCIES.get(policy.frequency,86400)//3600)))
+                    for policy in scheduled]
+                overdue=bool(thresholds and age_hours is not None and age_hours>min(thresholds))
             if not usable:availability='no_backups' if scheduled or attempts else 'not_scheduled'
             elif unavailable:availability='destination_unavailable'
             elif attempt and attempt.status=='failed' and attempt is not latest:availability='partial'
             elif overdue:availability='overdue'
             else:availability='available'
             result.append({'account_id':account.id,'username':account.username,'primary_domain':account.primary_domain,
-                'account_status':account.status,'recovery_point_count':len(usable),
+                'account_status':account.status,'account_group':'active' if account.status=='active' else 'former',
+                'recovery_point_count':len(usable),
                 'latest_recovery_at':(latest.completed_at or latest.started_at).isoformat() if latest else None,
                 'latest_attempt_status':attempt.status if attempt else None,'age_hours':age_hours,
                 'availability':availability,'components':components,'destinations':destinations,
                 'last_verified_at':max(verified).isoformat() if verified else None})
-        return {'accounts':result,'generated_at':now.isoformat()}
+        return {'accounts':result,'generated_at':now.isoformat(),
+            'counts':{'active':sum(row['account_group']=='active' for row in result),
+                      'former':sum(row['account_group']=='former' for row in result)}}
 
 
 def _strings(value, name, limit=200):
@@ -508,6 +680,10 @@ def validate_options(params):
         exclude_patterns=excludes,notification_channels=channels,retention_count=retention,mode=mode,
         destination_ids=destination_ids,
         timezone=timezone,
+        on_demand_retention=max(1,min(365,int(params.get('on_demand_retention',retention)))),
+        pre_restore_retention=max(1,min(365,int(params.get('pre_restore_retention',retention)))),
+        freshness_hours=max(1,min(8760,int(params.get('freshness_hours',36)))),
+        minimum_free_mb=max(256,min(1048576,int(params.get('minimum_free_mb',2048)))),
         retention_daily=max(0,min(365,int(params.get('retention_daily',retention)))),
         retention_weekly=max(0,min(104,int(params.get('retention_weekly',4)))),
         retention_monthly=max(0,min(120,int(params.get('retention_monthly',6)))))
@@ -553,7 +729,7 @@ def _run_dict(row, customer=False):
     return dict(id=row.id,policy_id=row.policy_id,destination_id=row.destination_id,account_id=row.account_id,
         status=row.status,trigger=row.trigger,snapshot_id=row.snapshot_id,summary=row.summary,options=options,
         notification_results=row.notification_results,progress_message=row.progress_message,error=row.error,
-        cancel_requested=row.cancel_requested,
+        cancel_requested=row.cancel_requested,pinned=row.pinned,
         started_at=row.started_at.isoformat(),completed_at=row.completed_at.isoformat() if row.completed_at else None)
 
 
@@ -563,8 +739,22 @@ def runs(params):
         query = select(SnapshotRun).order_by(SnapshotRun.id.desc()).limit(200)
         if account: query=query.where(SnapshotRun.account_id==account.id)
         rows=session.scalars(query).all()
+        if account and params.get('customer_scope'):
+            visible_ids=set(session.scalars(select(SnapshotDestination.id).where(
+                SnapshotDestination.customer_visible==True,SnapshotDestination.status!='deleted')))
+            rows=[row for row in rows if row.destination_id in visible_ids]
         names=dict(session.execute(select(Account.id,Account.username).where(Account.id.in_([row.account_id for row in rows]))).all())
-        return {'runs':[{**_run_dict(row,customer=account is not None),'username':names.get(row.account_id)} for row in rows]}
+        destination_rows={row.id:row for row in session.scalars(select(SnapshotDestination).where(
+            SnapshotDestination.id.in_([item.destination_id for item in rows]))).all()}
+        result=[]
+        for row in rows:
+            destination=destination_rows.get(row.destination_id);item=_run_dict(row,customer=account is not None)
+            item.update(username=names.get(row.account_id),destination_name=destination.name if destination else None,
+                destination_kind=destination.kind if destination else None,
+                destination_verified_at=destination.last_verified_at.isoformat() if destination and destination.last_verified_at else None,
+                missing_components=sorted({'files','databases','mail','config'}-set(row.options.get('components',[]))))
+            result.append(item)
+        return {'runs':result}
 
 
 def cancel_run(params):
@@ -609,7 +799,8 @@ def queue_policy(params):
         destination_ids=policy.options.get('destination_ids') or [policy.destination_id]
         destination_rows=[session.get(SnapshotDestination,value) for value in destination_ids]
         if any(row is None or row.status!='ready' or not row.enabled for row in destination_rows): raise ValidationError('Every backup destination must be ready and enabled')
-        options=policy.options
+        options=dict(policy.options)
+        if not scheduled:options['retention_count']=options.get('on_demand_retention',options['retention_count'])
         accounts=session.scalars(select(Account).where(Account.status=='active')).all()
         accounts=[a for a in accounts if (not options['accounts'] or a.username in options['accounts']) and a.username not in options['excluded_accounts']]
         skipped=[]
@@ -650,9 +841,29 @@ def sources(account, options):
         databases=session.scalars(select(DatabaseGrant).where(DatabaseGrant.account_id==account.id)).all()
         domains=session.scalars(select(Domain).where(Domain.account_id==account.id)).all()
         mail_domains=session.scalars(select(MailDomain).where(MailDomain.account_id==account.id)).all()
-    manifest={'format':1,'account_id':account.id,'username':account.username,'php_version':account.php_version,
+        ftp_accounts=session.scalars(select(FtpAccount).where(FtpAccount.account_id==account.id)).all()
+        wordpress=session.scalars(select(WordPressInstall).where(WordPressInstall.account_id==account.id)).all()
+        app_installs=session.scalars(select(AppInstall).where(AppInstall.account_id==account.id)).all()
+        node_apps=session.scalars(select(NodeApp).where(NodeApp.account_id==account.id)).all()
+        python_apps=session.scalars(select(PythonApp).where(PythonApp.account_id==account.id)).all()
+        git_repos=session.scalars(select(GitRepo).where(GitRepo.account_id==account.id)).all()
+        redis_instance=session.scalar(select(RedisInstance).where(RedisInstance.account_id==account.id))
+    manifest={'format':1,'manifest_version':2,'account_id':account.id,'username':account.username,'php_version':account.php_version,
         'components':options['components'],'home':str(home),'domains':[{'domain':d.domain,'docroot':d.docroot,'kind':d.kind,'php_version':d.php_version} for d in domains],
-        'databases':[{'name':d.db_name,'user':d.db_user} for d in databases],'mail_domains':[d.domain for d in mail_domains]}
+        'databases':[{'name':d.db_name,'user':d.db_user} for d in databases],'mail_domains':[d.domain for d in mail_domains],
+        'inventory':{
+            'ftp_accounts':[{'login':item.ftp_login,'path':item.path,'credential':'password reset required'} for item in ftp_accounts],
+            'ssl':[{'domain':item.domain,'status':item.ssl_status,'wildcard':item.ssl_is_wildcard,'recovery':'reissue'} for item in domains],
+            'wordpress':[{'domain':item.domain,'path':item.path,'database':item.db_name,'version':item.wp_version} for item in wordpress],
+            'applications':[{'kind':item.app_id,'domain':item.domain,'version':item.version,'database':item.db_name} for item in app_installs],
+            'nodejs':[{'name':item.name,'domain':item.domain,'entry_point':item.entry_point,'version':item.node_version,'enabled':item.enabled,'configuration_restore':False} for item in node_apps],
+            'python':[{'name':item.name,'domain':item.domain,'entry_point':item.entry_point,'app_type':item.app_type,'enabled':item.enabled,'configuration_restore':False} for item in python_apps],
+            'git':[{'name':item.name,'deploy_target':item.deploy_target} for item in git_repos],
+            'redis':({'memory_mb':redis_instance.mem_mb,'enabled':redis_instance.enabled,'data_persistence':'files component when enabled'} if redis_instance else None),
+        },
+        'recovery_capabilities':{'files':True,'databases_and_grants':True,'mail_and_settings':True,'dns':True,
+            'cron':True,'php':True,'domains_metadata':True,'ftp_requires_password_reset':True,
+            'ssl_reissued_instead_of_private_key_restore':True,'node_python_service_recreation':False}}
     (stage/'manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2))
     if 'databases' in options['components']:
         current_databases=_database_sources(account, stage)
@@ -778,21 +989,13 @@ def _database_sources(account, stage):
 
 
 def _notify(row,account):
-    from daemon import backup_notifications,notifications,webhooks
-    result={}
+    from daemon import backup_notifications
     event='backup.completed' if row.status=='completed' else 'backup.failed'
-    for channel in row.options['notification_channels']:
-        try:
-            sender={'email':notifications.maybe_send,'telegram':backup_notifications.send_telegram,
-                'webhook':webhooks.maybe_trigger}[channel]
-            response=sender(event,account,job_id=row.id,error=row.error)
-            result[channel]='dispatched' if response else 'not dispatched (check channel settings and account preferences)'
-        except Exception:
-            logger.exception('Snapshot notification failed');result[channel]='failed'
+    result=backup_notifications.dispatch(event,account,row.options['notification_channels'],job_id=row.id,error=row.error)
     _update(row.id,notification_results=result)
 
 
-def retained_snapshot_ids(items,options):
+def retained_snapshot_ids(items,options,protected=()):
     """Select recent plus daily/weekly/monthly points; always retain one usable point."""
     def stamp(item):
         value=item.get('time')
@@ -811,7 +1014,7 @@ def retained_snapshot_ids(items,options):
             if bucket in buckets:continue
             buckets.add(bucket);keep.add(item['id'])
             if len(buckets)>=count:break
-    keep.add(ordered[0]['id'])
+    keep.add(ordered[0]['id']);keep.update(protected)
     return keep
 
 
@@ -832,6 +1035,11 @@ def execute_run(ident):
             if account.status!='active':raise ValidationError('Account is no longer active')
             _update(ident,status='running',progress_message='Preparing account files and databases')
             paths=sources(account,row.options)
+            estimate=_preflight_capacity(paths,row.options)
+            automatic_config=None
+            if row.trigger=='scheduled':
+                from daemon.snapshot_config import automatic_export
+                automatic_config=automatic_export();paths.append(automatic_config['path'])
             if _row(SnapshotRun,ident).cancel_requested:
                 _update(ident,status='cancelled',progress_message='Cancelled after preparation',completed_at=utcnow());return
             archive_path=None;archive_summary=None
@@ -845,13 +1053,23 @@ def execute_run(ident):
                 excludes=row.options['exclude_patterns'],full_scan=row.options['mode']=='full',
                 exclude_mail_staging='mail' in row.options['components'],
                 sandbox_roots=sandbox_roots(account, paths))
+            summary={**summary,'preflight':estimate}
             if archive_summary:summary={**summary,'portable_archive':archive_summary}
+            if automatic_config:summary={**summary,'configuration_export':automatic_config}
             if _row(SnapshotRun,ident).cancel_requested:
                 _update(ident,status='cancelled',snapshot_id=summary['snapshot_id'],summary=summary,
                     progress_message='Backup point completed; later steps cancelled',completed_at=utcnow());return
             _update(ident,snapshot_id=summary['snapshot_id'],summary=summary,progress_message='Applying retention')
             items=[s for s in storage.snapshots(repo,account.id) if f'policy:{row.policy_id}' in s.get('tags',[])]
-            keep=retained_snapshot_ids(items,row.options)
+            with write_session() as session:
+                protected=set(session.scalars(select(SnapshotRun.snapshot_id).where(
+                    SnapshotRun.account_id==account.id, SnapshotRun.destination_id==row.destination_id,
+                    SnapshotRun.pinned==True, SnapshotRun.snapshot_id.is_not(None))))
+                active_download_runs=set(session.scalars(select(SnapshotDownload.run_id).where(
+                    SnapshotDownload.account_id==account.id, SnapshotDownload.status.in_(ACTIVE))))
+                protected.update(session.scalars(select(SnapshotRun.snapshot_id).where(
+                    SnapshotRun.id.in_(active_download_runs), SnapshotRun.snapshot_id.is_not(None))))
+            keep=retained_snapshot_ids(items,row.options,protected)
             obsolete=[s['id'] for s in items if s['id'] not in keep]
             if obsolete:
                 storage.forget(repo,account.id,obsolete,prune=True)
@@ -861,7 +1079,7 @@ def execute_run(ident):
                     for old in expired:old.status='expired';old.progress_message='Removed by retention policy'
             from daemon.snapshot_restores import apply_safety_retention
             apply_safety_retention(repo, account.id, row.destination_id, row.policy_id,
-                                   row.options['retention_count'])
+                                   row.options.get('pre_restore_retention',row.options['retention_count']))
             _update(ident,status='completed',progress_message='Snapshot ready',completed_at=utcnow())
     except Exception as exc:
         logger.exception('Snapshot run %s failed',ident)
@@ -870,6 +1088,28 @@ def execute_run(ident):
         export=Path(settings.snapshot_private_dir)/'exports'/f'run-{ident}'
         if export.exists() and not export.is_symlink():shutil.rmtree(export,ignore_errors=True)
         if should_notify and account is not None:_notify(_row(SnapshotRun,ident),account)
+
+
+def _preflight_capacity(paths,options):
+    """Reject portable staging that would consume the configured free-space reserve."""
+    reserve=int(options.get('minimum_free_mb',2048))*1024*1024;estimated=0
+    if options.get('mode') in ('compressed','archive'):
+        for value in paths:
+            path=Path(value)
+            if path.is_file() and not path.is_symlink():estimated+=path.stat().st_size
+            elif path.is_dir() and not path.is_symlink():
+                for root,_dirs,files in os.walk(path,followlinks=False):
+                    for name in files:
+                        item=Path(root)/name
+                        try:
+                            if not item.is_symlink():estimated+=item.stat().st_size
+                        except FileNotFoundError:continue
+        free=shutil.disk_usage(private_directory()).free
+        if free-estimated<reserve:
+            raise ValidationError(f'Portable backup needs about {estimated} bytes while preserving the configured free-space reserve')
+    else:free=shutil.disk_usage(private_directory()).free
+    if free<reserve:raise ValidationError('Backup staging free space is below the configured reserve')
+    return {'estimated_source_bytes':estimated if estimated else None,'free_bytes':free,'reserve_bytes':reserve}
 
 
 def _restore_entries(entries,account):
@@ -881,9 +1121,12 @@ def browse(params):
     account=_account(params['username'])
     row=_row(SnapshotRun,params['run_id'])
     if row.account_id!=account.id or not row.snapshot_id:raise ValidationError('Snapshot not found for this account')
+    destination=_row(SnapshotDestination,row.destination_id)
+    if params.get('customer_scope') and not destination.customer_visible:
+        raise ValidationError('This recovery point is not available in the customer panel')
     try:
         with lock(f'repository-{row.destination_id}',blocking=False):
-            repo=repository(_row(SnapshotDestination,row.destination_id))
+            repo=repository(destination)
             directory=params.get('directory','/')
             if directory=='/':
                 snapshot=storage.owned_snapshot(repo,account.id,row.snapshot_id)
@@ -905,36 +1148,148 @@ def browse(params):
         raise ValidationError('This destination is busy with a backup or retention task. Try again shortly.') from None
 
 
-def prepare_download(params):
-    account=_account(params['username']);row=_row(SnapshotRun,params['run_id'])
-    portable=(row.summary or {}).get('portable_archive') or {}
-    if row.account_id!=account.id or row.status!='completed' or not row.snapshot_id or not portable.get('path'):
-        raise ValidationError('A completed compressed or archive recovery point is required')
-    destination=_row(SnapshotDestination,row.destination_id)
+def _download_dict(row):
+    return {'id':row.id,'run_id':row.run_id,'account_id':row.account_id,'status':row.status,
+        'progress_message':row.progress_message,'filename':row.filename,'sha256':row.sha256,
+        'size_bytes':row.size_bytes,'error':row.error,'created_at':row.created_at.isoformat(),
+        'completed_at':row.completed_at.isoformat() if row.completed_at else None,
+        'expires_at':row.expires_at.isoformat() if row.expires_at else None}
+
+
+def _download_owned(params, *, require_ready=False):
+    account=_account(params['username']);download=_row(SnapshotDownload,params['id'])
+    if download.account_id!=account.id:raise ValidationError('Download not found for this account')
+    run=_row(SnapshotRun,download.run_id);destination=_row(SnapshotDestination,run.destination_id)
     if params.get('customer_scope') and not destination.customer_visible:
         raise ValidationError('This recovery point is not available in the customer panel')
-    work=Path(tempfile.mkdtemp(prefix='boron-snapshot-download-',dir='/tmp'))
+    if require_ready:
+        now=utcnow();expires=download.expires_at
+        if expires and expires.tzinfo is None:expires=expires.replace(tzinfo=dt.timezone.utc)
+        path=Path(download.private_path or '')
+        root=download_directory().resolve()
+        if download.status!='ready' or not expires or expires<=now or not path.is_file() or not path.resolve().is_relative_to(root):
+            raise ValidationError('This download is not ready or has expired')
+    return account,download
+
+
+def queue_download(params):
+    cleanup_downloads()
+    account=_account(params['username']);run_row=_row(SnapshotRun,params['run_id'])
+    if run_row.account_id!=account.id or run_row.status!='completed' or not run_row.snapshot_id:
+        raise ValidationError('A completed recovery point is required')
+    destination=_row(SnapshotDestination,run_row.destination_id)
+    if params.get('customer_scope') and not destination.customer_visible:
+        raise ValidationError('This recovery point is not available in the customer panel')
+    with write_session() as session:
+        existing=session.scalar(select(SnapshotDownload).where(SnapshotDownload.run_id==run_row.id,
+            SnapshotDownload.account_id==account.id,SnapshotDownload.status.in_(ACTIVE)).order_by(SnapshotDownload.id.desc()))
+        if existing:return _download_dict(existing)
+        row=SnapshotDownload(run_id=run_row.id,account_id=account.id)
+        session.add(row);session.flush();result=_download_dict(row);ident=row.id
+    _executor.submit(execute_download,ident)
+    return result
+
+
+def list_downloads(params):
+    cleanup_downloads()
+    account=_account(params['username'])
+    with write_session() as session:
+        rows=session.scalars(select(SnapshotDownload).where(SnapshotDownload.account_id==account.id)
+            .order_by(SnapshotDownload.id.desc()).limit(100)).all()
+        visible=[]
+        for row in rows:
+            run_row=session.get(SnapshotRun,row.run_id)
+            destination=session.get(SnapshotDestination,run_row.destination_id) if run_row else None
+            if params.get('customer_scope') and (not destination or not destination.customer_visible):continue
+            visible.append(_download_dict(row))
+        return {'downloads':visible}
+
+
+def execute_download(ident):
+    download=_row(SnapshotDownload,ident);work=download_directory(f'download-{ident}')
     try:
-        with lock(f'repository-{row.destination_id}',blocking=False):
-            restored=storage.restore_to(repository(destination),account.id,row.snapshot_id,str(work/'restored'),
-                selected_paths=[portable['path']])
-        source=restored/portable['path'].lstrip('/')
-        filename=portable.get('name') or f'{account.username}.boron.tar'
-        if not source.is_file() or '/' in filename or '\0' in filename:raise ValidationError('Portable archive is missing')
-        digest=hashlib.sha256()
-        with source.open('rb') as handle:
-            for chunk in iter(lambda:handle.read(1024*1024),b''):digest.update(chunk)
-        if not secrets.compare_digest(digest.hexdigest(),portable.get('sha256','')):
-            raise ValidationError('Portable archive checksum verification failed')
-        target=work/filename;shutil.move(source,target)
-        api_user=pwd.getpwnam('boron-api');os.chown(target,api_user.pw_uid,api_user.pw_gid);target.chmod(0o600)
-        return {'path':str(target),'filename':filename,'cleanup_dir':str(work),
-            'sha256':portable['sha256'],'size_bytes':target.stat().st_size}
-    except BlockingIOError:
-        shutil.rmtree(work,ignore_errors=True)
-        raise ValidationError('This destination is busy. Try again shortly.') from None
-    except Exception:
-        shutil.rmtree(work,ignore_errors=True);raise
+        with lock(f'download-{ident}'),lock(f'repository-{_row(SnapshotRun,download.run_id).destination_id}'):
+            download=_row(SnapshotDownload,ident)
+            if download.status!='pending':return
+            run_row=_row(SnapshotRun,download.run_id);account=_row(Account,download.account_id)
+            if run_row.status!='completed' or not run_row.snapshot_id:raise ValidationError('Recovery point is no longer available')
+            destination=_row(SnapshotDestination,run_row.destination_id)
+            _update_download(ident,status='running',progress_message='Restoring encrypted recovery point')
+            portable=(run_row.summary or {}).get('portable_archive') or {}
+            restored=storage.restore_to(repository(destination),account.id,run_row.snapshot_id,str(work/'restored'),
+                selected_paths=[portable['path']] if portable.get('path') else ())
+            if portable.get('path'):
+                source=restored/portable['path'].lstrip('/');filename=portable.get('name') or f'{account.username}.boron.tar'
+                if not source.is_file() or '/' in filename or '\0' in filename:raise ValidationError('Portable archive is missing')
+                target=work/filename;shutil.move(source,target)
+                expected=portable.get('sha256')
+            else:
+                _update_download(ident,progress_message='Building downloadable archive')
+                filename=f'{account.username}-backup-{run_row.id}.boron.tar.gz';target=work/filename
+                with tarfile.open(target,'w:gz') as archive:archive.add(restored,arcname='account',recursive=True)
+                expected=None
+            digest=hashlib.sha256()
+            with target.open('rb') as handle:
+                for chunk in iter(lambda:handle.read(1024*1024),b''):digest.update(chunk)
+            checksum=digest.hexdigest()
+            if expected and not secrets.compare_digest(checksum,expected):raise ValidationError('Portable archive checksum verification failed')
+            try:
+                api_user=pwd.getpwnam('boron-api');os.chown(target,api_user.pw_uid,api_user.pw_gid)
+                os.chown(work,os.geteuid(),api_user.pw_gid);work.chmod(0o710)
+            except KeyError:
+                # Source-tree tests and development containers need not have service users.
+                pass
+            target.chmod(0o640)
+            shutil.rmtree(work/'restored',ignore_errors=True)
+            _update_download(ident,status='ready',progress_message='Download ready',filename=filename,
+                private_path=str(target),sha256=checksum,size_bytes=target.stat().st_size,
+                completed_at=utcnow(),expires_at=utcnow()+dt.timedelta(hours=24))
+            from daemon import backup_notifications
+            backup_notifications.dispatch('backup.download_ready',account,run_row.options.get('notification_channels',[]),
+                job_id=run_row.id,detail=f'Download {filename} is ready for 24 hours')
+    except Exception as exc:
+        logger.exception('Snapshot download %s failed',ident);shutil.rmtree(work,ignore_errors=True)
+        _update_download(ident,status='failed',progress_message='Download preparation failed',error=str(exc)[-3000:],completed_at=utcnow())
+
+
+def _update_download(ident,**values):
+    with write_session() as session:
+        row=session.get(SnapshotDownload,ident)
+        if row:
+            for key,value in values.items():setattr(row,key,value)
+
+
+def download_file(params):
+    _,row=_download_owned(params,require_ready=True)
+    return {'path':row.private_path,'filename':row.filename,'sha256':row.sha256,'size_bytes':row.size_bytes}
+
+
+def cleanup_downloads():
+    now=utcnow();removed=0
+    with write_session() as session:
+        rows=session.scalars(select(SnapshotDownload).where(SnapshotDownload.status=='ready')).all()
+        for row in rows:
+            path=Path(row.private_path or '')
+            expires=row.expires_at
+            if expires and expires.tzinfo is None:expires=expires.replace(tzinfo=dt.timezone.utc)
+            missing=not path.is_file()
+            if not missing and (not expires or expires>now):continue
+            if path.is_file():path.unlink()
+            parent=path.parent
+            if parent.name==f'download-{row.id}':shutil.rmtree(parent,ignore_errors=True)
+            row.status='expired' if not missing else 'failed';row.private_path=None
+            row.progress_message='Download expired' if not missing else 'Prepared download file is missing; prepare it again'
+            if missing:row.error='Private download staging was unavailable after restart'
+            removed+=1
+    return {'removed':removed}
+
+
+def set_run_pin(params):
+    row=_row(SnapshotRun,params['id'])
+    if not isinstance(params.get('pinned'),bool):raise ValidationError('Invalid pinned value')
+    if row.status not in ('completed','expired'):raise ValidationError('Only completed recovery points can be pinned')
+    with write_session() as session:
+        current=session.get(SnapshotRun,row.id);current.pinned=params['pinned'];session.flush();return _run_dict(current)
 
 
 def run_scheduled():
@@ -963,3 +1318,10 @@ def recover_runs():
                         progress_message='Interrupted',completed_at=utcnow())
         except BlockingIOError:
             continue
+    with write_session() as session:
+        downloads=session.scalars(select(SnapshotDownload).where(SnapshotDownload.status.in_(ACTIVE))).all()
+    for item in downloads:
+        if item.status=='pending':_executor.submit(execute_download,item.id)
+        else:_update_download(item.id,status='failed',progress_message='Download preparation interrupted',
+            error='Download worker was interrupted; prepare it again.',completed_at=utcnow())
+    cleanup_downloads()

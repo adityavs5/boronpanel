@@ -1398,6 +1398,12 @@ NOTIFICATION_EVENT_TYPES = (
     "account.terminated",
     "backup.completed",
     "backup.failed",
+    "backup.partial",
+    "backup.overdue",
+    "backup.destination_unavailable",
+    "backup.restore_completed",
+    "backup.restore_failed",
+    "backup.download_ready",
     "ssl.expiring",
     "usage.limit.reached",
     "login.new",
@@ -1449,6 +1455,12 @@ WEBHOOK_EVENT_TYPES = (
     "account.terminated",
     "backup.completed",
     "backup.failed",
+    "backup.partial",
+    "backup.overdue",
+    "backup.destination_unavailable",
+    "backup.restore_completed",
+    "backup.restore_failed",
+    "backup.download_ready",
     "ssl.expiring",
     "usage.limit.reached",
     "dns.zone_activated",
@@ -2199,8 +2211,27 @@ class SnapshotRun(Base):
     progress_message: Mapped[str] = mapped_column(String(256), default='Queued')
     error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(default=False)
+    pinned: Mapped[bool] = mapped_column(default=False)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SnapshotDownload(Base):
+    """A private, expiring archive prepared asynchronously from a recovery point."""
+    __tablename__ = 'snapshot_downloads'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey('snapshot_runs.id'), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'), index=True)
+    status: Mapped[str] = mapped_column(String(16), default='pending', index=True)
+    progress_message: Mapped[str] = mapped_column(String(256), default='Queued')
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    private_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class SnapshotRestore(Base):
@@ -2234,12 +2265,25 @@ class SnapshotDestinationOperation(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     destination_id: Mapped[int] = mapped_column(ForeignKey('snapshot_destinations.id'), index=True)
     action: Mapped[str] = mapped_column(String(24))
+    options: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(16), default='pending', index=True)
     progress_message: Mapped[str] = mapped_column(String(256), default='Queued')
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(String(3000), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SnapshotOAuthState(Base):
+    """Short-lived, one-use PKCE state for administrator storage authorization."""
+    __tablename__ = 'snapshot_oauth_states'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    destination_id: Mapped[int] = mapped_column(ForeignKey('snapshot_destinations.id'), index=True)
+    state_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    verifier_enc: Mapped[str] = mapped_column(Text)
+    redirect_uri: Mapped[str] = mapped_column(String(2048))
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class BackupTelegramSettings(Base):
