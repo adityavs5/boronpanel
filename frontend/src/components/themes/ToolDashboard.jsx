@@ -119,7 +119,7 @@ export default function ToolDashboard() {
             {health.isSuccess && <><UsageRow label="CPU Usage" value={health.data.cpu_pct != null ? `${Math.round(health.data.cpu_pct)}%` : '—'} pct={health.data.cpu_pct} /><UsageRow label="Memory Usage" value={health.data.mem_pct != null ? `${Math.round(health.data.mem_pct)}%` : '—'} pct={health.data.mem_pct} /><UsageRow label="Disk Space" value={disk?.pct != null ? `${Math.round(disk.pct)}%` : '—'} pct={disk?.pct} /></>}
             <QueryNotice query={accounts} label="Accounts" />
             {accounts.isSuccess && <><UsageRow label="Hosting Accounts" value={Array.isArray(accounts.data) ? accounts.data.length : '—'} /><UsageRow label="Active Accounts" value={Array.isArray(accounts.data) ? accounts.data.filter((a) => a.status === 'active').length : '—'} /></>}
-          </> : <><QueryNotice query={usage} label="Usage statistics" />{usage.isSuccess && <>
+          </> : <><QueryNotice query={usage} label="Usage statistics" /><>
             <UsageRow label="CPU" value={rates.cpuCores != null ? `${rates.cpuCores.toFixed(2)} cores` : 'Collecting…'} pct={rates.cpuCores != null && counters?.cpu_limit_cores ? rates.cpuCores / counters.cpu_limit_cores * 100 : undefined} detail={counters?.cpu_limit_cores ? `${counters.cpu_limit_cores} cores allocated` : undefined} />
             <UsageRow label="Memory" value={counters?.memory_current_bytes != null ? formatBytes(counters.memory_current_bytes) : '—'} pct={counters?.memory_current_bytes != null && counters?.memory_limit_bytes ? counters.memory_current_bytes / counters.memory_limit_bytes * 100 : undefined} detail={counters?.memory_limit_bytes ? `of ${formatBytes(counters.memory_limit_bytes)}` : undefined} />
             <UsageRow label="Disk I/O" value={rates.ioBytes != null ? `${formatBytes(rates.ioBytes)}/s` : 'Collecting…'} detail={counters?.io_limit_bytes_per_second ? `${formatBytes(counters.io_limit_bytes_per_second)}/s limit` : undefined} />
@@ -134,7 +134,7 @@ export default function ToolDashboard() {
             <UsageRow label="Email Accounts" value={counters?.email_account_count != null ? `${counters.email_account_count} / ${counters.email_account_limit ?? '∞'}` : '—'} pct={counters?.email_account_limit ? counters.email_account_count / counters.email_account_limit * 100 : undefined} />
             <UsageRow label="Databases" value={counters?.database_count != null ? `${counters.database_count} / ${counters.database_limit ?? '∞'}` : '—'} pct={counters?.database_limit ? counters.database_count / counters.database_limit * 100 : undefined} />
             <UsageRow label="FTP Accounts" value={counters?.ftp_account_count != null ? `${counters.ftp_account_count} / ${counters.ftp_account_limit ?? '∞'}` : '—'} pct={counters?.ftp_account_limit ? counters.ftp_account_count / counters.ftp_account_limit * 100 : undefined} />
-          </>}</>}
+          </></>}
         </StatsPanel>
         {skin !== 'evolution' && <StatsPanel title="Quick Links">
           <div className="stats-quick-links"><Link to={isAdmin ? '/accounts' : '/files'}>{isAdmin ? 'Manage accounts' : 'Open file manager'}<ArrowUpRight size={14} /></Link><Link to="/security">Secure your account<ArrowUpRight size={14} /></Link><Link to="/appearance">Customize your workspace<ArrowUpRight size={14} /></Link>{supportUrl && <a href={supportUrl} target="_blank" rel="noopener noreferrer">Contact support<ExternalLink size={14} /></a>}{!supportUrl && supportEmail && <a href={`mailto:${supportEmail}`}>Contact support<ExternalLink size={14} /></a>}</div>
