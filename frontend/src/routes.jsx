@@ -80,6 +80,8 @@ const Administrators = lazy(() => import('@/pages/admin/Administrators'))
 const SoftwareInventory = lazy(() => import('@/pages/admin/SoftwareInventory'))
 const MailTracking = lazy(() => import('@/pages/admin/MailTracking'))
 const DnsCluster = lazy(() => import('@/pages/admin/DnsCluster'))
+const DnsSetup = lazy(() => import('@/pages/admin/DnsSetup'))
+const ServerSetup = lazy(() => import('@/pages/admin/ServerSetup'))
 
 function IndexRedirect() {
   const role = useAuth.getState().role
@@ -192,6 +194,8 @@ export const router = createBrowserRouter(
         { path: 'ip-whitelist', element: admin(<IpWhitelist />) },
         { path: 'cloudflare', element: admin(<Cloudflare />) },
         { path: 'dns-cluster', element: admin(<DnsCluster />) },
+        { path: 'dns-setup', element: admin(<DnsSetup />) },
+        { path: 'server-setup', element: admin(<ServerSetup />) },
         { path: 'audit-log', element: admin(<AuditLog />) },
         { path: 'account-log', element: admin(<AccountLog />) },
         { path: 'error-log', element: admin(<ErrorLog />) },

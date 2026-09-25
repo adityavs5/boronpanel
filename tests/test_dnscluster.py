@@ -26,10 +26,11 @@ ZONE_PAYLOAD = {
 }
 
 
-def _peer(kind="boron", credential="bdc_shared_test_key"):
+def _peer(kind="boron", credential="bdc_shared_test_key", **overrides):
     params = {"name": f"{kind}-peer", "peer_type": kind, "endpoint": "https://dns.example.test",
               "credential": credential}
     if kind != "boron": params["username"] = "admin"
+    params.update(overrides)
     return dnscluster.create_peer(params)
 
 
@@ -72,6 +73,7 @@ def test_outbox_coalesces_to_latest_complete_zone(isolated_db, monkeypatch):
 
 
 def test_incoming_full_zone_is_idempotent_and_removes_stale_rrsets(isolated_db, monkeypatch):
+    _peer(direction="receive", zones=["example.test"])
     existing = [
         {"name": "example.test.", "type": "SOA", "ttl": 3600, "records": []},
         {"name": "old.example.test.", "type": "A", "ttl": 300, "records": [{"content": "192.0.2.99"}]},
@@ -80,7 +82,8 @@ def test_incoming_full_zone_is_idempotent_and_removes_stale_rrsets(isolated_db, 
     monkeypatch.setattr(dnscluster.powerdns, "zone_exists", lambda zone: True)
     monkeypatch.setattr(dnscluster.powerdns, "get_zone", lambda zone: {"rrsets": existing})
     monkeypatch.setattr(dnscluster.powerdns, "apply_rrset_changes", lambda zone, rrsets: changes.extend(rrsets))
-    params = {"event_id": "a" * 32, "action": "upsert", "zone": "example.test", "payload": ZONE_PAYLOAD}
+    params = {"event_id": "a" * 32, "action": "upsert", "zone": "example.test", "payload": ZONE_PAYLOAD,
+              "_peer_name": "boron-peer"}
     assert dnscluster.apply_incoming(params) == {"applied": True, "duplicate": False}
     assert any(c["changetype"] == "DELETE" and c["name"] == "old.example.test." for c in changes)
     assert any(c["changetype"] == "REPLACE" and c["type"] == "NS" for c in changes)
@@ -94,6 +97,20 @@ def test_incoming_rejects_out_of_zone_record(isolated_db):
                                         "values": ["192.0.2.1"]}]}
     with pytest.raises(ValidationError, match="outside"):
         dnscluster._validate_payload("example.test", bad)
+
+
+def test_receive_direction_requires_explicit_zone_ownership(isolated_db):
+    with pytest.raises(ValidationError, match="allowlist"):
+        _peer(direction="receive")
+
+
+def test_incoming_rejects_unowned_zone(isolated_db):
+    _peer(direction="receive", zones=["owned.test"])
+    with pytest.raises(ValidationError, match="ownership"):
+        dnscluster.apply_incoming({
+            "event_id": "c" * 32, "action": "upsert", "zone": "example.test",
+            "payload": ZONE_PAYLOAD, "_peer_name": "boron-peer",
+        })
 
 
 def test_directadmin_adapter_uses_rawsave_and_delete(isolated_db):

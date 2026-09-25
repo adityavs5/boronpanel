@@ -15,8 +15,8 @@ from shared.db import write_session
 from shared.models import Account, DnsZone
 from shared.validation import ValidationError, validate_domain, validate_record_type
 
-from daemon import cloudflare_ops, dnsprovider
-from daemon.dns_zone_lookup import find_managed_zone
+from daemon import cloudflare_ops, dnsprovider, dnssetup
+from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 
 RECORD_VALUE_VALIDATORS = {
     "A": lambda v: _validate_ipv4(v),
@@ -133,7 +133,8 @@ def create_zone(params: dict) -> dict:
     if dnsprovider.zone_exists(domain_name):
         raise RuntimeError(f"zone '{domain_name}' already exists in PowerDNS")
 
-    ns_records = [f"ns1.{domain_name}.", f"ns2.{domain_name}."]
+    nameservers = dnssetup.local_nameservers(domain_name)
+    ns_records = [f"{name}." for name in nameservers]
     dnsprovider.create_zone(domain_name, ns_records)
 
     # Nameserver glue always points at the server's primary address. The
@@ -144,8 +145,14 @@ def create_zone(params: dict) -> dict:
     ip = settings.server_public_ip
     site_ip = ipmanager.address_for_account(account.id)
     if ip:
-        dnsprovider.upsert_record(domain_name, "ns1", "A", [ip])
-        dnsprovider.upsert_record(domain_name, "ns2", "A", [ip])
+        glue_type = "AAAA" if ":" in ip else "A"
+        # Glue belongs only in this zone when the configured nameserver is a
+        # child of it. External nameservers must be resolved by their owner.
+        for hostname in nameservers:
+            if hostname.endswith(f".{domain_name}"):
+                dnsprovider.upsert_record(
+                    domain_name, label_within_zone(hostname, domain_name), glue_type, [ip]
+                )
     if site_ip:
         rtype = "AAAA" if ":" in site_ip else "A"
         dnsprovider.upsert_record(domain_name, "@", rtype, [site_ip])

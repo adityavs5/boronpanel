@@ -91,11 +91,13 @@ def _dns01_plan(domain: str) -> list[str] | None:
     the stale local PowerDNS zone Boron keeps as the revert target). A
     local Boron-managed zone uses dns-powerdns. Anything else -> None
     (no DNS-01 hook available)."""
-    row = dnsprovider.cloudflare_zone_row(domain)
+    from daemon.dns_zone_lookup import find_managed_zone
+    zone = find_managed_zone(domain) or domain
+    row = dnsprovider.cloudflare_zone_row(zone)
     if row is not None and row.status == "active":
         return _cf_dns01_args(row)
     with write_session() as session:
-        if session.scalar(select(DnsZone).where(DnsZone.zone == domain)) is not None:
+        if session.scalar(select(DnsZone).where(DnsZone.zone == zone)) is not None:
             return _dns01_args()
     return None
 

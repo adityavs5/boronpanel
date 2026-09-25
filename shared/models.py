@@ -142,6 +142,9 @@ class DnsClusterPeer(Base):
     credential_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     verify_tls: Mapped[bool] = mapped_column(default=True)
     enabled: Mapped[bool] = mapped_column(default=True, index=True)
+    direction: Mapped[str] = mapped_column(String(16), default="push")  # push | receive | bidirectional
+    zones: Mapped[list] = mapped_column(JSON, default=list)  # empty = every locally managed zone
+    conflict_policy: Mapped[str] = mapped_column(String(24), default="reject_stale")
     status: Mapped[str] = mapped_column(String(20), default="pending")
     last_success_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
@@ -179,6 +182,65 @@ class DnsClusterReceipt(Base):
     peer_id: Mapped[int | None] = mapped_column(ForeignKey("dns_cluster_peers.id"), nullable=True)
     zone: Mapped[str] = mapped_column(String(253))
     received_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class DnsClusterZoneState(Base):
+    """Last accepted/sent version per peer and zone for convergence checks."""
+
+    __tablename__ = "dns_cluster_zone_state"
+    __table_args__ = (UniqueConstraint("peer_id", "zone", name="uq_dns_cluster_zone_state_peer_zone"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    peer_id: Mapped[int] = mapped_column(ForeignKey("dns_cluster_peers.id"), index=True)
+    zone: Mapped[str] = mapped_column(String(253), index=True)
+    serial: Mapped[int] = mapped_column(Integer, default=0)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    direction: Mapped[str] = mapped_column(String(16))  # sent | received
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class DnsServerSettings(Base):
+    """Server-wide default DNS authority for newly created zones."""
+
+    __tablename__ = "dns_server_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    mode: Mapped[str] = mapped_column(String(16), default="local")  # cloudflare | local | cluster
+    local_nameservers: Mapped[list] = mapped_column(JSON, default=list)
+    last_diagnostics: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class DnsZoneMigration(Base):
+    """Staged provider move; source remains effective until verification."""
+
+    __tablename__ = "dns_zone_migrations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    zone: Mapped[str] = mapped_column(String(253), unique=True, index=True)
+    source: Mapped[str] = mapped_column(String(16))
+    target: Mapped[str] = mapped_column(String(16))
+    state: Mapped[str] = mapped_column(String(32), default="staged", index=True)
+    expected_nameservers: Mapped[list] = mapped_column(JSON, default=list)
+    preview: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_verification: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ServerSetupState(Base):
+    """Resumable administrator setup wizard state and non-secret draft."""
+
+    __tablename__ = "server_setup_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    current_step: Mapped[int] = mapped_column(Integer, default=1)
+    completed: Mapped[bool] = mapped_column(default=False)
+    contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    maxmind_skipped: Mapped[bool] = mapped_column(default=False)
+    draft: Mapped[dict] = mapped_column(JSON, default=dict)
+    step_results: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class CloudflareZone(Base):

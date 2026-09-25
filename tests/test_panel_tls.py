@@ -76,7 +76,7 @@ def test_panel_acme_route_is_static_and_http_only(monkeypatch):
     assert 'boron_panel_acme' not in https
 
 
-def test_issue_uses_stable_renewal_hook_and_dedicated_webroot(monkeypatch):
+def test_issue_uses_stable_renewal_hook_and_dedicated_webroot(monkeypatch, isolated_db):
     from daemon import panel_tls,procutil
     monkeypatch.setattr(panel_tls,'bootstrap_challenge',lambda:{'hostname':'panel.example','webroot':'/var/www/panel-acme'})
     calls=[]

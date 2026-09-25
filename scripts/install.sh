@@ -1353,6 +1353,19 @@ setup_geoip() {
     fi
 }
 
+seed_server_setup_wizard() {
+    # Persist only non-secret installation facts. Cloudflare, cluster and
+    # MaxMind credentials are intentionally entered through the HTTPS wizard,
+    # never command arguments or shell history.
+    export BORON_SETUP_PANEL_DOMAIN="$PANEL_DOMAIN"
+    export BORON_SETUP_SERVER_IP="$SERVER_IP"
+    export BORON_SETUP_EMAIL="$LE_EMAIL"
+    export BORON_SETUP_MAXMIND_SKIPPED
+    [[ -z "$MAXMIND_LICENSE_KEY" ]] && BORON_SETUP_MAXMIND_SKIPPED=1 || BORON_SETUP_MAXMIND_SKIPPED=0
+    run_sh "'${VENV}/bin/python' -c \"import os, sys; sys.path.insert(0, '${DEST}'); from daemon.server_setup import seed_installer_draft; seed_installer_draft(os.environ.get('BORON_SETUP_PANEL_DOMAIN',''), os.environ.get('BORON_SETUP_SERVER_IP',''), os.environ.get('BORON_SETUP_EMAIL',''), maxmind_skipped=os.environ.get('BORON_SETUP_MAXMIND_SKIPPED') == '1')\""
+    unset BORON_SETUP_PANEL_DOMAIN BORON_SETUP_SERVER_IP BORON_SETUP_EMAIL BORON_SETUP_MAXMIND_SKIPPED
+}
+
 # --- prompts -----------------------------------------------------------------
 
 prompt_inputs() {
@@ -1483,10 +1496,12 @@ main() {
     bootstrap_security_services
     create_admin
     setup_geoip
+    seed_server_setup_wizard
 
     summary
     if [[ "$STEP_FAIL" -eq 0 ]]; then
         info "Done. Boron Panel v${BORON_VERSION} -- https://${PANEL_DOMAIN:-${SERVER_IP:-<server-ip>}}:2222/login"
+        info "Complete or review server setup at https://${PANEL_DOMAIN:-${SERVER_IP:-<server-ip>}}:2222/app/server-setup"
         if $DRY_RUN; then
             info "This was a dry-run -- nothing was changed."
         fi

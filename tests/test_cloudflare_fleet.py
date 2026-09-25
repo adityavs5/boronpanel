@@ -84,7 +84,8 @@ def test_auto_enable_skipped_without_capacity(cf, fake_pdns, monkeypatch):
     with write_session() as session:
         session.scalar(select(cloudflare_accounts.CloudflareAccount)).zone_count = 1  # full
     result = handlers_dns.create_zone({"domain": "site.com", "username": "site"})
-    assert "cloudflare" not in result  # skipped, zone still created locally
+    assert result["cloudflare"]["status"] == "failed"
+    assert "capacity" in result["cloudflare"]["error"].lower()
 
 
 def test_settings_get_set_roundtrip(cf):

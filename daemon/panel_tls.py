@@ -67,13 +67,26 @@ def issue_certificate(email):
     from daemon.procutil import run
     email=validate_email_address(email)
     route=bootstrap_challenge()
+    # Prefer the existing provider-aware DNS-01 implementation when the
+    # hostname sits inside a Boron-managed local or active Cloudflare zone.
+    # This keeps setup resumable even before the new hostname reaches this
+    # server over HTTP. Fall back to the dedicated HTTP-01 vhost otherwise.
+    from daemon import ssl as domain_ssl
+    from daemon.dns_zone_lookup import find_managed_zone
+    managed_zone = find_managed_zone(route['hostname'])
+    challenge_args = domain_ssl._dns01_plan(managed_zone) if managed_zone else None
+    if challenge_args is None:
+        challenge_args = ['--webroot', '-w', route['webroot']]
+        challenge_mode = 'http-01'
+    else:
+        challenge_mode = 'dns-01'
     hook=shlex.join([str(Path(settings.certbot_bin).parent/'python'),
         '/opt/boron/scripts/panel_ssl_deploy.py','--hostname',route['hostname']])
     result=run([settings.certbot_bin,'certonly','--non-interactive','--agree-tos',
         '--email',email,'--cert-name',route['hostname'],'-d',route['hostname'],
-        '--webroot','-w',route['webroot'],'--keep-until-expiring','--deploy-hook',hook],timeout=1200)
+        *challenge_args, '--keep-until-expiring','--deploy-hook',hook],timeout=1200)
     result.raise_if_failed('Issue panel certificate')
-    return {'hostname':route['hostname'],'status':'issued'}
+    return {'hostname':route['hostname'],'status':'issued','challenge':challenge_mode}
 
 
 def certificate_status(params=None):

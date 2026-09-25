@@ -22,7 +22,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import panel_config, panel_jobs, panel_tls, snapshot_config, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, dnscluster, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import panel_config, panel_jobs, panel_tls, snapshot_config, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, dnscluster, dnssetup, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, server_setup, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 from daemon.rpc_authority import AuthenticationError, AuthorizationError, authorize, resolve_principal
 from daemon import directadmin_remote
@@ -151,6 +151,17 @@ OP_TABLE = {
     "dnscluster.sync_all": dnscluster.sync_all,
     "dnscluster.apply": dnscluster.apply_incoming,
     "dnscluster.ping": lambda params: {"ok": True},
+    "dnssetup.get": dnssetup.get_settings,
+    "dnssetup.mode.preview": dnssetup.preview_mode,
+    "dnssetup.mode.set": dnssetup.set_mode,
+    "dnssetup.zone.preview": dnssetup.preview_zone_migration,
+    "dnssetup.zone.migrate": dnssetup.migrate_zone,
+    "dnssetup.zone.verify": dnssetup.verify_zone_migration,
+    "dnssetup.diagnostics": dnssetup.diagnostics,
+    "server_setup.status": server_setup.status,
+    "server_setup.step": server_setup.run_step,
+    "server_setup.records.preview": server_setup.service_records_preview,
+    "server_setup.step.reset": server_setup.reset_section,
     "nameservers.list": nameservers.list_nameservers,
     "nameservers.set": nameservers.set_nameservers,
     "nameservers.reset": nameservers.reset_nameservers,
@@ -657,6 +668,7 @@ REPORTING_OPS = {
     # a slow/unreachable external API polled by a dashboard must never
     # stall the default executor (same reasoning as services.status above).
     "cf.health",
+    "dnssetup.diagnostics",
     # Phase 2+3 feature 1: adding/testing a pool account live-verifies its
     # token against api.cloudflare.com -- same outbound-HTTPS isolation.
     "cf.account_add", "cf.account_test",
@@ -887,6 +899,8 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
         elif op == "firewall.temporary_ban.add":
             handler_params["actor"] = actor
             handler_params["actor_ip"] = ip
+        elif op.startswith("dnscluster.") and current is not None and current.role == "cluster":
+            handler_params["_peer_name"] = current.username
         return handler(handler_params)
 
     try:

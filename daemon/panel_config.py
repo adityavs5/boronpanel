@@ -8,6 +8,7 @@ from __future__ import annotations
 import fcntl
 import http.client
 import json
+import ipaddress
 import os
 from pathlib import Path
 import re
@@ -60,6 +61,92 @@ def render_hostname(content: str, hostname: str) -> str:
         raise ValidationError('Panel configuration is not flat TOML; hostname cannot be safely edited')
     Settings(**expected)
     return updated
+
+
+_SERVER_SETUP_KEYS = {
+    "server_public_ip", "letsencrypt_email", "panel_hostname",
+    "webmail_hostname", "webmail_url", "pma_hostname",
+}
+
+
+def render_setup_values(content: str, updates: dict[str, str]) -> str:
+    """Safely edit the small flat-TOML subset owned by Server Setup."""
+    unknown = set(updates) - _SERVER_SETUP_KEYS
+    if unknown:
+        raise ValidationError("Unsupported server setup setting: " + ", ".join(sorted(unknown)))
+    before = tomllib.loads(content)
+    expected = dict(before)
+    expected.update(updates)
+    updated = content
+    for key, value in updates.items():
+        encoded = json.dumps(value)
+        pattern = rf'(?m)^([ \t]*{re.escape(key)}[ \t]*=[ \t]*)[^\n#]*(.*)$'
+        updated, count = re.subn(pattern, lambda m, encoded=encoded: f'{m[1]}{encoded} {m[2]}'.rstrip(), updated)
+        if count == 0:
+            updated = f'{key} = {encoded}\n' + updated
+    if tomllib.loads(updated) != expected:
+        raise ValidationError("Panel configuration is not flat TOML; server setup values cannot be safely edited")
+    Settings(**expected)
+    return updated
+
+
+def apply_setup_values(updates: dict[str, str], *, config_path=CONFIG_PATH, reload_services: bool = False) -> dict:
+    """Atomically apply non-secret server identity/service-host settings."""
+    clean = dict(updates)
+    if "server_public_ip" in clean and clean["server_public_ip"]:
+        try:
+            ipaddress.ip_address(clean["server_public_ip"])
+        except ValueError as exc:
+            raise ValidationError("Server public IP is invalid") from exc
+    for key in ("panel_hostname", "webmail_hostname", "pma_hostname"):
+        if key in clean and clean[key]:
+            clean[key] = validate_domain(clean[key])
+    if "letsencrypt_email" in clean and clean["letsencrypt_email"]:
+        from shared.validation import validate_email_address
+        clean["letsencrypt_email"] = validate_email_address(clean["letsencrypt_email"])
+    if clean.get("webmail_hostname"):
+        clean["webmail_url"] = f'https://{clean["webmail_hostname"]}'
+    hostnames = [clean.get(key, getattr(settings, key)) for key in ("panel_hostname", "webmail_hostname", "pma_hostname")]
+    present = [item for item in hostnames if item]
+    if len(set(present)) != len(present):
+        raise ValidationError("Panel, webmail, and phpMyAdmin hostnames must be distinct")
+    target = Path(config_path)
+    if not target.is_file() or target.is_symlink():
+        raise ValidationError("Panel configuration must be an existing regular file")
+    original = target.read_text()
+    updated = render_setup_values(original, clean)
+    metadata = target.stat()
+
+    def validate(path):
+        Settings(**tomllib.loads(path.read_text()))
+        os.chmod(path, metadata.st_mode & 0o777)
+        os.chown(path, metadata.st_uid, metadata.st_gid)
+        return StepResult(True)
+
+    def reload():
+        try:
+            fresh = Settings(**tomllib.loads(target.read_text()))
+            for key in clean:
+                setattr(settings, key, getattr(fresh, key))
+            if reload_services:
+                from daemon import ols, panel_tls, pma
+                panel_tls.bootstrap_challenge()
+                if settings.webmail_hostname:
+                    ols.bootstrap_webmail()
+                if settings.pma_hostname:
+                    pma.bootstrap_pma()
+            return StepResult(True)
+        except Exception as exc:
+            return StepResult(False, f"Service hostname configuration failed: {type(exc).__name__}: {exc}")
+
+    writer = ConfigWriter(
+        str(target), validate=validate, reload=reload, verify=lambda: StepResult(True),
+        backup_dir=settings.backup_dir, subsystem="server-setup",
+    )
+    result = writer.apply(updated)
+    if not result.ok:
+        raise RuntimeError("Server setup configuration failed; previous settings restored. " + result.summary())
+    return {"status": "completed", "updated": sorted(clean)}
 
 
 def apply_hostname(hostname: str, *, config_path=CONFIG_PATH) -> dict:

@@ -44,7 +44,9 @@ def _cluster_notify(zone: str, action: str = "upsert") -> None:
     explicit cluster Sync all repair the gap.
     """
     try:
-        from daemon import dnscluster
+        from daemon import dnscluster, dnssetup
+        if dnssetup.current_mode() != "cluster":
+            return
         dnscluster.enqueue_zone(zone, action)
     except Exception:
         logger.exception("Could not queue DNS cluster update for %s", zone)

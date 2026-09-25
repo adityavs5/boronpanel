@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import logging
 import secrets
 import threading
@@ -20,12 +21,14 @@ from shared.models import (
     DnsClusterOutbox,
     DnsClusterPeer,
     DnsClusterReceipt,
+    DnsClusterZoneState,
     DnsZone,
 )
 from shared.validation import ValidationError, validate_domain
 
 logger = logging.getLogger("borond.dnscluster")
 PEER_TYPES = {"boron", "directadmin", "cpanel"}
+DIRECTIONS = {"push", "receive", "bidirectional"}
 RECORD_TYPES = {"A", "AAAA", "CAA", "CNAME", "MX", "NS", "PTR", "SOA", "SRV", "TXT"}
 _transport: httpx.BaseTransport | None = None
 _worker_started = False
@@ -48,6 +51,8 @@ def _peer_dict(peer: DnsClusterPeer) -> dict:
         "id": peer.id, "name": peer.name, "peer_type": peer.peer_type,
         "endpoint": peer.endpoint, "username": peer.username,
         "verify_tls": peer.verify_tls, "enabled": peer.enabled,
+        "direction": peer.direction, "zones": list(peer.zones or []),
+        "conflict_policy": peer.conflict_policy,
         "status": peer.status, "last_success_at": _iso(peer.last_success_at),
         "last_error": peer.last_error, "created_at": _iso(peer.created_at),
     }
@@ -91,10 +96,22 @@ def _validate_peer(params: dict, *, existing: DnsClusterPeer | None = None) -> d
         credential = "bdc_" + secrets.token_urlsafe(32) if peer_type == "boron" else None
     if existing is None and credential is None:
         raise ValidationError("An API token or login key is required")
+    direction = str(params.get("direction", existing.direction if existing else "push")).lower()
+    if direction not in DIRECTIONS:
+        raise ValidationError("Direction must be push, receive, or bidirectional")
+    if peer_type != "boron" and direction != "push":
+        raise ValidationError("DirectAdmin and cPanel peers support push replication only")
+    raw_zones = params.get("zones", existing.zones if existing else [])
+    if not isinstance(raw_zones, list) or len(raw_zones) > 10000:
+        raise ValidationError("Zones must be a list of at most 10,000 domain names")
+    zones = sorted({validate_domain(value) for value in raw_zones})
+    if direction in {"receive", "bidirectional"} and not zones:
+        raise ValidationError("Receiving peers require an explicit zone allowlist")
     return {
         "name": name, "peer_type": peer_type, "endpoint": endpoint, "username": username,
         "credential": credential, "verify_tls": bool(params.get("verify_tls", existing.verify_tls if existing else True)),
         "enabled": bool(params.get("enabled", existing.enabled if existing else True)),
+        "direction": direction, "zones": zones, "conflict_policy": "reject_stale",
     }
 
 
@@ -102,6 +119,7 @@ def list_peers(_params: dict) -> dict:
     with write_session() as db:
         peers = db.scalars(select(DnsClusterPeer).order_by(DnsClusterPeer.name)).all()
         jobs = db.scalars(select(DnsClusterOutbox).order_by(DnsClusterOutbox.updated_at.desc()).limit(100)).all()
+        states = db.scalars(select(DnsClusterZoneState).order_by(DnsClusterZoneState.updated_at.desc()).limit(250)).all()
         return {
             "peers": [_peer_dict(p) for p in peers],
             "jobs": [{
@@ -109,6 +127,11 @@ def list_peers(_params: dict) -> dict:
                 "status": j.status, "attempts": j.attempts, "next_attempt_at": _iso(j.next_attempt_at),
                 "last_error": j.last_error, "updated_at": _iso(j.updated_at),
             } for j in jobs],
+            "convergence": [{
+                "peer_id": row.peer_id, "zone": row.zone, "serial": row.serial,
+                "content_sha256": row.content_sha256, "direction": row.direction,
+                "updated_at": _iso(row.updated_at),
+            } for row in states],
         }
 
 
@@ -157,6 +180,12 @@ def delete_peer(params: dict) -> dict:
             return {"deleted": False}
         for job in db.scalars(select(DnsClusterOutbox).where(DnsClusterOutbox.peer_id == peer.id)).all():
             db.delete(job)
+        for state in db.scalars(select(DnsClusterZoneState).where(DnsClusterZoneState.peer_id == peer.id)).all():
+            db.delete(state)
+        for receipt in db.scalars(select(DnsClusterReceipt).where(DnsClusterReceipt.peer_id == peer.id)).all():
+            # Keep idempotency receipts after peer deletion without retaining
+            # a dangling foreign-key reference.
+            receipt.peer_id = None
         db.delete(peer)
     return {"deleted": True}
 
@@ -172,7 +201,23 @@ def _canonical_payload(zone: str) -> dict:
             "ttl": int(rrset.get("ttl") or 3600),
             "values": [str(r["content"]) for r in rrset.get("records", []) if not r.get("disabled")],
         })
-    return {"version": 1, "zone": validate_domain(zone), "rrsets": rrsets}
+    serial = 0
+    for rrset in rrsets:
+        if rrset["type"] == "SOA" and rrset["values"]:
+            parts = rrset["values"][0].split()
+            if len(parts) > 2 and parts[2].isdigit():
+                serial = int(parts[2])
+                break
+    canonical = json.dumps(rrsets, sort_keys=True, separators=(",", ":"))
+    return {
+        "version": 2, "zone": validate_domain(zone), "rrsets": rrsets,
+        "serial": serial, "content_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+        "generated_at": _now().isoformat(),
+    }
+
+
+def _peer_covers(peer: DnsClusterPeer, zone: str) -> bool:
+    return not peer.zones or zone in peer.zones
 
 
 def _enqueue_for_peer(db, peer: DnsClusterPeer, zone: str, action: str, payload: dict | None) -> None:
@@ -203,6 +248,7 @@ def enqueue_zone(zone: str, action: str = "upsert") -> dict:
         payload = None
     with write_session() as db:
         peers = db.scalars(select(DnsClusterPeer).where(DnsClusterPeer.enabled.is_(True))).all()
+        peers = [peer for peer in peers if peer.direction in {"push", "bidirectional"} and _peer_covers(peer, zone)]
         for peer in peers:
             _enqueue_for_peer(db, peer, zone, action, payload)
         return {"queued": len(peers)}
@@ -354,6 +400,16 @@ def process_one() -> bool:
                 db.delete(current)
             if target is not None:
                 target.status, target.last_success_at, target.last_error = "healthy", _now(), None
+                if job.action == "upsert" and job.payload:
+                    state = db.scalar(select(DnsClusterZoneState).where(
+                        DnsClusterZoneState.peer_id == peer.id, DnsClusterZoneState.zone == job.zone,
+                    ))
+                    if state is None:
+                        state = DnsClusterZoneState(peer_id=peer.id, zone=job.zone, direction="sent")
+                        db.add(state)
+                    state.serial = int(job.payload.get("serial") or 0)
+                    state.content_sha256 = job.payload.get("content_sha256")
+                    state.direction = "sent"
     except Exception as exc:
         logger.warning("DNS cluster delivery failed for job %s: %s", job_id, type(exc).__name__)
         with write_session() as db:
@@ -369,7 +425,7 @@ def process_one() -> bool:
 
 
 def _validate_payload(zone: str, payload: object) -> dict:
-    if not isinstance(payload, dict) or payload.get("version") != 1 or payload.get("zone") != zone:
+    if not isinstance(payload, dict) or payload.get("version") not in {1, 2} or payload.get("zone") != zone:
         raise ValidationError("Invalid DNS cluster zone payload")
     clean = []
     fqdn = zone + "."
@@ -390,7 +446,15 @@ def _validate_payload(zone: str, payload: object) -> dict:
         if any(not isinstance(v, str) or not v or len(v) > 8192 for v in values):
             raise ValidationError("Invalid DNS cluster record value")
         clean.append({"name": name, "type": rr["type"], "ttl": ttl, "values": values})
-    return {"version": 1, "zone": zone, "rrsets": clean}
+    canonical = json.dumps(clean, sort_keys=True, separators=(",", ":"))
+    calculated = hashlib.sha256(canonical.encode()).hexdigest()
+    supplied = payload.get("content_sha256")
+    if supplied is not None and supplied != calculated:
+        raise ValidationError("DNS cluster payload checksum does not match its records")
+    return {
+        "version": int(payload.get("version")), "zone": zone, "rrsets": clean,
+        "serial": int(payload.get("serial") or 0), "content_sha256": calculated,
+    }
 
 
 def apply_incoming(params: dict) -> dict:
@@ -402,12 +466,27 @@ def apply_incoming(params: dict) -> dict:
     if action not in {"upsert", "delete"}:
         raise ValidationError("Invalid DNS cluster action")
     with write_session() as db:
+        peer = db.scalar(select(DnsClusterPeer).where(DnsClusterPeer.name == params.get("_peer_name")))
+        if peer is None or peer.direction not in {"receive", "bidirectional"}:
+            raise ValidationError("This peer is not permitted to send DNS changes")
+        if not _peer_covers(peer, zone):
+            raise ValidationError("This zone is outside the peer's ownership allowlist")
+        peer_id = peer.id
         if db.scalar(select(DnsClusterReceipt.id).where(DnsClusterReceipt.event_id == event_id)) is not None:
             return {"applied": False, "duplicate": True}
     if action == "delete":
         powerdns.delete_zone(zone)
     else:
         payload = _validate_payload(zone, params.get("payload"))
+        with write_session() as db:
+            state = db.scalar(select(DnsClusterZoneState).where(
+                DnsClusterZoneState.peer_id == peer_id, DnsClusterZoneState.zone == zone,
+            ))
+            if state is not None:
+                if payload["serial"] < state.serial:
+                    raise ValidationError("Stale DNS cluster serial was rejected")
+                if payload["serial"] == state.serial and state.content_sha256 not in {None, payload["content_sha256"]}:
+                    raise ValidationError("Conflicting DNS data has the same serial; resolve it manually")
         if not powerdns.zone_exists(zone):
             ns_values = [v for rr in payload["rrsets"] if rr["type"] == "NS" and rr["name"].rstrip(".") == zone for v in rr["values"]]
             if not ns_values:
@@ -421,7 +500,17 @@ def apply_incoming(params: dict) -> dict:
                      "records": [{"content": v, "disabled": False} for v in r["values"]]} for r in desired.values()]
         powerdns.apply_rrset_changes(zone, changes)
     with write_session() as db:
-        db.add(DnsClusterReceipt(event_id=event_id, zone=zone))
+        db.add(DnsClusterReceipt(event_id=event_id, peer_id=peer_id, zone=zone))
+        if action == "upsert":
+            state = db.scalar(select(DnsClusterZoneState).where(
+                DnsClusterZoneState.peer_id == peer_id, DnsClusterZoneState.zone == zone,
+            ))
+            if state is None:
+                state = DnsClusterZoneState(peer_id=peer_id, zone=zone, direction="received")
+                db.add(state)
+            state.serial = payload["serial"]
+            state.content_sha256 = payload["content_sha256"]
+            state.direction = "received"
     return {"applied": True, "duplicate": False}
 
 

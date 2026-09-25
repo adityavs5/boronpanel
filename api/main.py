@@ -29,7 +29,7 @@ from shared import telemetry
 
 from api import logsetup, ratelimit
 from api.security import Identity, get_identity, require_admin
-from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, dnscluster, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, malware, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
+from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, dnscluster, dnssetup, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, logs_router, lscache_router, mail, mailqueue, maintenance, malware, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, server_setup, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
 
 
 @asynccontextmanager
@@ -325,6 +325,8 @@ app.include_router(nodeapps.admin_router)
 app.include_router(pythonapps.admin_router)
 app.include_router(dnscluster.admin_router)
 app.include_router(dnscluster.peer_router)
+app.include_router(dnssetup.router)
+app.include_router(server_setup.router)
 # Phase 8 feature 3/4: parked domains + whole-domain forwarding.
 app.include_router(parked.api_router)
 app.include_router(forwarding.api_router)

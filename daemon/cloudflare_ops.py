@@ -232,7 +232,12 @@ def _auto_enable_on() -> bool:
     """Feature 6: auto-enable Cloudflare for new domains when the admin toggle
     is on OR the operator has flipped default_dns_provider to 'cloudflare'
     (plan SS1.9 / Phase 3)."""
-    if settings.default_dns_provider == "cloudflare":
+    # The persisted operating mode supersedes the legacy TOML default. The
+    # import is deliberately lazy because dnssetup also calls this module for
+    # staged per-zone migrations.
+    from daemon import dnssetup
+
+    if dnssetup.current_mode() == "cloudflare":
         return True
     with write_session() as session:
         return _settings_row(session).auto_enable
@@ -248,12 +253,15 @@ def maybe_auto_enable(domain: str) -> dict | None:
         return None
     if not cloudflare_accounts.has_capacity():
         logger.info("auto-enable skipped for '%s': no Cloudflare account has capacity", domain)
-        return None
+        return {"status": "failed", "error": "No connected Cloudflare account has available zone capacity."}
     try:
         return zone_enable({"domain": domain})
     except Exception:
         logger.exception("auto-enable of Cloudflare for new domain '%s' failed (zone kept on local DNS)", domain)
-        return None
+        return {
+            "status": "failed",
+            "error": "Cloudflare setup failed; the zone remains available on local DNS and can be retried.",
+        }
 
 
 # --- real-IP rails (Phase 2 features 3+4) -----------------------------------

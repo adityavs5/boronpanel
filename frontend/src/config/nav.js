@@ -5,7 +5,7 @@ import {
   Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
   History, FileCode2, Cloud, Layers, Palette, AlertOctagon, BookOpen, ArrowUpCircle,
   DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban, ShieldBan, FileText, Store,
-  ExternalLink, Zap, Shield, GaugeCircle,
+  ExternalLink, Zap, Shield, GaugeCircle, Route, ServerCog,
 } from 'lucide-react'
 import { WordPressIcon, RedisIcon } from '@/components/icons/BrandIcons'
 
@@ -82,6 +82,7 @@ export const adminNav = [
   { label: 'Node.js Applications', to: '/software/node-apps', icon: Boxes },
   { label: 'Python Applications', to: '/software/python-apps', icon: FileCode2 },
   { section: 'Panel Configuration' },
+  { label: 'Server Setup', to: '/server-setup', icon: ServerCog },
   { label: 'Panel Settings', to: '/panel-settings', icon: Cog },
   { label: 'Branding', to: '/branding', icon: Palette },
   { label: 'Appearance', to: '/appearance', icon: Palette },
@@ -96,6 +97,7 @@ export const adminNav = [
   { label: 'IP Bans', to: '/ip-bans', icon: Ban },
   { label: 'Fail2ban', to: '/fail2ban', icon: ShieldAlert },
   { label: 'IP Whitelist', to: '/ip-whitelist', icon: LockKeyhole },
+  { label: 'DNS Setup', to: '/dns-setup', icon: Route },
   { label: 'Cloudflare', to: '/cloudflare', icon: Cloud },
   { label: 'DNS Cluster', to: '/dns-cluster', icon: Network },
   { section: 'Security & Logs' },

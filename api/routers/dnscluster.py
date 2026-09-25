@@ -18,6 +18,8 @@ class PeerBody(BaseModel):
     credential: str | None = Field(default=None, max_length=4096)
     verify_tls: bool = True
     enabled: bool = True
+    direction: str = "push"
+    zones: list[str] = Field(default_factory=list, max_length=10000)
 
 
 class PeerUpdateBody(BaseModel):
@@ -28,6 +30,8 @@ class PeerUpdateBody(BaseModel):
     credential: str | None = Field(default=None, max_length=4096)
     verify_tls: bool | None = None
     enabled: bool | None = None
+    direction: str | None = None
+    zones: list[str] | None = Field(default=None, max_length=10000)
 
 
 class ApplyBody(BaseModel):

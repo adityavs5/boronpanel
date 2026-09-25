@@ -85,6 +85,11 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     "impersonation_sessions": {"admin_session_enc": "VARCHAR(512)"},
     "branding_settings": {"terminal_banner": "TEXT"},
     "cloudflare_zones": {"cf_account_id": "INTEGER", "last_purge_at": "DATETIME"},
+    "dns_cluster_peers": {
+        "direction": "VARCHAR(16) NOT NULL DEFAULT 'push'",
+        "zones": "JSON NOT NULL DEFAULT '[]'",
+        "conflict_policy": "VARCHAR(24) NOT NULL DEFAULT 'reject_stale'",
+    },
     # Run A feature 1 (plan templates): both tables predate the Plan model.
     "accounts": {"plan_id": "INTEGER"},
     "account_resource_limits": {"ftp_account_limit": "INTEGER", "app_limit": "INTEGER"},

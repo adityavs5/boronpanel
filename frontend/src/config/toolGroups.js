@@ -22,23 +22,23 @@ const customerGroups = {
 const adminGroups = {
   evolution: [
     ['Account Manager', ['/accounts?new=1', '/accounts', '/resellers', '/administrators', '/plans', '/import/accounts']],
-    ['Server Manager', ['/health', '/services', '/openlitespeed', '/db-monitor', '/slow-queries', '/cloudflare', '/dns-cluster', '/ip-management', '/backup-jobs']],
+    ['Server Manager', ['/health', '/services', '/openlitespeed', '/db-monitor', '/slow-queries', '/dns-setup', '/cloudflare', '/dns-cluster', '/ip-management', '/backup-jobs']],
     ['Email', ['/mail-queue', '/mail-tracking', '/imap-migrations', '/notifications']],
     ['Software & Websites', ['/wordpress', '/software/node-apps', '/software/python-apps', '/templates', '/maintenance-mode', '/updates']],
     ['Security & Network', ['/ssl', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
     ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/webhooks']],
-    ['Account & Preferences', ['/panel-settings', '/branding', '/appearance', '/security', '/api/docs']],
+    ['Account & Preferences', ['/server-setup', '/panel-settings', '/branding', '/appearance', '/security', '/api/docs']],
   ],
   'paper-lantern': [
     ['Account Manager', ['/accounts?new=1', '/accounts', '/resellers', '/administrators', '/plans', '/import/accounts']],
     ['Server & Databases', ['/health', '/services', '/openlitespeed', '/db-monitor', '/slow-queries', '/backup-jobs', '/updates']],
-    ['Domains & Network', ['/cloudflare', '/dns-cluster', '/ip-management']],
+    ['Domains & Network', ['/dns-setup', '/cloudflare', '/dns-cluster', '/ip-management']],
     ['Email', ['/mail-queue', '/mail-tracking', '/imap-migrations', '/notifications']],
     ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/webhooks', '/notifications']],
     ['Security', ['/ssl', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens', '/security']],
     ['Software & Websites', ['/wordpress', '/software/node-apps', '/software/python-apps', '/templates', '/maintenance-mode']],
     ['Developer Tools', ['/api/docs']],
-    ['Preferences', ['/branding', '/change-password', '/appearance']],
+    ['Preferences', ['/server-setup', '/branding', '/change-password', '/appearance']],
   ],
 }
 const labels = {
