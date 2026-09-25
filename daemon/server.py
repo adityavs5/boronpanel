@@ -53,6 +53,7 @@ OP_TABLE = {
     "snapshot.policy.run": snapshot_jobs.queue_policy,
     "snapshot.run.list": snapshot_jobs.runs,
     "snapshot.run.browse": snapshot_jobs.browse,
+    "snapshot.run.download": snapshot_jobs.prepare_download,
     "snapshot.run.cancel": snapshot_jobs.cancel_run,
     "snapshot.run.retry": snapshot_jobs.retry_run,
     "snapshot.catalog.accounts": snapshot_jobs.account_catalog,

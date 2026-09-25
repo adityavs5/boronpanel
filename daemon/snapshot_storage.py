@@ -56,22 +56,27 @@ class Repository:
     ssh_port: int = 22
     ssh_key_file: str = ''
     ssh_known_hosts_file: str = ''
+    ssh_auth: str = 'key'
+    ssh_password: str = field(default='', repr=False)
+    ssh_askpass_file: str = ''
     s3_endpoint: str = ''
     s3_bucket: str = ''
     s3_region: str = ''
     s3_credentials: dict = field(default_factory=dict, repr=False)
+    rclone_config_file: str = ''
+    rclone_remote_name: str = ''
 
     def __post_init__(self):
-        if self.kind not in ('local','ssh','s3'):
-            raise ValidationError('Choose local disk, SSH, or S3-compatible storage')
-        if self.kind in ('local','ssh'):
+        if self.kind not in ('local','ssh','sftp','s3','drive'):
+            raise ValidationError('Choose local, SSH, SFTP, S3-compatible, or Google Drive storage')
+        if self.kind in ('local','ssh','sftp'):
             _absolute(self.path)
-        elif self.path and (self.path.startswith('/') or '..' in Path(self.path).parts or not re.fullmatch(r'[A-Za-z0-9._/-]{0,512}', self.path)):
-            raise ValidationError('Invalid S3 repository prefix')
+        elif self.path and (self.path.startswith('/') or '..' in Path(self.path).parts or not re.fullmatch(r'[A-Za-z0-9._ /-]{0,512}', self.path)):
+            raise ValidationError('Invalid repository prefix')
         _absolute(self.cache_dir)
         if not re.fullmatch(r'[a-z0-9-]{8,64}', self.namespace):
             raise ValidationError('Invalid backup repository namespace')
-        if self.kind == 'ssh':
+        if self.kind in ('ssh','sftp'):
             try:
                 ipaddress.ip_address(self.ssh_host)
             except ValueError:
@@ -81,6 +86,10 @@ class Repository:
                 raise ValidationError('Invalid SSH username')
             if isinstance(self.ssh_port, bool) or not isinstance(self.ssh_port, int) or not 1 <= self.ssh_port <= 65535:
                 raise ValidationError('SSH port must be between 1 and 65535')
+            if self.ssh_auth not in ('key','password'):
+                raise ValidationError('Choose SSH key or password authentication')
+            if self.ssh_auth == 'password' and (not self.ssh_password or len(self.ssh_password) > 2048):
+                raise ValidationError('SSH password is required')
         if self.kind == 's3':
             endpoint = urlsplit(self.s3_endpoint)
             if endpoint.scheme != 'https' or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
@@ -91,6 +100,10 @@ class Repository:
                 raise ValidationError('Invalid S3 region')
             if not self.s3_credentials.get('access_key') or not self.s3_credentials.get('secret_key'):
                 raise ValidationError('S3 access key and secret key are required')
+        if self.kind == 'drive':
+            if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,63}', self.rclone_remote_name):
+                raise ValidationError('Invalid Google Drive remote name')
+            _private_file(self.rclone_config_file)
 
     def owner_tag(self, account_id):
         return f'boron:{self.namespace}:account:{_positive(account_id)}'
@@ -111,20 +124,28 @@ class Repository:
         cache.chmod(0o700)
         extras = []
         repository = self.path
-        if self.kind == 'ssh':
-            key = _private_file(self.ssh_key_file)
+        if self.kind in ('ssh','sftp'):
             known_hosts = _private_file(self.ssh_known_hosts_file)
             host = f'[{self.ssh_host}]' if ':' in self.ssh_host else self.ssh_host
             repository = f'sftp://{self.ssh_user}@{host}:{self.ssh_port}/{quote(self.path, safe="/")}'
             ssh = ['/usr/bin/ssh','-F','/dev/null','-p',str(self.ssh_port),'-l',self.ssh_user,
-                '-i',str(key),'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','IdentityAgent=none',
+                '-o','IdentitiesOnly=yes','-o','IdentityAgent=none',
                 '-o','StrictHostKeyChecking=yes','-o',f'UserKnownHostsFile={known_hosts}',
                 '-o','GlobalKnownHostsFile=/dev/null','-o','ConnectTimeout=20',
                 '-o','ServerAliveInterval=30','-o','ServerAliveCountMax=6','-s',self.ssh_host,'sftp']
+            if self.ssh_auth == 'key':
+                key = _private_file(self.ssh_key_file)
+                ssh[7:7] = ['-i',str(key),'-o','BatchMode=yes']
+            else:
+                askpass = _private_file(self.ssh_askpass_file)
+                ssh[7:7] = ['-o','BatchMode=no','-o','PreferredAuthentications=password',
+                    '-o','PubkeyAuthentication=no','-o','NumberOfPasswordPrompts=1']
             extras = ['-o','sftp.command='+shlex.join(ssh)]
         elif self.kind == 's3':
             location = '/'.join(part for part in (self.s3_bucket, self.path.strip('/')) if part)
             repository = f's3:{self.s3_endpoint.rstrip("/")}/{location}'
+        elif self.kind == 'drive':
+            repository = f'rclone:{self.rclone_remote_name}:{self.path.strip("/")}'
         args = [settings.restic_bin,'--repo',repository]
         if password_file:
             args += ['--password-file',str(password)]
@@ -140,11 +161,20 @@ def _landlock_command(repository, command, read_roots):
     if repository.kind == 'local':
         wrapper += ['--rw', str(_absolute(repository.path))]
     wrapper += ['--rw', str(_absolute(repository.cache_dir))]
-    if repository.kind == 'ssh':
-        wrapper += ['--ro', str(_private_file(repository.ssh_key_file))]
+    if repository.kind in ('ssh','sftp'):
+        if repository.ssh_auth == 'key':
+            wrapper += ['--ro', str(_private_file(repository.ssh_key_file))]
+        else:
+            wrapper += ['--ro', str(_private_file(repository.ssh_askpass_file))]
         wrapper += ['--ro', str(_private_file(repository.ssh_known_hosts_file))]
         wrapper += ['--exec', '/usr/bin/ssh']
     elif repository.kind == 's3':
+        for certificates in ('/etc/ssl/certs', '/usr/share/ca-certificates'):
+            if Path(certificates).exists():
+                wrapper += ['--ro', certificates]
+    elif repository.kind == 'drive':
+        wrapper += ['--ro', str(_private_file(repository.rclone_config_file))]
+        wrapper += ['--exec', str(_absolute(settings.rclone_bin))]
         for certificates in ('/etc/ssl/certs', '/usr/share/ca-certificates'):
             if Path(certificates).exists():
                 wrapper += ['--ro', certificates]
@@ -170,6 +200,11 @@ def _execute(repository, arguments, timeout=3600, sandbox_roots=None):
         })
         if repository.s3_credentials.get('session_token'):
             env['AWS_SESSION_TOKEN'] = repository.s3_credentials['session_token']
+    elif repository.kind in ('ssh','sftp') and repository.ssh_auth == 'password':
+        env.update({'BORON_SSH_PASSWORD':repository.ssh_password,'SSH_ASKPASS':repository.ssh_askpass_file,
+            'SSH_ASKPASS_REQUIRE':'force','DISPLAY':'boron:0'})
+    elif repository.kind == 'drive':
+        env['RCLONE_CONFIG'] = repository.rclone_config_file
     if sandboxed:
         env['RESTIC_PASSWORD'] = repository.password_value()
         env['TMPDIR'] = str(_absolute(repository.cache_dir))
@@ -232,8 +267,10 @@ def backup(repository, account_id, paths, *, policy_id=None, excludes=(), full_s
     # The repository/cache must never recursively become part of a snapshot.
     if repository.kind == 'local': args += ['--exclude',_literal_pattern(_absolute(repository.path))]
     args += ['--exclude',_literal_pattern(_absolute(repository.cache_dir)),'--exclude',_literal_pattern(_absolute(repository.password_file))]
-    if repository.kind == 'ssh':
-        args += ['--exclude',_literal_pattern(_absolute(repository.ssh_key_file)), '--exclude',_literal_pattern(_absolute(repository.ssh_known_hosts_file))]
+    if repository.kind in ('ssh','sftp'):
+        if repository.ssh_auth == 'key':args += ['--exclude',_literal_pattern(_absolute(repository.ssh_key_file))]
+        else:args += ['--exclude',_literal_pattern(_absolute(repository.ssh_askpass_file))]
+        args += ['--exclude',_literal_pattern(_absolute(repository.ssh_known_hosts_file))]
     rows = _execute(repository,[*args,'--',*source_paths], sandbox_roots=sandbox_roots or source_paths)
     summary = next((r for r in reversed(rows) if isinstance(r,dict) and r.get('message_type')=='summary'),None)
     if not summary or not re.fullmatch(r'[a-f0-9]{64}',summary.get('snapshot_id','')):

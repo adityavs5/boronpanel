@@ -136,6 +136,37 @@ def test_ssh_arguments_pin_host_and_disable_ambient_credentials(repo,tmp_path):
     assert 'test-only-encryption-key' not in ' '.join(args)
 
 
+def test_ssh_password_uses_askpass_environment_not_arguments(repo,tmp_path,monkeypatch):
+    known=tmp_path/'known_hosts';known.write_text('host key');known.chmod(0o600)
+    askpass=tmp_path/'askpass';askpass.write_text('#!/bin/sh\nexit 1\n');askpass.chmod(0o700)
+    spec=replace(repo,kind='sftp',ssh_host='backup.example.test',ssh_user='boron',
+        ssh_auth='password',ssh_password='ONLY-IN-ENV',ssh_askpass_file=str(askpass),
+        ssh_known_hosts_file=str(known))
+    args=spec.arguments();assert 'ONLY-IN-ENV' not in ' '.join(args)
+    command=next(a for a in args if a.startswith('sftp.command='))
+    assert 'PreferredAuthentications=password' in command and 'PubkeyAuthentication=no' in command
+    captured={}
+    def fake_run(command,**kwargs):
+        captured.update(command=command,env=kwargs['env'])
+        return type('Result',(),{'ok':True,'stdout':'','stderr':''})()
+    monkeypatch.setattr(storage,'run',fake_run);storage._execute(spec,['check'])
+    assert captured['env']['BORON_SSH_PASSWORD']=='ONLY-IN-ENV'
+    assert 'ONLY-IN-ENV' not in ' '.join(captured['command'])
+
+
+def test_drive_uses_private_rclone_config(repo,tmp_path,monkeypatch):
+    config=tmp_path/'rclone.conf';config.write_text('[boron_drive]\ntype = drive\ntoken = private\n');config.chmod(0o600)
+    spec=replace(repo,kind='drive',path='Boron backups',rclone_config_file=str(config),rclone_remote_name='boron_drive')
+    assert 'rclone:boron_drive:Boron backups' in spec.arguments()
+    captured={}
+    def fake_run(command,**kwargs):
+        captured.update(command=command,env=kwargs['env'])
+        return type('Result',(),{'ok':True,'stdout':'','stderr':''})()
+    monkeypatch.setattr(storage,'run',fake_run);storage._execute(spec,['check'])
+    assert captured['env']['RCLONE_CONFIG']==str(config)
+    assert 'private' not in ' '.join(captured['command'])
+
+
 def test_s3_arguments_and_environment_keep_credentials_off_command_line(repo, monkeypatch):
     spec = replace(repo, kind='s3', path='daily/site-a',
         s3_endpoint='https://objects.example.test', s3_bucket='hosting-backups', s3_region='eu-test-1',

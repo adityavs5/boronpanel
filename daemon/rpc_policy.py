@@ -201,6 +201,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'snapshot.restore.trigger': 'account_username',
     'snapshot.restore.undo': 'account_username',
     'snapshot.run.browse': 'account_username',
+    'snapshot.run.download': 'account_username',
     'ssl.dashboard': 'account_username',
     'terminal.list': 'account_username',
     'terminal.open': 'account_username',

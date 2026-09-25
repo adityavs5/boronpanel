@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from starlette.background import BackgroundTask
+import shutil
 from pydantic import BaseModel
 from starlette.requests import Request
 
@@ -46,6 +48,16 @@ def list_snapshot_runs(username: str, identity: Identity = Depends(get_identity)
 def browse_snapshot(username: str, run_id: int, directory: str = '/', identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     return call_daemon('snapshot.run.browse', identity, username=username, run_id=run_id, directory=directory)
+
+
+@api_router.get('/snapshots/runs/{run_id}/download')
+def download_snapshot(username: str, run_id: int, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    prepared=call_daemon('snapshot.run.download',identity,username=username,run_id=run_id,
+        customer_scope=identity.role=='customer')
+    return FileResponse(prepared['path'],filename=prepared['filename'],media_type='application/octet-stream',
+        headers={'X-Checksum-SHA256':prepared['sha256']},
+        background=BackgroundTask(shutil.rmtree,prepared['cleanup_dir'],ignore_errors=True))
 
 
 @api_router.get('/snapshots/runs/{run_id}/databases')

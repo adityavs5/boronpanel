@@ -107,6 +107,58 @@ def test_s3_credentials_are_encrypted_and_write_only(environment):
     assert spec.s3_credentials == {'access_key':access,'secret_key':secret,'session_token':''}
 
 
+def test_ssh_password_is_encrypted_and_kept_off_command_line(environment):
+    root,_=environment
+    secret='test-password-never-in-argv'
+    destination=jobs.create_destination({'name':'Password SFTP','kind':'sftp','path':'/srv/backups',
+        'ssh_host':'backup.example.test','ssh_user':'boron','ssh_port':2222,'ssh_auth':'password',
+        'ssh_password':secret,'ssh_host_key':'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestOnlyHostKey'})
+    row=jobs._row(SnapshotDestination,destination['id']);spec=jobs.repository(row)
+    encrypted=Path(settings.snapshot_private_dir)/'repositories'/row.namespace/'transport_credentials.enc'
+    assert encrypted.stat().st_mode & 0o777 == 0o600
+    assert secret.encode() not in encrypted.read_bytes() and secret.encode() not in Path(settings.db_path).read_bytes()
+    assert secret not in ' '.join(spec.arguments())
+    assert spec.ssh_password == secret and spec.ssh_auth == 'password'
+
+
+def test_drive_rejects_incremental_but_accepts_archive_policy(environment):
+    root,_=environment
+    destination=jobs.create_destination({'name':'Drive archive','kind':'drive','drive_folder':'Boron backups',
+        'drive_client_id':'client.apps.test','drive_client_secret':'private-client-secret',
+        'drive_token':'{"access_token":"access","refresh_token":"refresh","expiry":"2099-01-01T00:00:00Z"}'})
+    with write_session() as session:
+        row=session.get(SnapshotDestination,destination['id']);row.status='ready'
+    with pytest.raises(Exception,match='not supported'):
+        jobs.save_policy({'name':'Bad Drive incremental','destination_id':destination['id'],
+            'accounts':['alpha'],'components':['files'],'mode':'incremental'})
+    policy=jobs.save_policy({'name':'Drive archives','destination_id':destination['id'],
+        'accounts':['alpha'],'components':['files'],'mode':'compressed'})
+    assert policy['options']['mode']=='compressed'
+
+
+@pytest.mark.parametrize('mode,suffix', [('compressed','.boron.tar.gz'),('archive','.boron.tar')])
+def test_portable_modes_embed_verified_account_archive(environment,mode,suffix):
+    root,_=environment
+    destination=make_destination(root)
+    policy=make_policy(destination,mode=mode)
+    ident=jobs.queue_policy({'id':policy['id']})['run_ids'][0]
+    jobs.execute_run(ident)
+    row=jobs._row(SnapshotRun,ident)
+    assert row.status=='completed',row.error
+    portable=row.summary['portable_archive'];assert portable['name'].endswith(suffix)
+    repository=jobs.repository(jobs._row(SnapshotDestination,destination['id']))
+    restored=storage.restore_to(repository,row.account_id,row.snapshot_id,str(root/f'restore-{mode}'),
+        selected_paths=[portable['path']])
+    archive=restored/portable['path'].lstrip('/')
+    import hashlib,tarfile
+    assert hashlib.sha256(archive.read_bytes()).hexdigest()==portable['sha256']
+    with tarfile.open(archive) as handle:
+        names=handle.getnames()
+        assert 'account/manifest.json' in names
+        assert 'account/home/site.txt' in names
+        assert 'account/home/exclude.txt' not in names
+
+
 @pytest.mark.parametrize('options,match',[
     ({'include_paths':['../../etc']},'relative'),
     ({'include_paths':['/etc']},'relative'),

@@ -147,6 +147,9 @@ class SnapshotDestinationBody(BaseModel):
     ssh_user: str = ''
     ssh_port: int = 22
     ssh_host_key: str = ''
+    ssh_auth: str = 'key'
+    ssh_password: str = ''
+    ssh_private_key: str = ''
     s3_provider: str = 'custom'
     s3_endpoint: str = ''
     s3_bucket: str = ''
@@ -155,6 +158,10 @@ class SnapshotDestinationBody(BaseModel):
     s3_access_key: str = ''
     s3_secret_key: str = ''
     s3_session_token: str = ''
+    drive_folder: str = ''
+    drive_client_id: str = ''
+    drive_client_secret: str = ''
+    drive_token: str = ''
 
 
 class SnapshotDestinationSettingsBody(BaseModel):

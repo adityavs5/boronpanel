@@ -5,16 +5,21 @@ are resolved here, never accepted from customer requests.
 """
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
+import configparser
 import datetime as dt
 import fcntl
+import fnmatch
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import pwd
 import re
 import secrets
 import shutil
 import tempfile
+import tarfile
 import time
 import uuid
 
@@ -89,17 +94,26 @@ def repository(destination):
     credentials = private_directory('repositories', destination.namespace)
     connection = destination.connection
     s3_credentials = {}
+    transport_credentials = {}
     s3_file = credentials/'s3_credentials.enc'
     if destination.kind == 's3':
         if not s3_file.exists() or s3_file.is_symlink() or s3_file.stat().st_uid != os.geteuid() or s3_file.stat().st_mode & 0o077:
             raise ValidationError('S3 credentials are missing or have unsafe permissions')
         s3_credentials = decrypt_env(s3_file.read_text())
+    transport_file = credentials/'transport_credentials.enc'
+    if destination.kind in ('ssh','sftp') and connection.get('auth') == 'password':
+        if not transport_file.exists() or transport_file.is_symlink() or transport_file.stat().st_mode & 0o077:
+            raise ValidationError('SSH credentials are missing or have unsafe permissions')
+        transport_credentials = decrypt_env(transport_file.read_text())
     return storage.Repository(kind=destination.kind, path=destination.path, namespace=destination.namespace,
         password_file=str(credentials/'password'), cache_dir=str(credentials/'cache'),
         ssh_host=connection.get('host',''), ssh_user=connection.get('user',''), ssh_port=connection.get('port',22),
         ssh_key_file=str(credentials/'ssh_key'), ssh_known_hosts_file=str(credentials/'known_hosts'),
+        ssh_auth=connection.get('auth','key'),ssh_password=transport_credentials.get('password',''),
+        ssh_askpass_file=str(credentials/'ssh_askpass'),
         s3_endpoint=connection.get('endpoint',''), s3_bucket=connection.get('bucket',''),
-        s3_region=connection.get('region',''), s3_credentials=s3_credentials)
+        s3_region=connection.get('region',''), s3_credentials=s3_credentials,
+        rclone_config_file=str(credentials/'rclone.conf'),rclone_remote_name='boron_drive')
 
 
 def _destination_dict(row):
@@ -134,15 +148,41 @@ def create_destination(params):
         s3_secrets = {key:str(params.get('s3_'+key,'')).strip() for key in ('access_key','secret_key','session_token')}
         if any(len(value) > 2048 or any(char in value for char in ('\0','\r','\n')) for value in s3_secrets.values()):
             raise ValidationError('Invalid S3 credential value')
-    else:
+    elif kind in ('ssh','sftp'):
+        auth=str(params.get('ssh_auth','key')).strip().lower()
+        if auth not in ('key','password'):raise ValidationError('Choose SSH key or password authentication')
         connection = {key:params.get('ssh_'+key,default) for key,default in [('host',''),('user',''),('port',22)]}
+        connection['auth']=auth
         path = params.get('path','')
-    row = SnapshotDestination(name=name,kind=params.get('kind','local'),path=params.get('path',''),namespace=namespace,
+        password=str(params.get('ssh_password',''))
+        supplied_key=str(params.get('ssh_private_key',''))
+        if auth=='password' and (not password or len(password)>2048 or any(c in password for c in ('\0','\r','\n'))):
+            raise ValidationError('Enter a valid SSH password')
+        if auth=='key' and supplied_key and (len(supplied_key)>16384 or '\0' in supplied_key):
+            raise ValidationError('Invalid SSH private key')
+    elif kind == 'drive':
+        path=str(params.get('drive_folder','')).strip().strip('/')
+        token=str(params.get('drive_token','')).strip()
+        client_id=str(params.get('drive_client_id','')).strip()
+        client_secret=str(params.get('drive_client_secret','')).strip()
+        try:parsed_token=json.loads(token)
+        except ValueError:raise ValidationError('Google Drive OAuth token must be valid JSON') from None
+        if not isinstance(parsed_token,dict) or not parsed_token.get('access_token') or not parsed_token.get('refresh_token'):
+            raise ValidationError('Google Drive OAuth token must contain access and refresh tokens')
+        if not client_id or not client_secret or max(map(len,(token,client_id,client_secret)))>16384:
+            raise ValidationError('Google Drive OAuth client and token are required')
+        connection={'provider':'google_drive'}
+    elif kind == 'local':
+        connection={};path=params.get('path','')
+    else:
+        raise ValidationError('Choose local, SSH, SFTP, Amazon S3, Backblaze B2, S3-compatible, or Google Drive storage')
+    capabilities={'incremental':kind!='drive','full':kind!='drive','compressed':True,'archive':True}
+    row = SnapshotDestination(name=name,kind=kind,path=path,namespace=namespace,
         connection=connection,status='draft',enabled=True,customer_visible=True,
-        capabilities={'incremental':True,'compressed':True,'archive':True})
+        capabilities=capabilities)
     row.path = path
     host_key = params.get('ssh_host_key','').strip()
-    if row.kind == 'ssh' and not re.fullmatch(r'(ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,3}(?: [^\r\n]*)?',host_key):
+    if row.kind in ('ssh','sftp') and not re.fullmatch(r'(ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,3}(?: [^\r\n]*)?',host_key):
         raise ValidationError('Paste the SSH server public host key, obtained from a trusted source')
     with lock('configuration'):
         with write_session() as session:
@@ -151,19 +191,39 @@ def create_destination(params):
         credentials = private_directory('repositories', namespace)
         try:
             _secret(credentials/'password', secrets.token_urlsafe(48)+'\n')
-            # Local and SSH repositories can be validated before their
-            # optional connection files exist. S3 validation must wait until
-            # its encrypted write-only credentials have been persisted.
-            spec = repository(row) if row.kind != 's3' else None
-            if row.kind == 'ssh':
-                result = run(['/usr/bin/ssh-keygen','-q','-t','ed25519','-N','','-f',spec.ssh_key_file],timeout=30)
-                result.raise_if_failed('Generate backup SSH key')
+            # Remote transports are validated only after their private
+            # credential files have been persisted.
+            spec = repository(row) if row.kind == 'local' else None
+            if row.kind in ('ssh','sftp'):
+                if connection['auth']=='key':
+                    if supplied_key:
+                        _secret(credentials/'ssh_key',supplied_key.rstrip('\n')+'\n')
+                        result=run(['/usr/bin/ssh-keygen','-y','-f',str(credentials/'ssh_key')],timeout=30)
+                        result.raise_if_failed('Validate backup SSH key')
+                        _secret(credentials/'ssh_key.pub',result.stdout.strip()+'\n')
+                    else:
+                        result = run(['/usr/bin/ssh-keygen','-q','-t','ed25519','-N','','-f',str(credentials/'ssh_key')],timeout=30)
+                        result.raise_if_failed('Generate backup SSH key')
+                else:
+                    _secret(credentials/'transport_credentials.enc',encrypt_env({'password':password}))
+                    _secret(credentials/'ssh_askpass','#!/bin/sh\nprintf "%s\\n" "$BORON_SSH_PASSWORD"\n')
+                    (credentials/'ssh_askpass').chmod(0o700)
                 host = connection['host'] if connection['port']==22 else f"[{connection['host']}]:{connection['port']}"
                 _secret(credentials/'known_hosts', f'{host} {host_key}\n')
+                spec=repository(row)
             elif row.kind == 's3':
                 _secret(credentials/'s3_credentials.enc', encrypt_env(s3_secrets))
                 # Validate the complete connection only after its write-only credentials exist.
                 spec = repository(row)
+            elif row.kind == 'drive':
+                parser=configparser.RawConfigParser();parser.add_section('boron_drive')
+                parser.set('boron_drive','type','drive');parser.set('boron_drive','scope','drive.file')
+                parser.set('boron_drive','client_id',client_id);parser.set('boron_drive','client_secret',client_secret)
+                parser.set('boron_drive','token',json.dumps(parsed_token,separators=(',',':')))
+                config=credentials/'rclone.conf'
+                fd=os.open(config,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+                with os.fdopen(fd,'w') as handle:parser.write(handle)
+                spec=repository(row)
             with write_session() as session:
                 session.add(row); session.flush()
                 result = _destination_dict(row)
@@ -415,6 +475,10 @@ def save_policy(params):
     destination_rows=[_row(SnapshotDestination,value) for value in options['destination_ids']]
     if any(row.status!='ready' or not row.enabled for row in destination_rows):
         raise ValidationError('Every destination must be ready and enabled before creating a job')
+    if any(not (row.capabilities or {}).get(options['mode'],
+               options['mode']=='full' and (row.capabilities or {}).get('incremental',False))
+           for row in destination_rows):
+        raise ValidationError(f"{options['mode'].capitalize()} backups are not supported by every selected destination")
     destination = destination_rows[0]
     with lock('configuration'), write_session() as session:
         row = session.get(SnapshotPolicy,params['id']) if params.get('id') else SnapshotPolicy()
@@ -573,6 +637,64 @@ def sandbox_roots(account, paths):
     return list(dict.fromkeys(roots))
 
 
+def _path_size(path):
+    if path.is_symlink():return 0
+    if path.is_file():return path.stat().st_size
+    total=0
+    for root,dirs,files in os.walk(path,followlinks=False):
+        dirs[:]=[name for name in dirs if not (Path(root)/name).is_symlink()]
+        for name in files:
+            item=Path(root)/name
+            try:
+                if not item.is_symlink():total+=item.stat().st_size
+            except FileNotFoundError:continue
+    return total
+
+
+def _portable_archive(run_id,account,paths,options):
+    """Build a self-identifying tar artifact alongside restic's raw recovery data."""
+    work=private_directory('exports',f'run-{run_id}')
+    for item in work.iterdir():
+        if item.is_dir() and not item.is_symlink():shutil.rmtree(item)
+        else:item.unlink()
+    mode=options['mode'];compressed=mode=='compressed'
+    suffix='.boron.tar.gz' if compressed else '.boron.tar'
+    artifact=work/f'{account.username}-{utcnow().strftime("%Y%m%d-%H%M%S")}{suffix}'
+    estimated=sum(_path_size(Path(value)) for value in paths)
+    free=shutil.disk_usage(work).free
+    reserve=max(256*1024*1024,int(estimated*.1))
+    if free < estimated+reserve:
+        raise ValidationError(f'Portable archive needs about {estimated+reserve} bytes of staging space; only {free} bytes are free')
+    home=Path(settings.home_base)/account.username;mail=Path(settings.mail_base)
+    inventory=[]
+    for value in paths:
+        source=Path(value)
+        if source==home:arcname=Path('account/home')
+        elif source.is_relative_to(home):arcname=Path('account/home')/source.relative_to(home)
+        elif source.is_relative_to(mail):arcname=Path('account/mail')/source.relative_to(mail)
+        else:arcname=Path('account/metadata')
+        inventory.append({'source':str(source),'archive_path':arcname.as_posix(),'size_bytes':_path_size(source)})
+    manifest={'format':'boron-account-snapshot','format_version':1,'account_id':account.id,
+        'username':account.username,'created_at':utcnow().isoformat(),'mode':mode,
+        'components':options['components'],'inventory':inventory}
+    manifest_path=work/'manifest.json';manifest_path.write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+    patterns=options.get('exclude_patterns',[])
+    def archive_filter(info):
+        relative=info.name.removeprefix('account/')
+        return None if any(fnmatch.fnmatch(relative,pattern) or fnmatch.fnmatch(Path(relative).name,pattern) for pattern in patterns) else info
+    try:
+        with tarfile.open(artifact,'w:gz' if compressed else 'w',format=tarfile.PAX_FORMAT) as archive:
+            archive.add(manifest_path,arcname='account/manifest.json',recursive=False)
+            for item,entry in zip(paths,inventory):archive.add(item,arcname=entry['archive_path'],recursive=True,filter=archive_filter)
+    except (OSError,tarfile.TarError) as exc:
+        raise ValidationError(f'Could not create portable account archive: {exc}') from exc
+    digest=hashlib.sha256()
+    with artifact.open('rb') as handle:
+        for chunk in iter(lambda:handle.read(1024*1024),b''):digest.update(chunk)
+    return artifact,{'name':artifact.name,'path':str(artifact),'size_bytes':artifact.stat().st_size,
+        'sha256':digest.hexdigest(),'format':'tar.gz' if compressed else 'tar'}
+
+
 @serialized_worker
 def _mail_sources(account, stage):
     # Read registrations only after excluding mail provisioning/deletion; keep
@@ -634,12 +756,18 @@ def execute_run(ident):
             paths=sources(account,row.options)
             if _row(SnapshotRun,ident).cancel_requested:
                 _update(ident,status='cancelled',progress_message='Cancelled after preparation',completed_at=utcnow());return
-            _update(ident,progress_message='Saving encrypted snapshot')
+            archive_path=None;archive_summary=None
+            if row.options['mode'] in ('compressed','archive'):
+                _update(ident,progress_message='Building portable account archive')
+                archive_path,archive_summary=_portable_archive(ident,account,paths,row.options)
+                paths=[*paths,str(archive_path)]
+            _update(ident,progress_message='Saving encrypted recovery point')
             repo=repository(_row(SnapshotDestination,row.destination_id))
             summary=storage.backup(repo,account.id,paths,policy_id=row.policy_id,
                 excludes=row.options['exclude_patterns'],full_scan=row.options['mode']=='full',
                 exclude_mail_staging='mail' in row.options['components'],
                 sandbox_roots=sandbox_roots(account, paths))
+            if archive_summary:summary={**summary,'portable_archive':archive_summary}
             if _row(SnapshotRun,ident).cancel_requested:
                 _update(ident,status='cancelled',snapshot_id=summary['snapshot_id'],summary=summary,
                     progress_message='Backup point completed; later steps cancelled',completed_at=utcnow());return
@@ -661,6 +789,8 @@ def execute_run(ident):
         logger.exception('Snapshot run %s failed',ident)
         _update(ident,status='failed',error=str(exc)[-3000:],progress_message='Backup failed',completed_at=utcnow())
     finally:
+        export=Path(settings.snapshot_private_dir)/'exports'/f'run-{ident}'
+        if export.exists() and not export.is_symlink():shutil.rmtree(export,ignore_errors=True)
         if should_notify and account is not None:_notify(_row(SnapshotRun,ident),account)
 
 
@@ -695,6 +825,38 @@ def browse(params):
             return {'entries':_restore_entries(storage.entries(repo,account.id,row.snapshot_id,directory),account)}
     except BlockingIOError:
         raise ValidationError('This destination is busy with a backup or retention task. Try again shortly.') from None
+
+
+def prepare_download(params):
+    account=_account(params['username']);row=_row(SnapshotRun,params['run_id'])
+    portable=(row.summary or {}).get('portable_archive') or {}
+    if row.account_id!=account.id or row.status!='completed' or not row.snapshot_id or not portable.get('path'):
+        raise ValidationError('A completed compressed or archive recovery point is required')
+    destination=_row(SnapshotDestination,row.destination_id)
+    if params.get('customer_scope') and not destination.customer_visible:
+        raise ValidationError('This recovery point is not available in the customer panel')
+    work=Path(tempfile.mkdtemp(prefix='boron-snapshot-download-',dir='/tmp'))
+    try:
+        with lock(f'repository-{row.destination_id}',blocking=False):
+            restored=storage.restore_to(repository(destination),account.id,row.snapshot_id,str(work/'restored'),
+                selected_paths=[portable['path']])
+        source=restored/portable['path'].lstrip('/')
+        filename=portable.get('name') or f'{account.username}.boron.tar'
+        if not source.is_file() or '/' in filename or '\0' in filename:raise ValidationError('Portable archive is missing')
+        digest=hashlib.sha256()
+        with source.open('rb') as handle:
+            for chunk in iter(lambda:handle.read(1024*1024),b''):digest.update(chunk)
+        if not secrets.compare_digest(digest.hexdigest(),portable.get('sha256','')):
+            raise ValidationError('Portable archive checksum verification failed')
+        target=work/filename;shutil.move(source,target)
+        api_user=pwd.getpwnam('boron-api');os.chown(target,api_user.pw_uid,api_user.pw_gid);target.chmod(0o600)
+        return {'path':str(target),'filename':filename,'cleanup_dir':str(work),
+            'sha256':portable['sha256'],'size_bytes':target.stat().st_size}
+    except BlockingIOError:
+        shutil.rmtree(work,ignore_errors=True)
+        raise ValidationError('This destination is busy. Try again shortly.') from None
+    except Exception:
+        shutil.rmtree(work,ignore_errors=True);raise
 
 
 def run_scheduled():
