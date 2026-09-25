@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Archive, Plus, RotateCcw, History, FolderOpen, Download } from 'lucide-react'
-import { get, post } from '@/lib/api'
+import { get, patch, post } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatBytes, formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -29,6 +29,17 @@ const BACKUP_KINDS = [
   { value: 'databases', label: 'All databases' },
   { value: 'mailbox', label: 'Single mailbox' },
 ]
+const BACKUP_EMAIL_EVENTS=[['backup.completed','Backup completed'],['backup.failed','Backup failed'],['backup.partial','Completed with warnings'],['backup.overdue','Backup overdue'],['backup.destination_unavailable','Destination unavailable'],['backup.restore_completed','Restore completed'],['backup.restore_failed','Restore failed'],['backup.download_ready','Download ready']]
+
+function BackupEmailPreferences({ username }) {
+  const endpoint=`/api/v1/accounts/${encodeURIComponent(username)}/notification-prefs`
+  const preferences=useQuery({queryKey:['backup-email-preferences',username],queryFn:()=>get(endpoint),enabled:!!username})
+  const [form,setForm]=useState(null)
+  useEffect(()=>{if(preferences.data)setForm({customer_email:preferences.data.customer_email||'',events:{...preferences.data.events}})},[preferences.data])
+  const save=useMutation({mutationFn:()=>patch(endpoint,form),onSuccess:data=>{setForm({customer_email:data.customer_email||'',events:{...data.events}});toast.success('Backup email preferences saved')}})
+  if(!form)return null
+  return <section className="mt-8 rounded-card border border-border bg-card p-5"><div className="mb-4"><h2 className="text-lg font-semibold">Backup email notifications</h2><p className="text-sm text-muted-foreground">Choose which backup activity is sent to your account email. Server notification settings still apply.</p></div><div className="grid gap-5 lg:grid-cols-[minmax(0,22rem)_1fr]"><FormField label="Notification email"><Input type="email" value={form.customer_email} onChange={event=>setForm(value=>({...value,customer_email:event.target.value}))} placeholder="you@example.com"/></FormField><fieldset><legend className="mb-2 text-sm font-medium">Events</legend><div className="grid gap-2 sm:grid-cols-2">{BACKUP_EMAIL_EVENTS.map(([key,label])=><label key={key} className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-accent" checked={form.events[key]??true} onChange={event=>setForm(value=>({...value,events:{...value.events,[key]:event.target.checked}}))}/>{label}</label>)}</div></fieldset></div>{save.error&&<p className="mt-3 text-sm text-danger">{save.error.message}</p>}<Button className="mt-4" loading={save.isPending} onClick={()=>save.mutate()}>Save email preferences</Button></section>
+}
 
 // Poll while any job is still working so progress + status stay live.
 const isActive = (rows) => rows.some((j) => j.status === 'running' || j.status === 'pending')
@@ -268,6 +279,7 @@ export default function Backups() {
       </PageHeader>
 
       <SnapshotHistory username={username} />
+      <BackupEmailPreferences username={username} />
       <h2 className="mb-3 text-lg font-semibold">On-demand archive backups</h2>
       <DataTable
         columns={backupColumns}

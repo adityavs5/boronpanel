@@ -20,6 +20,7 @@ logger=logging.getLogger('borond.snapshot_restores')
 
 _mail_recovery_timers = {}
 _mail_recovery_timer_lock = threading.Lock()
+_full_recovery_timers = {}
 
 
 def _schedule_mail_recovery(ident):
@@ -36,6 +37,16 @@ def _schedule_mail_recovery(ident):
         timer.daemon = True
         _mail_recovery_timers[ident] = timer
         timer.start()
+
+
+def _schedule_full_recovery(ident):
+    def enqueue():
+        with _mail_recovery_timer_lock:_full_recovery_timers.pop(ident,None)
+        row=jobs._row(SnapshotRestore,ident)
+        if row.status=='running':jobs._executor.submit(_execute_full,ident,row,jobs._row(SnapshotRun,row.run_id))
+    with _mail_recovery_timer_lock:
+        if ident in _full_recovery_timers:return
+        timer=threading.Timer(5,enqueue);timer.daemon=True;_full_recovery_timers[ident]=timer;timer.start()
 
 MAIL_PHASES = ('preparing', 'prepared', 'guarded', 'provisioned', 'staged', 'switching',
                'switched', 'safety_saved', 'completed')
@@ -292,7 +303,8 @@ def trigger(params):
     if account.status!='active':raise ValidationError('Reactivate the account before restoring its data')
     if params.get('confirmation')!=account.username:raise ValidationError('Type the account username to confirm this restore')
     kind=safety.selection['kind'] if safety else params.get('kind','files')
-    if kind not in ('files','databases','mail','config','mail_routing'):raise ValidationError('Unsupported snapshot restore type')
+    if kind not in ('files','databases','mail','config','mail_routing','full'):raise ValidationError('Unsupported snapshot restore type')
+    if kind=='full':return _trigger_full(params,account,source)
     paths=[] if safety else _paths(params.get('paths',[]))
     databases=[]
     mailboxes=[]
@@ -396,6 +408,59 @@ def trigger(params):
         row=SnapshotRestore(run_id=source.id,account_id=account.id,selection=selection,status='pending')
         session.add(row);session.flush();result=_serialize(row)
     jobs._executor.submit(execute,row.id)
+    return result
+
+
+def _trigger_full(params,account,source):
+    """Build one-date component plan; child jobs retain their own safety/undo records."""
+    steps=[];components=set(source.options.get('components',[]));missing=[]
+    if 'files' in components:steps.append({'kind':'files','paths':[]})
+    else:missing.append('files')
+    if 'databases' in components:
+        choices=database_options({'username':account.username,'run_id':source.id})['databases']
+        available=[item['name'] for item in choices if item['available']]
+        unavailable=[item['name'] for item in choices if not item['available']]
+        if unavailable:raise ValidationError('Full restore cannot continue while databases are unavailable: '+', '.join(unavailable))
+        if available:steps.append({'kind':'databases','paths':[],'databases':available})
+    else:missing.append('databases')
+    if 'mail' in components:
+        from daemon.snapshot_mail_guard_config import verify
+        if params.get('mail_pause_acknowledged') is not True:
+            raise ValidationError('Confirm the brief mail-service interruption before a full account restore')
+        verify()
+        mail=mailbox_options({'username':account.username,'run_id':source.id})['mailboxes']
+        unavailable=[item['address'] for item in mail if not item['available']]
+        if unavailable:raise ValidationError('Full restore cannot continue while mailboxes are unavailable: '+', '.join(unavailable))
+        addresses=[item['address'] for item in mail]
+        if addresses:steps.append({'kind':'mail','paths':[],'mailboxes':addresses})
+        routing=routing_options({'username':account.username,'run_id':source.id})['domains']
+        unavailable_routing=[item['domain'] for item in routing if not item['available']]
+        if unavailable_routing:raise ValidationError('Full restore cannot continue while mail routing is unavailable: '+', '.join(unavailable_routing))
+        domains=[item['domain'] for item in routing]
+        if domains:steps.append({'kind':'mail_routing','paths':[],'mail_domains':domains})
+    else:missing.append('mail')
+    if 'config' in components:
+        config=configuration_options({'username':account.username,'run_id':source.id})
+        if config.get('cron_available'):steps.append({'kind':'config','paths':[],'config_sections':['cron']})
+        if config.get('php_available'):steps.append({'kind':'config','paths':[],'config_sections':['php']})
+        zones=[item['zone'] for item in config.get('dns_zones',[]) if item['available']]
+        unavailable_zones=[item['zone'] for item in config.get('dns_zones',[]) if not item['available']]
+        if unavailable_zones:raise ValidationError('Full restore cannot continue while DNS zones are unavailable: '+', '.join(unavailable_zones))
+        if zones:steps.append({'kind':'config','paths':[],'config_sections':['dns'],'dns_zones':zones})
+    else:missing.append('config')
+    if not steps:raise ValidationError('This recovery point has no restorable account components')
+    with jobs.lock('queue'),write_session() as session:
+        current=session.get(Account,account.id)
+        if current is None or current.status!='active':raise ValidationError('Reactivate the account before restoring its data')
+        for model in (SnapshotRestore,SnapshotRun,BackupJob,RestoreJob):
+            if session.scalar(select(model.id).where(model.account_id==account.id,model.status.in_(jobs.ACTIVE))):
+                raise ValidationError('A backup or restore is already in progress for this account')
+        from daemon.mail_mutation import require_accounts_available
+        require_accounts_available(session,{account.id})
+        row=SnapshotRestore(run_id=source.id,account_id=account.id,
+            selection={'kind':'full','steps':steps,'missing_components':missing},status='pending')
+        session.add(row);session.flush();result=_serialize(row);ident=row.id
+    jobs._executor.submit(execute,ident)
     return result
 
 
@@ -627,6 +692,7 @@ def retry_mail_preparation_cleanup(ident):
 def execute(ident):
     row=jobs._row(SnapshotRestore,ident)
     source=jobs._row(SnapshotRun,row.run_id)
+    if row.selection.get('kind')=='full':return _execute_full(ident,row,source)
     work=None
     try:
         with jobs.lock(f'account-{row.account_id}'),jobs.lock(f'repository-{source.destination_id}'):
@@ -718,6 +784,66 @@ def execute(ident):
                 job_id=-ident,error=final.error,detail=final.progress_message)
 
 
+def _execute_full(ident,row,source):
+    """Resume-safe full restore coordinator over ordinary component workers."""
+    try:
+        with jobs.lock('queue'):
+            current=jobs._row(SnapshotRestore,ident)
+            child_ids=list((current.summary or {}).get('child_restore_ids',[]))
+            if not child_ids:
+                with write_session() as session:
+                    current=session.get(SnapshotRestore,ident)
+                    if current.status not in ('pending','running'):return
+                    children=[]
+                    for selection in current.selection['steps']:
+                        child=SnapshotRestore(run_id=current.run_id,account_id=current.account_id,
+                            selection={**selection,'parent_restore_id':ident},status='pending')
+                        session.add(child);session.flush();children.append(child.id)
+                    current.status='running';current.progress_message='Restoring full account components'
+                    current.summary={'child_restore_ids':children,'completed_steps':[],
+                        'missing_components':current.selection.get('missing_components',[])}
+                    child_ids=children
+        completed=[]
+        for position,child_id in enumerate(child_ids,1):
+            child=jobs._row(SnapshotRestore,child_id)
+            label=child.selection['kind']
+            if label=='config':label=child.selection['config_sections'][0]
+            _update(ident,progress_message=f'Restoring {label} ({position} of {len(child_ids)})')
+            if child.status=='pending':execute(child_id)
+            elif child.status=='running':
+                if child.selection.get('kind')=='mail':recover_mail_restore(child_id)
+                elif child.selection.get('kind')=='mail_routing':
+                    from daemon.snapshot_routing_worker import recover
+                    recover(child_id)
+                else:_update(child_id,status='failed',progress_message='Restore interrupted',
+                    error='Component restore was interrupted; retry the full restore after reviewing safety points.',completed_at=utcnow())
+            child=jobs._row(SnapshotRestore,child_id)
+            if child.status=='running':
+                _update(ident,progress_message=f'Waiting for interrupted {label} recovery to finish')
+                _schedule_full_recovery(ident);return
+            if child.status!='completed':
+                _update(ident,status='failed',progress_message=f'Full restore stopped at {label}',
+                    error=f'{label} restore did not complete; completed components retain individual undo points.',
+                    summary={'child_restore_ids':child_ids,'completed_steps':completed,'failed_child_id':child_id,
+                        'missing_components':row.selection.get('missing_components',[])},completed_at=utcnow())
+                return
+            completed.append({'restore_id':child_id,'component':label,'safety_snapshot_id':child.safety_snapshot_id})
+            _update(ident,summary={'child_restore_ids':child_ids,'completed_steps':completed,
+                'missing_components':row.selection.get('missing_components',[])})
+        _update(ident,status='completed',progress_message='Full account restore completed',
+            summary={'child_restore_ids':child_ids,'completed_steps':completed,
+                'missing_components':row.selection.get('missing_components',[])},completed_at=utcnow())
+    except Exception as exc:
+        logger.exception('Full account restore %s failed',ident)
+        _update(ident,status='failed',progress_message='Full account restore failed',error=str(exc)[-3000:],completed_at=utcnow())
+    finally:
+        final=jobs._row(SnapshotRestore,ident);account=jobs._row(Account,final.account_id)
+        if final.status in ('completed','failed'):
+            from daemon import backup_notifications
+            backup_notifications.dispatch('backup.restore_completed' if final.status=='completed' else 'backup.restore_failed',
+                account,source.options.get('notification_channels',[]),job_id=-ident,error=final.error,detail=final.progress_message)
+
+
 def recover_mail_restore(ident):
     """Reconcile an interrupted mailbox job without replaying its switch."""
     from shared.models import SnapshotMailRecovery
@@ -801,7 +927,10 @@ def recover_restores():
     with write_session() as session:
         rows=session.scalars(select(SnapshotRestore).where(SnapshotRestore.status.in_(jobs.ACTIVE))).all()
     for row in rows:
+        if row.selection.get('parent_restore_id'):continue
         if row.status=='pending':jobs._executor.submit(execute,row.id);continue
+        if row.selection.get('kind')=='full':
+            jobs._executor.submit(_execute_full,row.id,row,jobs._row(SnapshotRun,row.run_id));continue
         if row.selection.get('kind') == 'mail_routing':
             from daemon.snapshot_routing_worker import recover
             jobs._executor.submit(recover, row.id)

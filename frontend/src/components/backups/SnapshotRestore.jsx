@@ -55,6 +55,29 @@ export function SnapshotDatabaseRestore({ username, run }) {
   </section>
 }
 
+export function SnapshotFullRestore({ username, run }) {
+  const [open,setOpen]=useState(false)
+  const [confirmation,setConfirmation]=useState('')
+  const [mailAcknowledged,setMailAcknowledged]=useState(false)
+  const qc=useQueryClient()
+  const hasMail=run.options?.components?.includes('mail')
+  const restore=useMutation({mutationFn:()=>post(`/api/v1/accounts/${encodeURIComponent(username)}/backups/snapshots/runs/${run.id}/restore`,{
+    kind:'full',confirmation,mail_pause_acknowledged:hasMail?mailAcknowledged:false,
+  }),onSuccess:()=>{toast.success('Full account restore queued','Each component keeps its own progress and previous-version recovery point.');setOpen(false);setConfirmation('');setMailAcknowledged(false);qc.invalidateQueries({queryKey:['snapshot-restores',username]})}})
+  if(!username||!run.snapshot_id||run.status==='expired')return null
+  return <section className="space-y-3 border-t border-border pt-4">
+    <Button variant="primary" onClick={()=>setOpen(value=>!value)}><RotateCcw className="h-4 w-4"/>Restore full account</Button>
+    {open&&<form className="space-y-4 rounded-btn border border-warning/40 bg-warning/5 p-4" onSubmit={event=>{event.preventDefault();restore.mutate()}}>
+      <div><h3 className="font-semibold">Restore every available component from backup #{run.id}</h3><p className="mt-1 text-sm text-muted-foreground">Boron uses only this recovery point. Files, databases, email, routing, cron, PHP and DNS run as separately recorded steps; unavailable components stop the job before changes begin.</p></div>
+      <p className="flex gap-2 text-sm text-muted-foreground"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0"/>Each destructive step saves its current state first. You can recover individual previous versions from restore history.</p>
+      {hasMail&&<label className="flex items-start gap-3 text-sm"><input type="checkbox" className="mt-1 h-4 w-4 accent-accent" checked={mailAcknowledged} onChange={event=>setMailAcknowledged(event.target.checked)}/><span>I understand that mail access pauses briefly while messages and routing are restored.</span></label>}
+      <FormField label={`Type ${username} to confirm full account restore`}><Input value={confirmation} onChange={event=>setConfirmation(event.target.value)} autoComplete="off" spellCheck={false}/></FormField>
+      {restore.error&&<p role="alert" className="text-sm text-danger">{restore.error.message}</p>}
+      <div className="flex flex-wrap gap-2"><Button type="submit" loading={restore.isPending} disabled={confirmation!==username||(hasMail&&!mailAcknowledged)}>Restore full account</Button><Button type="button" variant="ghost" disabled={restore.isPending} onClick={()=>setOpen(false)}>Cancel</Button></div>
+    </form>}
+  </section>
+}
+
 const isRoutingRecovery = row => row?.selection?.kind === 'mail_routing'
 const pausesMail = row => ['mail', 'mail_routing'].includes(row?.selection?.kind)
 const isDnsRecovery = row => row?.selection?.kind === 'config' && row.selection.config_sections?.includes('dns')
@@ -69,7 +92,7 @@ export function SnapshotRestoreHistory({ username }) {
   if(!username)return null
   return <section className="mt-5 space-y-3"><h3 className="text-sm font-semibold">Restore history</h3><DataTable loading={history.isLoading} error={history.error} onRetry={history.refetch} data={history.data?.restores} pageSize={5} emptyTitle="No restores yet" columns={[
     {key:'id',header:'Restore',render:r=>`#${r.id}`},
-    {key:'kind',header:'Contents',render:r=>isDnsRecovery(r)?'DNS records':isPhpRecovery(r)?'PHP settings':({databases:'Databases',mail:'Mailboxes',mail_routing:'Email settings',files:'Files',config:'Scheduled tasks'})[r.selection?.kind]||'Files'},
+    {key:'kind',header:'Contents',render:r=>isDnsRecovery(r)?'DNS records':isPhpRecovery(r)?'PHP settings':({full:'Full account',databases:'Databases',mail:'Mailboxes',mail_routing:'Email settings',files:'Files',config:'Scheduled tasks'})[r.selection?.kind]||'Files'},
     {key:'started_at',header:'Started',render:r=>formatDate(r.started_at)},
     {key:'status',header:'Status',render:r=><Badge variant={r.status==='completed'?'success':r.status==='failed'?'danger':'neutral'}>{r.status}</Badge>},
     {key:'progress_message',header:'Progress',render:r=><div className="text-sm"><p>{r.progress_message}</p>{r.summary?.safety_snapshot_expired&&<p className="text-muted-foreground">The previous-version copy expired under this backup job’s retention policy.</p>}{r.error&&<p className="text-danger">{r.error}</p>}{r.status==='failed'&&r.safety_snapshot_id&&<p className="mt-1 text-muted-foreground">{isRoutingRecovery(r)?(r.summary?.rolled_back && r.summary?.routing_finalized ? 'Previous email settings were recovered automatically. No further recovery is needed.' : 'Recovery data is retained. Contact the server administrator to inspect this operation before trying again.'):r.selection?.kind==='mail'?'The previous mail copy is retained and can be recovered while these mailboxes still exist.':'Some selected data may have changed. Use the recovery copy to recover the previous version.'}</p>}</div>},

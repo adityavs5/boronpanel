@@ -7,7 +7,7 @@ from daemon import snapshot_jobs as jobs, snapshot_storage as storage, snapshot_
 from daemon.procutil import run
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, SnapshotDestination, SnapshotRun, SnapshotRestore
+from shared.models import Account, SnapshotDestination, SnapshotPolicy, SnapshotRun, SnapshotRestore, utcnow
 
 
 @pytest.fixture
@@ -83,6 +83,38 @@ def test_restore_authorization_and_path_validation(environment):
     with pytest.raises(Exception,match='managed by the panel'):
         restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','paths':['.php/runtime.ini']})
     assert restores.list_restores({'username':'alpha'})['restores']==[]
+
+
+def test_full_account_restore_coordinates_one_date_and_component_safety(isolated_db,monkeypatch):
+    monkeypatch.setattr(jobs._executor,'submit',lambda *args:None)
+    with write_session() as session:
+        account=Account(username='alpha',status='active',uid=os.geteuid() or 1,gid=os.getegid() or 1)
+        session.add(account);session.flush()
+        destination=SnapshotDestination(name='Full restore',kind='local',path='/tmp/repository',namespace='a'*32,
+            status='ready',enabled=True,customer_visible=True,capabilities={'incremental':True})
+        session.add(destination);session.flush()
+        policy=SnapshotPolicy(name='Full restore',destination_id=destination.id,frequency='manual',enabled=True,
+            options={'components':['files'],'notification_channels':[]})
+        session.add(policy);session.flush()
+        source=SnapshotRun(policy_id=policy.id,destination_id=destination.id,account_id=account.id,
+            options={'components':['files'],'notification_channels':[]},status='completed',snapshot_id='a'*64,
+            completed_at=utcnow())
+        session.add(source);session.flush();ident=source.id
+    parent=restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'full'})
+    original_execute=restores.execute
+    def complete_component(child_id):
+        restores._update(child_id,status='completed',progress_message='Files restored',
+            safety_snapshot_id='b'*64,summary={'files':1},completed_at=utcnow())
+    monkeypatch.setattr(restores,'execute',complete_component)
+    parent_row=jobs._row(SnapshotRestore,parent['id']);source_row=jobs._row(SnapshotRun,ident)
+    restores._execute_full(parent['id'],parent_row,source_row)
+    monkeypatch.setattr(restores,'execute',original_execute)
+    rows=restores.list_restores({'username':'alpha'})['restores']
+    full=next(row for row in rows if row['id']==parent['id'])
+    child=next(row for row in rows if row['selection'].get('parent_restore_id')==parent['id'])
+    assert full['status']=='completed' and full['selection']['kind']=='full'
+    assert full['summary']['child_restore_ids']==[child['id']]
+    assert child['status']=='completed' and child['safety_snapshot_id']
 
 
 def test_missing_snapshot_path_never_changes_live_files(environment):

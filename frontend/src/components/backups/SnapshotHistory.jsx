@@ -1,5 +1,5 @@
 import { SnapshotConfigurationRestore } from './SnapshotConfigurationRestore'
-import { SnapshotFileRestore, SnapshotDatabaseRestore, SnapshotRestoreHistory } from './SnapshotRestore'
+import { SnapshotFileRestore, SnapshotDatabaseRestore, SnapshotFullRestore, SnapshotRestoreHistory } from './SnapshotRestore'
 import { SnapshotRoutingRestore } from './SnapshotRoutingRestore'
 import { SnapshotMailRestore } from './SnapshotMailRestore'
 import { useState } from 'react'
@@ -52,6 +52,7 @@ function RunDialog({ run, username, admin, onClose }) {
         {key:'restore',header:'Restore',render:r=>r.restore_path!=null?<Button size="sm" variant="secondary" onClick={e=>{e.stopPropagation();setRestorePaths(p=>[...new Set([...p.split('\n').filter(Boolean),r.restore_path])].join('\n'))}}>Select for restore</Button>:null},
       ]}/></>}
     </div>}
+    <SnapshotFullRestore username={username} run={run}/>
     <SnapshotFileRestore username={username} run={run} paths={restorePaths} onPathsChange={setRestorePaths}/>
     <SnapshotDatabaseRestore username={username} run={run}/>
     <SnapshotMailRestore username={username} run={run}/>
