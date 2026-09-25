@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Gauge, KeyRound, RefreshCw, Server, Settings2 } from 'lucide-react'
+import { ExternalLink, Gauge, KeyRound, RefreshCw, Server, Settings2, ScrollText } from 'lucide-react'
 import { get, post, put } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
@@ -26,6 +26,7 @@ export default function OpenLiteSpeed() {
   const [profile, setProfile] = useState('balanced')
   const [resetOpen, setResetOpen] = useState(false)
   const [credential, setCredential] = useState(null)
+  const [domainLogForm, setDomainLogForm] = useState({ domain: '', log_level: 'WARN', debug_minutes: 0 })
   useEffect(() => { if (query.data?.settings && form == null) setForm(query.data.settings) }, [query.data, form])
   const webadmin = useMemo(() => {
     if (typeof window === 'undefined') return ''
@@ -36,6 +37,7 @@ export default function OpenLiteSpeed() {
   const reloadMut = useMutation({ mutationFn: () => post('/api/v1/admin/openlitespeed/reload', { confirm: true }), onSuccess: () => { toast.success('OpenLiteSpeed reloaded'); invalidate() }, onError: (error) => toast.error('Reload failed', error.message) })
   const revealMut = useMutation({ mutationFn: () => post('/api/v1/admin/openlitespeed/credentials/reveal', { confirm: true }), onSuccess: setCredential, onError: (error) => toast.error('Password is unavailable', error.message) })
   const resetMut = useMutation({ mutationFn: () => post('/api/v1/admin/openlitespeed/credentials/reset', { username: query.data?.credential?.username || 'admin' }), onSuccess: (data) => { setCredential(data); setResetOpen(false); toast.success('WebAdmin password reset'); invalidate() }, onError: (error) => toast.error('Password reset failed', error.message) })
+  const domainLogMut = useMutation({ mutationFn: () => put('/api/v1/admin/openlitespeed/domain-logs', domainLogForm), onSuccess: () => { toast.success('Domain log level applied'); invalidate() }, onError: (error) => toast.error('Could not update domain logging', error.message) })
   const number = (key) => (event) => setForm((value) => ({ ...value, [key]: Number(event.target.value) }))
   if (query.isLoading || !form) return <CenteredSpinner />
   const data = query.data
@@ -69,6 +71,15 @@ export default function OpenLiteSpeed() {
       <div className="grid gap-3 sm:grid-cols-3">{[['gzip_enabled', 'Dynamic Gzip'], ['brotli_enabled', 'Brotli'], ['quic_enabled', 'HTTP/3 / QUIC']].map(([key, label]) => <label key={key} className="flex items-center justify-between rounded-btn border border-border p-3 text-sm"><span>{label}</span><Switch aria-label={label} checked={form[key]} onCheckedChange={(checked) => setForm((value) => ({ ...value, [key]: checked }))} /></label>)}</div>
       {data.config_message && <p className="break-all rounded-btn bg-muted p-3 font-mono text-xs text-muted-foreground">{data.config_message}</p>}
       <Button loading={saveMut.isPending} onClick={() => saveMut.mutate()}><Settings2 className="h-4 w-4" /> Validate and apply</Button>
+    </CardContent></Card>
+
+    <Card><CardHeader><CardTitle><ScrollText className="h-5 w-5" /> Domain error logging</CardTitle><CardDescription>Access and error logs rotate at 50 MiB, retain 90 days, and compress closed segments. DEBUG is always time-limited and automatically returns to the prior level.</CardDescription></CardHeader><CardContent className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-[1fr_180px_180px_auto] md:items-end">
+        <FormField label="Hosted domain"><Select value={domainLogForm.domain} onChange={(event) => { const domain = event.target.value; const current = data.domain_logs?.find((row) => row.domain === domain); setDomainLogForm({ domain, log_level: current?.log_level || 'WARN', debug_minutes: 0 }) }}><option value="">Select domain</option>{(data.domain_logs || []).map((row) => <option key={row.domain} value={row.domain}>{row.domain}{row.debug_until ? ' · temporary DEBUG' : ''}</option>)}</Select></FormField>
+        <FormField label="Error level"><Select value={domainLogForm.log_level} onChange={(event) => setDomainLogForm((current) => ({ ...current, log_level: event.target.value, debug_minutes: event.target.value === 'DEBUG' ? 30 : 0 }))}><option>ERROR</option><option>WARN</option><option>NOTICE</option><option>INFO</option><option>DEBUG</option></Select></FormField>
+        <FormField label="DEBUG duration"><Select value={domainLogForm.debug_minutes} disabled={domainLogForm.log_level !== 'DEBUG'} onChange={(event) => setDomainLogForm((current) => ({ ...current, debug_minutes: Number(event.target.value) }))}><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option><option value="240">4 hours</option><option value="1440">24 hours</option></Select></FormField>
+        <Button disabled={!domainLogForm.domain} loading={domainLogMut.isPending} onClick={() => domainLogMut.mutate()}>Apply</Button>
+      </div>
     </CardContent></Card>
 
     <Card><CardHeader><CardTitle><KeyRound className="h-5 w-5" /> WebAdmin credentials</CardTitle><CardDescription>The installed one-way password hash cannot be decoded. After a reset, Boron can reveal the newly generated credential to authenticated administrators.</CardDescription></CardHeader><CardContent className="flex flex-wrap items-center justify-between gap-4">

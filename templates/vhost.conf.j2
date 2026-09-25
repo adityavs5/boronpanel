@@ -324,14 +324,17 @@ END_boron_rules
    concurrently-active vhost definitions at the exact same log file. #}
 errorlog {{ home_dir }}/logs/{{ vhost_name }}-error.log {
   useServer               0
-  logLevel                WARN
-  rollingSize             10M
+  logLevel                {{ domain_log_level }}
+  rollingSize             50M
+  keepDays                90
+  compressArchive         1
 }
 
 accessLog {{ home_dir }}/logs/{{ vhost_name }}-access.log {
   useServer               0
-  rollingSize             10M
-  keepDays                30
+  rollingSize             50M
+  keepDays                90
+  compressArchive         1
 }
 
 vhssl {

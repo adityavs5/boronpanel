@@ -105,6 +105,11 @@ class Domain(Base):
     # Phase 4 feature 3: IP/CIDR deny list, rendered into OLS's native
     # per-vhost accessControl block.
     ip_block_list: Mapped[list] = mapped_column(JSON, default=list)
+    # Per-vhost web-server error logging. DEBUG can be time-bounded; the
+    # previous level is restored automatically by borond.
+    ols_log_level: Mapped[str] = mapped_column(String(16), default="WARN")
+    ols_log_previous_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    ols_log_debug_until: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     account: Mapped[Account] = relationship(back_populates="domains")
 
@@ -914,7 +919,7 @@ class OlsServerSettings(Base):
     brotli_enabled: Mapped[bool] = mapped_column(default=True)
     quic_enabled: Mapped[bool] = mapped_column(default=True)
     log_level: Mapped[str] = mapped_column(String(16), default="WARN")
-    log_keep_days: Mapped[int] = mapped_column(Integer, default=30)
+    log_keep_days: Mapped[int] = mapped_column(Integer, default=90)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 

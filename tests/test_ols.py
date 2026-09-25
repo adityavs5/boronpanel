@@ -1,3 +1,5 @@
+import datetime as dt
+
 import pytest
 from pathlib import Path
 
@@ -26,6 +28,48 @@ def test_render_vhost_conf_active_uses_real_docroot():
     assert "docRoot                   /home/demo1/public_html" in content
     assert "lsapi:demo1_php83 php" in content
     assert "_suspended" not in content
+
+
+def test_render_vhost_conf_configures_retained_compressed_domain_logs():
+    account = make_account()
+    domain = make_domain(ols_log_level="INFO")
+    content = ols.render_vhost_conf(account, domain, suspended=False)
+
+    assert "logLevel                INFO" in content
+    assert content.count("rollingSize             50M") == 2
+    assert content.count("keepDays                90") == 2
+    assert content.count("compressArchive         1") == 2
+
+
+def test_expire_domain_log_debug_restores_previous_level(isolated_db, monkeypatch):
+    from shared.db import write_session
+    from shared.models import Domain
+
+    with write_session() as session:
+        account = Account(username="demo1", uid=5001, gid=5001, status="active", php_version="8.3")
+        session.add(account)
+        session.flush()
+        session.add(Domain(
+            account_id=account.id,
+            domain="demo1.example",
+            kind="primary",
+            docroot="/home/demo1/public_html",
+            ols_log_level="DEBUG",
+            ols_log_previous_level="NOTICE",
+            ols_log_debug_until=dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1),
+        ))
+
+    refreshed = []
+    monkeypatch.setattr(ols, "refresh_vhost", lambda account: refreshed.append(account.username))
+    result = ols.expire_domain_log_debug({})
+
+    assert result == {"expired": ["demo1.example"], "count": 1}
+    assert refreshed == ["demo1"]
+    with write_session() as session:
+        domain = session.query(Domain).filter_by(domain="demo1.example").one()
+        assert domain.ols_log_level == "NOTICE"
+        assert domain.ols_log_previous_level is None
+        assert domain.ols_log_debug_until is None
 
 
 def test_render_vhost_conf_omits_php_ini_block_when_not_set():

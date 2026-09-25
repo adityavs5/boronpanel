@@ -92,7 +92,12 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     # see _migrate_wordpress_installs_uniqueness below for the accompanying
     # index change this column enables.
     "wordpress_installs": {"path": "VARCHAR(255) NOT NULL DEFAULT ''"},
-    "domains": {"suspended": "BOOLEAN NOT NULL DEFAULT 0"},
+    "domains": {
+        "suspended": "BOOLEAN NOT NULL DEFAULT 0",
+        "ols_log_level": "VARCHAR(16) NOT NULL DEFAULT 'WARN'",
+        "ols_log_previous_level": "VARCHAR(16)",
+        "ols_log_debug_until": "DATETIME",
+    },
     "snapshot_destinations": {
         "enabled": "BOOLEAN NOT NULL DEFAULT 1",
         "customer_visible": "BOOLEAN NOT NULL DEFAULT 1",

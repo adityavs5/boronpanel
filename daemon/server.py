@@ -325,6 +325,7 @@ OP_TABLE = {
     "apps.list": appinstaller.list_installed_apps,
     # Phase 3 feature 9: error log viewer
     "logs.get": logs.get_log,
+    "logs.download": logs.download_log,
     # Phase 5 feature 1: server health dashboard
     "health.get": health.get_live,
     "health.history": health.get_history,
@@ -364,6 +365,7 @@ OP_TABLE = {
     "malware.finding.ignore": malware.ignore,
     "ols.admin.status": ols.admin_status,
     "ols.admin.settings.update": ols.update_admin_settings,
+    "ols.admin.domain_log.update": ols.update_domain_log_settings,
     "ols.admin.reload": ols.graceful_reload,
     "ols.admin.password.reset": ols.reset_admin_password,
     "ols.admin.password.reveal": ols.reveal_admin_password,
@@ -982,6 +984,15 @@ async def _cgroup_reconcile_loop() -> None:
         await asyncio.sleep(CGROUP_RECONCILE_INTERVAL_SECONDS)
 
 
+async def _domain_log_level_loop() -> None:
+    while True:
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, ols.expire_domain_log_debug, {})
+        except Exception:
+            logger.exception("temporary domain DEBUG log-level expiry failed")
+        await asyncio.sleep(60)
+
+
 async def _reconcile_acme_renewals() -> None:
     from certbot.errors import LockError
     from daemon.acme_http import migrate_renewals
@@ -1025,6 +1036,7 @@ async def amain() -> None:
     except Exception:
         logger.exception("cgroup slice bootstrap failed at startup")
     asyncio.create_task(_cgroup_reconcile_loop())
+    asyncio.create_task(_domain_log_level_loop())
     try:
         await asyncio.get_running_loop().run_in_executor(None, fail2ban.reconcile_managed_jails)
     except Exception:

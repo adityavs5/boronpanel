@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import json
+import datetime as dt
 from pathlib import Path
 import pwd
 import re
@@ -67,7 +68,7 @@ OLS_SETTINGS_DEFAULTS = {
     "brotli_enabled": True,
     "quic_enabled": True,
     "log_level": "WARN",
-    "log_keep_days": 30,
+    "log_keep_days": 90,
 }
 OLS_CREDENTIAL_PATH = Path("/var/lib/boron/ols-admin-credential.json")
 OLS_PASSWORD_SCRIPT = Path("/usr/local/lsws/admin/misc/admpass.sh")
@@ -141,6 +142,8 @@ def _domain_row_to_plain(d: Domain) -> dict:
         # Phase 7a feature 6: None means "inherit Account.php_version" --
         # render_vhost_conf resolves the effective version itself.
         "php_version": d.php_version,
+        "ols_log_level": d.ols_log_level or "WARN",
+        "ols_log_debug_until": d.ols_log_debug_until,
     }
 
 
@@ -408,6 +411,7 @@ def render_vhost_conf(
         lscache=lscache or domain.get("lscache"),
         maintenance=maintenance or domain.get("maintenance"),
         error_pages=error_pages or domain.get("error_pages"),
+        domain_log_level=domain.get("ols_log_level") or "WARN",
         default_error_pages_dir=str(DEFAULT_ERROR_PAGES_DIR),
     )
 
@@ -1226,6 +1230,14 @@ def admin_status(params: dict) -> dict:
     with write_session() as session:
         accounts = session.scalar(select(func.count()).select_from(Account)) or 0
         domains = session.scalar(select(func.count()).select_from(Domain)) or 0
+        domain_logs = [
+            {
+                "domain": row.domain,
+                "log_level": row.ols_log_level or "WARN",
+                "debug_until": row.ols_log_debug_until.isoformat() if row.ols_log_debug_until else None,
+            }
+            for row in session.scalars(select(Domain).order_by(Domain.domain)).all()
+        ]
     return {
         "active": service.stdout.strip() == "active",
         "version": (version.stdout or version.stderr).strip()[:200],
@@ -1238,7 +1250,73 @@ def admin_status(params: dict) -> dict:
         "webadmin_tls_hostname": settings.panel_hostname,
         "accounts": accounts,
         "domains": domains,
+        "domain_logs": domain_logs,
     }
+
+
+def update_domain_log_settings(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    level = str(params.get("log_level") or "WARN").upper()
+    if level not in {"ERROR", "WARN", "NOTICE", "INFO", "DEBUG"}:
+        raise ValidationError("log_level must be ERROR, WARN, NOTICE, INFO, or DEBUG")
+    try:
+        debug_minutes = int(params.get("debug_minutes") or 0)
+    except (TypeError, ValueError):
+        raise ValidationError("debug_minutes must be an integer") from None
+    if not 0 <= debug_minutes <= 24 * 60:
+        raise ValidationError("debug_minutes must be between 0 and 1440")
+    previous = None
+    account = None
+    debug_until = None
+    with write_session() as session:
+        row = session.scalar(select(Domain).where(Domain.domain == domain_name))
+        if row is None:
+            raise ValidationError(f"domain '{domain_name}' is not hosted on this server")
+        account = session.get(Account, row.account_id)
+        previous = (row.ols_log_level, row.ols_log_previous_level, row.ols_log_debug_until)
+        if level == "DEBUG" and debug_minutes > 0:
+            row.ols_log_previous_level = row.ols_log_level if row.ols_log_level != "DEBUG" else (row.ols_log_previous_level or "WARN")
+            debug_until = utcnow() + dt.timedelta(minutes=debug_minutes)
+            row.ols_log_debug_until = debug_until
+        else:
+            row.ols_log_previous_level = None
+            row.ols_log_debug_until = None
+        row.ols_log_level = level
+    try:
+        refresh_vhost(account)
+    except Exception:
+        with write_session() as session:
+            row = session.scalar(select(Domain).where(Domain.domain == domain_name))
+            if row is not None:
+                row.ols_log_level, row.ols_log_previous_level, row.ols_log_debug_until = previous
+        refresh_vhost(account)
+        raise
+    return {
+        "domain": domain_name, "log_level": level,
+        "debug_until": debug_until.isoformat() if debug_until else None,
+    }
+
+
+def expire_domain_log_debug(params: dict | None = None) -> dict:
+    now = utcnow()
+    account_ids = set()
+    expired = []
+    with write_session() as session:
+        rows = session.scalars(
+            select(Domain).where(Domain.ols_log_debug_until.is_not(None), Domain.ols_log_debug_until <= now)
+        ).all()
+        for row in rows:
+            row.ols_log_level = row.ols_log_previous_level or "WARN"
+            row.ols_log_previous_level = None
+            row.ols_log_debug_until = None
+            account_ids.add(row.account_id)
+            expired.append(row.domain)
+    for account_id in account_ids:
+        with write_session() as session:
+            account = session.get(Account, account_id)
+        if account is not None:
+            refresh_vhost(account)
+    return {"expired": expired, "count": len(expired)}
 
 
 def update_admin_settings(params: dict) -> dict:

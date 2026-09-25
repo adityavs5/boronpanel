@@ -33,6 +33,12 @@ class ResetPasswordBody(BaseModel):
     username: str = "admin"
 
 
+class DomainLogBody(BaseModel):
+    domain: str
+    log_level: str = "WARN"
+    debug_minutes: int = 0
+
+
 @api_router.get("")
 def status(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -43,6 +49,12 @@ def status(identity: Identity = Depends(get_identity)):
 def update_settings(body: SettingsBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("ols.admin.settings.update", identity, **body.model_dump())
+
+
+@api_router.put("/domain-logs")
+def update_domain_logs(body: DomainLogBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("ols.admin.domain_log.update", identity, **body.model_dump())
 
 
 @api_router.post("/reload")

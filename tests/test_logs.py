@@ -1,4 +1,6 @@
 import os
+import base64
+import gzip
 
 import pytest
 
@@ -138,3 +140,27 @@ def test_large_log_read_is_bounded(account_with_domain, fake_account_home):
     path.write_bytes(b'x' * (2 * 1024 * 1024) + b'\nlast line\n')
     result = logs.get_log({'username': 'demo1', 'type': 'php'})
     assert result['lines'] == ['last line']
+
+
+def test_access_log_and_compressed_history_are_selectable(account_with_domain, fake_account_home):
+    active = fake_account_home / 'logs' / 'demo1_example-access.log'
+    active.write_text('198.51.100.1 - - [25/Sep/2026:12:00:00 +0000] "GET / HTTP/1.1" 200 12\n')
+    rotated = fake_account_home / 'logs' / 'demo1_example-access.log.09_24_2026.gz'
+    rotated.write_bytes(gzip.compress(b'198.51.100.2 - - [24/Sep/2026:12:00:00 +0000] "GET /old HTTP/1.1" 200 10\n'))
+    current = logs.get_log({'username': 'demo1', 'type': 'access'})
+    assert current['state'] == 'available'
+    assert len(current['segments']) == 2
+    history = logs.get_log({'username': 'demo1', 'type': 'access', 'segment': rotated.name})
+    assert '/old' in history['lines'][0]
+
+
+def test_log_date_filter_and_bounded_download(account_with_domain, fake_account_home):
+    path = fake_account_home / 'logs' / 'demo1_example-access.log'
+    path.write_text(
+        '198.51.100.1 - - [24/Sep/2026:12:00:00 +0000] "GET /old HTTP/1.1" 200 10\n'
+        '198.51.100.1 - - [25/Sep/2026:12:00:00 +0000] "GET /new HTTP/1.1" 200 10\n'
+    )
+    result = logs.get_log({'username': 'demo1', 'type': 'access', 'from_date': '2026-09-25'})
+    assert len(result['lines']) == 1 and '/new' in result['lines'][0]
+    download = logs.download_log({'username': 'demo1', 'type': 'access'})
+    assert base64.b64decode(download['content_base64']) == path.read_bytes()
