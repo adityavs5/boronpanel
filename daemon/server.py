@@ -22,7 +22,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import panel_config, panel_jobs, panel_tls, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, dnscluster, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import panel_config, panel_jobs, panel_tls, snapshot_config, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, dnscluster, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
 from daemon.logsetup import configure_logging
 from daemon.rpc_authority import AuthenticationError, AuthorizationError, authorize, resolve_principal
 from daemon import directadmin_remote
@@ -48,6 +48,7 @@ OP_TABLE = {
     "snapshot.destination.delete": snapshot_jobs.delete_destination,
     "snapshot.destination.operation.queue": snapshot_jobs.queue_destination_operation,
     "snapshot.destination.operation.list": snapshot_jobs.destination_operations,
+    "snapshot.destination.inventory": snapshot_jobs.destination_inventory,
     "snapshot.policy.list": snapshot_jobs.policies,
     "snapshot.policy.save": snapshot_jobs.save_policy,
     "snapshot.policy.run": snapshot_jobs.queue_policy,
@@ -61,6 +62,8 @@ OP_TABLE = {
     "snapshot.notifications.telegram.save": backup_notifications.save_telegram,
     "snapshot.notifications.telegram.test": backup_notifications.test_telegram,
     "snapshot.notifications.deliveries": backup_notifications.deliveries,
+    "snapshot.config.export": snapshot_config.export_configuration,
+    "snapshot.config.import": snapshot_config.import_configuration,
     "account.create": handlers_account.create_account,
     "account.get": handlers_account.get_account,
     "account.list": handlers_account.list_accounts,

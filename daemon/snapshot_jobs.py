@@ -22,6 +22,7 @@ import tempfile
 import tarfile
 import time
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from daemon import snapshot_storage as storage
@@ -308,6 +309,32 @@ def destination_operations(params):
         return {'operations':[_operation_dict(row) for row in session.scalars(query).all()]}
 
 
+def destination_inventory(params):
+    destination=_row(SnapshotDestination,params['id'])
+    if destination.status=='deleted':raise ValidationError('Destination configuration was removed')
+    try:
+        with lock(f'repository-{destination.id}',blocking=False):items=storage.all_snapshots(repository(destination))
+    except BlockingIOError:raise ValidationError('This destination is busy. Try again shortly.') from None
+    prefix=f'boron:{destination.namespace}:account:'
+    account_ids=[]
+    for item in items:
+        tag=next((str(tag) for tag in item.get('tags',[]) if str(tag).startswith(prefix)),None)
+        if tag:
+            try:account_ids.append(int(tag.removeprefix(prefix)))
+            except ValueError:pass
+    with write_session() as session:
+        names=dict(session.execute(select(Account.id,Account.username).where(Account.id.in_(account_ids))).all())
+    rows=[]
+    for item in items:
+        tag=next((str(tag) for tag in item.get('tags',[]) if str(tag).startswith(prefix)),None)
+        try:account_id=int(tag.removeprefix(prefix)) if tag else None
+        except ValueError:account_id=None
+        rows.append({'snapshot_id':item.get('id'),'account_id':account_id,'username':names.get(account_id),
+            'created_at':item.get('time'),'paths':item.get('paths',[]),'tags':item.get('tags',[]),
+            'kind':'logical_recovery_point','raw_objects':'Encrypted repository objects are intentionally hidden'})
+    return {'destination':_destination_dict(destination),'entries':rows}
+
+
 def queue_destination_operation(params):
     ident=storage._positive(params['id']);action=params.get('action')
     if action not in ('test','speed','reindex'):raise ValidationError('Choose test, speed, or reindex')
@@ -402,6 +429,8 @@ def account_catalog(params):
         accounts=session.scalars(select(Account).order_by(Account.username)).all()
         runs=session.scalars(select(SnapshotRun).order_by(SnapshotRun.id.desc())).all()
         archives=session.scalars(select(BackupJob).order_by(BackupJob.id.desc())).all()
+        policies=session.scalars(select(SnapshotPolicy).where(SnapshotPolicy.enabled==True)).all()
+        destination_rows={row.id:row for row in session.scalars(select(SnapshotDestination)).all()}
         by_account={account.id:[] for account in accounts}
         for run in runs:by_account.setdefault(run.account_id,[]).append(('snapshot',run))
         for job in archives:by_account.setdefault(job.account_id,[]).append(('archive',job))
@@ -417,11 +446,32 @@ def account_catalog(params):
                 stamp=latest.completed_at or latest.started_at
                 if stamp.tzinfo is None:stamp=stamp.replace(tzinfo=dt.timezone.utc)
                 age_hours=round((now-stamp).total_seconds()/3600,1)
+            scheduled=[policy for policy in policies if policy.frequency!='manual' and
+                (not policy.options.get('accounts') or account.username in policy.options.get('accounts',[])) and
+                account.username not in policy.options.get('excluded_accounts',[])]
+            snapshot_points=[row for kind,row in usable if kind=='snapshot']
+            components=sorted(set(component for row in snapshot_points for component in row.options.get('components',[])))
+            destination_ids=sorted(set(row.destination_id for row in snapshot_points))
+            destinations=[destination_rows[ident].name for ident in destination_ids if ident in destination_rows]
+            verified=[destination_rows[ident].last_verified_at for ident in destination_ids
+                if ident in destination_rows and destination_rows[ident].last_verified_at]
+            unavailable=any(ident not in destination_rows or not destination_rows[ident].enabled or destination_rows[ident].error
+                for ident in destination_ids)
+            overdue=False
+            if latest and scheduled:
+                intervals=[FREQUENCIES.get(policy.frequency,0) for policy in scheduled if FREQUENCIES.get(policy.frequency,0)]
+                overdue=bool(intervals and age_hours is not None and age_hours*3600>min(intervals)*1.5)
+            if not usable:availability='no_backups' if scheduled or attempts else 'not_scheduled'
+            elif unavailable:availability='destination_unavailable'
+            elif attempt and attempt.status=='failed' and attempt is not latest:availability='partial'
+            elif overdue:availability='overdue'
+            else:availability='available'
             result.append({'account_id':account.id,'username':account.username,'primary_domain':account.primary_domain,
                 'account_status':account.status,'recovery_point_count':len(usable),
                 'latest_recovery_at':(latest.completed_at or latest.started_at).isoformat() if latest else None,
                 'latest_attempt_status':attempt.status if attempt else None,'age_hours':age_hours,
-                'availability':'available' if usable else ('not_scheduled' if not attempts else 'no_backups')})
+                'availability':availability,'components':components,'destinations':destinations,
+                'last_verified_at':max(verified).isoformat() if verified else None})
         return {'accounts':result,'generated_at':now.isoformat()}
 
 
@@ -451,10 +501,13 @@ def validate_options(params):
     if not isinstance(destination_ids,list) or not destination_ids or len(destination_ids)>8:
         raise ValidationError('Choose between one and eight destinations')
     destination_ids = list(dict.fromkeys(storage._positive(value) for value in destination_ids))
+    timezone=str(params.get('timezone') or 'UTC')[:64]
+    try:ZoneInfo(timezone)
+    except ZoneInfoNotFoundError:raise ValidationError('Choose a valid IANA time zone') from None
     return dict(accounts=accounts,excluded_accounts=excluded,components=components,include_paths=includes,
         exclude_patterns=excludes,notification_channels=channels,retention_count=retention,mode=mode,
         destination_ids=destination_ids,
-        timezone=str(params.get('timezone') or 'UTC')[:64],
+        timezone=timezone,
         retention_daily=max(0,min(365,int(params.get('retention_daily',retention)))),
         retention_weekly=max(0,min(104,int(params.get('retention_weekly',4)))),
         retention_monthly=max(0,min(120,int(params.get('retention_monthly',6)))))
@@ -739,6 +792,29 @@ def _notify(row,account):
     _update(row.id,notification_results=result)
 
 
+def retained_snapshot_ids(items,options):
+    """Select recent plus daily/weekly/monthly points; always retain one usable point."""
+    def stamp(item):
+        value=item.get('time')
+        try:return dt.datetime.fromisoformat(value.replace('Z','+00:00'))
+        except (AttributeError,ValueError):return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    ordered=sorted(items,key=stamp,reverse=True)
+    if not ordered:return set()
+    keep={item['id'] for item in ordered[:max(1,int(options.get('retention_count',7)))]}
+    tiers=[('day',int(options.get('retention_daily',0))),('week',int(options.get('retention_weekly',0))),('month',int(options.get('retention_monthly',0)))]
+    for kind,count in tiers:
+        if count<=0:continue
+        buckets=set()
+        for item in ordered:
+            moment=stamp(item)
+            bucket=(moment.year,moment.month,moment.day) if kind=='day' else ((moment.isocalendar().year,moment.isocalendar().week) if kind=='week' else (moment.year,moment.month))
+            if bucket in buckets:continue
+            buckets.add(bucket);keep.add(item['id'])
+            if len(buckets)>=count:break
+    keep.add(ordered[0]['id'])
+    return keep
+
+
 def execute_run(ident):
     row=_row(SnapshotRun,ident)
     account_id=row.account_id
@@ -775,8 +851,8 @@ def execute_run(ident):
                     progress_message='Backup point completed; later steps cancelled',completed_at=utcnow());return
             _update(ident,snapshot_id=summary['snapshot_id'],summary=summary,progress_message='Applying retention')
             items=[s for s in storage.snapshots(repo,account.id) if f'policy:{row.policy_id}' in s.get('tags',[])]
-            items.sort(key=lambda s:s['time'],reverse=True)
-            obsolete=[s['id'] for s in items[row.options['retention_count']:]]
+            keep=retained_snapshot_ids(items,row.options)
+            obsolete=[s['id'] for s in items if s['id'] not in keep]
             if obsolete:
                 storage.forget(repo,account.id,obsolete,prune=True)
                 with write_session() as session:

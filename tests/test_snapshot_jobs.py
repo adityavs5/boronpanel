@@ -399,3 +399,13 @@ def test_account_catalog_distinguishes_attempts_from_usable_points(environment):
     assert rows['alpha']['latest_attempt_status'] == 'failed'
     assert rows['alpha']['recovery_point_count'] == 0
     assert rows['bravo']['availability'] == 'not_scheduled'
+
+
+def test_retention_keeps_recent_daily_weekly_and_monthly_points():
+    moments=['2026-09-25T02:00:00Z','2026-09-25T01:00:00Z','2026-09-24T01:00:00Z',
+        '2026-09-18T01:00:00Z','2026-08-20T01:00:00Z','2026-07-20T01:00:00Z']
+    items=[{'id':str(index),'time':value} for index,value in enumerate(moments)]
+    kept=jobs.retained_snapshot_ids(items,{'retention_count':1,'retention_daily':2,
+        'retention_weekly':2,'retention_monthly':2})
+    assert {'0','2','3','4'} <= kept
+    assert '1' not in kept

@@ -196,6 +196,12 @@ class TelegramPluginBody(BaseModel):
     events: list[str] = ['backup.completed','backup.failed']
 
 
+class BackupConfigurationImportBody(BaseModel):
+    payload: str
+    recovery_key: str
+    apply: bool = False
+
+
 @api_router.get('/snapshots/destinations')
 def snapshot_destinations(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -244,6 +250,12 @@ def snapshot_destination_action(destination_id: int, action: str, identity: Iden
 def snapshot_destination_operations(destination_id: int | None = None, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon('snapshot.destination.operation.list', identity, id=destination_id)
+
+
+@api_router.get('/snapshots/destinations/{destination_id}/browse')
+def snapshot_destination_browse(destination_id: int,identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.destination.inventory',identity,id=destination_id)
 
 
 @api_router.get('/snapshots/policies')
@@ -316,3 +328,17 @@ def snapshot_test_telegram(identity: Identity = Depends(get_identity)):
 def snapshot_notification_deliveries(identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon('snapshot.notifications.deliveries',identity)
+
+
+@api_router.post('/snapshots/configuration/export')
+def snapshot_export_configuration(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    from fastapi.responses import JSONResponse
+    return JSONResponse(call_daemon('snapshot.config.export',identity),
+        headers={'Cache-Control':'no-store','Pragma':'no-cache'})
+
+
+@api_router.post('/snapshots/configuration/import')
+def snapshot_import_configuration(body: BackupConfigurationImportBody,identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.config.import',identity,**body.model_dump())
