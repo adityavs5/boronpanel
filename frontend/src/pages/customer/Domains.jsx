@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Globe, Plus, Trash2, Settings, MoreHorizontal, Copy } from 'lucide-react'
-import { get, post, del } from '@/lib/api'
+import { Globe, Plus, Trash2, Settings, MoreHorizontal, Copy, PauseCircle, PlayCircle } from 'lucide-react'
+import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -50,6 +50,15 @@ function ParkedDomainsCard({ username, domains }) {
     mutationFn: (row) => del(`${base}/${row.parked_domain}`),
     onSuccess: () => { toast.success('Parked domain removed'); invalidate(); setToDelete(null) },
     onError: (e) => { toast.error('Could not remove parked domain', e.message); setToDelete(null) },
+  })
+
+  const suspensionMut = useMutation({
+    mutationFn: (d) => patch(`/api/v1/accounts/${username}/domains/${encodeURIComponent(d.domain)}/suspension`, { suspended: !d.suspended }),
+    onSuccess: (result) => {
+      toast.success(result.suspended ? 'Domain suspended' : 'Domain reactivated', result.suspended ? 'Only this website now shows the suspension page.' : 'The website is serving normally again.')
+      qc.invalidateQueries({ queryKey: ['domains', username] })
+    },
+    onError: (e) => toast.error('Could not change domain status', e.message),
   })
 
   const targetable = (domains || []).filter((d) => d.kind !== 'parked')
@@ -199,6 +208,12 @@ export default function Domains({ subdomainsOnly = false }) {
       render: (r) => <StatusBadge status={r.ssl_status || 'none'} />,
     },
     {
+      key: 'suspended',
+      header: 'Website',
+      sortable: true,
+      render: (r) => <Badge variant={r.suspended ? 'warning' : 'success'}>{r.suspended ? 'Suspended' : 'Active'}</Badge>,
+    },
+    {
       key: 'created_at',
       header: 'Created',
       sortable: true,
@@ -220,6 +235,10 @@ export default function Domains({ subdomainsOnly = false }) {
             <DropdownMenuContent>
               <DropdownMenuItem onSelect={() => navigate(`/domains/${r.domain}`)}>
                 <Settings className="h-4 w-4" /> Manage
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={suspensionMut.isPending} onSelect={() => suspensionMut.mutate(r)}>
+                {r.suspended ? <PlayCircle className="h-4 w-4" /> : <PauseCircle className="h-4 w-4" />}
+                {r.suspended ? 'Unsuspend website' : 'Suspend website'}
               </DropdownMenuItem>
               {r.kind !== 'primary' && (
                 <>
@@ -279,16 +298,13 @@ export default function Domains({ subdomainsOnly = false }) {
           >
             <DialogBody className="space-y-4">
               {!subdomainsOnly && <FormField label="Site type" htmlFor="domain-kind"><Select id="domain-kind" value={kind} onChange={e=>{setKind(e.target.value);setDomain('');setParent(data?.domains?.[0]?.domain||'')}}><option value="addon">Domain</option><option value="subdomain" disabled={!data?.domains?.length}>Subdomain</option></Select></FormField>}
-              {kind==='subdomain'&&<FormField label="Parent domain" htmlFor="subdomain-parent"><Select id="subdomain-parent" value={parent} onChange={e=>setParent(e.target.value)}>{(data?.domains||[]).filter(d=>d.kind!=='subdomain').map(d=><option key={d.domain} value={d.domain}>{d.domain}</option>)}</Select></FormField>}
-              <FormField label={kind==='subdomain'?'Subdomain name':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter a name such as blog or shop.':'Enter a complete domain name.'}>
-                <Input
-                  id="new-domain-name"
-                  autoFocus
-                  value={domain}
-                  onChange={(e) => setDomain(e.target.value)}
-                  placeholder={kind==='subdomain'?'blog':'example.com'}
-                  required
-                />
+              <FormField label={kind==='subdomain'?'Subdomain':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter the name first, then choose the parent domain that follows it.':'Enter a complete domain name.'}>
+                {kind === 'subdomain' ? <div className="flex min-w-0 items-stretch">
+                  <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="blog" required className="min-w-0 rounded-r-none" />
+                  <Select id="subdomain-parent" aria-label="Parent domain" value={parent} onChange={e=>setParent(e.target.value)} className="min-w-0 flex-1 rounded-l-none border-l-0">
+                    {(data?.domains||[]).filter(d=>d.kind!=='subdomain').map(d=><option key={d.domain} value={d.domain}>.{d.domain}</option>)}
+                  </Select>
+                </div> : <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" required />}
               </FormField>
               {kind==='subdomain'&&<FormField label="Document root" htmlFor="subdomain-docroot" hint="A separate folder is recommended for an independent site."><Select id="subdomain-docroot" value={docrootMode} onChange={e=>setDocrootMode(e.target.value)}><option value="default">Separate website folder</option><option value="parent">Parent domain’s document root</option><option value="custom">Choose an account folder</option></Select></FormField>}
               {kind==='subdomain'&&docrootMode==='custom'&&<FormField label="Account-relative folder" htmlFor="subdomain-custom-docroot" hint={`Stored inside /home/${username}.`} required><Input id="subdomain-custom-docroot" value={customDocroot} onChange={e=>setCustomDocroot(e.target.value)} placeholder="sites/blog/public_html" required /></FormField>}

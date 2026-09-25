@@ -32,6 +32,7 @@ def _domain_to_dict(domain: Domain) -> dict:
         "kind": domain.kind,
         "docroot": domain.docroot,
         "ssl_status": domain.ssl_status,
+        "suspended": bool(domain.suspended),
         "ssl_is_wildcard": domain.ssl_is_wildcard,
         # None means "inherit the account's own PHP version" (Phase 7a
         # feature 6) -- the account's own default is not resolved/inlined
@@ -257,9 +258,48 @@ def remove_domain(params: dict) -> dict:
 
     handlers_maintenance.delete_maintenance_for_domain(domain_name)
     handlers_wildcard.delete_wildcard_for_domain(domain_name)
-
     return {"domain": domain_name, "kind": kind, "status": "removed"}
 
+
+@database_operations.serialized
+@account_mutation.locked
+def set_suspended(params: dict) -> dict:
+    """Suspend one web vhost without changing the rest of the account."""
+    username = validate_username(params["username"])
+    domain_name = validate_domain(params["domain"])
+    suspended = params.get("suspended")
+    if not isinstance(suspended, bool):
+        raise ValidationError("suspended must be true or false")
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found")
+        if account.status not in ("active", "suspended"):
+            raise RuntimeError(f"cannot change a domain for an account in status '{account.status}'")
+        domain = session.scalar(select(Domain).where(
+            Domain.account_id == account.id, Domain.domain == domain_name,
+        ))
+        if domain is None:
+            raise RuntimeError(f"domain '{domain_name}' not found for account '{username}'")
+        previous = bool(domain.suspended)
+        domain.suspended = suspended
+        session.flush()
+        account_snapshot = account
+    try:
+        ols.refresh_vhost(account_snapshot)
+    except Exception:
+        with write_session() as session:
+            row = session.scalar(select(Domain).where(
+                Domain.account_id == account_snapshot.id, Domain.domain == domain_name,
+            ))
+            if row is not None:
+                row.suspended = previous
+        raise
+    with write_session() as session:
+        row = session.scalar(select(Domain).where(
+            Domain.account_id == account_snapshot.id, Domain.domain == domain_name,
+        ))
+        return _domain_to_dict(row)
 
 def list_domains(params: dict) -> dict:
     username = validate_username(params["username"])

@@ -21,9 +21,10 @@ def stub_filesystem(monkeypatch):
 
 @pytest.fixture()
 def stub_ols(monkeypatch):
-    calls = {"provision": [], "remove": []}
+    calls = {"provision": [], "remove": [], "refresh": []}
     monkeypatch.setattr(hd.ols, "provision_vhost", lambda account: calls["provision"].append(account.username))
     monkeypatch.setattr(hd.ols, "remove_domain_vhost", lambda account, domain: calls["remove"].append((account.username, domain)))
+    monkeypatch.setattr(hd.ols, "refresh_vhost", lambda account: calls["refresh"].append(account.username))
     return calls
 
 
@@ -113,6 +114,27 @@ def test_list_domains(isolated_db, stub_sysops, stub_filesystem, stub_ols):
     result = hd.list_domains({"username": "demo1"})
     domains = {d["domain"] for d in result["domains"]}
     assert domains == {"demo1.example", "addon.example"}
+
+
+def test_domain_suspension_is_scoped_and_refreshes_ols(isolated_db, stub_sysops, stub_filesystem, stub_ols):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "addon.example", "kind": "addon"})
+    result = hd.set_suspended({"username": "demo1", "domain": "addon.example", "suspended": True})
+    assert result["suspended"] is True
+    assert stub_ols["refresh"] == ["demo1"]
+    listed = {row["domain"]: row for row in hd.list_domains({"username": "demo1"})["domains"]}
+    assert listed["addon.example"]["suspended"] is True
+    assert listed["demo1.example"]["suspended"] is False
+
+
+def test_domain_suspension_rolls_back_when_ols_rejects(isolated_db, stub_sysops, stub_filesystem, stub_ols, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    monkeypatch.setattr(hd.ols, "refresh_vhost", lambda _account: (_ for _ in ()).throw(RuntimeError("invalid OLS config")))
+    with pytest.raises(RuntimeError, match="invalid OLS config"):
+        hd.set_suspended({"username": "demo1", "domain": "demo1.example", "suspended": True})
+    assert hd.list_domains({"username": "demo1"})["domains"][0]["suspended"] is False
 
 
 def test_add_subdomain_creates_dns_a_record_when_parent_zone_managed(isolated_db, stub_sysops, stub_filesystem, stub_ols, stub_powerdns, monkeypatch):

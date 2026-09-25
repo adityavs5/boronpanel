@@ -19,6 +19,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'dns.set_record': 'account_and_domain',
     'domain.remove': 'account_and_domain',
     'domain.set_php_version': 'account_and_domain',
+    'domain.set_suspended': 'account_and_domain',
     'email_routing.get': 'account_and_domain',
     'email_routing.set': 'account_and_domain',
     'errorpages.delete': 'account_and_domain',

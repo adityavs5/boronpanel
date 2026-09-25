@@ -100,6 +100,7 @@ OP_TABLE = {
     "domain.remove": handlers_domain.remove_domain,
     "domain.list": handlers_domain.list_domains,
     "domain.set_php_version": handlers_domain.set_domain_php_version,
+    "domain.set_suspended": handlers_domain.set_suspended,
     "usage.get": handlers_usage.get_account_usage,
     "bandwidth.get": handlers_usage.get_bandwidth,
     "bandwidth.ranking": handlers_usage.get_bandwidth_ranking,

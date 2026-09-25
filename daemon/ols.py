@@ -134,6 +134,7 @@ def _domain_row_to_plain(d: Domain) -> dict:
         "domain": d.domain,
         "docroot": d.docroot,
         "ssl_status": d.ssl_status,
+        "suspended": bool(d.suspended),
         "hotlink_protection_enabled": d.hotlink_protection_enabled,
         "hotlink_allowed_domains": d.hotlink_allowed_domains or [],
         "ip_block_list": d.ip_block_list or [],
@@ -837,7 +838,7 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
         ssl_key_file, ssl_cert_file = _ssl_paths_for_domain(domain)
         targets[vhost_name] = _vhost_conf_path(vhost_name)
         content[vhost_name] = render_vhost_conf(
-            account, domain, suspended,
+            account, domain, suspended or bool(domain.get("suspended")),
             ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file,
             php_ini=_with_disable_functions(php_ini, disable_functions_by_domain[domain["domain"]]),
             redirects=redirects_by_domain[domain["domain"]],
