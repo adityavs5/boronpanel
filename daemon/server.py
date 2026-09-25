@@ -383,9 +383,14 @@ OP_TABLE = {
     # Phase 5 feature 7: ModSecurity/WAF
     "waf.status": waf.get_status,
     "waf.set_enabled": waf.set_enabled,
+    "waf.settings.update": waf.update_settings,
     "waf.set_domain_override": waf.set_domain_override,
+    "waf.domain_policy.set": waf.set_domain_policy,
     "waf.add_custom_rule": waf.add_custom_rule,
     "waf.delete_custom_rule": waf.delete_custom_rule,
+    "waf.exception.add": waf.add_exception,
+    "waf.exception.delete": waf.delete_exception,
+    "waf.incident.unblock": waf.unblock_ip,
     "waf.blocked_requests": waf.list_blocked_requests,
     # Phase 5 feature 8: MySQL slow query viewer
     "slowquery.status": slowquery.get_status,

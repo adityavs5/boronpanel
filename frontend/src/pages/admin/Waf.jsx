@@ -1,366 +1,158 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldHalf, ShieldOff, Plus, Trash2, Globe, Ban } from 'lucide-react'
-import { get, post, del } from '@/lib/api'
+import { ShieldHalf, ShieldOff, ShieldAlert, Plus, Trash2, Eye, RotateCcw } from 'lucide-react'
+import { get, post, put, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
-import { Switch } from '@/components/ui/Toggle'
 import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, ConfirmDialog,
-} from '@/components/ui/Dialog'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, ConfirmDialog } from '@/components/ui/Dialog'
 import { EmptyState, ErrorState } from '@/components/ui/States'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { toast } from '@/components/ui/Toast'
 
-// Mirrors the daemon's ALLOWED_TARGETS allowlist (daemon/waf.py) — `target` is
-// interpolated straight into a server-wide OLS config, so only these are valid.
-const TARGET_OPTIONS = [
-  { value: 'ARGS', label: 'ARGS' },
-  { value: 'REQUEST_URI', label: 'REQUEST_URI' },
-  { value: 'QUERY_STRING', label: 'QUERY_STRING' },
-  { value: 'REQUEST_BODY', label: 'REQUEST_BODY' },
-  { value: 'REQUEST_COOKIES', label: 'REQUEST_COOKIES' },
-  { value: 'REQUEST_HEADERS:User-Agent', label: 'User-Agent header' },
-  { value: 'REQUEST_HEADERS:Referer', label: 'Referer header' },
-]
-
+const TARGET_OPTIONS = ['ARGS', 'ARGS_NAMES', 'REQUEST_URI', 'QUERY_STRING', 'REQUEST_BODY', 'REQUEST_COOKIES', 'REQUEST_HEADERS:User-Agent', 'REQUEST_HEADERS:Referer']
 const EMPTY_RULE = { domain: '', target: 'ARGS', pattern: '' }
+const EMPTY_EXCEPTION = { domain: '', rule_id: '', category: '', uri_prefix: '', parameter: '', duration_hours: '24', reason: '' }
+const DEFAULT_SETTINGS = { mode: 'disabled', paranoia_level: '1', anomaly_threshold: '5', wp_login_limit: '10', wp_xmlrpc_limit: '5', wp_rate_window_seconds: '60' }
+
+function modeBadge(mode) {
+  if (mode === 'protect') return 'success'
+  if (mode === 'detect') return 'warning'
+  return 'neutral'
+}
 
 export default function Waf() {
   const username = useAccountUsername()
   const qc = useQueryClient()
+  const [settingsForm, setSettingsForm] = useState(DEFAULT_SETTINGS)
+  const [policy, setPolicy] = useState({ domain: '', mode: 'detect' })
   const [ruleOpen, setRuleOpen] = useState(false)
   const [ruleForm, setRuleForm] = useState(EMPTY_RULE)
   const [deleteRule, setDeleteRule] = useState(null)
-  const [overrideDomain, setOverrideDomain] = useState('')
+  const [exceptionOpen, setExceptionOpen] = useState(false)
+  const [exceptionForm, setExceptionForm] = useState(EMPTY_EXCEPTION)
+  const [deleteException, setDeleteException] = useState(null)
+  const [incident, setIncident] = useState(null)
 
-  const wafQuery = useQuery({
-    queryKey: ['waf', username],
-    queryFn: () => get('/api/v1/waf'),
-  })
-  const blockedQuery = useQuery({
-    queryKey: ['waf-blocked', username],
-    queryFn: () => get('/api/v1/waf/blocked-requests?limit=50'),
-  })
-
+  const wafQuery = useQuery({ queryKey: ['waf', username], queryFn: () => get('/api/v1/waf') })
+  const incidentsQuery = useQuery({ queryKey: ['waf-incidents', username], queryFn: () => get('/api/v1/waf/blocked-requests?limit=100'), refetchInterval: 30000 })
   const status = wafQuery.data
-  const available = status?.available
-  const enabled = !!status?.enabled
+
+  useEffect(() => {
+    if (!status) return
+    setSettingsForm({
+      mode: status.mode,
+      paranoia_level: String(status.paranoia_level),
+      anomaly_threshold: String(status.anomaly_threshold),
+      wp_login_limit: String(status.wp_login_limit),
+      wp_xmlrpc_limit: String(status.wp_xmlrpc_limit),
+      wp_rate_window_seconds: String(status.wp_rate_window_seconds),
+    })
+  }, [status?.mode, status?.paranoia_level, status?.anomaly_threshold, status?.wp_login_limit, status?.wp_xmlrpc_limit, status?.wp_rate_window_seconds])
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['waf', username] })
-
-  const enableMut = useMutation({
-    mutationFn: (next) => post('/api/v1/waf/enable', { enabled: next }),
-    onSuccess: (_res, next) => {
-      toast.success(next ? 'WAF enabled' : 'WAF disabled')
-      invalidate()
-    },
-    onError: (e) => toast.error('Could not change WAF state', e.message),
+  const settingsMut = useMutation({
+    mutationFn: () => put('/api/v1/waf/settings', Object.fromEntries(Object.entries(settingsForm).map(([key, value]) => [key, key === 'mode' ? value : Number(value)]))),
+    onSuccess: () => { toast.success('WAF policy updated'); invalidate() },
+    onError: (error) => toast.error('Could not update WAF policy', error.message),
   })
-
-  const overrideMut = useMutation({
-    mutationFn: (body) => post('/api/v1/waf/domain-override', body),
-    onSuccess: (_res, body) => {
-      toast.success(body.disabled ? 'WAF disabled for domain' : 'WAF re-enabled for domain')
-      invalidate()
-      setOverrideDomain('')
-    },
-    onError: (e) => toast.error('Could not update domain override', e.message),
+  const policyMut = useMutation({
+    mutationFn: (body) => put('/api/v1/waf/domain-policy', body),
+    onSuccess: () => { toast.success('Domain policy updated'); setPolicy({ domain: '', mode: 'detect' }); invalidate() },
+    onError: (error) => toast.error('Could not update domain policy', error.message),
   })
-
-  const addRuleMut = useMutation({
+  const ruleMut = useMutation({
     mutationFn: (body) => post('/api/v1/waf/custom-rules', body),
-    onSuccess: () => {
-      toast.success('Custom rule added')
-      invalidate()
-      setRuleOpen(false)
-      setRuleForm(EMPTY_RULE)
-    },
-    onError: (e) => toast.error('Could not add rule', e.message),
+    onSuccess: () => { toast.success('Custom rule added'); setRuleOpen(false); setRuleForm(EMPTY_RULE); invalidate() },
+    onError: (error) => toast.error('Could not add rule', error.message),
   })
-
   const deleteRuleMut = useMutation({
-    mutationFn: (ruleId) => del(`/api/v1/waf/custom-rules/${ruleId}`),
-    onSuccess: () => {
-      toast.success('Custom rule deleted')
-      invalidate()
-      setDeleteRule(null)
-    },
-    onError: (e) => toast.error('Could not delete rule', e.message),
+    mutationFn: (id) => del(`/api/v1/waf/custom-rules/${id}`),
+    onSuccess: () => { toast.success('Custom rule deleted'); setDeleteRule(null); invalidate() },
+    onError: (error) => toast.error('Could not delete rule', error.message),
+  })
+  const exceptionMut = useMutation({
+    mutationFn: (body) => post('/api/v1/waf/exceptions', body),
+    onSuccess: () => { toast.success('Temporary exception added'); setExceptionOpen(false); setExceptionForm(EMPTY_EXCEPTION); invalidate() },
+    onError: (error) => toast.error('Could not add exception', error.message),
+  })
+  const deleteExceptionMut = useMutation({
+    mutationFn: (id) => del(`/api/v1/waf/exceptions/${id}`),
+    onSuccess: () => { toast.success('Exception removed'); setDeleteException(null); invalidate() },
+    onError: (error) => toast.error('Could not remove exception', error.message),
+  })
+  const unblockMut = useMutation({
+    mutationFn: (ip) => post('/api/v1/waf/incidents/unblock', { ip }),
+    onSuccess: (result) => toast.success(result.unbanned_from?.length ? 'IP unblocked' : 'IP was not temporarily banned', result.unbanned_from?.join(', ')),
+    onError: (error) => toast.error('Could not unblock IP', error.message),
   })
 
-  const overrideColumns = [
-    {
-      key: 'domain',
-      header: 'Domain (WAF disabled)',
-      searchable: true,
-      sortable: true,
-      sortValue: (d) => d,
-      searchValue: (d) => d,
-      render: (d) => <span className="font-medium text-foreground">{d}</span>,
-    },
-    {
-      key: 'controls',
-      header: '',
-      align: 'right',
-      render: (d) => (
-        <Button
-          variant="secondary"
-          size="sm"
-          loading={overrideMut.isPending && overrideMut.variables?.domain === d}
-          onClick={() => overrideMut.mutate({ domain: d, disabled: false })}
-        >
-          Re-enable
-        </Button>
-      ),
-    },
-  ]
+  const openIncidentException = (event) => {
+    setExceptionForm({ ...EMPTY_EXCEPTION, domain: (event.host || '').split(':')[0], rule_id: event.rule_id ? String(event.rule_id) : '', uri_prefix: (event.path || '').split('?')[0], reason: `False positive from incident ${event.txid}` })
+    setIncident(null)
+    setExceptionOpen(true)
+  }
 
-  const ruleColumns = [
-    { key: 'domain', header: 'Domain', sortable: true, searchable: true, render: (r) => <span className="font-medium text-foreground">{r.domain}</span> },
-    { key: 'target', header: 'Target', sortable: true, searchable: true, render: (r) => <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{r.target}</code> },
-    { key: 'pattern', header: 'Pattern', searchable: true, render: (r) => <code className="text-xs text-muted-foreground">{r.pattern}</code> },
-    {
-      key: 'controls',
-      header: '',
-      align: 'right',
-      render: (r) => (
-        <Button variant="danger" size="sm" onClick={() => setDeleteRule(r)}>
-          <Trash2 className="h-4 w-4" /> Delete
-        </Button>
-      ),
-    },
-  ]
+  if (wafQuery.isLoading) return <CardSkeleton />
+  if (wafQuery.error) return <ErrorState error={wafQuery.error} onRetry={wafQuery.refetch} />
 
-  const blockedColumns = [
-    { key: 'timestamp', header: 'Time', searchable: true, render: (e) => <span className="whitespace-nowrap tabular-nums text-xs">{e.timestamp || '—'}</span> },
-    { key: 'client_ip', header: 'Client IP', searchable: true, render: (e) => <span className="tabular-nums">{e.client_ip || '—'}</span> },
-    { key: 'host', header: 'Host', searchable: true, render: (e) => e.host || <span className="text-muted-foreground">—</span> },
-    { key: 'method', header: 'Method', render: (e) => e.method || '—' },
-    { key: 'path', header: 'Path', searchable: true, render: (e) => <span className="break-all">{e.path || '—'}</span> },
-    { key: 'status', header: 'Status', align: 'right', render: (e) => <Badge variant="danger">{e.status}</Badge> },
-    { key: 'message', header: 'Message', searchable: true, render: (e) => <span className="text-muted-foreground">{e.message || '—'}</span> },
+  const incidentColumns = [
+    { key: 'timestamp', header: 'Time', render: (row) => <span className="whitespace-nowrap text-xs tabular-nums">{row.timestamp || '—'}</span> },
+    { key: 'action', header: 'Action', render: (row) => <Badge variant={row.action === 'blocked' ? 'danger' : 'warning'}>{row.action}</Badge> },
+    { key: 'host', header: 'Domain', searchable: true },
+    { key: 'client_ip', header: 'Client IP', searchable: true, render: (row) => <span className="font-mono text-xs">{row.verified_client_ip || row.client_ip}</span> },
+    { key: 'rule_id', header: 'Rule', render: (row) => row.rule_id ? <code>{row.rule_id}</code> : '—' },
+    { key: 'message', header: 'Reason', searchable: true },
+    { key: 'controls', header: '', align: 'right', render: (row) => <Button size="sm" variant="outline" onClick={() => setIncident(row)}><Eye className="h-4 w-4" /> Inspect</Button> },
   ]
 
   return (
     <div>
-      <PageHeader
-        title="ModSecurity WAF"
-        description="Server-wide web application firewall, with per-domain overrides and custom rules."
-        icon={ShieldHalf}
-      />
+      <PageHeader title="Web application firewall" description="OWASP CRS protection, incidents, and narrow per-site exceptions." icon={ShieldHalf}>
+        <Badge variant={modeBadge(status.mode)}>{status.mode === 'protect' ? 'Protecting' : status.mode === 'detect' ? 'Detect only' : 'Disabled'}</Badge>
+      </PageHeader>
 
-      {wafQuery.isLoading ? (
-        <CardSkeleton />
-      ) : wafQuery.error ? (
-        <ErrorState error={wafQuery.error} onRetry={wafQuery.refetch} />
-      ) : !available ? (
-        <Card>
-          <CardContent>
-            <EmptyState
-              icon={ShieldOff}
-              title="ModSecurity is not installed"
-              description="The mod_security module is not present on this server, so the WAF cannot be enabled or configured."
-            />
-          </CardContent>
-        </Card>
+      {!status.available ? (
+        <Card><CardContent><EmptyState icon={ShieldOff} title="ModSecurity is not installed" description="Install the OpenLiteSpeed ModSecurity module and OWASP CRS before enabling protection." /></CardContent></Card>
       ) : (
-        <div className="space-y-6">
-          {/* Global on/off */}
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>Firewall status</CardTitle>
-                <CardDescription>
-                  OpenLiteSpeed loads ModSecurity once, server-wide — this is the single global on/off switch. Per-domain control is below.
-                </CardDescription>
-              </div>
-              <div className="flex shrink-0 items-center gap-3">
-                <Badge variant={enabled ? 'success' : 'neutral'}>{enabled ? 'Enabled' : 'Disabled'}</Badge>
-                <Switch
-                  checked={enabled}
-                  disabled={enableMut.isPending}
-                  onCheckedChange={(next) => enableMut.mutate(next)}
-                  aria-label="Toggle WAF"
-                />
-              </div>
-            </CardHeader>
-          </Card>
+        <Tabs defaultValue="incidents">
+          <TabsList><TabsTrigger value="incidents">Incidents</TabsTrigger><TabsTrigger value="settings">Protection</TabsTrigger><TabsTrigger value="domains">Domain policies</TabsTrigger><TabsTrigger value="exceptions">Exceptions</TabsTrigger><TabsTrigger value="custom">Custom rules</TabsTrigger></TabsList>
 
-          {/* Per-domain overrides */}
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>Per-domain overrides</CardTitle>
-                <CardDescription>Disable the WAF for a specific domain. Every other domain keeps global protection.</CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <form
-                className="flex flex-wrap items-end gap-3"
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  overrideMut.mutate({ domain: overrideDomain.trim(), disabled: true })
-                }}
-              >
-                <FormField label="Domain" className="min-w-[220px] flex-1">
-                  <Input
-                    value={overrideDomain}
-                    onChange={(e) => setOverrideDomain(e.target.value)}
-                    placeholder="example.com"
-                    required
-                  />
-                </FormField>
-                <Button type="submit" loading={overrideMut.isPending && overrideMut.variables?.disabled}>
-                  <ShieldOff className="h-4 w-4" /> Disable for domain
-                </Button>
-              </form>
+          <TabsContent value="incidents"><Card><CardHeader><div><CardTitle>Security incidents</CardTitle><CardDescription>Detected and blocked requests with the concrete CRS rule and verified client address.</CardDescription></div></CardHeader><CardContent><DataTable columns={incidentColumns} data={incidentsQuery.data?.events} loading={incidentsQuery.isLoading} error={incidentsQuery.error} onRetry={incidentsQuery.refetch} getRowKey={(row) => row.txid} filterable searchPlaceholder="Search incidents…" pageSize={20} emptyTitle="No WAF incidents" emptyDescription="Detection events will appear here." emptyIcon={ShieldAlert} /></CardContent></Card></TabsContent>
 
-              <DataTable
-                columns={overrideColumns}
-                data={status.domain_overrides}
-                loading={wafQuery.isLoading}
-                error={wafQuery.error}
-                onRetry={wafQuery.refetch}
-                getRowKey={(d) => d}
-                pageSize={10}
-                emptyTitle="No per-domain overrides"
-                emptyDescription="The WAF applies to every domain."
-                emptyIcon={Globe}
-              />
-            </CardContent>
-          </Card>
+          <TabsContent value="settings"><Card><CardHeader><div><CardTitle>Protection policy</CardTitle><CardDescription>Start in Detect only, review incidents, then switch to Protect. Higher paranoia finds more unusual traffic and can require exceptions.</CardDescription></div></CardHeader><CardContent><form className="space-y-6" onSubmit={(event) => { event.preventDefault(); settingsMut.mutate() }}>
+            <div className="grid gap-5 md:grid-cols-3"><FormField label="Mode"><Select value={settingsForm.mode} onChange={(e) => setSettingsForm((f) => ({ ...f, mode: e.target.value }))}><option value="disabled">Disabled</option><option value="detect">Detect only</option><option value="protect">Protect</option></Select></FormField><FormField label="CRS paranoia level" hint="1 is safest for general hosting."><Select value={settingsForm.paranoia_level} onChange={(e) => setSettingsForm((f) => ({ ...f, paranoia_level: e.target.value }))}>{[1, 2, 3, 4].map((n) => <option key={n} value={n}>Level {n}</option>)}</Select></FormField><FormField label="Anomaly threshold"><Input type="number" min="1" max="100" value={settingsForm.anomaly_threshold} onChange={(e) => setSettingsForm((f) => ({ ...f, anomaly_threshold: e.target.value }))} /></FormField></div>
+            <div className="border-t border-border pt-5"><div className="mb-4 font-semibold">WordPress abuse limits</div><div className="grid gap-5 md:grid-cols-3"><FormField label="Login requests"><Input type="number" min="0" max="10000" value={settingsForm.wp_login_limit} onChange={(e) => setSettingsForm((f) => ({ ...f, wp_login_limit: e.target.value }))} /></FormField><FormField label="XML-RPC requests"><Input type="number" min="0" max="10000" value={settingsForm.wp_xmlrpc_limit} onChange={(e) => setSettingsForm((f) => ({ ...f, wp_xmlrpc_limit: e.target.value }))} /></FormField><FormField label="Window (seconds)"><Input type="number" min="10" max="3600" value={settingsForm.wp_rate_window_seconds} onChange={(e) => setSettingsForm((f) => ({ ...f, wp_rate_window_seconds: e.target.value }))} /></FormField></div></div>
+            <Button type="submit" loading={settingsMut.isPending}>Save and validate configuration</Button>
+          </form></CardContent></Card></TabsContent>
 
-          {/* Custom rules */}
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>Custom rules</CardTitle>
-                <CardDescription>Block requests matching a regex pattern on a chosen variable, scoped to one domain.</CardDescription>
-              </div>
-              <Button className="shrink-0" onClick={() => setRuleOpen(true)}>
-                <Plus className="h-4 w-4" /> Add rule
-              </Button>
-            </CardHeader>
-            <CardContent>
-              <DataTable
-                columns={ruleColumns}
-                data={status.custom_rules}
-                loading={wafQuery.isLoading}
-                error={wafQuery.error}
-                onRetry={wafQuery.refetch}
-                getRowKey={(r) => r.id}
-                filterable
-                searchPlaceholder="Search rules…"
-                pageSize={10}
-                emptyTitle="No custom rules"
-                emptyDescription="Add a rule to block requests matching a pattern."
-                emptyIcon={ShieldHalf}
-                emptyAction={<Button onClick={() => setRuleOpen(true)}><Plus className="h-4 w-4" /> Add rule</Button>}
-              />
-            </CardContent>
-          </Card>
+          <TabsContent value="domains"><Card><CardHeader><div><CardTitle>Domain policies</CardTitle><CardDescription>Override the global mode for a real hosted virtual host.</CardDescription></div></CardHeader><CardContent className="space-y-5">
+            <form className="grid items-end gap-4 md:grid-cols-[1fr_220px_auto]" onSubmit={(e) => { e.preventDefault(); policyMut.mutate(policy) }}><FormField label="Domain"><Select value={policy.domain} onChange={(e) => setPolicy((f) => ({ ...f, domain: e.target.value }))} required><option value="">Select a hosted domain</option>{status.available_domains.map((domain) => <option key={domain}>{domain}</option>)}</Select></FormField><FormField label="Policy"><Select value={policy.mode} onChange={(e) => setPolicy((f) => ({ ...f, mode: e.target.value }))}><option value="inherit">Use global mode</option><option value="detect">Detect only</option><option value="protect">Protect</option><option value="disabled">Disabled</option></Select></FormField><Button type="submit" loading={policyMut.isPending}>Apply policy</Button></form>
+            <DataTable columns={[{ key: 'domain', header: 'Domain', searchable: true }, { key: 'mode', header: 'Mode', render: (row) => <Badge variant={modeBadge(row.mode)}>{row.mode}</Badge> }, { key: 'controls', header: '', align: 'right', render: (row) => <Button size="sm" variant="outline" onClick={() => policyMut.mutate({ domain: row.domain, mode: 'inherit' })}>Use global</Button> }]} data={status.domain_policies} getRowKey={(row) => row.domain} emptyTitle="All domains use the global policy" emptyDescription="Add an override only when a site needs different handling." />
+          </CardContent></Card></TabsContent>
 
-          {/* Blocked requests */}
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>Blocked requests</CardTitle>
-                <CardDescription>The 50 most recent requests denied by ModSecurity, from the audit log.</CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <DataTable
-                columns={blockedColumns}
-                data={blockedQuery.data?.events}
-                loading={blockedQuery.isLoading}
-                error={blockedQuery.error}
-                onRetry={blockedQuery.refetch}
-                getRowKey={(e) => e.txid}
-                filterable
-                searchPlaceholder="Search blocked requests…"
-                pageSize={15}
-                emptyTitle="No blocked requests"
-                emptyDescription="Nothing has been denied by the WAF yet."
-                emptyIcon={Ban}
-              />
-            </CardContent>
-          </Card>
-        </div>
+          <TabsContent value="exceptions"><Card><CardHeader><div><CardTitle>Temporary exceptions</CardTitle><CardDescription>Exclude one rule or category for one domain. Add a URI or parameter whenever possible.</CardDescription></div><Button onClick={() => setExceptionOpen(true)}><Plus className="h-4 w-4" /> Add exception</Button></CardHeader><CardContent><DataTable columns={[
+            { key: 'domain', header: 'Domain', searchable: true }, { key: 'target', header: 'Rule/category', render: (row) => <code>{row.rule_id || row.category}</code> }, { key: 'scope', header: 'Scope', render: (row) => [row.uri_prefix, row.parameter && `parameter: ${row.parameter}`].filter(Boolean).join(' · ') || 'Entire domain' }, { key: 'expires_at', header: 'Expires', render: (row) => <span className="text-xs tabular-nums">{new Date(row.expires_at).toLocaleString()}</span> }, { key: 'active', header: 'State', render: (row) => <Badge variant={row.active ? 'warning' : 'neutral'}>{row.active ? 'Active' : 'Expired'}</Badge> }, { key: 'controls', header: '', align: 'right', render: (row) => <Button size="sm" variant="danger" onClick={() => setDeleteException(row)}><Trash2 className="h-4 w-4" /> Remove</Button> },
+          ]} data={status.exceptions} getRowKey={(row) => row.id} filterable searchPlaceholder="Search exceptions…" emptyTitle="No WAF exceptions" emptyDescription="Create exceptions from a reviewed incident." /></CardContent></Card></TabsContent>
+
+          <TabsContent value="custom"><Card><CardHeader><div><CardTitle>Custom blocking rules</CardTitle><CardDescription>Match a validated request field on one hosted domain.</CardDescription></div><Button onClick={() => setRuleOpen(true)}><Plus className="h-4 w-4" /> Add rule</Button></CardHeader><CardContent><DataTable columns={[{ key: 'domain', header: 'Domain', searchable: true }, { key: 'target', header: 'Target', render: (row) => <code>{row.target}</code> }, { key: 'pattern', header: 'Pattern', searchable: true, render: (row) => <code className="text-xs">{row.pattern}</code> }, { key: 'controls', header: '', align: 'right', render: (row) => <Button size="sm" variant="danger" onClick={() => setDeleteRule(row)}><Trash2 className="h-4 w-4" /> Delete</Button> }]} data={status.custom_rules} getRowKey={(row) => row.id} filterable searchPlaceholder="Search custom rules…" emptyTitle="No custom rules" emptyDescription="OWASP CRS remains active without custom rules." /></CardContent></Card></TabsContent>
+        </Tabs>
       )}
 
-      {/* Add custom rule dialog */}
-      <Dialog open={ruleOpen} onOpenChange={setRuleOpen}>
-        <DialogContent size="sm">
-          <DialogHeader>
-            <DialogTitle>Add custom rule</DialogTitle>
-          </DialogHeader>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              addRuleMut.mutate({
-                domain: ruleForm.domain.trim(),
-                target: ruleForm.target,
-                pattern: ruleForm.pattern,
-              })
-            }}
-          >
-            <DialogBody className="space-y-4">
-              <FormField label="Domain" required hint="The rule applies only to requests for this host.">
-                <Input
-                  autoFocus
-                  value={ruleForm.domain}
-                  onChange={(e) => setRuleForm((f) => ({ ...f, domain: e.target.value }))}
-                  placeholder="example.com"
-                  required
-                />
-              </FormField>
-              <FormField label="Target" required hint="Which part of the request to inspect.">
-                <Select value={ruleForm.target} onChange={(e) => setRuleForm((f) => ({ ...f, target: e.target.value }))}>
-                  {TARGET_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </Select>
-              </FormField>
-              <FormField label="Pattern" required hint="Regex to block. Max 300 chars; no backtick, double-quote, or newline.">
-                <Input
-                  value={ruleForm.pattern}
-                  onChange={(e) => setRuleForm((f) => ({ ...f, pattern: e.target.value }))}
-                  placeholder="(?:union\s+select|<script)"
-                  maxLength={300}
-                  required
-                />
-              </FormField>
-            </DialogBody>
-            <DialogFooter>
-              <Button type="button" variant="secondary" onClick={() => setRuleOpen(false)}>Cancel</Button>
-              <Button type="submit" loading={addRuleMut.isPending}>Add rule</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <Dialog open={!!incident} onOpenChange={(open) => !open && setIncident(null)}><DialogContent size="lg"><DialogHeader><DialogTitle>WAF incident {incident?.txid}</DialogTitle></DialogHeader><DialogBody className="space-y-4">{incident && <><div className="grid gap-3 rounded-panel border border-border p-4 text-sm sm:grid-cols-2"><div><span className="text-muted-foreground">Domain</span><div className="font-medium">{incident.host}</div></div><div><span className="text-muted-foreground">Verified client IP</span><div className="font-mono">{incident.verified_client_ip}</div></div><div><span className="text-muted-foreground">Request</span><div>{incident.method} {incident.path}</div></div><div><span className="text-muted-foreground">Decision</span><div><Badge variant={incident.action === 'blocked' ? 'danger' : 'warning'}>{incident.action}</Badge></div></div></div><div className="space-y-2">{incident.findings?.map((finding, index) => <div key={`${finding.rule_id}-${index}`} className="rounded-panel border border-border p-3"><div className="font-medium">Rule {finding.rule_id}: {finding.message}</div>{finding.tags?.length > 0 && <div className="mt-1 text-xs text-muted-foreground">{finding.tags.join(' · ')}</div>}</div>)}</div></>}</DialogBody><DialogFooter><Button variant="outline" disabled={!incident} onClick={() => unblockMut.mutate(incident?.verified_client_ip)} loading={unblockMut.isPending}><RotateCcw className="h-4 w-4" /> Unblock temporary ban</Button><Button disabled={!incident} onClick={() => incident && openIncidentException(incident)}>Add narrow exception</Button></DialogFooter></DialogContent></Dialog>
 
-      {/* Delete custom rule confirmation */}
-      <ConfirmDialog
-        open={!!deleteRule}
-        onOpenChange={(o) => !o && setDeleteRule(null)}
-        title="Delete custom rule?"
-        description={
-          deleteRule
-            ? `Remove the rule blocking ${deleteRule.target} on ${deleteRule.domain}. This takes effect on the next config reload.`
-            : ''
-        }
-        confirmLabel="Delete rule"
-        confirmationText={deleteRule?.domain}
-        loading={deleteRuleMut.isPending}
-        onConfirm={() => deleteRuleMut.mutate(deleteRule.id)}
-      />
+      <Dialog open={exceptionOpen} onOpenChange={setExceptionOpen}><DialogContent size="md"><DialogHeader><DialogTitle>Add temporary WAF exception</DialogTitle></DialogHeader><form onSubmit={(e) => { e.preventDefault(); exceptionMut.mutate({ ...exceptionForm, rule_id: exceptionForm.rule_id ? Number(exceptionForm.rule_id) : null, category: exceptionForm.category || null, duration_hours: Number(exceptionForm.duration_hours) }) }}><DialogBody className="grid gap-4 sm:grid-cols-2"><FormField label="Domain" required><Select value={exceptionForm.domain} onChange={(e) => setExceptionForm((f) => ({ ...f, domain: e.target.value }))} required><option value="">Select domain</option>{status?.available_domains?.map((domain) => <option key={domain}>{domain}</option>)}</Select></FormField><FormField label="Duration"><Select value={exceptionForm.duration_hours} onChange={(e) => setExceptionForm((f) => ({ ...f, duration_hours: e.target.value }))}><option value="1">1 hour</option><option value="6">6 hours</option><option value="24">24 hours</option><option value="168">7 days</option><option value="720">30 days</option></Select></FormField><FormField label="Rule ID" hint="Use either rule ID or category."><Input type="number" min="1" value={exceptionForm.rule_id} onChange={(e) => setExceptionForm((f) => ({ ...f, rule_id: e.target.value, category: e.target.value ? '' : f.category }))} /></FormField><FormField label="Category/tag"><Input value={exceptionForm.category} disabled={!!exceptionForm.rule_id} onChange={(e) => setExceptionForm((f) => ({ ...f, category: e.target.value }))} placeholder="attack-sqli" /></FormField><FormField label="URI prefix" hint="Optional, recommended."><Input value={exceptionForm.uri_prefix} onChange={(e) => setExceptionForm((f) => ({ ...f, uri_prefix: e.target.value }))} placeholder="/wp-admin/" /></FormField><FormField label="Parameter" hint="Optional request parameter."><Input value={exceptionForm.parameter} onChange={(e) => setExceptionForm((f) => ({ ...f, parameter: e.target.value }))} placeholder="content" /></FormField><FormField label="Reason" className="sm:col-span-2"><Input value={exceptionForm.reason} onChange={(e) => setExceptionForm((f) => ({ ...f, reason: e.target.value }))} /></FormField></DialogBody><DialogFooter><Button type="button" variant="secondary" onClick={() => setExceptionOpen(false)}>Cancel</Button><Button type="submit" loading={exceptionMut.isPending}>Add exception</Button></DialogFooter></form></DialogContent></Dialog>
+
+      <Dialog open={ruleOpen} onOpenChange={setRuleOpen}><DialogContent size="sm"><DialogHeader><DialogTitle>Add custom blocking rule</DialogTitle></DialogHeader><form onSubmit={(e) => { e.preventDefault(); ruleMut.mutate(ruleForm) }}><DialogBody className="space-y-4"><FormField label="Domain" required><Select value={ruleForm.domain} onChange={(e) => setRuleForm((f) => ({ ...f, domain: e.target.value }))} required><option value="">Select domain</option>{status?.available_domains?.map((domain) => <option key={domain}>{domain}</option>)}</Select></FormField><FormField label="Target"><Select value={ruleForm.target} onChange={(e) => setRuleForm((f) => ({ ...f, target: e.target.value }))}>{TARGET_OPTIONS.map((target) => <option key={target}>{target}</option>)}</Select></FormField><FormField label="Regex pattern"><Input value={ruleForm.pattern} onChange={(e) => setRuleForm((f) => ({ ...f, pattern: e.target.value }))} maxLength={300} required /></FormField></DialogBody><DialogFooter><Button type="button" variant="secondary" onClick={() => setRuleOpen(false)}>Cancel</Button><Button type="submit" loading={ruleMut.isPending}>Add rule</Button></DialogFooter></form></DialogContent></Dialog>
+
+      <ConfirmDialog open={!!deleteRule} onOpenChange={(open) => !open && setDeleteRule(null)} title="Delete custom rule?" description={deleteRule ? `Delete the ${deleteRule.target} rule for ${deleteRule.domain}?` : ''} confirmLabel="Delete rule" loading={deleteRuleMut.isPending} onConfirm={() => deleteRuleMut.mutate(deleteRule.id)} />
+      <ConfirmDialog open={!!deleteException} onOpenChange={(open) => !open && setDeleteException(null)} title="Remove WAF exception?" description={deleteException ? `Protection for ${deleteException.domain} will immediately use rule ${deleteException.rule_id || deleteException.category} again.` : ''} confirmLabel="Remove exception" loading={deleteExceptionMut.isPending} onConfirm={() => deleteExceptionMut.mutate(deleteException.id)} />
     </div>
   )
 }

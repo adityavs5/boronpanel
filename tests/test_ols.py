@@ -987,7 +987,8 @@ def test_waf_host_scope_and_chain_actions(host, expected):
          'waf_domain_overrides':[], 'waf_custom_rules':[{'id':7,'domain':'shop.example.com','target':'ARGS','pattern':'badbot'}]}
     content=ols.render_waf_rules(waf)
     lines=[line for line in content.splitlines() if line.startswith('SecRule ')]
-    host_rule, target_rule=lines
+    custom_index = next(i for i, line in enumerate(lines) if 'boron-custom-rule-7' in line)
+    host_rule, target_rule = lines[custom_index:custom_index + 2]
     pattern=host_rule.split('"')[1].removeprefix('@rx ')
     assert bool(re.fullmatch(pattern,host.lower())) is expected
     assert 't:none,t:lowercase' in host_rule

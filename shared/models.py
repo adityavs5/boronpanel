@@ -886,6 +886,14 @@ class WafSettings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     enabled: Mapped[bool] = mapped_column(default=False)
+    # disabled | detect | protect. `enabled` remains as a compatibility
+    # mirror for older releases and is updated with every settings change.
+    mode: Mapped[str] = mapped_column(String(16), default="disabled")
+    paranoia_level: Mapped[int] = mapped_column(Integer, default=1)
+    anomaly_threshold: Mapped[int] = mapped_column(Integer, default=5)
+    wp_login_limit: Mapped[int] = mapped_column(Integer, default=10)
+    wp_xmlrpc_limit: Mapped[int] = mapped_column(Integer, default=5)
+    wp_rate_window_seconds: Mapped[int] = mapped_column(Integer, default=60)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
@@ -923,6 +931,7 @@ class WafDomainOverride(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
     disabled: Mapped[bool] = mapped_column(default=True)
+    mode: Mapped[str] = mapped_column(String(16), default="disabled")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -943,6 +952,22 @@ class WafCustomRule(Base):
     domain: Mapped[str] = mapped_column(String(253), index=True)
     target: Mapped[str] = mapped_column(String(64))
     pattern: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WafException(Base):
+    """A narrow, time-bounded CRS exclusion for one real hosted domain."""
+
+    __tablename__ = "waf_exceptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(253), index=True)
+    rule_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    uri_prefix: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    parameter: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

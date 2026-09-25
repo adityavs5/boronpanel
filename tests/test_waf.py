@@ -3,7 +3,7 @@ import pytest
 from daemon import waf
 from daemon.procutil import ProcResult
 from shared.db import write_session
-from shared.models import WafCustomRule, WafDomainOverride, WafSettings
+from shared.models import Account, Domain, WafCustomRule, WafDomainOverride, WafException, WafSettings
 from shared.validation import ValidationError
 
 
@@ -61,6 +61,14 @@ ModSecurity: Access denied with code 403 (phase 2). Matched "Operator `Ge' with 
 
 ---AvoGc53z---Z--
 """
+
+
+def _add_domain(name="example.com"):
+    with write_session() as session:
+        account = Account(username="wafowner", primary_domain=name)
+        session.add(account)
+        session.flush()
+        session.add(Domain(account_id=account.id, domain=name, kind="primary", docroot="/home/wafowner/public_html"))
 
 
 def test_parse_audit_log_extracts_both_transactions():
@@ -132,6 +140,7 @@ def test_set_enabled_persists_and_refreshes_config(isolated_db, monkeypatch):
 
 def test_set_domain_override_adds_and_removes(isolated_db, monkeypatch):
     monkeypatch.setattr(waf.ols, "refresh_main_config", lambda: None)
+    _add_domain()
     waf.set_domain_override({"domain": "example.com", "disabled": True})
     with write_session() as session:
         assert session.query(WafDomainOverride).filter_by(domain="example.com").count() == 1
@@ -163,6 +172,7 @@ def test_add_custom_rule_rejects_injection_characters(isolated_db, monkeypatch, 
 def test_add_custom_rule_accepts_valid_input(isolated_db, monkeypatch):
     calls = []
     monkeypatch.setattr(waf.ols, "refresh_main_config", lambda: calls.append("refreshed"))
+    _add_domain()
     result = waf.add_custom_rule({"domain": "example.com", "target": "ARGS", "pattern": "badbot"})
     assert result["domain"] == "example.com"
     assert calls == ["refreshed"]
@@ -172,6 +182,7 @@ def test_add_custom_rule_accepts_valid_input(isolated_db, monkeypatch):
 
 def test_delete_custom_rule_removes_row(isolated_db, monkeypatch):
     monkeypatch.setattr(waf.ols, "refresh_main_config", lambda: None)
+    _add_domain()
     created = waf.add_custom_rule({"domain": "example.com", "target": "ARGS", "pattern": "badbot"})
     result = waf.delete_custom_rule({"rule_id": created["id"]})
     assert result["status"] == "deleted"
@@ -209,3 +220,61 @@ def test_missing_crs_fails_before_enabling(isolated_db, monkeypatch):
         waf.set_enabled({'enabled':True})
     with write_session() as session:
         assert session.get(WafSettings,1) is None
+
+
+def test_unknown_domain_policy_is_rejected(isolated_db, monkeypatch):
+    monkeypatch.setattr(waf.ols, "refresh_main_config", lambda: None)
+    with pytest.raises(ValidationError, match="active Boron virtual host"):
+        waf.set_domain_policy({"domain": "unknown.example", "mode": "disabled"})
+
+
+def test_waf_modes_and_thresholds_persist(isolated_db, monkeypatch):
+    monkeypatch.setattr(waf, "is_available", lambda: True)
+    monkeypatch.setattr(waf.ols, "refresh_main_config", lambda: None)
+    result = waf.update_settings({
+        "mode": "protect", "paranoia_level": 2, "anomaly_threshold": 10,
+        "wp_login_limit": 20, "wp_xmlrpc_limit": 3, "wp_rate_window_seconds": 120,
+    })
+    assert result["mode"] == "protect"
+    status = waf.get_status({})
+    assert status["mode"] == "protect"
+    assert status["paranoia_level"] == 2
+    assert status["wp_rate_window_seconds"] == 120
+
+
+def test_narrow_timed_exception_lifecycle(isolated_db, monkeypatch):
+    monkeypatch.setattr(waf.ols, "refresh_main_config", lambda: None)
+    _add_domain()
+    created = waf.add_exception({
+        "domain": "example.com", "rule_id": 941100,
+        "uri_prefix": "/wp-admin/", "parameter": "content",
+        "duration_hours": 2, "reason": "editor false positive",
+    })
+    assert created["active"] is True
+    assert created["rule_id"] == 941100
+    with write_session() as session:
+        assert session.get(WafException, created["id"]) is not None
+    assert waf.delete_exception({"exception_id": created["id"]})["status"] == "deleted"
+
+
+def test_detect_only_incident_has_rule_details():
+    event = waf._parse_audit_log(REAL_AUDIT_LOG_SAMPLE)[0]
+    assert event["action"] == "blocked"
+    assert event["rule_id"] == 941100
+    assert event["verified_client_ip"] == "104.234.179.64"
+    assert event["findings"][0]["message"] == "XSS Attack Detected via libinjection"
+
+
+def test_failed_ols_validation_restores_previous_waf_settings(isolated_db, monkeypatch):
+    monkeypatch.setattr(waf, "is_available", lambda: True)
+    calls = []
+    def refresh():
+        calls.append("refresh")
+        if len(calls) == 1:
+            raise RuntimeError("invalid generated config")
+    monkeypatch.setattr(waf.ols, "refresh_main_config", refresh)
+    with pytest.raises(RuntimeError, match="invalid generated config"):
+        waf.update_settings({"mode": "protect"})
+    with write_session() as session:
+        assert session.get(WafSettings, 1) is None
+    assert calls == ["refresh", "refresh"]

@@ -29,6 +29,34 @@ class CustomRuleBody(BaseModel):
     pattern: str
 
 
+class WafSettingsBody(BaseModel):
+    mode: str
+    paranoia_level: int = 1
+    anomaly_threshold: int = 5
+    wp_login_limit: int = 10
+    wp_xmlrpc_limit: int = 5
+    wp_rate_window_seconds: int = 60
+
+
+class DomainPolicyBody(BaseModel):
+    domain: str
+    mode: str = "inherit"
+
+
+class WafExceptionBody(BaseModel):
+    domain: str
+    rule_id: int | None = None
+    category: str | None = None
+    uri_prefix: str | None = None
+    parameter: str | None = None
+    duration_hours: int = 24
+    reason: str = ""
+
+
+class UnblockBody(BaseModel):
+    ip: str
+
+
 @api_router.get("")
 def get_status(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -39,6 +67,18 @@ def get_status(identity: Identity = Depends(get_identity)):
 def set_enabled(body: SetEnabledBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("waf.set_enabled", identity, enabled=body.enabled)
+
+
+@api_router.put("/settings")
+def update_settings(body: WafSettingsBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("waf.settings.update", identity, **body.model_dump())
+
+
+@api_router.put("/domain-policy")
+def set_domain_policy(body: DomainPolicyBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("waf.domain_policy.set", identity, **body.model_dump())
 
 
 @api_router.post("/domain-override")
@@ -57,6 +97,24 @@ def add_custom_rule(body: CustomRuleBody, identity: Identity = Depends(get_ident
 def delete_custom_rule(rule_id: int, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("waf.delete_custom_rule", identity, rule_id=rule_id)
+
+
+@api_router.post("/exceptions")
+def add_exception(body: WafExceptionBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("waf.exception.add", identity, **body.model_dump())
+
+
+@api_router.delete("/exceptions/{exception_id}")
+def delete_exception(exception_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("waf.exception.delete", identity, exception_id=exception_id)
+
+
+@api_router.post("/incidents/unblock")
+def unblock_incident_ip(body: UnblockBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("waf.incident.unblock", identity, ip=body.ip)
 
 
 @api_router.get("/blocked-requests")

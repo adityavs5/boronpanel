@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, OlsServerSettings, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafSettings, WildcardDomain, utcnow
+from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, OlsServerSettings, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafException, WafSettings, WildcardDomain, utcnow
 from shared.validation import ValidationError, validate_domain
 
 from daemon.configtx import ConfigWriterMulti, StepResult
@@ -526,24 +526,60 @@ def waf_template_context(session) -> dict:
     at all) keeps working, and so this never touches the live DB as a
     surprise side effect of what looks like template rendering."""
     waf_settings = session.get(WafSettings, 1)
-    enabled = bool(waf_settings and waf_settings.enabled)
-    overrides = session.scalars(select(WafDomainOverride).where(WafDomainOverride.disabled == True)).all()  # noqa: E712
+    mode = "disabled"
+    if waf_settings:
+        mode = waf_settings.mode
+        if mode == "disabled" and waf_settings.enabled:
+            mode = "protect"  # compatibility with a pre-mode enabled row
+    overrides = session.scalars(select(WafDomainOverride)).all()
     rules = session.scalars(select(WafCustomRule)).all()
+    exceptions = session.scalars(
+        select(WafException).where(WafException.expires_at > utcnow())
+    ).all()
     return {
-        "waf_enabled": enabled,
+        "waf_enabled": mode != "disabled",
+        "waf_mode": mode,
+        "waf_paranoia_level": waf_settings.paranoia_level if waf_settings else 1,
+        "waf_anomaly_threshold": waf_settings.anomaly_threshold if waf_settings else 5,
+        "waf_wp_login_limit": waf_settings.wp_login_limit if waf_settings else 10,
+        "waf_wp_xmlrpc_limit": waf_settings.wp_xmlrpc_limit if waf_settings else 5,
+        "waf_wp_rate_window": waf_settings.wp_rate_window_seconds if waf_settings else 60,
         "waf_audit_log": WAF_AUDIT_LOG,
         "waf_rules_file": WAF_RULES_FILE,
-        "waf_domain_overrides": [{"domain": o.domain} for o in overrides],
+        "waf_domain_overrides": [
+            {"domain": o.domain} for o in overrides
+            if (o.mode if o.mode else ("disabled" if o.disabled else "inherit")) == "disabled"
+        ],
+        "waf_domain_policies": [
+            {"domain": o.domain, "mode": o.mode if o.mode else ("disabled" if o.disabled else "inherit")}
+            for o in overrides
+        ],
         "waf_custom_rules": [{"id": r.id, "domain": r.domain, "target": r.target, "pattern": r.pattern} for r in rules],
+        "waf_exceptions": [
+            {
+                "id": row.id, "domain": row.domain, "rule_id": row.rule_id,
+                "category": row.category, "uri_prefix": row.uri_prefix,
+                "parameter": row.parameter,
+            }
+            for row in exceptions
+        ],
     }
 
 
 _WAF_DISABLED_CONTEXT = {
     "waf_enabled": False,
+    "waf_mode": "disabled",
+    "waf_paranoia_level": 1,
+    "waf_anomaly_threshold": 5,
+    "waf_wp_login_limit": 10,
+    "waf_wp_xmlrpc_limit": 5,
+    "waf_wp_rate_window": 60,
     "waf_audit_log": WAF_AUDIT_LOG,
     "waf_rules_file": WAF_RULES_FILE,
     "waf_domain_overrides": [],
+    "waf_domain_policies": [],
     "waf_custom_rules": [],
+    "waf_exceptions": [],
 }
 
 
@@ -564,7 +600,13 @@ def cloudflare_trusted_ips() -> list[str]:
 
 
 def render_waf_rules(waf: dict) -> str:
-    return _env.get_template('modsecurity_rules.conf.j2').render(**waf)
+    context = {**_WAF_DISABLED_CONTEXT, **waf}
+    if not context["waf_domain_policies"] and context["waf_domain_overrides"]:
+        context["waf_domain_policies"] = [
+            {"domain": row["domain"], "mode": "disabled"}
+            for row in context["waf_domain_overrides"]
+        ]
+    return _env.get_template('modsecurity_rules.conf.j2').render(**context)
 
 
 def _attach_waf_config(targets: dict, contents: dict, waf: dict) -> None:

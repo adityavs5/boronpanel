@@ -101,6 +101,15 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "last_speed_bps": "INTEGER",
     },
     "snapshot_runs": {"cancel_requested": "BOOLEAN NOT NULL DEFAULT 0"},
+    "waf_settings": {
+        "mode": "VARCHAR(16) NOT NULL DEFAULT 'disabled'",
+        "paranoia_level": "INTEGER NOT NULL DEFAULT 1",
+        "anomaly_threshold": "INTEGER NOT NULL DEFAULT 5",
+        "wp_login_limit": "INTEGER NOT NULL DEFAULT 10",
+        "wp_xmlrpc_limit": "INTEGER NOT NULL DEFAULT 5",
+        "wp_rate_window_seconds": "INTEGER NOT NULL DEFAULT 60",
+    },
+    "waf_domain_overrides": {"mode": "VARCHAR(16) NOT NULL DEFAULT 'disabled'"},
     # Unified external-account importer. Existing rows are cPanel jobs.
     "cpanel_import_jobs": {
         "panel": "VARCHAR(16) NOT NULL DEFAULT 'cpanel'",

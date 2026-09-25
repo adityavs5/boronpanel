@@ -1,14 +1,52 @@
-SecRuleEngine On
+SecRuleEngine {{ 'On' if waf_mode == 'protect' else 'DetectionOnly' }}
 SecRequestBodyAccess On
 SecAuditEngine RelevantOnly
 SecAuditLogParts ABCEFHJKZ
 SecAuditLogType Serial
 SecAuditLog {{ waf_audit_log }}
-{% for override in waf_domain_overrides %}
-SecRule REQUEST_HEADERS:Host "@rx ^{{ override.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9000000 + loop.index }},phase:1,t:none,t:lowercase,pass,nolog,ctl:ruleEngine=Off"
+SecAction "id:9001001,phase:1,t:none,pass,nolog,setvar:tx.paranoia_level={{ waf_paranoia_level }},setvar:tx.executing_paranoia_level={{ waf_paranoia_level }},setvar:tx.inbound_anomaly_score_threshold={{ waf_anomaly_threshold }}"
+
+# Certificate issuance must remain reachable even when a CRS update changes.
+SecRule REQUEST_URI "@beginsWith /.well-known/acme-challenge/" "id:9001002,phase:1,t:none,pass,nolog,ctl:ruleEngine=Off"
+{% for override in waf_domain_policies %}
+{% set override_mode = override.mode | default('disabled', true) %}
+{% if override_mode in ['disabled', 'detect', 'protect'] %}
+SecRule REQUEST_HEADERS:Host "@rx ^{{ override.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9010000 + loop.index }},phase:1,t:none,t:lowercase,pass,nolog,ctl:ruleEngine={{ {'disabled':'Off','detect':'DetectionOnly','protect':'On'}[override_mode] }}"
+{% endif %}
 {% endfor %}
+
+# Narrow, expiring false-positive exclusions. Every rule is scoped to a real
+# hosted Host value; optional URI/argument conditions narrow it further.
+{% for exception in waf_exceptions %}
+{% set removal = 'ctl:ruleRemoveById=' ~ exception.rule_id if exception.rule_id else 'ctl:ruleRemoveByTag=' ~ exception.category %}
+{% if exception.uri_prefix or exception.parameter %}
+SecRule REQUEST_HEADERS:Host "@rx ^{{ exception.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9020000 + exception.id }},phase:1,t:none,t:lowercase,pass,nolog,chain"
+{% if exception.uri_prefix %}
+SecRule REQUEST_URI "@beginsWith {{ exception.uri_prefix }}" "t:none{% if exception.parameter %},chain{% else %},{{ removal }}{% endif %}"
+{% endif %}
+{% if exception.parameter %}
+SecRule &ARGS:{{ exception.parameter }} "@gt 0" "t:none,{{ removal }}"
+{% endif %}
+{% else %}
+SecRule REQUEST_HEADERS:Host "@rx ^{{ exception.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9020000 + exception.id }},phase:1,t:none,t:lowercase,pass,nolog,{{ removal }}"
+{% endif %}
+{% endfor %}
+
 {% for rule in waf_custom_rules %}
 SecRule REQUEST_HEADERS:Host "@rx ^{{ rule.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9100000 + loop.index }},phase:2,t:none,t:lowercase,deny,status:403,msg:'boron-custom-rule-{{ rule.id }}',chain"
 SecRule {{ rule.target }} "@rx {{ rule.pattern }}" "t:none"
 {% endfor %}
+
+# Conservative per-client WordPress request limits. OpenLiteSpeed accepts a
+# proxy client IP only from the explicitly trusted Cloudflare ranges, so
+# REMOTE_ADDR remains the verified address used for this collection.
+SecAction "id:9001200,phase:1,t:none,pass,nolog,initcol:ip=%{REMOTE_ADDR}"
+{% if waf_wp_login_limit > 0 %}
+SecRule REQUEST_URI "@streq /wp-login.php" "id:9001201,phase:1,t:none,pass,nolog,setvar:ip.boron_wp_login=+1,expirevar:ip.boron_wp_login={{ waf_wp_rate_window }}"
+SecRule IP:BORON_WP_LOGIN "@gt {{ waf_wp_login_limit }}" "id:9001202,phase:1,t:none,deny,status:429,log,msg:'Boron WordPress login rate limit'"
+{% endif %}
+{% if waf_wp_xmlrpc_limit > 0 %}
+SecRule REQUEST_URI "@streq /xmlrpc.php" "id:9001203,phase:1,t:none,pass,nolog,setvar:ip.boron_wp_xmlrpc=+1,expirevar:ip.boron_wp_xmlrpc={{ waf_wp_rate_window }}"
+SecRule IP:BORON_WP_XMLRPC "@gt {{ waf_wp_xmlrpc_limit }}" "id:9001204,phase:1,t:none,deny,status:429,log,msg:'Boron WordPress XML-RPC rate limit'"
+{% endif %}
 Include {{ waf_rules_file }}
