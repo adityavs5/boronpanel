@@ -114,7 +114,8 @@ def test_terminal_uses_quiet_interactive_shell(monkeypatch):
 
     assert observed["session"] is True
     assert observed["pty"]["term"] == "xterm-256color"
-    assert observed["command"] == "exec /bin/bash --noprofile --norc -i"
+    assert observed["command"] == terminal.INTERACTIVE_SHELL_COMMAND
+    assert "PS1='\\u@\\h:\\w\\$ '" in observed["command"]
     assert observed["timeout"] == terminal._RECV_TIMEOUT
     assert isinstance(channel, Channel)
 

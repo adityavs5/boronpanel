@@ -51,6 +51,7 @@ MAX_RESIZE_ROWS = 120
 # the request-serving executors.
 _TERMINAL_IO = ThreadPoolExecutor(max_workers=64, thread_name_prefix="terminal-io")
 SSH_HOST_KEY_DIR = Path('/etc/ssh')
+INTERACTIVE_SHELL_COMMAND = "exec env PS1='\\u@\\h:\\w\\$ ' /bin/bash --noprofile --norc -i"
 
 
 def _local_host_keys():
@@ -146,7 +147,7 @@ def _connect_ssh(username: str, private_key_pem: str, host: str, port: int, quie
         chan.get_pty(term="xterm-256color",width=80,height=24)
         # An exec session skips SSH's login MOTD. Bash stays interactive for
         # editing/job control, without loading login or interactive rc files.
-        chan.exec_command("exec /bin/bash --noprofile --norc -i")
+        chan.exec_command(INTERACTIVE_SHELL_COMMAND)
     else:
         chan = client.invoke_shell(term="xterm-256color", width=80, height=24)
     chan.settimeout(_RECV_TIMEOUT)
