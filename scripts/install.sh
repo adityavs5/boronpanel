@@ -669,6 +669,7 @@ deploy_app() {
     # job's log path with a symlink.
     run env PYTHONPATH="$DEST" "${VENV}/bin/python" -c 'import sys; from daemon.logsetup import prepare_log_directory; prepare_log_directory(sys.argv[1])' "$LOG_DIR"
     run find "$LOG_DIR" -type f -exec chmod 0640 {} +
+    run install -m 0755 "${DEST}/scripts/firewall_recover.py" /usr/local/sbin/boron-firewall-recover
     ok "log dir ${LOG_DIR} restricted to root and boron-api"
 }
 

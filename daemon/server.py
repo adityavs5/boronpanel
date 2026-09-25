@@ -341,14 +341,17 @@ OP_TABLE = {
     "mailqueue.delete_all": mailqueue.delete_all,
     # Phase 5 feature 4: firewall UI (UFW)
     "firewall.list": firewall.list_rules,
-    "firewall.add": firewall.add_rule,
-    "firewall.delete": firewall.delete_rule,
+    "firewall.add": firewall.transactional_add_rule,
+    "firewall.delete": firewall.transactional_delete_rule,
     "firewall.bypass.list": firewall.list_bypass,
-    "firewall.bypass.add": firewall.add_bypass,
-    "firewall.bypass.delete": firewall.delete_bypass,
+    "firewall.bypass.add": firewall.transactional_add_bypass,
+    "firewall.bypass.delete": firewall.transactional_delete_bypass,
     "firewall.status": firewall.get_status,
-    "firewall.enable": firewall.enable_firewall,
-    "firewall.disable": firewall.disable_firewall,
+    "firewall.enable": firewall.transactional_enable,
+    "firewall.disable": firewall.transactional_disable,
+    "firewall.pending": firewall.pending_change,
+    "firewall.confirm": firewall.confirm_change,
+    "firewall.rollback": firewall.rollback_change,
     # Product expansion: account-scoped file/script malware scans. Scans run
     # on malware.py's own bounded executor; actions remain explicit.
     "malware.engine.status": malware.engine_status,
@@ -993,6 +996,10 @@ async def amain() -> None:
     init_db()
     from daemon import jobcredentials
     jobcredentials.migrate()
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, firewall.recover_pending_changes)
+    except Exception:
+        logger.exception("Pending firewall change recovery failed; use boron-firewall-recover locally")
     await asyncio.get_running_loop().run_in_executor(None, ols.migrate_error_page_paths)
     # Reconcile HTTP renewal writers without taking the API down if a
     # scheduled Certbot process currently owns its configuration lock.

@@ -31,6 +31,10 @@ class BypassBody(BaseModel):
     label: str = ""
 
 
+class ConfirmChangeBody(BaseModel):
+    confirmation_token: str
+
+
 @api_router.get("/rules")
 def list_rules(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -83,6 +87,26 @@ def enable(body: ConfirmBody, identity: Identity = Depends(get_identity)):
 def disable(body: ConfirmBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("firewall.disable", identity, confirm=body.confirm)
+
+
+@api_router.get("/pending")
+def get_pending_change(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("firewall.pending", identity)
+
+
+@api_router.post("/pending/confirm")
+def confirm_pending_change(body: ConfirmChangeBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon(
+        "firewall.confirm", identity, confirmation_token=body.confirmation_token
+    )
+
+
+@api_router.post("/pending/revert")
+def revert_pending_change(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("firewall.rollback", identity, reason="reverted from the panel")
 
 
 # --- server-rendered UI ------------------------------------------------------

@@ -324,3 +324,79 @@ def test_unknown_effective_ssh_ports_fail_closed(monkeypatch):
     monkeypatch.setattr(procutil, 'run', lambda args, **kwargs: ProcResult(args, 1, '', 'invalid config'))
     with pytest.raises(RuntimeError, match='effective SSH'):
         _REAL_SSH_PORTS()
+
+
+@pytest.fixture()
+def isolated_firewall_journal(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "firewall_state_dir", str(tmp_path / "firewall"))
+    monkeypatch.setattr(firewall, "_arm_rollback", lambda state: None)
+    monkeypatch.setattr(firewall, "_verify_protected_access", lambda: None)
+    firewall._clear_pending()
+    yield
+    firewall._clear_pending()
+
+
+def test_transaction_keeps_confirmation_secret_out_of_journal(
+    isolated_firewall_journal, monkeypatch
+):
+    monkeypatch.setattr(
+        firewall,
+        "add_rule",
+        lambda params: {"rule_id": "new-rule", "action": params["action"]},
+    )
+    result = firewall.transactional_add_rule(
+        {"action": "allow", "port": 8443, "protocol": "tcp"}
+    )
+    token = result["pending_change"]["confirmation_token"]
+    journal = firewall._state_file().read_text()
+    assert token not in journal
+    assert "token_sha256" in journal
+
+    with pytest.raises(ValidationError, match="invalid"):
+        firewall.confirm_change({"confirmation_token": "wrong"})
+    assert firewall._state_file().exists()
+
+    assert firewall.confirm_change({"confirmation_token": token})["status"] == "confirmed"
+    assert not firewall._state_file().exists()
+
+
+def test_transaction_reverts_explicitly_and_on_daemon_restart(
+    isolated_firewall_journal, monkeypatch
+):
+    undone = []
+    monkeypatch.setattr(firewall, "add_rule", lambda params: {"rule_id": "new-rule"})
+    monkeypatch.setattr(firewall, "_undo_one", lambda step: undone.append(step))
+
+    firewall.transactional_add_rule({"action": "allow", "port": 8443})
+    result = firewall.rollback_change({"reason": "administrator requested"})
+    assert result["status"] == "reverted"
+    assert undone[-1]["kind"] == "delete_rule"
+
+    firewall.transactional_add_rule({"action": "allow", "port": 9443})
+    result = firewall.recover_pending_changes()
+    assert result["status"] == "reverted"
+    assert len(undone) == 2
+    assert not firewall._state_file().exists()
+
+
+def test_failed_transaction_is_rolled_back_and_does_not_block_retry(
+    isolated_firewall_journal, monkeypatch
+):
+    undone = []
+    monkeypatch.setattr(firewall, "_undo_one", lambda step: undone.append(step))
+    monkeypatch.setattr(
+        firewall,
+        "add_rule",
+        lambda params: (_ for _ in ()).throw(RuntimeError("ufw failed")),
+    )
+    with pytest.raises(RuntimeError, match="ufw failed"):
+        firewall.transactional_add_rule({"action": "allow", "port": 8443})
+    assert undone and undone[0]["kind"] == "delete_rule"
+    assert not firewall._state_file().exists()
+
+
+def test_only_one_unconfirmed_change_can_exist(isolated_firewall_journal, monkeypatch):
+    monkeypatch.setattr(firewall, "add_rule", lambda params: {"rule_id": "new-rule"})
+    firewall.transactional_add_rule({"action": "allow", "port": 8443})
+    with pytest.raises(ValidationError, match="pending firewall change"):
+        firewall.transactional_add_rule({"action": "allow", "port": 9443})

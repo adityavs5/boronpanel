@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Flame, Plus, Trash2, ShieldCheck, ShieldOff, Network } from 'lucide-react'
+import { Flame, Plus, Trash2, ShieldCheck, ShieldOff, Network, RotateCcw, TimerReset } from 'lucide-react'
 import { get, post, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -27,6 +27,8 @@ export default function Firewall() {
   const [bypassOpen, setBypassOpen] = useState(false)
   const [bypassForm, setBypassForm] = useState({ address: '', label: '' })
   const [deleteBypass, setDeleteBypass] = useState(null)
+  const [confirmationToken, setConfirmationToken] = useState('')
+  const [now, setNow] = useState(() => Date.now())
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['firewall-rules', username],
@@ -34,13 +36,27 @@ export default function Firewall() {
   })
 
   const active = data?.active
+  const pending = data?.pending_change
+  const secondsLeft = pending ? Math.max(0, Math.ceil(pending.expires_at - now / 1000)) : 0
   const invalidate = () => qc.invalidateQueries({ queryKey: ['firewall-rules', username] })
+
+  useEffect(() => {
+    if (!pending) return undefined
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [pending?.change_id])
+
+  const changeApplied = (response, message) => {
+    setConfirmationToken(response?.pending_change?.confirmation_token || '')
+    setNow(Date.now())
+    toast.warning('Confirm firewall access', `${message}. Keep this change within two minutes or Boron will revert it.`)
+    invalidate()
+  }
 
   const toggleMut = useMutation({
     mutationFn: (action) => post(`/api/v1/firewall/${action}`, { confirm: true }),
-    onSuccess: (_res, action) => {
-      toast.success(action === 'enable' ? 'Firewall enabled' : 'Firewall disabled')
-      invalidate()
+    onSuccess: (res, action) => {
+      changeApplied(res, action === 'enable' ? 'Firewall enabled temporarily' : 'Firewall disabled temporarily')
       setToggleAction(null)
     },
     onError: (e) => toast.error('Action failed', e.message),
@@ -48,9 +64,8 @@ export default function Firewall() {
 
   const addMut = useMutation({
     mutationFn: (body) => post('/api/v1/firewall/rules', body),
-    onSuccess: () => {
-      toast.success('Rule added')
-      invalidate()
+    onSuccess: (res) => {
+      changeApplied(res, 'Rule added temporarily')
       setAddOpen(false)
       setForm(EMPTY_FORM)
     },
@@ -59,9 +74,8 @@ export default function Firewall() {
 
   const deleteMut = useMutation({
     mutationFn: (ruleId) => del(`/api/v1/firewall/rules/${ruleId}`),
-    onSuccess: () => {
-      toast.success('Rule deleted')
-      invalidate()
+    onSuccess: (res) => {
+      changeApplied(res, 'Rule deleted temporarily')
       setDeleteRule(null)
     },
     onError: (e) => toast.error('Could not delete rule', e.message),
@@ -69,9 +83,8 @@ export default function Firewall() {
 
   const addBypassMut = useMutation({
     mutationFn: (body) => post('/api/v1/firewall/bypass', body),
-    onSuccess: () => {
-      toast.success('Full-access IP added')
-      invalidate()
+    onSuccess: (res) => {
+      changeApplied(res, 'Full-access IP added temporarily')
       setBypassOpen(false)
       setBypassForm({ address: '', label: '' })
     },
@@ -80,12 +93,31 @@ export default function Firewall() {
 
   const deleteBypassMut = useMutation({
     mutationFn: (id) => del(`/api/v1/firewall/bypass/${id}`),
-    onSuccess: () => {
-      toast.success('Full-access IP removed')
-      invalidate()
+    onSuccess: (res) => {
+      changeApplied(res, 'Full-access IP removed temporarily')
       setDeleteBypass(null)
     },
     onError: (e) => toast.error('Could not remove bypass IP', e.message),
+  })
+
+  const confirmMut = useMutation({
+    mutationFn: () => post('/api/v1/firewall/pending/confirm', { confirmation_token: confirmationToken }),
+    onSuccess: () => {
+      toast.success('Firewall change kept')
+      setConfirmationToken('')
+      invalidate()
+    },
+    onError: (e) => toast.error('Could not confirm change', e.message),
+  })
+
+  const revertMut = useMutation({
+    mutationFn: () => post('/api/v1/firewall/pending/revert', {}),
+    onSuccess: () => {
+      toast.success('Firewall change reverted')
+      setConfirmationToken('')
+      invalidate()
+    },
+    onError: (e) => toast.error('Could not revert change', e.message),
   })
 
   const columns = [
@@ -145,6 +177,32 @@ export default function Firewall() {
           </Button>
         </div>
       </PageHeader>
+
+      {pending && (
+        <Card className="mb-6 border-warning/50 bg-warning/5">
+          <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <TimerReset className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+              <div>
+                <div className="font-semibold">Confirm that you can still reach the server</div>
+                <div className="text-sm text-muted-foreground">
+                  {pending.summary}. Automatic rollback in <span className="font-semibold tabular-nums text-foreground">{secondsLeft}s</span>.
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" loading={revertMut.isPending} onClick={() => revertMut.mutate()}>
+                <RotateCcw className="h-4 w-4" /> Revert now
+              </Button>
+              {confirmationToken && (
+                <Button loading={confirmMut.isPending} onClick={() => confirmMut.mutate()}>
+                  <ShieldCheck className="h-4 w-4" /> Keep change
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <DataTable
         columns={columns}

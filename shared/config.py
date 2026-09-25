@@ -141,6 +141,7 @@ class Settings:
     snapshot_cpu_threads: int = 2
     backup_staging_dir: str = "/var/lib/boron/backup-staging"
     backup_concurrency: int = 2
+    firewall_state_dir: str = "/var/lib/boron/firewall-changes"
 
     # ssl (Phase f)
     certbot_bin: str = "/opt/boron/.venv/bin/certbot"
