@@ -289,6 +289,32 @@ class DatabaseGrant(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class DatabaseUser(Base):
+    """An independently managed MariaDB login owned by one hosting account."""
+
+    __tablename__ = "database_users"
+    __table_args__ = (UniqueConstraint("db_user", "host", name="uq_database_user_host"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    db_user: Mapped[str] = mapped_column(String(64), index=True)
+    host: Mapped[str] = mapped_column(String(253), default="localhost")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DatabaseUserGrant(Base):
+    """Many-to-many assignment of account-owned users to databases."""
+
+    __tablename__ = "database_user_grants"
+    __table_args__ = (UniqueConstraint("database_grant_id", "database_user_id", name="uq_database_user_grant"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    database_grant_id: Mapped[int] = mapped_column(ForeignKey("database_grants.id"), index=True)
+    database_user_id: Mapped[int] = mapped_column(ForeignKey("database_users.id"), index=True)
+    privileges: Mapped[str] = mapped_column(String(16), default="all")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class MailDomain(Base):
     __tablename__ = "mail_domains_cache"
 

@@ -20,6 +20,19 @@ class ChangeDatabasePasswordBody(BaseModel):
     password: str | None = None
 
 
+class CreateDatabaseUserBody(BaseModel):
+    name: str
+    password: str | None = None
+
+
+class DatabaseUserGrantBody(BaseModel):
+    user: str
+
+
+class ChangeDatabaseUserPasswordBody(BaseModel):
+    password: str | None = None
+
+
 @api_router.get("")
 def list_databases(username: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
@@ -56,6 +69,42 @@ def change_password_patch(username: str, name: str, body: ChangeDatabasePassword
     if body.password:
         params["password"] = body.password
     return call_daemon("db.change_password", identity, **params)
+
+
+@api_router.get("/users")
+def list_database_users(username: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("db.user.list", identity, username=username)
+
+
+@api_router.post("/users")
+def create_database_user(username: str, body: CreateDatabaseUserBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("db.user.create", identity, username=username, **body.model_dump(exclude_none=True))
+
+
+@api_router.patch("/users/{user}/password")
+def change_database_user_password(username: str, user: str, body: ChangeDatabaseUserPasswordBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("db.user.change_password", identity, username=username, user=user, **body.model_dump(exclude_none=True))
+
+
+@api_router.delete("/users/{user}")
+def delete_database_user(username: str, user: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("db.user.drop", identity, username=username, user=user)
+
+
+@api_router.post("/{name}/users")
+def assign_database_user(username: str, name: str, body: DatabaseUserGrantBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("db.user.grant", identity, username=username, database=name, user=body.user)
+
+
+@api_router.delete("/{name}/users/{user}")
+def unassign_database_user(username: str, name: str, user: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("db.user.revoke", identity, username=username, database=name, user=user)
 
 
 @ui_router.post("")

@@ -33,6 +33,9 @@ def stub_mariadb(monkeypatch):
         calls.append(("create_db_user", db_user))
         state["users"].add(db_user)
 
+    def user_exists(db_user):
+        return db_user in state["users"]
+
     def drop_db_user(db_user):
         calls.append(("drop_db_user", db_user))
         state["users"].discard(db_user)
@@ -47,8 +50,11 @@ def stub_mariadb(monkeypatch):
     monkeypatch.setattr(hdb.mariadb, "create_database", create_database)
     monkeypatch.setattr(hdb.mariadb, "drop_database", drop_database)
     monkeypatch.setattr(hdb.mariadb, "create_db_user", create_db_user)
+    monkeypatch.setattr(hdb.mariadb, "user_exists", user_exists)
     monkeypatch.setattr(hdb.mariadb, "drop_db_user", drop_db_user)
     monkeypatch.setattr(hdb.mariadb, "grant_all", grant_all)
+    monkeypatch.setattr(hdb.mariadb, "grant_exact_database", grant_all)
+    monkeypatch.setattr(hdb.mariadb, "revoke_all", lambda db_name, db_user: calls.append(("revoke_all", db_name, db_user)))
     monkeypatch.setattr(hdb.mariadb, "set_password", set_password)
     monkeypatch.setattr(hdb.mariadb, "generate_password", lambda: "generated-pw")
     return calls
@@ -213,3 +219,36 @@ def test_same_suffix_different_accounts_get_distinct_db_names(isolated_db, stub_
     bob_db = hdb.create_database({"username": "bob", "name": "shop"})
     assert alice_db["db_name"] == "alice_shop"
     assert bob_db["db_name"] == "bob_shop"
+
+
+def test_independent_user_can_be_assigned_to_multiple_databases(isolated_db, stub_sysops, stub_mariadb):
+    ha.create_account({"username": "demo1"})
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    hdb.create_database({"username": "demo1", "name": "blog"})
+    created = hdb.create_user({"username": "demo1", "name": "reporter"})
+    assert created["db_user"] == "demo1_reporter"
+    hdb.grant_user({"username": "demo1", "database": "demo1_shop", "user": "demo1_reporter"})
+    hdb.grant_user({"username": "demo1", "database": "blog", "user": "reporter"})
+    users = {row["db_user"]: row for row in hdb.list_users({"username": "demo1"})["users"]}
+    assert [item["db_name"] for item in users["demo1_reporter"]["databases"]] == ["demo1_blog", "demo1_shop"]
+    databases = {row["db_name"]: row for row in hdb.list_databases({"username": "demo1"})["databases"]}
+    assert "demo1_reporter" in databases["demo1_shop"]["users"]
+
+
+def test_revoke_and_drop_independent_database_user(isolated_db, stub_sysops, stub_mariadb):
+    ha.create_account({"username": "demo1"})
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    hdb.create_user({"username": "demo1", "name": "reporter"})
+    hdb.grant_user({"username": "demo1", "database": "shop", "user": "reporter"})
+    assert hdb.revoke_user({"username": "demo1", "database": "shop", "user": "reporter"})["status"] == "revoked"
+    assert hdb.drop_user({"username": "demo1", "user": "reporter"})["status"] == "dropped"
+    assert all(row["db_user"] != "demo1_reporter" for row in hdb.list_users({"username": "demo1"})["users"])
+
+
+def test_original_application_user_cannot_be_revoked_or_dropped(isolated_db, stub_sysops, stub_mariadb):
+    ha.create_account({"username": "demo1"})
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    with pytest.raises(ValidationError, match="original application user"):
+        hdb.revoke_user({"username": "demo1", "database": "shop", "user": "shop"})
+    with pytest.raises(ValidationError, match="removed when its database"):
+        hdb.drop_user({"username": "demo1", "user": "shop"})

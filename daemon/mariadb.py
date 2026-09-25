@@ -151,13 +151,18 @@ def grant_all(db_name: str, db_user: str, host: str = "localhost") -> None:
     grant_exact_database(db_name, db_user, host)
 
 
+def _grant_database_pattern(db_name: str) -> str:
+    validate_db_identifier(db_name)
+    return '`' + db_name.replace('_', r'\_').replace('%', r'\%') + '`'
+
+
 def grant_exact_database(db_name: str, db_user: str, host: str = "localhost") -> None:
     """Database GRANT patterns treat underscores specially even inside backticks."""
     validate_db_identifier(db_name)
     validate_db_identifier(db_user)
     if host != 'localhost':
         raise ValueError('Temporary database access must be local')
-    db_ident = '`' + db_name.replace('_', r'\_').replace('%', r'\%') + '`'
+    db_ident = _grant_database_pattern(db_name)
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -168,12 +173,14 @@ def grant_exact_database(db_name: str, db_user: str, host: str = "localhost") ->
 
 
 def revoke_all(db_name: str, db_user: str, host: str = "localhost") -> None:
-    db_ident = _quote_ident(db_name)
+    db_ident = _grant_database_pattern(db_name)
     validate_db_identifier(db_user)
+    if host != "localhost":
+        raise ValueError("Hosted database access must use the configured local account")
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(f"REVOKE ALL PRIVILEGES ON {db_ident}.* FROM '{db_user}'@'{host}'")
+            cur.execute(f"REVOKE ALL PRIVILEGES ON {db_ident}.* FROM '{db_user}'@'localhost'")
             cur.execute("FLUSH PRIVILEGES")
     finally:
         conn.close()
