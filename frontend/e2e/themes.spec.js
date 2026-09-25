@@ -50,6 +50,8 @@ for (const role of ['admin', 'customer']) {
         await expect(page.locator('.usage-row').filter({ hasText: 'Memory' })).toContainText('256.0 MB')
         await expect(page.locator('.usage-row').filter({ hasText: 'Subdomains' })).toContainText('3 / 10')
         await expect(page.locator('.usage-row').filter({ hasText: 'Email Accounts' })).toContainText('8 / 25')
+        const toolCounts = await page.locator('.tool-grid').evaluateAll(grids => grids.map(grid => grid.querySelectorAll('.tool-link').length))
+        expect(toolCounts).toEqual([6, 6, 6, 12, 6, 6])
       }
       if (skin === 'evolution') {
         const iconSizes = await page.locator('.tool-icon').evaluateAll(items => items.map(item => {
@@ -59,6 +61,21 @@ for (const role of ['admin', 'customer']) {
           return [outer.width, outer.height, inner?.width, inner?.height]
         }))
         expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['46x46x26x26']))
+        const gridRows = await page.locator('.tool-grid').evaluateAll(grids => grids.map(grid => {
+          const left = grid.getBoundingClientRect().left
+          const rows = new Map()
+          for (const item of grid.querySelectorAll('.tool-link')) {
+            const rect = item.getBoundingClientRect()
+            const key = Math.round(rect.top)
+            if (!rows.has(key)) rows.set(key, [])
+            rows.get(key).push(Math.round(rect.left - left))
+          }
+          return [...rows.values()]
+        }))
+        const fullRows = gridRows.flat().filter(row => row.length === 6)
+        expect(fullRows.length).toBeGreaterThan(0)
+        expect(new Set(fullRows.map(row => row.join(','))).size).toBe(1)
+        expect(Math.max(...gridRows.flat().map(row => row.length))).toBe(6)
       }
       await noOverflow(page)
       const links = await page.locator('.tool-link').evaluateAll((items) => items.map((item) => item.getAttribute('href')))

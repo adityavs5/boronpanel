@@ -5,18 +5,18 @@ const customerGroups = {
   evolution: [
     ['Account Manager', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns']],
     ['E-mail Manager', ['/email', '/email/settings', '/email/dns', '/email/spam', '/email/migration']],
-    ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis']],
+    ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis', '/git', '/cron']],
     ['Site Tools', ['/files', '/php', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
-    ['Developer Tools', ['/git', '/cron', '/ssh', '/terminal', '/logs', '/devtools']],
-    ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security', '/change-password', '/appearance']],
+    ['Advanced Tools', ['/ssh', '/terminal', '/logs', '/devtools', '/change-password', '/appearance']],
+    ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security']],
   ],
   'paper-lantern': [
     ['Domains', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns']],
     ['Email', ['/email', '/email/settings', '/email/dns', '/email/spam', '/email/migration']],
-    ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis']],
+    ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis', '/git', '/cron']],
     ['Site Tools', ['/files', '/php', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
-    ['Developer Tools', ['/git', '/cron', '/ssh', '/terminal', '/logs', '/devtools']],
-    ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security', '/change-password', '/appearance']],
+    ['Advanced Tools', ['/ssh', '/terminal', '/logs', '/devtools', '/change-password', '/appearance']],
+    ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security']],
   ],
 }
 const adminGroups = {
@@ -81,15 +81,17 @@ export function getToolGroups(role, skin) {
       { ...backupTool, to: '/backup-jobs?tab=destinations&action=create', label: 'Storage Destinations', icon: Cloud, tone: 'violet' },
       { ...backupTool, to: '/backup-jobs?tab=history', label: 'Run History', icon: History, tone: 'amber' },
     ] : [
-      { ...backupTool, to: '/backups', label: 'Backup Overview', icon: Archive, tone: 'sky' },
       { ...backupTool, to: '/backups?action=create&kind=full', label: 'Full Account Backup', icon: HardDriveDownload, tone: 'green' },
       { ...backupTool, to: '/backups?action=create&kind=file', label: 'Files Backup', icon: FileArchive, tone: 'amber' },
       { ...backupTool, to: '/backups?action=create&kind=database', label: 'Database Backup', icon: DatabaseBackup, tone: 'violet' },
       { ...backupTool, to: '/backups?action=create&kind=databases', label: 'All Databases', icon: DatabaseBackup, tone: 'teal' },
-      { ...backupTool, to: '/backups?action=create&kind=mailbox', label: 'Mailbox Backup', icon: Mail, tone: 'rose' },
       { ...backupTool, to: '/backups?view=restores', label: 'Restore History', icon: RotateCcw, tone: 'sky' },
     ]
     backupGroup.items.splice(backupIndex, 1, ...shortcuts)
+    if (role !== 'admin') {
+      const emailGroup = groups.find((group) => group.title === 'E-mail Manager' || group.title === 'Email')
+      emailGroup?.items.push({ ...backupTool, to: '/backups?action=create&kind=mailbox', label: 'Mailbox Backup', icon: Mail, tone: 'rose' })
+    }
   }
   return groups
 }
