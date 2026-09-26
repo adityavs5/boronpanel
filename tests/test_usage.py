@@ -33,6 +33,16 @@ def stub_filesystem(monkeypatch):
     monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot, domain_name=None: None)
 
 
+@pytest.fixture(autouse=True)
+def stub_zone_creation(monkeypatch):
+    """Usage tests create domains but do not exercise DNS provisioning."""
+    monkeypatch.setattr(
+        hd,
+        "_create_managed_zone",
+        lambda username, domain: {"zone": domain},
+    )
+
+
 def _account(username="demo1"):
     with write_session() as session:
         return session.scalar(select(ha.Account).where(ha.Account.username == username))

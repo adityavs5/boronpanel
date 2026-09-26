@@ -22,6 +22,21 @@ def stub_filesystem(monkeypatch):
     monkeypatch.setattr(hd.ols, "provision_vhost", lambda account: None)
 
 
+@pytest.fixture(autouse=True)
+def stub_zone_creation(monkeypatch):
+    """Keep SSL unit tests independent of the live PowerDNS API.
+
+    Individual tests add a DnsZone row when they need to exercise a managed
+    DNS challenge.  Domain creation itself is not the behavior under test in
+    this module.
+    """
+    monkeypatch.setattr(
+        hd,
+        "_create_managed_zone",
+        lambda username, domain: {"zone": domain},
+    )
+
+
 def test_challenge_plan_http01_when_zone_not_managed(isolated_db, stub_sysops, stub_filesystem):
     ha.create_account({"username": "demo1"})
     hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
