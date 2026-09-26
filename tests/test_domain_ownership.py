@@ -54,6 +54,11 @@ def test_same_owner_can_reclaim_web_domain_with_retained_mail(owners, monkeypatc
         db.add(MailDomain(domain='retained.example', account_id=alice))
     monkeypatch.setattr(handlers_domain, 'ensure_docroot', lambda *a: None)
     monkeypatch.setattr(handlers_domain.ols, 'provision_vhost', lambda *a: None)
+    monkeypatch.setattr(
+        handlers_domain,
+        '_create_managed_zone',
+        lambda username, domain: {'zone': domain},
+    )
     result = handlers_domain.add_domain({'username': 'alice', 'domain': 'retained.example'})
     assert result['account_id'] == alice
 
