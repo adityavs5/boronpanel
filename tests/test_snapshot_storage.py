@@ -164,7 +164,8 @@ def test_drive_uses_private_rclone_config(repo,tmp_path,monkeypatch):
         return type('Result',(),{'ok':True,'stdout':'','stderr':''})()
     monkeypatch.setattr(storage,'run',fake_run);storage._execute(spec,['check'])
     assert captured['env']['RCLONE_CONFIG']==str(config)
-    assert 'private' not in ' '.join(captured['command'])
+    assert 'private' not in captured['command']
+    assert config.read_text() not in '\n'.join(captured['command'])
 
 
 def test_s3_arguments_and_environment_keep_credentials_off_command_line(repo, monkeypatch):

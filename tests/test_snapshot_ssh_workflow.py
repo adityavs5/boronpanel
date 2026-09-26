@@ -110,7 +110,7 @@ def test_ssh_job_filters_incremental_restore_and_notifications(environment, ssh_
         jobs.execute_run(ids[0])
         row = jobs._row(SnapshotRun, ids[0])
         assert row.status == 'completed', row.error
-        assert row.notification_results == {'email': 'dispatched', 'webhook': 'dispatched'}
+        assert row.notification_results == {'email': 'provider accepted', 'webhook': 'queued'}
         return row
     first = execute()
     second = execute()
@@ -131,13 +131,14 @@ def test_ssh_job_filters_incremental_restore_and_notifications(environment, ssh_
     assert (home/'outside.txt').read_text() == 'outside include filter'
     assert result.safety_snapshot_id
     assert jobs.runs({'username':'bravo'})['runs'] == []
-    assert len(mail) == len(hooks) == 2
+    assert len(mail) == 3 and len(hooks) == 2
     assert all(message['To'] == 'owner@example.test' for message in mail)
+    assert mail[-1]['Subject'] == 'Backup restore completed'
     for body, signature in hooks:
         assert hmac.compare_digest(signature, 'sha256='+hmac.new(b'qa-only-signing-secret',body,hashlib.sha256).hexdigest())
         assert json.loads(body)['event'] == 'backup.completed'
     jobs.execute_run(second.id)
-    assert len(mail) == len(hooks) == 2
+    assert len(mail) == 3 and len(hooks) == 2
     jobs.save_policy(dict(id=policy['id'], name='SSH selected sites', destination_id=dest['id'],
         components=['files'], accounts=['alpha'], include_paths=['missing-site'],
         frequency='manual', notification_channels=['email','webhook']))
@@ -145,11 +146,11 @@ def test_ssh_job_filters_incremental_restore_and_notifications(environment, ssh_
     jobs.execute_run(failed_id)
     failed = jobs._row(SnapshotRun, failed_id)
     assert failed.status == 'failed'
-    assert failed.notification_results == {'email': 'dispatched', 'webhook': 'dispatched'}
-    assert len(mail) == len(hooks) == 3
+    assert failed.notification_results == {'email': 'provider accepted', 'webhook': 'queued'}
+    assert len(mail) == 4 and len(hooks) == 3
     assert 'failed' in mail[-1].get_payload().lower()
     body, signature = hooks[-1]
     assert json.loads(body)['event'] == 'backup.failed'
     assert hmac.compare_digest(signature, 'sha256='+hmac.new(b'qa-only-signing-secret',body,hashlib.sha256).hexdigest())
     jobs.execute_run(failed_id)
-    assert len(mail) == len(hooks) == 3
+    assert len(mail) == 4 and len(hooks) == 3
