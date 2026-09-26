@@ -26,7 +26,7 @@ for (const skin of ['evolution', 'paper-lantern']) {
     await expect(page.getByRole('table').getByText('Boron archive', { exact: true })).toBeVisible()
     await page.getByRole('table').getByText('migrated1', { exact: true }).click()
     await expect(page.getByText('New account password', { exact: true })).toBeVisible()
-    await expect(page.locator('input[value="Test-only-Password-42!"]')).toBeVisible()
+    await expect(page.getByText('Test-only-Password-42!', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: 'Close' }).first().click()
 
     await page.getByRole('button', { name: 'New migration' }).first().click()

@@ -27,11 +27,12 @@ async function session(page, role, skin) {
   })
 }
 
-const expectedCustomerOrder = [
+const expectedCustomerStart = [
   '/app/domains', '/app/subdomains', '/app/ftp', '/app/ssl', '/app/databases', '/app/dns',
-  '/app/email', '/app/email/settings', '/app/email/dns', '/app/email/spam', '/app/email/migration',
-  '/app/wordpress', '/app/node-apps', '/app/python-apps', '/app/redis', '/app/backups',
+  '/app/email', '/app/email?webmail=1', '/app/email/settings', '/app/email/dns', '/app/email/spam', '/app/email/migration',
+  '/app/wordpress', '/app/node-apps', '/app/python-apps', '/app/redis', '/app/git', '/app/cron',
 ]
+const expectedBackupEnd = ['/app/backups', '/app/backups?component=files', '/app/backups?component=databases', '/app/backups?component=mail', '/app/backups?action=create&kind=full', '/app/backups?view=restores']
 
 for (const skin of ['evolution', 'paper-lantern']) {
   test(`${skin}: requested customer menu order and direct sections`, async ({ page }) => {
@@ -39,7 +40,8 @@ for (const skin of ['evolution', 'paper-lantern']) {
     await page.goto('/app/dashboard')
     await expect(page.locator('.tool-link').first()).toBeVisible()
     const links = await page.locator('.tool-link').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('href')))
-    expect(links.slice(0, expectedCustomerOrder.length)).toEqual(expectedCustomerOrder)
+    expect(links.slice(0, expectedCustomerStart.length)).toEqual(expectedCustomerStart)
+    expect(links.slice(-expectedBackupEnd.length)).toEqual(expectedBackupEnd)
 
     await page.getByRole('textbox', { name: 'Search hosting tools' }).fill('mail deliverability')
     await expect(page.getByRole('option').filter({ hasText: 'Email DNS Records' })).toBeVisible()

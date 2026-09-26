@@ -38,7 +38,7 @@ for (const skin of ['evolution', 'paper-lantern']) {
   test(`${skin}: firewall, OLS and global SSL controls`, async ({ page }) => {
     const writes = await session(page, skin)
     await page.goto('/app/firewall')
-    await expect(page.getByRole('heading', { name: 'Firewall' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Firewall', exact: true })).toBeVisible()
     await expect(page.getByText('198.51.100.42')).toBeVisible()
     await page.getByRole('button', { name: 'Add trusted IP' }).click()
     await expect(page.getByRole('heading', { name: 'Add full-access IP' })).toBeVisible()
