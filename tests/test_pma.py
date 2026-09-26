@@ -33,6 +33,7 @@ def stub_mariadb(monkeypatch):
         pass
 
     monkeypatch.setattr(hdb.mariadb, "database_exists", lambda name: False)
+    monkeypatch.setattr(hdb.mariadb, "user_exists", lambda name, host="localhost": False)
     monkeypatch.setattr(hdb.mariadb, "create_database", create_database)
     monkeypatch.setattr(hdb.mariadb, "drop_database", drop_database)
     monkeypatch.setattr(hdb.mariadb, "create_db_user", create_db_user)

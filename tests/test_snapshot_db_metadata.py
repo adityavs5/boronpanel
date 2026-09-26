@@ -7,7 +7,15 @@ import pytest
 
 from daemon import mariadb, snapshot_db_metadata as metadata, snapshot_databases as database
 from shared.config import settings
+from shared.db import write_session
+from shared.models import Account
 from tests.test_snapshot_databases import sql_server, sql
+
+
+@pytest.fixture(autouse=True)
+def panel_account(isolated_db):
+    with write_session() as session:
+        session.add(Account(username='alpha', status='active', uid=65534, gid=65534))
 
 
 def entry():
