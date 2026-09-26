@@ -4,18 +4,18 @@ import { Archive, CalendarClock, Cloud, DatabaseBackup, Download, FileArchive, H
 const customerGroups = {
   evolution: [
     ['Account Manager', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns']],
-    ['E-mail Manager', ['/email', '/email/settings', '/email/dns', '/email/spam', '/email/migration']],
+    ['E-mail Manager', ['/email', '/email?webmail=1', '/email/settings', '/email/dns', '/email/spam', '/email/migration']],
     ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis', '/git', '/cron']],
-    ['Site Tools', ['/files', '/php', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
-    ['Advanced Tools', ['/ssh', '/terminal', '/logs', '/devtools', '/change-password', '/appearance']],
+    ['Site Tools', ['/files', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
+    ['Advanced Tools', ['/php', '/ssh', '/terminal', '/logs', '/devtools', '/appearance']],
     ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security']],
   ],
   'paper-lantern': [
     ['Domains', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns']],
-    ['Email', ['/email', '/email/settings', '/email/dns', '/email/spam', '/email/migration']],
+    ['Email', ['/email', '/email?webmail=1', '/email/settings', '/email/dns', '/email/spam', '/email/migration']],
     ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis', '/git', '/cron']],
-    ['Site Tools', ['/files', '/php', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
-    ['Advanced Tools', ['/ssh', '/terminal', '/logs', '/devtools', '/change-password', '/appearance']],
+    ['Site Tools', ['/files', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
+    ['Advanced Tools', ['/php', '/ssh', '/terminal', '/logs', '/devtools', '/appearance']],
     ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security']],
   ],
 }
@@ -61,7 +61,10 @@ export function getToolGroups(role, skin) {
   const lookup = new Map(nav.filter((item) => item.to).map((item) => [item.to, item]))
   const layouts = role === 'admin' ? adminGroups : customerGroups
   const definitions = layouts[skin] || layouts.evolution
-  const used = new Set(['/overview', '/dashboard'])
+  // Change password stays available from the persistent account menu and the
+  // command palette. Omitting its duplicate tile keeps every customer group at
+  // six tools without hiding Appearance from dashboard search/navigation.
+  const used = new Set(['/overview', '/dashboard', ...(role === 'customer' ? ['/change-password'] : [])])
   const groups = definitions.map(([title, paths], index) => ({
     title,
     items: paths.filter((path) => lookup.has(path)).map((path, i) => {

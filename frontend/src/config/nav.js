@@ -26,6 +26,7 @@ export const customerNav = [
   { label: 'LiteSpeed Cache', to: '/cache', icon: Zap },
   { section: 'Email' },
   { label: 'Email Accounts', to: '/email', icon: Mail },
+  { label: 'Webmail', to: '/email?webmail=1', icon: ExternalLink },
   { label: 'Email Settings', to: '/email/settings', icon: Cog },
   { label: 'Email DNS Records', to: '/email/dns', icon: Network },
   { label: 'Spam Filters', to: '/email/spam', icon: ShieldBan },

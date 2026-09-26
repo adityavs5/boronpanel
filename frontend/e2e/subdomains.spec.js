@@ -22,7 +22,7 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
   const dialog=page.getByRole('dialog')
   await dialog.getByLabel('Site type',{exact:true}).selectOption('subdomain')
   await expect(dialog.getByLabel('Parent domain',{exact:true})).toHaveValue('example.com')
-  await dialog.getByLabel(/^Subdomain name/).fill('blog')
+  await dialog.getByRole('textbox',{name:/^Subdomain required$/}).fill('blog')
   await expect(dialog.getByText('blog.example.com',{exact:true})).toBeVisible()
   await page.setViewportSize({width:390,height:844})
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)

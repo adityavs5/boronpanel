@@ -1,8 +1,8 @@
 # Backup, security, DNS and hosting improvements
 
-Status: proposed plan; awaiting user approval. Research and source inspection only.
+Status: implementation complete; combined release validation in progress (2026-09-26).
 
-This document covers the complete September 25 request. It does not authorize implementation, running tests, changing the server, or publishing another release. The previous instruction to defer tests and releases remains in force until the user authorizes the relevant stage. The intended delivery is a coordinated major release after the requested batches and acceptance checks are complete; no version bump is made by this plan.
+The user approved implementation, testing, and one coordinated major release after this plan was written. The work packages below are now the implementation record and acceptance contract. External AWS, Backblaze, and Google Drive credentials and an isolated second-host firewall target were not supplied; those real-provider and lockout trials remain explicit post-release acceptance dependencies and are not represented as passed.
 
 ## 1. Findings that determine the implementation
 
@@ -279,7 +279,21 @@ A recoverability/feature is complete only with recorded implementation and appro
 
 Schema/contract work needed by backups is designed first even when its standalone UI ships in a later batch. Work is considered an implementation batch, not a separate public release. No parallel agents are required for this plan.
 
-## 5. Requirement traceability
+## 5. Implementation and validation record
+
+The approved work landed as reviewable commits from `a854a23` through the final release candidate. The implementation includes the account-first recovery catalog, legacy archive visibility, portable archive modes and encryption, SSH/SFTP/S3/Drive destination contracts, queued destination operations, configuration recovery, schedules and retention, notification delivery, firewall rollback, WAF policies and incidents, domain suspension, joined subdomain creation, independent database grants, DNS modes and setup wizard, WordPress inventory caching, direct-session SSH/2FA handling, customer terminal welcome, and compressed 90-day web-log history.
+
+Validation is intentionally split into focused implementation tests and one combined release gate. Focused backend and browser checks cover ownership boundaries, recovery selection, encryption/tamper failure, retention, mail/DNS/PHP/domain recovery, firewall rollback, WAF policy, database grants, setup state, direct versus impersonated sessions, terminal startup, log rotation, Evo/Paper themes, keyboard/mobile layouts, and the custom-logo first paint. The signed release pipeline runs the complete backend suite and a fresh production frontend build before publication.
+
+The following acceptance items require infrastructure that is not present in this workspace and remain recorded rather than simulated as real-provider success:
+
+- Live AWS S3, Backblaze B2, and Google Drive round trips with customer-owned test credentials.
+- A second isolated host for fresh-connection firewall lockout, crash, reboot, IPv6, and custom-SSH-port trials.
+- Destructive full-account restore or live source-account migration. Only disposable accounts are authorized for those checks.
+
+These dependencies do not weaken the backend restrictions: Drive incremental mode is rejected, destination secrets remain write-only/encrypted, pending firewall changes have an out-of-process rollback path, and customer authorization is enforced on direct recovery URLs.
+
+## 6. Requirement traceability
 
 | User requirement | Work package |
 | --- | --- |
@@ -306,4 +320,4 @@ Schema/contract work needed by backups is designed first even when its standalon
 | User 2FA session error | AUTH2 |
 | Preserve previous UI fixes; wait for batch testing/major release | U0, Q1 |
 
-Approval requested for this plan before implementation. External storage/OAuth test credentials and an isolated firewall test target will be collected only when their validation stage is authorized.
+Implementation was approved. External storage/OAuth credentials and an isolated firewall test target are still required to close the real-provider acceptance items above.

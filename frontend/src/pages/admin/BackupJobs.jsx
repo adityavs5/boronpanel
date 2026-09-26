@@ -200,7 +200,7 @@ export default function BackupJobs() {
       <TabsContent value="history"><SnapshotHistory admin/></TabsContent>
       <TabsContent value="notifications"><NotificationPlugins/></TabsContent>
     </Tabs>
-    {policy&&<PolicyDialog key={policy.id||'new'} policy={policy} destinations={destinations.data?.destinations||[]} accounts={accounts.data?.accounts||[]} onClose={()=>setPolicy(null)} onSaved={refresh}/>}
+    {policy&&<PolicyDialog key={policy.id||'new'} policy={policy} destinations={destinations.data?.destinations||[]} accounts={accounts.data?.accounts||[]} onClose={()=>setPolicy(null)} onSaved={()=>{refresh();setTab('jobs')}}/>}
     {destination&&<DestinationDialog key={destination.id||'new'} destination={destination} accounts={accounts.data?.accounts||[]} onClose={()=>setDestination(null)} onSaved={refresh}/>}
   </div>
 }

@@ -51,7 +51,7 @@ for (const role of ['admin', 'customer']) {
         await expect(page.locator('.usage-row').filter({ hasText: 'Subdomains' })).toContainText('3 / 10')
         await expect(page.locator('.usage-row').filter({ hasText: 'Email Accounts' })).toContainText('8 / 25')
         const toolCounts = await page.locator('.tool-grid').evaluateAll(grids => grids.map(grid => grid.querySelectorAll('.tool-link').length))
-        expect(toolCounts).toEqual([6, 6, 6, 12, 6, 6])
+        expect(toolCounts).toEqual([6, 6, 6, 6, 6, 6, 6])
       }
       if (skin === 'evolution') {
         const iconSizes = await page.locator('.tool-icon').evaluateAll(items => items.map(item => {
@@ -193,7 +193,10 @@ test('keyboard navigation can switch themes and reach Appearance', async ({ page
   await page.goto('/app/overview')
   await page.getByRole('button', { name: 'Choose theme', exact: true }).first().focus()
   await page.keyboard.press('Enter')
+  const paperTheme = page.getByRole('menuitemradio', { name: /Paper/ })
+  await expect(paperTheme).toBeVisible()
   await page.keyboard.press('p')
+  await expect(paperTheme).toBeFocused()
   await page.keyboard.press('Enter')
   await expect(page.locator('html')).toHaveAttribute('data-skin', 'paper-lantern')
   const search = page.getByRole('textbox', { name: 'Search hosting tools' })
