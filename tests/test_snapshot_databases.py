@@ -142,7 +142,7 @@ def test_system_database_cannot_get_a_restore_login(sql):
 def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
     from daemon import snapshot_jobs as jobs,snapshot_storage as storage
     from shared.db import write_session
-    from shared.models import Account,DatabaseGrant,SnapshotDestination,SnapshotRun,SnapshotRestore
+    from shared.models import Account,DatabaseGrant,DatabaseUserGrant,SnapshotDestination,SnapshotRun,SnapshotRestore
     connection,work=sql
     home=work/'homes'/'alpha';home.mkdir(parents=True)
     monkeypatch.setattr(settings,'home_base',str(home.parent))
@@ -214,15 +214,17 @@ def test_real_backup_job_database_round_trip(sql,isolated_db,monkeypatch):
         assert cursor.fetchone()[0]==42
     assert not list(Path(settings.snapshot_private_dir).rglob('client-*.cnf'))
     assert not (Path(settings.snapshot_private_dir)/'database-safety'/f'account-{account.id}'/'databases').exists()
-    from sqlalchemy import delete
+    from sqlalchemy import delete, select
     with write_session() as session:
+        session.execute(delete(DatabaseUserGrant).where(DatabaseUserGrant.database_grant_id.in_(
+            select(DatabaseGrant.id).where(DatabaseGrant.account_id==account.id)
+        )))
         session.execute(delete(DatabaseGrant).where(DatabaseGrant.account_id==account.id))
     catalog=restores.database_options({'username':'alpha','run_id':ident})
     assert catalog['databases'][0]['available'] is False
     assert 'conflict' in catalog['databases'][0]['reason']
     with pytest.raises(Exception,match='not found for this account'):
         restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha','kind':'databases','databases':['alpha_wp']})
-    from sqlalchemy import select
     # An unregistered live database is a conflict; a fully deleted pair is recoverable.
     mariadb.drop_database('alpha_wp')
     mariadb.drop_db_user('alpha_wp')

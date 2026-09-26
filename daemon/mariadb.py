@@ -236,6 +236,19 @@ def grant_exact_database(db_name: str, db_user: str, host: str = "localhost") ->
         conn.close()
 
 
+def _revoke_hosted_privileges(cur, db_ident: str, db_user: str, host: str) -> None:
+    """Remove only privileges the Boron service account is allowed to grant."""
+    for privilege in HOSTED_DB_PRIVILEGE_NAMES:
+        try:
+            cur.execute(f"REVOKE {privilege} ON {db_ident}.* FROM '{db_user}'@'{host}'")
+        except pymysql.err.OperationalError as exc:
+            # MariaDB reports an absent individual grant with either code,
+            # depending on server version. Other authorization errors remain
+            # fatal so a preset change cannot silently leave stale access.
+            if exc.args[0] not in (1141, 1269):
+                raise
+
+
 def revoke_all(db_name: str, db_user: str, host: str = "localhost") -> None:
     db_ident = _grant_database_pattern(db_name)
     validate_db_identifier(db_user)
@@ -243,7 +256,7 @@ def revoke_all(db_name: str, db_user: str, host: str = "localhost") -> None:
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(f"REVOKE ALL PRIVILEGES ON {db_ident}.* FROM '{db_user}'@'{host}'")
+            _revoke_hosted_privileges(cur, db_ident, db_user, host)
             cur.execute("FLUSH PRIVILEGES")
     finally:
         conn.close()
@@ -259,11 +272,7 @@ def grant_database_privileges(db_name: str, db_user: str, host: str = "localhost
         with conn.cursor() as cur:
             # Replacing the database-scoped grant prevents stale privileges
             # surviving a preset change. User/global grants are untouched.
-            try:
-                cur.execute(f"REVOKE ALL PRIVILEGES ON {db_ident}.* FROM '{db_user}'@'{host}'")
-            except pymysql.err.OperationalError as exc:
-                if exc.args[0] not in (1141, 1269):
-                    raise
+            _revoke_hosted_privileges(cur, db_ident, db_user, host)
             cur.execute(f"GRANT {', '.join(privileges)} ON {db_ident}.* TO '{db_user}'@'{host}'")
             cur.execute("FLUSH PRIVILEGES")
     finally:

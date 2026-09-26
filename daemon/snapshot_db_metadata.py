@@ -229,11 +229,32 @@ def restore_access(username, database_names, metadata):
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise ValidationError('Database recovery account no longer exists')
+        databases = {}
         for database in selected:
             row = session.scalar(select(DatabaseGrant).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == database))
             if row is None:
                 raise ValidationError('Database registration is missing after reconstruction: ' + database)
+            databases[database] = row
         existing_rows = {(row.db_user, row.host): row for row in session.scalars(select(DatabaseUser).where(DatabaseUser.account_id == account.id)).all()}
+        # Upgraded installations can still have the original one-login-per-
+        # database registration without a DatabaseUser compatibility row.  A
+        # matching DatabaseGrant is authoritative ownership evidence; expose
+        # only that exact localhost login through the new model before applying
+        # the saved grants.  Unrelated live MariaDB users remain conflicts.
+        for database in databases.values():
+            key = (database.db_user, 'localhost')
+            if key not in needed or key in existing_rows:
+                continue
+            other = session.scalar(select(DatabaseUser).where(
+                DatabaseUser.db_user == key[0], DatabaseUser.host == key[1],
+                DatabaseUser.account_id != account.id,
+            ))
+            if other:
+                raise ValidationError('A restored database login belongs to another account')
+            row = DatabaseUser(account_id=account.id, db_user=key[0], host=key[1])
+            session.add(row)
+            session.flush()
+            existing_rows[key] = row
         for key in needed:
             saved = users_by_key[key]
             other = session.scalar(select(DatabaseUser).where(DatabaseUser.db_user == key[0], DatabaseUser.host == key[1], DatabaseUser.account_id != account.id))
@@ -248,7 +269,7 @@ def restore_access(username, database_names, metadata):
             elif not mariadb.user_exists(*key):
                 mariadb.create_db_user_from_hash(saved['user'], saved['password_hash'], saved['host'])
         for saved in grants:
-            database = session.scalar(select(DatabaseGrant).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == saved['database']))
+            database = databases[saved['database']]
             user = existing_rows[(saved['user'], saved['host'])]
             mariadb.grant_database_privileges(database.db_name, user.db_user, user.host,
                 preset=saved['preset'], custom=saved['privileges'])
