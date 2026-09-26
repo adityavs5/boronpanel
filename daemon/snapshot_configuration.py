@@ -67,6 +67,14 @@ def load_php(repo, account, snapshot_id, *, source_restore_id=None):
     return snapshot_php.validate_for_restore(account, payload['php_configuration'])
 
 
+def load_domains(repo, account, snapshot_id, *, source_restore_id=None):
+    from daemon import snapshot_domains
+    payload=_load_metadata(repo,account,snapshot_id,source_restore_id=source_restore_id)
+    if 'domain_configuration' not in payload:
+        raise ValidationError('This recovery point has no domain settings; create a new configuration backup')
+    return snapshot_domains.validate_for_restore(account,payload['domain_configuration'])
+
+
 def restore_cron(ident, account, row, repo, snapshot_id, work, update):
     selected = load_cron(repo, account, snapshot_id, source_restore_id=row.selection.get('source_restore_id'))
     current = cron.capture_configuration(account.username)
@@ -104,6 +112,21 @@ def restore_php(ident, account, row, repo, snapshot_id, work, update):
            progress_message='PHP settings restored', completed_at=utcnow())
 
 
+def restore_domains(ident,account,row,repo,snapshot_id,work,update):
+    from daemon import snapshot_domains
+    from shared.models import utcnow
+    selected=load_domains(repo,account,snapshot_id,source_restore_id=row.selection.get('source_restore_id'))
+    def save_previous(previous):
+        path=work/'config-recovery.json'
+        write_metadata(path,dict(format=1,account_id=account.id,username=account.username,
+            restore_id=ident,domain_configuration=previous))
+        result=storage.backup(repo,account.id,[str(path)])
+        update(ident,safety_snapshot_id=result['snapshot_id'],progress_message='Restoring domain settings')
+    result=snapshot_domains.apply_configuration(account,selected,save_previous)
+    update(ident,status='completed',summary={'config_sections':['domains'],**result},
+        progress_message='Domain settings restored',completed_at=utcnow())
+
+
 def load_dns(repo, account, snapshot_id, *, source_restore_id=None, selected_zones=None):
     from daemon import snapshot_dns
     payload = _load_metadata(repo, account, snapshot_id, source_restore_id=source_restore_id)
@@ -138,7 +161,8 @@ def configuration_catalog(repo, account, snapshot_id):
     """One decryption for all configuration previews; expose counts, not values."""
     from daemon import snapshot_php, snapshot_dns
     payload = _load_metadata(repo, account, snapshot_id)
-    result = {'cron_available': False, 'php_available': False, 'dns_available': False, 'dns_zones': []}
+    result = {'cron_available': False, 'php_available': False, 'domains_available': False,
+              'dns_available': False, 'dns_zones': []}
     for section, key, validator in (
         ('cron', 'cron_configuration', lambda data: cron.validate_configuration(account.username, data)),
         ('php', 'php_configuration', lambda data: snapshot_php.validate_for_restore(account, data)),
@@ -157,6 +181,12 @@ def configuration_catalog(repo, account, snapshot_id):
         else:
             result.update(php_sites=len(saved['sites']), php_default_version=saved['default_version'])
     dns = payload.get('dns_configuration')
+    from daemon import snapshot_domains
+    try:
+        domains=snapshot_domains.validate_for_restore(account,payload.get('domain_configuration'))
+        result.update(domains_available=True,domain_count=len(domains['domains']))
+    except ValidationError as exc:
+        result['domains_reason']=str(exc) if payload.get('domain_configuration') is not None else 'This recovery point has no domain settings'
     try:
         snapshot_dns.validate_for_restore(account, dns, [])
     except ValidationError as exc:

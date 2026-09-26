@@ -33,6 +33,7 @@ def _domain_to_dict(domain: Domain) -> dict:
         "docroot": domain.docroot,
         "ssl_status": domain.ssl_status,
         "suspended": bool(domain.suspended),
+        "suspension_reason": domain.suspension_reason,
         "ssl_is_wildcard": domain.ssl_is_wildcard,
         # None means "inherit the account's own PHP version" (Phase 7a
         # feature 6) -- the account's own default is not resolved/inlined
@@ -270,6 +271,11 @@ def set_suspended(params: dict) -> dict:
     suspended = params.get("suspended")
     if not isinstance(suspended, bool):
         raise ValidationError("suspended must be true or false")
+    reason = str(params.get("reason") or "").strip()
+    if any(character in reason for character in "\0\r\n") or len(reason) > 500:
+        raise ValidationError("suspension reason must be a single line of up to 500 characters")
+    if suspended and not reason:
+        reason = "Suspended from the hosting panel"
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
@@ -281,8 +287,9 @@ def set_suspended(params: dict) -> dict:
         ))
         if domain is None:
             raise RuntimeError(f"domain '{domain_name}' not found for account '{username}'")
-        previous = bool(domain.suspended)
+        previous = (bool(domain.suspended), domain.suspension_reason)
         domain.suspended = suspended
+        domain.suspension_reason = reason if suspended else None
         session.flush()
         account_snapshot = account
     try:
@@ -293,7 +300,7 @@ def set_suspended(params: dict) -> dict:
                 Domain.account_id == account_snapshot.id, Domain.domain == domain_name,
             ))
             if row is not None:
-                row.suspended = previous
+                row.suspended, row.suspension_reason = previous
         raise
     with write_session() as session:
         row = session.scalar(select(Domain).where(

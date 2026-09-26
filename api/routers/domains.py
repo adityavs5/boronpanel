@@ -25,6 +25,7 @@ class SetDomainPhpVersionBody(BaseModel):
 
 class SetDomainSuspendedBody(BaseModel):
     suspended: bool
+    reason: str | None = None
 
 
 @api_router.get("")
@@ -59,7 +60,7 @@ def set_domain_php_version(username: str, domain: str, body: SetDomainPhpVersion
 def set_domain_suspended(username: str, domain: str, body: SetDomainSuspendedBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     require_domain_access(identity, domain)
-    return call_daemon("domain.set_suspended", identity, username=username, domain=domain, suspended=body.suspended)
+    return call_daemon("domain.set_suspended", identity, username=username, domain=domain, **body.model_dump())
 
 
 @ui_router.post("")

@@ -52,15 +52,6 @@ function ParkedDomainsCard({ username, domains }) {
     onError: (e) => { toast.error('Could not remove parked domain', e.message); setToDelete(null) },
   })
 
-  const suspensionMut = useMutation({
-    mutationFn: (d) => patch(`/api/v1/accounts/${username}/domains/${encodeURIComponent(d.domain)}/suspension`, { suspended: !d.suspended }),
-    onSuccess: (result) => {
-      toast.success(result.suspended ? 'Domain suspended' : 'Domain reactivated', result.suspended ? 'Only this website now shows the suspension page.' : 'The website is serving normally again.')
-      qc.invalidateQueries({ queryKey: ['domains', username] })
-    },
-    onError: (e) => toast.error('Could not change domain status', e.message),
-  })
-
   const targetable = (domains || []).filter((d) => d.kind !== 'parked')
   const columns = [
     { key: 'parked_domain', header: 'Parked domain', searchable: true, render: (r) => <span className="font-medium text-foreground">{r.parked_domain}</span> },
@@ -147,6 +138,8 @@ export default function Domains({ subdomainsOnly = false }) {
   const [docrootMode,setDocrootMode]=useState('default')
   const [customDocroot,setCustomDocroot]=useState('')
   const [toDelete, setToDelete] = useState(null)
+  const [toSuspend,setToSuspend]=useState(null)
+  const [suspensionReason,setSuspensionReason]=useState('')
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['domains', username],
@@ -181,6 +174,18 @@ export default function Domains({ subdomainsOnly = false }) {
     onError: (e) => toast.error('Could not remove domain', e.message),
   })
 
+  const suspensionMut = useMutation({
+    mutationFn: (d) => patch(`/api/v1/accounts/${username}/domains/${encodeURIComponent(d.domain)}/suspension`, {
+      suspended: !d.suspended, reason: d.suspended ? null : suspensionReason.trim(),
+    }),
+    onSuccess: (result) => {
+      toast.success(result.suspended ? 'Domain suspended' : 'Domain reactivated', result.suspended ? 'Only this website now shows the suspension page.' : 'The website is serving normally again.')
+      qc.invalidateQueries({ queryKey: ['domains', username] })
+      setToSuspend(null);setSuspensionReason('')
+    },
+    onError: (e) => toast.error('Could not change domain status', e.message),
+  })
+
   const columns = [
     {
       key: 'domain',
@@ -211,7 +216,7 @@ export default function Domains({ subdomainsOnly = false }) {
       key: 'suspended',
       header: 'Website',
       sortable: true,
-      render: (r) => <Badge variant={r.suspended ? 'warning' : 'success'}>{r.suspended ? 'Suspended' : 'Active'}</Badge>,
+      render: (r) => <Badge title={r.suspension_reason || undefined} variant={r.suspended ? 'warning' : 'success'}>{r.suspended ? 'Suspended' : 'Active'}</Badge>,
     },
     {
       key: 'created_at',
@@ -236,7 +241,7 @@ export default function Domains({ subdomainsOnly = false }) {
               <DropdownMenuItem onSelect={() => navigate(`/domains/${r.domain}`)}>
                 <Settings className="h-4 w-4" /> Manage
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={suspensionMut.isPending} onSelect={() => suspensionMut.mutate(r)}>
+              <DropdownMenuItem disabled={suspensionMut.isPending} onSelect={() => {setToSuspend(r);setSuspensionReason(r.suspension_reason||'')}}>
                 {r.suspended ? <PlayCircle className="h-4 w-4" /> : <PauseCircle className="h-4 w-4" />}
                 {r.suspended ? 'Unsuspend website' : 'Suspend website'}
               </DropdownMenuItem>
@@ -329,6 +334,15 @@ export default function Domains({ subdomainsOnly = false }) {
         loading={deleteMut.isPending}
         onConfirm={() => toDelete && deleteMut.mutate(toDelete)}
       />
+
+      <Dialog open={!!toSuspend} onOpenChange={open=>{if(!open&&!suspensionMut.isPending){setToSuspend(null);setSuspensionReason('')}}}>
+        <DialogContent size="sm"><DialogHeader><DialogTitle>{toSuspend?.suspended?'Reactivate website':'Suspend website'}</DialogTitle></DialogHeader>
+          <form onSubmit={event=>{event.preventDefault();if(toSuspend)suspensionMut.mutate(toSuspend)}}><DialogBody className="space-y-4">
+            <p className="text-sm text-muted-foreground">{toSuspend?.suspended?'The website will begin serving normally again. Account-level restrictions still take precedence.':'Only this website will show the configured suspension page. Mail, DNS, databases, and files remain available.'}</p>
+            {!toSuspend?.suspended&&<FormField label="Reason" hint="Shown in the domain status for administrators and this account."><Input autoFocus maxLength={500} value={suspensionReason} onChange={event=>setSuspensionReason(event.target.value)} placeholder="For example, site maintenance"/></FormField>}
+          </DialogBody><DialogFooter><Button type="button" variant="secondary" disabled={suspensionMut.isPending} onClick={()=>setToSuspend(null)}>Cancel</Button><Button type="submit" variant={toSuspend?.suspended?'primary':'danger'} loading={suspensionMut.isPending}>{toSuspend?.suspended?'Reactivate website':'Suspend website'}</Button></DialogFooter></form>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

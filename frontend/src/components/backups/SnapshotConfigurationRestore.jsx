@@ -11,7 +11,8 @@ export function SnapshotConfigurationRestore({ username, run }) {
   const open = section !== null
   const php = section === 'php'
   const dns = section === 'dns'
-  const labels = {php: 'PHP settings', cron: 'scheduled tasks', dns: 'DNS records'}
+  const domains = section === 'domains'
+  const labels = {php: 'PHP settings', cron: 'scheduled tasks', domains: 'domain settings', dns: 'DNS records'}
   const label = labels[section] || labels.cron
   const [zones, setZones] = useState([])
   const available = data => !!data?.[`${section}_available`]
@@ -31,9 +32,9 @@ export function SnapshotConfigurationRestore({ username, run }) {
   })
   if (!username || !run.snapshot_id || run.status === 'expired' || !run.options?.components?.includes('config')) return null
   return <section className="space-y-3 border-t border-border pt-4">
-    <div className="flex flex-wrap gap-2">{['cron', 'php', 'dns'].map(value => <Button key={value} variant="secondary" disabled={restore.isPending} onClick={() => { setSection(section === value ? null : value); setConfirmation(''); setZones([]); restore.reset() }}><RotateCcw className="h-4 w-4" />Restore {labels[value]}</Button>)}</div>
-    {open && <form aria-label={dns ? 'DNS records restore' : php ? 'PHP settings restore' : 'Scheduled-task restore'} className="space-y-4 rounded-btn border border-border bg-muted/20 p-4" onSubmit={event => { event.preventDefault(); if (confirmation === username && available(catalog.data) && !catalog.isFetching && !catalog.error && !restore.isPending && (!dns || validZones)) restore.mutate() }}>
-      <p className="text-sm text-muted-foreground">{dns ? 'Replace customer DNS records in the selected zones with this backup, including removal of records added afterward. This can affect websites and email. Current records are saved in an encrypted recovery copy first. Server-managed nameservers and DNSSEC settings are kept. DNS changes may take time to propagate.' : php ? 'Restore the account’s default PHP version, saved site overrides, limits and extension choices. These settings affect your websites. Administrator function restrictions are kept. The current PHP settings are saved in an encrypted recovery copy first.' : 'Replace this account’s complete crontab, including manually added tasks, environment settings and cron email settings. The current configuration is saved in an encrypted recovery copy first.'}</p>
+    <div className="flex flex-wrap gap-2">{['cron', 'php', 'domains', 'dns'].map(value => <Button key={value} variant="secondary" disabled={restore.isPending} onClick={() => { setSection(section === value ? null : value); setConfirmation(''); setZones([]); restore.reset() }}><RotateCcw className="h-4 w-4" />Restore {labels[value]}</Button>)}</div>
+    {open && <form aria-label={dns ? 'DNS records restore' : php ? 'PHP settings restore' : domains ? 'Domain settings restore' : 'Scheduled-task restore'} className="space-y-4 rounded-btn border border-border bg-muted/20 p-4" onSubmit={event => { event.preventDefault(); if (confirmation === username && available(catalog.data) && !catalog.isFetching && !catalog.error && !restore.isPending && (!dns || validZones)) restore.mutate() }}>
+      <p className="text-sm text-muted-foreground">{dns ? 'Replace customer DNS records in the selected zones with this backup, including removal of records added afterward. This can affect websites and email. Current records are saved in an encrypted recovery copy first. Server-managed nameservers and DNSSEC settings are kept. DNS changes may take time to propagate.' : php ? 'Restore the account’s default PHP version, saved site overrides, limits and extension choices. These settings affect your websites. Administrator function restrictions are kept. The current PHP settings are saved in an encrypted recovery copy first.' : domains ? 'Restore saved document roots, PHP overrides, and website suspension states for domains that still belong to this account. Current domain settings are saved in an encrypted recovery copy first.' : 'Replace this account’s complete crontab, including manually added tasks, environment settings and cron email settings. The current configuration is saved in an encrypted recovery copy first.'}</p>
       {catalog.isLoading && <p className="text-sm">Checking recovery point…</p>}
       {catalog.error && <p role="alert" className="text-sm text-danger">{catalog.error.message}</p>}
       {catalog.data && !available(catalog.data) && <p className="text-sm">{catalog.data[`${section}_reason`] || catalog.data.reason || 'This recovery point does not contain these settings.'}</p>}
@@ -46,6 +47,7 @@ export function SnapshotConfigurationRestore({ username, run }) {
       </fieldset>}
       {available(catalog.data) && <>
         {php && <p className="text-sm">Saved default: PHP {catalog.data.php_default_version} · {catalog.data.php_sites} sites</p>}
+        {domains && <p className="text-sm">Saved domain settings: {catalog.data.domain_count}</p>}
         <FormField label="Confirm account username" hint={`Type ${username} to replace its ${label}.`}>
           <Input value={confirmation} onChange={event => setConfirmation(event.target.value)} autoComplete="off" />
         </FormField>

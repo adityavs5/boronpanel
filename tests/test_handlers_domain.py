@@ -120,12 +120,16 @@ def test_domain_suspension_is_scoped_and_refreshes_ols(isolated_db, stub_sysops,
     ha.create_account({"username": "demo1"})
     hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
     hd.add_domain({"username": "demo1", "domain": "addon.example", "kind": "addon"})
-    result = hd.set_suspended({"username": "demo1", "domain": "addon.example", "suspended": True})
+    result = hd.set_suspended({"username": "demo1", "domain": "addon.example", "suspended": True, "reason": "Site maintenance"})
     assert result["suspended"] is True
+    assert result["suspension_reason"] == "Site maintenance"
     assert stub_ols["refresh"] == ["demo1"]
     listed = {row["domain"]: row for row in hd.list_domains({"username": "demo1"})["domains"]}
     assert listed["addon.example"]["suspended"] is True
+    assert listed["addon.example"]["suspension_reason"] == "Site maintenance"
     assert listed["demo1.example"]["suspended"] is False
+    cleared = hd.set_suspended({"username": "demo1", "domain": "addon.example", "suspended": False})
+    assert cleared["suspension_reason"] is None
 
 
 def test_domain_suspension_rolls_back_when_ols_rejects(isolated_db, stub_sysops, stub_filesystem, stub_ols, monkeypatch):

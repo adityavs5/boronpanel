@@ -81,6 +81,7 @@ class Domain(Base):
     # Domain-level suspension affects only this vhost. Mail, DNS, databases,
     # files and the rest of the account remain available.
     suspended: Mapped[bool] = mapped_column(default=False)
+    suspension_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # Phase 7a feature 5: wildcard SSL. True only when the live cert at
     # letsencrypt_cert_paths(domain) actually covers "*.<domain>" (issued

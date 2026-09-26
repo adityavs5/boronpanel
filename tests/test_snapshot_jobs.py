@@ -2,6 +2,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from urllib.parse import parse_qs, urlsplit
 from types import SimpleNamespace
+import datetime as dt
 import pytest
 from sqlalchemy import select
 from daemon import snapshot_jobs as jobs, snapshot_storage as storage
@@ -35,8 +36,47 @@ def make_destination(tmp_path):
 
 
 def make_policy(dest,**kwargs):
-    return jobs.save_policy(dict(name='Daily websites',destination_id=dest['id'],components=['files'],
-        accounts=['alpha'],exclude_patterns=['exclude.txt'],frequency='daily',retention_count=1,**kwargs))
+    options=dict(name='Daily websites',destination_id=dest['id'],components=['files'],
+        accounts=['alpha'],exclude_patterns=['exclude.txt'],frequency='daily',retention_count=1)
+    options.update(kwargs)
+    return jobs.save_policy(options)
+
+
+def test_calendar_schedule_respects_local_time_and_period(environment):
+    root,_=environment
+    destination=make_destination(root)
+    policy=make_policy(destination,timezone='Asia/Kolkata',schedule_hour=2,schedule_minute=30)
+    with write_session() as session:
+        row=session.get(SnapshotPolicy,policy['id'])
+        row.created_at=dt.datetime(2026,9,24,0,0,tzinfo=dt.timezone.utc)
+        assert jobs.scheduled_boundary(row,dt.datetime(2026,9,25,0,0,tzinfo=dt.timezone.utc))==dt.datetime(2026,9,24,21,0,tzinfo=dt.timezone.utc)
+        assert jobs.scheduled_due(row,dt.datetime(2026,9,25,0,0,tzinfo=dt.timezone.utc)) is True
+        row.last_queued_at=dt.datetime(2026,9,24,21,1,tzinfo=dt.timezone.utc)
+        assert jobs.scheduled_due(row,dt.datetime(2026,9,25,0,0,tzinfo=dt.timezone.utc)) is False
+
+
+def test_weekly_and_monthly_schedule_boundaries(environment):
+    root,_=environment
+    destination=make_destination(root)
+    weekly=make_policy(destination,name='Weekly',frequency='weekly',schedule_weekday=0,schedule_hour=4)
+    monthly=make_policy(destination,name='Monthly',frequency='monthly',schedule_monthday=31,schedule_hour=1)
+    with write_session() as session:
+        weekly_row=session.get(SnapshotPolicy,weekly['id']);monthly_row=session.get(SnapshotPolicy,monthly['id'])
+        now=dt.datetime(2026,9,25,12,0,tzinfo=dt.timezone.utc)  # Friday
+        assert jobs.scheduled_boundary(weekly_row,now)==dt.datetime(2026,9,21,4,0,tzinfo=dt.timezone.utc)
+        # September has 30 days, so a day-31 job uses the final day.
+        assert jobs.scheduled_boundary(monthly_row,dt.datetime(2026,9,30,2,0,tzinfo=dt.timezone.utc))==dt.datetime(2026,9,30,1,0,tzinfo=dt.timezone.utc)
+
+
+def test_policy_api_preserves_consistency_and_calendar_fields():
+    from api.routers.backups import SnapshotPolicyBody
+    body=SnapshotPolicyBody(name='Scheduled',destination_id=1,quiesce_apps=True,
+        timezone='Asia/Kolkata',schedule_hour=3,schedule_minute=15,
+        schedule_weekday=4,schedule_monthday=28)
+    values=body.model_dump()
+    assert values['quiesce_apps'] is True
+    assert {key:values[key] for key in ('timezone','schedule_hour','schedule_minute','schedule_weekday','schedule_monthday')}=={
+        'timezone':'Asia/Kolkata','schedule_hour':3,'schedule_minute':15,'schedule_weekday':4,'schedule_monthday':28}
 
 
 def test_real_persistent_job_incremental_retention_and_restore(environment):

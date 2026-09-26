@@ -195,6 +195,7 @@ class SnapshotPolicyBody(BaseModel):
     components: list[str] = ['files', 'databases', 'mail', 'config']
     include_paths: list[str] = []
     exclude_patterns: list[str] = []
+    quiesce_apps: bool = False
     notification_channels: list[str] = []
     notification_events: list[str] = [
         'backup.completed', 'backup.failed', 'backup.partial', 'backup.overdue',
@@ -212,6 +213,10 @@ class SnapshotPolicyBody(BaseModel):
     retention_weekly: int = 4
     retention_monthly: int = 6
     timezone: str = 'UTC'
+    schedule_hour: int = 2
+    schedule_minute: int = 0
+    schedule_weekday: int = 0
+    schedule_monthday: int = 1
 
 
 class TelegramPluginBody(BaseModel):

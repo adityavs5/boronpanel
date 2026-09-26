@@ -312,8 +312,8 @@ def trigger(params):
     mail_domains=[]
     if kind == 'config':
         sections = safety.selection.get('config_sections') if safety else params.get('config_sections')
-        if sections not in (['cron'], ['php'], ['dns']):
-            raise ValidationError('Select scheduled tasks, PHP settings or DNS records to restore')
+        if sections not in (['cron'], ['php'], ['domains'], ['dns']):
+            raise ValidationError('Select domain settings, scheduled tasks, PHP settings, or DNS records to restore')
         if not safety:
             options = configuration_options({'username': account.username, 'run_id': source.id})
             section = sections[0]
@@ -443,6 +443,9 @@ def _trigger_full(params,account,source):
         config=configuration_options({'username':account.username,'run_id':source.id})
         if config.get('cron_available'):steps.append({'kind':'config','paths':[],'config_sections':['cron']})
         if config.get('php_available'):steps.append({'kind':'config','paths':[],'config_sections':['php']})
+        if not config.get('domains_available'):
+            raise ValidationError('Full restore cannot continue because domain settings are unavailable: '+config.get('domains_reason','unknown reason'))
+        steps.append({'kind':'config','paths':[],'config_sections':['domains']})
         zones=[item['zone'] for item in config.get('dns_zones',[]) if item['available']]
         unavailable_zones=[item['zone'] for item in config.get('dns_zones',[]) if not item['available']]
         if unavailable_zones:raise ValidationError('Full restore cannot continue while DNS zones are unavailable: '+', '.join(unavailable_zones))
@@ -728,11 +731,11 @@ def execute(ident):
                 return
             work=jobs.private_directory('restores',f'restore-{ident}')
             if row.selection['kind'] == 'config':
-                from daemon.snapshot_configuration import restore_cron, restore_php, restore_dns
+                from daemon.snapshot_configuration import restore_cron, restore_php, restore_domains, restore_dns
                 sections = row.selection.get('config_sections')
-                if sections not in (['cron'], ['php'], ['dns']):
+                if sections not in (['cron'], ['php'], ['domains'], ['dns']):
                     raise ValidationError('Unsupported configuration recovery section')
-                worker = {'cron': restore_cron, 'php': restore_php, 'dns': restore_dns}[sections[0]]
+                worker = {'cron': restore_cron, 'php': restore_php, 'domains':restore_domains, 'dns': restore_dns}[sections[0]]
                 worker(ident, account, row, repo, snapshot_id, work, _update)
                 return
             if row.selection['kind']=='databases':

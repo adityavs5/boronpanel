@@ -5,6 +5,7 @@ are resolved here, never accepted from customer requests.
 """
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
+import calendar
 import configparser
 import datetime as dt
 import fcntl
@@ -688,12 +689,22 @@ def validate_options(params):
     timezone=str(params.get('timezone') or 'UTC')[:64]
     try:ZoneInfo(timezone)
     except ZoneInfoNotFoundError:raise ValidationError('Choose a valid IANA time zone') from None
+    schedule_hour=int(params.get('schedule_hour',2))
+    schedule_minute=int(params.get('schedule_minute',0))
+    schedule_weekday=int(params.get('schedule_weekday',0))
+    schedule_monthday=int(params.get('schedule_monthday',1))
+    if not 0<=schedule_hour<=23:raise ValidationError('Backup schedule hour must be between 0 and 23')
+    if not 0<=schedule_minute<=59:raise ValidationError('Backup schedule minute must be between 0 and 59')
+    if not 0<=schedule_weekday<=6:raise ValidationError('Backup schedule weekday must be between Monday and Sunday')
+    if not 1<=schedule_monthday<=31:raise ValidationError('Backup schedule day must be between 1 and 31')
     return dict(accounts=accounts,excluded_accounts=excluded,components=components,include_paths=includes,
         exclude_patterns=excludes,notification_channels=channels,notification_events=notification_events,
         notification_recipients=recipients,digest_frequency=digest_frequency,retention_count=retention,mode=mode,
         destination_ids=destination_ids,
         quiesce_apps=quiesce_apps,
         timezone=timezone,
+        schedule_hour=schedule_hour,schedule_minute=schedule_minute,
+        schedule_weekday=schedule_weekday,schedule_monthday=schedule_monthday,
         on_demand_retention=max(1,min(365,int(params.get('on_demand_retention',retention)))),
         pre_restore_retention=max(1,min(365,int(params.get('pre_restore_retention',retention)))),
         freshness_hours=max(1,min(8760,int(params.get('freshness_hours',36)))),
@@ -800,6 +811,54 @@ def retry_run(params):
     return result
 
 
+def scheduled_boundary(policy, now=None):
+    """Return the most recent local schedule boundary as an aware UTC time.
+
+    The scheduler can run a few minutes late after downtime without skipping a
+    job. ``last_queued_at`` is compared with this stable boundary, so repeated
+    cron invocations cannot queue the same period twice.
+    """
+    if policy.frequency=='manual':return None
+    now=now or utcnow()
+    if now.tzinfo is None:now=now.replace(tzinfo=dt.timezone.utc)
+    options=policy.options or {};zone=ZoneInfo(options.get('timezone','UTC'))
+    local=now.astimezone(zone);hour=int(options.get('schedule_hour',2));minute=int(options.get('schedule_minute',0))
+    if policy.frequency=='hourly':
+        candidate=local.replace(minute=minute,second=0,microsecond=0)
+        if candidate>local:candidate-=dt.timedelta(hours=1)
+    elif policy.frequency=='daily':
+        candidate=local.replace(hour=hour,minute=minute,second=0,microsecond=0)
+        if candidate>local:candidate-=dt.timedelta(days=1)
+    elif policy.frequency=='weekly':
+        weekday=int(options.get('schedule_weekday',0))
+        candidate=(local-dt.timedelta(days=(local.weekday()-weekday)%7)).replace(
+            hour=hour,minute=minute,second=0,microsecond=0)
+        if candidate>local:candidate-=dt.timedelta(days=7)
+    elif policy.frequency=='monthly':
+        requested=int(options.get('schedule_monthday',1))
+        day=min(requested,calendar.monthrange(local.year,local.month)[1])
+        candidate=local.replace(day=day,hour=hour,minute=minute,second=0,microsecond=0)
+        if candidate>local:
+            previous=local.replace(day=1)-dt.timedelta(days=1)
+            day=min(requested,calendar.monthrange(previous.year,previous.month)[1])
+            candidate=previous.replace(day=day,hour=hour,minute=minute,second=0,microsecond=0)
+    else:raise ValidationError('Invalid backup frequency')
+    return candidate.astimezone(dt.timezone.utc)
+
+
+def scheduled_due(policy, now=None):
+    boundary=scheduled_boundary(policy,now)
+    if boundary is None or not policy.enabled:return False
+    created=policy.created_at
+    if created.tzinfo is None:created=created.replace(tzinfo=dt.timezone.utc)
+    # A newly created job waits for its first configured boundary instead of
+    # treating the previous period as missed work.
+    if boundary<created:return False
+    last=policy.last_queued_at
+    if last and last.tzinfo is None:last=last.replace(tzinfo=dt.timezone.utc)
+    return last is None or last<boundary
+
+
 def queue_policy(params):
     ids=[]
     with lock('queue'), write_session() as session:
@@ -807,10 +866,7 @@ def queue_policy(params):
         if not policy: raise ValidationError('Backup job not found')
         scheduled=params.get('trigger')=='scheduled'
         if scheduled:
-            interval=FREQUENCIES[policy.frequency]
-            last=policy.last_queued_at
-            if last and last.tzinfo is None:last=last.replace(tzinfo=dt.timezone.utc)
-            if not policy.enabled or not interval or (last and (utcnow()-last).total_seconds()<interval):return {'run_ids':[]}
+            if not scheduled_due(policy):return {'run_ids':[]}
         destination_ids=policy.options.get('destination_ids') or [policy.destination_id]
         destination_rows=[session.get(SnapshotDestination,value) for value in destination_ids]
         if any(row is None or row.status!='ready' or not row.enabled for row in destination_rows): raise ValidationError('Every backup destination must be ready and enabled')
@@ -864,7 +920,8 @@ def sources(account, options):
         git_repos=session.scalars(select(GitRepo).where(GitRepo.account_id==account.id)).all()
         redis_instance=session.scalar(select(RedisInstance).where(RedisInstance.account_id==account.id))
     manifest={'format':1,'manifest_version':2,'account_id':account.id,'username':account.username,'php_version':account.php_version,
-        'components':options['components'],'home':str(home),'domains':[{'domain':d.domain,'docroot':d.docroot,'kind':d.kind,'php_version':d.php_version} for d in domains],
+        'components':options['components'],'home':str(home),'domains':[{'domain':d.domain,'docroot':d.docroot,'kind':d.kind,'php_version':d.php_version,
+            'suspended':bool(d.suspended),'suspension_reason':d.suspension_reason} for d in domains],
         'databases':[{'name':d.db_name,'user':d.db_user} for d in databases],'mail_domains':[d.domain for d in mail_domains],
         'inventory':{
             'ftp_accounts':[{'login':item.ftp_login,'path':item.path,'credential':'password reset required'} for item in ftp_accounts],
@@ -896,7 +953,9 @@ def sources(account, options):
     if 'config' in options['components']:
         from daemon import cron
         from daemon.snapshot_php import capture as capture_php
+        from daemon.snapshot_domains import capture as capture_domains
         manifest['php_configuration']=capture_php(account)
+        manifest['domain_configuration']=capture_domains(account)
         from daemon.snapshot_dns import capture as capture_dns, legacy_zones
         manifest['dns_configuration']=capture_dns(account)
         manifest['cron_configuration']=cron.capture_configuration(account.username)

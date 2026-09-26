@@ -99,6 +99,7 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     "wordpress_installs": {"path": "VARCHAR(255) NOT NULL DEFAULT ''"},
     "domains": {
         "suspended": "BOOLEAN NOT NULL DEFAULT 0",
+        "suspension_reason": "VARCHAR(500)",
         "ols_log_level": "VARCHAR(16) NOT NULL DEFAULT 'WARN'",
         "ols_log_previous_level": "VARCHAR(16)",
         "ols_log_debug_until": "DATETIME",
