@@ -176,9 +176,13 @@ def _build(action: str, p: dict):
     if action == "plugin_list":
         # Listing must not execute customer extensions. A broken plugin can
         # otherwise make this read-only operation fatal.
-        return (["plugin", "list", "--format=json", "--skip-plugins", "--skip-themes"], "plugin list", None, None)
+        return (["plugin", "list", "--format=json", "--skip-update-check", "--skip-plugins", "--skip-themes"], "plugin list --skip-update-check", None, None)
     if action == "theme_list":
-        return (["theme", "list", "--format=json", "--skip-plugins", "--skip-themes"], "theme list", None, None)
+        return (["theme", "list", "--format=json", "--skip-update-check", "--skip-plugins", "--skip-themes"], "theme list --skip-update-check", None, None)
+    if action in ("plugin_check_updates", "theme_check_updates"):
+        kind = action.split("_")[0]
+        return ([kind, "update", "--all", "--dry-run", "--format=json", "--skip-plugins", "--skip-themes"],
+                f"{kind} update --all --dry-run --format=json", None, None)
     if action == "cache_flush":
         return (["cache", "flush"], "cache flush", None, None)
     if action == "maintenance_on":

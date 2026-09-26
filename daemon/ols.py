@@ -26,7 +26,7 @@ from sqlalchemy import func, select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, OlsServerSettings, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafException, WafSettings, WildcardDomain, utcnow
+from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, OlsServerSettings, ParkedDomain, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafException, WafSettings, WildcardDomain, utcnow
 from shared.validation import ValidationError, validate_domain
 
 from daemon.configtx import ConfigWriterMulti, StepResult
@@ -867,6 +867,9 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
             for domain in domains
         }
         maintenance_by_domain = {domain["domain"]: _maintenance_for_domain(session, domain["domain"]) for domain in domains}
+        parked_targets = {row.parked_domain: row.target_domain for row in session.scalars(
+            select(ParkedDomain).where(ParkedDomain.account_id == account.id)).all()}
+        suspended_by_name = {domain['domain']: bool(domain.get('suspended')) for domain in domains}
         waf = waf_template_context(session)
         ols_settings = _ols_settings_from_session(session)
 
@@ -884,7 +887,8 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
         ssl_key_file, ssl_cert_file = _ssl_paths_for_domain(domain)
         targets[vhost_name] = _vhost_conf_path(vhost_name)
         content[vhost_name] = render_vhost_conf(
-            account, domain, suspended or bool(domain.get("suspended")),
+            account, domain, suspended or bool(domain.get("suspended")) or
+                suspended_by_name.get(parked_targets.get(domain['domain']), False),
             ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file,
             php_ini=_with_disable_functions(php_ini, disable_functions_by_domain[domain["domain"]]),
             redirects=redirects_by_domain[domain["domain"]],

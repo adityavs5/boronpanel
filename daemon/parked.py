@@ -26,12 +26,15 @@ from daemon.handlers_domain import ensure_docroot
 logger = logging.getLogger("borond.parked")
 
 
-def _row_to_dict(parked: ParkedDomain, domain: Domain | None) -> dict:
+def _row_to_dict(parked: ParkedDomain, domain: Domain | None, target: Domain | None = None) -> dict:
     return {
         "parked_domain": parked.parked_domain,
         "target_domain": parked.target_domain,
         "docroot": domain.docroot if domain else None,
         "ssl_status": domain.ssl_status if domain else "none",
+        "effective_suspended": bool((domain and domain.suspended) or (target and target.suspended)),
+        "suspension_reason": ((domain.suspension_reason if domain and domain.suspended else None) or
+                              (target.suspension_reason if target and target.suspended else None)),
         "created_at": parked.created_at.isoformat() if parked.created_at else None,
     }
 
@@ -121,7 +124,9 @@ def list_parked_domains(params: dict) -> dict:
         result = []
         for parked in rows:
             domain = session.scalar(select(Domain).where(Domain.domain == parked.parked_domain))
-            result.append(_row_to_dict(parked, domain))
+            target = session.scalar(select(Domain).where(
+                Domain.domain == parked.target_domain, Domain.account_id == account.id))
+            result.append(_row_to_dict(parked, domain, target))
     return {"parked_domains": result}
 
 

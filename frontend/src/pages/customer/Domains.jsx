@@ -56,6 +56,7 @@ function ParkedDomainsCard({ username, domains }) {
   const columns = [
     { key: 'parked_domain', header: 'Parked domain', searchable: true, render: (r) => <span className="font-medium text-foreground">{r.parked_domain}</span> },
     { key: 'target_domain', header: 'Serves', render: (r) => <span className="font-mono text-xs text-muted-foreground">{r.target_domain}</span> },
+    { key: 'effective_suspended', header: 'Website', render: (r) => <Badge title={r.suspension_reason||undefined} variant={r.effective_suspended?'warning':'success'}>{r.effective_suspended?'Suspended with target':'Active'}</Badge> },
     { key: 'ssl_status', header: 'SSL', render: (r) => <StatusBadge status={r.ssl_status || 'none'} /> },
     {
       key: 'actions', header: '', align: 'right', render: (r) => (

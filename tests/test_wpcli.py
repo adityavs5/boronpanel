@@ -29,6 +29,14 @@ def test_build_plugin_update_all_vs_named():
     assert wpcli._build("plugin_update", {"name": "akismet"})[0] == ["plugin", "update", "akismet"]
 
 
+def test_extension_inventory_skips_network_check_and_update_check_is_separate():
+    listing=wpcli._build('plugin_list',{})[0]
+    assert '--skip-update-check' in listing
+    check=wpcli._build('plugin_check_updates',{})[0]
+    assert check[:3]==['plugin','update','--all']
+    assert '--dry-run' in check and '--format=json' in check
+
+
 def test_build_rejects_bad_slug():
     with pytest.raises(ValidationError):
         wpcli._build("plugin_activate", {"name": "bad name; rm -rf"})

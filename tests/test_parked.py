@@ -61,6 +61,17 @@ def test_list_parked(isolated_db, monkeypatch):
     assert names == {"a.com", "b.com"}
 
 
+def test_parked_domain_reports_target_suspension(isolated_db, monkeypatch):
+    _setup(monkeypatch)
+    parked.add_parked_domain({"username":"demo1","parked_domain":"alias.com"})
+    with write_session() as db:
+        target=db.scalar(select(Domain).where(Domain.domain=="site.com"))
+        target.suspended=True;target.suspension_reason="Maintenance window"
+    item=parked.list_parked_domains({"username":"demo1"})["parked_domains"][0]
+    assert item["effective_suspended"] is True
+    assert item["suspension_reason"]=="Maintenance window"
+
+
 def test_remove_parked(isolated_db, monkeypatch):
     account_id = _setup(monkeypatch)
     parked.add_parked_domain({"username": "demo1", "parked_domain": "alias.com"})
