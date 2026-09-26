@@ -556,7 +556,18 @@ def test_account_catalog_distinguishes_attempts_from_usable_points(environment):
     assert rows['alpha']['availability'] == 'no_backups'
     assert rows['alpha']['latest_attempt_status'] == 'failed'
     assert rows['alpha']['recovery_point_count'] == 0
+    assert rows['alpha']['snapshot_recovery_point_count'] == 0
+    assert rows['alpha']['archive_recovery_point_count'] == 0
     assert rows['bravo']['availability'] == 'not_scheduled'
+
+
+def test_account_catalog_keeps_suspended_accounts_active_and_hides_unprotected_terminated_accounts(environment):
+    with write_session() as session:
+        session.scalar(select(Account).where(Account.username=='alpha')).status='suspended'
+        session.scalar(select(Account).where(Account.username=='bravo')).status='terminated'
+    rows={row['username']:row for row in jobs.account_catalog({})['accounts']}
+    assert rows['alpha']['account_group']=='active'
+    assert 'bravo' not in rows
 
 
 def test_retention_keeps_recent_daily_weekly_and_monthly_points():

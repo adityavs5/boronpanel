@@ -621,6 +621,7 @@ def account_catalog(params):
                 (not policy.options.get('accounts') or account.username in policy.options.get('accounts',[])) and
                 account.username not in policy.options.get('excluded_accounts',[])]
             snapshot_points=[row for kind,row in usable if kind=='snapshot']
+            archive_points=[row for kind,row in usable if kind=='archive']
             components=sorted(set(component for row in snapshot_points for component in row.options.get('components',[])))
             destination_ids=sorted(set(row.destination_id for row in snapshot_points))
             destinations=[destination_rows[ident].name for ident in destination_ids if ident in destination_rows]
@@ -638,9 +639,16 @@ def account_catalog(params):
             elif attempt and attempt.status=='failed' and attempt is not latest:availability='partial'
             elif overdue:availability='overdue'
             else:availability='available'
+            account_group='former' if account.status=='terminated' else 'active'
+            # The former-account recovery view is a disaster-recovery catalog,
+            # not a second copy of every terminated account. Keep former rows
+            # only while they still have a usable recovery point.
+            if account_group=='former' and not usable:continue
             result.append({'account_id':account.id,'username':account.username,'primary_domain':account.primary_domain,
-                'account_status':account.status,'account_group':'active' if account.status=='active' else 'former',
+                'account_status':account.status,'account_group':account_group,
                 'recovery_point_count':len(usable),
+                'snapshot_recovery_point_count':len(snapshot_points),
+                'archive_recovery_point_count':len(archive_points),
                 'latest_recovery_at':(latest.completed_at or latest.started_at).isoformat() if latest else None,
                 'latest_attempt_status':attempt.status if attempt else None,'age_hours':age_hours,
                 'availability':availability,'components':components,'destinations':destinations,
