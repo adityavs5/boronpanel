@@ -27,7 +27,7 @@ def call_daemon(op: str, identity: "Identity", **params) -> dict:
     """
     try:
         credential = {"type": identity.auth_method, "value": identity.rpc_credential or ""}
-        return _client.call(op, credential=credential, _ip=getattr(identity, "ip", None), **params)
+        return _client.call(op, rpc_credential=credential, _ip=getattr(identity, "ip", None), **params)
     except RpcError as exc:
         status = {"bad_request": 400, "forbidden": 403, "unauthenticated": 401}.get(exc.code, 502)
         raise HTTPException(status_code=status, detail=exc.message) from exc
@@ -53,7 +53,7 @@ def call_daemon_cluster(op: str, token: str, **params) -> dict:
     if op not in ("dnscluster.apply", "dnscluster.ping"):
         raise ValueError("operation is not part of the DNS cluster protocol")
     try:
-        return _client.call(op, credential={"type": "cluster", "value": token}, **params)
+        return _client.call(op, rpc_credential={"type": "cluster", "value": token}, **params)
     except RpcError as exc:
         status = {"bad_request": 400, "forbidden": 403, "unauthenticated": 401}.get(exc.code, 502)
         raise HTTPException(status_code=status, detail=exc.message) from exc

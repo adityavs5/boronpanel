@@ -95,8 +95,11 @@ class RpcClient:
         self.socket_path = socket_path
         self.timeout = timeout
 
-    def call(self, op: str, *, credential: dict[str, str] | None = None, **params: Any) -> Any:
-        req = RpcRequest(op=op, params=params, credential=credential)
+    def call(self, op: str, *, rpc_credential: dict[str, str] | None = None, **params: Any) -> Any:
+        # Keep envelope authentication under a name that cannot collide with
+        # an operation's own data. DNS-cluster peers, for example, legitimately
+        # carry a parameter named ``credential`` for the remote server.
+        req = RpcRequest(op=op, params=params, credential=rpc_credential)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(self.timeout)
         try:
