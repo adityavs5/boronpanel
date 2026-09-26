@@ -678,10 +678,13 @@ def validate_options(params):
     if digest_frequency not in ('immediate','daily','weekly'):raise ValidationError('Choose immediate, daily, or weekly notifications')
     quiesce_apps=params.get('quiesce_apps',False)
     if not isinstance(quiesce_apps,bool):raise ValidationError('Invalid application consistency option')
+    encrypt_portable=params.get('encrypt_portable',False)
+    if not isinstance(encrypt_portable,bool):raise ValidationError('Invalid portable archive encryption option')
     retention = params.get('retention_count',7)
     if isinstance(retention,bool) or not isinstance(retention,int) or not 1<=retention<=365: raise ValidationError('Keep between 1 and 365 snapshots')
     mode = params.get('mode','incremental')
     if mode not in ('full','incremental','compressed','archive'): raise ValidationError('Choose full or incremental, compressed, or archive backup')
+    if mode not in ('compressed','archive'):encrypt_portable=False
     destination_ids = params.get('destination_ids') or [params.get('destination_id')]
     if not isinstance(destination_ids,list) or not destination_ids or len(destination_ids)>8:
         raise ValidationError('Choose between one and eight destinations')
@@ -701,7 +704,7 @@ def validate_options(params):
         exclude_patterns=excludes,notification_channels=channels,notification_events=notification_events,
         notification_recipients=recipients,digest_frequency=digest_frequency,retention_count=retention,mode=mode,
         destination_ids=destination_ids,
-        quiesce_apps=quiesce_apps,
+        quiesce_apps=quiesce_apps,encrypt_portable=encrypt_portable,
         timezone=timezone,
         schedule_hour=schedule_hour,schedule_minute=schedule_minute,
         schedule_weekday=schedule_weekday,schedule_monthday=schedule_monthday,
@@ -989,7 +992,7 @@ def _path_size(path):
     return total
 
 
-def _portable_archive(run_id,account,paths,options):
+def _portable_archive(run_id,account,paths,options,recovery_key_file=None):
     """Build a self-identifying tar artifact alongside restic's raw recovery data."""
     work=private_directory('exports',f'run-{run_id}')
     for item in work.iterdir():
@@ -1026,11 +1029,24 @@ def _portable_archive(run_id,account,paths,options):
             for item,entry in zip(paths,inventory):archive.add(item,arcname=entry['archive_path'],recursive=True,filter=archive_filter)
     except (OSError,tarfile.TarError) as exc:
         raise ValidationError(f'Could not create portable account archive: {exc}') from exc
+    plain_digest=hashlib.sha256()
+    with artifact.open('rb') as handle:
+        for chunk in iter(lambda:handle.read(1024*1024),b''):plain_digest.update(chunk)
+    encrypted=False
+    if options.get('encrypt_portable'):
+        if recovery_key_file is None:raise ValidationError('Portable archive encryption needs a destination recovery key')
+        from daemon.portable_crypto import encrypt
+        encrypted_artifact=artifact.with_name(artifact.name+'.enc')
+        recovery_key=storage._private_file(recovery_key_file).read_text().strip()
+        encrypt(artifact,encrypted_artifact,recovery_key)
+        artifact.unlink();artifact=encrypted_artifact;encrypted=True
     digest=hashlib.sha256()
     with artifact.open('rb') as handle:
         for chunk in iter(lambda:handle.read(1024*1024),b''):digest.update(chunk)
     return artifact,{'name':artifact.name,'path':str(artifact),'size_bytes':artifact.stat().st_size,
-        'sha256':digest.hexdigest(),'format':'tar.gz' if compressed else 'tar'}
+        'sha256':digest.hexdigest(),'plaintext_sha256':plain_digest.hexdigest(),
+        'format':('tar.gz' if compressed else 'tar')+('.aes256gcm' if encrypted else ''),
+        'encrypted':encrypted,'recovery_key_source':'destination' if encrypted else None}
 
 
 @serialized_worker
@@ -1137,13 +1153,13 @@ def execute_run(ident):
                 automatic_config=automatic_export();paths.append(automatic_config['path'])
             if _row(SnapshotRun,ident).cancel_requested:
                 _update(ident,status='cancelled',progress_message='Cancelled after preparation',completed_at=utcnow());return
+            destination=_row(SnapshotDestination,row.destination_id);repo=repository(destination)
             archive_path=None;archive_summary=None
             if row.options['mode'] in ('compressed','archive'):
                 _update(ident,progress_message='Building portable account archive')
-                archive_path,archive_summary=_portable_archive(ident,account,paths,row.options)
+                archive_path,archive_summary=_portable_archive(ident,account,paths,row.options,repo.password_file)
                 paths=[*paths,str(archive_path)]
             _update(ident,progress_message='Saving encrypted recovery point')
-            repo=repository(_row(SnapshotDestination,row.destination_id))
             summary=storage.backup(repo,account.id,paths,policy_id=row.policy_id,
                 excludes=row.options['exclude_patterns'],full_scan=row.options['mode']=='full',
                 exclude_mail_staging='mail' in row.options['components'],
@@ -1213,8 +1229,9 @@ def _preflight_capacity(paths,options):
                             if not item.is_symlink():estimated+=item.stat().st_size
                         except FileNotFoundError:continue
         free=shutil.disk_usage(private_directory()).free
-        if free-estimated<reserve:
-            raise ValidationError(f'Portable backup needs about {estimated} bytes while preserving the configured free-space reserve')
+        staging=estimated*(2 if options.get('encrypt_portable') else 1)
+        if free-staging<reserve:
+            raise ValidationError(f'Portable backup needs about {staging} bytes of staging while preserving the configured free-space reserve')
     else:free=shutil.disk_usage(private_directory()).free
     if free<reserve:raise ValidationError('Backup staging free space is below the configured reserve')
     return {'estimated_source_bytes':estimated if estimated else None,'free_bytes':free,'reserve_bytes':reserve}

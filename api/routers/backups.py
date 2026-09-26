@@ -196,6 +196,7 @@ class SnapshotPolicyBody(BaseModel):
     include_paths: list[str] = []
     exclude_patterns: list[str] = []
     quiesce_apps: bool = False
+    encrypt_portable: bool = False
     notification_channels: list[str] = []
     notification_events: list[str] = [
         'backup.completed', 'backup.failed', 'backup.partial', 'backup.overdue',

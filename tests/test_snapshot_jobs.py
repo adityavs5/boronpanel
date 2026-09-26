@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from urllib.parse import parse_qs, urlsplit
 from types import SimpleNamespace
 import datetime as dt
+import tarfile
 import pytest
 from sqlalchemy import select
 from daemon import snapshot_jobs as jobs, snapshot_storage as storage
@@ -70,11 +71,12 @@ def test_weekly_and_monthly_schedule_boundaries(environment):
 
 def test_policy_api_preserves_consistency_and_calendar_fields():
     from api.routers.backups import SnapshotPolicyBody
-    body=SnapshotPolicyBody(name='Scheduled',destination_id=1,quiesce_apps=True,
+    body=SnapshotPolicyBody(name='Scheduled',destination_id=1,quiesce_apps=True,encrypt_portable=True,
         timezone='Asia/Kolkata',schedule_hour=3,schedule_minute=15,
         schedule_weekday=4,schedule_monthday=28)
     values=body.model_dump()
     assert values['quiesce_apps'] is True
+    assert values['encrypt_portable'] is True
     assert {key:values[key] for key in ('timezone','schedule_hour','schedule_minute','schedule_weekday','schedule_monthday')}=={
         'timezone':'Asia/Kolkata','schedule_hour':3,'schedule_minute':15,'schedule_weekday':4,'schedule_monthday':28}
 
@@ -270,6 +272,28 @@ def test_portable_modes_embed_verified_account_archive(environment,mode,suffix):
         assert 'account/manifest.json' in names
         assert 'account/home/site.txt' in names
         assert 'account/home/exclude.txt' not in names
+
+
+def test_portable_archive_can_be_independently_encrypted(environment):
+    root,_=environment
+    destination=make_destination(root)
+    policy=make_policy(destination,mode='compressed',encrypt_portable=True)
+    ident=jobs.queue_policy({'id':policy['id']})['run_ids'][0]
+    jobs.execute_run(ident)
+    row=jobs._row(SnapshotRun,ident);portable=row.summary['portable_archive']
+    assert row.status=='completed',row.error
+    assert portable['encrypted'] is True
+    assert portable['name'].endswith('.boron.tar.gz.enc')
+    repository=jobs.repository(jobs._row(SnapshotDestination,destination['id']))
+    restored=storage.restore_to(repository,row.account_id,row.snapshot_id,str(root/'encrypted-restore'),
+        selected_paths=[portable['path']])
+    encrypted=restored/portable['path'].lstrip('/')
+    decrypted=root/'decrypted.tar.gz'
+    from daemon.portable_crypto import decrypt
+    key=Path(repository.password_file).read_text().strip()
+    decrypt(encrypted,decrypted,key)
+    with tarfile.open(decrypted,'r:gz') as handle:
+        assert 'account/home/site.txt' in handle.getnames()
 
 
 @pytest.mark.parametrize('options,match',[
