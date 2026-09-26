@@ -1426,7 +1426,15 @@ def _run_import_job(job_id: int, params: dict) -> None:
                     if session.scalar(select(PanelUser.id).where(PanelUser.username == username)) is not None:
                         raise CpanelImportError("Destination login appeared during import; refusing to overwrite")
                 try:
-                    created_account = handlers_account.create_account({"username": username, "password": account_password, "primary_domain": primary_domain})
+                    created_account = handlers_account.create_account({
+                        "username": username,
+                        "password": account_password,
+                        "primary_domain": primary_domain,
+                        # The source archive's zone is imported below before
+                        # addon/subdomain provisioning. A generated primary
+                        # zone here would make that restore fail as duplicate.
+                        "create_dns_zone": False,
+                    })
                 finally:
                     with write_session() as session:
                         account = session.scalar(select(Account).where(Account.username == username))

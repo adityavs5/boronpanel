@@ -53,6 +53,24 @@ _find_parent_zone = find_managed_zone
 _subdomain_label = label_within_zone
 
 
+def _create_managed_zone(username: str, domain_name: str) -> dict:
+    """Create the authoritative zone after the Domain ownership row exists.
+
+    Imported archives create their source zone before calling add_domain(), so
+    this helper is only reached for ordinary panel-created primary/addon
+    domains that are not already covered by another managed zone.
+    """
+    from daemon import handlers_dns
+
+    return handlers_dns.create_zone({"username": username, "domain": domain_name})
+
+
+def _delete_managed_zone(domain_name: str) -> dict:
+    from daemon import handlers_dns
+
+    return handlers_dns.delete_zone({"domain": domain_name})
+
+
 @database_operations.serialized
 @account_mutation.locked
 def add_domain(params: dict) -> dict:
@@ -143,6 +161,7 @@ def add_domain(params: dict) -> dict:
     parent_zone = None
     dns_label = None
     dns_record_created = False
+    dns_zone_created = False
     try:
         # These lookups can touch the database too; keep them inside the same
         # compensation boundary as docroot/DNS/OLS so an exception here cannot
@@ -157,9 +176,23 @@ def add_domain(params: dict) -> dict:
             record_type = "AAAA" if ":" in site_ip else "A"
             dnsprovider.upsert_record(parent_zone, dns_label, record_type, [site_ip])
             dns_record_created = True
+        elif parent_zone is None and kind != "subdomain":
+            # A separately hosted primary/addon domain is an authoritative
+            # zone by default, as it is in DirectAdmin/cPanel. Creating it
+            # through handlers_dns also seeds apex/www records and queues the
+            # final zone payload when DNS cluster mode is active.
+            _create_managed_zone(username, domain_name)
+            parent_zone = domain_name
+            dns_label = "@"
+            dns_zone_created = True
         ols.provision_vhost(account_snapshot)
     except Exception:
-        if dns_record_created:
+        if dns_zone_created:
+            try:
+                _delete_managed_zone(domain_name)
+            except dnsprovider.DnsError:
+                pass  # best-effort; the Domain-row compensation below remains authoritative
+        elif dns_record_created:
             try:
                 dnsprovider.delete_record(parent_zone, dns_label, record_type)
             except dnsprovider.DnsError:
@@ -174,6 +207,7 @@ def add_domain(params: dict) -> dict:
         raise
 
     domain_dict["dns_record_created"] = dns_record_created
+    domain_dict["dns_zone_created"] = dns_zone_created
     return domain_dict
 
 
@@ -203,6 +237,9 @@ def remove_domain(params: dict) -> dict:
         if domain.kind == "primary":
             raise RuntimeError("cannot remove an account's primary domain -- terminate or reassign the account instead")
         kind = domain.kind
+        own_zone = session.scalar(
+            select(DnsZone).where(DnsZone.zone == domain_name, DnsZone.account_id == account.id)
+        ) is not None
         account_snapshot = account
         # Keep every persisted value so an OLS failure can restore the exact
         # row that ownership checks rely on. The row must be deleted before
@@ -232,7 +269,9 @@ def remove_domain(params: dict) -> dict:
                     setattr(restored, name, value)
         raise
 
-    if parent_zone:
+    if own_zone:
+        _delete_managed_zone(domain_name)
+    elif parent_zone:
         label = _subdomain_label(domain_name, parent_zone)
         # Remove either family: older domains used A only; newer accounts may
         # have been assigned an IPv6 address.

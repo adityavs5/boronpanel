@@ -9,7 +9,10 @@ from shared.validation import ValidationError
 
 @pytest.fixture()
 def stub_sysops(monkeypatch):
-    calls = []
+    class Calls(list):
+        pass
+
+    calls = Calls()
     # Importing the RPC registry during collection registers real system
     # hooks. This module tests hook dispatch with its own synthetic callbacks.
     for name in ("CREATE_HOOKS", "LIMITS_HOOKS", "SUSPEND_HOOKS", "UNSUSPEND_HOOKS", "TERMINATE_HOOKS"):
@@ -48,6 +51,18 @@ def stub_sysops(monkeypatch):
     monkeypatch.setattr(ha.sysops, "remove_quota", remove_quota)
     monkeypatch.setattr(ha.handlers_domain, "ensure_docroot", lambda username, docroot, domain_name=None: None)
     monkeypatch.setattr(ha.ols, "provision_vhost", lambda account: None)
+    zone_calls = {"create": [], "delete": []}
+    monkeypatch.setattr(
+        ha.handlers_domain,
+        "_create_managed_zone",
+        lambda username, domain: zone_calls["create"].append((username, domain)) or {"zone": domain},
+    )
+    monkeypatch.setattr(
+        ha.handlers_domain,
+        "_delete_managed_zone",
+        lambda domain: zone_calls["delete"].append(domain) or {"zone": domain, "status": "deleted"},
+    )
+    calls.zone_calls = zone_calls
     return calls
 
 
@@ -58,6 +73,8 @@ def test_create_account_happy_path(isolated_db, stub_sysops):
     assert result["uid"] == 5001
     assert "initial_password" in result
     assert ("create_linux_user", "demo1") in stub_sysops
+    assert result["dns_zone_created"] is True
+    assert stub_sysops.zone_calls["create"] == [("demo1", "demo1.example")]
 
     with write_session() as session:
         domain = session.scalar(select(Domain).where(Domain.domain == "demo1.example"))
@@ -81,6 +98,35 @@ def test_create_account_compensates_primary_domain_when_ols_fails(isolated_db, s
         assert account is not None
         assert account.primary_domain is None
         assert session.scalar(select(Domain).where(Domain.domain == "demo1.example")) is None
+
+
+def test_create_account_compensates_primary_domain_when_dns_zone_fails(
+    isolated_db, stub_sysops, monkeypatch
+):
+    monkeypatch.setattr(
+        ha.handlers_domain,
+        "_create_managed_zone",
+        lambda username, domain: (_ for _ in ()).throw(RuntimeError("PowerDNS unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="PowerDNS unavailable"):
+        ha.create_account({"username": "demo1", "primary_domain": "demo1.example"})
+
+    with write_session() as session:
+        account = session.scalar(select(ha.Account).where(ha.Account.username == "demo1"))
+        assert account.primary_domain is None
+        assert session.scalar(select(Domain).where(Domain.domain == "demo1.example")) is None
+
+
+def test_create_account_can_defer_primary_zone_for_archive_imports(isolated_db, stub_sysops):
+    result = ha.create_account({
+        "username": "demo1",
+        "primary_domain": "demo1.example",
+        "create_dns_zone": False,
+    })
+
+    assert result["dns_zone_created"] is False
+    assert stub_sysops.zone_calls["create"] == []
 
 
 def test_create_account_rejects_duplicate_primary_domain(isolated_db, stub_sysops):

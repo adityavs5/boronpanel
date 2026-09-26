@@ -201,6 +201,7 @@ def create_account(params: dict) -> dict:
     # The account/domain rows are committed before provisioning for the same
     # reason as handlers_domain.add_domain; compensate both values if the
     # docroot or OLS setup fails.
+    dns_zone_created = False
     if primary_domain is not None:
         try:
             handlers_domain.ensure_docroot(
@@ -209,7 +210,19 @@ def create_account(params: dict) -> dict:
                 primary_domain,
             )
             ols.provision_vhost(account_snapshot)
+            # Normal DirectAdmin/cPanel-style account creation provisions an
+            # authoritative zone with the primary website. Archive importers
+            # opt out because they restore the source zone immediately after
+            # the account exists and must not collide with a generated zone.
+            if params.get("create_dns_zone", True):
+                handlers_domain._create_managed_zone(username, primary_domain)
+                dns_zone_created = True
         except Exception:
+            if dns_zone_created:
+                try:
+                    handlers_domain._delete_managed_zone(primary_domain)
+                except Exception:  # noqa: BLE001 - preserve the provisioning failure
+                    logger.exception("Could not remove DNS zone while rolling back account %s", username)
             with write_session() as session:
                 primary = session.get(Domain, primary_domain_id)
                 if primary is not None:
@@ -218,6 +231,8 @@ def create_account(params: dict) -> dict:
                 if account is not None:
                     account.primary_domain = None
             raise
+
+    result["dns_zone_created"] = dns_zone_created
 
     # Phase 7b feature 3: the "account created" email needs the plaintext
     # initial password, which exists only in this function's own local

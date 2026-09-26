@@ -28,6 +28,23 @@ def stub_ols(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def stub_zone_lifecycle(monkeypatch):
+    """Keep domain unit tests independent of a live PowerDNS API."""
+    calls = {"create": [], "delete": []}
+    monkeypatch.setattr(
+        hd,
+        "_create_managed_zone",
+        lambda username, domain: calls["create"].append((username, domain)) or {"zone": domain},
+    )
+    monkeypatch.setattr(
+        hd,
+        "_delete_managed_zone",
+        lambda domain: calls["delete"].append(domain) or {"zone": domain, "status": "deleted"},
+    )
+    return calls
+
+
 def _add_zone_owned_by(username: str, zone: str) -> None:
     # DnsZone.account_id is NOT NULL in the actual schema even though
     # handlers_dns.create_zone's own code accepts username=None and would
@@ -48,11 +65,13 @@ def stub_powerdns(monkeypatch):
     return calls
 
 
-def test_add_domain_success_calls_provision_vhost(isolated_db, stub_sysops, stub_filesystem, stub_ols):
+def test_add_domain_success_calls_provision_vhost(isolated_db, stub_sysops, stub_filesystem, stub_ols, stub_zone_lifecycle):
     ha.create_account({"username": "demo1"})
     result = hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
 
     assert result["domain"] == "demo1.example"
+    assert result["dns_zone_created"] is True
+    assert stub_zone_lifecycle["create"] == [("demo1", "demo1.example")]
     assert stub_ols["provision"] == ["demo1"]
 
     with write_session() as session:
@@ -60,7 +79,9 @@ def test_add_domain_success_calls_provision_vhost(isolated_db, stub_sysops, stub
         assert account.primary_domain == "demo1.example"
 
 
-def test_add_domain_compensates_db_row_when_ols_apply_fails(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+def test_add_domain_compensates_db_row_when_ols_apply_fails(
+    isolated_db, stub_sysops, stub_filesystem, stub_zone_lifecycle, monkeypatch
+):
     def boom(account):
         raise RuntimeError("openlitespeed -t failed")
 
@@ -76,6 +97,8 @@ def test_add_domain_compensates_db_row_when_ols_apply_fails(isolated_db, stub_sy
 
         account = session.scalar(select(ha.Account).where(ha.Account.username == "demo1"))
         assert account.primary_domain is None, "primary_domain must be cleared along with the orphaned row"
+    assert stub_zone_lifecycle["create"] == [("demo1", "demo1.example")]
+    assert stub_zone_lifecycle["delete"] == ["demo1.example"]
 
 
 def test_add_domain_compensates_db_row_when_parent_lookup_fails(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
@@ -163,7 +186,34 @@ def test_add_subdomain_skips_dns_when_zone_not_managed(isolated_db, stub_sysops,
     result = hd.add_domain({"username": "demo1", "domain": "blog.demo1.example", "kind": "subdomain"})
 
     assert result["dns_record_created"] is False
+    assert result["dns_zone_created"] is False
     assert stub_powerdns["upsert"] == []
+
+
+def test_addon_domain_creates_own_zone_when_no_parent_is_managed(
+    isolated_db, stub_sysops, stub_filesystem, stub_ols, stub_zone_lifecycle
+):
+    ha.create_account({"username": "demo1"})
+    result = hd.add_domain({"username": "demo1", "domain": "addon.example", "kind": "addon"})
+
+    assert result["dns_zone_created"] is True
+    assert result["dns_record_created"] is False
+    assert stub_zone_lifecycle["create"] == [("demo1", "addon.example")]
+
+
+def test_addon_domain_uses_existing_parent_zone_instead_of_creating_child_zone(
+    isolated_db, stub_sysops, stub_filesystem, stub_ols, stub_powerdns, stub_zone_lifecycle, monkeypatch
+):
+    monkeypatch.setattr(hd.settings, "server_public_ip", "203.0.113.10")
+    ha.create_account({"username": "demo1"})
+    _add_zone_owned_by("demo1", "example.test")
+
+    result = hd.add_domain({"username": "demo1", "domain": "site.example.test", "kind": "addon"})
+
+    assert result["dns_zone_created"] is False
+    assert result["dns_record_created"] is True
+    assert stub_zone_lifecycle["create"] == []
+    assert ("example.test", "site", "A", ("203.0.113.10",)) in stub_powerdns["upsert"]
 
 
 def test_add_domain_dns_failure_is_compensated(isolated_db, stub_sysops, stub_filesystem, stub_ols, monkeypatch):
@@ -207,6 +257,19 @@ def test_remove_domain_deletes_row_and_vhost(isolated_db, stub_sysops, stub_file
         assert gone is None
         still_there = session.scalar(select(Domain).where(Domain.domain == "demo1.example"))
         assert still_there is not None
+
+
+def test_remove_addon_domain_deletes_its_own_managed_zone(
+    isolated_db, stub_sysops, stub_filesystem, stub_ols, stub_zone_lifecycle
+):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "addon.example", "kind": "addon"})
+    _add_zone_owned_by("demo1", "addon.example")
+
+    hd.remove_domain({"username": "demo1", "domain": "addon.example"})
+
+    assert "addon.example" in stub_zone_lifecycle["delete"]
 
 
 def test_remove_domain_restores_row_when_ols_apply_fails(isolated_db, stub_sysops, stub_filesystem, stub_ols, monkeypatch):

@@ -113,7 +113,49 @@ def test_incoming_rejects_unowned_zone(isolated_db):
         })
 
 
-def test_directadmin_adapter_uses_rawsave_and_delete(isolated_db):
+def test_directadmin_adapter_uses_exists_guard_rawsave_and_delete(isolated_db):
+    result = _peer("directadmin", "login-key")
+    requests = []
+    def handler(request):
+        requests.append(request)
+        if request.url.params.get("action") == "exists":
+            return httpx.Response(200, text="error=0&exists=0")
+        return httpx.Response(200, text="error=0&text=ok")
+    dnscluster._transport = httpx.MockTransport(handler)
+    try:
+        with write_session() as db:
+            peer = db.get(DnsClusterPeer, result["id"]); db.expunge(peer)
+        assert dnscluster._send_directadmin(peer, "upsert", ZONE_PAYLOAD, "example.test") == "sent-owned"
+        assert dnscluster._send_directadmin(
+            peer, "delete", None, "example.test", boron_managed_remote=True
+        ) == "sent-owned"
+    finally:
+        dnscluster._transport = None
+    assert requests[0].url.params["action"] == "exists"
+    assert requests[1].url.params["action"] == "rawsave"
+    assert b"www.example.test." in requests[1].content
+    assert b"action=delete" in requests[2].content and b"select0=example.test" in requests[2].content
+
+
+def test_directadmin_adapter_never_modifies_preexisting_remote_zone(isolated_db):
+    result = _peer("directadmin", "login-key")
+    requests = []
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, text="error=0&exists=1")
+    dnscluster._transport = httpx.MockTransport(handler)
+    try:
+        with write_session() as db:
+            peer = db.get(DnsClusterPeer, result["id"]); db.expunge(peer)
+        assert dnscluster._send_directadmin(peer, "upsert", ZONE_PAYLOAD, "example.test") == "skipped-existing"
+        assert dnscluster._send_directadmin(peer, "delete", None, "example.test") == "skipped-existing"
+    finally:
+        dnscluster._transport = None
+    assert len(requests) == 1
+    assert requests[0].url.params["action"] == "exists"
+
+
+def test_directadmin_adapter_updates_zone_previously_created_by_boron(isolated_db):
     result = _peer("directadmin", "login-key")
     requests = []
     def handler(request):
@@ -123,13 +165,13 @@ def test_directadmin_adapter_uses_rawsave_and_delete(isolated_db):
     try:
         with write_session() as db:
             peer = db.get(DnsClusterPeer, result["id"]); db.expunge(peer)
-        dnscluster._send_directadmin(peer, "upsert", ZONE_PAYLOAD, "example.test")
-        dnscluster._send_directadmin(peer, "delete", None, "example.test")
+        assert dnscluster._send_directadmin(
+            peer, "upsert", ZONE_PAYLOAD, "example.test", boron_managed_remote=True
+        ) == "sent-owned"
     finally:
         dnscluster._transport = None
+    assert len(requests) == 1
     assert requests[0].url.params["action"] == "rawsave"
-    assert b"www.example.test." in requests[0].content
-    assert b"action=delete" in requests[1].content and b"select0=example.test" in requests[1].content
 
 
 def test_boron_delivery_sends_event_and_bearer(isolated_db):

@@ -196,7 +196,9 @@ class DnsClusterZoneState(Base):
     zone: Mapped[str] = mapped_column(String(253), index=True)
     serial: Mapped[int] = mapped_column(Integer, default=0)
     content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    direction: Mapped[str] = mapped_column(String(16))  # sent | received
+    # sent/received for ordinary peers; DirectAdmin uses sent-owned only
+    # after an absent check and skipped-existing for a preserved remote zone.
+    direction: Mapped[str] = mapped_column(String(16))
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 

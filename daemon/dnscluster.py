@@ -9,7 +9,7 @@ import secrets
 import threading
 import time
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 from sqlalchemy import select
@@ -340,13 +340,47 @@ def _send_cpanel(peer: DnsClusterPeer, action: str, payload: dict | None, zone: 
                 _cpanel_call(client, peer, "addzonerecord", _cpanel_record_params(zone, rr, value))
 
 
-def _send_directadmin(peer: DnsClusterPeer, action: str, payload: dict | None, zone: str) -> None:
+def _directadmin_zone_exists(client: httpx.Client, peer: DnsClusterPeer, auth: tuple[str, str], zone: str) -> bool:
+    response = client.get(
+        f"{peer.endpoint}/CMD_API_DNS_ADMIN",
+        auth=auth,
+        params={"action": "exists", "domain": zone},
+    )
+    response.raise_for_status()
+    result = parse_qs(response.text, keep_blank_values=True)
+    if result.get("error", ["0"])[0] == "1":
+        raise RuntimeError("DirectAdmin rejected the DNS zone existence check")
+    exists = result.get("exists", [None])[0]
+    if exists not in {"0", "1"}:
+        raise RuntimeError("DirectAdmin returned an invalid DNS zone existence result")
+    return exists == "1"
+
+
+def _send_directadmin(
+    peer: DnsClusterPeer,
+    action: str,
+    payload: dict | None,
+    zone: str,
+    *,
+    boron_managed_remote: bool = False,
+) -> str:
     auth = (peer.username or "admin", appcrypto.decrypt_secret(peer.credential_enc))
     with _client(peer) as client:
         if action == "delete":
+            # No successful Boron send means this same-named remote zone
+            # predates our ownership. Never delete it during local cleanup.
+            if not boron_managed_remote:
+                return "skipped-existing"
             response = client.post(f"{peer.endpoint}/CMD_API_DNS_ADMIN", auth=auth,
                                    data={"action": "delete", "select0": zone})
         else:
+            # DirectAdmin rawsave creates an absent zone but overwrites an
+            # existing one. On the first delivery, ask DirectAdmin's official
+            # action=exists endpoint and preserve any pre-existing zone. A
+            # successful first rawsave records direction=sent, which permits
+            # later Boron changes to update only that Boron-created copy.
+            if not boron_managed_remote and _directadmin_zone_exists(client, peer, auth, zone):
+                return "skipped-existing"
             response = client.post(f"{peer.endpoint}/CMD_API_DNS_ADMIN", auth=auth,
                                    params={"action": "rawsave", "domain": zone},
                                    content=_zone_text(payload or {}),
@@ -356,6 +390,9 @@ def _send_directadmin(peer: DnsClusterPeer, action: str, payload: dict | None, z
             action == "delete" and any(marker in response.text.lower() for marker in ("does+not+exist", "not+found", "cannot+find"))
         ):
             raise RuntimeError("DirectAdmin rejected the DNS cluster update")
+    # Distinct from the legacy generic "sent" marker: only this value proves
+    # the first guarded delivery observed the zone absent before rawsave.
+    return "sent-owned"
 
 
 def _send_boron(peer: DnsClusterPeer, action: str, payload: dict | None, zone: str, event_id: str) -> None:
@@ -366,10 +403,24 @@ def _send_boron(peer: DnsClusterPeer, action: str, payload: dict | None, zone: s
         response.raise_for_status()
 
 
-def _send(peer: DnsClusterPeer, action: str, payload: dict | None, zone: str, event_id: str) -> None:
-    if peer.peer_type == "boron": _send_boron(peer, action, payload, zone, event_id)
-    elif peer.peer_type == "directadmin": _send_directadmin(peer, action, payload, zone)
-    else: _send_cpanel(peer, action, payload, zone)
+def _send(
+    peer: DnsClusterPeer,
+    action: str,
+    payload: dict | None,
+    zone: str,
+    event_id: str,
+    *,
+    boron_managed_remote: bool = False,
+) -> str:
+    if peer.peer_type == "boron":
+        _send_boron(peer, action, payload, zone, event_id)
+        return "sent"
+    if peer.peer_type == "directadmin":
+        return _send_directadmin(
+            peer, action, payload, zone, boron_managed_remote=boron_managed_remote
+        )
+    _send_cpanel(peer, action, payload, zone)
+    return "sent"
 
 
 def process_one() -> bool:
@@ -391,8 +442,28 @@ def process_one() -> bool:
             if job is None or peer is None or not peer.enabled:
                 if job: db.delete(job)
                 return True
+            previous_state = db.scalar(select(DnsClusterZoneState).where(
+                DnsClusterZoneState.peer_id == peer.id,
+                DnsClusterZoneState.zone == job.zone,
+            ))
+            if peer.peer_type == "directadmin":
+                # Legacy `sent` rows predate the existence guard and cannot
+                # prove who created the remote zone. Trust only the marker
+                # written after an absent check followed by rawsave.
+                boron_managed_remote = (
+                    previous_state is not None and previous_state.direction == "sent-owned"
+                )
+            else:
+                boron_managed_remote = previous_state is not None and previous_state.direction == "sent"
             db.expunge(job); db.expunge(peer)
-        _send(peer, job.action, job.payload, job.zone, job.event_id)
+        delivery = _send(
+            peer,
+            job.action,
+            job.payload,
+            job.zone,
+            job.event_id,
+            boron_managed_remote=boron_managed_remote,
+        )
         with write_session() as db:
             current = db.get(DnsClusterOutbox, job_id)
             target = db.get(DnsClusterPeer, peer.id)
@@ -405,11 +476,17 @@ def process_one() -> bool:
                         DnsClusterZoneState.peer_id == peer.id, DnsClusterZoneState.zone == job.zone,
                     ))
                     if state is None:
-                        state = DnsClusterZoneState(peer_id=peer.id, zone=job.zone, direction="sent")
+                        state = DnsClusterZoneState(peer_id=peer.id, zone=job.zone, direction=delivery)
                         db.add(state)
                     state.serial = int(job.payload.get("serial") or 0)
                     state.content_sha256 = job.payload.get("content_sha256")
-                    state.direction = "sent"
+                    state.direction = delivery
+                elif job.action == "delete":
+                    state = db.scalar(select(DnsClusterZoneState).where(
+                        DnsClusterZoneState.peer_id == peer.id, DnsClusterZoneState.zone == job.zone,
+                    ))
+                    if state is not None:
+                        db.delete(state)
     except Exception as exc:
         logger.warning("DNS cluster delivery failed for job %s: %s", job_id, type(exc).__name__)
         with write_session() as db:

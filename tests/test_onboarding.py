@@ -21,6 +21,8 @@ def stub_sysops(monkeypatch):
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
     monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
     monkeypatch.setattr(ha.handlers_domain, "ensure_docroot", lambda username, docroot, domain_name=None: None)
+    monkeypatch.setattr(ha.handlers_domain, "_create_managed_zone", lambda username, domain: {"zone": domain})
+    monkeypatch.setattr(ha.handlers_domain, "_delete_managed_zone", lambda domain: {"zone": domain})
     monkeypatch.setattr(ha.ols, "provision_vhost", lambda account: None)
 
 
