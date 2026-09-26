@@ -13,9 +13,12 @@ import { ThemeSelector } from './ThemeSelector'
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard'
 import { DashboardSearch } from './DashboardSearch'
 import { EvoToolIcon } from '@/components/icons/EvoToolIcon'
+import { getProductBrandIcon } from '@/components/icons/BrandIcons'
 
 export function ToolIcon({ icon: Icon, tone = 'sky', to, skin }) {
   if (skin === 'evolution') return <span className={`tool-icon tone-${tone}`} aria-hidden="true"><EvoToolIcon to={to} fallback={Icon} /></span>
+  const Brand = getProductBrandIcon(to)
+  if (Brand) return <span className={`tool-icon tone-${tone}`} aria-hidden="true"><Brand /></span>
   return <span className={`tool-icon tone-${tone}`} aria-hidden="true"><Icon strokeWidth={1.7} /><span className="icon-detail" /></span>
 }
 

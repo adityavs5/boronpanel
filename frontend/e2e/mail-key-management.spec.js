@@ -6,6 +6,8 @@ for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','
     await page.addInitScript(({skin,theme})=>{
       localStorage.setItem('boron.ui',JSON.stringify({state:{skin,theme},version:0}))
       localStorage.setItem('boron.auth',JSON.stringify({state:{role:'customer',username:'alpha'},version:0}))
+      window.open=()=>null
+      HTMLFormElement.prototype.submit=function(){window.__webmailSubmit={action:this.action,method:this.method,target:this.target,fields:Object.fromEntries(new FormData(this).entries())}}
     },{skin,theme})
     let passwordRequest,removed=0
     await page.route('**/api/**',async route=>{
@@ -16,6 +18,7 @@ for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','
       else if(path==='/api/v1/mail/webmail')data={enabled:true,url:'https://webmail.example.test'}
       else if(path==='/api/v1/accounts/alpha/domains')data={domains:[{domain:'alpha.test'}]}
       else if(path.endsWith('/mailboxes'))data={mailboxes:[{local_part:'inbox',quota_mb:512,active:true}]}
+      else if(path.endsWith('/webmail-session'))data={token:'fixture-one-use-token',url:'https://webmail.example.test'}
       else if(path.endsWith('/email/inbox/password')){passwordRequest=route.request().postDataJSON();data={changed:true}}
       else if(path.endsWith('/ssh-keys'))data={keys:[{comment:'Work laptop',type:'ED25519',bits:256,fingerprint:'SHA256:test-fixture-fingerprint'}]}
       else if(route.request().method()==='DELETE'){removed++;data={deleted:true}}
@@ -23,6 +26,14 @@ for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','
     })
     await page.goto('/app/email')
     await expect(page.getByRole('link',{name:'Open Webmail'})).toHaveAttribute('href','https://webmail.example.test')
+    await page.getByRole('button',{name:'Webmail',exact:true}).click()
+    await expect.poll(()=>page.evaluate(()=>window.__webmailSubmit)).toBeTruthy()
+    const launch=await page.evaluate(()=>window.__webmailSubmit)
+    expect(launch.method).toBe('post')
+    expect(launch.target).toBe('_blank')
+    expect(launch.action).not.toContain('fixture-one-use-token')
+    expect(launch.fields._boron_token).toBe('fixture-one-use-token')
+    expect(launch.fields._user).toBe('inbox@alpha.test')
     await page.getByRole('button',{name:'inbox@alpha.test',exact:true}).click()
     let dialog=page.getByRole('dialog')
     await expect(dialog.getByRole('heading',{name:'Manage mailbox'})).toBeVisible()

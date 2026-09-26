@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, HTTPException, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from starlette.requests import Request
 
 from shared.config import settings
 from shared.db import read_session
-from shared.models import Account, Domain, MailDomain
+from shared.models import Account, Domain, MailDomain, MailUser
 
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_account_access, require_domain_access
@@ -39,6 +39,20 @@ class CreateMailboxBody(BaseModel):
 class ChangeMailboxPasswordBody(BaseModel):
     domain: str
     password: str
+
+
+class WebmailSessionBody(BaseModel):
+    domain: str
+
+
+class MailDnsRepairBody(BaseModel):
+    replace_conflicts: list[str] = Field(default_factory=list)
+
+
+class DmarcBody(BaseModel):
+    policy: str = "none"
+    rua: str | None = None
+    subdomain_policy: str | None = None
 
 
 @api_router.get("/webmail")
@@ -97,6 +111,94 @@ def change_mailbox_password(username: str, local_part: str, body: ChangeMailboxP
     require_account_access(identity, username)
     require_domain_access(identity, body.domain)
     return call_daemon("mail.change_password", identity, domain=body.domain, local_part=local_part, password=body.password)
+
+
+@account_api_router.post("/{local_part}/webmail-session")
+def create_webmail_session(
+    username: str,
+    local_part: str,
+    body: WebmailSessionBody,
+    request: Request,
+    response: Response,
+    identity: Identity = Depends(get_identity),
+):
+    """Create a one-use Roundcube handoff for a direct customer session."""
+    require_account_access(identity, username)
+    require_domain_access(identity, body.domain)
+    if identity.auth_method != "session" or identity.is_impersonating or identity.role != "customer":
+        raise HTTPException(status_code=403, detail="Sign in directly as the customer to open webmail")
+    expected = f"{request.url.scheme}://{request.url.netloc}"
+    if request.headers.get("origin") != expected:
+        raise HTTPException(status_code=403, detail="same-origin request required")
+    result = call_daemon(
+        "webmail.launch.create", identity, username=username,
+        mailbox=f"{local_part}@{body.domain}",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return result
+
+
+@account_api_router.get("/mailboxes")
+def list_account_mailboxes(username: str, identity: Identity = Depends(get_identity)):
+    """Return the owned mailbox inventory used by guided backup selectors.
+
+    This read stays in the unprivileged API process.  Ownership is derived
+    from the account -> mail-domain relationship; callers cannot supply a
+    domain to widen the result set.
+    """
+    require_account_access(identity, username)
+    with read_session() as db:
+        account = db.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            return {"domains": [], "mailboxes": []}
+        domains = db.scalars(
+            select(MailDomain).where(MailDomain.account_id == account.id).order_by(MailDomain.domain)
+        ).all()
+        domain_names = [row.domain for row in domains]
+        if not domain_names:
+            return {"domains": [], "mailboxes": []}
+        rows = db.scalars(
+            select(MailUser)
+            .where(MailUser.domain.in_(domain_names))
+            .order_by(MailUser.domain, MailUser.local_part)
+        ).all()
+        return {
+            "domains": domain_names,
+            "mailboxes": [
+                {
+                    "domain": row.domain,
+                    "local_part": row.local_part,
+                    "address": f"{row.local_part}@{row.domain}",
+                    "active": True,
+                }
+                for row in rows
+            ],
+        }
+
+
+@account_api_router.get("/domains/{domain}/dns-readiness")
+def mail_dns_readiness(username: str, domain: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("mail.dns.preview", identity, username=username, domain=domain)
+
+
+@account_api_router.post("/domains/{domain}/dns-repair")
+def repair_mail_dns(username: str, domain: str, body: MailDnsRepairBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon(
+        "mail.dns.repair", identity, username=username, domain=domain,
+        replace_conflicts=body.replace_conflicts,
+    )
+
+
+@account_api_router.put("/domains/{domain}/dmarc")
+def set_dmarc(username: str, domain: str, body: DmarcBody, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("mail.dns.dmarc", identity, username=username, domain=domain, **body.model_dump())
 
 
 @ui_router.get("/{domain}")

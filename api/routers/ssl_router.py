@@ -8,6 +8,7 @@ from starlette.requests import Request
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_account_access, require_admin, require_domain_access
 from api.templates import templates
+from shared.config import settings
 
 api_router = APIRouter(prefix="/api/v1/ssl", tags=["ssl"])
 ui_router = APIRouter(prefix="/ui/accounts/{username}/ssl", tags=["ui:ssl"])
@@ -70,6 +71,18 @@ def admin_ssl_dashboard(identity: Identity = Depends(get_identity)):
 def admin_issue_certificate(domain: str, body: DomainIssueCertBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("ssl.issue", identity, domain=domain, force=body.force)
+
+
+@admin_router.post("/panel/issue")
+def admin_issue_panel_certificate(body: DomainIssueCertBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("panel.tls.issue", identity, email=settings.letsencrypt_email)
+
+
+@admin_router.get("/domains/{domain}/diagnostics")
+def admin_service_certificate_diagnostics(domain: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("ssl.service.diagnostics", identity, domain=domain)
 
 
 @admin_router.post("/domains/{domain}/wildcard")

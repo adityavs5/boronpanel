@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, NamespaceMigrationJob, utcnow
+from shared.models import Account, NamespaceMigrationJob, NodeApp, PythonApp, RedisInstance, utcnow
 from shared.validation import validate_username
 
 from daemon import audit
@@ -353,4 +353,83 @@ def health_summary(params: dict | None = None) -> dict:
         "not_yet_eligible_count": not_eligible,
         "anomaly_count": len(anomalies),
         "anomalies": anomalies,
+    }
+
+
+def isolation_overview(params: dict | None = None) -> dict:
+    """Report the real isolation boundary for every customer entry point."""
+    min_uid = get_min_uid()
+    disabled = set(list_disabled_uids())
+    with write_session() as session:
+        accounts = session.scalars(
+            select(Account).where(Account.status != "terminated").order_by(Account.username)
+        ).all()
+        node_ids = set(session.scalars(select(NodeApp.account_id)).all())
+        python_ids = set(session.scalars(select(PythonApp.account_id)).all())
+        redis_ids = set(session.scalars(
+            select(RedisInstance.account_id).where(RedisInstance.enabled == True)  # noqa: E712
+        ).all())
+        rows = []
+        for account in accounts:
+            eligible = account.uid is not None and account.uid >= min_uid
+            web = eligible and account.uid not in disabled
+            services = []
+            if account.id in node_ids:
+                services.append("Node.js")
+            if account.id in python_ids:
+                services.append("Python")
+            if account.id in redis_ids:
+                services.append("Redis")
+            rows.append({
+                "username": account.username, "uid": account.uid, "status": account.status,
+                "web": "isolated" if web else "disabled" if eligible else "not_eligible",
+                "terminal": "account_uid_and_cgroup",
+                "services": services, "services_hardened": bool(services),
+                "ssh_sftp": "linux_permissions_only",
+            })
+    return {
+        "min_uid": min_uid, "accounts": rows,
+        "capabilities": {
+            "mount_namespace": True, "private_tmp": True,
+            "filtered_identity_files": True, "pid_namespace": False,
+            "ssh_namespace": False,
+        },
+        "warning": "OpenLiteSpeed provides mount isolation. Terminal and SSH/SFTP remain account-UID boundaries and do not provide a private process namespace.",
+    }
+
+
+def rebuild_namespace(params: dict) -> dict:
+    username = validate_username(params["username"])
+    uid = _account_uid(username)
+    unmount_uid(uid)
+    enable_uid(uid)
+    return get_status(username)
+
+
+def self_test(params: dict) -> dict:
+    """Run a metadata-only mount isolation canary without returning files."""
+    username = validate_username(params["username"])
+    uid = _account_uid(username)
+    with write_session() as session:
+        other = session.scalar(select(Account.username).where(
+            Account.username != username, Account.status == "active"
+        ).order_by(Account.id))
+    own = run([
+        "/usr/local/lsws/lsns/bin/cmd_ns", "-u", str(uid), "-c", "-o",
+        "/usr/bin/test", "-r", f"/home/{username}",
+    ], timeout=20)
+    other_hidden = None
+    if other:
+        result = run([
+            "/usr/local/lsws/lsns/bin/cmd_ns", "-u", str(uid), "-c", "-o",
+            "/usr/bin/test", "!", "-r", f"/home/{other}",
+        ], timeout=20)
+        other_hidden = result.ok
+    current = get_status(username)
+    passed = current["enabled"] and own.ok and other_hidden is not False
+    return {
+        "username": username, "passed": passed,
+        "namespace_enabled": current["enabled"], "own_home_readable": own.ok,
+        "other_home_hidden": other_hidden,
+        "process_isolation": "not_supported_by_ols_mount_namespaces",
     }

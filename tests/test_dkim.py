@@ -40,29 +40,32 @@ def test_dkim_record_name(dkim_tmp_dir):
 
 def test_setup_dns_signing_without_managed_zone(dkim_tmp_dir, isolated_db, monkeypatch):
     monkeypatch.setattr(dkim, "find_managed_zone", lambda domain: None)
+    monkeypatch.setattr(dkim, "configure_signer", lambda: {"active": True})
     result = dkim.setup_dns_signing("demo1.example")
     assert result["dns_published"] is False
     assert result["selector"] == "default"
     assert "v=spf1" in result["spf_record_value"]
-    assert result["dmarc_record_value"] == "v=DMARC1; p=none; rua=mailto:postmaster@demo1.example"
+    assert result["signing_active"] is True
 
 
 def test_setup_dns_signing_publishes_when_zone_managed(dkim_tmp_dir, isolated_db, monkeypatch):
     published = []
     monkeypatch.setattr(dkim, "find_managed_zone", lambda domain: "example.com")
     monkeypatch.setattr(dkim, "label_within_zone", lambda domain, zone: "demo1")
+    monkeypatch.setattr(dkim, "configure_signer", lambda: {"active": True})
     monkeypatch.setattr(dkim.dnsprovider, "upsert_record", lambda zone, label, rtype, values, **kw: published.append((zone, label, rtype)))
 
     result = dkim.setup_dns_signing("demo1.example.com")
     assert result["dns_published"] is True
     labels = {label for _, label, _ in published}
-    assert "demo1" in labels  # SPF at the subdomain label itself
     assert "default._domainkey.demo1" in labels
-    assert "_dmarc.demo1" in labels
+    assert "demo1" not in labels  # Existing SPF is managed by the conflict-aware mail DNS reconciler.
+    assert "_dmarc.demo1" not in labels  # DMARC is an explicit customer choice
 
 
 def test_setup_dns_signing_reuses_existing_selector(dkim_tmp_dir, isolated_db, monkeypatch):
     monkeypatch.setattr(dkim, "find_managed_zone", lambda domain: None)
+    monkeypatch.setattr(dkim, "configure_signer", lambda: {"active": True})
     first = dkim.setup_dns_signing("demo1.example")
     second = dkim.setup_dns_signing("demo1.example")
     assert first["selector"] == second["selector"] == "default"
@@ -70,6 +73,7 @@ def test_setup_dns_signing_reuses_existing_selector(dkim_tmp_dir, isolated_db, m
 
 def test_teardown_dns_signing_removes_key_dir(dkim_tmp_dir, isolated_db, monkeypatch):
     monkeypatch.setattr(dkim, "find_managed_zone", lambda domain: None)
+    monkeypatch.setattr(dkim, "configure_signer", lambda: {"active": True})
     dkim.setup_dns_signing("demo1.example")
     assert dkim._domain_dir("demo1.example").exists()
     dkim.teardown_dns_signing("demo1.example")
@@ -80,11 +84,23 @@ def test_teardown_dns_signing_deletes_dns_records_when_managed(dkim_tmp_dir, iso
     deleted = []
     monkeypatch.setattr(dkim, "find_managed_zone", lambda domain: "example.com")
     monkeypatch.setattr(dkim, "label_within_zone", lambda domain, zone: "demo1")
+    monkeypatch.setattr(dkim, "configure_signer", lambda: {"active": True})
     monkeypatch.setattr(dkim.dnsprovider, "upsert_record", lambda *a, **kw: None)
     monkeypatch.setattr(dkim.dnsprovider, "delete_record", lambda zone, label, rtype: deleted.append((zone, label, rtype)))
 
     dkim.setup_dns_signing("demo1.example.com")
     dkim.teardown_dns_signing("demo1.example.com")
-    assert ("example.com", "demo1", "TXT") in deleted
     assert ("example.com", "default._domainkey.demo1", "TXT") in deleted
-    assert ("example.com", "_dmarc.demo1", "TXT") in deleted
+    assert ("example.com", "demo1", "TXT") not in deleted
+    assert ("example.com", "_dmarc.demo1", "TXT") not in deleted
+
+
+def test_setup_dns_signing_does_not_publish_when_signer_fails(dkim_tmp_dir, isolated_db, monkeypatch):
+    published = []
+    monkeypatch.setattr(dkim, "find_managed_zone", lambda domain: "example.com")
+    monkeypatch.setattr(dkim, "configure_signer", lambda: (_ for _ in ()).throw(dkim.DkimError("offline")))
+    monkeypatch.setattr(dkim.dnsprovider, "upsert_record", lambda *args, **kwargs: published.append(args))
+    result = dkim.setup_dns_signing("demo1.example.com")
+    assert result["signing_active"] is False
+    assert result["dns_published"] is False
+    assert published == []

@@ -122,6 +122,14 @@ class Settings:
     # Boron mailbox's address+password already works.
     webmail_hostname: str = ""
     webmail_docroot: str = "/var/www/roundcube/public_html"
+    # A separate, narrowly scoped socket is used by the Roundcube launch
+    # plugin.  It must never share the general provisioning RPC endpoint.
+    webmail_launch_socket: str = "/run/boron-webmail/launch.sock"
+    webmail_launch_ttl_seconds: int = 60
+    webmail_session_ttl_seconds: int = 3600
+    # Canonical MX/IMAP/SMTP hostname.  Blank keeps upgrades compatible and
+    # resolves to webmail_hostname, then panel_hostname at runtime.
+    mail_hostname: str = ""
 
     # Phase 2 feature 6: cgroups v2 resource limits. The block device
     # IOReadBandwidthMax/IOWriteBandwidthMax apply to -- must be the whole
@@ -143,6 +151,8 @@ class Settings:
     backup_staging_dir: str = "/var/lib/boron/backup-staging"
     backup_concurrency: int = 2
     firewall_state_dir: str = "/var/lib/boron/firewall-changes"
+    htaccess_watch_debounce_seconds: float = 2.0
+    resource_sample_retention_days: int = 30
 
     # ssl (Phase f)
     certbot_bin: str = "/opt/boron/.venv/bin/certbot"

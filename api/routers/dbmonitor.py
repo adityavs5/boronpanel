@@ -16,6 +16,21 @@ class BootstrapKillPrivilegeBody(BaseModel):
     confirm: bool = False
 
 
+class GovernorModeBody(BaseModel):
+    mode: str
+
+
+class GovernorPolicyBody(BaseModel):
+    mode: str = "monitor"
+    max_user_connections: int | None = None
+    max_queries_per_hour: int | None = None
+    max_updates_per_hour: int | None = None
+    max_connections_per_hour: int | None = None
+    max_statement_time: float | None = None
+    warning_threshold_pct: int = 80
+    cooldown_seconds: int = 300
+
+
 @api_router.get("/monitor")
 def get_monitor(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -44,3 +59,35 @@ def kill_query(thread_id: int, identity: Identity = Depends(get_identity)):
 def bootstrap_kill_privilege(body: BootstrapKillPrivilegeBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("dbmonitor.bootstrap_kill_privilege", identity, confirm=body.confirm)
+
+
+@api_router.get("/governor")
+def governor_overview(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    result = call_daemon("dbgovernor.overview", identity)
+    result["statistics"] = call_daemon("dbgovernor.statistics", identity)
+    return result
+
+
+@api_router.post("/governor/userstat")
+def governor_enable_userstat(body: BootstrapKillPrivilegeBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("dbgovernor.userstat.enable", identity, confirm=body.confirm)
+
+
+@api_router.patch("/governor/mode")
+def governor_mode(body: GovernorModeBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("dbgovernor.mode.set", identity, mode=body.mode)
+
+
+@api_router.put("/governor/accounts/{username}")
+def governor_policy(username: str, body: GovernorPolicyBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("dbgovernor.policy.save", identity, username=username, **body.model_dump())
+
+
+@api_router.delete("/governor/accounts/{username}")
+def governor_policy_reset(username: str, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("dbgovernor.policy.reset", identity, username=username)

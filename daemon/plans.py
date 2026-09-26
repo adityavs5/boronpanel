@@ -16,10 +16,10 @@ import logging
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, Plan
+from shared.models import Account, Plan, ResourcePolicy
 from shared.validation import ValidationError, validate_resource_limit, validate_username
 
-from daemon import handlers_account, redisacct, sysops, usage_alerts
+from daemon import handlers_account, redisacct, resource_manager, sysops, usage_alerts
 
 logger = logging.getLogger("borond.plans")
 
@@ -50,8 +50,8 @@ def _validate_quota(soft_mb, hard_mb) -> tuple[int, int]:
     return soft_mb, hard_mb
 
 
-def _plan_to_dict(plan: Plan) -> dict:
-    return {
+def _plan_to_dict(plan: Plan, policy: ResourcePolicy | None = None) -> dict:
+    result = {
         "id": plan.id,
         "name": plan.name,
         "cpu_pct": plan.cpu_pct,
@@ -71,6 +71,25 @@ def _plan_to_dict(plan: Plan) -> dict:
         "created_at": plan.created_at.isoformat() if plan.created_at else None,
         "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
     }
+    if policy is not None:
+        result.update({field: getattr(policy, field) for field in resource_manager.POLICY_FIELDS})
+    return result
+
+
+def _resource_values(params: dict, *, cpu_pct: int, mem_mb: int, io_mb: int, pids_max: int) -> dict:
+    raw = {
+        "cpu_cores": params.get("cpu_cores", cpu_pct / 100),
+        "cpu_weight": params.get("cpu_weight", 100),
+        "memory_high_mb": params.get("memory_high_mb", max(64, int(mem_mb * .9))),
+        "memory_max_mb": params.get("memory_max_mb", mem_mb),
+        "io_read_bps": params.get("io_read_bps", io_mb * 1024 * 1024),
+        "io_write_bps": params.get("io_write_bps", io_mb * 1024 * 1024),
+        "io_read_iops": params.get("io_read_iops"),
+        "io_write_iops": params.get("io_write_iops"),
+        "nproc": params.get("nproc", pids_max),
+        "entry_processes": params.get("entry_processes", 20),
+    }
+    return resource_manager.validate_policy(raw)
 
 
 def create_plan(params: dict) -> dict:
@@ -96,13 +115,19 @@ def create_plan(params: dict) -> dict:
         )
         session.add(plan)
         session.flush()
-        return _plan_to_dict(plan)
+        policy = ResourcePolicy(scope_type="plan", scope_id=plan.id, **_resource_values(
+            params, cpu_pct=cpu_pct, mem_mb=mem_mb, io_mb=io_mb, pids_max=pids_max,
+        ))
+        session.add(policy)
+        session.flush()
+        return _plan_to_dict(plan, policy)
 
 
 def list_plans(params: dict) -> dict:
     with write_session() as session:
         plans = session.scalars(select(Plan).order_by(Plan.name)).all()
-        return {"plans": [_plan_to_dict(p) for p in plans]}
+        policies = {row.scope_id: row for row in session.scalars(select(ResourcePolicy).where(ResourcePolicy.scope_type == "plan")).all()}
+        return {"plans": [_plan_to_dict(p, policies.get(p.id)) for p in plans]}
 
 
 def get_plan(params: dict) -> dict:
@@ -111,7 +136,8 @@ def get_plan(params: dict) -> dict:
         plan = session.get(Plan, plan_id)
         if plan is None:
             raise RuntimeError(f"plan {plan_id} not found")
-        return _plan_to_dict(plan)
+        policy = session.scalar(select(ResourcePolicy).where(ResourcePolicy.scope_type == "plan", ResourcePolicy.scope_id == plan.id))
+        return _plan_to_dict(plan, policy)
 
 
 def update_plan(params: dict) -> dict:
@@ -146,8 +172,25 @@ def update_plan(params: dict) -> dict:
         if "redis_enabled" in params:
             plan.redis_enabled = bool(params["redis_enabled"])
 
+        policy = session.scalar(select(ResourcePolicy).where(
+            ResourcePolicy.scope_type == "plan", ResourcePolicy.scope_id == plan.id,
+        ))
+        resource_input = ({field: getattr(policy, field) for field in resource_manager.POLICY_FIELDS}
+                          if policy is not None else {})
+        resource_input.update(params)
+        values = _resource_values(resource_input, cpu_pct=cpu_pct, mem_mb=mem_mb, io_mb=io_mb, pids_max=pids_max)
+        if policy is None:
+            policy = ResourcePolicy(scope_type="plan", scope_id=plan.id)
+            session.add(policy)
+        else:
+            policy.version += 1
+        for field, value in values.items():
+            setattr(policy, field, value)
+
         session.flush()
-        return _plan_to_dict(plan)
+        result = _plan_to_dict(plan, policy)
+    resource_manager._reconcile_scope("plan", plan_id)
+    return result
 
 
 def delete_plan(params: dict) -> dict:
@@ -162,6 +205,11 @@ def delete_plan(params: dict) -> dict:
         # (the same class of bug already fixed once for Webhook deletion).
         for account in session.scalars(select(Account).where(Account.plan_id == plan_id)).all():
             account.plan_id = None
+        policy = session.scalar(select(ResourcePolicy).where(
+            ResourcePolicy.scope_type == "plan", ResourcePolicy.scope_id == plan_id,
+        ))
+        if policy:
+            session.delete(policy)
         session.delete(plan)
     return {"status": "deleted", "id": plan_id}
 
@@ -187,7 +235,8 @@ def apply_plan(params: dict) -> dict:
         plan = session.get(Plan, plan_id)
         if plan is None:
             raise RuntimeError(f"plan {plan_id} not found")
-        plan_values = _plan_to_dict(plan)
+        policy = session.scalar(select(ResourcePolicy).where(ResourcePolicy.scope_type == "plan", ResourcePolicy.scope_id == plan.id))
+        plan_values = _plan_to_dict(plan, policy)
 
         account.cpu_pct = plan_values["cpu_pct"]
         account.mem_mb = plan_values["mem_mb"]

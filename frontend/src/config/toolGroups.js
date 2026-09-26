@@ -22,7 +22,7 @@ const customerGroups = {
 const adminGroups = {
   evolution: [
     ['Account Manager', ['/accounts?new=1', '/accounts', '/resellers', '/administrators', '/plans', '/import/accounts']],
-    ['Server Manager', ['/health', '/services', '/openlitespeed', '/db-monitor', '/slow-queries', '/dns-setup', '/cloudflare', '/dns-cluster', '/ip-management', '/backup-jobs']],
+    ['Server Manager', ['/health', '/services', '/openlitespeed', '/resource-manager', '/filesystem-isolation', '/security-center', '/stack-manager', '/db-monitor', '/slow-queries', '/dns-setup', '/cloudflare', '/dns-cluster', '/ip-management', '/backup-jobs']],
     ['Email', ['/mail-queue', '/mail-tracking', '/imap-migrations', '/notifications']],
     ['Software & Websites', ['/wordpress', '/software/node-apps', '/software/python-apps', '/templates', '/maintenance-mode', '/updates']],
     ['Security & Network', ['/ssl', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
@@ -31,7 +31,7 @@ const adminGroups = {
   ],
   'paper-lantern': [
     ['Account Manager', ['/accounts?new=1', '/accounts', '/resellers', '/administrators', '/plans', '/import/accounts']],
-    ['Server & Databases', ['/health', '/services', '/openlitespeed', '/db-monitor', '/slow-queries', '/backup-jobs', '/updates']],
+    ['Server & Databases', ['/health', '/services', '/openlitespeed', '/resource-manager', '/filesystem-isolation', '/security-center', '/stack-manager', '/db-monitor', '/slow-queries', '/backup-jobs', '/updates']],
     ['Domains & Network', ['/dns-setup', '/cloudflare', '/dns-cluster', '/ip-management']],
     ['Email', ['/mail-queue', '/mail-tracking', '/imap-migrations', '/notifications']],
     ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/webhooks']],

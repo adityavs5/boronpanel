@@ -283,6 +283,7 @@ readonly STACK_PKGS=(
     mariadb-server postfix dovecot-core dovecot-imapd dovecot-lmtpd
     dovecot-mysql dovecot-sieve postfix-mysql pdns-server pdns-backend-sqlite3
     pure-ftpd certbot rclone restic spamassassin fail2ban redis-server clamav clamav-freshclam
+    opendkim opendkim-tools
 )
 readonly ROUNDCUBE_PKGS=(
     lsphp83-imap
@@ -714,6 +715,7 @@ letsencrypt_email = "${LE_EMAIL}"
 panel_hostname = "${PANEL_DOMAIN}"
 webmail_hostname = "${WEBMAIL_DOMAIN}"
 webmail_url = "${WEBMAIL_DOMAIN:+https://${WEBMAIL_DOMAIN}}"
+mail_hostname = "${WEBMAIL_DOMAIN}"
 webmail_docroot = "/var/www/roundcube/public_html"
 EOF
     ok "boron.toml written"
@@ -804,6 +806,15 @@ CREATE TABLE IF NOT EXISTS mail_autoresponder (
   active TINYINT(1) NOT NULL DEFAULT 1,
   FOREIGN KEY (mail_user_id) REFERENCES mail_user(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS webmail_session (
+  launch_id BIGINT NOT NULL PRIMARY KEY,
+  mailbox VARCHAR(320) NOT NULL,
+  password VARCHAR(255) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  revoked TINYINT(1) NOT NULL DEFAULT 0,
+  INDEX ix_webmail_mailbox (mailbox),
+  INDEX ix_webmail_expiry (expires_at)
+) ENGINE=InnoDB;
 SQL
     printf '[client]\nuser=root\npassword=%s\n' "${root_pass}" >/root/.my.cnf
     chmod 600 /root/.my.cnf
@@ -865,6 +876,13 @@ setup_ssl_bootstrap() {
         run_sh "openssl req -x509 -nodes -newkey rsa:2048 -keyout '${CONF_DIR}/ssl/default.key' -out '${CONF_DIR}/ssl/default.crt' -days 3650 -subj '/CN=boron-default'"
         run chmod 600 "${CONF_DIR}/ssl/default.key"
         ok "default cert generated"
+    fi
+    # Mail services have their own deploy target. Keeping this pair separate
+    # prevents a mail/webmail renewal from replacing OLS's default listener
+    # identity when the service hostnames differ.
+    if [[ ! -f "${CONF_DIR}/ssl/mail.crt" || ! -f "${CONF_DIR}/ssl/mail.key" ]]; then
+        run install -o root -g root -m 0644 "${CONF_DIR}/ssl/default.crt" "${CONF_DIR}/ssl/mail.crt"
+        run install -o root -g root -m 0600 "${CONF_DIR}/ssl/default.key" "${CONF_DIR}/ssl/mail.key"
     fi
     if [[ -f "${CONF_DIR}/ssl/api/panel.crt" ]]; then
         skip "panel TLS cert exists"
@@ -940,10 +958,14 @@ EOF
     postconf -e "smtpd_sasl_type = dovecot"
     postconf -e "smtpd_sasl_path = private/auth"
     postconf -e "smtpd_sasl_auth_enable = yes"
-    postconf -e "smtpd_tls_cert_file = ${CONF_DIR}/ssl/default.crt"
-    postconf -e "smtpd_tls_key_file = ${CONF_DIR}/ssl/default.key"
+    postconf -e "smtpd_tls_cert_file = ${CONF_DIR}/ssl/mail.crt"
+    postconf -e "smtpd_tls_key_file = ${CONF_DIR}/ssl/mail.key"
     postconf -e "smtpd_tls_security_level = may"
     postconf -e "smtpd_tls_auth_only = yes"
+    postconf -e "milter_default_action = accept"
+    postconf -e "milter_protocol = 6"
+    postconf -e "smtpd_milters = unix:opendkim/opendkim.sock"
+    postconf -e "non_smtpd_milters = unix:opendkim/opendkim.sock"
     postconf -Me 'submission/inet=submission inet n - y - - smtpd'
     postconf -P 'submission/inet/syslog_name=postfix/submission'
     postconf -P 'submission/inet/smtpd_tls_security_level=encrypt'
@@ -954,7 +976,7 @@ EOF
 driver = mysql
 connect = host=127.0.0.1 dbname=boron_mail user=boron_mailro password=${mailro_pass}
 default_pass_scheme = ARGON2ID
-password_query = SELECT CONCAT(u.local_part, '@', d.domain) AS user, u.password FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%u' AND u.active=1 AND d.active=1
+password_query = SELECT auth.user, auth.password FROM (SELECT CONCAT(u.local_part, '@', d.domain) AS user, u.password FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%u' AND u.active=1 AND d.active=1 UNION ALL SELECT s.mailbox AS user, s.password FROM webmail_session s JOIN mail_user u ON CONCAT(u.local_part, '@', (SELECT domain FROM mail_domain WHERE id=u.domain_id))=s.mailbox JOIN mail_domain d ON d.id=u.domain_id WHERE s.mailbox='%u' AND s.revoked=0 AND s.expires_at>UTC_TIMESTAMP() AND u.active=1 AND d.active=1) auth LIMIT 1
 user_query = SELECT 150 AS uid, 150 AS gid, CONCAT('/var/vmail/', d.domain, '/', u.local_part) AS home, CONCAT('maildir:/var/vmail/', d.domain, '/', u.local_part, '/Maildir') AS mail FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%u' AND u.active=1 AND d.active=1
 EOF
     chown root:dovecot /etc/dovecot/dovecot-sql.conf.ext
@@ -968,8 +990,8 @@ last_valid_uid = 150
 first_valid_gid = 150
 last_valid_gid = 150
 ssl = required
-ssl_cert = <${CONF_DIR}/ssl/default.crt
-ssl_key = <${CONF_DIR}/ssl/default.key
+ssl_cert = <${CONF_DIR}/ssl/mail.crt
+ssl_key = <${CONF_DIR}/ssl/mail.key
 service auth {
   unix_listener /var/spool/postfix/private/auth {
     mode = 0660
@@ -995,6 +1017,9 @@ EOF
     fi
     run systemctl enable --now dovecot postfix
     run systemctl restart dovecot postfix
+    # No domain keys exist yet on a fresh server, but installing the verified
+    # signing path now means the first mail domain can safely publish DKIM.
+    run "${VENV}/bin/python" -c "import sys; sys.path.insert(0, '${DEST}'); from daemon.dkim import configure_signer; configure_signer()"
     ok "Postfix + Dovecot virtual mail configured"
 }
 
@@ -1066,10 +1091,13 @@ SQL
 \$config['log_dir'] = '/var/www/roundcube/logs';
 \$config['temp_dir'] = '/var/www/roundcube/temp';
 \$config['des_key'] = '${des_key}';
-\$config['plugins'] = ['filesystem_attachments'];
+\$config['plugins'] = ['filesystem_attachments', 'boron_sso'];
 \$config['skin'] = 'elastic';
 \$config['enable_installer'] = false;
 EOF
+    install -d -m 0755 /var/www/roundcube/plugins/boron_sso
+    install -m 0644 "${DEST}/integrations/roundcube/boron_sso/boron_sso.php" /var/www/roundcube/plugins/boron_sso/boron_sso.php
+    install -m 0644 "${DEST}/integrations/roundcube/boron_sso/package.xml" /var/www/roundcube/plugins/boron_sso/package.xml
     chown -R root:root /var/www/roundcube
     find /var/www/roundcube -type d -exec chmod 0755 {} +
     find /var/www/roundcube -type f -exec chmod 0644 {} +

@@ -3,18 +3,25 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 
 from sqlalchemy import func, select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, PanelUser, ResellerAccount, ResellerPlan, ResellerProfile
+from shared.models import Account, PanelUser, ResellerAccount, ResellerPlan, ResellerProfile, ResourcePolicy
 from shared.validation import ValidationError, generate_strong_password, validate_domain, validate_php_version, validate_username
 
-from daemon import audit, handlers_account, handlers_auth
+from daemon import audit, handlers_account, handlers_auth, resource_manager
 
 logger = logging.getLogger("borond.resellers")
 _state_lock = threading.RLock()
+RESOURCE_HOOKS: list[Callable[[int], None]] = []
+
+
+def _reconcile_account(account_id: int) -> None:
+    for hook in RESOURCE_HOOKS:
+        hook(account_id)
 
 
 class ResellerError(Exception):
@@ -31,10 +38,53 @@ def _bounded(value, name: str, default: int, minimum: int, maximum: int) -> int:
     return value
 
 
-def _plan_dict(row: ResellerPlan) -> dict:
+def _plan_dict(row: ResellerPlan, policy: ResourcePolicy | None = None) -> dict:
     result = {column.name: getattr(row, column.name) for column in row.__table__.columns}
-    result["account_cpu_cores"] = row.account_cpu_pct / 100
+    values = ({field: getattr(policy, field) for field in resource_manager.POLICY_FIELDS}
+              if policy is not None else {
+                  "cpu_cores": row.account_cpu_pct / 100, "cpu_weight": 100,
+                  "memory_high_mb": max(64, int(row.account_mem_mb * .9)),
+                  "memory_max_mb": row.account_mem_mb,
+                  "io_read_bps": row.account_io_mb * 1024 * 1024,
+                  "io_write_bps": row.account_io_mb * 1024 * 1024,
+                  "io_read_iops": None, "io_write_iops": None,
+                  "nproc": row.account_pids_max, "entry_processes": 20,
+              })
+    result.update({
+        "account_cpu_cores": values["cpu_cores"],
+        "account_cpu_weight": values["cpu_weight"],
+        "account_memory_high_mb": values["memory_high_mb"],
+        "account_io_write_mb": None if values["io_write_bps"] is None else round(values["io_write_bps"] / 1048576),
+        "account_io_read_iops": values["io_read_iops"],
+        "account_io_write_iops": values["io_write_iops"],
+        "account_entry_processes": values["entry_processes"],
+    })
     return result
+
+
+def _resource_values(params: dict, fields: dict, current: ResourcePolicy | None = None) -> dict:
+    existing = ({field: getattr(current, field) for field in resource_manager.POLICY_FIELDS}
+                if current is not None else {})
+    read_mb = fields["account_io_mb"]
+    if "account_io_write_mb" in params:
+        write_mb = params["account_io_write_mb"]
+    elif current is not None:
+        write_mb = None if current.io_write_bps is None else current.io_write_bps / 1048576
+    else:
+        write_mb = read_mb
+    raw = {
+        "cpu_cores": params.get("account_cpu_cores", fields["account_cpu_pct"] / 100),
+        "cpu_weight": params.get("account_cpu_weight", existing.get("cpu_weight", 100)),
+        "memory_high_mb": params.get("account_memory_high_mb", existing.get("memory_high_mb", max(64, int(fields["account_mem_mb"] * .9)))),
+        "memory_max_mb": fields["account_mem_mb"],
+        "io_read_bps": read_mb * 1048576,
+        "io_write_bps": None if write_mb is None else int(write_mb * 1048576),
+        "io_read_iops": params.get("account_io_read_iops", existing.get("io_read_iops")),
+        "io_write_iops": params.get("account_io_write_iops", existing.get("io_write_iops")),
+        "nproc": fields["account_pids_max"],
+        "entry_processes": params.get("account_entry_processes", existing.get("entry_processes", 20)),
+    }
+    return resource_manager.validate_policy(raw)
 
 
 def _validate_plan(params: dict, current: ResellerPlan | None = None) -> dict:
@@ -69,7 +119,10 @@ def create_plan(params: dict) -> dict:
         row = ResellerPlan(**fields)
         session.add(row)
         session.flush()
-        return _plan_dict(row)
+        policy = ResourcePolicy(scope_type="reseller_plan", scope_id=row.id, **_resource_values(params, fields))
+        session.add(policy)
+        session.flush()
+        return _plan_dict(row, policy)
 
 
 def _profile_usage(session, profile_id: int) -> tuple[int, int]:
@@ -107,17 +160,33 @@ def update_plan(params: dict) -> dict:
         profiles = session.scalars(select(ResellerProfile).where(ResellerProfile.plan_id == plan_id)).all()
         for profile in profiles:
             _require_capacity(session, profile, candidate)
+        policy = session.scalar(select(ResourcePolicy).where(
+            ResourcePolicy.scope_type == "reseller_plan", ResourcePolicy.scope_id == plan_id,
+        ))
+        values = _resource_values(params, fields, policy)
         for key, value in fields.items():
             setattr(row, key, value)
+        if policy is None:
+            policy = ResourcePolicy(scope_type="reseller_plan", scope_id=plan_id)
+            session.add(policy)
+        else:
+            policy.version += 1
+        for key, value in values.items():
+            setattr(policy, key, value)
         session.flush()
-        return _plan_dict(row)
+        result = _plan_dict(row, policy)
+    resource_manager._reconcile_scope("reseller_plan", plan_id)
+    return result
 
 
 def list_plans(params: dict | None = None) -> dict:
     with write_session() as session:
         rows = session.scalars(select(ResellerPlan).order_by(ResellerPlan.name)).all()
+        policies = {row.scope_id: row for row in session.scalars(select(ResourcePolicy).where(
+            ResourcePolicy.scope_type == "reseller_plan"
+        )).all()}
         counts = dict(session.execute(select(ResellerProfile.plan_id, func.count()).group_by(ResellerProfile.plan_id)).all())
-        return {"plans": [{**_plan_dict(row), "reseller_count": counts.get(row.id, 0)} for row in rows]}
+        return {"plans": [{**_plan_dict(row, policies.get(row.id)), "reseller_count": counts.get(row.id, 0)} for row in rows]}
 
 
 def delete_plan(params: dict) -> dict:
@@ -128,6 +197,11 @@ def delete_plan(params: dict) -> dict:
             raise ResellerError(f"reseller plan {plan_id} not found")
         if session.scalar(select(ResellerProfile.id).where(ResellerProfile.plan_id == plan_id)) is not None:
             raise ResellerError("plan is assigned to a reseller")
+        policy = session.scalar(select(ResourcePolicy).where(
+            ResourcePolicy.scope_type == "reseller_plan", ResourcePolicy.scope_id == plan_id,
+        ))
+        if policy is not None:
+            session.delete(policy)
         session.delete(row)
     return {"status": "deleted", "id": plan_id}
 
@@ -189,6 +263,7 @@ def list_resellers(params: dict | None = None) -> dict:
 
 def update_reseller(params: dict) -> dict:
     profile_id = int(params["reseller_id"])
+    resource_account_ids: list[int] = []
     with _state_lock, write_session() as session:
         profile = session.get(ResellerProfile, profile_id)
         if profile is None:
@@ -200,6 +275,9 @@ def update_reseller(params: dict) -> dict:
                 raise ResellerError(f"reseller plan {plan_id} not found")
             _require_capacity(session, profile, plan)
             profile.plan_id = plan_id
+            resource_account_ids = list(session.scalars(select(ResellerAccount.account_id).where(
+                ResellerAccount.reseller_id == profile.id
+            )).all())
         if "status" in params:
             status = str(params["status"])
             if status not in ("active", "suspended"):
@@ -213,7 +291,10 @@ def update_reseller(params: dict) -> dict:
                 raise ValidationError("company must be at most 160 characters")
             profile.company = company
         session.flush()
-        return _profile_dict(session, profile)
+        result = _profile_dict(session, profile)
+    for account_id in resource_account_ids:
+        _reconcile_account(account_id)
+    return result
 
 
 def move_account(params: dict) -> dict:
@@ -250,8 +331,11 @@ def move_account(params: dict) -> dict:
             session.flush()
         if target is not None:
             session.add(ResellerAccount(reseller_id=target.id, account_id=account.id))
-        return {"username": username, "reseller_id": target_id,
-                "reseller_username": _profile_dict(session, target)["username"] if target else None}
+        account_id = account.id
+        result = {"username": username, "reseller_id": target_id,
+                  "reseller_username": _profile_dict(session, target)["username"] if target else None}
+    _reconcile_account(account_id)
+    return result
 
 
 def _profile_for_username(session, username: str, *, active: bool = True) -> ResellerProfile:
@@ -283,9 +367,12 @@ def dashboard(params: dict) -> dict:
             ResellerAccount.reseller_id == profile.id, Account.status != "terminated"
         ).order_by(Account.username)).all()
         used_disk = sum(account.quota_hard_mb for account in accounts)
+        policy = session.scalar(select(ResourcePolicy).where(
+            ResourcePolicy.scope_type == "reseller_plan", ResourcePolicy.scope_id == plan.id,
+        ))
         return {
             "profile": _profile_dict(session, profile),
-            "plan": _plan_dict(plan),
+            "plan": _plan_dict(plan, policy),
             "usage": {"accounts": len(accounts), "disk_mb": used_disk},
             "accounts": [handlers_account._account_to_dict(account) for account in accounts],
         }
@@ -309,7 +396,10 @@ def create_account(params: dict) -> dict:
                 raise ResellerError("reseller disk allocation limit reached")
             if session.scalar(select(PanelUser.id).where(PanelUser.username == username)) is not None:
                 raise ResellerError(f"panel login '{username}' already exists")
-            plan_values = _plan_dict(plan)
+            policy = session.scalar(select(ResourcePolicy).where(
+                ResourcePolicy.scope_type == "reseller_plan", ResourcePolicy.scope_id == plan.id,
+            ))
+            plan_values = _plan_dict(plan, policy)
             profile_id = profile.id
         account = handlers_account.create_account({
             "username": username,
@@ -327,6 +417,7 @@ def create_account(params: dict) -> dict:
             handlers_auth.create_panel_user({"username": username, "password": password, "role": "customer", "account_id": account["id"]})
             with write_session() as session:
                 session.add(ResellerAccount(reseller_id=profile_id, account_id=account["id"]))
+            _reconcile_account(account["id"])
         except Exception:
             try:
                 handlers_account.terminate_account({"username": username})

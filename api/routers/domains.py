@@ -63,6 +63,13 @@ def set_domain_suspended(username: str, domain: str, body: SetDomainSuspendedBod
     return call_daemon("domain.set_suspended", identity, username=username, domain=domain, **body.model_dump())
 
 
+@api_router.post("/{domain}/reload-htaccess")
+def reload_htaccess(username: str, domain: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("htaccess.reload", identity, username=username, domain=domain)
+
+
 @ui_router.post("")
 def ui_add_domain(
     username: str,

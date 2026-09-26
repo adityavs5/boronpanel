@@ -16,6 +16,7 @@ import pytest
 warnings.filterwarnings("ignore")
 
 pytest.importorskip("fastapi")
+pytestmark = pytest.mark.usefixtures("isolated_db")
 
 from fastapi.testclient import TestClient  # noqa: E402
 

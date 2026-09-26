@@ -46,6 +46,7 @@ function MailboxesTab({ domain }) {
   const [toDelete, setToDelete] = useState(null)
   const [selected, setSelected] = useState(null)
   const [password, setPassword] = useState('')
+  const [launching, setLaunching] = useState('')
   useEffect(() => { setSelected(null); setPassword('') }, [domain, username])
   const passwordMut = useMutation({
     mutationFn: () => patch(`/api/v1/accounts/${encodeURIComponent(username)}/email/${encodeURIComponent(selected.local_part)}/password`, {domain, password}),
@@ -80,6 +81,29 @@ function MailboxesTab({ domain }) {
     onError: (e) => toast.error('Could not delete mailbox', e.message),
   })
 
+  const openWebmail = async (row) => {
+    const address = `${row.local_part}@${domain}`
+    const target = `boron-webmail-${Date.now()}`
+    const tab = window.open('', target)
+    if (tab) tab.opener = null
+    setLaunching(address)
+    try {
+      const launch = await post(`/api/v1/accounts/${encodeURIComponent(username)}/email/${encodeURIComponent(row.local_part)}/webmail-session`, { domain })
+      const form = document.createElement('form')
+      form.method = 'POST'
+      form.action = `${launch.url.replace(/\/$/, '')}/?_task=login&_action=login`
+      form.target = tab ? target : '_blank'
+      for (const [name, value] of Object.entries({ _task: 'login', _action: 'login', _user: address, _pass: 'boron-sso', _boron_token: launch.token })) {
+        const input = document.createElement('input')
+        input.type = 'hidden'; input.name = name; input.value = value; form.appendChild(input)
+      }
+      document.body.appendChild(form); form.submit(); form.remove()
+    } catch (error) {
+      if (tab) tab.close()
+      toast.error('Could not open webmail', error.message)
+    } finally { setLaunching('') }
+  }
+
   const columns = [
     {
       key: 'local_part',
@@ -105,7 +129,7 @@ function MailboxesTab({ domain }) {
       header: '',
       align: 'right',
       render: (r) => (
-        <div className="flex items-center justify-end gap-2"><Button variant="secondary" size="sm" onClick={event => { event.stopPropagation(); setSelected(r) }}>Manage</Button><Button variant="ghost" size="icon-sm" onClick={event => { event.stopPropagation(); setToDelete(r.local_part) }} aria-label="Delete mailbox">
+        <div className="flex items-center justify-end gap-2"><Button variant="primary" size="sm" loading={launching === `${r.local_part}@${domain}`} onClick={event => { event.stopPropagation(); openWebmail(r) }}><ExternalLink className="h-4 w-4" /> Webmail</Button><Button variant="secondary" size="sm" onClick={event => { event.stopPropagation(); setSelected(r) }}>Manage</Button><Button variant="ghost" size="icon-sm" onClick={event => { event.stopPropagation(); setToDelete(r.local_part) }} aria-label="Delete mailbox">
           <Trash2 className="h-4 w-4 text-danger" />
         </Button></div>
       ),
@@ -1020,6 +1044,11 @@ export default function Email({ defaultTab = 'mailboxes' }) {
     queryFn: () => get('/api/v1/mail/webmail'),
     staleTime: 300_000,
   })
+  const inventoryQ = useQuery({
+    queryKey: ['mailbox-inventory', username],
+    queryFn: () => get(`/api/v1/accounts/${username}/email/mailboxes`),
+    enabled: !!username,
+  })
 
   const domains = domainsQ.data?.domains || []
 
@@ -1055,6 +1084,8 @@ export default function Email({ defaultTab = 'mailboxes' }) {
         />
       ) : !domain ? (
         <CenteredSpinner />
+      ) : activeTab !== 'mailboxes' && !inventoryQ.isLoading && (inventoryQ.data?.mailboxes || []).length === 0 ? (
+        <EmptyState icon={Inbox} title="No email accounts yet" description="Create an email account to use forwarding, spam controls, webmail, mailbox migration and mailbox backups." action={<Button onClick={() => setSearchParams(new URLSearchParams())}><Plus className="h-4 w-4" /> Create email account</Button>} />
       ) : (
         <Tabs value={activeTab} key={domain} onValueChange={(tab) => setSearchParams((prev) => {
           const next = new URLSearchParams(prev)

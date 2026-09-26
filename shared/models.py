@@ -344,6 +344,9 @@ class DkimKey(Base):
     domain: Mapped[str] = mapped_column(String(253), unique=True, index=True)
     selector: Mapped[str] = mapped_column(String(63), default="default")
     dns_published: Mapped[bool] = mapped_column(default=False)
+    signing_active: Mapped[bool] = mapped_column(default=False)
+    last_verified_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -990,6 +993,15 @@ class OlsServerSettings(Base):
     quic_enabled: Mapped[bool] = mapped_column(default=True)
     log_level: Mapped[str] = mapped_column(String(16), default="WARN")
     log_keep_days: Mapped[int] = mapped_column(Integer, default=90)
+    throttle_preset: Mapped[str] = mapped_column(String(16), default="disabled")
+    static_req_per_sec: Mapped[int] = mapped_column(Integer, default=0)
+    dyn_req_per_sec: Mapped[int] = mapped_column(Integer, default=0)
+    out_bandwidth: Mapped[int] = mapped_column(Integer, default=0)
+    in_bandwidth: Mapped[int] = mapped_column(Integer, default=0)
+    client_soft_limit: Mapped[int] = mapped_column(Integer, default=10000)
+    client_hard_limit: Mapped[int] = mapped_column(Integer, default=10000)
+    client_grace_period: Mapped[int] = mapped_column(Integer, default=15)
+    client_ban_period: Mapped[int] = mapped_column(Integer, default=300)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
@@ -2470,3 +2482,140 @@ class SuspensionPageSettings(Base):
     heading: Mapped[str] = mapped_column(String(160), default="Account suspended")
     message: Mapped[str] = mapped_column(String(500), default="Please contact your hosting provider for assistance.")
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+# Mail/DNS/resource/security-stack release contracts.  These tables are
+# deliberately additive so upgraded panels can continue to read the legacy
+# Account/Plan limit columns while the compatibility adapter populates the
+# richer policies below.
+class FeatureControl(Base):
+    """Singleton rollout switches for controls that can affect workloads."""
+
+    __tablename__ = "feature_controls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    isolation_mode: Mapped[str] = mapped_column(String(16), default="disabled")
+    db_governor_mode: Mapped[str] = mapped_column(String(16), default="monitor")
+    ols_throttle_mode: Mapped[str] = mapped_column(String(16), default="disabled")
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ResourcePolicy(Base):
+    """Versioned, inheritable native Linux/OLS resource policy."""
+
+    __tablename__ = "resource_policies"
+    __table_args__ = (UniqueConstraint("scope_type", "scope_id", name="uq_resource_policy_scope"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope_type: Mapped[str] = mapped_column(String(24), index=True)  # server|plan|reseller_plan|account
+    scope_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    cpu_cores: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cpu_weight: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_high_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_max_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    io_read_bps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    io_write_bps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    io_read_iops: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    io_write_iops: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    nproc: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    entry_processes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_apply_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    last_apply_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    last_applied_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ResourceSample(Base):
+    __tablename__ = "resource_samples"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    period_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    cpu_pct: Mapped[float] = mapped_column(Float, default=0)
+    memory_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    io_read_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    io_write_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    pids: Mapped[int] = mapped_column(Integer, default=0)
+    sampled_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class ResourceFault(Base):
+    __tablename__ = "resource_faults"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    resource: Mapped[str] = mapped_column(String(32), index=True)
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    detail: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    detected_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class WebmailLaunch(Base):
+    """One-use Roundcube launch and independently scoped mail credential."""
+
+    __tablename__ = "webmail_launches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    mailbox: Mapped[str] = mapped_column(String(320), index=True)
+    credential_hash: Mapped[str] = mapped_column(String(255))
+    credential_enc: Mapped[str] = mapped_column(String(1024))
+    source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    redeemed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DbGovernorPolicy(Base):
+    __tablename__ = "db_governor_policies"
+    __table_args__ = (UniqueConstraint("scope_type", "scope_id", name="uq_db_governor_policy_scope"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope_type: Mapped[str] = mapped_column(String(24), index=True)  # server|plan|account
+    scope_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    mode: Mapped[str] = mapped_column(String(16), default="monitor")
+    max_user_connections: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_queries_per_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_updates_per_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_connections_per_hour: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_statement_time: Mapped[float | None] = mapped_column(Float, nullable=True)
+    warning_threshold_pct: Mapped[int] = mapped_column(Integer, default=80)
+    cooldown_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class DbGovernorEvent(Base):
+    __tablename__ = "db_governor_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True, index=True)
+    database_user: Mapped[str] = mapped_column(String(64), index=True)
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    action: Mapped[str] = mapped_column(String(32), default="observed")
+    detail: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class StackJob(Base):
+    """Durable typed maintenance job; command strings are never stored."""
+
+    __tablename__ = "stack_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    component: Mapped[str] = mapped_column(String(24), index=True)
+    action: Mapped[str] = mapped_column(String(24))
+    target: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    phase: Mapped[str] = mapped_column(String(64), default="queued")
+    progress_pct: Mapped[int] = mapped_column(Integer, default=0)
+    detail: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -14,7 +14,11 @@ borond, so there's no privilege boundary to cross).
 from __future__ import annotations
 
 import datetime as dt
+import http.client
 import os
+import socket
+import ssl as ssl_library
+import secrets
 from pathlib import Path
 
 from cryptography import x509
@@ -35,6 +39,86 @@ _VENV_PYTHON = str(Path(settings.certbot_bin).parent / "python")
 
 class SslError(Exception):
     pass
+
+
+def _service_hostname(domain: str) -> bool:
+    return domain in {value for value in (
+        settings.panel_hostname, settings.webmail_hostname, settings.pma_hostname,
+        settings.mail_hostname,
+    ) if value}
+
+
+def _resolved_addresses(hostname: str) -> list[str]:
+    try:
+        return sorted({item[4][0] for item in socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)})
+    except socket.gaierror:
+        return []
+
+
+def _http_challenge_preflight(hostname: str, addresses: list[str]) -> dict:
+    if hostname != settings.webmail_hostname:
+        return {"checked": False, "ok": True, "detail": "DNS-01 or non-webmail service"}
+    token = "boron-preflight-" + secrets.token_hex(8)
+    directory = Path(settings.webmail_docroot) / ".well-known" / "acme-challenge"
+    directory.mkdir(parents=True, exist_ok=True)
+    probe = directory / token
+    probe.write_text(token)
+    try:
+        for address in addresses:
+            if ":" in address:
+                continue
+            try:
+                connection = http.client.HTTPConnection(address, 80, timeout=5)
+                connection.request("GET", f"/.well-known/acme-challenge/{token}", headers={"Host": hostname})
+                response = connection.getresponse()
+                payload = response.read(1024).decode(errors="replace")
+                connection.close()
+                if response.status == 200 and payload.strip() == token:
+                    return {"checked": True, "ok": True, "address": address}
+            except OSError:
+                continue
+        return {"checked": True, "ok": False, "detail": "ACME challenge file was not served by the webmail vhost"}
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def _sni_probe(hostname: str, addresses: list[str], port: int = 443) -> dict:
+    context = ssl_library.create_default_context()
+    errors = []
+    for address in addresses:
+        try:
+            with socket.create_connection((address, port), timeout=5) as raw:
+                with context.wrap_socket(raw, server_hostname=hostname) as secure:
+                    cert = secure.getpeercert()
+                    ssl_library.match_hostname(cert, hostname)
+                    return {"ok": True, "address": address, "protocol": secure.version()}
+        except (OSError, ssl_library.SSLError, ssl_library.CertificateError) as exc:
+            errors.append(f"{address}: {type(exc).__name__}")
+    return {"ok": False, "detail": "; ".join(errors) or "No address available"}
+
+
+def service_certificate_diagnostics(params: dict) -> dict:
+    hostname = validate_domain(params["domain"])
+    if not _service_hostname(hostname):
+        raise SslError("Diagnostics are available only for configured service hostnames")
+    addresses = _resolved_addresses(hostname)
+    expected = [settings.server_public_ip] if settings.server_public_ip else []
+    mismatched = [address for address in addresses if expected and address not in expected]
+    dns_ok = bool(addresses) and (not expected or settings.server_public_ip in addresses) and not mismatched
+    details = _cert_file_details(hostname)
+    challenge = _http_challenge_preflight(hostname, addresses)
+    probe_port = 993 if hostname == settings.mail_hostname and hostname != settings.webmail_hostname else 443
+    sni = _sni_probe(hostname, addresses, probe_port) if details else {"ok": False, "detail": "No certificate installed"}
+    return {
+        "domain": hostname,
+        "dns": {"ok": dns_ok, "expected": expected, "resolved": addresses, "mismatched": mismatched},
+        "http_challenge": challenge,
+        "certificate": details,
+        "renewal": {"enabled": _auto_renew_enabled(hostname)},
+        "sni": sni,
+        "probe_port": probe_port,
+        "ols_deployed": details is not None and sni.get("ok", False),
+    }
 
 
 def _dns01_args() -> list[str]:
@@ -109,7 +193,7 @@ def _challenge_plan(domain: str) -> tuple[str, list[str]]:
     # per-account Domain row -- it's server infrastructure, same category
     # as the panel's own TLS cert. Its webroot is settings.webmail_docroot,
     # not something looked up from the accounts/domains tables.
-    if domain == settings.webmail_hostname:
+    if domain in {settings.webmail_hostname, settings.mail_hostname}:
         from daemon.acme_http import challenge_args
         return "http-01", challenge_args()
 
@@ -132,6 +216,16 @@ def issue_certificate(params: dict) -> dict:
     domain = validate_domain(params["domain"])
     if not settings.letsencrypt_email:
         raise SslError("letsencrypt_email is not set in boron.toml")
+
+    if _service_hostname(domain):
+        preflight = service_certificate_diagnostics({"domain": domain})
+        if not preflight["dns"]["ok"]:
+            raise SslError(
+                f"DNS for '{domain}' must point only to this server before issuance "
+                f"(resolved: {', '.join(preflight['dns']['resolved']) or 'nothing'})"
+            )
+        if domain == settings.webmail_hostname and not preflight["http_challenge"]["ok"]:
+            raise SslError(preflight["http_challenge"].get("detail", "Webmail ACME preflight failed"))
 
     with write_session() as session:
         site_domain = session.scalar(select(Domain).where(Domain.domain == domain))
@@ -171,7 +265,12 @@ def issue_certificate(params: dict) -> dict:
     if not result.ok:
         raise SslError(f"certbot failed ({mode}): {result.stderr.strip() or result.stdout.strip()}")
 
-    return {"domain": domain, "challenge": mode, "status": "issued"}
+    response = {"domain": domain, "challenge": mode, "status": "issued"}
+    if _service_hostname(domain):
+        response["diagnostics"] = service_certificate_diagnostics({"domain": domain})
+        if not response["diagnostics"]["sni"]["ok"]:
+            raise SslError("Certificate was issued but the service did not present it over HTTPS; review diagnostics")
+    return response
 
 
 def issue_wildcard_certificate(params: dict) -> dict:
@@ -232,9 +331,12 @@ def issue_wildcard_certificate(params: dict) -> dict:
 
 def certificate_status(params: dict) -> dict:
     domain = validate_domain(params["domain"])
-    if domain in {settings.webmail_hostname, settings.pma_hostname}:
-        key, cert = letsencrypt_cert_paths(domain)
-        exists = Path(key).exists() and Path(cert).exists()
+    if _service_hostname(domain):
+        if domain == settings.panel_hostname:
+            exists = Path("/etc/boron/ssl/api/panel.key").exists() and Path("/etc/boron/ssl/api/panel.crt").exists()
+        else:
+            key, cert = letsencrypt_cert_paths(domain)
+            exists = Path(key).exists() and Path(cert).exists()
         return {"domain": domain, "ssl_status": "active" if exists else "none"}
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain))
@@ -279,7 +381,10 @@ def _cert_file_details(domain: str) -> dict | None:
     own issue flow succeed", not the certificate's real, independently-
     verifiable expiry -- the dashboard's whole point is showing the
     latter)."""
-    _key_path, cert_path = letsencrypt_cert_paths(domain)
+    if domain == settings.panel_hostname:
+        cert_path = "/etc/boron/ssl/api/panel.crt"
+    else:
+        _key_path, cert_path = letsencrypt_cert_paths(domain)
     if not Path(cert_path).exists():
         return None
     try:
@@ -363,12 +468,20 @@ def get_admin_ssl_dashboard(params: dict) -> dict:
         for domain, ssl_status, wildcard, username, account_status in rows
     ]
     hosted = {item["domain"] for item in domain_data}
-    for hostname, label in ((settings.webmail_hostname, "Webmail"), (settings.pma_hostname, "phpMyAdmin")):
-        if hostname and hostname not in hosted:
+    seen_services: set[str] = set()
+    for hostname, label, service in (
+        (settings.panel_hostname, "Panel", "panel"),
+        (settings.webmail_hostname, "Webmail", "webmail"),
+        (settings.mail_hostname, "Mail", "mail"),
+        (settings.pma_hostname, "phpMyAdmin", "phpmyadmin"),
+    ):
+        if hostname and hostname not in hosted and hostname not in seen_services:
+            seen_services.add(hostname)
             status = certificate_status({"domain": hostname})["ssl_status"]
             domain_data.append({
                 "domain": hostname, "ssl_status": status, "is_wildcard": False,
                 "username": label, "account_status": "system", "system": True,
+                "service": service,
             })
     timer_active = run(["systemctl", "is-active", "certbot.timer"], timeout=10).stdout.strip() == "active"
     entries = []
@@ -381,6 +494,7 @@ def get_admin_ssl_dashboard(params: dict) -> dict:
             "days_remaining": details["days_remaining"] if details else None,
             "issuer": details["issuer"] if details else None,
             "auto_renew": bool(details) and timer_active and _auto_renew_enabled(item["domain"]),
+            "deployment_status": "active" if item.get("system") and details else ("pending" if item.get("system") else None),
         })
     return {"certbot_timer_active": timer_active, "domains": entries}
 

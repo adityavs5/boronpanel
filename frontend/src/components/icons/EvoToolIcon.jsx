@@ -10,7 +10,7 @@ import {
   FcServices, FcSettings, FcStatistics, FcSynchronize, FcTemplate, FcTodoList,
   FcUpload, FcViewDetails, FcWorkflow,
 } from 'react-icons/fc'
-import { SiNodedotjs, SiPython, SiRedis, SiWordpress } from 'react-icons/si'
+import { getProductBrandIcon } from '@/components/icons/BrandIcons'
 
 const routeIcons = {
   '/domains': FcGlobe,
@@ -52,6 +52,10 @@ const routeIcons = {
   '/plans': FcPackage,
   '/import/accounts': FcImport,
   '/health': FcStatistics,
+  '/resource-manager': FcAreaChart,
+  '/filesystem-isolation': FcDataProtection,
+  '/security-center': FcSafe,
+  '/stack-manager': FcPackage,
   '/services': FcServices,
   '/openlitespeed': FcLinux,
   '/db-monitor': FcAcceptDatabase,
@@ -103,10 +107,8 @@ const exactIcons = {
 
 export function EvoToolIcon({ to, fallback: Fallback }) {
   const path = to?.split('?')[0]
-  if (path === '/wordpress') return <SiWordpress className="evo-brand-glyph brand-wordpress" />
-  if (path === '/redis') return <SiRedis className="evo-brand-glyph brand-redis" />
-  if (path === '/node-apps' || path === '/software/node-apps') return <SiNodedotjs className="evo-brand-glyph brand-node" />
-  if (path === '/python-apps' || path === '/software/python-apps') return <SiPython className="evo-brand-glyph brand-python" />
+  const Brand = getProductBrandIcon(path)
+  if (Brand) return <Brand className="evo-brand-glyph" />
   const Icon = exactIcons[to] || routeIcons[path] || FcFile
   return <Icon className="evo-pictogram" />
 }

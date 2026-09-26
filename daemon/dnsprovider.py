@@ -20,6 +20,8 @@ best-effort deletes stay best-effort whichever backend serves the zone.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+import threading
 
 from daemon import dns_operations
 
@@ -34,6 +36,7 @@ from daemon.powerdns import DEFAULT_TTL, PowerDnsError  # re-exported for caller
 
 DnsError = (PowerDnsError, CloudflareError)
 logger = logging.getLogger("borond.dnsprovider")
+_batch_state = threading.local()
 
 
 def _cluster_notify(zone: str, action: str = "upsert") -> None:
@@ -43,6 +46,12 @@ def _cluster_notify(zone: str, action: str = "upsert") -> None:
     mutation failure would invite a duplicate user retry. Log it and let the
     explicit cluster Sync all repair the gap.
     """
+    if getattr(_batch_state, "depth", 0):
+        pending = getattr(_batch_state, "pending", {})
+        # Delete wins over an earlier upsert for the same logical batch.
+        pending[zone] = "delete" if action == "delete" else pending.get(zone, action)
+        _batch_state.pending = pending
+        return
     try:
         from daemon import dnscluster, dnssetup
         if dnssetup.current_mode() != "cluster":
@@ -50,6 +59,29 @@ def _cluster_notify(zone: str, action: str = "upsert") -> None:
         dnscluster.enqueue_zone(zone, action)
     except Exception:
         logger.exception("Could not queue DNS cluster update for %s", zone)
+
+
+@contextmanager
+def batch_cluster_notifications():
+    """Coalesce a logical multi-record mutation into one cluster sync.
+
+    Authoritative provider writes still happen immediately.  Only the
+    downstream full-zone notification is deferred, preventing a peer from
+    observing a half-repaired mail template.
+    """
+    outer = getattr(_batch_state, "depth", 0) == 0
+    if outer:
+        _batch_state.pending = {}
+    _batch_state.depth = getattr(_batch_state, "depth", 0) + 1
+    try:
+        yield
+    finally:
+        _batch_state.depth -= 1
+        if outer:
+            pending = _batch_state.pending
+            _batch_state.pending = {}
+            for zone, action in pending.items():
+                _cluster_notify(zone, action)
 
 
 def cloudflare_zone_row(zone: str) -> CloudflareZone | None:

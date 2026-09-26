@@ -86,3 +86,53 @@ def test_phpmyadmin_renewal_refreshes_infrastructure_vhost(hook,monkeypatch):
     monkeypatch.setattr(hook.ols,'refresh_pma_vhost',lambda:calls.append('pma'))
     assert hook.main()==0
     assert calls==['pma']
+
+
+def test_mail_certificate_uses_dedicated_paths_without_replacing_ols_default(hook, tmp_path, monkeypatch):
+    live = tmp_path / "letsencrypt" / "mail.example.com"
+    live.mkdir(parents=True)
+    (live / "fullchain.pem").write_text("mail certificate")
+    (live / "privkey.pem").write_text("mail key")
+    ssl_dir = tmp_path / "boron-ssl"
+    ssl_dir.mkdir()
+    (ssl_dir / "default.crt").write_text("ols certificate")
+    (ssl_dir / "default.key").write_text("ols key")
+    monkeypatch.setattr(hook.settings, "mail_hostname", "mail.example.com")
+    monkeypatch.setattr(hook, "LETSENCRYPT_LIVE_DIR", tmp_path / "letsencrypt")
+    monkeypatch.setattr(hook, "MAIL_CERT_PATH", ssl_dir / "mail.crt")
+    monkeypatch.setattr(hook, "MAIL_KEY_PATH", ssl_dir / "mail.key")
+    monkeypatch.setattr(hook, "_validate_certificate_pair", lambda cert, key: None)
+    monkeypatch.setattr(hook, "run", lambda *args, **kwargs: None)
+
+    hook._deploy_mail_service_certificate("mail.example.com")
+
+    assert (ssl_dir / "mail.crt").read_text() == "mail certificate"
+    assert (ssl_dir / "mail.key").read_text() == "mail key"
+    assert (ssl_dir / "default.crt").read_text() == "ols certificate"
+    assert (ssl_dir / "default.key").read_text() == "ols key"
+
+
+def test_mail_certificate_restores_previous_pair_when_service_validation_fails(hook, tmp_path, monkeypatch):
+    live = tmp_path / "letsencrypt" / "mail.example.com"
+    live.mkdir(parents=True)
+    (live / "fullchain.pem").write_text("new certificate")
+    (live / "privkey.pem").write_text("new key")
+    ssl_dir = tmp_path / "boron-ssl"
+    ssl_dir.mkdir()
+    (ssl_dir / "mail.crt").write_text("previous certificate")
+    (ssl_dir / "mail.key").write_text("previous key")
+    monkeypatch.setattr(hook.settings, "mail_hostname", "mail.example.com")
+    monkeypatch.setattr(hook, "LETSENCRYPT_LIVE_DIR", tmp_path / "letsencrypt")
+    monkeypatch.setattr(hook, "MAIL_CERT_PATH", ssl_dir / "mail.crt")
+    monkeypatch.setattr(hook, "MAIL_KEY_PATH", ssl_dir / "mail.key")
+    monkeypatch.setattr(hook, "_validate_certificate_pair", lambda cert, key: None)
+
+    def fail_postfix_check(args, **kwargs):
+        if args == ["postfix", "check"]:
+            raise RuntimeError("invalid service configuration")
+
+    monkeypatch.setattr(hook, "run", fail_postfix_check)
+    with pytest.raises(RuntimeError, match="invalid service configuration"):
+        hook._deploy_mail_service_certificate("mail.example.com")
+    assert (ssl_dir / "mail.crt").read_text() == "previous certificate"
+    assert (ssl_dir / "mail.key").read_text() == "previous key"

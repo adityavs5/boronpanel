@@ -9,6 +9,7 @@ import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter,
   ConfirmDialog,
@@ -35,6 +36,7 @@ export default function Databases() {
   const [health, setHealth] = useState(null)
   const [renameName, setRenameName] = useState('')
   const [creds, setCreds] = useState(null) // { title, db_name, db_user, password }
+  const [accessDatabase, setAccessDatabase] = useState('')
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['databases', username],
@@ -234,6 +236,13 @@ export default function Databases() {
   return (
     <div>
       <PageHeader title="Databases" description="Create and manage MySQL databases, users and application credentials." icon={Database} />
+      <Tabs defaultValue="databases">
+        <TabsList aria-label="Database management sections">
+          <TabsTrigger value="databases">Databases</TabsTrigger>
+          <TabsTrigger value="users">Users</TabsTrigger>
+          <TabsTrigger value="access">Access &amp; privileges</TabsTrigger>
+        </TabsList>
+        <TabsContent value="databases" className="space-y-6">
       <section className="database-create-section" aria-labelledby="database-create-title">
         <h2 id="database-create-title">Create New Database</h2>
         <p className="mb-4 text-sm text-muted-foreground">A database and its matching user are created together. Save the credentials shown after creation.</p>
@@ -265,8 +274,9 @@ export default function Databases() {
         emptyDescription="Create a MySQL database to power your applications."
         emptyIcon={Database}
       />
-
-      <section className="database-create-section mt-8" aria-labelledby="database-user-create-title">
+        </TabsContent>
+        <TabsContent value="users" className="space-y-6">
+      <section className="database-create-section" aria-labelledby="database-user-create-title">
         <h2 id="database-user-create-title">Create Database User</h2>
         <p className="mb-4 text-sm text-muted-foreground">Create one login, then assign it to any database on this account.</p>
         <form onSubmit={event => { event.preventDefault(); createUserMut.mutate({ name: userForm.name.trim(), password: userForm.password || undefined, host: userForm.host.trim() || 'localhost' }) }}>
@@ -299,6 +309,29 @@ export default function Databases() {
         emptyTitle="No database users yet"
         emptyDescription="Create a user and assign it to a database."
       />
+        </TabsContent>
+        <TabsContent value="access">
+          <section className="database-create-section" aria-labelledby="database-access-title">
+            <h2 id="database-access-title">Database access</h2>
+            <p className="mb-4 text-sm text-muted-foreground">Choose a database to attach users, remove access, or set read-only and custom privileges.</p>
+            <div className="grid items-end gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <FormField label="Database">
+                <Select value={accessDatabase} onChange={event => setAccessDatabase(event.target.value)}>
+                  <option value="">Choose a database…</option>
+                  {(data?.databases || []).map(row => <option key={row.db_name} value={row.db_name}>{row.db_name}</option>)}
+                </Select>
+              </FormField>
+              <Button disabled={!accessDatabase} onClick={() => setSelected((data?.databases || []).find(row => row.db_name === accessDatabase) || null)}>Manage access</Button>
+            </div>
+            {accessDatabase && <div className="mt-5 rounded-btn border border-border bg-muted/30 p-4">
+              <h3 className="font-medium">Current access</h3>
+              <div className="mt-3 space-y-2">{((data?.databases || []).find(row => row.db_name === accessDatabase)?.grants || []).map(grant => (
+                <div key={`${grant.db_user}@${grant.host}`} className="flex flex-wrap items-center justify-between gap-2 text-sm"><code>{grant.db_user}@{grant.host}</code><span className="text-muted-foreground">{grant.preset === 'read_only' ? 'Read only' : grant.preset === 'custom' ? grant.privileges.join(', ') : 'Full hosted access'}</span></div>
+              ))}</div>
+            </div>}
+          </section>
+        </TabsContent>
+      </Tabs>
 
       {/* Credentials reveal (after create / reset) */}
       <Dialog open={!!creds} onOpenChange={(v) => { if (!v) setCreds(null) }}>
@@ -327,16 +360,25 @@ export default function Databases() {
       <Dialog open={!!selected} onOpenChange={open => !open && setSelected(null)}>
         <DialogContent size="lg">
           <DialogHeader><DialogTitle>{selected?.db_name}</DialogTitle><DialogDescription>Manage this database and the users allowed to access it.</DialogDescription></DialogHeader>
-          <DialogBody className="space-y-5">
-            <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm"><dt className="text-muted-foreground">Database</dt><dd className="break-all">{selected?.db_name}</dd><dt className="text-muted-foreground">Primary user</dt><dd className="break-all">{selected?.db_user}</dd><dt className="text-muted-foreground">Storage</dt><dd>{formatBytes(selected?.size_bytes || 0)} across {selected?.table_count || 0} tables</dd><dt className="text-muted-foreground">Engines</dt><dd>{selected?.engines?.join(', ') || 'No tables'}</dd><dt className="text-muted-foreground">Created</dt><dd>{selected?.created_at ? formatDate(selected.created_at) : '—'}</dd></dl>
-            <div className="flex flex-wrap gap-3"><Button loading={pmaMut.isPending} onClick={() => openPma(selected)}><ExternalLink className="h-4 w-4"/> Open phpMyAdmin</Button><Button variant="outline" loading={resetMut.isPending} onClick={() => {resetMut.mutate(selected);setSelected(null)}}><KeyRound className="h-4 w-4"/> Reset password</Button><Button variant="outline" loading={healthMut.isPending} onClick={() => healthMut.mutate({ row: selected, repair: false })}><Stethoscope className="h-4 w-4"/> Check tables</Button><Button variant="outline" loading={healthMut.isPending} onClick={() => healthMut.mutate({ row: selected, repair: true })}>Repair MyISAM/Aria</Button><Button variant="outline" asChild><a href={`/api/v1/accounts/${username}/databases/${encodeURIComponent(selected?.db_name || '')}/export`}>Export SQL</a></Button><label className="inline-flex h-9 cursor-pointer items-center rounded-btn border border-input px-3 text-sm font-medium hover:bg-muted">{importMut.isPending ? 'Importing…' : 'Import SQL'}<input type="file" accept=".sql,application/sql,text/plain" className="sr-only" disabled={importMut.isPending} onChange={event => { const file = event.target.files?.[0]; if (file && selected) importMut.mutate({ row: selected, file }); event.target.value = '' }}/></label></div>
-            <div className="rounded-btn border border-border p-3"><h3 className="font-semibold">Rename database</h3><p className="mt-1 text-sm text-muted-foreground">Boron copies and validates the database before switching. Update wp-config.php or other application configuration after the rename.</p><div className="mt-3 flex gap-2"><div className="database-name-input flex-1"><span aria-hidden="true">{username}_</span><Input aria-label="New database name" value={renameName} onChange={event => setRenameName(event.target.value)} placeholder="newname" /></div><Button variant="outline" disabled={!renameName.trim()} loading={renameMut.isPending} onClick={() => renameMut.mutate({ row: selected, newName: renameName.trim() })}>Rename</Button></div></div>
-            <div className="space-y-3 border-t border-border pt-4"><h3 className="font-semibold">Users with access</h3>
+          <DialogBody>
+            <Tabs defaultValue="overview">
+              <TabsList><TabsTrigger value="overview">Overview</TabsTrigger><TabsTrigger value="access">Users &amp; privileges</TabsTrigger><TabsTrigger value="transfer">Import / export</TabsTrigger><TabsTrigger value="maintenance">Maintenance</TabsTrigger></TabsList>
+              <TabsContent value="overview" className="space-y-5">
+                <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm"><dt className="text-muted-foreground">Database</dt><dd className="break-all">{selected?.db_name}</dd><dt className="text-muted-foreground">Primary user</dt><dd className="break-all">{selected?.db_user}</dd><dt className="text-muted-foreground">Storage</dt><dd>{formatBytes(selected?.size_bytes || 0)} across {selected?.table_count || 0} tables</dd><dt className="text-muted-foreground">Engines</dt><dd>{selected?.engines?.join(', ') || 'No tables'}</dd><dt className="text-muted-foreground">Created</dt><dd>{selected?.created_at ? formatDate(selected.created_at) : '—'}</dd></dl>
+                <Button loading={pmaMut.isPending} onClick={() => openPma(selected)}><ExternalLink className="h-4 w-4"/> Open phpMyAdmin</Button>
+              </TabsContent>
+              <TabsContent value="access" className="space-y-3"><h3 className="font-semibold">Users with access</h3>
               {(data?.databases?.find(row => row.db_name === selected?.db_name)?.grants || []).map(grant => <div key={`${grant.db_user}@${grant.host}`} className="flex items-center justify-between gap-3 rounded-btn border border-border px-3 py-2 text-sm"><span><code>{grant.db_user}@{grant.host}</code><small className="ml-2 text-muted-foreground">{grant.preset === 'read_only' ? 'Read only' : grant.preset === 'custom' ? grant.privileges.join(', ') : 'Full hosted access'}</small></span>{!grant.original && <Button size="sm" variant="ghost" loading={revokeMut.isPending} onClick={() => revokeMut.mutate({ database: selected.db_name, user: grant.db_user, host: grant.host })}>Remove</Button>}</div>)}
               <div className="grid gap-2 sm:grid-cols-[2fr_1fr_auto]"><Select aria-label="Database user to assign" value={assignUser} onChange={event => setAssignUser(event.target.value)}><option value="">Choose a user</option>{(usersQuery.data?.users || []).filter(user => !(data?.databases?.find(row => row.db_name === selected?.db_name)?.grants || []).some(grant => grant.db_user === user.db_user && grant.host === user.host)).map(user => <option key={user.id} value={`${user.db_user}\n${user.host}`}>{user.db_user}@{user.host}</option>)}</Select><Select aria-label="Database privileges" value={assignPreset} onChange={event => setAssignPreset(event.target.value)}><option value="all">Full hosted access</option><option value="read_only">Read only</option><option value="custom">Custom</option></Select><Button disabled={!assignUser || (assignPreset === 'custom' && !customPrivileges.length)} loading={assignMut.isPending} onClick={() => { const [user, host] = assignUser.split('\n'); assignMut.mutate({ database: selected.db_name, user, host }) }}>Assign user</Button></div>
               {assignPreset === 'custom' && <fieldset className="grid gap-2 rounded-btn border border-border p-3 sm:grid-cols-3"><legend className="px-1 text-sm font-medium">Custom privileges</legend>{['SELECT','INSERT','UPDATE','DELETE','CREATE','DROP','ALTER','INDEX','REFERENCES','CREATE TEMPORARY TABLES','LOCK TABLES'].map(privilege => <label key={privilege} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={customPrivileges.includes(privilege)} onChange={event => setCustomPrivileges(values => event.target.checked ? [...values, privilege] : values.filter(value => value !== privilege))}/>{privilege}</label>)}</fieldset>}
-            </div>
-            {health && health.database === selected?.db_name && <div className="rounded-btn border border-border p-3"><h3 className="font-semibold">{health.operation === 'repair' ? 'Repair' : 'Check'} results</h3><div className="mt-2 max-h-48 overflow-auto text-sm">{health.tables.length ? health.tables.map(row => <p key={row.table}><code>{row.table}</code> · {row.engine || 'unknown'} · {row.status}: {row.message}</p>) : <p className="text-muted-foreground">This database has no tables.</p>}</div></div>}
+              </TabsContent>
+              <TabsContent value="transfer" className="space-y-4"><p className="text-sm text-muted-foreground">Move SQL data into or out of this database. Imports keep a private pre-import recovery copy.</p><div className="flex flex-wrap gap-3"><Button variant="outline" asChild><a href={`/api/v1/accounts/${username}/databases/${encodeURIComponent(selected?.db_name || '')}/export`}>Export SQL</a></Button><label className="inline-flex h-9 cursor-pointer items-center rounded-btn border border-input px-3 text-sm font-medium hover:bg-muted">{importMut.isPending ? 'Importing…' : 'Import SQL'}<input type="file" accept=".sql,application/sql,text/plain" className="sr-only" disabled={importMut.isPending} onChange={event => { const file = event.target.files?.[0]; if (file && selected) importMut.mutate({ row: selected, file }); event.target.value = '' }}/></label></div></TabsContent>
+              <TabsContent value="maintenance" className="space-y-5">
+                <div className="flex flex-wrap gap-3"><Button variant="outline" loading={resetMut.isPending} onClick={() => {resetMut.mutate(selected);setSelected(null)}}><KeyRound className="h-4 w-4"/> Reset primary password</Button><Button variant="outline" loading={healthMut.isPending} onClick={() => healthMut.mutate({ row: selected, repair: false })}><Stethoscope className="h-4 w-4"/> Check tables</Button><Button variant="outline" loading={healthMut.isPending} onClick={() => healthMut.mutate({ row: selected, repair: true })}>Repair MyISAM/Aria</Button></div>
+                <div className="rounded-btn border border-border p-3"><h3 className="font-semibold">Rename database</h3><p className="mt-1 text-sm text-muted-foreground">Boron copies and validates the database before switching. Update application configuration after the rename.</p><div className="mt-3 flex gap-2"><div className="database-name-input flex-1"><span aria-hidden="true">{username}_</span><Input aria-label="New database name" value={renameName} onChange={event => setRenameName(event.target.value)} placeholder="newname" /></div><Button variant="outline" disabled={!renameName.trim()} loading={renameMut.isPending} onClick={() => renameMut.mutate({ row: selected, newName: renameName.trim() })}>Rename</Button></div></div>
+                {health && health.database === selected?.db_name && <div className="rounded-btn border border-border p-3"><h3 className="font-semibold">{health.operation === 'repair' ? 'Repair' : 'Check'} results</h3><div className="mt-2 max-h-48 overflow-auto text-sm">{health.tables.length ? health.tables.map(row => <p key={row.table}><code>{row.table}</code> · {row.engine || 'unknown'} · {row.status}: {row.message}</p>) : <p className="text-muted-foreground">This database has no tables.</p>}</div></div>}
+              </TabsContent>
+            </Tabs>
           </DialogBody>
           <DialogFooter><Button variant="danger" onClick={() => {setToDelete(selected);setSelected(null)}}>Delete database</Button><Button variant="secondary" onClick={() => setSelected(null)}>Done</Button></DialogFooter>
         </DialogContent>

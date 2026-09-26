@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ShieldCheck, MoreHorizontal, RefreshCw, Asterisk, ShieldOff, Clock,
+  Server, Stethoscope,
 } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
@@ -25,6 +26,7 @@ export default function Ssl() {
   // confirm = { action: 'issue' | 'wildcard', row }
   const [confirm, setConfirm] = useState(null)
   const [selected, setSelected] = useState(null)
+  const [diagnostics, setDiagnostics] = useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['ssl', admin ? 'all' : username],
@@ -35,7 +37,7 @@ export default function Ssl() {
   const timerActive = data?.certbot_timer_active
 
   const issueMut = useMutation({
-    mutationFn: (r) => post(admin ? `/api/v1/admin/ssl/domains/${r.domain}/issue` : `/api/v1/accounts/${username}/domains/${r.domain}/ssl/issue`, { force: false }),
+    mutationFn: (r) => post(admin ? (r.service === 'panel' ? '/api/v1/admin/ssl/panel/issue' : `/api/v1/admin/ssl/domains/${r.domain}/issue`) : `/api/v1/accounts/${username}/domains/${r.domain}/ssl/issue`, { force: false }),
     onSuccess: (_res, r) => {
       toast.success('Certificate requested', `SSL issuance started for ${r.domain}.`)
       qc.invalidateQueries({ queryKey: ['ssl'] })
@@ -52,6 +54,11 @@ export default function Ssl() {
       setConfirm(null)
     },
     onError: (e) => toast.error('Could not issue wildcard certificate', e.message),
+  })
+  const diagnosticsMut = useMutation({
+    mutationFn: (row) => get(`/api/v1/admin/ssl/domains/${row.domain}/diagnostics`),
+    onSuccess: setDiagnostics,
+    onError: e => toast.error('Could not run certificate diagnostics', e.message),
   })
 
   const columns = [
@@ -137,6 +144,8 @@ export default function Ssl() {
   const confirmRow = confirm?.row
   const confirmLoading = isWildcard ? wildcardMut.isPending : issueMut.isPending
   const domains = data?.domains || []
+  const serviceDomains = domains.filter(row => row.system)
+  const hostedDomains = domains.filter(row => !row.system)
   const secured = domains.filter((row) => row.cert_status && !['missing', 'none', 'expired'].includes(row.cert_status)).length
   const expiring = domains.filter((row) => typeof row.days_remaining === 'number' && row.days_remaining < 30).length
   const unsecured = Math.max(0, domains.length - secured)
@@ -155,6 +164,8 @@ export default function Ssl() {
         )}
       </PageHeader>
 
+      {admin && serviceDomains.length > 0 && <section className="mb-6"><div className="ssl-section-title"><div><h2>Service certificates</h2><p>Panel services use dedicated hostnames and are verified from DNS through the presented SNI certificate.</p></div></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{serviceDomains.map(row => <div key={row.domain} className="rounded-lg border border-border bg-card p-4"><div className="flex items-start justify-between gap-3"><div className="flex min-w-0 items-center gap-3"><div className="rounded-md bg-muted p-2 text-accent"><Server className="h-5 w-5" /></div><div className="min-w-0"><h3 className="font-semibold text-foreground">{row.username}</h3><p className="truncate font-mono text-xs text-muted-foreground">{row.domain}</p></div></div><StatusBadge status={row.cert_status} /></div><dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm"><dt className="text-muted-foreground">Expires</dt><dd>{row.expiry_date ? `${formatDateShort(row.expiry_date)} (${row.days_remaining} days)` : 'No certificate'}</dd><dt className="text-muted-foreground">Renewal</dt><dd>{row.auto_renew ? 'Automatic' : 'Not configured'}</dd><dt className="text-muted-foreground">Deployment</dt><dd className="capitalize">{row.deployment_status || '—'}</dd></dl><div className="mt-4 flex gap-2"><Button size="sm" onClick={() => setConfirm({ action: 'issue', row })}>{row.cert_status === 'missing' ? 'Issue certificate' : 'Renew'}</Button><Button size="sm" variant="secondary" loading={diagnosticsMut.isPending && diagnosticsMut.variables?.domain === row.domain} onClick={() => diagnosticsMut.mutate(row)}><Stethoscope className="h-4 w-4" /> Diagnostics</Button></div></div>)}</div></section>}
+
       <div className="ssl-summary" aria-label="Certificate summary">
         <div><ShieldCheck /><span><strong>{secured}</strong>Secured domains</span></div>
         <div><ShieldOff /><span><strong>{unsecured}</strong>Need a certificate</span></div>
@@ -165,7 +176,7 @@ export default function Ssl() {
 
       <DataTable
         columns={columns}
-        data={domains.filter(row => row.cert_status && !['missing', 'none'].includes(row.cert_status))}
+        data={hostedDomains.filter(row => row.cert_status && !['missing', 'none'].includes(row.cert_status))}
         loading={isLoading}
         error={error}
         onRetry={refetch}
@@ -183,7 +194,7 @@ export default function Ssl() {
       <div className="ssl-section-title mt-6"><div><h2>Issue a new certificate</h2><p>Choose an unsecured domain. Confirm its DNS points to this server before issuing.</p></div></div>
       <DataTable
         columns={columns}
-        data={domains.filter(row => !row.cert_status || ['missing', 'none'].includes(row.cert_status))}
+        data={hostedDomains.filter(row => !row.cert_status || ['missing', 'none'].includes(row.cert_status))}
         loading={isLoading}
         error={error}
         onRetry={refetch}
@@ -233,6 +244,7 @@ export default function Ssl() {
           else issueMut.mutate(confirmRow)
         }}
       />
+      <Dialog open={!!diagnostics} onOpenChange={open => !open && setDiagnostics(null)}><DialogContent size="lg"><DialogHeader><DialogTitle>Service certificate diagnostics</DialogTitle><DialogDescription>{diagnostics?.domain}</DialogDescription></DialogHeader><DialogBody className="space-y-3">{diagnostics && <><div className="grid gap-3 sm:grid-cols-2"><div className="rounded-md border border-border p-3"><p className="text-xs font-medium uppercase text-muted-foreground">DNS</p><p className="mt-1 font-medium">{diagnostics.dns.ok ? 'Points to this server' : 'Needs attention'}</p><p className="mt-1 break-all font-mono text-xs text-muted-foreground">{diagnostics.dns.resolved.join(', ') || 'No address found'}</p></div><div className="rounded-md border border-border p-3"><p className="text-xs font-medium uppercase text-muted-foreground">HTTPS / SNI</p><p className="mt-1 font-medium">{diagnostics.sni.ok ? `Valid · ${diagnostics.sni.protocol}` : 'Not verified'}</p><p className="mt-1 text-xs text-muted-foreground">{diagnostics.sni.address || diagnostics.sni.detail}</p></div><div className="rounded-md border border-border p-3"><p className="text-xs font-medium uppercase text-muted-foreground">ACME webroot</p><p className="mt-1 font-medium">{diagnostics.http_challenge.ok ? 'Ready' : 'Failed'}</p><p className="mt-1 text-xs text-muted-foreground">{diagnostics.http_challenge.address || diagnostics.http_challenge.detail}</p></div><div className="rounded-md border border-border p-3"><p className="text-xs font-medium uppercase text-muted-foreground">Renewal</p><p className="mt-1 font-medium">{diagnostics.renewal.enabled ? 'Configured' : 'Not configured'}</p></div></div>{diagnostics.dns.mismatched.length > 0 && <p className="rounded-md bg-warning/10 p-3 text-sm text-warning">Remove or correct these mismatched A/AAAA records: {diagnostics.dns.mismatched.join(', ')}</p>}</>}</DialogBody><DialogFooter><Button variant="secondary" onClick={() => setDiagnostics(null)}>Done</Button></DialogFooter></DialogContent></Dialog>
     </div>
   )
 }

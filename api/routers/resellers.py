@@ -18,9 +18,16 @@ class PlanBody(BaseModel):
     account_quota_soft_mb: int = 4096
     account_quota_hard_mb: int = 5120
     account_cpu_pct: int = 50
+    account_cpu_cores: float | None = 0.5
     account_mem_mb: int = 1024
     account_io_mb: int = 50
     account_pids_max: int = 100
+    account_cpu_weight: int | None = 100
+    account_memory_high_mb: int | None = 896
+    account_io_write_mb: int | None = 50
+    account_io_read_iops: int | None = None
+    account_io_write_iops: int | None = None
+    account_entry_processes: int | None = 20
     php_version: str = "8.3"
 
 

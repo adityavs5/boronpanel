@@ -14,7 +14,7 @@ from shared.models import Account, DatabaseGrant, DatabaseUser, DatabaseUserGran
 from shared.validation import ValidationError, validate_db_identifier, validate_password_strength, validate_username
 
 from daemon.database_operations import serialized
-from daemon import mariadb, resource_limits
+from daemon import db_governor, mariadb, resource_limits
 
 
 def _grant_dict(grant: DatabaseGrant) -> dict:
@@ -129,6 +129,9 @@ def create_database(params: dict) -> dict:
     try:
         mariadb.create_db_user(db_user, password)
         mariadb.grant_all(db_name, db_user)
+        # A governor policy may predate this login. Install its effective
+        # native limits before the credential is returned to the customer.
+        db_governor.apply_new_user(account_id, db_user, "localhost")
     except Exception:
         mariadb.drop_db_user(db_user)
         mariadb.drop_database(db_name)
@@ -215,6 +218,7 @@ def create_user(params: dict) -> dict:
         raise RuntimeError(f"database user '{db_user}' already exists in MariaDB")
     mariadb.create_db_user(db_user, password, host)
     try:
+        db_governor.apply_new_user(account_id, db_user, host)
         with write_session() as session:
             row = DatabaseUser(account_id=account_id, db_user=db_user, host=host)
             session.add(row)

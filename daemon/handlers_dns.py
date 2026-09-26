@@ -15,7 +15,7 @@ from shared.db import write_session
 from shared.models import Account, DnsZone
 from shared.validation import ValidationError, validate_domain, validate_record_type
 
-from daemon import cloudflare_ops, dnsprovider, dnssetup
+from daemon import cloudflare_ops, dnsprovider, dnssetup, mail_dns
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 
 RECORD_VALUE_VALIDATORS = {
@@ -157,6 +157,21 @@ def create_zone(params: dict) -> dict:
         rtype = "AAAA" if ":" in site_ip else "A"
         dnsprovider.upsert_record(domain_name, "@", rtype, [site_ip])
         dnsprovider.upsert_record(domain_name, "www", "CNAME", [f"{domain_name}."])
+
+    # A fresh zone starts ready for ordinary hosting and mail.  Existing
+    # zones are never modified by this path; their explicit preview/repair
+    # workflow lives in daemon.mail_dns.
+    try:
+        with dnsprovider.batch_cluster_notifications():
+            for record in mail_dns.default_records(domain_name, include_dkim=False):
+                dnsprovider.upsert_record(
+                    domain_name, record.label, record.rtype, list(record.values)
+                )
+    except ValidationError:
+        # Upgraded/bootstrap installations may not have chosen a canonical
+        # mail hostname yet.  Zone creation must still succeed; Server Setup
+        # and Email DNS explain and repair the missing mail records later.
+        pass
 
     with write_session() as session:
         zone_row = DnsZone(account_id=account.id if account else None, zone=domain_name)

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Network, Plus, Pencil, Trash2, Cloud } from 'lucide-react'
-import { get, put, del } from '@/lib/api'
+import { Network, Plus, Pencil, Trash2, Cloud, CheckCircle2, AlertTriangle, Wand2 } from 'lucide-react'
+import { get, post, put, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { Badge } from '@/components/ui/Badge'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -24,6 +24,7 @@ export default function Dns({ emailOnly = false }) {
   const [domain, setDomain] = useState('')
   const [dialog, setDialog] = useState(null) // {mode, subdomain, type, ttl, values}
   const [toDelete, setToDelete] = useState(null)
+  const [dmarc, setDmarc] = useState({ policy: 'none', subdomain_policy: 'none', rua: '' })
 
   // --- domains for the picker ---------------------------------------------
   const domainsQuery = useQuery({
@@ -43,6 +44,11 @@ export default function Dns({ emailOnly = false }) {
     queryKey: ['dns-records', domain],
     queryFn: () => get(`/api/v1/dns/zones/${domain}/records`),
     enabled: !!domain,
+  })
+  const readiness = useQuery({
+    queryKey: ['mail-dns-readiness', username, domain],
+    queryFn: () => get(`/api/v1/accounts/${username}/email/domains/${domain}/dns-readiness`),
+    enabled: emailOnly && !!username && !!domain,
   })
 
   const zone = (data?.zone || domain || '').replace(/\.$/, '')
@@ -79,6 +85,16 @@ export default function Dns({ emailOnly = false }) {
     mutationFn: (row) => del(`/api/v1/dns/zones/${domain}/records`, { params: { subdomain: row.subdomain, type: row.type } }),
     onSuccess: () => { toast.success('DNS record deleted'); invalidate(); setToDelete(null) },
     onError: (e) => { toast.error('Could not delete record', e.message); setToDelete(null) },
+  })
+  const repairMut = useMutation({
+    mutationFn: (replace_conflicts = []) => post(`/api/v1/accounts/${username}/email/domains/${domain}/dns-repair`, { replace_conflicts }),
+    onSuccess: () => { toast.success('Mail DNS records updated'); readiness.refetch(); invalidate() },
+    onError: e => toast.error('Could not repair mail DNS', e.message),
+  })
+  const dmarcMut = useMutation({
+    mutationFn: () => put(`/api/v1/accounts/${username}/email/domains/${domain}/dmarc`, dmarc),
+    onSuccess: () => { toast.success('DMARC policy installed'); readiness.refetch(); invalidate() },
+    onError: e => toast.error('Could not install DMARC', e.message),
   })
 
   const columns = [
@@ -142,6 +158,18 @@ export default function Dns({ emailOnly = false }) {
           <Badge variant="neutral" className="mb-7">Local DNS</Badge>
         ) : null}
       </div>
+
+      {emailOnly && readiness.data?.managed && (
+        <div className="mb-5 grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,.8fr)]">
+          <div className="rounded-lg border border-border bg-card p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold text-foreground">Mail readiness</h2><p className="text-sm text-muted-foreground">MX uses <span className="font-mono">{readiness.data.mail_hostname}</span>. Existing conflicting records are preserved.</p></div><Button size="sm" variant="secondary" loading={repairMut.isPending} onClick={() => repairMut.mutate([])}><Wand2 className="h-4 w-4" /> Add missing records</Button></div>
+            <div className="divide-y divide-border rounded-md border border-border">
+              {(readiness.data.records || []).map(record => <div key={record.key} className="flex flex-wrap items-center gap-3 px-3 py-2 text-sm"><span className="w-20 font-medium uppercase text-foreground">{record.key}</span><span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{record.name} · {record.type}</span>{record.status === 'present' ? <Badge variant="success"><CheckCircle2 className="h-3 w-3" /> Ready</Badge> : record.status === 'conflicting' ? <><Badge variant="warning"><AlertTriangle className="h-3 w-3" /> Conflict</Badge><Button size="sm" variant="secondary" onClick={() => repairMut.mutate([record.key])}>Replace</Button></> : record.status === 'optional' ? <Badge variant="neutral">Optional</Badge> : <Badge variant="warning">Missing</Badge>}</div>)}
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-card p-4"><h2 className="font-semibold text-foreground">DMARC policy</h2><p className="mb-3 text-sm text-muted-foreground">Start with Monitor, then enforce after reviewing reports.</p><div className="space-y-3"><FormField label="Policy"><Select value={dmarc.policy} onChange={e => setDmarc(value => ({ ...value, policy: e.target.value }))}><option value="none">Monitor (p=none)</option><option value="quarantine">Quarantine</option><option value="reject">Reject</option></Select></FormField><FormField label="Subdomain policy"><Select value={dmarc.subdomain_policy} onChange={e => setDmarc(value => ({ ...value, subdomain_policy: e.target.value }))}><option value="none">Monitor</option><option value="quarantine">Quarantine</option><option value="reject">Reject</option></Select></FormField><FormField label="Aggregate reports" hint={`Blank uses postmaster@${domain}`}><Input type="email" value={dmarc.rua} onChange={e => setDmarc(value => ({ ...value, rua: e.target.value }))} placeholder={`postmaster@${domain}`} /></FormField><Button className="w-full" loading={dmarcMut.isPending} onClick={() => dmarcMut.mutate()}>{dmarc.policy === 'none' ? 'Install monitor policy' : `Install ${dmarc.policy} policy`}</Button>{dmarc.policy !== 'none' && <p className="text-xs text-warning">Enforcement can reject legitimate mail until every sender passes SPF or DKIM alignment.</p>}</div></div>
+        </div>
+      )}
 
       {unmanaged ? (
         <EmptyState

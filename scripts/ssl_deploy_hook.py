@@ -23,8 +23,12 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -35,9 +39,14 @@ from shared.db import write_session  # noqa: E402
 from shared.models import Account, Domain  # noqa: E402
 
 from daemon import cloudflare_ops, ols  # noqa: E402
+from daemon.procutil import run  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s ssl_deploy_hook: %(message)s")
 logger = logging.getLogger("ssl_deploy_hook")
+
+LETSENCRYPT_LIVE_DIR = Path("/etc/letsencrypt/live")
+MAIL_CERT_PATH = Path("/etc/boron/ssl/mail.crt")
+MAIL_KEY_PATH = Path("/etc/boron/ssl/mail.key")
 
 
 def main() -> int:
@@ -64,6 +73,7 @@ def _apply_for_domain(domain_name: str, is_wildcard: bool = False) -> None:
     # same reasoning as ssl.py's _challenge_plan special case.
     if domain_name == settings.webmail_hostname:
         ols.refresh_webmail_vhost()
+        _deploy_mail_service_certificate(domain_name)
         logger.info("applied new certificate for webmail host %s", domain_name)
         return
 
@@ -71,6 +81,9 @@ def _apply_for_domain(domain_name: str, is_wildcard: bool = False) -> None:
         ols.refresh_pma_vhost()
         logger.info("applied new certificate for phpMyAdmin host %s", domain_name)
         return
+
+    if domain_name == (settings.mail_hostname or settings.webmail_hostname or settings.panel_hostname):
+        _deploy_mail_service_certificate(domain_name)
 
     with write_session() as session:
         domain_row = session.scalar(select(Domain).where(Domain.domain == domain_name))
@@ -99,6 +112,77 @@ def _apply_for_domain(domain_name: str, is_wildcard: bool = False) -> None:
             logger.info("upgraded Cloudflare edge SSL to strict for %s", domain_name)
     except Exception:
         logger.exception("could not upgrade Cloudflare SSL mode for %s", domain_name)
+
+
+def _deploy_mail_service_certificate(domain_name: str) -> None:
+    """Install the canonical host certificate for IMAP/SMTP atomically."""
+    canonical = settings.mail_hostname or settings.webmail_hostname or settings.panel_hostname
+    if not canonical or domain_name != canonical:
+        return
+    lineage = LETSENCRYPT_LIVE_DIR / domain_name
+    source_cert, source_key = lineage / "fullchain.pem", lineage / "privkey.pem"
+    if not source_cert.exists() or not source_key.exists():
+        raise RuntimeError("canonical mail certificate lineage is incomplete")
+    destination = MAIL_CERT_PATH.parent
+    destination.mkdir(parents=True, exist_ok=True)
+    staged: list[tuple[Path, Path]] = []
+    backups: dict[Path, Path | None] = {}
+    for source, target, mode in ((source_cert, MAIL_CERT_PATH, 0o644), (source_key, MAIL_KEY_PATH, 0o600)):
+        temporary = destination / f".{target.name}.tmp.{os.getpid()}"
+        shutil.copyfile(source, temporary)
+        os.chmod(temporary, mode)
+        staged.append((temporary, target))
+    try:
+        _validate_certificate_pair(staged[0][0], staged[1][0])
+        for _temporary, target in staged:
+            if target.exists():
+                backup = destination / f".{target.name}.bak.{os.getpid()}"
+                shutil.copyfile(target, backup)
+                os.chmod(backup, target.stat().st_mode & 0o777)
+                backups[target] = backup
+            else:
+                backups[target] = None
+        for temporary, target in staged:
+            os.replace(temporary, target)
+        run(["doveconf", "-n"], timeout=20, check=True)
+        run(["postfix", "check"], timeout=20, check=True)
+        run(["systemctl", "reload", "dovecot"], timeout=30, check=True)
+        run(["systemctl", "reload", "postfix"], timeout=30, check=True)
+    except Exception:
+        for target, backup in backups.items():
+            if backup is None:
+                target.unlink(missing_ok=True)
+            elif backup.exists():
+                os.replace(backup, target)
+        # If one service already accepted the new pair, bring both back to the
+        # restored pair. This is best-effort; the original exception remains
+        # the actionable deploy-hook failure.
+        for service in ("dovecot", "postfix"):
+            try:
+                run(["systemctl", "reload", service], timeout=30, check=True)
+            except Exception:
+                logger.exception("could not reload %s after restoring its prior mail certificate", service)
+        raise
+    finally:
+        for temporary, _target in staged:
+            temporary.unlink(missing_ok=True)
+        for backup in backups.values():
+            if backup is not None:
+                backup.unlink(missing_ok=True)
+    logger.info("deployed canonical mail certificate for %s", domain_name)
+
+
+def _validate_certificate_pair(cert_path: Path, key_path: Path) -> None:
+    certificate = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    private_key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    certificate_public = certificate.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    key_public = private_key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    if certificate_public != key_public:
+        raise RuntimeError("canonical mail certificate and private key do not match")
 
 
 if __name__ == "__main__":

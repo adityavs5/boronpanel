@@ -25,7 +25,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import autoresponder, dkim, mail, resource_limits, spamfilter
+from daemon import autoresponder, dkim, mail, resource_limits, spamfilter, webmail_sso
 from daemon.mail_mutation import serialized
 
 # Bounds for a single mailbox's quota. 100 GB is a generous shared-hosting
@@ -119,6 +119,7 @@ def _delete_mail_domain_cache(domain_name: str) -> None:
 @serialized
 def delete_mail_domain(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
+    webmail_sso.revoke_domain(domain_name)
     mail.delete_mail_domain(domain_name)
     # Keep ownership/cache rows until cleanup succeeds, so a failed delete
     # remains authorized and discoverable for retry (including termination).
@@ -213,6 +214,7 @@ def create_mailbox(params: dict) -> dict:
 def delete_mailbox(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
+    webmail_sso.revoke_mailbox(f"{local_part}@{domain_name}")
     mail.delete_mailbox(domain_name, local_part)
     spamfilter.delete_entries_for_mailbox(domain_name, local_part)
     with write_session() as session:
@@ -234,6 +236,7 @@ def change_mailbox_password(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
     new_password = validate_password_strength(params["password"])
+    webmail_sso.revoke_mailbox(f"{local_part}@{domain_name}")
     mail.change_mailbox_password(domain_name, local_part, new_password)
     return {"domain": domain_name, "local_part": local_part, "status": "password_changed"}
 

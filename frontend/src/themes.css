@@ -79,6 +79,7 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 .tool-label{text-align:center;font-size:14px;line-height:1.5;color:rgb(var(--link));max-width:150px;overflow-wrap:anywhere}
 .tool-icon{--icon-color:#41a6d5;--icon-fill:#cbeefc;position:relative;display:flex;align-items:center;justify-content:center;width:46px;height:46px;flex:none;color:var(--icon-color)}
 .tool-icon>svg,.tool-icon>img{width:40px;height:40px;object-fit:contain}
+.tool-icon>img.brand-product-icon{display:block;width:40px;height:40px;padding:2px;object-fit:contain;box-sizing:border-box}
 .tool-icon>svg{fill:var(--icon-fill);stroke-width:1.5}
 .tool-icon>svg.hosting-artwork{width:40px;height:40px;fill:none;stroke:none}
 .tone-green{--icon-color:#288b72;--icon-fill:#c5ebd9}.tone-amber{--icon-color:#b57524;--icon-fill:#ffe0aa}.tone-violet{--icon-color:#7264ad;--icon-fill:#ded9f6}.tone-rose{--icon-color:#c15579;--icon-fill:#f7d6e3}.tone-teal{--icon-color:#288c9b;--icon-fill:#c2edf1}
@@ -92,7 +93,7 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 [data-skin=evolution] .tool-icon>.brand-wordpress{color:#21759b}
 [data-skin=evolution] .tool-icon>.brand-redis{color:#dc382d}
 [data-skin=evolution] .tool-icon .icon-detail{display:none}
-.dark .tool-icon:has(img[src$='wordpress.svg']){filter:brightness(1.6)}
+.dark .tool-icon>img.brand-product-icon{filter:brightness(1.15) saturate(.95)}
 .tool-external{position:absolute;top:4px;right:4px;color:rgb(var(--muted-fg))}
 .stats-panel{margin-bottom:16px;border:1px solid rgb(var(--border));border-radius:3px;overflow:hidden;background:rgb(var(--card))}
 .stats-heading{font-size:20px;font-weight:500;letter-spacing:0;padding:16px 18px;border-bottom:1px solid rgb(var(--border));margin:0;color:rgb(var(--fg))}

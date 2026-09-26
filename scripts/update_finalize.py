@@ -156,6 +156,28 @@ class Finalizer:
                 self.log("restart", "ok", unit)
         return ok
 
+    def run_runtime_migrations(self) -> bool:
+        if self.args.mode != "update":
+            return True
+        script = os.path.join(self.args.new_dir, "scripts", "upgrade_runtime.py")
+        python = os.path.join(self.args.new_dir, ".venv", "bin", "python")
+        if not os.path.isfile(script):
+            self.log("runtime-migration", "skipped", "release has no runtime migration")
+            return True
+        if not os.path.isfile(python):
+            self.log("runtime-migration", "failed", "release interpreter is missing")
+            return False
+        try:
+            proc = subprocess.run([python, script], capture_output=True, text=True, timeout=1200)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.log("runtime-migration", "failed", type(exc).__name__)
+            return False
+        if proc.returncode != 0:
+            self.log("runtime-migration", "failed", f"rc={proc.returncode} {(proc.stderr or proc.stdout)[-500:]}")
+            return False
+        self.log("runtime-migration", "ok", "host integrations reconciled")
+        return True
+
     def check_api(self) -> bool:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -261,7 +283,8 @@ class Finalizer:
                 self.log("swap", "ok", f"{a.live} -> {a.new_dir}")
             self.swapped = True
 
-            restarts_ok = self.restart_services()
+            migrated = self.run_runtime_migrations()
+            restarts_ok = self.restart_services() if migrated else False
             healthy = self.health_check() if restarts_ok else False
             if restarts_ok and healthy:
                 self.log("healthcheck", "ok", "api + daemon responding")

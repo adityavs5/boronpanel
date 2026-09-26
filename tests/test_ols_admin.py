@@ -75,3 +75,23 @@ def test_existing_one_way_password_is_reported_as_unavailable(tmp_path, monkeypa
     assert ols.credential_status({}) == {"username": "admin", "password_available": False, "reset_at": None}
     with pytest.raises(Exception, match="not recoverable"):
         ols.reveal_admin_password({"confirm": True})
+def test_abuse_preset_updates_validated_settings(isolated_db, monkeypatch):
+    from daemon import ols
+
+    refreshed = []
+    monkeypatch.setattr(ols, "refresh_main_config", lambda: refreshed.append(True))
+    result = ols.update_abuse_settings({"preset": "balanced"})
+    assert result["dyn_req_per_sec"] == 20
+    assert result["client_soft_limit"] < result["client_hard_limit"]
+    assert refreshed == [True]
+
+
+def test_abuse_custom_rejects_inverted_connection_limits(isolated_db):
+    from daemon import ols
+    from shared.validation import ValidationError
+
+    with pytest.raises(ValidationError, match="soft limit"):
+        ols.update_abuse_settings({
+            "preset": "custom", "client_soft_limit": 300,
+            "client_hard_limit": 100,
+        })

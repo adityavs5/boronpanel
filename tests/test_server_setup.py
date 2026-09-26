@@ -110,7 +110,7 @@ def test_maxmind_skip_completes_without_a_license_or_database(isolated_db, monke
 
 def test_finish_refuses_incomplete_wizard(isolated_db):
     with pytest.raises(ValidationError, match="Complete setup steps"):
-        server_setup._step8({})
+        server_setup._step9({})
 
 
 def test_public_result_filter_redacts_nested_credentials():

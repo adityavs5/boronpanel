@@ -65,7 +65,7 @@ def render_hostname(content: str, hostname: str) -> str:
 
 _SERVER_SETUP_KEYS = {
     "server_public_ip", "letsencrypt_email", "panel_hostname",
-    "webmail_hostname", "webmail_url", "pma_hostname",
+    "webmail_hostname", "webmail_url", "mail_hostname", "pma_hostname",
 }
 
 
@@ -106,6 +106,7 @@ def apply_setup_values(updates: dict[str, str], *, config_path=CONFIG_PATH, relo
         clean["letsencrypt_email"] = validate_email_address(clean["letsencrypt_email"])
     if clean.get("webmail_hostname"):
         clean["webmail_url"] = f'https://{clean["webmail_hostname"]}'
+        clean.setdefault("mail_hostname", clean["webmail_hostname"])
     hostnames = [clean.get(key, getattr(settings, key)) for key in ("panel_hostname", "webmail_hostname", "pma_hostname")]
     present = [item for item in hostnames if item]
     if len(set(present)) != len(present):

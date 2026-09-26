@@ -39,6 +39,18 @@ class DomainLogBody(BaseModel):
     debug_minutes: int = 0
 
 
+class AbuseSettingsBody(BaseModel):
+    preset: str = "balanced"
+    static_req_per_sec: int | None = None
+    dyn_req_per_sec: int | None = None
+    out_bandwidth: int | None = None
+    in_bandwidth: int | None = None
+    client_soft_limit: int | None = None
+    client_hard_limit: int | None = None
+    client_grace_period: int | None = None
+    client_ban_period: int | None = None
+
+
 @api_router.get("")
 def status(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -55,6 +67,12 @@ def update_settings(body: SettingsBody, identity: Identity = Depends(get_identit
 def update_domain_logs(body: DomainLogBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("ols.admin.domain_log.update", identity, **body.model_dump())
+
+
+@api_router.put("/abuse-controls")
+def update_abuse_controls(body: AbuseSettingsBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("ols.admin.abuse.update", identity, **body.model_dump(exclude_none=True))
 
 
 @api_router.post("/reload")

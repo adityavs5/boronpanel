@@ -22,7 +22,7 @@ from shared.db import init_db
 from shared.rpc import encode_response, read_frame
 from shared.validation import ValidationError
 
-from daemon import panel_config, panel_jobs, panel_tls, snapshot_config, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, dbmonitor, dnscluster, dnssetup, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, server_setup, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, staging, terminal, totp, updates, usage_alerts, waf, webhooks, wordpress, wpcli
+from daemon import panel_config, panel_jobs, panel_tls, snapshot_config, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, db_governor, dbmonitor, dnscluster, dnssetup, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, htaccess, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, mail_dns, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, resource_manager, server_setup, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, stack_manager, staging, terminal, totp, updates, usage_alerts, waf, webhooks, webmail_sso, wordpress, wpcli
 from daemon.logsetup import configure_logging
 from daemon.rpc_authority import AuthenticationError, AuthorizationError, authorize, resolve_principal
 from daemon import directadmin_remote
@@ -124,6 +124,12 @@ OP_TABLE = {
     "domain.list": handlers_domain.list_domains,
     "domain.set_php_version": handlers_domain.set_domain_php_version,
     "domain.set_suspended": handlers_domain.set_suspended,
+    "htaccess.reload": htaccess.reload_domain,
+    "stack.inventory": stack_manager.inventory,
+    "stack.preview": stack_manager.preview,
+    "stack.start": stack_manager.start,
+    "stack.job.get": stack_manager.get_job,
+    "stack.job.cancel": stack_manager.cancel,
     "usage.get": handlers_usage.get_account_usage,
     "bandwidth.get": handlers_usage.get_bandwidth,
     "bandwidth.ranking": handlers_usage.get_bandwidth_ranking,
@@ -133,6 +139,15 @@ OP_TABLE = {
     "namespace.bulk_enable.trigger": nsisolation.trigger_bulk_enable,
     "namespace.bulk_enable.get": nsisolation.get_bulk_enable_job,
     "namespace.health_summary": nsisolation.health_summary,
+    "namespace.overview": nsisolation.isolation_overview,
+    "namespace.rebuild": nsisolation.rebuild_namespace,
+    "namespace.self_test": nsisolation.self_test,
+    "dbgovernor.overview": db_governor.overview,
+    "dbgovernor.statistics": db_governor.statistics,
+    "dbgovernor.userstat.enable": db_governor.enable_userstat,
+    "dbgovernor.mode.set": db_governor.set_global_mode,
+    "dbgovernor.policy.save": db_governor.save_policy,
+    "dbgovernor.policy.reset": db_governor.reset_policy,
     "system.bootstrap_ols": lambda params: (ols.bootstrap_baseline(), {"status": "ok"})[1],
     "system.bootstrap_webmail": lambda params: (ols.bootstrap_webmail(), {"status": "ok"})[1],
     # Security fix (Phase 6a research finding): one-time migration backfilling
@@ -218,6 +233,12 @@ OP_TABLE = {
     "mail.delete_mailbox": handlers_mail.delete_mailbox,
     "mail.list_mailboxes": handlers_mail.list_mailboxes,
     "mail.change_password": handlers_mail.change_mailbox_password,
+    "webmail.launch.create": webmail_sso.create_launch,
+    "mail.dns.preview": lambda params: mail_dns.preview(params["domain"]),
+    "mail.dns.repair": lambda params: mail_dns.repair(params["domain"], params.get("replace_conflicts")),
+    "mail.dns.dmarc": lambda params: mail_dns.set_dmarc(
+        params["domain"], params["policy"], params.get("rua"), params.get("subdomain_policy")
+    ),
     # Phase 3 feature 4: forwarders/catch-all/autoresponders
     "mail.forward.create": handlers_mail.create_forward,
     "mail.forward.delete": handlers_mail.delete_forward,
@@ -238,6 +259,7 @@ OP_TABLE = {
     "ssl.status": ssl.certificate_status,
     "ssl.dashboard": ssl.get_ssl_dashboard,
     "ssl.admin.dashboard": ssl.get_admin_ssl_dashboard,
+    "ssl.service.diagnostics": ssl.service_certificate_diagnostics,
     # File manager: FileBrowser Quantum (the custom file.* ops that used to live
     # here were retired 2026-07-09 after FB Quantum was verified live end-to-end;
     # daemon/filemanager.py now only provides the shared path-jail helpers that
@@ -396,6 +418,7 @@ OP_TABLE = {
     "ols.admin.status": ols.admin_status,
     "ols.admin.settings.update": ols.update_admin_settings,
     "ols.admin.domain_log.update": ols.update_domain_log_settings,
+    "ols.admin.abuse.update": ols.update_abuse_settings,
     "ols.admin.reload": ols.graceful_reload,
     "ols.admin.password.reset": ols.reset_admin_password,
     "ols.admin.password.reveal": ols.reveal_admin_password,
@@ -557,6 +580,11 @@ OP_TABLE = {
     "plan.update": plans.update_plan,
     "plan.delete": plans.delete_plan,
     "plan.apply": plans.apply_plan,
+    "resources.overview": resource_manager.overview,
+    "resources.policy.save": resource_manager.save_policy,
+    "resources.policy.account": resource_manager.save_account_policy,
+    "resources.policy.reset": resource_manager.reset_account,
+    "resources.sample": lambda params: {"sampled": resource_manager.sample_all()},
     # Run A feature 3: white-label branding
     "branding.get": branding.get_settings,
     "branding.set": branding.set_settings,
@@ -731,6 +759,8 @@ handlers_account.SUSPEND_HOOKS.append(lambda account: lscache.purge_account_doma
 handlers_account.UNSUSPEND_HOOKS.append(lambda account: lscache.purge_account_domains(account))
 handlers_account.SUSPEND_HOOKS.append(lambda account: cloudflare_ops.purge_account_zones(account))
 handlers_account.UNSUSPEND_HOOKS.append(lambda account: cloudflare_ops.purge_account_zones(account))
+handlers_account.SUSPEND_HOOKS.append(lambda account: webmail_sso.revoke_account(account.id))
+handlers_account.TERMINATE_HOOKS.append(lambda account: webmail_sso.revoke_account(account.id))
 handlers_account.PHP_VERSION_HOOKS.append(lambda account: ols.refresh_vhost(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ols.terminate_vhost(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_dns.terminate_account_zones(account))
@@ -747,8 +777,9 @@ handlers_account.CREATE_HOOKS.append(
     lambda account: cgroups.apply_limits(account.username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
 )
 handlers_account.LIMITS_HOOKS.append(
-    lambda account: cgroups.apply_limits(account.username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
+    lambda account: resource_manager.apply_account(account.id)
 )
+resellers.RESOURCE_HOOKS.append(resource_manager.apply_account)
 handlers_account.TERMINATE_HOOKS.append(lambda account: cgroups.remove_slice(account.username))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ipmanager.release_account(account))
 # Phase 6b: new accounts (and reactivated ones, same CREATE_HOOKS list) get
@@ -912,6 +943,8 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
         elif op == "firewall.temporary_ban.add":
             handler_params["actor"] = actor
             handler_params["actor_ip"] = ip
+        elif op == "webmail.launch.create":
+            handler_params["source_ip"] = ip
         elif op.startswith("dnscluster.") and current is not None and current.role == "cluster":
             handler_params["_peer_name"] = current.username
         return handler(handler_params)
@@ -1030,6 +1063,28 @@ async def _domain_log_level_loop() -> None:
         await asyncio.sleep(60)
 
 
+async def _resource_sample_loop() -> None:
+    while True:
+        try:
+            await asyncio.get_running_loop().run_in_executor(REPORTING_EXECUTOR, resource_manager.sample_all)
+        except Exception:
+            logger.exception("resource sampling failed")
+        try:
+            await asyncio.get_running_loop().run_in_executor(REPORTING_EXECUTOR, db_governor.evaluate)
+        except Exception:
+            logger.exception("database governor sampling failed")
+        await asyncio.sleep(60)
+
+
+async def _htaccess_watch_loop() -> None:
+    while True:
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, htaccess.watcher.poll)
+        except Exception:
+            logger.exception(".htaccess watcher failed")
+        await asyncio.sleep(1)
+
+
 async def _temporary_firewall_ban_loop() -> None:
     while True:
         try:
@@ -1081,8 +1136,16 @@ async def amain() -> None:
         await asyncio.get_running_loop().run_in_executor(None, cgroups.bootstrap_all_slices)
     except Exception:
         logger.exception("cgroup slice bootstrap failed at startup")
+    try:
+        governor_result = await asyncio.get_running_loop().run_in_executor(None, db_governor.reconcile_all)
+        if governor_result["errors"]:
+            logger.error("DB Governor startup reconciliation had %d error(s)", len(governor_result["errors"]))
+    except Exception:
+        logger.exception("DB Governor reconciliation failed at startup")
     asyncio.create_task(_cgroup_reconcile_loop())
     asyncio.create_task(_domain_log_level_loop())
+    asyncio.create_task(_resource_sample_loop())
+    asyncio.create_task(_htaccess_watch_loop())
     asyncio.create_task(_temporary_firewall_ban_loop())
     try:
         await asyncio.get_running_loop().run_in_executor(None, fail2ban.reconcile_managed_jails)
@@ -1100,6 +1163,15 @@ async def amain() -> None:
         await asyncio.get_running_loop().run_in_executor(None, redisacct.bootstrap_all_redis)
     except Exception:
         logger.exception("Redis bootstrap failed at startup")
+
+    webmail_server = None
+    if settings.webmail_url:
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, webmail_sso.ensure_schema)
+            webmail_server = await webmail_sso.start_server()
+            logger.info("Roundcube launch exchange listening on %s", settings.webmail_launch_socket)
+        except Exception:
+            logger.exception("Webmail launch exchange failed to start")
 
     try:
         directadmin_remote.recover_interrupted()
@@ -1176,8 +1248,12 @@ async def amain() -> None:
         await asyncio.get_running_loop().run_in_executor(None, dnscluster.recover_and_start_worker)
     except Exception:
         logger.exception("DNS cluster recovery failed at startup")
-    async with server:
-        await server.serve_forever()
+    if webmail_server is None:
+        async with server:
+            await server.serve_forever()
+    else:
+        async with server, webmail_server:
+            await asyncio.gather(server.serve_forever(), webmail_server.serve_forever())
 
 
 def main() -> None:

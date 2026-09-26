@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Globe, Plus, Trash2, Settings, MoreHorizontal, Copy, PauseCircle, PlayCircle } from 'lucide-react'
+import { Globe, Plus, Trash2, Settings, MoreHorizontal, Copy, PauseCircle, PlayCircle, RefreshCw } from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatDate } from '@/lib/utils'
@@ -187,6 +187,12 @@ export default function Domains({ subdomainsOnly = false }) {
     onError: (e) => toast.error('Could not change domain status', e.message),
   })
 
+  const htaccessMut = useMutation({
+    mutationFn: d => post(`/api/v1/accounts/${username}/domains/${encodeURIComponent(d.domain)}/reload-htaccess`, {}),
+    onSuccess: (_result, d) => toast.success('.htaccess reloaded', `${d.domain} is using the latest rewrite rules.`),
+    onError: e => toast.error('Could not reload .htaccess', e.message),
+  })
+
   const columns = [
     {
       key: 'domain',
@@ -245,6 +251,9 @@ export default function Domains({ subdomainsOnly = false }) {
               <DropdownMenuItem disabled={suspensionMut.isPending} onSelect={() => {setToSuspend(r);setSuspensionReason(r.suspension_reason||'')}}>
                 {r.suspended ? <PlayCircle className="h-4 w-4" /> : <PauseCircle className="h-4 w-4" />}
                 {r.suspended ? 'Unsuspend website' : 'Suspend website'}
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={htaccessMut.isPending} onSelect={() => htaccessMut.mutate(r)}>
+                <RefreshCw className="h-4 w-4" /> Reload .htaccess
               </DropdownMenuItem>
               {r.kind !== 'primary' && (
                 <>

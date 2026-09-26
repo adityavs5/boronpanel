@@ -9,7 +9,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from daemon import cloudflare_accounts, dnscluster, dnsprovider, dnssetup, geoip, panel_config, panel_tls, ssl as ssl_ops
+from daemon import cloudflare_accounts, dnscluster, dnsprovider, dnssetup, geoip, panel_config, panel_tls, stack_manager, ssl as ssl_ops
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from daemon.procutil import run
 from shared.config import settings
@@ -25,7 +25,8 @@ STEPS = {
     5: "DNS verification",
     6: "TLS certificates",
     7: "MaxMind GeoLite2",
-    8: "Review and finish",
+    8: "Hosting software stack",
+    9: "Review and finish",
 }
 _SECRET_MARKERS = ("token", "credential", "password", "secret", "license_key", "recovery_key")
 
@@ -69,6 +70,7 @@ def status(_params: dict | None = None) -> dict:
         "panel_hostname": settings.panel_hostname,
         "server_public_ip": settings.server_public_ip,
         "webmail_hostname": settings.webmail_hostname,
+        "mail_hostname": settings.mail_hostname or settings.webmail_hostname,
         "pma_hostname": settings.pma_hostname,
         "panel_port": settings.api_bind_port,
         "geoip_configured": geoip.is_configured(),
@@ -94,8 +96,8 @@ def _record(step: int, state: str, result: dict, *, draft: dict | None = None,
         if maxmind_skipped is not None:
             row.maxmind_skipped = maxmind_skipped
         if state == "completed":
-            row.current_step = max(row.current_step, min(8, step + 1))
-        if step == 8 and state == "completed":
+            row.current_step = max(row.current_step, min(9, step + 1))
+        if step == 9 and state == "completed":
             row.completed = True
 
 
@@ -296,26 +298,34 @@ def _step7(params: dict) -> tuple[dict, dict]:
 
 
 def _step8(_params: dict) -> tuple[dict, dict]:
+    inventory = stack_manager.inventory({})
+    return {
+        "status": "reviewed", "components": inventory["components"],
+        "message": "Use Stack Manager for typed install and update jobs. Existing services remain unchanged by this review step.",
+    }, {"stack_reviewed": True}
+
+
+def _step9(_params: dict) -> tuple[dict, dict]:
     with write_session() as db:
         row = _get_or_create(db)
         results = dict(row.step_results or {})
-        required = [1, 2, 3, 4, 5, 6, 7]
+        required = [1, 2, 3, 4, 5, 6, 7, 8]
         missing = [number for number in required if results.get(str(number), {}).get("state") != "completed"]
     if missing:
         raise ValidationError("Complete setup steps: " + ", ".join(str(number) for number in missing))
     return {"status": "completed", "completed_at": _now()}, {}
 
 
-_HANDLERS = {1: _step1, 2: _step2, 3: _step3, 4: _step4, 5: _step5, 6: _step6, 7: _step7, 8: _step8}
+_HANDLERS = {1: _step1, 2: _step2, 3: _step3, 4: _step4, 5: _step5, 6: _step6, 7: _step7, 8: _step8, 9: _step9}
 
 
 def run_step(params: dict) -> dict:
     try:
         step = int(params.get("step"))
     except (TypeError, ValueError) as exc:
-        raise ValidationError("Setup step must be an integer from 1 to 8") from exc
+        raise ValidationError("Setup step must be an integer from 1 to 9") from exc
     if step not in _HANDLERS:
-        raise ValidationError("Setup step must be from 1 to 8")
+        raise ValidationError("Setup step must be from 1 to 9")
     try:
         result, draft = _HANDLERS[step](params)
         result_state = result.get("state")
@@ -336,7 +346,7 @@ def run_step(params: dict) -> dict:
 def reset_section(params: dict) -> dict:
     step = int(params.get("step", 0))
     if step not in STEPS:
-        raise ValidationError("Setup step must be from 1 to 8")
+        raise ValidationError("Setup step must be from 1 to 9")
     with write_session() as db:
         row = _get_or_create(db)
         results = dict(row.step_results or {})

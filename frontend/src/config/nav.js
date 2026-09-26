@@ -7,7 +7,7 @@ import {
   DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban, ShieldBan, FileText, Store,
   ExternalLink, Zap, Shield, GaugeCircle, Route, ServerCog,
 } from 'lucide-react'
-import { WordPressIcon, RedisIcon } from '@/components/icons/BrandIcons'
+import { WordPressIcon, RedisIcon, NodeIcon, PythonIcon, GitIcon } from '@/components/icons/BrandIcons'
 
 // Customer nav — resource pages scoped to the signed-in account. Paths are
 // client-router paths (mounted under the /app basename).
@@ -33,8 +33,8 @@ export const customerNav = [
   { label: 'IMAP Migration', to: '/email/migration', icon: ArrowRightLeft },
   { section: 'Software' },
   { label: 'WordPress Manager', to: '/wordpress', icon: WordPressIcon },
-  { label: 'Node.js App', to: '/node-apps', icon: Boxes },
-  { label: 'Python App', to: '/python-apps', icon: FileCode2 },
+  { label: 'Node.js App', to: '/node-apps', icon: NodeIcon },
+  { label: 'Python App', to: '/python-apps', icon: PythonIcon },
   { label: 'Redis', to: '/redis', icon: RedisIcon },
   { section: 'Backups' },
   { label: 'Backups', to: '/backups', icon: Archive },
@@ -42,7 +42,7 @@ export const customerNav = [
   { label: 'File Manager', to: '/files', icon: FolderOpen },
   { label: 'PHP Settings', to: '/php', icon: FileCode2 },
   { label: 'Cron Jobs', to: '/cron', icon: Clock },
-  { label: 'Git', to: '/git', icon: GitBranch },
+  { label: 'Git', to: '/git', icon: GitIcon },
   { label: 'SSH Keys', to: '/ssh', icon: KeyRound },
   { label: 'Terminal', to: '/terminal', icon: TerminalSquare },
   { label: 'Disk Usage', to: '/disk-usage', icon: HardDrive },
@@ -69,6 +69,10 @@ export const adminNav = [
   { label: 'Resellers', to: '/resellers', icon: Store },
   { label: 'Administrators', to: '/administrators', icon: ShieldCheck },
   { label: 'Server Health', to: '/health', icon: Activity },
+  { label: 'Resource Manager', to: '/resource-manager', icon: Cpu },
+  { label: 'Filesystem Isolation', to: '/filesystem-isolation', icon: Boxes },
+  { label: 'Security Center', to: '/security-center', icon: ShieldCheck },
+  { label: 'Stack Manager', to: '/stack-manager', icon: ServerCog },
   { label: 'Services', to: '/services', icon: Cog },
   { label: 'OpenLiteSpeed', to: '/openlitespeed', icon: Server },
   // Sidebar shows an accent dot on this item while an update is available.
@@ -80,8 +84,8 @@ export const adminNav = [
   { label: 'Bandwidth', to: '/bandwidth', icon: Gauge },
   { label: 'Site Statistics', to: '/site-stats', icon: BarChart3 },
   { label: 'Maintenance Mode', to: '/maintenance-mode', icon: Construction },
-  { label: 'Node.js Applications', to: '/software/node-apps', icon: Boxes },
-  { label: 'Python Applications', to: '/software/python-apps', icon: FileCode2 },
+  { label: 'Node.js Applications', to: '/software/node-apps', icon: NodeIcon },
+  { label: 'Python Applications', to: '/software/python-apps', icon: PythonIcon },
   { section: 'Panel Configuration' },
   { label: 'Server Setup', to: '/server-setup', icon: ServerCog },
   { label: 'Panel Settings', to: '/panel-settings', icon: Cog },

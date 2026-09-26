@@ -117,6 +117,11 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     },
     "snapshot_destination_operations": {"options": "JSON NOT NULL DEFAULT '{}'"},
     "database_user_grants": {"privilege_list": "VARCHAR(512)"},
+    "dkim_keys": {
+        "signing_active": "BOOLEAN NOT NULL DEFAULT 0",
+        "last_verified_at": "DATETIME",
+        "last_error": "VARCHAR(1000)",
+    },
     "waf_settings": {
         "mode": "VARCHAR(16) NOT NULL DEFAULT 'disabled'",
         "paranoia_level": "INTEGER NOT NULL DEFAULT 1",
@@ -126,6 +131,17 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "wp_rate_window_seconds": "INTEGER NOT NULL DEFAULT 60",
     },
     "waf_domain_overrides": {"mode": "VARCHAR(16) NOT NULL DEFAULT 'disabled'"},
+    "ols_server_settings": {
+        "throttle_preset": "VARCHAR(16) NOT NULL DEFAULT 'disabled'",
+        "static_req_per_sec": "INTEGER NOT NULL DEFAULT 0",
+        "dyn_req_per_sec": "INTEGER NOT NULL DEFAULT 0",
+        "out_bandwidth": "INTEGER NOT NULL DEFAULT 0",
+        "in_bandwidth": "INTEGER NOT NULL DEFAULT 0",
+        "client_soft_limit": "INTEGER NOT NULL DEFAULT 10000",
+        "client_hard_limit": "INTEGER NOT NULL DEFAULT 10000",
+        "client_grace_period": "INTEGER NOT NULL DEFAULT 15",
+        "client_ban_period": "INTEGER NOT NULL DEFAULT 300",
+    },
     # Unified external-account importer. Existing rows are cPanel jobs.
     "cpanel_import_jobs": {
         "panel": "VARCHAR(16) NOT NULL DEFAULT 'cpanel'",

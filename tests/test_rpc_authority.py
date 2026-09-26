@@ -305,6 +305,32 @@ def test_customer_destination_list_is_bound_to_account(isolated_db, monkeypatch)
     assert entered == [True]
 
 
+def test_webmail_launch_requires_direct_customer_session_for_own_account(isolated_db):
+    from daemon.rpc_authority import Principal, authorize
+
+    with write_session() as db:
+        alice = Account(username="alice")
+        bob = Account(username="bob")
+        db.add_all([alice, bob])
+        db.flush()
+        alice_id = alice.id
+
+    params = {"username": "alice", "mailbox": "hello@example.test"}
+    authorize(
+        "webmail.launch.create", params,
+        Principal("customer", "alice-login", alice_id, 1, "session"),
+    )
+    denied = (
+        Principal("customer", "alice-token", alice_id, None, "token"),
+        Principal("admin", "administrator", None, 2, "session"),
+        Principal("customer", "administrator", alice_id, 2, "session", impersonating=True),
+        Principal("customer", "bob-login", alice_id + 1, 3, "session"),
+    )
+    for principal in denied:
+        with pytest.raises(AuthorizationError):
+            authorize("webmail.launch.create", params, principal)
+
+
 def test_update_requires_root_confirmed_admin_session_and_second_factor(isolated_db, monkeypatch):
     import pyotp
 

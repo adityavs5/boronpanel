@@ -2,7 +2,7 @@ import { SnapshotHistory } from '@/components/backups/SnapshotHistory'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Archive, Plus, RotateCcw, History, FolderOpen, Download } from 'lucide-react'
+import { Archive, Plus, RotateCcw, History, FolderOpen, Download, Mail } from 'lucide-react'
 import { get, patch, post } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatBytes, formatDate } from '@/lib/utils'
@@ -167,14 +167,14 @@ export default function Backups() {
   const restoreHistoryRef = useRef(null)
 
   const [createOpen, setCreateOpen] = useState(false)
-  const [form, setForm] = useState({ kind: 'full', item_ref: '' })
+  const [form, setForm] = useState({ kind: 'full', item_ref: '', mail_domain: '' })
   const [toRestore, setToRestore] = useState(null)
   const [toBrowse, setToBrowse] = useState(null)
 
   useEffect(() => {
     const kind = searchParams.get('kind')
     if (searchParams.get('action') === 'create' && BACKUP_KINDS.some(option => option.value === kind)) {
-      setForm({ kind, item_ref: '' })
+      setForm({ kind, item_ref: '', mail_domain: '' })
       setCreateOpen(true)
       setSearchParams({}, { replace: true })
     } else if (searchParams.get('view') === 'restores') {
@@ -202,6 +202,11 @@ export default function Backups() {
     queryFn: () => get(`/api/v1/accounts/${username}/databases`),
     enabled: !!username && createOpen,
   })
+  const mailboxInventory = useQuery({
+    queryKey: ['backup-mailbox-inventory', username],
+    queryFn: () => get(`/api/v1/accounts/${username}/email/mailboxes`),
+    enabled: !!username && createOpen && form.kind === 'mailbox',
+  })
 
   const createMut = useMutation({
     mutationFn: (body) => post(`/api/v1/accounts/${username}/backups`, body),
@@ -209,7 +214,7 @@ export default function Backups() {
       toast.success('Backup started', 'The backup job is running in the background.')
       qc.invalidateQueries({ queryKey: ['backups', username] })
       setCreateOpen(false)
-      setForm({ kind: 'full', item_ref: '' })
+      setForm({ kind: 'full', item_ref: '', mail_domain: '' })
     },
     onError: (e) => toast.error('Could not start backup', e.message),
   })
@@ -336,7 +341,7 @@ export default function Backups() {
           >
             <DialogBody className="space-y-4">
               <FormField label="What to back up" required>
-                <Select value={form.kind} onChange={(e) => setForm((f) => ({ ...f, kind: e.target.value }))}>
+                <Select value={form.kind} onChange={(e) => setForm({ kind: e.target.value, item_ref: '', mail_domain: '' })}>
                   {BACKUP_KINDS.map((k) => (
                     <option key={k.value} value={k.value}>{k.label}</option>
                   ))}
@@ -350,11 +355,47 @@ export default function Backups() {
                   </Select>
                 </FormField>
               )}
-              {needsItemRef && form.kind !== 'database' && (
+              {form.kind === 'mailbox' && (
+                <div className="space-y-4">
+                  <FormField label="Mail domain" required hint="Choose the domain first so the mailbox list stays clear.">
+                    <Select
+                      autoFocus
+                      value={form.mail_domain}
+                      onChange={(e) => setForm((f) => ({ ...f, mail_domain: e.target.value, item_ref: '' }))}
+                      disabled={mailboxInventory.isLoading || mailboxInventory.isError}
+                      required
+                    >
+                      <option value="">{mailboxInventory.isLoading ? 'Loading mail domains…' : 'Choose a mail domain…'}</option>
+                      {(mailboxInventory.data?.domains || []).map((name) => <option key={name} value={name}>{name}</option>)}
+                    </Select>
+                  </FormField>
+                  <FormField label="Mailbox" required hint="The full email address is stored with the backup.">
+                    <Select
+                      value={form.item_ref}
+                      onChange={(e) => setForm((f) => ({ ...f, item_ref: e.target.value }))}
+                      disabled={!form.mail_domain || mailboxInventory.isLoading || mailboxInventory.isError}
+                      required
+                    >
+                      <option value="">Choose a mailbox…</option>
+                      {(mailboxInventory.data?.mailboxes || []).filter((item) => item.domain === form.mail_domain).map((item) => (
+                        <option key={item.address} value={item.address}>{item.address}{item.active === false ? ' (inactive)' : ''}</option>
+                      ))}
+                    </Select>
+                  </FormField>
+                  {mailboxInventory.isError && <p className="text-sm text-danger">Could not load mailboxes. {mailboxInventory.error.message}</p>}
+                  {!mailboxInventory.isLoading && !mailboxInventory.isError && !(mailboxInventory.data?.mailboxes || []).length && (
+                    <div className="rounded-btn border border-border bg-muted/40 p-4 text-sm">
+                      <div className="flex items-center gap-2 font-medium"><Mail className="h-4 w-4" /> No email accounts yet</div>
+                      <p className="mt-1 text-muted-foreground">Create an email account before making a mailbox backup.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+              {needsItemRef && !['database', 'mailbox'].includes(form.kind) && (
                 <FormField
                   label="Item reference"
                   required
-                  hint="e.g. public_html/wp-config.php, a database name, or user@domain."
+                  hint="Enter a path inside your account, such as public_html/wp-config.php."
                 >
                   <Input
                     autoFocus
@@ -371,7 +412,7 @@ export default function Backups() {
               <Button
                 type="submit"
                 loading={createMut.isPending}
-                disabled={(needsItemRef && !form.item_ref.trim()) || (form.kind === 'databases' && !(databases.data?.databases || []).length)}
+                disabled={(needsItemRef && !form.item_ref.trim()) || (form.kind === 'mailbox' && !form.mail_domain) || (form.kind === 'databases' && !(databases.data?.databases || []).length)}
               >
                 Back up now
               </Button>

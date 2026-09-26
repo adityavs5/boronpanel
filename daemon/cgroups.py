@@ -127,20 +127,41 @@ def apply_limits(username: str, cpu_pct: int, mem_mb: int, io_mb: int, pids_max:
     own drop-in mechanism (reboot-safe -- confirmed empirically, see
     module docstring). Called both at initial provisioning and on every
     subsequent limit update; there is no separate "update" code path."""
+    apply_policy(username, {
+        "cpu_cores": cpu_pct / 100, "memory_high_mb": None, "memory_max_mb": mem_mb,
+        "io_read_bps": io_mb * 1024 * 1024, "io_write_bps": io_mb * 1024 * 1024,
+        "io_read_iops": None, "io_write_iops": None, "nproc": pids_max,
+    })
+
+
+def apply_policy(username: str, policy: dict) -> None:
+    """Apply the extended native resource policy to one account slice."""
     ensure_slice(username)
     device = settings.cgroup_io_device
-    result = run(
-        [
-            "systemctl", "set-property", slice_name(username),
-            f"CPUQuota={cpu_pct}%",
-            f"MemoryMax={mem_mb}M",
-            "MemorySwapMax=0",
-            f"TasksMax={pids_max}",
-            f"IOReadBandwidthMax={device} {io_mb}M",
-            f"IOWriteBandwidthMax={device} {io_mb}M",
-        ],
-        timeout=20,
-    )
+    cpu = policy.get("cpu_cores")
+    high = policy.get("memory_high_mb")
+    maximum = policy.get("memory_max_mb")
+    nproc = policy.get("nproc")
+    def bandwidth(value):
+        if value is None:
+            return "infinity"
+        value = int(value)
+        return f"{value // 1048576}M" if value % 1048576 == 0 else str(value)
+
+    properties = [
+        f"CPUQuota={'infinity' if cpu is None else f'{float(cpu) * 100:g}%'}",
+        f"MemoryHigh={'infinity' if high is None else f'{int(high)}M'}",
+        f"MemoryMax={'infinity' if maximum is None else f'{int(maximum)}M'}",
+        "MemorySwapMax=0",
+        f"TasksMax={'infinity' if nproc is None else int(nproc)}",
+        f"IOReadBandwidthMax={device} {bandwidth(policy.get('io_read_bps'))}",
+        f"IOWriteBandwidthMax={device} {bandwidth(policy.get('io_write_bps'))}",
+        f"IOReadIOPSMax={device} {'infinity' if policy.get('io_read_iops') is None else int(policy['io_read_iops'])}",
+        f"IOWriteIOPSMax={device} {'infinity' if policy.get('io_write_iops') is None else int(policy['io_write_iops'])}",
+    ]
+    if policy.get("cpu_weight") is not None:
+        properties.append(f"CPUWeight={int(policy['cpu_weight'])}")
+    result = run(["systemctl", "set-property", slice_name(username), *properties], timeout=20)
     if not result.ok:
         raise CgroupError(f"systemctl set-property failed for '{username}': {result.stderr.strip()}")
 
@@ -169,15 +190,23 @@ def bootstrap_all_slices() -> None:
     so borond's own startup is the single source of truth that
     reconciles cgroups back to DB state, the same role bootstrap_baseline
     plays for OLS vhosts."""
+    # Resolve the complete inheritance chain at startup. Applying only the
+    # legacy Account columns here would silently discard plan/account policy
+    # overrides after a reboot until another administrator edit happened.
+    from daemon.resource_manager import effective_for_account
+
     with write_session() as session:
         accounts = session.scalars(select(Account).where(Account.status.in_(["active", "suspended"]))).all()
-        snapshots = [(a.username, a.cpu_pct, a.mem_mb, a.io_mb, a.pids_max) for a in accounts]
+        snapshots = [(account, effective_for_account(session, account)) for account in accounts]
 
-    for username, cpu_pct, mem_mb, io_mb, pids_max in snapshots:
+    for account, effective in snapshots:
         try:
-            apply_limits(username, cpu_pct, mem_mb, io_mb, pids_max)
+            if effective["policy"] is None:
+                apply_limits(account.username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
+            else:
+                apply_policy(account.username, effective["values"])
         except Exception:
-            logger.exception("failed to bootstrap cgroup slice for '%s'", username)
+            logger.exception("failed to bootstrap cgroup slice for '%s'", account.username)
 
 
 def _account_uid_map(session) -> dict[int, str]:

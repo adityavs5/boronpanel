@@ -82,6 +82,10 @@ const MailTracking = lazy(() => import('@/pages/admin/MailTracking'))
 const DnsCluster = lazy(() => import('@/pages/admin/DnsCluster'))
 const DnsSetup = lazy(() => import('@/pages/admin/DnsSetup'))
 const ServerSetup = lazy(() => import('@/pages/admin/ServerSetup'))
+const ResourceManager = lazy(() => import('@/pages/admin/ResourceManager'))
+const FilesystemIsolation = lazy(() => import('@/pages/admin/FilesystemIsolation'))
+const SecurityCenter = lazy(() => import('@/pages/admin/SecurityCenter'))
+const StackManager = lazy(() => import('@/pages/admin/StackManager'))
 
 function IndexRedirect() {
   const role = useAuth.getState().role
@@ -196,6 +200,10 @@ export const router = createBrowserRouter(
         { path: 'dns-cluster', element: admin(<DnsCluster />) },
         { path: 'dns-setup', element: admin(<DnsSetup />) },
         { path: 'server-setup', element: admin(<ServerSetup />) },
+        { path: 'resource-manager', element: admin(<ResourceManager />) },
+        { path: 'filesystem-isolation', element: admin(<FilesystemIsolation />) },
+        { path: 'security-center', element: admin(<SecurityCenter />) },
+        { path: 'stack-manager', element: admin(<StackManager />) },
         { path: 'audit-log', element: admin(<AuditLog />) },
         { path: 'account-log', element: admin(<AccountLog />) },
         { path: 'error-log', element: admin(<ErrorLog />) },

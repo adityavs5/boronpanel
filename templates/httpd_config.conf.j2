@@ -106,14 +106,14 @@ fileAccessControl{
 }
 
 perClientConnLimit{
-    staticReqPerSec                          0
-    dynReqPerSec                             0
-    outBandwidth                             0
-    inBandwidth                              0
-    softLimit                                10000
-    hardLimit                                10000
-    gracePeriod                              15
-    banPeriod                                300
+    staticReqPerSec                          {{ ols_settings.static_req_per_sec }}
+    dynReqPerSec                             {{ ols_settings.dyn_req_per_sec }}
+    outBandwidth                             {{ ols_settings.out_bandwidth }}
+    inBandwidth                              {{ ols_settings.in_bandwidth }}
+    softLimit                                {{ ols_settings.client_soft_limit }}
+    hardLimit                                {{ ols_settings.client_hard_limit }}
+    gracePeriod                              {{ ols_settings.client_grace_period }}
+    banPeriod                                {{ ols_settings.client_ban_period }}
 }
 
 CGIRLimit{
@@ -273,8 +273,8 @@ virtualHost phpmyadmin{
 extProcessor {{ acc.php_app_name }}{
     type                            lsapi
     address                         uds://tmp/lshttpd/{{ acc.php_app_name }}.sock
-    maxConns                        10
-    env                              PHP_LSAPI_CHILDREN=10
+    maxConns                        {{ acc.entry_processes|default(20) }}
+    env                              PHP_LSAPI_CHILDREN={{ acc.entry_processes|default(20) }}
     {# Security fix (Phase 6a research finding): confirmed empirically
        (lsphp -i / a live test script) that this build's sys_temp_dir ini
        directive is empty, so sys_get_temp_dir() -- and anything that

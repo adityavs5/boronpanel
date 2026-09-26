@@ -69,6 +69,15 @@ OLS_SETTINGS_DEFAULTS = {
     "quic_enabled": True,
     "log_level": "WARN",
     "log_keep_days": 90,
+    "throttle_preset": "disabled",
+    "static_req_per_sec": 0,
+    "dyn_req_per_sec": 0,
+    "out_bandwidth": 0,
+    "in_bandwidth": 0,
+    "client_soft_limit": 10000,
+    "client_hard_limit": 10000,
+    "client_grace_period": 15,
+    "client_ban_period": 300,
 }
 OLS_CREDENTIAL_PATH = Path("/var/lib/boron/ols-admin-credential.json")
 OLS_PASSWORD_SCRIPT = Path("/usr/local/lsws/admin/misc/admpass.sh")
@@ -449,6 +458,9 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
     domain_vhosts = []
     account_procs = []
     for account in accounts:
+        from daemon.resource_manager import effective_for_account
+        resource_policy = effective_for_account(session, account)["values"]
+        entry_processes = resource_policy.get("entry_processes") or 10000
         # Domain rows are the only source of truth for what gets a listener
         # map entry. Account.primary_domain is a denormalized display field
         # only -- falling back to it here previously caused a phantom vhost
@@ -471,7 +483,7 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
             effective_version = d.php_version or account.php_version
             if effective_version not in versions_seen:
                 versions_seen.add(effective_version)
-                account_procs.append({
+                process = {
                     "username": account.username,
                     "php_app_name": _php_app_name(account.username, effective_version),
                     "lsphp_path": _lsphp_path(effective_version),
@@ -480,7 +492,10 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
                         phpdirectives.php_scan_dir(account.username, effective_version)
                         if account.id in ext_override_ids else None
                     ),
-                })
+                }
+                if entry_processes != 20:
+                    process["entry_processes"] = entry_processes
+                account_procs.append(process)
             domain_vhosts.append({
                 "vhost_name": _vhost_name(d.domain),
                 "domain": d.domain,
@@ -1345,6 +1360,69 @@ def update_admin_settings(params: dict) -> dict:
                 setattr(row, key, value)
         raise
     return admin_status({})
+
+
+ABUSE_PRESETS = {
+    "disabled": {
+        "static_req_per_sec": 0, "dyn_req_per_sec": 0,
+        "out_bandwidth": 0, "in_bandwidth": 0,
+        "client_soft_limit": 10000, "client_hard_limit": 10000,
+        "client_grace_period": 15, "client_ban_period": 300,
+    },
+    "balanced": {
+        "static_req_per_sec": 100, "dyn_req_per_sec": 20,
+        "out_bandwidth": 0, "in_bandwidth": 0,
+        "client_soft_limit": 150, "client_hard_limit": 200,
+        "client_grace_period": 15, "client_ban_period": 60,
+    },
+    "strict": {
+        "static_req_per_sec": 60, "dyn_req_per_sec": 10,
+        "out_bandwidth": 0, "in_bandwidth": 0,
+        "client_soft_limit": 100, "client_hard_limit": 150,
+        "client_grace_period": 10, "client_ban_period": 300,
+    },
+}
+
+
+def update_abuse_settings(params: dict) -> dict:
+    """Apply OLS per-client controls through the normal validated rollback path."""
+    preset = str(params.get("preset", "balanced"))
+    if preset not in {*ABUSE_PRESETS, "custom"}:
+        raise ValidationError("preset must be disabled, balanced, strict, or custom")
+    current = _ols_settings()
+    raw = ABUSE_PRESETS.get(preset, params)
+    values = {
+        "static_req_per_sec": _bounded_setting("static_req_per_sec", raw.get("static_req_per_sec", current["static_req_per_sec"]), 0, 100000),
+        "dyn_req_per_sec": _bounded_setting("dyn_req_per_sec", raw.get("dyn_req_per_sec", current["dyn_req_per_sec"]), 0, 100000),
+        "out_bandwidth": _bounded_setting("out_bandwidth", raw.get("out_bandwidth", current["out_bandwidth"]), 0, 2_000_000_000),
+        "in_bandwidth": _bounded_setting("in_bandwidth", raw.get("in_bandwidth", current["in_bandwidth"]), 0, 2_000_000_000),
+        "client_soft_limit": _bounded_setting("client_soft_limit", raw.get("client_soft_limit", current["client_soft_limit"]), 1, 1000000),
+        "client_hard_limit": _bounded_setting("client_hard_limit", raw.get("client_hard_limit", current["client_hard_limit"]), 1, 1000000),
+        "client_grace_period": _bounded_setting("client_grace_period", raw.get("client_grace_period", current["client_grace_period"]), 1, 3600),
+        "client_ban_period": _bounded_setting("client_ban_period", raw.get("client_ban_period", current["client_ban_period"]), 1, 86400),
+    }
+    if values["client_soft_limit"] > values["client_hard_limit"]:
+        raise ValidationError("Client soft limit cannot exceed the hard limit")
+    with write_session() as session:
+        row = session.get(OlsServerSettings, 1)
+        if row is None:
+            row = OlsServerSettings(id=1)
+            session.add(row)
+        previous = {key: getattr(row, key) for key in values}
+        previous["throttle_preset"] = row.throttle_preset
+        row.throttle_preset = preset
+        for key, value in values.items():
+            setattr(row, key, value)
+    try:
+        refresh_main_config()
+    except Exception:
+        with write_session() as session:
+            row = session.get(OlsServerSettings, 1)
+            for key, value in previous.items():
+                setattr(row, key, value)
+        refresh_main_config()
+        raise
+    return {"preset": preset, **values}
 
 
 def graceful_reload(params: dict) -> dict:

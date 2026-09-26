@@ -1,8 +1,11 @@
 import pytest
 from contextlib import contextmanager
+from sqlalchemy import select
 
 from daemon import handlers_account as ha
 from daemon import handlers_database as hdb
+from shared.db import write_session
+from shared.models import Account, DbGovernorPolicy, FeatureControl
 from shared.validation import ValidationError
 
 
@@ -72,6 +75,25 @@ def test_create_database_happy_path(isolated_db, stub_sysops, stub_mariadb):
     assert "password" in result
     assert ("create_database", "demo1_shop") in stub_mariadb
     assert ("grant_all", "demo1_shop", "demo1_shop") in stub_mariadb
+
+
+def test_create_database_applies_existing_governor_policy_before_returning_credential(
+    isolated_db, stub_sysops, stub_mariadb, monkeypatch,
+):
+    ha.create_account({"username": "demo1"})
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        session.add(FeatureControl(id=1, db_governor_mode="enforce"))
+        session.add(DbGovernorPolicy(
+            scope_type="account", scope_id=account.id, mode="enforce", max_user_connections=4,
+        ))
+    applied = []
+    monkeypatch.setattr(
+        hdb.db_governor, "_apply_user",
+        lambda user, host, policy: applied.append((user, host, policy.max_user_connections)),
+    )
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    assert applied == [("demo1_shop", "localhost", 4)]
 
 
 def test_create_database_rejects_duplicate(isolated_db, stub_sysops, stub_mariadb):
