@@ -36,6 +36,10 @@ def fake_pdns(monkeypatch):
     fake = FakePDNS()
     for name in ("zone_exists", "create_zone", "delete_zone", "upsert_record", "delete_record", "list_records"):
         monkeypatch.setattr(powerdns, name, getattr(fake, name))
+    monkeypatch.setattr(
+        handlers_dns.dkim, "setup_dns_signing",
+        lambda domain: {"selector": "default", "signing_active": True, "dns_published": True},
+    )
     return fake
 
 
@@ -71,6 +75,23 @@ def test_create_zone_no_auto_enable_when_off(cf, fake_pdns, monkeypatch):
     assert "cloudflare" not in result
     with write_session() as session:
         assert session.scalar(select(CloudflareZone).where(CloudflareZone.zone == "site.com")) is None
+
+
+def test_create_zone_activates_dkim_before_first_mailbox(cf, fake_pdns, monkeypatch):
+    monkeypatch.setattr(settings, "server_public_ip", "192.0.2.50")
+    _account_and_domain()
+    activated = []
+    monkeypatch.setattr(
+        handlers_dns.dkim, "setup_dns_signing",
+        lambda domain: activated.append(domain) or {
+            "selector": "default", "signing_active": True, "dns_published": True,
+        },
+    )
+
+    result = handlers_dns.create_zone({"domain": "site.com", "username": "site"})
+
+    assert activated == ["site.com"]
+    assert result["dkim"]["dns_published"] is True
 
 
 def test_auto_enable_skipped_without_capacity(cf, fake_pdns, monkeypatch):

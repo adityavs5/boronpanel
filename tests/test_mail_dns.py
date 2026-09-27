@@ -1,6 +1,6 @@
 from daemon import mail_dns
 from shared.db import write_session
-from shared.models import Account, DkimKey, MailDomain
+from shared.models import Account, DkimKey, Domain, MailDomain
 
 
 def test_default_mail_records_exclude_dmarc_and_unready_dkim(monkeypatch):
@@ -52,6 +52,27 @@ def test_preview_surfaces_inactive_dkim_for_provisioned_mail_domain(isolated_db,
     assert dkim_row["name"] == "default._domainkey"
     assert dkim_row["status"] == "inactive"
     assert "activation" in dkim_row["detail"].lower()
+
+
+def test_preview_surfaces_inactive_dkim_before_first_mailbox(isolated_db, monkeypatch):
+    with write_session() as db:
+        account = Account(username="hostedone", status="active")
+        db.add(account)
+        db.flush()
+        db.add(Domain(
+            account_id=account.id, domain="example.test", kind="primary",
+            docroot="/home/hostedone/public_html",
+        ))
+    monkeypatch.setattr(mail_dns, "find_managed_zone", lambda domain: "example.test")
+    monkeypatch.setattr(mail_dns.dnsprovider, "list_records", lambda zone: [])
+    monkeypatch.setattr(mail_dns.settings, "mail_hostname", "mail.host.test")
+    monkeypatch.setattr(mail_dns.settings, "server_public_ip", "")
+
+    state = mail_dns.preview("example.test")
+
+    dkim_row = next(row for row in state["records"] if row["key"] == "dkim")
+    assert dkim_row["name"] == "default._domainkey"
+    assert dkim_row["status"] == "inactive"
 
 
 def test_repair_activates_inactive_dkim_before_writing_records(monkeypatch):

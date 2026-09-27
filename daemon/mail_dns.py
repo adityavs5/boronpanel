@@ -9,7 +9,7 @@ from daemon import dkim, dnsprovider
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from shared.config import settings
 from shared.db import write_session
-from shared.models import DkimKey, MailDomain
+from shared.models import DkimKey, Domain, MailDomain
 from shared.validation import ValidationError, validate_domain, validate_email_address
 
 
@@ -128,14 +128,16 @@ def preview(domain: str) -> dict:
             "status": status,
         })
 
-    # A mail domain must always expose DKIM in readiness, even when an older
-    # installation has a missing/inactive key. Hiding the row made the UI say
-    # nothing about DKIM and left "Add missing records" unable to repair it.
+    # A hosted domain must always expose DKIM in readiness, even before its
+    # first mailbox exists. DKIM is domain-level signing: requiring a
+    # MailDomain row made the UI hide the record and left "Add missing
+    # records" unable to activate it for a newly hosted domain.
     if not any(row["key"] == "dkim" for row in rows):
         with write_session() as db:
             mail_domain = db.scalar(select(MailDomain).where(MailDomain.domain == domain))
+            hosted_domain = db.scalar(select(Domain).where(Domain.domain == domain))
             key = db.scalar(select(DkimKey).where(DkimKey.domain == domain))
-        if mail_domain is not None:
+        if mail_domain is not None or hosted_domain is not None:
             selector = key.selector if key else dkim.DEFAULT_SELECTOR
             label = f"{selector}._domainkey"
             if label_prefix != "@":

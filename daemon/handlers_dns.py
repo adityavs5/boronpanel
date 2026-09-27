@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, DnsZone, MailDomain
+from shared.models import Account, DnsZone
 from shared.validation import ValidationError, validate_domain, validate_record_type
 
 from daemon import cloudflare_ops, dkim, dnsprovider, dnssetup, mail_dns
@@ -183,19 +183,15 @@ def create_zone(params: dict) -> dict:
         session.flush()
         result = _zone_dict(zone_row)
 
-    # If mail was provisioned before its DNS zone, DKIM setup previously had
-    # nowhere to publish the public key. Reconcile it now that the managed zone
-    # exists. Zone creation remains usable if the local signer needs operator
-    # attention; Email DNS will surface the repair state and error.
-    with write_session() as session:
-        has_mail = session.scalar(
-            select(MailDomain.id).where(MailDomain.domain == domain_name)
-        ) is not None
-    if has_mail:
-        try:
-            result["dkim"] = dkim.setup_dns_signing(domain_name)
-        except Exception:
-            logger.exception("DKIM reconciliation failed after creating zone '%s'", domain_name)
+    # DKIM belongs to a hosted domain, not to an individual mailbox. Generate
+    # and publish a unique signing key as soon as the authoritative zone exists
+    # so a new domain is mail-ready before its first email account is created.
+    # Keep zone creation usable if the local signer needs operator attention;
+    # Email DNS surfaces the inactive state and provides a retry action.
+    try:
+        result["dkim"] = dkim.setup_dns_signing(domain_name)
+    except Exception:
+        logger.exception("DKIM activation failed after creating zone '%s'", domain_name)
 
     # Phase 2+3 feature 6: auto-enable Cloudflare for the new zone when the
     # admin toggle / default_dns_provider says so and a pool account has

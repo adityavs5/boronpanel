@@ -329,9 +329,11 @@ class CloudflareSettings(Base):
 
 
 class DkimKey(Base):
-    """Phase 3 feature 1: one DKIM signing keypair per mail domain,
-    generated automatically the first time a mail domain is created
-    (daemon/dkim.py). The private key itself lives on disk
+    """One DKIM signing keypair per hosted signing domain.
+
+    Keys are generated when a managed DNS zone is created, or lazily when
+    mail is enabled for a domain covered by a parent zone. A mailbox is not a
+    prerequisite for domain-level signing. The private key itself lives on disk
     (/etc/boron/dkim/<domain>/<selector>.private, root-only) -- this
     row is bookkeeping only (which selector is active, so repeat calls
     reuse rather than silently rotate the key) plus whether the public key
