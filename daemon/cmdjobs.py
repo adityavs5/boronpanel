@@ -19,7 +19,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, CommandRun, utcnow
 
-from daemon import jobcredentials
+from daemon import account_exec, jobcredentials
 from daemon.procutil import run
 
 logger = logging.getLogger("borond.cmdjobs")
@@ -105,8 +105,8 @@ def _run_job(
                 raise RuntimeError("queued command no longer belongs to this account")
             job.status = "running"
 
-        wrapped = ["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", *argv]
-        result = run(wrapped, cwd=cwd, timeout=timeout, redact=redact or None, **({"input_text": input_text} if input_text is not None else {}))
+        wrapped = account_exec.wrap(username, argv, token=f"cmd-{job_id}", cwd=cwd, home=pw.pw_dir)
+        result = run(wrapped, timeout=timeout, redact=redact or None, **({"input_text": input_text} if input_text is not None else {}))
         if result.returncode != 0 and on_failure:
             on_failure()
         if result.returncode == 0 and on_success:

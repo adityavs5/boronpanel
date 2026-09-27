@@ -9,7 +9,9 @@ from shared.db import write_session
 from shared.models import Account, Domain
 
 @pytest.fixture
-def sites(isolated_db,tmp_path):
+def sites(isolated_db,tmp_path,monkeypatch):
+    monkeypatch.setattr(manager.account_exec, 'wrap',
+        lambda username, argv, **kwargs: ['runuser', '-u', username, '--', *argv])
     with write_session() as s:
         for name in ('alice','bob'):
             a=Account(username=name);s.add(a);s.flush()
@@ -134,23 +136,32 @@ def test_restore_rejects_archive_path_traversal_before_touching_site(worker,tmp_
     assert not (tmp_path/'escaped').exists()
 
 def test_login_handoff_scopes_csp_without_relaxing_panel_policy(sites,monkeypatch):
-    from fastapi.testclient import TestClient
-    from api.main import app
-    from api.security import get_identity
+    import asyncio
+    from fastapi.responses import HTMLResponse
+    from starlette.requests import Request
+    from api import main
     admin=Identity(panel_user_id=1,username='admin',role='admin',account_id=None,auth_method='session')
-    app.dependency_overrides[get_identity]=lambda:admin
     monkeypatch.setattr(api,'call_daemon',lambda *args,**kwargs:{'url':'https://alice.example/boron-login-test.php','token':'private-token'})
-    try:
-        client=TestClient(app)
-        r=client.post('/api/v1/accounts/alice/domains/alice.example/wordpress/login/open',data={'path':''})
-        assert r.status_code==200
-        assert 'form-action https://alice.example' in r.headers['content-security-policy']
-        assert "script-src 'nonce-" in r.headers['content-security-policy']
-        assert r.headers['cache-control']=='no-store'
-        assert r.headers['referrer-policy']=='no-referrer'
-        assert 'private-token' in r.text
-        assert "form-action 'self'" in client.get('/app').headers['content-security-policy']
-    finally:app.dependency_overrides.pop(get_identity,None)
+
+    def request(path, method='GET'):
+        return Request({'type':'http','http_version':'1.1','method':method,'scheme':'https',
+            'path':path,'raw_path':path.encode(),'query_string':b'','headers':[],
+            'client':('127.0.0.1',12345),'server':('panel.example',443)})
+
+    async def secured(path, response, method='GET'):
+        async def call_next(_request): return response
+        return await main._security_headers(request(path, method), call_next)
+
+    endpoint=api.open_wordpress_login('alice','alice.example','',admin)
+    r=asyncio.run(secured('/api/v1/accounts/alice/domains/alice.example/wordpress/login/open',endpoint,'POST'))
+    assert r.status_code==200
+    assert 'form-action https://alice.example' in r.headers['content-security-policy']
+    assert "script-src 'nonce-" in r.headers['content-security-policy']
+    assert r.headers['cache-control']=='no-store'
+    assert r.headers['referrer-policy']=='no-referrer'
+    assert 'private-token' in r.body.decode()
+    app_response=asyncio.run(secured('/app',HTMLResponse('<html></html>')))
+    assert "form-action 'self'" in app_response.headers['content-security-policy']
 
 def test_admin_inventory_includes_suspended_sites_but_no_install_destinations(sites):
     from sqlalchemy import select

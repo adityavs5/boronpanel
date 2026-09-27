@@ -1,69 +1,40 @@
-"""Per-account resource limits via cgroups v2 (Phase 2 feature 6).
+"""Aggregate per-account resource enforcement through native user slices.
 
-Architecture decision (EFFORT: xhigh per the goal): OLS spawns each
-account's LSAPI/PHP worker process itself, already setuid/setgid-dropped
-to that account's own uid/gid *before* it execs the configured binary --
-confirmed empirically by pointing a test account's extprocessor `path` at
-a diagnostic wrapper script and inspecting its real uid/cgroup at runtime
-(see CHECKPOINT-phase2-6.md). That means there is no privilege-elevated
-moment inside the spawned process itself to join a cgroup outside
-lshttpd's own hierarchy -- cgroup v2 requires write access to the nearest
-*common ancestor* of the process's current and target cgroups to migrate
-it there, not just the destination, and an already-unprivileged worker
-has no such access (confirmed empirically: a plain unprivileged
-self-migration attempt failed with EACCES).
+OpenLiteSpeed's cgroup-v2 integration starts account CGI/PHP workloads below
+``user-<uid>.slice``. PAM/logind place SSH, SFTP and panel-terminal sessions
+below the same slice. Boron assigns account application services to that
+slice too, so one CPU, memory, I/O and task budget covers the whole account.
 
-The alternative considered was a small setuid-root (or
-cap_sys_admin-capable) helper binary as the extprocessor's `path`, which
-would let the kernel re-elevate privilege at exec time regardless of the
-calling process's dropped uid. Rejected: that installs a permanent local
-privilege-escalation binary in every account's PHP execution path on a
-box that will host mutually-untrusted customer accounts -- real, ongoing
-attack surface for the sake of closing what is at most a few-second
-placement window, and it was flagged by this environment's own safety
-review before it was ever installed. This build never installs one.
-
-Instead: borond (which already runs as root, the same privilege level
-ARCHITECTURE.md establishes for the whole daemon) periodically scans for
-worker processes still sitting in lshttpd's own cgroup and moves each one
-into its owning account's slice -- root crossing an arbitrary cgroup
-boundary is always permitted, no capability/setuid surface needed. This
-trades a small window (one reconcile interval, default a few seconds)
-during which a freshly (re)spawned LSAPI worker is briefly unthrottled,
-for zero new privilege-escalation surface. Given LSAPI backends are
-long-lived/pooled (persistConn, not spawned per request -- Phase 1's
-ARCHITECTURE.md SS6), this window is rare (only at initial spawn or after
-a crash/restart) and short, a reasonable trade for a hosting panel where
-the alternative is a standing root-equivalent local exploit primitive.
-
-Limits themselves are systemd slices (`Slice=` unit per account, nested
-under a static `boron.slice`), not hand-rolled cgroupfs writes --
-`systemctl set-property` applies limits to the live cgroup immediately
-*and* persists them via a systemd-generated drop-in under
-/etc/systemd/system.control/ (confirmed empirically: survives daemon-reload,
-which is what a reboot re-reads), satisfying "must survive reboot" without
-this project needing to hand-write/parse raw unit files for updates.
+Older Boron releases created ``boron-<username>.slice`` and attempted to move
+already-running PHP workers directly into it. That destination becomes an
+internal cgroup as soon as an app service exists below it, so cgroup v2
+correctly rejects the move with ``EBUSY``. This module never writes PIDs to an
+internal cgroup. Native OLS placement happens before customer code runs; the
+periodic audit only detects uncovered workers and retires empty legacy slices.
 """
 from __future__ import annotations
 
 import logging
 import os
 from pathlib import Path
+from pwd import getpwnam as _getpwnam
+import shutil
 
 from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account
+from shared.validation import validate_username
 
 from daemon.procutil import run
 
 logger = logging.getLogger("borond.cgroups")
 
-PARENT_SLICE = "boron.slice"
 CGROUP_ROOT = Path("/sys/fs/cgroup")
+USER_SLICE_ROOT = CGROUP_ROOT / "user.slice"
 LSHTTPD_CGROUP_PROCS = CGROUP_ROOT / "system.slice" / "lshttpd.service" / "cgroup.procs"
-MIN_ACCOUNT_UID = 1000  # matches useradd's default UID_MIN (Phase 1 convention)
+MIN_ACCOUNT_UID = 1000
 
 DEFAULT_CPU_PCT = 25
 DEFAULT_MEM_MB = 512
@@ -75,79 +46,95 @@ class CgroupError(Exception):
     pass
 
 
-def slice_name(username: str) -> str:
-    return f"boron-{username}.slice"
+def user_slice_name(uid: int) -> str:
+    uid = int(uid)
+    if uid < MIN_ACCOUNT_UID:
+        raise CgroupError(f"refusing account resource slice for system uid {uid}")
+    return f"user-{uid}.slice"
 
 
-def _unit_path(username: str) -> Path:
-    return Path("/etc/systemd/system") / slice_name(username)
+def legacy_slice_name(username: str) -> str:
+    return f"boron-{validate_username(username)}.slice"
 
 
-def _cgroup_path(username: str) -> Path:
-    return CGROUP_ROOT / PARENT_SLICE / slice_name(username)
+def _resolve_uid(username: str, uid: int | None = None) -> int:
+    """Resolve and cross-check the immutable kernel identity for an account."""
+    username = validate_username(username)
+    supplied = int(uid) if uid is not None else None
+    with write_session() as session:
+        db_uid = session.scalar(select(Account.uid).where(Account.username == username))
+    try:
+        passwd_uid = _getpwnam(username).pw_uid
+    except KeyError:
+        passwd_uid = None
+    candidates = [value for value in (supplied, db_uid, passwd_uid) if value is not None]
+    if not candidates:
+        raise CgroupError(f"account '{username}' has no resolvable uid")
+    if len(set(candidates)) != 1:
+        raise CgroupError(f"account '{username}' uid does not match the Linux identity")
+    resolved = candidates[0]
+    user_slice_name(resolved)
+    return resolved
 
 
-def _write_unit_file(username: str) -> None:
-    """A minimal, static base unit -- just enough to exist. No explicit
-    `Slice=boron.slice` directive: systemd nests any "foo-bar.slice"
-    unit under "foo.slice" automatically from the name alone (confirmed
-    empirically -- CGroup path is /boron.slice/boron-<user>.slice
-    with no Slice= line at all). Asserting it explicitly turned out to be
-    not just redundant but noisy: re-running daemon-reload + start against
-    an *already-active* slice with an explicit Slice= line logged "Failed
-    to assign slice boron.slice to unit ..., ignoring: Invalid
-    argument" on every subsequent apply_limits() call (harmless --
-    "ignoring" means it kept the correct assignment -- but needless
-    warning noise in the journal on every limit update). Actual limits are
-    applied separately via `systemctl set-property` (see apply_limits),
-    not templated into this file, so updating limits never requires
-    rewriting/reloading the base unit."""
-    unit_path = _unit_path(username)
-    content = (
-        "[Unit]\n"
-        f"Description=Boron resource limits for account '{username}'\n"
-    )
-    if unit_path.exists() and unit_path.read_text() == content:
-        return
-    unit_path.write_text(content)
+def account_slice_name(username: str, uid: int | None = None) -> str:
+    return user_slice_name(_resolve_uid(username, uid))
 
 
-def ensure_slice(username: str) -> None:
-    """Idempotent: creates the unit file (if missing/changed) and starts
-    the slice so its cgroup exists on disk -- safe to call even if it's
-    already running (`systemctl start` on an already-active unit is a
-    no-op)."""
-    _write_unit_file(username)
-    run(["systemctl", "daemon-reload"], timeout=20, check=True)
-    run(["systemctl", "start", slice_name(username)], timeout=20, check=True)
+def _cgroup_path(username: str, uid: int | None = None) -> Path:
+    resolved = _resolve_uid(username, uid)
+    return USER_SLICE_ROOT / user_slice_name(resolved)
 
 
-def apply_limits(username: str, cpu_pct: int, mem_mb: int, io_mb: int, pids_max: int) -> None:
-    """Applies to the live cgroup immediately and persists via systemd's
-    own drop-in mechanism (reboot-safe -- confirmed empirically, see
-    module docstring). Called both at initial provisioning and on every
-    subsequent limit update; there is no separate "update" code path."""
+def _legacy_unit_path(username: str) -> Path:
+    return Path("/etc/systemd/system") / legacy_slice_name(username)
+
+
+def ensure_slice(username: str, uid: int | None = None) -> str:
+    """Ensure the canonical per-UID parent exists before admitting work."""
+    unit = account_slice_name(username, uid)
+    result = run(["systemctl", "start", unit], timeout=20)
+    if not result.ok:
+        raise CgroupError(f"could not start {unit}: {result.stderr.strip()}")
+    return unit
+
+
+def apply_limits(
+    username: str,
+    cpu_pct: int,
+    mem_mb: int,
+    io_mb: int,
+    pids_max: int,
+    *,
+    uid: int | None = None,
+) -> None:
     apply_policy(username, {
-        "cpu_cores": cpu_pct / 100, "memory_high_mb": None, "memory_max_mb": mem_mb,
-        "io_read_bps": io_mb * 1024 * 1024, "io_write_bps": io_mb * 1024 * 1024,
-        "io_read_iops": None, "io_write_iops": None, "nproc": pids_max,
-    })
+        "cpu_cores": cpu_pct / 100,
+        "memory_high_mb": None,
+        "memory_max_mb": mem_mb,
+        "io_read_bps": io_mb * 1024 * 1024,
+        "io_write_bps": io_mb * 1024 * 1024,
+        "io_read_iops": None,
+        "io_write_iops": None,
+        "nproc": pids_max,
+    }, uid=uid)
 
 
-def apply_policy(username: str, policy: dict) -> None:
-    """Apply the extended native resource policy to one account slice."""
-    ensure_slice(username)
+def apply_policy(username: str, policy: dict, *, uid: int | None = None) -> None:
+    """Apply one aggregate policy to PHP, apps and login-session descendants."""
+    unit = ensure_slice(username, uid)
     device = settings.cgroup_io_device
-    cpu = policy.get("cpu_cores")
-    high = policy.get("memory_high_mb")
-    maximum = policy.get("memory_max_mb")
-    nproc = policy.get("nproc")
+
     def bandwidth(value):
         if value is None:
             return "infinity"
         value = int(value)
         return f"{value // 1048576}M" if value % 1048576 == 0 else str(value)
 
+    cpu = policy.get("cpu_cores")
+    high = policy.get("memory_high_mb")
+    maximum = policy.get("memory_max_mb")
+    nproc = policy.get("nproc")
     properties = [
         f"CPUQuota={'infinity' if cpu is None else f'{float(cpu) * 100:g}%'}",
         f"MemoryHigh={'infinity' if high is None else f'{int(high)}M'}",
@@ -158,101 +145,131 @@ def apply_policy(username: str, policy: dict) -> None:
         f"IOWriteBandwidthMax={device} {bandwidth(policy.get('io_write_bps'))}",
         f"IOReadIOPSMax={device} {'infinity' if policy.get('io_read_iops') is None else int(policy['io_read_iops'])}",
         f"IOWriteIOPSMax={device} {'infinity' if policy.get('io_write_iops') is None else int(policy['io_write_iops'])}",
+        "CPUAccounting=yes",
+        "MemoryAccounting=yes",
+        "IOAccounting=yes",
+        "TasksAccounting=yes",
     ]
     if policy.get("cpu_weight") is not None:
         properties.append(f"CPUWeight={int(policy['cpu_weight'])}")
-    result = run(["systemctl", "set-property", slice_name(username), *properties], timeout=20)
+    result = run(["systemctl", "set-property", unit, *properties], timeout=20)
     if not result.ok:
         raise CgroupError(f"systemctl set-property failed for '{username}': {result.stderr.strip()}")
 
 
-def remove_slice(username: str) -> None:
-    """TERMINATE_HOOKS entry: idempotent -- safe even if the account never
-    had a slice (e.g. termination failed partway through creation)."""
-    run(["systemctl", "stop", slice_name(username)], timeout=20)
-    unit_path = _unit_path(username)
-    if unit_path.exists():
-        unit_path.unlink()
-    import shutil
-
-    control_dropin = Path("/etc/systemd/system.control") / f"{slice_name(username)}.d"
-    shutil.rmtree(control_dropin, ignore_errors=True)
+def _retire_legacy_slice(username: str) -> bool:
+    """Remove an obsolete Boron slice only after it has no descendants."""
+    legacy = legacy_slice_name(username)
+    old_root = CGROUP_ROOT / "boron.slice" / legacy
+    if old_root.exists():
+        try:
+            populated = (old_root / "cgroup.events").read_text()
+        except OSError:
+            return False
+        if "populated 1" in populated:
+            return False
+    run(["systemctl", "stop", legacy], timeout=20)
+    _legacy_unit_path(username).unlink(missing_ok=True)
+    shutil.rmtree(Path("/etc/systemd/system.control") / f"{legacy}.d", ignore_errors=True)
     run(["systemctl", "daemon-reload"], timeout=20)
+    return True
+
+
+def remove_slice(username: str, uid: int | None = None) -> None:
+    """Reset a terminated account's policy and remove obsolete Boron state."""
+    resolved = None
+    try:
+        resolved = _resolve_uid(username, uid)
+    except CgroupError:
+        if uid is not None:
+            raise
+    if resolved is not None:
+        unit = user_slice_name(resolved)
+        run(["systemctl", "stop", unit], timeout=20)
+        run(["systemctl", "revert", unit], timeout=20)
+        shutil.rmtree(Path("/etc/systemd/system.control") / f"{unit}.d", ignore_errors=True)
+    _retire_legacy_slice(username)
 
 
 def bootstrap_all_slices() -> None:
-    """Run once at borond startup: ensures every active/suspended
-    account's slice exists with its current DB-recorded limits applied.
-    This is what makes limits survive a *host* reboot, not just a
-    borond restart -- systemd itself doesn't auto-recreate a slice's
-    cgroup on boot just because a unit file is present (slices without an
-    [Install] section aren't "enabled"/auto-started the way services are),
-    so borond's own startup is the single source of truth that
-    reconciles cgroups back to DB state, the same role bootstrap_baseline
-    plays for OLS vhosts."""
-    # Resolve the complete inheritance chain at startup. Applying only the
-    # legacy Account columns here would silently discard plan/account policy
-    # overrides after a reboot until another administrator edit happened.
+    """Reapply every account policy before OLS/apps/customer sessions start."""
     from daemon.resource_manager import effective_for_account
 
     with write_session() as session:
         accounts = session.scalars(select(Account).where(Account.status.in_(["active", "suspended"]))).all()
         snapshots = [(account, effective_for_account(session, account)) for account in accounts]
-
     for account, effective in snapshots:
         try:
             if effective["policy"] is None:
-                apply_limits(account.username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
+                apply_limits(
+                    account.username, account.cpu_pct, account.mem_mb, account.io_mb,
+                    account.pids_max, uid=account.uid,
+                )
             else:
-                apply_policy(account.username, effective["values"])
+                apply_policy(account.username, effective["values"], uid=account.uid)
         except Exception:
-            logger.exception("failed to bootstrap cgroup slice for '%s'", account.username)
+            logger.exception("failed to bootstrap account resource slice for '%s'", account.username)
 
 
 def _account_uid_map(session) -> dict[int, str]:
-    rows = session.execute(select(Account.uid, Account.username).where(Account.uid.isnot(None))).all()
+    rows = session.execute(select(Account.uid, Account.username).where(
+        Account.uid.isnot(None), Account.status.in_(["active", "suspended"]),
+    )).all()
     return {uid: username for uid, username in rows}
 
 
-def reconcile_processes() -> int:
-    """Periodic (called from borond's own asyncio loop, every few
-    seconds): moves any worker process still sitting in lshttpd's own
-    cgroup into its owning account's slice, keyed by the process's real
-    uid against Account.uid. Root-privileged (borond's own level), so
-    crossing the cgroup hierarchy here needs no special capability --
-    this is the safe alternative to a setuid/capability helper binary
-    (see module docstring). Returns the number of processes moved."""
+def _pid_cgroup(pid: int) -> str | None:
     try:
-        pids_text = LSHTTPD_CGROUP_PROCS.read_text()
+        for line in Path(f"/proc/{pid}/cgroup").read_text().splitlines():
+            if line.startswith("0::"):
+                return line[3:]
     except OSError:
-        return 0  # lshttpd not running / not yet started -- nothing to do
+        pass
+    return None
 
-    pids = [int(p) for p in pids_text.split() if p.strip()]
-    if not pids:
-        return 0
 
+def _pid_uid(pid: int) -> int | None:
+    try:
+        return os.stat(f"/proc/{pid}").st_uid
+    except OSError:
+        return None
+
+
+def audit_php_coverage() -> dict:
+    """Detect OLS workers that escaped native startup placement.
+
+    This is observation-only. Moving a live process after it has allocated
+    memory cannot prove complete accounting, and placing it directly in the
+    per-user parent would violate cgroup-v2's internal-process rule.
+    """
+    try:
+        pids = [int(value) for value in LSHTTPD_CGROUP_PROCS.read_text().split()]
+    except OSError:
+        return {"checked": 0, "uncovered": 0, "accounts": {}}
     with write_session() as session:
         uid_map = _account_uid_map(session)
-
-    moved = 0
+    uncovered: dict[str, int] = {}
+    checked = 0
     for pid in pids:
-        try:
-            uid = os.stat(f"/proc/{pid}").st_uid
-        except OSError:
-            continue  # process exited between listing and stat -- not an error
-
-        if uid < MIN_ACCOUNT_UID:
-            continue  # root/system processes (lshttpd itself, etc.), not a hosting account
-
+        uid = _pid_uid(pid)
+        if uid is None:
+            continue
         username = uid_map.get(uid)
         if username is None:
-            continue  # uid doesn't belong to any known account (e.g. a non-Boron service)
-
-        target = _cgroup_path(username) / "cgroup.procs"
+            continue
+        checked += 1
+        path = _pid_cgroup(pid)
+        expected = f"/user.slice/{user_slice_name(uid)}"
+        if path is None or not (path == expected or path.startswith(expected + "/")):
+            uncovered[username] = uncovered.get(username, 0) + 1
+    for username in uid_map.values():
         try:
-            target.write_text(str(pid))
-            moved += 1
-        except OSError as exc:
-            logger.warning("failed to move pid %d (uid %d, account '%s') into its slice: %s", pid, uid, username, exc)
+            _retire_legacy_slice(username)
+        except Exception:
+            logger.exception("failed to retire legacy resource slice for '%s'", username)
+    return {"checked": checked, "uncovered": sum(uncovered.values()), "accounts": uncovered}
 
-    return moved
+
+def reconcile_processes() -> int:
+    """Compatibility wrapper returning uncovered PHP workers, never moving them."""
+    return audit_php_coverage()["uncovered"]

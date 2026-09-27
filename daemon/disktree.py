@@ -35,7 +35,7 @@ from shared.db import write_session
 from shared.models import Account, UsageSnapshot, utcnow
 from shared.validation import ValidationError, validate_username
 
-from daemon import filemanager
+from daemon import account_exec, filemanager
 from daemon.procutil import run
 from daemon.usage import SNAPSHOT_MAX_AGE_SECONDS, _as_aware_utc
 
@@ -83,7 +83,7 @@ def _resolve_dir(username: str, relative_path: str) -> tuple[str, str]:
 
 
 def _immediate_subdirs(path: str, username: str) -> list[dict]:
-    result = run(["runuser", "-u", username, "--", "du", "--max-depth=1", "-b", "-0", path], timeout=DU_TIMEOUT)
+    result = run(account_exec.wrap(username, ["du", "--max-depth=1", "-b", "-0", path], cwd=path), timeout=DU_TIMEOUT)
     if not result.ok:
         raise DiskTreeError(f"du failed: {result.stderr.strip() or result.stdout.strip()}")
     entries = []
@@ -98,7 +98,7 @@ def _immediate_subdirs(path: str, username: str) -> list[dict]:
 
 
 def _immediate_files(path: str, username: str) -> list[dict]:
-    result = run(["runuser", "-u", username, "--", "find", path, "-maxdepth", "1", "-type", "f", "-printf", "%s\t%f\\0"], timeout=FIND_TIMEOUT)
+    result = run(account_exec.wrap(username, ["find", path, "-maxdepth", "1", "-type", "f", "-printf", "%s\t%f\\0"], cwd=path), timeout=FIND_TIMEOUT)
     if not result.ok:
         raise DiskTreeError(f"find failed: {result.stderr.strip() or result.stdout.strip()}")
     entries = []
@@ -111,7 +111,7 @@ def _immediate_files(path: str, username: str) -> list[dict]:
 
 
 def _total_size(path: str, username: str) -> int:
-    result = run(["runuser", "-u", username, "--", "du", "-sb", path], timeout=DU_TIMEOUT)
+    result = run(account_exec.wrap(username, ["du", "-sb", path], cwd=path), timeout=DU_TIMEOUT)
     if not result.ok:
         raise DiskTreeError(f"du failed: {result.stderr.strip() or result.stdout.strip()}")
     return int(result.stdout.split(None, 1)[0])
@@ -169,7 +169,7 @@ def get_top_files(params: dict) -> dict:
     resolved, home = _resolve_dir(username, relative_path)
 
     result = run(
-        ["runuser", "-u", username, "--", "find", resolved, "-type", "f", "-printf", "%s\t%p\\0"],
+        account_exec.wrap(username, ["find", resolved, "-type", "f", "-printf", "%s\t%p\\0"], cwd=resolved),
         timeout=TOP_FILES_TIMEOUT,
     )
     if not result.ok:

@@ -3,6 +3,9 @@ Description=Boron file manager for %i
 After=network.target
 [Service]
 Type=simple
+# daemon/filebrowser_accounts.py installs a per-instance Slice= drop-in using
+# the account's numeric UID. A template specifier cannot safely translate the
+# username instance (%i) to that UID.
 User=%i
 Group=%i
 UMask=0007

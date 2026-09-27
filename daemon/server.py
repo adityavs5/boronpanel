@@ -775,13 +775,16 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_mail.terminate_
 handlers_account.TERMINATE_HOOKS.append(lambda account: ssl.terminate_account_certs(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_cron.terminate_account_cron(account))
 handlers_account.CREATE_HOOKS.append(
-    lambda account: cgroups.apply_limits(account.username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
+    lambda account: cgroups.apply_limits(
+        account.username, account.cpu_pct, account.mem_mb, account.io_mb,
+        account.pids_max, uid=account.uid,
+    )
 )
 handlers_account.LIMITS_HOOKS.append(
     lambda account: resource_manager.apply_account(account.id)
 )
 resellers.RESOURCE_HOOKS.append(resource_manager.apply_account)
-handlers_account.TERMINATE_HOOKS.append(lambda account: cgroups.remove_slice(account.username))
+handlers_account.TERMINATE_HOOKS.append(lambda account: cgroups.remove_slice(account.username, uid=account.uid))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ipmanager.release_account(account))
 # Phase 6b: new accounts (and reactivated ones, same CREATE_HOOKS list) get
 # namespace isolation by default; termination tears down the per-uid
@@ -1034,22 +1037,20 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         writer.close()
 
 
-CGROUP_RECONCILE_INTERVAL_SECONDS = 5
+CGROUP_RECONCILE_INTERVAL_SECONDS = 30
 
 
 async def _cgroup_reconcile_loop() -> None:
-    """Moves any LSAPI worker still sitting in lshttpd's own cgroup into
-    its owning account's slice -- see daemon/cgroups.py's module docstring
-    for why this periodic-scan approach was chosen over a setuid/capability
-    helper binary. Runs for the daemon's whole lifetime alongside the RPC
-    server; a single reconcile failure must not kill this loop, since a
-    transient error here (a PID exiting mid-scan, systemd being briefly
-    busy) is expected background noise, not a fatal condition."""
+    """Audit native OLS placement and retire empty pre-v3.0.3 slices."""
+    last_uncovered = None
     while True:
         try:
-            moved = await asyncio.get_running_loop().run_in_executor(None, cgroups.reconcile_processes)
-            if moved:
-                logger.info("cgroup reconcile: moved %d process(es) into their account slice", moved)
+            uncovered = await asyncio.get_running_loop().run_in_executor(None, cgroups.reconcile_processes)
+            if uncovered and uncovered != last_uncovered:
+                logger.error("cgroup coverage audit: %d account PHP worker(s) are outside their user slice", uncovered)
+            elif not uncovered and last_uncovered:
+                logger.info("cgroup coverage audit recovered; all observed account PHP workers are covered")
+            last_uncovered = uncovered
         except Exception:
             logger.exception("cgroup reconcile pass failed")
         await asyncio.sleep(CGROUP_RECONCILE_INTERVAL_SECONDS)

@@ -49,7 +49,7 @@ from shared.db import write_session
 from shared.models import Account, Domain, WordPressInstall, WordPressJob, WordPressSiteState, utcnow
 from shared.validation import generate_strong_password, validate_domain, validate_password_strength, validate_username
 
-from daemon import handlers_database
+from daemon import account_exec, handlers_database
 from daemon import jobcredentials
 from daemon.procutil import run
 from daemon.safeio import secure_mkdirs, secure_write_file_beneath, secure_replace_file
@@ -234,9 +234,10 @@ def _write_wp_config(docroot: str, db_name: str, db_user: str, db_password: str)
 
 
 def _files_as_account(username: str, action: str, target: str, **kwargs) -> None:
-    user = pwd.getpwnam(username)
-    result = run([sys.executable, str(FILES_HELPER_PATH), action, target],
-                 uid=user.pw_uid, gid=user.pw_gid, timeout=180, **kwargs)
+    command = account_exec.wrap(
+        username, [sys.executable, str(FILES_HELPER_PATH), action, target], cwd=target if Path(target).is_dir() else None,
+    )
+    result = run(command, timeout=180, **kwargs)
     if not result.ok:
         raise WordPressError("WordPress file preparation failed; check directory permissions and retry")
 
@@ -244,13 +245,13 @@ def _files_as_account(username: str, action: str, target: str, **kwargs) -> None
 def _run_silent_install(
     docroot: str, username: str, home_dir: str, site_url: str, title: str, admin_user: str, admin_email: str, admin_password: str
 ) -> dict:
+    command = account_exec.wrap(
+        username,
+        [settings.php_cli_bin, str(INSTALL_HELPER_PATH), docroot, site_url, title, admin_user, admin_email],
+        cwd=docroot, home=home_dir,
+    )
     result = run(
-        [
-            "runuser", "-u", username, "--",
-            "env", f"HOME={home_dir}",
-            settings.php_cli_bin, str(INSTALL_HELPER_PATH),
-            docroot, site_url, title, admin_user, admin_email,
-        ],
+        command,
         timeout=90,
         input_text=admin_password,
         redact=[admin_password],
@@ -409,7 +410,9 @@ def install(params: dict) -> dict:
 
     # Newly created subfolders and extracted modes can mask the default ACL.
     # Restore OLS worker access as the account, without root following site files.
-    run(["runuser", "-u", username, "--", "setfacl", "-R", "-m", "u:nobody:rX", "-d", "-m", "u:nobody:rX", target_dir], check=True)
+    run(account_exec.wrap(
+        username, ["setfacl", "-R", "-m", "u:nobody:rX", "-d", "-m", "u:nobody:rX", target_dir], cwd=target_dir,
+    ), check=True)
 
     with write_session() as session:
         state = session.scalar(select(WordPressSiteState).where(

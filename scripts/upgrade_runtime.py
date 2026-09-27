@@ -100,6 +100,16 @@ def configure_roundcube() -> None:
         config.write_text(content)
 
 
+def configure_account_resource_parent() -> None:
+    """Enable accounting on the common ancestor used by OLS and logind."""
+    if not Path("/sys/fs/cgroup/cgroup.controllers").exists():
+        raise RuntimeError("Boron resource limits require cgroups v2")
+    command([
+        "systemctl", "set-property", "user.slice",
+        "CPUAccounting=yes", "MemoryAccounting=yes", "IOAccounting=yes", "TasksAccounting=yes",
+    ], timeout=30)
+
+
 def main() -> int:
     if shutil.which("opendkim") is None or shutil.which("opendkim-testkey") is None:
         command(["apt-get", "update"])
@@ -112,6 +122,7 @@ def main() -> int:
     configure_dovecot()
     configure_mail_tls()
     configure_roundcube()
+    configure_account_resource_parent()
     dkim.configure_signer()
     if Path("/etc/dovecot/dovecot.conf").exists():
         command(["doveconf", "-n"], timeout=30)

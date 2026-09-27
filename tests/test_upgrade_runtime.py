@@ -8,6 +8,19 @@ def test_dovecot_prefers_temporary_webmail_credential():
     assert "ORDER BY auth.priority ASC LIMIT 1" in query
 
 
+def test_configure_account_resource_parent_enables_all_accounting(monkeypatch):
+    commands = []
+    monkeypatch.setattr(upgrade_runtime.Path, "exists", lambda path: True)
+    monkeypatch.setattr(upgrade_runtime, "command", lambda args, timeout=900: commands.append(args))
+
+    upgrade_runtime.configure_account_resource_parent()
+
+    assert commands == [[
+        "systemctl", "set-property", "user.slice",
+        "CPUAccounting=yes", "MemoryAccounting=yes", "IOAccounting=yes", "TasksAccounting=yes",
+    ]]
+
+
 def test_configure_mail_tls_separates_existing_mail_services(tmp_path, monkeypatch):
     ssl_dir = tmp_path / "ssl"
     ssl_dir.mkdir()

@@ -55,12 +55,12 @@ def stub_network(monkeypatch, tmp_path):
 @pytest.fixture()
 def stub_system(monkeypatch):
     calls = []
+    monkeypatch.setattr(wp.account_exec, "wrap", lambda username, argv, **kwargs: argv)
 
     def fake_run(args, **kwargs):
         calls.append(args)
         from daemon.procutil import ProcResult
         if len(args) > 2 and args[1] == str(wp.FILES_HELPER_PATH):
-            assert kwargs['uid'] == os.getuid() and kwargs['gid'] == os.getgid()
             action, target = args[2:4]
             if action == 'prepare':
                 Path(target).mkdir(parents=True, exist_ok=True)
@@ -455,10 +455,10 @@ def test_config_write_replaces_planted_symlink_without_touching_canary(tmp_path,
     assert not (site / 'wp-config.php').is_symlink()
 
 
-def test_filesystem_actions_drop_privileges_and_hide_failure_output(monkeypatch):
-    from types import SimpleNamespace
+def test_filesystem_actions_use_account_launcher_and_hide_failure_output(monkeypatch):
     calls = []
-    monkeypatch.setattr(wp.pwd, 'getpwnam', lambda _: SimpleNamespace(pw_uid=5001, pw_gid=5002))
+    wrapped = []
+    monkeypatch.setattr(wp.account_exec, 'wrap', lambda username, argv, **kwargs: wrapped.append((username, argv)) or argv)
     def run(args, **kwargs):
         calls.append((args, kwargs))
         return ProcResult(args=args, returncode=1, stdout='secret', stderr='secret')
@@ -466,5 +466,6 @@ def test_filesystem_actions_drop_privileges_and_hide_failure_output(monkeypatch)
     with pytest.raises(wp.WordPressError) as failed:
         wp._files_as_account('demo1', 'config', '/home/demo1/site', input_text='secret')
     assert 'secret' not in str(failed.value)
-    assert calls[0][1]['uid'] == 5001 and calls[0][1]['gid'] == 5002
+    assert wrapped[0][0] == 'demo1'
+    assert calls[0][1].get('uid') is None and calls[0][1].get('gid') is None
     assert 'secret' not in calls[0][0]

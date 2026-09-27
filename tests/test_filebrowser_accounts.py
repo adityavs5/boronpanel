@@ -1,7 +1,7 @@
 """The kernel, not a root file browser's path parser, isolates tenants."""
 import os
 from pathlib import Path
-import socket
+import stat
 from types import SimpleNamespace
 
 import pytest
@@ -20,18 +20,26 @@ def isolated_instance(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, 'home_base', str(home.parent))
     monkeypatch.setattr(settings, 'filebrowser_account_data_dir', str(tmp_path / 'state'))
     monkeypatch.setattr(settings, 'filebrowser_runtime_dir', str(tmp_path / 'run'))
+    monkeypatch.setattr(fb, 'SYSTEMD_DIR', tmp_path / 'systemd')
+    monkeypatch.setattr(fb.cgroups, 'ensure_slice', lambda username, uid: 'user-test.slice')
+    monkeypatch.setattr(fb.cgroups, 'account_slice_name', lambda username, uid=None: 'user-test.slice')
     monkeypatch.setattr(fb.pwd, 'getpwnam', lambda _: SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid()))
     monkeypatch.setattr(fb.grp, 'getgrnam', lambda _: SimpleNamespace(gr_gid=os.getgid()))
-    listener = socket.socket(socket.AF_UNIX)
+    socket_path = Path(account_socket('demo1'))
+    real_lstat = Path.lstat
+    def fake_lstat(path):
+        if path == socket_path:
+            return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o700, st_uid=os.getuid())
+        return real_lstat(path)
+    monkeypatch.setattr(Path, 'lstat', fake_lstat)
     calls = []
     def run(args, **kwargs):
         calls.append(args)
         if args[:2] == ['systemctl', 'start']:
-            listener.bind(account_socket('demo1'))
+            socket_path.touch()
         return ProcResult(args=args, returncode=0, stdout='', stderr='')
     monkeypatch.setattr(fb, 'run', run)
     yield home, calls
-    listener.close()
 
 
 def test_instance_config_uses_own_state_and_unix_socket(isolated_instance):
@@ -44,7 +52,7 @@ def test_instance_config_uses_own_state_and_unix_socket(isolated_instance):
     assert config['server']['sources'][0]['path'] == str(home.parent)
     assert (root / 'state').stat().st_mode & 0o777 == 0o700
     assert calls[-1] == ['systemctl', 'start', 'boron-filebrowser@demo1.service']
-    assert calls[0][:3] == ['setfacl', '-m', 'd:u:boron-api:rwx']
+    assert any(call[:3] == ['setfacl', '-m', 'd:u:boron-api:rwx'] for call in calls)
 
 
 def test_instance_rejects_moved_or_symlinked_home(isolated_instance):

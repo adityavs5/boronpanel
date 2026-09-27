@@ -42,8 +42,8 @@ UNSUSPEND_HOOKS: list[Callable[[Account], None]] = []
 # Phase 2 feature 1: re-render/reload just this account's vhost after its
 # php_version column changes, same wiring pattern as the hooks above.
 PHP_VERSION_HOOKS: list[Callable[[Account], None]] = []
-# Phase 2 feature 6: create the account's cgroup slice with its (default or
-# requested) resource limits right after the Linux user/DB row exist.
+# Create the account's aggregate user slice with its resource limits right
+# after the Linux user/DB row exist, before customer sessions are admitted.
 CREATE_HOOKS: list[Callable[[Account], None]] = []
 # Re-applies cgroup limits after set_limits() changes them.
 LIMITS_HOOKS: list[Callable[[Account], None]] = []

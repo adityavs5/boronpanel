@@ -343,3 +343,42 @@ def test_health_summary_no_anomalies_when_all_enabled(fake_lsnsctl, isolated_db)
     assert summary["anomaly_count"] == 0
     assert summary["anomalies"] == []
     assert summary["enabled_count"] == 2
+
+
+def test_overview_reports_evidence_states_instead_of_hardcoded_booleans(fake_lsnsctl, isolated_db, monkeypatch, tmp_path):
+    with write_session() as session:
+        make_account(session, username="acct1", uid=2000)
+    config = tmp_path / "httpd_config.conf"
+    config.write_text("CGIRLimit {\n cgroups 1\n}\n")
+    resource_root = tmp_path / "user-2000.slice"
+    resource_root.mkdir()
+    monkeypatch.setattr(nsisolation, "OLS_CONFIG_PATH", config)
+    monkeypatch.setattr(nsisolation, "_account_process_rows", lambda uid: [])
+    monkeypatch.setattr(nsisolation.cgroups, "_cgroup_path", lambda username, uid=None: resource_root)
+
+    result = nsisolation.isolation_overview({})
+
+    row = result["accounts"][0]
+    assert row["web"]["status"] == "configured"
+    assert row["terminal"]["status"] == "configured"
+    assert row["services"]["status"] == "not_applicable"
+    assert row["resource"]["status"] == "verified"
+    assert result["capabilities"]["resource_enforcement"]["status"] == "verified"
+    assert result["capabilities"]["pid_namespace"]["status"] == "unavailable"
+    assert all(isinstance(value, dict) for value in result["capabilities"].values())
+
+
+def test_self_test_marks_missing_peer_check_incomplete(fake_lsnsctl, isolated_db, monkeypatch):
+    with write_session() as session:
+        make_account(session, username="acct1", uid=2000)
+    monkeypatch.setattr(
+        nsisolation, "run",
+        lambda args, timeout=20: ProcResult(args=args, returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(nsisolation, "get_status", lambda username: {"enabled": True})
+
+    result = nsisolation.self_test({"username": "acct1"})
+
+    assert result["passed"] is False
+    assert result["status"] == "incomplete"
+    assert result["skipped"] == ["peer_account_visibility"]

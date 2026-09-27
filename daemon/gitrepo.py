@@ -32,7 +32,7 @@ from shared.db import write_session
 from shared.models import Account, GitRepo
 from shared.validation import ValidationError, validate_git_repo_name, validate_protected_dir_relative_path, validate_username
 
-from daemon import filemanager, safeio
+from daemon import account_exec, filemanager, safeio
 from daemon.procutil import run
 
 REPOS_SUBDIR = "repos"
@@ -108,7 +108,7 @@ def create_repo(params: dict) -> dict:
             raise ValidationError(f"repo '{name}' already exists for account '{username}'")
 
         repo_path = _repo_path(username, name)
-        result = run(["runuser", "-u", username, "--", "git", "init", "--bare", repo_path], timeout=30)
+        result = run(account_exec.wrap(username, ["git", "init", "--bare", repo_path]), timeout=30)
         if not result.ok:
             raise GitRepoError(f"git init --bare failed: {result.stderr.strip() or result.stdout.strip()}")
 

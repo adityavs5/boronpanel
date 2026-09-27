@@ -117,6 +117,9 @@ perClientConnLimit{
 }
 
 CGIRLimit{
+    # Native OLS cgroup placement occurs before CGI/PHP executes and uses the
+    # owner's user-UID.slice, shared with PAM/logind login sessions.
+    cgroups                                1
     maxCGIInstances                         20
     minUID                                  {{ min_uid }}
     minGID                                  {{ min_gid }}

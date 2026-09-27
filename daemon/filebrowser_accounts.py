@@ -17,15 +17,31 @@ import shutil
 from threading import RLock
 
 import yaml
+from sqlalchemy import select
 
+from daemon import cgroups
 from daemon.procutil import run
 from shared.config import settings
+from shared.db import write_session
 from shared.filebrowser_paths import account_socket, frontend_socket
+from shared.models import Account
 from shared.validation import validate_username
 
 TEMPLATE_PATH = "/etc/systemd/system/boron-filebrowser@.service"
 FRONTEND_TEMPLATE_PATH = "/etc/systemd/system/boron-filebrowser-ui.service"
+SYSTEMD_DIR = Path("/etc/systemd/system")
 _lifecycle_lock = RLock()
+
+
+def _dropin_path(username: str) -> Path:
+    validate_username(username)
+    return SYSTEMD_DIR / f"boron-filebrowser@{username}.service.d" / "10-account-slice.conf"
+
+
+def _write_account_dropin(username: str, uid: int | None = None) -> None:
+    path = _dropin_path(username)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    path.write_text(f"[Service]\nSlice={cgroups.account_slice_name(username, uid)}\n")
 
 
 def unit_content() -> str:
@@ -73,8 +89,21 @@ def bootstrap() -> dict:
     # silently fall back to the shared root process if isolation cannot start.
     run(["systemctl", "disable", "--now", "boron-filebrowser.service"], timeout=30)
     Path(TEMPLATE_PATH).write_text(unit_content())
+    with write_session() as session:
+        accounts = session.scalars(select(Account).where(
+            Account.status.in_(["active", "suspended"]), Account.uid.is_not(None),
+        )).all()
+        snapshots = [(row.username, row.uid) for row in accounts]
+    active = []
+    for username, uid in snapshots:
+        _write_account_dropin(username, uid)
+        state = run(["systemctl", "is-active", f"boron-filebrowser@{username}.service"], timeout=10)
+        if state.stdout.strip() == "active":
+            active.append(username)
     _bootstrap_frontend()
     run(["systemctl", "daemon-reload"], timeout=20, check=True)
+    for username in active:
+        run(["systemctl", "restart", f"boron-filebrowser@{username}.service"], timeout=30, check=True)
     run(["systemctl", "start", "boron-filebrowser-ui.service"], timeout=30, check=True)
     return {"status": "ok", "service": "boron-filebrowser@.service", "active": "on-demand"}
 
@@ -98,6 +127,9 @@ def _start(username: str, home: str) -> None:
     expected = Path(settings.home_base) / username
     if str(expected) != home or expected.is_symlink() or expected.stat().st_uid != user.pw_uid:
         raise RuntimeError("file manager home ownership is invalid")
+    cgroups.ensure_slice(username, user.pw_uid)
+    _write_account_dropin(username, user.pw_uid)
+    run(["systemctl", "daemon-reload"], timeout=20, check=True)
     api_gid = grp.getgrnam("boron-api").gr_gid
     data_root = Path(settings.filebrowser_account_data_dir)
     runtime_root = Path(settings.filebrowser_runtime_dir)
@@ -145,6 +177,8 @@ def stop(username: str) -> None:
 def _stop(username: str) -> None:
     validate_username(username)
     run(["systemctl", "stop", f"boron-filebrowser@{username}.service"], timeout=30, check=True)
+    shutil.rmtree(_dropin_path(username).parent, ignore_errors=True)
+    run(["systemctl", "daemon-reload"], timeout=20)
     for root in (settings.filebrowser_account_data_dir, settings.filebrowser_runtime_dir):
         path = Path(root) / username
         if path.is_symlink():

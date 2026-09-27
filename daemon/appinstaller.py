@@ -65,7 +65,7 @@ from shared.db import write_session
 from shared.models import Account, AppInstall, AppInstallJob, Domain, utcnow
 from shared.validation import generate_strong_password, validate_domain, validate_password_strength, validate_username
 
-from daemon import handlers_database, wordpress
+from daemon import account_exec, handlers_database, wordpress
 from daemon import jobcredentials
 from daemon.procutil import run
 from daemon.safeio import secure_mkdirs, secure_write_file_beneath, secure_replace_file
@@ -140,8 +140,8 @@ def _files_as_account(username: str, action: str, docroot: str, *, payload=None,
     user = pwd.getpwnam(username)
     helper = Path(__file__).resolve().parent.parent / 'scripts/app_files.py'
     inputs = {'input_path': str(archive)} if archive is not None else {'input_text': json.dumps(payload or {})}
-    result = run([sys.executable, str(helper), action, docroot], uid=user.pw_uid, gid=user.pw_gid,
-                 timeout=300, **inputs)
+    result = run(account_exec.wrap(username, [sys.executable, str(helper), action, docroot],
+                 home=user.pw_dir, cwd=docroot), timeout=300, **inputs)
     if not result.ok:
         raise AppInstallError('Application file preparation failed; check directory permissions and retry')
     return json.loads(result.stdout)
@@ -649,10 +649,9 @@ def install_prestashop(username: str, domain_name: str, title: str, admin_user: 
             "send_email": "0",
         }
         result = run(
-            [
-                "runuser", "-u", username, "--",
+            account_exec.wrap(username, [
                 settings.php_cli_bin, str(PRESTASHOP_CLI_HELPER), installer,
-            ],
+            ], cwd=docroot),
             input_text=json.dumps(options, separators=(",", ":")),
             timeout=300,
         )
@@ -691,14 +690,9 @@ def install_laravel(username: str, domain_name: str, title: str, admin_user: str
     _set_ownership(username, docroot)
 
     pw = pwd.getpwnam(username)
-    result = run(
-        [
-            "runuser", "-u", username, "--",
-            "env", f"HOME={pw.pw_dir}", "COMPOSER_ALLOW_SUPERUSER=0",
-            "composer", "create-project", "--prefer-dist", "--no-interaction", "laravel/laravel", docroot,
-        ],
-        timeout=600,
-    )
+    result = run(account_exec.wrap(username,
+        ["composer", "create-project", "--prefer-dist", "--no-interaction", "laravel/laravel", docroot],
+        home=pw.pw_dir, cwd=docroot, env={"COMPOSER_ALLOW_SUPERUSER": "0"}), timeout=600)
     if not result.ok:
         raise AppInstallError(f"composer create-project laravel/laravel failed: {result.stderr.strip()[:800]}")
 
@@ -706,10 +700,11 @@ def install_laravel(username: str, domain_name: str, title: str, admin_user: str
         'DB_HOST': 'localhost', 'DB_PORT': '3306', 'DB_DATABASE': db_name,
         'DB_USERNAME': db_user, 'DB_PASSWORD': db_password, 'APP_URL': f'https://{domain_name}'}})
 
-    run(["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", settings.php_cli_bin, "artisan", "key:generate", "--force"],
-        timeout=30, cwd=docroot)
+    run(account_exec.wrap(username, [settings.php_cli_bin, "artisan", "key:generate", "--force"],
+        home=pw.pw_dir, cwd=docroot), timeout=30, cwd=docroot)
     migrate_result = run(
-        ["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", settings.php_cli_bin, "artisan", "migrate", "--force"],
+        account_exec.wrap(username, [settings.php_cli_bin, "artisan", "migrate", "--force"],
+            home=pw.pw_dir, cwd=docroot),
         timeout=60, cwd=docroot,
     )
     if not migrate_result.ok:
@@ -717,7 +712,8 @@ def install_laravel(username: str, domain_name: str, title: str, admin_user: str
 
     _set_ownership(username, docroot)
 
-    version_result = run(["runuser", "-u", username, "--", "env", f"HOME={pw.pw_dir}", settings.php_cli_bin, "artisan", "--version"], timeout=15, cwd=docroot)
+    version_result = run(account_exec.wrap(username, [settings.php_cli_bin, "artisan", "--version"],
+        home=pw.pw_dir, cwd=docroot), timeout=15, cwd=docroot)
     version = version_result.stdout.strip().replace("Laravel Framework ", "") if version_result.ok else "unknown"
 
     return {"version": version, "admin_url": f"https://{domain_name}/", "admin_user": None, "admin_password": None}

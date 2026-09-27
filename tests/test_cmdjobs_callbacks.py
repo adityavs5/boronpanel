@@ -1,6 +1,11 @@
 from types import SimpleNamespace
 import pytest
 from daemon import cmdjobs
+
+
+@pytest.fixture(autouse=True)
+def account_command_wrapper(monkeypatch):
+    monkeypatch.setattr(cmdjobs.account_exec, "wrap", lambda username, argv, **kwargs: argv)
 from shared.db import write_session
 from shared.models import Account, CommandRun
 

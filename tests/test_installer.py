@@ -137,6 +137,8 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert "write_file /usr/local/lsws/lsns/conf/lsns.conf 0644" in source
     assert "1000" in source[source.index("write_file /usr/local/lsws/lsns/conf/lsns.conf"):]
     assert source.index("setup_ols_namespace") < source.index("run systemctl enable --now lshttpd")
+    assert source.index("setup_account_resource_parent") < source.index("run systemctl enable --now lshttpd")
+    assert "systemctl set-property user.slice" in source
     assert "write_file /etc/systemd/system/lshttpd.service.d/boron-lifecycle.conf 0644" in source
     assert "KillMode=mixed" in source
 

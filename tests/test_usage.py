@@ -76,13 +76,13 @@ def test_process_count_counts_real_output(monkeypatch):
 
 
 def test_cgroup_counters_read_cpu_memory_and_io(monkeypatch, tmp_path):
-    root = tmp_path / "boron-demo1.slice"
+    root = tmp_path / "user-5001.slice"
     root.mkdir()
     (root / "cpu.stat").write_text("usage_usec 2500000\nuser_usec 2000000\n")
     (root / "memory.current").write_text("1048576\n")
     (root / "pids.current").write_text("4\n")
     (root / "io.stat").write_text("8:0 rbytes=100 wbytes=200 rios=3 wios=4\n8:1 rbytes=10 wbytes=20 rios=1 wios=2\n")
-    monkeypatch.setattr(usage, "CGROUP_ROOT", tmp_path)
+    monkeypatch.setattr(usage.cgroups, "_cgroup_path", lambda username: root)
 
     result = usage._cgroup_counters("demo1")
 

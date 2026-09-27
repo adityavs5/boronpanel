@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from pathlib import Path
 import re
 from concurrent.futures import ThreadPoolExecutor
 
@@ -30,12 +32,14 @@ from shared.db import write_session
 from shared.models import Account, NamespaceMigrationJob, NodeApp, PythonApp, RedisInstance, utcnow
 from shared.validation import validate_username
 
-from daemon import audit
+from daemon import appunits, audit, cgroups
 from daemon.procutil import run
 
 logger = logging.getLogger("borond.nsisolation")
 
 LSNSCTL_BIN = "/usr/local/lsws/lsns/bin/lsnsctl"
+OLS_CONFIG_PATH = Path("/usr/local/lsws/conf/httpd_config.conf")
+PROC_ROOT = Path("/proc")
 
 # Single worker, deliberately: Step 4's own safety rule is "one at a time,
 # verified between each, stop on first failure" -- concurrency here would
@@ -45,6 +49,22 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ns-migration")
 
 class NamespaceError(Exception):
     pass
+
+
+def _account_process_rows(uid: int) -> list[tuple[int, str, str]]:
+    rows = []
+    for entry in PROC_ROOT.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            comm = (entry / "comm").read_text().strip()
+            path = cgroups._pid_cgroup(int(entry.name)) or ""
+        except OSError:
+            continue
+        rows.append((int(entry.name), comm, path))
+    return rows
 
 
 def _account_uid(username: str) -> int:
@@ -357,44 +377,163 @@ def health_summary(params: dict | None = None) -> dict:
 
 
 def isolation_overview(params: dict | None = None) -> dict:
-    """Report the real isolation boundary for every customer entry point."""
+    """Report measured isolation and resource coverage without inferred green states."""
     min_uid = get_min_uid()
     disabled = set(list_disabled_uids())
+    checked_at = utcnow().isoformat()
+    namespace_observations: list[dict] = []
+    try:
+        host_mount_namespace = os.stat("/proc/1/ns/mnt").st_ino
+    except OSError:
+        host_mount_namespace = None
+    try:
+        ols_config = OLS_CONFIG_PATH.read_text()
+        cgroups_enabled = bool(re.search(r"CGIRLimit\s*\{[^}]*\bcgroups\s+1\b", ols_config, re.S))
+    except OSError:
+        cgroups_enabled = False
+
+    def state(status: str, reason: str, **extra) -> dict:
+        return {"status": status, "reason": reason, "checked_at": checked_at, **extra}
+
+    def covered(path: str, uid: int) -> bool:
+        expected = f"/user.slice/{cgroups.user_slice_name(uid)}"
+        return path == expected or path.startswith(expected + "/")
+
+    def workload_state(processes, uid: int, *, idle_reason: str) -> dict:
+        if not cgroups_enabled:
+            return state("degraded", "OpenLiteSpeed native cgroup placement is disabled")
+        if not processes:
+            return state("configured", idle_reason)
+        missed = [pid for pid, _comm, path in processes if not covered(path, uid)]
+        if missed:
+            return state("degraded", f"{len(missed)} live process(es) are outside the account resource slice", uncovered=len(missed))
+        return state("verified", f"{len(processes)} live process(es) verified in the account resource slice")
+
+    def unit_properties(unit: str) -> dict[str, str]:
+        result = run([
+            "systemctl", "show", unit, "--property=LoadState,ActiveState,ControlGroup,PrivateTmp,NoNewPrivileges,ProtectSystem",
+        ], timeout=10)
+        if not result.ok:
+            return {}
+        values = {}
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value
+        return values
+
     with write_session() as session:
         accounts = session.scalars(
             select(Account).where(Account.status != "terminated").order_by(Account.username)
         ).all()
-        node_ids = set(session.scalars(select(NodeApp.account_id)).all())
-        python_ids = set(session.scalars(select(PythonApp.account_id)).all())
-        redis_ids = set(session.scalars(
-            select(RedisInstance.account_id).where(RedisInstance.enabled == True)  # noqa: E712
-        ).all())
+        node_rows = session.execute(select(NodeApp.account_id, NodeApp.id, NodeApp.enabled)).all()
+        python_rows = session.execute(select(PythonApp.account_id, PythonApp.id, PythonApp.enabled)).all()
+        redis_rows = session.execute(select(RedisInstance.account_id, RedisInstance.id, RedisInstance.enabled)).all()
+        usernames = {account.id: account.username for account in accounts}
+        services_by_account: dict[int, list[tuple[str, str, bool]]] = {}
+        for account_id, row_id, enabled in node_rows:
+            services_by_account.setdefault(account_id, []).append(("Node.js", "node", enabled))
+        for account_id, row_id, enabled in python_rows:
+            services_by_account.setdefault(account_id, []).append(("Python", "python", enabled))
+        for account_id, row_id, enabled in redis_rows:
+            services_by_account.setdefault(account_id, []).append(("Redis", "redis", enabled))
+
+        # Keep exact row IDs separately for the systemd unit names.
+        unit_rows: dict[int, list[tuple[str, str]]] = {}
+        for account_id, row_id, enabled in node_rows:
+            if enabled and account_id in usernames:
+                unit_rows.setdefault(account_id, []).append(("Node.js", appunits.unit_name("node", usernames[account_id], row_id)))
+        for account_id, row_id, enabled in python_rows:
+            if enabled and account_id in usernames:
+                unit_rows.setdefault(account_id, []).append(("Python", appunits.unit_name("python", usernames[account_id], row_id)))
+        for account_id, row_id, enabled in redis_rows:
+            if enabled and account_id in usernames:
+                unit_rows.setdefault(account_id, []).append(("Redis", appunits.unit_name("redis", usernames[account_id], row_id)))
         rows = []
         for account in accounts:
             eligible = account.uid is not None and account.uid >= min_uid
-            web = eligible and account.uid not in disabled
-            services = []
-            if account.id in node_ids:
-                services.append("Node.js")
-            if account.id in python_ids:
-                services.append("Python")
-            if account.id in redis_ids:
-                services.append("Redis")
+            namespace_enabled = eligible and account.uid not in disabled
+            if not eligible:
+                web = state("unavailable", "Account UID is below the OpenLiteSpeed isolation floor")
+                terminal = state("unavailable", "Account has no eligible hosting UID")
+                ssh = terminal
+                resource = terminal
+                processes = []
+            else:
+                processes = _account_process_rows(account.uid)
+                php = [row for row in processes if row[1].startswith("lsphp")]
+                for pid, _comm, _path in php:
+                    try:
+                        mount_namespace = os.stat(f"/proc/{pid}/ns/mnt").st_ino
+                        mountinfo = Path(f"/proc/{pid}/mountinfo").read_text()
+                        namespace_observations.append({
+                            "separate_mount_namespace": host_mount_namespace is not None and mount_namespace != host_mount_namespace,
+                            "private_tmp_mount": any(line.split()[4] == "/tmp" for line in mountinfo.splitlines() if len(line.split()) > 4),
+                        })
+                    except OSError:
+                        continue
+                web = workload_state(php, account.uid, idle_reason="No live PHP worker; native placement is configured")
+                if not namespace_enabled:
+                    web = state("disabled", "OpenLiteSpeed namespace isolation is disabled for this UID")
+                sessions = [row for row in processes if "/session-" in row[2] or row[1] in {"bash", "sh", "sshd", "sftp-server"}]
+                terminal = workload_state(sessions, account.uid, idle_reason="No live login session; PAM/logind placement is configured")
+                ssh = terminal.copy()
+                root = cgroups._cgroup_path(account.username, account.uid)
+                resource = state(
+                    "verified" if root.exists() else "degraded",
+                    "Canonical account resource parent is active" if root.exists() else "Canonical account resource parent is missing",
+                    cgroup=f"/user.slice/{cgroups.user_slice_name(account.uid)}",
+                )
+
+            service_details = []
+            for label, unit in unit_rows.get(account.id, []):
+                props = unit_properties(unit)
+                active = props.get("ActiveState") == "active"
+                in_parent = bool(account.uid is not None and covered(props.get("ControlGroup", ""), account.uid))
+                hardened = props.get("NoNewPrivileges") == "yes" and props.get("PrivateTmp") == "yes"
+                service_details.append({
+                    "name": label, "unit": unit,
+                    "status": "verified" if active and in_parent and hardened else "degraded",
+                    "reason": "running in the account slice with runtime hardening" if active and in_parent and hardened
+                    else "runtime unit is inactive, misplaced, or missing hardening",
+                })
+            if service_details:
+                service_status = state(
+                    "verified" if all(item["status"] == "verified" for item in service_details) else "degraded",
+                    "All enabled app services passed runtime checks" if all(item["status"] == "verified" for item in service_details)
+                    else "One or more enabled app services failed runtime checks",
+                    details=service_details,
+                )
+            elif services_by_account.get(account.id):
+                service_status = state("configured", "Application services exist but are currently disabled")
+            else:
+                service_status = state("not_applicable", "No account application services configured")
+
+            fb_props = unit_properties(f"boron-filebrowser@{account.username}.service")
+            if fb_props.get("ActiveState") == "active":
+                fb_good = account.uid is not None and covered(fb_props.get("ControlGroup", ""), account.uid)
+                file_manager = state("verified" if fb_good else "degraded", "Live File Manager is inside the account slice" if fb_good else "Live File Manager is outside the account slice")
+            else:
+                file_manager = state("configured", "File Manager starts on demand inside the account slice")
             rows.append({
                 "username": account.username, "uid": account.uid, "status": account.status,
-                "web": "isolated" if web else "disabled" if eligible else "not_eligible",
-                "terminal": "account_uid_and_cgroup",
-                "services": services, "services_hardened": bool(services),
-                "ssh_sftp": "linux_permissions_only",
+                "web": web, "terminal": terminal, "services": service_status,
+                "file_manager": file_manager, "ssh_sftp": ssh, "resource": resource,
             })
+
+    mount_verified = bool(namespace_observations) and all(item["separate_mount_namespace"] for item in namespace_observations)
+    tmp_verified = bool(namespace_observations) and all(item["private_tmp_mount"] for item in namespace_observations)
+    mount_status = "verified" if mount_verified else "degraded" if namespace_observations else "configured"
+    tmp_status = "verified" if tmp_verified else "degraded" if namespace_observations else "configured"
     return {
-        "min_uid": min_uid, "accounts": rows,
+        "min_uid": min_uid, "accounts": rows, "checked_at": checked_at,
         "capabilities": {
-            "mount_namespace": True, "private_tmp": True,
-            "filtered_identity_files": True, "pid_namespace": False,
-            "ssh_namespace": False,
+            "mount_namespace": state(mount_status, "Live PHP workers use a mount namespace distinct from the host" if mount_verified else "Live PHP namespace verification failed" if namespace_observations else "Configured; no live PHP worker was available to inspect"),
+            "private_tmp": state(tmp_status, "Live PHP workers have a private /tmp mount" if tmp_verified else "Live PHP private /tmp verification failed" if namespace_observations else "Configured; runtime verification awaits a PHP worker"),
+            "resource_enforcement": state("verified" if cgroups_enabled else "degraded", "OpenLiteSpeed native cgroup placement is enabled" if cgroups_enabled else "OpenLiteSpeed native cgroup placement is disabled"),
+            "pid_namespace": state("unavailable", "OpenLiteSpeed mount isolation does not provide a private PID namespace"),
         },
-        "warning": "OpenLiteSpeed provides mount isolation. Terminal and SSH/SFTP remain account-UID boundaries and do not provide a private process namespace.",
+        "warning": "Filesystem visibility, temporary files, process visibility, and resource enforcement are separate controls. Runtime states below are measured when a workload is active.",
     }
 
 
@@ -426,10 +565,15 @@ def self_test(params: dict) -> dict:
         ], timeout=20)
         other_hidden = result.ok
     current = get_status(username)
-    passed = current["enabled"] and own.ok and other_hidden is not False
+    skipped = []
+    if other is None:
+        skipped.append("peer_account_visibility")
+    passed = current["enabled"] and own.ok and other_hidden is True
     return {
         "username": username, "passed": passed,
+        "status": "passed" if passed else "incomplete" if skipped and current["enabled"] and own.ok else "failed",
         "namespace_enabled": current["enabled"], "own_home_readable": own.ok,
         "other_home_hidden": other_hidden,
+        "skipped": skipped,
         "process_isolation": "not_supported_by_ols_mount_namespaces",
     }

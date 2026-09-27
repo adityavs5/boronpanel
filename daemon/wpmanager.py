@@ -9,7 +9,7 @@ import time
 import re
 import threading
 from sqlalchemy import select
-from daemon import cmdjobs, wordpress, wpcli
+from daemon import account_exec, cmdjobs, wordpress, wpcli
 from daemon.procutil import run
 from shared.config import settings
 from shared.db import write_session
@@ -137,7 +137,7 @@ wp_safe_redirect(admin_url()); exit;
 """.replace('\n ', '\n')
 
     pw = pwd.getpwnam(username)
-    result = run(['runuser','-u',username,'--','env',f'HOME={pw.pw_dir}','/usr/bin/python3','-c',code],
+    result = run(account_exec.wrap(username, ['/usr/bin/python3','-c',code], home=pw.pw_dir, cwd=root),
                  input_text=json.dumps({'root':root,'name':filename,'code':bridge}), timeout=15)
     if not result.ok: raise RuntimeError('Could not create a secure login link')
     path = p.get('path','').strip('/')
@@ -183,8 +183,8 @@ def _state(session, account_id, domain, path):
 
 def _account_command(username, root, arguments):
     pw = pwd.getpwnam(username)
-    result = run(['runuser', '-u', username, '--', 'env', f'HOME={pw.pw_dir}',
-        settings.php_cli_bin, wpcli.ensure_wpcli(), f'--path={root}', '--no-color', *arguments], timeout=45)
+    result = run(account_exec.wrap(username, [settings.php_cli_bin, wpcli.ensure_wpcli(),
+        f'--path={root}', '--no-color', *arguments], home=pw.pw_dir, cwd=root), timeout=45)
     if not result.ok:
         raise ValidationError('Could not inspect WordPress. Check its configuration and database connection.')
     return result.stdout.strip()
@@ -253,7 +253,7 @@ def _forget(username, domain, path):
 
 def _removal_worker(username, root, config):
     pw = pwd.getpwnam(username)
-    result = run(['runuser','-u',username,'--','env',f'HOME={pw.pw_dir}', '/usr/bin/python3',WORKER],
+    result = run(account_exec.wrap(username, ['/usr/bin/python3',WORKER], home=pw.pw_dir, cwd=root),
         input_text=json.dumps(config), timeout=300)
     if not result.ok: raise RuntimeError('Removal cleanup failed: '+result.stderr[-1000:])
 

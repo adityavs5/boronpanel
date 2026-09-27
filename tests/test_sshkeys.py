@@ -5,6 +5,8 @@ import subprocess
 import pytest
 
 from daemon import sshkeys
+from shared.db import write_session
+from shared.models import Account
 from shared.validation import ValidationError
 
 
@@ -18,7 +20,7 @@ def _generate_key(tmp_path, name="testkey", comment="test@example.com"):
 
 
 @pytest.fixture()
-def account_with_home(tmp_path, monkeypatch):
+def account_with_home(isolated_db, tmp_path, monkeypatch):
     home_base = tmp_path / "home"
     home_base.mkdir()
     monkeypatch.setattr(sshkeys.settings, "home_base", str(home_base))
@@ -40,6 +42,9 @@ def account_with_home(tmp_path, monkeypatch):
 
     fake_pw = real_pwd.struct_passwd(("demo1", "x", os.getuid(), os.getgid(), "", str(account_home), sshkeys.sysops.NOLOGIN_SHELL))
     monkeypatch.setattr(sshkeys.pwd, "getpwnam", lambda name: fake_pw)
+    monkeypatch.setattr(sshkeys.resource_manager, "apply_account", lambda account_id: {"account_id": account_id})
+    with write_session() as session:
+        session.add(Account(username="demo1", status="active", uid=5001, gid=5001))
 
     return {"home": account_home, "shells": shells}
 
@@ -57,6 +62,14 @@ def test_add_key_creates_authorized_keys_with_correct_permissions(account_with_h
     ssh_dir = account_with_home["home"] / ".ssh"
     assert oct(os.stat(ssh_dir).st_mode & 0o777) == "0o700"
     assert key in ak_path.read_text()
+
+
+def test_add_key_fails_before_authorized_keys_when_policy_cannot_apply(account_with_home, tmp_path, monkeypatch):
+    key = _generate_key(tmp_path)
+    monkeypatch.setattr(sshkeys.resource_manager, "apply_account", lambda account_id: (_ for _ in ()).throw(RuntimeError("policy unavailable")))
+    with pytest.raises(RuntimeError, match="policy unavailable"):
+        sshkeys.add_key({"username": "demo1", "key": key})
+    assert not (account_with_home["home"] / ".ssh" / "authorized_keys").exists()
 
 
 def test_add_key_upgrades_shell_from_nologin(account_with_home, tmp_path):

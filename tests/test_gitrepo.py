@@ -40,6 +40,10 @@ def account_with_home(isolated_db, tmp_path, monkeypatch):
 
     fake_pw = real_pwd.struct_passwd(("demo1", "x", os.getuid(), os.getgid(), "", str(account_home), "/usr/sbin/nologin"))
     monkeypatch.setattr(gitrepo.pwd, "getpwnam", lambda name: fake_pw)
+    monkeypatch.setattr(
+        gitrepo.account_exec, "wrap",
+        lambda username, argv, **kwargs: ["runuser", "-u", username, "--", *argv],
+    )
 
     with write_session() as session:
         account = Account(username="demo1", uid=5001, gid=5001, status="active")

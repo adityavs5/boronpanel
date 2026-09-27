@@ -24,10 +24,14 @@ from __future__ import annotations
 import os
 import pwd
 
+from sqlalchemy import select
+
 from shared.config import settings
+from shared.db import write_session
+from shared.models import Account
 from shared.validation import ValidationError, validate_ssh_key_text, validate_username
 
-from daemon import safeio, sysops
+from daemon import resource_manager, safeio, sysops
 from daemon.procutil import run
 
 SSH_KEYGEN_BIN = "/usr/bin/ssh-keygen"
@@ -108,6 +112,15 @@ def add_key(params: dict) -> dict:
     username = validate_username(params["username"])
     key_text = validate_ssh_key_text(params["key"])
     info = _inspect(key_text)  # raises ValidationError if malformed -- never written if so
+
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None or account.status != "active":
+            raise SshKeyError("SSH access requires an active hosting account")
+        account_id = account.id
+    # Establish the aggregate policy before a new credential can make an SSH
+    # or SFTP session reachable.
+    resource_manager.apply_account(account_id)
 
     pw = pwd.getpwnam(username)
     # Create ~/.ssh symlink-safely BEFORE reading/writing authorized_keys: the

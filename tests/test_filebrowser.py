@@ -45,6 +45,7 @@ def fb_env(tmp_path, monkeypatch):
     monkeypatch.setattr(filebrowser_accounts, "run", fake_run)
     monkeypatch.setattr(filebrowser_accounts, "start", lambda username, home: None)
     monkeypatch.setattr(filebrowser_accounts, "TEMPLATE_PATH", str(tmp_path / "account.service"))
+    monkeypatch.setattr(filebrowser_accounts, "SYSTEMD_DIR", tmp_path / "systemd")
     return {"home_base": home_base, "calls": calls}
 
 
@@ -284,7 +285,7 @@ def test_restrict_backend_access_missing_api_user_does_not_raise(fb_env, monkeyp
     assert calls == []
 
 
-def test_bootstrap_disables_shared_root_backend(fb_env, monkeypatch):
+def test_bootstrap_disables_shared_root_backend(fb_env, monkeypatch, isolated_db):
     monkeypatch.setattr("daemon.filebrowser_accounts._bootstrap_frontend", lambda: None)
     monkeypatch.setattr("os.path.exists", lambda p: True)
     result = fb.bootstrap({})

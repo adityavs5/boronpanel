@@ -54,6 +54,7 @@ def account_with_domain(isolated_db, tmp_path, monkeypatch, stub_ols, fake_syste
     monkeypatch.setattr(nodeapps.settings, "home_base", str(home_base))
     monkeypatch.setattr(nodeapps.settings, "app_env_dir", str(tmp_path / "app-env"))
     monkeypatch.setattr(nodeapps.settings, "node_base_dir", str(tmp_path / "nodejs"))
+    monkeypatch.setattr(nodeapps.account_exec, "wrap", lambda username, argv, **kwargs: argv)
 
     account_home = home_base / "demo1"
     account_home.mkdir()
@@ -102,7 +103,7 @@ def test_create_node_app_writes_systemd_unit_and_env_file(account_with_domain):
     })
     unit_path = nodeapps.appunits.unit_path(result["unit"])
     content = unit_path.read_text()
-    assert f"boron-{'demo1'}.slice" in content
+    assert "user-5001.slice" in content
     assert "User=demo1" in content
     assert "Restart=on-failure" in content
     env_path = nodeapps.appunits.env_file_path(result["unit"])

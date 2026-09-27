@@ -21,6 +21,8 @@ def account_tree(isolated_db, tmp_path, monkeypatch):
     test file -- docs/CHECKPOINT-phase4-0b-cross-account-idor.md)."""
     # Exercise real du/find parsing with fixture files; verify every command
     # requests the tenant identity before substituting the fixture owner.
+    monkeypatch.setattr(disktree.account_exec, 'wrap',
+        lambda username, argv, **kwargs: ['runuser', '-u', username, '--', *argv])
     original_run = disktree.run
     def fixture_run(args, **kwargs):
         assert args[:4] == ['runuser', '-u', 'demo1', '--']

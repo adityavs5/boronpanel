@@ -37,7 +37,7 @@ from shared.db import write_session
 from shared.models import Account
 from shared.validation import validate_username
 
-from daemon import sysops
+from daemon import resource_manager, sysops
 from daemon.safeio import UnsafePathError, secure_mkdirs
 
 logger = logging.getLogger("borond.terminal")
@@ -217,6 +217,11 @@ def open_session(params: dict) -> dict:
             raise RuntimeError(f"account '{username}' not found")
         if account.status != "active":
             raise RuntimeError(f"cannot open a terminal for an account in status '{account.status}'")
+        account_id = account.id
+
+    # Fail closed before installing the temporary login credential. This also
+    # recreates the persistent user-slice policy if systemd state was removed.
+    resource_manager.apply_account(account_id)
 
     ssh_dir, _path, uid, gid = _ssh_paths(username)
     home = os.path.dirname(ssh_dir)

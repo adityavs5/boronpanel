@@ -64,6 +64,7 @@ def account_with_domain(isolated_db, tmp_path, monkeypatch, stub_ols, fake_syste
     home_base.mkdir()
     monkeypatch.setattr(pythonapps.settings, "home_base", str(home_base))
     monkeypatch.setattr(pythonapps.settings, "app_env_dir", str(tmp_path / "app-env"))
+    monkeypatch.setattr(pythonapps.account_exec, "wrap", lambda username, argv, **kwargs: argv)
 
     account_home = home_base / "demo1"
     account_home.mkdir()

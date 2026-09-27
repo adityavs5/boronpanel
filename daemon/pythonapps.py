@@ -36,7 +36,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import account_mutation, appcrypto, appunits, ols, resource_limits, safeio
+from daemon import account_exec, account_mutation, appcrypto, appunits, cgroups, ols, resource_limits, safeio
 from daemon.portalloc import allocate_port
 from daemon.procutil import run
 
@@ -133,15 +133,12 @@ def _create_venv(username: str, name: str) -> None:
     inside it is owned by the account, never root."""
     app_dir = _app_dir(username, name)
     venv_dir = _venv_dir(username, name)
-    result = run(["runuser", "-u", username, "--", settings.python_bin, "-m", "venv", venv_dir], cwd=app_dir, timeout=60)
+    result = run(account_exec.wrap(username, [settings.python_bin, "-m", "venv", venv_dir], cwd=app_dir), cwd=app_dir, timeout=60)
     if not result.ok:
         raise RuntimeError(f"failed to create virtualenv: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
 
     pip = f"{venv_dir}/bin/pip"
-    result = run(
-        ["runuser", "-u", username, "--", pip, "install", "--quiet", "--disable-pip-version-check", "gunicorn", "uvicorn"],
-        cwd=app_dir, timeout=180,
-    )
+    result = run(account_exec.wrap(username, [pip, "install", "--quiet", "--disable-pip-version-check", "gunicorn", "uvicorn"], cwd=app_dir), cwd=app_dir, timeout=180)
     if not result.ok:
         raise RuntimeError(f"failed to install gunicorn/uvicorn: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
 
@@ -175,7 +172,7 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, app_typ
         f"WorkingDirectory={app_dir}\n"
         f"EnvironmentFile={appunits.env_file_path(unit)}\n"
         f"ExecStart={appunits.logged_exec(_exec_start(venv_dir, app_type, entry_point, port), log_path)}\n"
-        f"Slice=boron-{username}.slice\n"
+        f"Slice={cgroups.account_slice_name(username)}\n"
         "NoNewPrivileges=true\n"
         "PrivateTmp=true\n"
         "ProtectSystem=strict\n"
@@ -339,10 +336,11 @@ def pip_install(params: dict) -> dict:
         return {"id": app_id, "status": "skipped", "output": "no requirements.txt found in app directory"}
 
     pip = f"{_venv_dir(username, name)}/bin/pip"
-    result = run(
-        ["runuser", "-u", username, "--", pip, "install", "--quiet", "--disable-pip-version-check", "-r", "requirements.txt"],
-        cwd=app_dir, timeout=300,
+    command = account_exec.wrap(
+        username, [pip, "install", "--quiet", "--disable-pip-version-check", "-r", "requirements.txt"],
+        token=f"pip-{app_id}", cwd=app_dir,
     )
+    result = run(command, timeout=300)
     if not result.ok:
         raise RuntimeError(f"pip install failed: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
     return {"id": app_id, "status": "installed", "output": result.stdout[-4000:]}
@@ -428,7 +426,7 @@ def bootstrap_all_python_apps() -> None:
             unit = _write_unit(username, app_id, name, entry_point, app_type, port, env_vars)
             _provision_filesystem(username, name)
             if enabled:
-                appunits.enable_start(unit)
+                appunits.enable_start_in_slice(unit, cgroups.account_slice_name(username))
         except Exception:
             import logging
 

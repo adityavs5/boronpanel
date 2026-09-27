@@ -17,6 +17,11 @@ from shared.db import write_session
 from shared.models import Account
 
 
+@pytest.fixture(autouse=True)
+def resource_policy_ready(monkeypatch):
+    monkeypatch.setattr(terminal.resource_manager, "apply_account", lambda account_id: {"account_id": account_id})
+
+
 # --- pure key/marker helpers -----------------------------------------------
 
 
@@ -100,6 +105,13 @@ def test_open_session_injects_key_and_upgrades_shell(term_env):
     text = term_env["ak"].read_text()
     assert result["session_id"] in text
     assert "no-port-forwarding" in text  # forwarding disabled, pty allowed
+
+
+def test_open_session_fails_before_key_install_when_policy_cannot_apply(term_env, monkeypatch):
+    monkeypatch.setattr(terminal.resource_manager, "apply_account", lambda account_id: (_ for _ in ()).throw(RuntimeError("policy unavailable")))
+    with pytest.raises(RuntimeError, match="policy unavailable"):
+        terminal.open_session({"username": "demo1"})
+    assert not term_env["ak"].exists()
 
 
 def test_open_session_enforces_max_concurrent(term_env):

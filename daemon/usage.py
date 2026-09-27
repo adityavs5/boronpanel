@@ -29,13 +29,12 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, AccountResourceLimits, BandwidthDaily, BandwidthDailyDomain, DatabaseGrant, Domain, FtpAccount, MailDomain, MailUser, UsageSnapshot, utcnow
 
-from daemon import mariadb, ols, safeio
+from daemon import cgroups, mariadb, ols, safeio
 from daemon.procutil import run
 
 SNAPSHOT_MAX_AGE_SECONDS = 15 * 60
 BANDWIDTH_HISTORY_DAYS = 90
 SNAPSHOT_HISTORY_DAYS = 30
-CGROUP_ROOT = Path("/sys/fs/cgroup/boron.slice")
 
 
 def _as_aware_utc(value: dt.datetime) -> dt.datetime:
@@ -278,7 +277,7 @@ def _integer_file(path: Path) -> int | None:
 
 def _cgroup_counters(username: str) -> dict:
     """Cheap cumulative counters for a dashboard client to turn into rates."""
-    root = CGROUP_ROOT / f"boron-{username}.slice"
+    root = cgroups._cgroup_path(username)
     cpu_usage_usec = None
     try:
         cpu = dict(line.split(None, 1) for line in (root / "cpu.stat").read_text().splitlines() if " " in line)

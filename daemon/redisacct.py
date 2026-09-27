@@ -37,7 +37,7 @@ from shared.db import write_session
 from shared.models import Account, RedisInstance
 from shared.validation import ValidationError, validate_username
 
-from daemon import appunits, safeio
+from daemon import appunits, cgroups, safeio
 from daemon.procutil import run
 
 KIND = "redis"
@@ -155,7 +155,7 @@ def _write_unit(username: str, instance_id: int, mem_mb: int) -> str:
         f"Group={username}\n"
         f"WorkingDirectory={_data_dir(username)}\n"
         f"ExecStart={appunits.logged_exec(f'{settings.redis_bin} {conf_path}', log_path)}\n"
-        f"Slice=boron-{username}.slice\n"
+        f"Slice={cgroups.account_slice_name(username)}\n"
         "NoNewPrivileges=true\n"
         "PrivateTmp=true\n"
         "ProtectSystem=strict\n"
@@ -338,7 +338,7 @@ def bootstrap_all_redis() -> None:
             unit = _write_unit(username, instance_id, mem_mb)
             _provision_filesystem(username)
             if enabled:
-                appunits.enable_start(unit)
+                appunits.enable_start_in_slice(unit, cgroups.account_slice_name(username))
         except Exception:
             import logging
 

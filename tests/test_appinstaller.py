@@ -14,6 +14,8 @@ from daemon import handlers_account as ha
 
 @pytest.fixture()
 def account_with_domain(isolated_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(ai.account_exec, 'wrap',
+        lambda username, argv, **kwargs: ['runuser', '-u', username, '--', *argv])
     from scripts.app_files import execute
     def files(username, action, docroot, *, payload=None, archive=None):
         if action == 'access':

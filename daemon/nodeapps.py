@@ -39,7 +39,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import account_mutation, appcrypto, appunits, ols, resource_limits, safeio
+from daemon import account_exec, account_mutation, appcrypto, appunits, cgroups, ols, resource_limits, safeio
 from daemon.portalloc import allocate_port
 from daemon.procutil import run
 
@@ -156,7 +156,7 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, port: i
         f"WorkingDirectory={app_dir}\n"
         f"EnvironmentFile={appunits.env_file_path(unit)}\n"
         f"ExecStart={appunits.logged_exec(f'{_node_bin(node_version)} {entry_point}', log_path)}\n"
-        f"Slice=boron-{username}.slice\n"
+        f"Slice={cgroups.account_slice_name(username)}\n"
         "NoNewPrivileges=true\n"
         "PrivateTmp=true\n"
         "ProtectSystem=strict\n"
@@ -336,15 +336,12 @@ def npm_install(params: dict) -> dict:
 
     app_dir = _app_dir(username, name)
     node_bin_dir = str(Path(_node_bin(node_version)).parent)
-    result = run(
-        [
-            "runuser", "-u", username, "--",
-            "env", f"PATH={node_bin_dir}:/usr/bin:/bin", f"HOME={app_dir}",
-            _npm_bin(node_version), "install", "--omit=dev",
-        ],
-        cwd=app_dir,
-        timeout=300,
+    command = account_exec.wrap(
+        username, [_npm_bin(node_version), "install", "--omit=dev"],
+        token=f"npm-{app_id}", cwd=app_dir, home=app_dir,
+        env={"PATH": f"{node_bin_dir}:/usr/bin:/bin"},
     )
+    result = run(command, timeout=300)
     if not result.ok:
         raise RuntimeError(f"npm install failed: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
     return {"id": app_id, "status": "installed", "output": result.stdout[-4000:]}
@@ -434,7 +431,7 @@ def bootstrap_all_node_apps() -> None:
             unit = _write_unit(username, app_id, name, entry_point, port, node_version, env_vars)
             _provision_filesystem(username, name)
             if enabled:
-                appunits.enable_start(unit)
+                appunits.enable_start_in_slice(unit, cgroups.account_slice_name(username))
         except Exception:
             import logging
 

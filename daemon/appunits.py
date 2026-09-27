@@ -7,9 +7,9 @@ app's own log file instead of the system journal. A trusted launcher opens
 the log after systemd drops to the hosting user; systemd must not open a
 tenant-controlled log path with root privileges.
 
-Each app is assigned directly to its account's existing cgroup slice via
-`Slice=boron-<username>.slice` in the unit itself -- daemon/cgroups.py
-already creates that slice at account-creation time (CREATE_HOOKS), so it
+Each app is assigned directly to its account's canonical user-UID slice via
+`Slice=user-<uid>.slice` in the unit itself -- daemon/cgroups.py
+already configures that slice at account-creation time (CREATE_HOOKS), so it
 always exists before any app unit references it. This is simpler than
 cgroups.py's own LSAPI-worker reconciler: a systemd-spawned unit can be
 told its target slice directly at spawn time (root, via systemd, always
@@ -93,6 +93,19 @@ def daemon_reload() -> None:
 
 def enable_start(name: str) -> None:
     run(["systemctl", "enable", "--now", name], timeout=30, check=True)
+
+
+def enable_start_in_slice(name: str, slice_unit: str) -> None:
+    """Start a unit or restart an old live process after a Slice= migration."""
+    active = run(["systemctl", "is-active", name], timeout=10)
+    if active.stdout.strip() != "active":
+        enable_start(name)
+        return
+    shown = run(["systemctl", "show", name, "--property=ControlGroup", "--value"], timeout=10)
+    control_group = shown.stdout.strip() if shown.ok else ""
+    expected = f"/user.slice/{slice_unit}/"
+    if not control_group.startswith(expected):
+        restart(name)
 
 
 def stop_disable(name: str) -> None:

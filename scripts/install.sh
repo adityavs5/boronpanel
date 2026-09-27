@@ -453,6 +453,15 @@ EOF
     ok "OpenLiteSpeed namespace config installed (min UID 1000)"
 }
 
+setup_account_resource_parent() {
+    info "Configuring aggregate account resource controls"
+    [[ -r /sys/fs/cgroup/cgroup.controllers ]] || die "cgroups v2 unified hierarchy is required"
+    run systemctl set-property user.slice \
+        CPUAccounting=yes MemoryAccounting=yes IOAccounting=yes TasksAccounting=yes
+    run systemctl daemon-reload
+    ok "systemd user-slice accounting enabled for PHP, apps and login sessions"
+}
+
 install_openlitespeed() {
     info "Installing OpenLiteSpeed + lsphp"
     if [[ -d /usr/local/lsws ]]; then
@@ -480,6 +489,7 @@ EOF
     # Must precede the first lshttpd start: httpd_config.conf contains the
     # namespaceConf directive and OLS rejects it when this file is absent.
     setup_ols_namespace
+    setup_account_resource_parent
     # The upstream unit uses KillMode=none, which leaves LSAPI workers and
     # their mount namespaces alive across restarts. That can keep removed or
     # newly-added namespace paths stale. Preserve graceful shutdown for the
