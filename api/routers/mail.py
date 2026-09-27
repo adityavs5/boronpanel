@@ -135,12 +135,17 @@ def create_webmail_session(
     response: Response,
     identity: Identity = Depends(get_identity),
 ):
-    """Create a one-use Roundcube handoff for a direct customer/admin session."""
+    """Create a one-use Roundcube handoff for an interactive authorized session."""
     require_account_access(identity, username)
     require_domain_access(identity, body.domain)
-    if (identity.auth_method != "session" or identity.is_impersonating
+    invalid_impersonation = identity.is_impersonating and (
+        identity.role != "customer"
+        or identity.account_id is None
+        or identity.impersonated_account != username
+    )
+    if (identity.auth_method != "session" or invalid_impersonation
             or identity.role not in ("customer", "admin")):
-        raise HTTPException(status_code=403, detail="Sign in directly as the customer or administrator to open webmail")
+        raise HTTPException(status_code=403, detail="An authorized customer or administrator session is required to open webmail")
     expected = f"{request.url.scheme}://{request.url.netloc}"
     if request.headers.get("origin") != expected:
         raise HTTPException(status_code=403, detail="same-origin request required")

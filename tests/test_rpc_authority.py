@@ -305,7 +305,7 @@ def test_customer_destination_list_is_bound_to_account(isolated_db, monkeypatch)
     assert entered == [True]
 
 
-def test_webmail_launch_allows_direct_customer_or_admin_session_for_account(isolated_db):
+def test_webmail_launch_allows_customer_admin_or_scoped_impersonation_session(isolated_db):
     from daemon.rpc_authority import Principal, authorize
 
     with write_session() as db:
@@ -324,12 +324,16 @@ def test_webmail_launch_allows_direct_customer_or_admin_session_for_account(isol
         "webmail.launch.create", params,
         Principal("admin", "administrator", None, 2, "session"),
     )
+    authorize(
+        "webmail.launch.create", params,
+        Principal("customer", "administrator", alice_id, 2, "session", impersonating=True),
+    )
     denied = (
         Principal("customer", "alice-token", alice_id, None, "token"),
         Principal("admin", "administrator-token", None, None, "token"),
         Principal("reseller", "reseller", None, 4, "session", reseller_id=1),
-        Principal("customer", "administrator", alice_id, 2, "session", impersonating=True),
         Principal("customer", "bob-login", alice_id + 1, 3, "session"),
+        Principal("customer", "administrator", alice_id + 1, 2, "session", impersonating=True),
     )
     for principal in denied:
         with pytest.raises(AuthorizationError):

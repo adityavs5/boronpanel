@@ -124,7 +124,11 @@ class Settings:
     webmail_docroot: str = "/var/www/roundcube/public_html"
     # A separate, narrowly scoped socket is used by the Roundcube launch
     # plugin.  It must never share the general provisioning RPC endpoint.
-    webmail_launch_socket: str = "/run/boron-webmail/launch.sock"
+    # Keep the socket inside Roundcube's non-public vhost root. OpenLiteSpeed
+    # isolates its PHP worker in a mount namespace with a private /run, while
+    # /var/www/roundcube remains visible. The socket is still root:www-data
+    # 0660 inside a 0710 directory and the daemon verifies SO_PEERCRED.
+    webmail_launch_socket: str = "/var/www/roundcube/run/boron-launch.sock"
     webmail_launch_ttl_seconds: int = 60
     webmail_session_ttl_seconds: int = 3600
     # Canonical MX/IMAP/SMTP hostname.  Blank keeps upgrades compatible and

@@ -89,6 +89,16 @@ def create_launch(params: dict) -> dict:
         )).all()
         if len(recent) >= 10:
             raise ValidationError("Too many webmail launch requests; wait a minute and try again")
+        # Dovecot's SQL passdb returns one password hash for a mailbox. Keep a
+        # single temporary hash active so a new one-click login is
+        # deterministic and any older handoff credential is invalidated.
+        previous = db.scalars(select(WebmailLaunch).where(
+            WebmailLaunch.account_id == account.id,
+            WebmailLaunch.mailbox == mailbox,
+            WebmailLaunch.revoked_at.is_(None),
+        )).all()
+        for existing in previous:
+            existing.revoked_at = now
         token = secrets.token_urlsafe(32)
         credential = secrets.token_urlsafe(36)
         expiry = now + dt.timedelta(seconds=max(15, min(settings.webmail_launch_ttl_seconds, 60)))
@@ -107,6 +117,10 @@ def create_launch(params: dict) -> dict:
     try:
         with connection.cursor() as cursor:
             credential_expiry = now + dt.timedelta(seconds=max(300, min(settings.webmail_session_ttl_seconds, 86400)))
+            cursor.execute(
+                "UPDATE webmail_session SET revoked=1 WHERE mailbox=%s AND revoked=0",
+                (mailbox,),
+            )
             cursor.execute(
                 "INSERT INTO webmail_session (launch_id,mailbox,password,expires_at,revoked) VALUES (%s,%s,%s,%s,0)",
                 (launch_id, mailbox, mail.hash_password(credential), credential_expiry.replace(tzinfo=None)),

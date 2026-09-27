@@ -221,7 +221,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'usage.alerts.get': 'account_username',
     'usage.get': 'account_username',
     'usage.limits.get': 'account_username',
-    'webmail.launch.create': 'customer_or_admin_session_account',
+    'webmail.launch.create': 'customer_admin_or_impersonation_session_account',
     # admin_account_username
     'account.set_password': 'admin_account_username',
     'namespace.disable': 'admin_account_username',

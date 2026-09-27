@@ -32,7 +32,7 @@ def _fixture_account():
         return account.id
 
 
-def test_webmail_session_requires_same_origin_direct_customer_or_admin_session(isolated_db, monkeypatch):
+def test_webmail_session_requires_same_origin_authorized_interactive_session(isolated_db, monkeypatch):
     account_id = _fixture_account()
     calls = []
     monkeypatch.setattr(
@@ -59,11 +59,23 @@ def test_webmail_session_requires_same_origin_direct_customer_or_admin_session(i
     )
     assert admin_result["token"] == "opaque-launch-token"
 
+    impersonated_result = mail_router.create_webmail_session(
+        "mailone", "hello", mail_router.WebmailSessionBody(domain="example.test"),
+        _request(), Response(), Identity(
+            1, "administrator", "customer", account_id, "session",
+            impersonator="administrator", impersonated_account="mailone",
+        ),
+    )
+    assert impersonated_result["token"] == "opaque-launch-token"
+
     denied = [
         Identity(7, "mail-token", "customer", account_id, "token"),
         Identity(1, "admin-token", "admin", None, "token"),
         Identity(8, "reseller", "reseller", None, "session"),
-        Identity(1, "administrator", "customer", account_id, "session", impersonator="administrator"),
+        Identity(
+            1, "administrator", "customer", account_id, "session",
+            impersonator="administrator", impersonated_account="another-account",
+        ),
     ]
     for other in denied:
         try:
@@ -93,3 +105,16 @@ def test_webmail_session_rejects_cross_origin_before_rpc(isolated_db, monkeypatc
     else:
         raise AssertionError("cross-origin launch was accepted")
     assert called == []
+
+
+def test_panel_csp_allows_only_the_configured_https_webmail_origin(monkeypatch):
+    from api import main
+
+    monkeypatch.setattr(main.settings, "webmail_url", "https://webmail.example.test/roundcube")
+    assert main._webmail_form_action_source() == "https://webmail.example.test"
+    monkeypatch.setattr(main.settings, "webmail_url", "https://webmail.example.test:8443/roundcube")
+    assert main._webmail_form_action_source() == "https://webmail.example.test:8443"
+    monkeypatch.setattr(main.settings, "webmail_url", "http://webmail.example.test")
+    assert main._webmail_form_action_source() is None
+    monkeypatch.setattr(main.settings, "webmail_url", "https://webmail.example.test; form-action *")
+    assert main._webmail_form_action_source() is None

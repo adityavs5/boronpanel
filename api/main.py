@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import time
+from urllib.parse import urlsplit
 
 from pathlib import Path
 
@@ -25,11 +26,25 @@ from sqlalchemy import select
 from shared.config import require_secure_session_secret, settings
 from shared.db import read_session
 from shared.models import IpWhitelistEntry
+from shared.validation import ValidationError, validate_domain
 from shared import telemetry
 
 from api import logsetup, ratelimit
 from api.security import Identity, get_identity, require_admin
 from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, dnscluster, dnssetup, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, isolation, logs_router, lscache_router, mail, mailqueue, maintenance, malware, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, resources, server_setup, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, stack_manager, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
+
+
+def _webmail_form_action_source() -> str | None:
+    """Return one exact, safely rendered HTTPS CSP source for Roundcube."""
+    try:
+        parsed = urlsplit((settings.webmail_url or "").strip())
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            return None
+        hostname = validate_domain(parsed.hostname)
+        port = parsed.port
+    except (TypeError, ValueError, ValidationError):
+        return None
+    return f"https://{hostname}{f':{port}' if port and port != 443 else ''}"
 
 
 @asynccontextmanager
@@ -217,11 +232,13 @@ async def _security_headers(request, call_next):
         # external/CDN script. script-src keeps 'self' (+ 'unsafe-inline' is NOT
         # granted). connect-src 'self' also covers the terminal's same-origin
         # WebSocket (Phase 8 f7).
+        webmail_form_action = _webmail_form_action_source()
+        form_action = "form-action 'self'" + (f" {webmail_form_action}" if webmail_form_action else "")
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; worker-src 'self' blob:; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
-            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+            f"frame-ancestors 'none'; base-uri 'self'; {form_action}"
         )
     elif path == settings.filebrowser_base_url or path.startswith(settings.filebrowser_base_url + "/"):
         # FileBrowser Quantum's own bundled SPA, served same-origin through the

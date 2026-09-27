@@ -73,6 +73,30 @@ def test_launch_token_is_hash_only_and_redeems_once(mailbox):
         webmail_sso.redeem(launch["token"])
 
 
+def test_new_launch_replaces_older_mailbox_credential(mailbox):
+    account_id, calls = mailbox
+    first = webmail_sso.create_launch({
+        "username": "mailone", "mailbox": "hello@example.test", "source_ip": "192.0.2.8",
+    })
+    second = webmail_sso.create_launch({
+        "username": "mailone", "mailbox": "hello@example.test", "source_ip": "192.0.2.8",
+    })
+
+    first_digest = hashlib.sha256(first["token"].encode()).hexdigest()
+    second_digest = hashlib.sha256(second["token"].encode()).hexdigest()
+    with write_session() as db:
+        first_row = db.scalar(select(WebmailLaunch).where(WebmailLaunch.token_hash == first_digest))
+        second_row = db.scalar(select(WebmailLaunch).where(WebmailLaunch.token_hash == second_digest))
+        assert first_row.account_id == account_id
+        assert first_row.revoked_at is not None
+        assert second_row.revoked_at is None
+
+    assert sum("UPDATE webmail_session SET revoked=1" in sql for sql, _params in calls) == 2
+    with pytest.raises(ValidationError, match="already used"):
+        webmail_sso.redeem(first["token"])
+    assert webmail_sso.redeem(second["token"])["username"] == "hello@example.test"
+
+
 def test_redeem_and_revoke_audit_only_non_secret_metadata(mailbox, monkeypatch):
     _account_id, _calls = mailbox
     events = []

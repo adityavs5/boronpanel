@@ -976,7 +976,7 @@ EOF
 driver = mysql
 connect = host=127.0.0.1 dbname=boron_mail user=boron_mailro password=${mailro_pass}
 default_pass_scheme = ARGON2ID
-password_query = SELECT auth.user, auth.password FROM (SELECT CONCAT(u.local_part, '@', d.domain) AS user, u.password FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%u' AND u.active=1 AND d.active=1 UNION ALL SELECT s.mailbox AS user, s.password FROM webmail_session s JOIN mail_user u ON CONCAT(u.local_part, '@', (SELECT domain FROM mail_domain WHERE id=u.domain_id))=s.mailbox JOIN mail_domain d ON d.id=u.domain_id WHERE s.mailbox='%u' AND s.revoked=0 AND s.expires_at>UTC_TIMESTAMP() AND u.active=1 AND d.active=1) auth LIMIT 1
+password_query = SELECT auth.user, auth.password FROM (SELECT s.mailbox AS user, s.password, 0 AS priority FROM webmail_session s JOIN mail_user u ON CONCAT(u.local_part, '@', (SELECT domain FROM mail_domain WHERE id=u.domain_id))=s.mailbox JOIN mail_domain d ON d.id=u.domain_id WHERE s.mailbox='%u' AND s.revoked=0 AND s.expires_at>UTC_TIMESTAMP() AND u.active=1 AND d.active=1 UNION ALL SELECT CONCAT(u.local_part, '@', d.domain) AS user, u.password, 1 AS priority FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%u' AND u.active=1 AND d.active=1) auth ORDER BY auth.priority ASC LIMIT 1
 user_query = SELECT 150 AS uid, 150 AS gid, CONCAT('/var/vmail/', d.domain, '/', u.local_part) AS home, CONCAT('maildir:/var/vmail/', d.domain, '/', u.local_part, '/Maildir') AS mail FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%u' AND u.active=1 AND d.active=1
 EOF
     chown root:dovecot /etc/dovecot/dovecot-sql.conf.ext

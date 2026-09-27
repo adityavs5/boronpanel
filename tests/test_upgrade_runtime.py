@@ -1,6 +1,13 @@
 from scripts import upgrade_runtime
 
 
+def test_dovecot_prefers_temporary_webmail_credential():
+    query = upgrade_runtime.PASSWORD_QUERY
+    assert "s.password, 0 AS priority" in query
+    assert "u.password, 1 AS priority" in query
+    assert "ORDER BY auth.priority ASC LIMIT 1" in query
+
+
 def test_configure_mail_tls_separates_existing_mail_services(tmp_path, monkeypatch):
     ssl_dir = tmp_path / "ssl"
     ssl_dir.mkdir()
