@@ -432,18 +432,27 @@ def test_app_install_failure_does_not_store_or_log_exception_secrets(isolated_db
     assert "secret" not in caplog.text
 
 
-def test_application_file_worker_drops_uid_and_keeps_secrets_off_argv(monkeypatch):
+def test_application_file_worker_uses_account_launcher_and_keeps_secrets_off_argv(monkeypatch):
     from types import SimpleNamespace
     from daemon.procutil import ProcResult
     seen = []
-    monkeypatch.setattr(ai.pwd, 'getpwnam', lambda _: SimpleNamespace(pw_uid=5011, pw_gid=5012))
+    wrapped = []
+    monkeypatch.setattr(
+        ai.pwd, 'getpwnam',
+        lambda _: SimpleNamespace(pw_uid=5011, pw_gid=5012, pw_dir='/home/demo1'),
+    )
+    def wrap(username, args, **kwargs):
+        wrapped.append((username, args, kwargs))
+        return ['account-launcher', *args]
+    monkeypatch.setattr(ai.account_exec, 'wrap', wrap)
     def run(args, **kwargs):
         seen.append((args, kwargs))
         return ProcResult(args=args, returncode=0, stdout='{"ok":true}', stderr='')
     monkeypatch.setattr(ai, 'run', run)
     ai._files_as_account('demo1', 'joomla-config', '/home/demo1/public_html', payload={'db_password':'private value'})
     args, options = seen[0]
-    assert options['uid'] == 5011 and options['gid'] == 5012
+    assert wrapped[0][0] == 'demo1'
+    assert wrapped[0][2] == {'home': '/home/demo1', 'cwd': '/home/demo1/public_html'}
     assert 'private value' not in ' '.join(args)
     assert json.loads(options['input_text'])['db_password'] == 'private value'
 
