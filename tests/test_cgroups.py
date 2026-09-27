@@ -48,7 +48,7 @@ def test_resolver_uses_and_cross_checks_account_uid(isolated_db, monkeypatch):
 def test_apply_limits_targets_canonical_user_slice(isolated_db, fake_systemctl, monkeypatch):
     with write_session() as session:
         make_account(session)
-    monkeypatch.setattr(cgroups.settings, "cgroup_io_device", "/dev/vda")
+    monkeypatch.setattr(cgroups, "resolve_io_device", lambda: "/dev/vda")
     cgroups.apply_limits("demo1", cpu_pct=40, mem_mb=1024, io_mb=100, pids_max=75)
 
     assert ["systemctl", "start", "user-2000.slice"] in fake_systemctl
@@ -62,6 +62,15 @@ def test_apply_limits_targets_canonical_user_slice(isolated_db, fake_systemctl, 
     assert "CPUAccounting=yes" in command
 
 
+def test_io_device_falls_back_to_detected_major_minor(monkeypatch):
+    monkeypatch.setattr(cgroups.settings, "cgroup_io_device", "/dev/missing-disk")
+    monkeypatch.setattr(cgroups, "_is_block_device", lambda path: False)
+    monkeypatch.setattr(cgroups, "_backing_major_minor", lambda: (8, 1))
+    monkeypatch.setattr(cgroups, "_materialize_block_device", lambda major, minor: cgroups.Path(f"/run/boron/cgroup-devices/{major}-{minor}"))
+
+    assert cgroups.resolve_io_device() == "/run/boron/cgroup-devices/8-1"
+
+
 def test_apply_limits_fails_closed_on_systemd_error(isolated_db, monkeypatch):
     with write_session() as session:
         make_account(session)
@@ -72,6 +81,7 @@ def test_apply_limits_fails_closed_on_systemd_error(isolated_db, monkeypatch):
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(cgroups, "run", fake_run)
+    monkeypatch.setattr(cgroups, "resolve_io_device", lambda: "/dev/vda")
     with pytest.raises(cgroups.CgroupError, match="set-property"):
         cgroups.apply_limits("demo1", 25, 512, 50, 50)
 

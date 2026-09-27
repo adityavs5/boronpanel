@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 from pwd import getpwnam as _getpwnam
 import shutil
+import stat
 
 from sqlalchemy import select
 
@@ -40,10 +41,64 @@ DEFAULT_CPU_PCT = 25
 DEFAULT_MEM_MB = 512
 DEFAULT_IO_MB = 50
 DEFAULT_PIDS_MAX = 50
+IO_DEVICE_DIR = Path("/run/boron/cgroup-devices")
 
 
 class CgroupError(Exception):
     pass
+
+
+def _is_block_device(path: Path) -> bool:
+    try:
+        return stat.S_ISBLK(path.stat().st_mode)
+    except OSError:
+        return False
+
+
+def _backing_major_minor() -> tuple[int, int]:
+    result = run(["findmnt", "-n", "-o", "MAJ:MIN", "-T", settings.home_base], timeout=10)
+    value = result.stdout.strip() if result.ok else ""
+    try:
+        major_text, minor_text = value.split(":", 1)
+        major, minor = int(major_text), int(minor_text)
+    except (TypeError, ValueError):
+        raise CgroupError(f"could not resolve the backing block device for {settings.home_base}")
+    if major < 1 or minor < 0:
+        raise CgroupError(f"invalid backing block device {major}:{minor}")
+    return major, minor
+
+
+def _materialize_block_device(major: int, minor: int) -> Path:
+    """Return a root-only device node for systemd's path-based I/O API.
+
+    Minimal VPS /dev trees do not always expose the root disk even though the
+    kernel and cgroup controller identify it by major:minor.  A node under
+    /run gives systemd the same immutable device identity without guessing a
+    provider-specific name such as vda or sda.
+    """
+    IO_DEVICE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(IO_DEVICE_DIR, 0o700)
+    path = IO_DEVICE_DIR / f"{major}-{minor}"
+    if path.exists() or path.is_symlink():
+        if _is_block_device(path):
+            actual = path.stat().st_rdev
+            if os.major(actual) == major and os.minor(actual) == minor:
+                return path
+        path.unlink()
+    os.mknod(path, stat.S_IFBLK | 0o600, os.makedev(major, minor))
+    return path
+
+
+def resolve_io_device() -> str:
+    """Resolve the configured or actual home-filesystem device safely."""
+    configured = str(settings.cgroup_io_device or "").strip()
+    if configured and configured.lower() != "auto":
+        path = Path(configured)
+        if _is_block_device(path):
+            return str(path)
+        logger.warning("configured cgroup I/O device %s is unavailable; detecting %s backing device", configured, settings.home_base)
+    major, minor = _backing_major_minor()
+    return str(_materialize_block_device(major, minor))
 
 
 def user_slice_name(uid: int) -> str:
@@ -123,7 +178,7 @@ def apply_limits(
 def apply_policy(username: str, policy: dict, *, uid: int | None = None) -> None:
     """Apply one aggregate policy to PHP, apps and login-session descendants."""
     unit = ensure_slice(username, uid)
-    device = settings.cgroup_io_device
+    device = resolve_io_device()
 
     def bandwidth(value):
         if value is None:

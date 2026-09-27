@@ -30,6 +30,7 @@ update_github_repo = "adityavs5/boronpanel"
 # webmail_hostname = "webmail.example.com"
 # pma_hostname = "pma.example.com"
 
-# Block device cgroups v2 io-weight limits are applied against. Only change
-# this if your root filesystem isn't /dev/vda (check `findmnt -no SOURCE /`).
-# cgroup_io_device = "/dev/vda"
+# Block device cgroups v2 I/O limits are applied against. Auto-detection uses
+# the filesystem backing home_base. Set an explicit block-device path only for
+# unusual storage layouts.
+# cgroup_io_device = "auto"

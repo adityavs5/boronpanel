@@ -135,15 +135,11 @@ class Settings:
     # resolves to webmail_hostname, then panel_hostname at runtime.
     mail_hostname: str = ""
 
-    # Phase 2 feature 6: cgroups v2 resource limits. The block device
-    # IOReadBandwidthMax/IOWriteBandwidthMax apply to -- must be the whole
-    # disk (e.g. /dev/vda), not a partition (e.g. /dev/vda1): the io
-    # controller keys io.max by the block device's own major:minor, which
-    # is the whole-disk device's, confirmed against this server's actual
-    # `findmnt`/`lsblk` output rather than assumed. Set this to match
-    # whatever `findmnt -no SOURCE /` resolves to on the actual deployment
-    # target if it differs (e.g. /dev/sda, /dev/nvme0n1).
-    cgroup_io_device: str = "/dev/vda"
+    # Phase 2 feature 6: cgroups v2 I/O limits. "auto" resolves the
+    # major:minor backing home_base with findmnt, including minimal VPS /dev
+    # trees where the kernel device has no visible provider-specific node.
+    # An explicit block-device path remains available for unusual storage.
+    cgroup_io_device: str = "auto"
 
     # Phase 2 feature 7: backup system
     rclone_bin: str = "/usr/bin/rclone"
