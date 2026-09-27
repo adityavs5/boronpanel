@@ -240,6 +240,15 @@ def authorize(op: str, params: dict, principal: Principal | None) -> None:
             if target != principal.account_id:
                 raise AuthorizationError("account ownership required")
         return
+    if disposition == "customer_or_admin_session_account":
+        if (principal.auth_method != "session" or principal.impersonating
+                or principal.role not in ("admin", "customer")):
+            raise AuthorizationError("direct customer or administrator session required")
+        with write_session() as db:
+            target = _target_account_id(db, params)
+            if target is None or not _owns_account(db, principal, target):
+                raise AuthorizationError("account ownership required")
+        return
     if disposition == "self_panel_user_session_only":
         if principal.auth_method != "session" or principal.impersonating or principal.panel_user_id != params.get("panel_user_id"):
             raise AuthorizationError("current panel session required")

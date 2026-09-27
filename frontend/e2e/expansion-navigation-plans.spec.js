@@ -61,7 +61,9 @@ for (const skin of ['evolution', 'paper-lantern']) {
     await expect(page.getByRole('combobox', { name: 'Choose domain' })).toHaveValue('example.test')
 
     await page.goto('/app/email/settings')
-    await expect(page.getByRole('tab', { name: 'Forwarders' })).toHaveAttribute('data-state', 'active')
+    await expect(page.getByRole('heading', { name: 'Email Settings', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Forwarders/ })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('tab')).toHaveCount(0)
 
     await page.goto('/app/email/dns')
     await expect(page.getByRole('heading', { name: 'Email DNS Records', exact: true })).toBeVisible()
@@ -76,9 +78,9 @@ test('plan creation is a full page with four editable templates', async ({ page 
   const template = page.getByLabel('Starting template')
   await expect(template.locator('option')).toHaveCount(4)
   await expect(template).toHaveValue('wordpress')
-  await expect(page.getByLabel('Memory (MB)')).toHaveValue('1024')
+  await expect(page.getByLabel('Hard memory limit (MB)')).toHaveValue('1024')
   await expect(page.getByText('Compute resources', { exact: true })).toBeVisible()
-  await expect(page.getByText('Storage and traffic', { exact: true })).toBeVisible()
+  await expect(page.getByText('Disk, I/O and traffic', { exact: true })).toBeVisible()
   await expect(page.getByText(/Provision an isolated Redis instance/)).toBeVisible()
 
   await template.selectOption('starter')

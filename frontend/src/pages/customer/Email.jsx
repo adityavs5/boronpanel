@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Mail, Plus, Trash2, Inbox, Forward, ShieldAlert, AtSign, Network, ScrollText,
   ShieldBan, ShieldCheck, ArrowRightLeft, Loader2, XCircle, CheckCircle2, X, ExternalLink,
+  CirclePause, CirclePlay, Settings2, LogIn,
 } from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
@@ -16,7 +17,6 @@ import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Switch } from '@/components/ui/Toggle'
 import { Badge } from '@/components/ui/Badge'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, ConfirmDialog,
 } from '@/components/ui/Dialog'
@@ -24,16 +24,69 @@ import { EmptyState, ErrorState } from '@/components/ui/States'
 import { CenteredSpinner } from '@/components/ui/Spinner'
 import { toast } from '@/components/ui/Toast'
 
-const EMAIL_TABS = [
-  ['mailboxes', 'Mailboxes', Inbox],
-  ['forwarders', 'Forwarders', Forward],
-  ['catchall', 'Catch-all', AtSign],
-  ['spam', 'Spam filter', ShieldAlert],
-  ['spam-entries', 'Spam Filters', ShieldBan],
-  ['imap-migrate', 'Migrate', ArrowRightLeft],
-  ['routing', 'Routing', Network],
-  ['delivery', 'Delivery log', ScrollText],
-]
+const EMAIL_MODES = {
+  accounts: {
+    title: 'Email Accounts',
+    description: 'Create mailboxes and manage login, passwords, quotas, and account access.',
+    sections: [['mailboxes', 'Email accounts', Inbox]],
+  },
+  webmail: {
+    title: 'Webmail',
+    description: 'Open a mailbox securely without entering its password again.',
+    sections: [['webmail', 'Webmail login', LogIn]],
+  },
+  settings: {
+    title: 'Email Settings',
+    description: 'Configure forwarding and delivery behavior for the selected domain.',
+    sections: [
+      ['forwarders', 'Forwarders', Forward],
+      ['catchall', 'Catch-all', AtSign],
+      ['routing', 'Mail routing', Network],
+      ['delivery', 'Delivery log', ScrollText],
+    ],
+  },
+  spam: {
+    title: 'Spam Filters',
+    description: 'Control spam scoring and mailbox-level allow and block lists.',
+    sections: [
+      ['spam', 'Spam scoring', ShieldAlert],
+      ['spam-entries', 'Allow & block lists', ShieldBan],
+    ],
+  },
+  migration: {
+    title: 'IMAP Migration',
+    description: 'Copy messages from an existing mail server into a Boron mailbox.',
+    sections: [['imap-migrate', 'IMAP migration', ArrowRightLeft]],
+  },
+}
+
+function useWebmailLaunch(username, domain) {
+  const [launching, setLaunching] = useState('')
+  const openWebmail = async (row) => {
+    if (!row.active) return
+    const address = `${row.local_part}@${domain}`
+    const target = `boron-webmail-${Date.now()}`
+    const tab = window.open('', target)
+    if (tab) tab.opener = null
+    setLaunching(address)
+    try {
+      const launch = await post(`/api/v1/accounts/${encodeURIComponent(username)}/email/${encodeURIComponent(row.local_part)}/webmail-session`, { domain })
+      const form = document.createElement('form')
+      form.method = 'POST'
+      form.action = `${launch.url.replace(/\/$/, '')}/?_task=login&_action=login`
+      form.target = tab ? target : '_blank'
+      for (const [name, value] of Object.entries({ _task: 'login', _action: 'login', _user: address, _pass: 'boron-sso', _boron_token: launch.token })) {
+        const input = document.createElement('input')
+        input.type = 'hidden'; input.name = name; input.value = value; form.appendChild(input)
+      }
+      document.body.appendChild(form); form.submit(); form.remove()
+    } catch (error) {
+      if (tab) tab.close()
+      toast.error('Could not open webmail', error.message)
+    } finally { setLaunching('') }
+  }
+  return { launching, openWebmail }
+}
 
 // --- Mailboxes -----------------------------------------------------------
 
@@ -46,7 +99,7 @@ function MailboxesTab({ domain }) {
   const [toDelete, setToDelete] = useState(null)
   const [selected, setSelected] = useState(null)
   const [password, setPassword] = useState('')
-  const [launching, setLaunching] = useState('')
+  const { launching, openWebmail } = useWebmailLaunch(username, domain)
   useEffect(() => { setSelected(null); setPassword('') }, [domain, username])
   const passwordMut = useMutation({
     mutationFn: () => patch(`/api/v1/accounts/${encodeURIComponent(username)}/email/${encodeURIComponent(selected.local_part)}/password`, {domain, password}),
@@ -81,28 +134,18 @@ function MailboxesTab({ domain }) {
     onError: (e) => toast.error('Could not delete mailbox', e.message),
   })
 
-  const openWebmail = async (row) => {
-    const address = `${row.local_part}@${domain}`
-    const target = `boron-webmail-${Date.now()}`
-    const tab = window.open('', target)
-    if (tab) tab.opener = null
-    setLaunching(address)
-    try {
-      const launch = await post(`/api/v1/accounts/${encodeURIComponent(username)}/email/${encodeURIComponent(row.local_part)}/webmail-session`, { domain })
-      const form = document.createElement('form')
-      form.method = 'POST'
-      form.action = `${launch.url.replace(/\/$/, '')}/?_task=login&_action=login`
-      form.target = tab ? target : '_blank'
-      for (const [name, value] of Object.entries({ _task: 'login', _action: 'login', _user: address, _pass: 'boron-sso', _boron_token: launch.token })) {
-        const input = document.createElement('input')
-        input.type = 'hidden'; input.name = name; input.value = value; form.appendChild(input)
-      }
-      document.body.appendChild(form); form.submit(); form.remove()
-    } catch (error) {
-      if (tab) tab.close()
-      toast.error('Could not open webmail', error.message)
-    } finally { setLaunching('') }
-  }
+  const activeMut = useMutation({
+    mutationFn: (row) => patch(
+      `/api/v1/mail/domains/${encodeURIComponent(domain)}/mailboxes/${encodeURIComponent(row.local_part)}`,
+      { active: !row.active },
+    ),
+    onSuccess: (result) => {
+      toast.success(result.active ? 'Mailbox unsuspended' : 'Mailbox suspended')
+      qc.invalidateQueries({ queryKey: key })
+      setSelected(current => current?.local_part === result.local_part ? { ...current, active: result.active } : current)
+    },
+    onError: (error) => toast.error('Could not update mailbox status', error.message),
+  })
 
   const columns = [
     {
@@ -129,9 +172,16 @@ function MailboxesTab({ domain }) {
       header: '',
       align: 'right',
       render: (r) => (
-        <div className="flex items-center justify-end gap-2"><Button variant="primary" size="sm" loading={launching === `${r.local_part}@${domain}`} onClick={event => { event.stopPropagation(); openWebmail(r) }}><ExternalLink className="h-4 w-4" /> Webmail</Button><Button variant="secondary" size="sm" onClick={event => { event.stopPropagation(); setSelected(r) }}>Manage</Button><Button variant="ghost" size="icon-sm" onClick={event => { event.stopPropagation(); setToDelete(r.local_part) }} aria-label="Delete mailbox">
-          <Trash2 className="h-4 w-4 text-danger" />
-        </Button></div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="primary" size="sm" disabled={!r.active} loading={launching === `${r.local_part}@${domain}`} onClick={event => { event.stopPropagation(); openWebmail(r) }}><ExternalLink className="h-4 w-4" /> Log in</Button>
+          <Button variant="secondary" size="sm" onClick={event => { event.stopPropagation(); setSelected(r) }}><Settings2 className="h-4 w-4" /> Manage</Button>
+          <Button variant="secondary" size="sm" loading={activeMut.isPending && activeMut.variables?.local_part === r.local_part} onClick={event => { event.stopPropagation(); activeMut.mutate(r) }}>
+            {r.active ? <CirclePause className="h-4 w-4" /> : <CirclePlay className="h-4 w-4" />} {r.active ? 'Suspend' : 'Unsuspend'}
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={event => { event.stopPropagation(); setToDelete(r.local_part) }} aria-label={`Delete ${r.local_part}@${domain}`}>
+            <Trash2 className="h-4 w-4 text-danger" />
+          </Button>
+        </div>
       ),
     },
   ]
@@ -1017,6 +1067,44 @@ function ImapMigrateTab({ username, domain }) {
   )
 }
 
+function WebmailTab({ username, domain }) {
+  const { launching, openWebmail } = useWebmailLaunch(username, domain)
+  const mailboxes = useQuery({
+    queryKey: ['mailboxes', domain],
+    queryFn: () => get(`/api/v1/mail/domains/${domain}/mailboxes`),
+    enabled: !!domain,
+  })
+  const columns = [
+    {
+      key: 'local_part', header: 'Email account', sortable: true, searchable: true,
+      render: row => <span className="font-medium text-foreground">{row.local_part}@{domain}</span>,
+    },
+    {
+      key: 'active', header: 'Status',
+      render: row => row.active ? <Badge variant="success">Active</Badge> : <Badge variant="neutral">Suspended</Badge>,
+    },
+    {
+      key: 'actions', header: '', align: 'right',
+      render: row => <Button size="sm" disabled={!row.active} loading={launching === `${row.local_part}@${domain}`} onClick={() => openWebmail(row)}><LogIn className="h-4 w-4" /> Log in to webmail</Button>,
+    },
+  ]
+  return <DataTable columns={columns} data={mailboxes.data?.mailboxes} loading={mailboxes.isLoading} error={mailboxes.error} onRetry={mailboxes.refetch} filterable searchPlaceholder="Search email accounts…" pageSize={10} getRowKey={row => row.local_part} emptyTitle="No email accounts yet" emptyDescription="Create an email account before opening webmail." emptyIcon={Inbox} />
+}
+
+function EmailSectionPicker({ sections, active, onChange }) {
+  if (sections.length < 2) return null
+  return (
+    <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Email tools">
+      {sections.map(([value, label, Icon], index) => (
+        <button key={value} type="button" aria-pressed={active === value} onClick={() => onChange(value)} className={`flex min-h-20 items-center gap-3 rounded-btn border px-4 py-3 text-left transition-colors ${active === value ? 'border-accent bg-accent-50 text-accent-700 dark:bg-accent-950 dark:text-accent-200' : 'border-border bg-surface text-foreground hover:bg-muted'}`}>
+          <span className={`tool-icon tone-${['sky', 'green', 'violet', 'amber'][index % 4]}`}><Icon className="h-6 w-6" /></span>
+          <span><strong className="block text-sm">{label}</strong><small className="text-xs text-muted-foreground">Open settings</small></span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function ProgressBarInline({ value, max }) {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0
   return (
@@ -1026,11 +1114,13 @@ function ProgressBarInline({ value, max }) {
   )
 }
 
-export default function Email({ defaultTab = 'mailboxes' }) {
+export default function Email({ mode = 'accounts' }) {
   const [searchParams, setSearchParams] = useSearchParams()
-  const emailTabs = new Set(EMAIL_TABS.map(([value]) => value))
+  const effectiveMode = searchParams.get('webmail') === '1' ? 'webmail' : mode
+  const config = EMAIL_MODES[effectiveMode] || EMAIL_MODES.accounts
+  const allowedSections = new Set(config.sections.map(([value]) => value))
   const requestedTab = searchParams.get('tab')
-  const activeTab = emailTabs.has(requestedTab) ? requestedTab : defaultTab
+  const activeSection = allowedSections.has(requestedTab) ? requestedTab : config.sections[0][0]
   const username = useAccountUsername()
   const [domain, setDomain] = useState('')
 
@@ -1039,28 +1129,36 @@ export default function Email({ defaultTab = 'mailboxes' }) {
     queryFn: () => get(`/api/v1/accounts/${username}/domains`),
     enabled: !!username,
   })
-  const webmailQ = useQuery({
-    queryKey: ['webmail-settings'],
-    queryFn: () => get('/api/v1/mail/webmail'),
-    staleTime: 300_000,
-  })
-  const inventoryQ = useQuery({
-    queryKey: ['mailbox-inventory', username],
-    queryFn: () => get(`/api/v1/accounts/${username}/email/mailboxes`),
-    enabled: !!username,
-  })
-
   const domains = domainsQ.data?.domains || []
 
   useEffect(() => {
     if (!domain && domains.length) setDomain(domains[0].domain)
   }, [domains, domain])
 
+  const selectSection = (section) => setSearchParams((previous) => {
+    const next = new URLSearchParams(previous)
+    next.delete('webmail')
+    if (section === config.sections[0][0]) next.delete('tab')
+    else next.set('tab', section)
+    return next
+  })
+
+  const content = {
+    mailboxes: <MailboxesTab domain={domain} />,
+    webmail: <WebmailTab username={username} domain={domain} />,
+    forwarders: <ForwardersTab username={username} domain={domain} />,
+    catchall: <CatchallTab username={username} domain={domain} />,
+    spam: <SpamTab username={username} domain={domain} />,
+    'spam-entries': <MailboxSpamFiltersTab username={username} domain={domain} />,
+    'imap-migrate': <ImapMigrateTab username={username} domain={domain} />,
+    routing: <RoutingTab username={username} domain={domain} />,
+    delivery: <DeliveryLogTab username={username} />,
+  }[activeSection]
+
   return (
     <div>
-      <PageHeader title="Email" description="Manage mailboxes, forwarders, catch-all delivery, and spam filtering." icon={Mail}>
+      <PageHeader title={config.title} description={config.description} icon={config.sections[0][2] || Mail}>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          {webmailQ.data?.enabled && <Button asChild variant="secondary"><a href={webmailQ.data.url} target="_blank" rel="noreferrer"><ExternalLink className="h-4 w-4" /> Open Webmail</a></Button>}
           {domains.length > 0 && <div className="flex items-center gap-2">
             <AtSign className="h-4 w-4 text-muted-foreground" />
             <Select value={domain} onChange={(e) => setDomain(e.target.value)} className="w-56">
@@ -1084,58 +1182,11 @@ export default function Email({ defaultTab = 'mailboxes' }) {
         />
       ) : !domain ? (
         <CenteredSpinner />
-      ) : activeTab !== 'mailboxes' && !inventoryQ.isLoading && (inventoryQ.data?.mailboxes || []).length === 0 ? (
-        <EmptyState icon={Inbox} title="No email accounts yet" description="Create an email account to use forwarding, spam controls, webmail, mailbox migration and mailbox backups." action={<Button onClick={() => setSearchParams(new URLSearchParams())}><Plus className="h-4 w-4" /> Create email account</Button>} />
       ) : (
-        <Tabs value={activeTab} key={domain} onValueChange={(tab) => setSearchParams((prev) => {
-          const next = new URLSearchParams(prev)
-          if (tab === 'mailboxes') next.delete('tab')
-          else next.set('tab', tab)
-          return next
-        })}>
-          <Select
-            value={activeTab}
-            onChange={(event) => setSearchParams((prev) => {
-              const next = new URLSearchParams(prev)
-              if (event.target.value === 'mailboxes') next.delete('tab')
-              else next.set('tab', event.target.value)
-              return next
-            })}
-            aria-label="Email section"
-            className="mb-4 sm:hidden"
-          >
-            {EMAIL_TABS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </Select>
-          <TabsList className="hidden sm:flex">
-            {EMAIL_TABS.map(([value, label, Icon]) => (
-              <TabsTrigger key={value} value={value}><Icon className="h-4 w-4" /> {label}</TabsTrigger>
-            ))}
-          </TabsList>
-          <TabsContent value="mailboxes">
-            <MailboxesTab domain={domain} />
-          </TabsContent>
-          <TabsContent value="forwarders">
-            <ForwardersTab username={username} domain={domain} />
-          </TabsContent>
-          <TabsContent value="catchall">
-            <CatchallTab username={username} domain={domain} />
-          </TabsContent>
-          <TabsContent value="spam">
-            <SpamTab username={username} domain={domain} />
-          </TabsContent>
-          <TabsContent value="spam-entries">
-            <MailboxSpamFiltersTab username={username} domain={domain} />
-          </TabsContent>
-          <TabsContent value="imap-migrate">
-            <ImapMigrateTab username={username} domain={domain} />
-          </TabsContent>
-          <TabsContent value="routing">
-            <RoutingTab username={username} domain={domain} />
-          </TabsContent>
-          <TabsContent value="delivery">
-            <DeliveryLogTab username={username} />
-          </TabsContent>
-        </Tabs>
+        <div key={`${effectiveMode}:${domain}`}>
+          <EmailSectionPicker sections={config.sections} active={activeSection} onChange={selectSection} />
+          {content}
+        </div>
       )}
     </div>
   )

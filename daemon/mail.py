@@ -198,6 +198,28 @@ def list_mailboxes(domain: str) -> list[dict]:
 
 
 @serialized
+def set_mailbox_active(domain: str, local_part: str, active: bool) -> bool:
+    """Enable or disable IMAP/SMTP authentication for one mailbox.
+
+    Dovecot and Postfix query ``mail_user.active`` live, so the change takes
+    effect without reloading either service.
+    """
+    validate_domain(domain)
+    validate_mailbox_local_part(local_part)
+    domain_id = _domain_id(domain)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE mail_user SET active = %s WHERE domain_id = %s AND local_part = %s",
+                (1 if active else 0, domain_id, local_part),
+            )
+            return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+@serialized
 def change_mailbox_password(domain: str, local_part: str, new_password: str) -> None:
     validate_domain(domain)
     validate_mailbox_local_part(local_part)

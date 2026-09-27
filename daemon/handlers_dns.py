@@ -6,16 +6,18 @@ content.
 """
 from __future__ import annotations
 
+import logging
+
 from daemon import dns_operations
 
 from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, DnsZone
+from shared.models import Account, DnsZone, MailDomain
 from shared.validation import ValidationError, validate_domain, validate_record_type
 
-from daemon import cloudflare_ops, dnsprovider, dnssetup, mail_dns
+from daemon import cloudflare_ops, dkim, dnsprovider, dnssetup, mail_dns
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 
 RECORD_VALUE_VALIDATORS = {
@@ -28,6 +30,8 @@ RECORD_VALUE_VALIDATORS = {
     "SRV": lambda v: _validate_srv(v),
     "CAA": lambda v: _validate_caa(v),
 }
+
+logger = logging.getLogger("borond.dns")
 
 
 def _validate_ipv4(value: str) -> str:
@@ -178,6 +182,20 @@ def create_zone(params: dict) -> dict:
         session.add(zone_row)
         session.flush()
         result = _zone_dict(zone_row)
+
+    # If mail was provisioned before its DNS zone, DKIM setup previously had
+    # nowhere to publish the public key. Reconcile it now that the managed zone
+    # exists. Zone creation remains usable if the local signer needs operator
+    # attention; Email DNS will surface the repair state and error.
+    with write_session() as session:
+        has_mail = session.scalar(
+            select(MailDomain.id).where(MailDomain.domain == domain_name)
+        ) is not None
+    if has_mail:
+        try:
+            result["dkim"] = dkim.setup_dns_signing(domain_name)
+        except Exception:
+            logger.exception("DKIM reconciliation failed after creating zone '%s'", domain_name)
 
     # Phase 2+3 feature 6: auto-enable Cloudflare for the new zone when the
     # admin toggle / default_dns_provider says so and a pool account has

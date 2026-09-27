@@ -33,7 +33,7 @@ from sqlalchemy import select
 
 from shared.db import write_session
 from shared.models import Account, UsageSnapshot, utcnow
-from shared.validation import validate_protected_dir_relative_path, validate_username
+from shared.validation import ValidationError, validate_username
 
 from daemon import filemanager
 from daemon.procutil import run
@@ -49,8 +49,33 @@ class DiskTreeError(Exception):
     pass
 
 
+def _validate_browse_path(value: object) -> str:
+    """Validate a read-only explorer path without restricting real filenames.
+
+    The protected-directory validator is intentionally limited to a shell and
+    configuration-safe character set. Disk usage never interpolates a path
+    into shell text (all commands use argv) and is already confined by
+    filemanager._resolve's realpath jail, so applying that validator here made
+    ordinary backup names such as ``2026-09-26T12_37_28+00_00`` impossible to
+    open. Keep only transport/structure limits here and let the realpath jail
+    enforce containment.
+    """
+    if not isinstance(value, str):
+        raise ValidationError("directory path must be text")
+    if len(value) > 4096:
+        raise ValidationError("directory path is too long")
+    if "\x00" in value:
+        raise ValidationError("directory path contains an invalid character")
+    if value.startswith("/"):
+        raise ValidationError("directory path must be relative")
+    parts = value.split("/") if value else []
+    if any(part in ("", ".", "..") for part in parts):
+        raise ValidationError("directory path contains an invalid segment")
+    return value
+
+
 def _resolve_dir(username: str, relative_path: str) -> tuple[str, str]:
-    relative_path = validate_protected_dir_relative_path(relative_path) if relative_path else ""
+    relative_path = _validate_browse_path(relative_path)
     resolved, home = filemanager._resolve(username, relative_path)
     if not os.path.isdir(resolved):
         raise DiskTreeError(f"'{relative_path}' is not a directory")

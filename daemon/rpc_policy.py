@@ -55,6 +55,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'mail.forward.delete': 'account_and_domain',
     'mail.forward.list': 'account_and_domain',
     'mail.list_mailboxes': 'account_and_domain',
+    'mail.set_mailbox_active': 'account_and_domain',
     'mail.spamfilter.get': 'account_and_domain',
     'mail.spamfilter.set': 'account_and_domain',
     'maintenance.get': 'account_and_domain',
@@ -220,7 +221,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'usage.alerts.get': 'account_username',
     'usage.get': 'account_username',
     'usage.limits.get': 'account_username',
-    'webmail.launch.create': 'customer_session_self_account',
+    'webmail.launch.create': 'customer_or_admin_session_account',
     # admin_account_username
     'account.set_password': 'admin_account_username',
     'namespace.disable': 'admin_account_username',

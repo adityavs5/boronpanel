@@ -1,6 +1,7 @@
 import pytest
 
 from daemon import disktree
+from shared.validation import ValidationError
 
 
 @pytest.fixture()
@@ -66,6 +67,25 @@ def test_get_disk_tree_drills_into_subdirectory(account_tree):
     assert big["size_bytes"] == 50_000
 
 
+def test_get_disk_tree_accepts_backup_timestamp_directory(account_tree):
+    backup = account_tree / "2026-09-26T12_37_28+00_00"
+    backup.mkdir()
+    (backup / "archive.tar.zst").write_bytes(b"backup")
+
+    result = disktree.get_disk_tree({
+        "username": "demo1", "path": "2026-09-26T12_37_28+00_00",
+    })
+
+    assert result["path"] == "2026-09-26T12_37_28+00_00"
+    assert result["children"][0]["name"] == "archive.tar.zst"
+
+
+@pytest.mark.parametrize("path", ["/etc", "public_html//assets", "public_html/../logs", "public_html/./assets", "bad\x00name"])
+def test_get_disk_tree_rejects_invalid_path_structure(account_tree, path):
+    with pytest.raises((ValidationError, disktree.DiskTreeError)):
+        disktree.get_disk_tree({"username": "demo1", "path": path})
+
+
 def test_get_disk_tree_rejects_nonexistent_path(account_tree):
     with pytest.raises(disktree.DiskTreeError):
         disktree.get_disk_tree({"username": "demo1", "path": "does-not-exist"})
@@ -74,7 +94,7 @@ def test_get_disk_tree_rejects_nonexistent_path(account_tree):
 def test_get_disk_tree_rejects_path_escaping_home(account_tree):
     from daemon.filemanager import FileManagerError
 
-    with pytest.raises(FileManagerError):
+    with pytest.raises((FileManagerError, ValidationError)):
         disktree.get_disk_tree({"username": "demo1", "path": "../../etc"})
 
 

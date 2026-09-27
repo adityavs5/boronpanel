@@ -41,6 +41,10 @@ class ChangeMailboxPasswordBody(BaseModel):
     password: str
 
 
+class MailboxActiveBody(BaseModel):
+    active: bool
+
+
 class WebmailSessionBody(BaseModel):
     domain: str
 
@@ -106,6 +110,15 @@ def delete_mailbox(domain: str, local_part: str, identity: Identity = Depends(ge
     )
 
 
+@api_router.patch("/domains/{domain}/mailboxes/{local_part}")
+def set_mailbox_active(domain: str, local_part: str, body: MailboxActiveBody, identity: Identity = Depends(get_identity)):
+    require_domain_access(identity, domain)
+    return call_daemon(
+        "mail.set_mailbox_active", identity,
+        domain=domain, local_part=local_part, active=body.active,
+    )
+
+
 @account_api_router.patch("/{local_part}/password")
 def change_mailbox_password(username: str, local_part: str, body: ChangeMailboxPasswordBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
@@ -122,11 +135,12 @@ def create_webmail_session(
     response: Response,
     identity: Identity = Depends(get_identity),
 ):
-    """Create a one-use Roundcube handoff for a direct customer session."""
+    """Create a one-use Roundcube handoff for a direct customer/admin session."""
     require_account_access(identity, username)
     require_domain_access(identity, body.domain)
-    if identity.auth_method != "session" or identity.is_impersonating or identity.role != "customer":
-        raise HTTPException(status_code=403, detail="Sign in directly as the customer to open webmail")
+    if (identity.auth_method != "session" or identity.is_impersonating
+            or identity.role not in ("customer", "admin")):
+        raise HTTPException(status_code=403, detail="Sign in directly as the customer or administrator to open webmail")
     expected = f"{request.url.scheme}://{request.url.netloc}"
     if request.headers.get("origin") != expected:
         raise HTTPException(status_code=403, detail="same-origin request required")

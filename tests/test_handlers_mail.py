@@ -14,6 +14,9 @@ def stub_dkim(tmp_path, monkeypatch):
     split test_dkim.py uses."""
     monkeypatch.setattr(settings, "dkim_base_dir", str(tmp_path / "dkim"))
     monkeypatch.setattr(hm.dkim, "find_managed_zone", lambda domain: None)
+    # Unit tests use a temporary tree which is not owned by the real
+    # OpenDKIM service account (and may run inside a user namespace).
+    monkeypatch.setattr(hm.dkim, "_opendkim_gid", lambda: None)
 
 
 @pytest.fixture()
@@ -55,6 +58,10 @@ def stub_mail(monkeypatch):
     def change_mailbox_password(domain, local_part, new_password):
         calls.append(("change_mailbox_password", domain, local_part))
 
+    def set_mailbox_active(domain, local_part, active):
+        calls.append(("set_mailbox_active", domain, local_part, active))
+        return (domain, local_part) in state["mailboxes"]
+
     def revoke_webmail_sessions(mailbox):
         calls.append(("revoke_webmail_sessions", mailbox))
 
@@ -65,6 +72,7 @@ def stub_mail(monkeypatch):
     monkeypatch.setattr(hm.mail, "delete_mailbox", delete_mailbox)
     monkeypatch.setattr(hm.mail, "list_mailboxes", list_mailboxes)
     monkeypatch.setattr(hm.mail, "change_mailbox_password", change_mailbox_password)
+    monkeypatch.setattr(hm.mail, "set_mailbox_active", set_mailbox_active)
     monkeypatch.setattr(hm.webmail_sso, "revoke_mailbox", revoke_webmail_sessions)
 
     forwards = {}
@@ -293,6 +301,31 @@ def test_delete_mailbox(isolated_db, stub_sysops, stub_mail):
     assert stub_mail.index(("revoke_webmail_sessions", "john@demo1.example")) < stub_mail.index(
         ("delete_mailbox", "demo1.example", "john")
     )
+
+
+def test_suspend_mailbox_revokes_webmail_before_disabling(isolated_db, stub_sysops, stub_mail):
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
+
+    result = hm.set_mailbox_active({"domain": "demo1.example", "local_part": "john", "active": False})
+
+    assert result["status"] == "suspended"
+    assert stub_mail.index(("revoke_webmail_sessions", "john@demo1.example")) < stub_mail.index(
+        ("set_mailbox_active", "demo1.example", "john", False)
+    )
+
+
+def test_unsuspend_mailbox_does_not_revoke_webmail(isolated_db, stub_sysops, stub_mail):
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
+
+    result = hm.set_mailbox_active({"domain": "demo1.example", "local_part": "john", "active": True})
+
+    assert result["status"] == "active"
+    assert ("set_mailbox_active", "demo1.example", "john", True) in stub_mail
+    assert ("revoke_webmail_sessions", "john@demo1.example") not in stub_mail
 
 
 def test_delete_mailbox_fails_closed_when_webmail_revocation_fails(

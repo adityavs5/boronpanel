@@ -232,6 +232,7 @@ OP_TABLE = {
     "mail.create_mailbox": handlers_mail.create_mailbox,
     "mail.delete_mailbox": handlers_mail.delete_mailbox,
     "mail.list_mailboxes": handlers_mail.list_mailboxes,
+    "mail.set_mailbox_active": handlers_mail.set_mailbox_active,
     "mail.change_password": handlers_mail.change_mailbox_password,
     "webmail.launch.create": webmail_sso.create_launch,
     "mail.dns.preview": lambda params: mail_dns.preview(params["domain"]),

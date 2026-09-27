@@ -35,6 +35,9 @@
 .preview-stats b { display: block; width: 70%; height: 4px; background: #a7b9c5; margin-bottom: 6px; }
 .preview-stats span { display: block; height: 3px; background: #e4eaee; margin: 7px 0; }
 .preview-stats i { display: block; width: 60%; height: 3px; background: #70b9cf; }
+.preview-evolution .preview-top { background: #0b6fa6; }
+.preview-evolution .preview-title { background: #0e6799; }
+.preview-evolution .preview-tool { border: 0; background: transparent; }
 .preview-paper-lantern .preview-top { background: #2d404f; }
 .preview-paper-lantern .preview-top b { color: white; }
 .preview-paper-lantern .preview-layout { background: #f4f5f6; }
@@ -62,6 +65,13 @@
 .dashboard-search-field>svg{width:20px;color:rgb(var(--muted-fg));flex:none}.dashboard-search-field input{flex:1;min-width:0;height:50px;border:0!important;background:transparent!important;font-size:15px;color:rgb(var(--fg));outline:0!important;box-shadow:none!important;padding:0}.dashboard-search-field input:focus-visible{outline:0!important}.dashboard-search-field button{display:grid;place-items:center;width:34px;height:34px;border:0;border-radius:2px;color:rgb(var(--muted-fg))}.dashboard-search-field button:hover{background:rgb(var(--muted))}.dashboard-search-field button svg{width:18px}
 .dashboard-search-results{position:absolute;left:0;right:0;top:calc(100% + 5px);max-height:430px;overflow:auto;padding:7px;border:1px solid rgb(var(--border));border-top:3px solid rgb(var(--accent));background:rgb(var(--card));box-shadow:0 10px 25px rgb(15 30 40/.18)}
 .dashboard-search-results>button{display:grid;grid-template-columns:42px minmax(0,1fr) 22px;align-items:center;gap:11px;width:100%;min-height:54px;padding:7px 10px;border:0;border-bottom:1px solid rgb(var(--border));border-radius:0;text-align:left;outline:0!important;color:rgb(var(--fg))}.dashboard-search-results>button:last-of-type{border-bottom:0}.dashboard-search-results>button[aria-selected=true]{background:rgb(var(--accent)/.1);color:rgb(var(--link))}.search-result-icon{display:grid;place-items:center;width:38px;height:38px;border:1px solid rgb(var(--border));background:rgb(var(--surface));border-radius:3px}.search-result-icon svg,.search-result-icon img{width:23px;height:23px;object-fit:contain}.dashboard-search-results strong{display:block;font-size:14px;font-weight:600}.dashboard-search-results small{display:block;font-size:12px;color:rgb(var(--muted-fg));margin-top:1px}.search-enter{width:15px;color:rgb(var(--muted-fg))}.dashboard-search-empty{padding:24px 16px;text-align:center;font-size:14px;color:rgb(var(--muted-fg))}
+[data-skin=evolution] .dashboard-search{margin-bottom:18px}
+[data-skin=evolution] .dashboard-search-field{height:42px;padding:0 13px;border-color:rgb(var(--border));border-radius:2px;box-shadow:0 1px 3px rgb(20 40 55/.1)}
+[data-skin=evolution] .dashboard-search-field:focus-within{border-color:rgb(var(--accent));box-shadow:0 0 0 1px rgb(var(--accent)/.18)}
+[data-skin=evolution] .dashboard-search-field input{height:40px;font-size:14px}
+[data-skin=evolution] .dashboard-search-field>svg{width:18px}
+[data-skin=evolution] .dashboard-search-results{top:calc(100% + 3px);border-radius:2px;border-top-width:2px}
+[data-skin=evolution] .search-result-icon{border:0;background:transparent}
 
 
 .settings-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
@@ -73,4 +83,3 @@
 
 .plan-editor{display:grid;gap:20px}.plan-editor>.panel-page-heading{margin-bottom:0}.plan-editor-section{margin:0}.plan-editor-section>.panel-card-header{min-height:68px}.plan-editor-section>.px-6{padding:22px}.plan-switch{display:flex;min-height:76px;align-items:center;justify-content:space-between;gap:18px;border:1px solid rgb(var(--border));padding:13px 15px}.plan-switch span{display:block}.plan-switch strong{display:block;font-size:15px}.plan-switch small{display:block;color:rgb(var(--muted-fg));font-size:13px;margin-top:3px}.plan-editor-actions{display:flex;justify-content:flex-end;gap:10px;padding:8px 0 20px}
 .php-layout{display:grid;gap:22px}.php-version-grid{display:grid;grid-template-columns:minmax(280px,.75fr) minmax(460px,1.4fr);gap:22px;align-items:start}.php-version-grid>.panel-card{height:100%}
-

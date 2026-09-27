@@ -305,7 +305,7 @@ def test_customer_destination_list_is_bound_to_account(isolated_db, monkeypatch)
     assert entered == [True]
 
 
-def test_webmail_launch_requires_direct_customer_session_for_own_account(isolated_db):
+def test_webmail_launch_allows_direct_customer_or_admin_session_for_account(isolated_db):
     from daemon.rpc_authority import Principal, authorize
 
     with write_session() as db:
@@ -320,9 +320,14 @@ def test_webmail_launch_requires_direct_customer_session_for_own_account(isolate
         "webmail.launch.create", params,
         Principal("customer", "alice-login", alice_id, 1, "session"),
     )
+    authorize(
+        "webmail.launch.create", params,
+        Principal("admin", "administrator", None, 2, "session"),
+    )
     denied = (
         Principal("customer", "alice-token", alice_id, None, "token"),
-        Principal("admin", "administrator", None, 2, "session"),
+        Principal("admin", "administrator-token", None, None, "token"),
+        Principal("reseller", "reseller", None, 4, "session", reseller_id=1),
         Principal("customer", "administrator", alice_id, 2, "session", impersonating=True),
         Principal("customer", "bob-login", alice_id + 1, 3, "session"),
     )

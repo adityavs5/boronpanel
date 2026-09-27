@@ -5,11 +5,11 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 
-from daemon import dnsprovider
+from daemon import dkim, dnsprovider
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from shared.config import settings
 from shared.db import write_session
-from shared.models import DkimKey
+from shared.models import DkimKey, MailDomain
 from shared.validation import ValidationError, validate_domain, validate_email_address
 
 
@@ -128,6 +128,27 @@ def preview(domain: str) -> dict:
             "status": status,
         })
 
+    # A mail domain must always expose DKIM in readiness, even when an older
+    # installation has a missing/inactive key. Hiding the row made the UI say
+    # nothing about DKIM and left "Add missing records" unable to repair it.
+    if not any(row["key"] == "dkim" for row in rows):
+        with write_session() as db:
+            mail_domain = db.scalar(select(MailDomain).where(MailDomain.domain == domain))
+            key = db.scalar(select(DkimKey).where(DkimKey.domain == domain))
+        if mail_domain is not None:
+            selector = key.selector if key else dkim.DEFAULT_SELECTOR
+            label = f"{selector}._domainkey"
+            if label_prefix != "@":
+                label = f"{label}.{label_prefix}"
+            existing = current.get((label, "TXT"))
+            rows.append({
+                "key": "dkim", "name": label, "type": "TXT", "expected": [],
+                "actual": list(existing.get("values") or []) if existing else [],
+                "status": "inactive",
+                "detail": (key.last_error if key and key.last_error else
+                           "DKIM signing needs activation"),
+            })
+
     dmarc_label = "_dmarc" if label_prefix == "@" else f"_dmarc.{label_prefix}"
     dmarc = current.get((dmarc_label, "TXT"))
     rows.append({
@@ -149,14 +170,22 @@ def repair(domain: str, replace_conflicts: list[str] | None = None) -> dict:
     state = preview(domain)
     if not state["managed"]:
         raise ValidationError("This domain is not covered by a Boron-managed DNS zone")
+    changed: list[str] = []
+    dkim_row = next((row for row in state["records"] if row["key"] == "dkim"), None)
+    if dkim_row and dkim_row["status"] == "inactive":
+        activated = dkim.setup_dns_signing(domain)
+        if not activated.get("signing_active"):
+            raise ValidationError(activated.get("last_error") or "DKIM signing could not be activated")
+        changed.append("dkim")
+        state = preview(domain)
+
     approved = set(replace_conflicts or [])
     allowed = {row["key"] for row in state["records"]}
     if not approved <= allowed:
         raise ValidationError("Unknown mail DNS repair selection")
-    changed: list[str] = []
     with dnsprovider.batch_cluster_notifications():
         for row in state["records"]:
-            if row["key"] == "dmarc" or row["status"] == "present":
+            if row["key"] == "dmarc" or row["status"] in ("present", "inactive"):
                 continue
             if row["status"] == "conflicting" and row["key"] not in approved:
                 continue

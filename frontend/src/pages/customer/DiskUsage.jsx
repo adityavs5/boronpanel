@@ -35,12 +35,19 @@ export default function DiskUsage() {
     placeholderData: keepPreviousData,
   })
 
-  const total = tree.data?.total_bytes ?? 0
-  const children = tree.data?.children || []
+  // Never expose the previous directory's children while a new path is being
+  // fetched. Otherwise a second click can append the same stale child name to
+  // the path and produce a misleading a/a/a breadcrumb.
+  const currentTree = tree.data?.path === path ? tree.data : null
+  const total = currentTree?.total_bytes ?? 0
+  const children = currentTree?.children || []
 
   // Breadcrumb segments derived from the drilled-into path.
   const segments = path ? path.split('/') : []
-  const drillInto = (name) => setPath(path ? `${path}/${name}` : name)
+  const drillInto = (name) => {
+    if (tree.isFetching) return
+    setPath(path ? `${path}/${name}` : name)
+  }
   const goToDepth = (i) => setPath(segments.slice(0, i + 1).join('/'))
 
   const refreshAll = () => { tree.refetch(); topFiles.refetch() }
@@ -104,7 +111,7 @@ export default function DiskUsage() {
                     </button>
                   </span>
                 ))}
-                {tree.data && (
+                {currentTree && (
                   <span className="ml-1 text-muted-foreground">
                     — total <span className="font-medium tabular-nums text-foreground">{formatBytes(total)}</span>
                   </span>
@@ -113,7 +120,7 @@ export default function DiskUsage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {tree.isLoading ? (
+            {tree.isLoading || (tree.isFetching && !currentTree) ? (
               <CenteredSpinner label="Scanning directory…" />
             ) : tree.error ? (
               <ErrorState error={tree.error} onRetry={tree.refetch} />
@@ -131,6 +138,7 @@ export default function DiskUsage() {
                           <button
                             type="button"
                             onClick={() => drillInto(c.name)}
+                            disabled={tree.isFetching}
                             className="flex min-w-0 items-center gap-2 font-medium text-accent-600 hover:underline dark:text-accent-400"
                           >
                             <Icon className="h-4 w-4 shrink-0" />

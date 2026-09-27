@@ -32,7 +32,7 @@ def _fixture_account():
         return account.id
 
 
-def test_webmail_session_requires_same_origin_direct_customer_session(isolated_db, monkeypatch):
+def test_webmail_session_requires_same_origin_direct_customer_or_admin_session(isolated_db, monkeypatch):
     account_id = _fixture_account()
     calls = []
     monkeypatch.setattr(
@@ -53,9 +53,16 @@ def test_webmail_session_requires_same_origin_direct_customer_session(isolated_d
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
 
+    admin_result = mail_router.create_webmail_session(
+        "mailone", "hello", mail_router.WebmailSessionBody(domain="example.test"),
+        _request(), Response(), Identity(1, "administrator", "admin", None, "session"),
+    )
+    assert admin_result["token"] == "opaque-launch-token"
+
     denied = [
         Identity(7, "mail-token", "customer", account_id, "token"),
-        Identity(1, "administrator", "admin", None, "session"),
+        Identity(1, "admin-token", "admin", None, "token"),
+        Identity(8, "reseller", "reseller", None, "session"),
         Identity(1, "administrator", "customer", account_id, "session", impersonator="administrator"),
     ]
     for other in denied:
@@ -67,7 +74,7 @@ def test_webmail_session_requires_same_origin_direct_customer_session(isolated_d
         except HTTPException as exc:
             assert exc.status_code == 403
         else:
-            raise AssertionError("non-direct customer identity created a webmail launch")
+            raise AssertionError("ineligible identity created a webmail launch")
 
 
 def test_webmail_session_rejects_cross_origin_before_rpc(isolated_db, monkeypatch):

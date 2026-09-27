@@ -232,6 +232,23 @@ def list_mailboxes(params: dict) -> dict:
 
 
 @serialized
+def set_mailbox_active(params: dict) -> dict:
+    domain_name = validate_domain(params["domain"])
+    local_part = validate_mailbox_local_part(params["local_part"])
+    active = params.get("active")
+    if not isinstance(active, bool):
+        raise ValidationError("active must be true or false")
+    if not active:
+        webmail_sso.revoke_mailbox(f"{local_part}@{domain_name}")
+    if not mail.set_mailbox_active(domain_name, local_part, active):
+        raise ValidationError(f"mailbox '{local_part}@{domain_name}' does not exist")
+    return {
+        "domain": domain_name, "local_part": local_part,
+        "active": active, "status": "active" if active else "suspended",
+    }
+
+
+@serialized
 def change_mailbox_password(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
