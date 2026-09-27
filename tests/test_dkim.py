@@ -1,3 +1,6 @@
+import os
+from types import SimpleNamespace
+
 import pytest
 
 from daemon import dkim
@@ -7,6 +10,9 @@ from shared.config import settings
 @pytest.fixture()
 def dkim_tmp_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "dkim_base_dir", str(tmp_path / "dkim"))
+    # Key-generation unit tests intentionally cover the pre-install path.
+    # A host-level OpenDKIM package must not change their ownership model.
+    monkeypatch.setattr(dkim, "_opendkim_gid", lambda: None)
     return tmp_path
 
 
@@ -15,6 +21,24 @@ def test_generate_keypair_creates_private_key(dkim_tmp_dir):
     assert path.exists()
     assert path.read_text().startswith("-----BEGIN")
     assert oct(path.stat().st_mode)[-3:] == "600"
+
+
+def test_socket_directory_is_owned_by_opendkim_and_not_group_writable(tmp_path, monkeypatch):
+    socket_path = tmp_path / "postfix" / "opendkim" / "opendkim.sock"
+    ownership = []
+    monkeypatch.setattr(dkim, "SOCKET_PATH", socket_path)
+    monkeypatch.setattr(
+        dkim.pwd,
+        "getpwnam",
+        lambda username: SimpleNamespace(pw_uid=123, pw_gid=456) if username == "opendkim" else None,
+    )
+    monkeypatch.setattr(dkim.os, "chown", lambda path, uid, gid: ownership.append((path, uid, gid)))
+
+    dkim._ensure_socket_directory()
+
+    assert socket_path.parent.is_dir()
+    assert ownership == [(socket_path.parent, 123, 456)]
+    assert os.stat(socket_path.parent).st_mode & 0o777 == 0o750
 
 
 def test_generate_keypair_is_idempotent(dkim_tmp_dir):

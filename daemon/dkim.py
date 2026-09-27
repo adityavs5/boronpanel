@@ -5,6 +5,7 @@ import datetime as dt
 import grp
 import logging
 import os
+import pwd
 import shutil
 from pathlib import Path
 
@@ -50,6 +51,22 @@ def _opendkim_gid() -> int | None:
         return grp.getgrnam("opendkim").gr_gid
     except KeyError:
         return None
+
+
+def _ensure_socket_directory() -> None:
+    """Create the Postfix-chroot socket directory for the milter owner.
+
+    Postfix only needs group traversal and access to the group-enabled socket.
+    OpenDKIM itself must own the directory so it can create that socket while
+    the directory stays closed to every other account.
+    """
+    try:
+        account = pwd.getpwnam("opendkim")
+    except KeyError as exc:
+        raise DkimError("OpenDKIM service account is unavailable") from exc
+    SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    os.chown(SOCKET_PATH.parent, account.pw_uid, account.pw_gid)
+    os.chmod(SOCKET_PATH.parent, 0o750)
 
 
 def generate_keypair(domain: str, selector: str = DEFAULT_SELECTOR) -> Path:
@@ -157,11 +174,7 @@ def configure_signer() -> dict:
         raise DkimError("Postfix service account is unavailable")
     if "opendkim" not in membership.stdout.split():
         run(["usermod", "-a", "-G", "opendkim", "postfix"], timeout=20, check=True)
-    SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
-    gid = _opendkim_gid()
-    if gid is not None:
-        os.chown(SOCKET_PATH.parent, 0, gid)
-    os.chmod(SOCKET_PATH.parent, 0o750)
+    _ensure_socket_directory()
     _write_signer_tables()
     _ensure_main_include()
     validation = run(["opendkim", "-n", "-x", "/etc/opendkim.conf"], timeout=20)
