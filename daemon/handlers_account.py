@@ -209,6 +209,11 @@ def create_account(params: dict) -> dict:
                 f"{settings.home_base}/{username}/public_html",
                 primary_domain,
             )
+            # OLS opens per-vhost logs as its shared worker identity. Create
+            # the private account log directory and its narrow ACL before
+            # validating the first vhost, otherwise a new primary domain can
+            # fail openlitespeed -t before the later migration helper runs.
+            sysops.ensure_web_logs(username)
             ols.provision_vhost(account_snapshot)
             # Normal DirectAdmin/cPanel-style account creation provisions an
             # authoritative zone with the primary website. Archive importers

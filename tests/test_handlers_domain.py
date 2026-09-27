@@ -9,9 +9,12 @@ from shared.models import Domain, DnsZone
 
 @pytest.fixture()
 def stub_sysops(monkeypatch):
+    log_calls = []
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
     monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
+    monkeypatch.setattr(hd.sysops, "ensure_web_logs", lambda username: log_calls.append(username))
+    return log_calls
 
 
 @pytest.fixture()
@@ -71,6 +74,7 @@ def test_add_domain_success_calls_provision_vhost(isolated_db, stub_sysops, stub
 
     assert result["domain"] == "demo1.example"
     assert result["dns_zone_created"] is True
+    assert stub_sysops == ["demo1"]
     assert stub_zone_lifecycle["create"] == [("demo1", "demo1.example")]
     assert stub_ols["provision"] == ["demo1"]
 

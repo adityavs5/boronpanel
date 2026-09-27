@@ -169,6 +169,10 @@ def add_domain(params: dict) -> dict:
         parent_zone = _find_parent_zone(domain_name)
         dns_label = _subdomain_label(domain_name, parent_zone) if parent_zone else None
         ensure_docroot(username, docroot, domain_name)
+        # Accounts created without a primary domain do not yet have the OLS
+        # log directory. Provision it before the first later-added vhost is
+        # validated; this is idempotent for ordinary existing accounts.
+        sysops.ensure_web_logs(username)
         from daemon import ipmanager
 
         site_ip = ipmanager.address_for_account(account_snapshot.id)

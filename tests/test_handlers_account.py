@@ -49,6 +49,7 @@ def stub_sysops(monkeypatch):
     monkeypatch.setattr(ha.sysops, "unlock_user", unlock_user)
     monkeypatch.setattr(ha.sysops, "delete_linux_user", delete_linux_user)
     monkeypatch.setattr(ha.sysops, "remove_quota", remove_quota)
+    monkeypatch.setattr(ha.sysops, "ensure_web_logs", lambda username: calls.append(("ensure_web_logs", username)))
     monkeypatch.setattr(ha.handlers_domain, "ensure_docroot", lambda username, docroot, domain_name=None: None)
     monkeypatch.setattr(ha.ols, "provision_vhost", lambda account: None)
     zone_calls = {"create": [], "delete": []}
@@ -73,6 +74,7 @@ def test_create_account_happy_path(isolated_db, stub_sysops):
     assert result["uid"] == 5001
     assert "initial_password" in result
     assert ("create_linux_user", "demo1") in stub_sysops
+    assert ("ensure_web_logs", "demo1") in stub_sysops
     assert result["dns_zone_created"] is True
     assert stub_sysops.zone_calls["create"] == [("demo1", "demo1.example")]
 
