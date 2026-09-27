@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Globe, Plus, Trash2, Settings, MoreHorizontal, Copy, PauseCircle, PlayCircle, RefreshCw } from 'lucide-react'
+import { Globe, Plus, Trash2, Settings, MoreHorizontal, Copy, PauseCircle, PlayCircle, RefreshCw, Network, FolderTree } from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useDomainContext } from '@/hooks/useDomainContext'
 import { formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
@@ -135,7 +136,6 @@ export default function Domains({ subdomainsOnly = false }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [domain, setDomain] = useState('')
   const [kind,setKind]=useState(subdomainsOnly ? 'subdomain' : 'addon')
-  const [parent,setParent]=useState('')
   const [docrootMode,setDocrootMode]=useState('default')
   const [customDocroot,setCustomDocroot]=useState('')
   const [toDelete, setToDelete] = useState(null)
@@ -148,10 +148,8 @@ export default function Domains({ subdomainsOnly = false }) {
     enabled: !!username,
   })
 
-  useEffect(() => {
-    const parents = (data?.domains || []).filter(item => item.kind !== 'subdomain')
-    if (kind === 'subdomain' && !parent && parents.length) setParent(parents[0].domain)
-  }, [data?.domains, kind, parent])
+  const parentDomains = (data?.domains || []).filter(item => item.kind !== 'subdomain' && item.kind !== 'parked')
+  const [parent, setParent] = useDomainContext(username, parentDomains)
 
   const createMut = useMutation({
     mutationFn: (body) => post(`/api/v1/accounts/${username}/domains`, body),
@@ -271,6 +269,8 @@ export default function Domains({ subdomainsOnly = false }) {
   ]
 
   const visibleDomains = subdomainsOnly ? (data?.domains || []).filter((item) => item.kind === 'subdomain') : data?.domains
+  const fullSubdomain = `${domain.trim() || 'subdomain'}.${parent || 'example.com'}`
+  const parentDocroot = parentDomains.find((item) => item.domain === parent)?.docroot || `/home/${username}/public_html`
 
   return (
     <div>
@@ -301,9 +301,9 @@ export default function Domains({ subdomainsOnly = false }) {
       {!subdomainsOnly && <ParkedDomainsCard username={username} domains={data?.domains} />}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent size="sm">
+        <DialogContent size={kind === 'subdomain' ? 'lg' : 'sm'} className={kind === 'subdomain' ? 'subdomain-dialog' : undefined}>
           <DialogHeader>
-            <DialogTitle>{subdomainsOnly ? 'Add subdomain' : 'Add domain'}</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">{kind === 'subdomain' && <Network className="h-5 w-5 text-accent" />}{kind === 'subdomain' ? 'Add New Subdomain' : 'Add domain'}</DialogTitle>
           </DialogHeader>
           <form
             onSubmit={(e) => {
@@ -312,19 +312,23 @@ export default function Domains({ subdomainsOnly = false }) {
             }}
           >
             <DialogBody className="space-y-4">
-              {!subdomainsOnly && <FormField label="Site type" htmlFor="domain-kind"><Select id="domain-kind" value={kind} onChange={e=>{setKind(e.target.value);setDomain('');setParent(data?.domains?.[0]?.domain||'')}}><option value="addon">Domain</option><option value="subdomain" disabled={!data?.domains?.length}>Subdomain</option></Select></FormField>}
-              <FormField label={kind==='subdomain'?'Subdomain':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter the name first, then choose the parent domain that follows it.':'Enter a complete domain name.'}>
-                {kind === 'subdomain' ? <div className="flex min-w-0 items-stretch">
-                  <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="blog" required className="min-w-0 rounded-r-none" />
-                  <Select id="subdomain-parent" aria-label="Parent domain" value={parent} onChange={e=>setParent(e.target.value)} className="min-w-0 flex-1 rounded-l-none border-l-0">
-                    {(data?.domains||[]).filter(d=>d.kind!=='subdomain').map(d=><option key={d.domain} value={d.domain}>.{d.domain}</option>)}
-                  </Select>
+              {!subdomainsOnly && <FormField label="Site type" htmlFor="domain-kind"><Select id="domain-kind" value={kind} onChange={e=>{setKind(e.target.value);setDomain('');setParent(parentDomains[0]?.domain||'')}}><option value="addon">Domain</option><option value="subdomain" disabled={!parentDomains.length}>Subdomain</option></Select></FormField>}
+              <FormField label={kind==='subdomain'?'Subdomain':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter the new name on the left. The selected parent domain remains visible beside it.':'Enter a complete domain name.'}>
+                {kind === 'subdomain' ? <div className="subdomain-address-composer">
+                  <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="blog" required className="subdomain-label-input" autoComplete="off" spellCheck={false} />
+                  <div className="subdomain-parent-control"><span aria-hidden="true">.</span><Select id="subdomain-parent" aria-label="Parent domain" value={parent} onChange={e=>setParent(e.target.value)}>
+                    {parentDomains.map(d=><option key={d.domain} value={d.domain}>{d.domain}</option>)}
+                  </Select></div>
                 </div> : <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" required />}
               </FormField>
-              {kind==='subdomain'&&<FormField label="Document root" htmlFor="subdomain-docroot" hint="A separate folder is recommended for an independent site."><Select id="subdomain-docroot" value={docrootMode} onChange={e=>setDocrootMode(e.target.value)}><option value="default">Separate website folder</option><option value="parent">Parent domain’s document root</option><option value="custom">Choose an account folder</option></Select></FormField>}
+              {kind==='subdomain'&&<div className="subdomain-address-preview"><Globe aria-hidden="true" /><span>Full address</span><strong>{fullSubdomain}</strong></div>}
+              {kind==='subdomain'&&<fieldset className="subdomain-root-options"><legend>Document root</legend>
+                <label className={docrootMode==='default'?'selected':''}><input type="radio" name="document-root-mode" value="default" checked={docrootMode==='default'} onChange={e=>setDocrootMode(e.target.value)}/><span><strong>Separate website folder</strong><small>Recommended for an independent website</small><code>/home/{username}/{fullSubdomain}/public_html</code></span></label>
+                <label className={docrootMode==='parent'?'selected':''}><input type="radio" name="document-root-mode" value="parent" checked={docrootMode==='parent'} onChange={e=>setDocrootMode(e.target.value)}/><span><strong>Use the parent website</strong><small>Serve the same files as {parent || 'the parent domain'}</small><code>{parentDocroot}</code></span></label>
+                <label className={docrootMode==='custom'?'selected':''}><input type="radio" name="document-root-mode" value="custom" checked={docrootMode==='custom'} onChange={e=>setDocrootMode(e.target.value)}/><span><strong>Choose a custom folder</strong><small>Use an account-relative document root</small></span></label>
+              </fieldset>}
               {kind==='subdomain'&&docrootMode==='custom'&&<FormField label="Account-relative folder" htmlFor="subdomain-custom-docroot" hint={`Stored inside /home/${username}.`} required><Input id="subdomain-custom-docroot" value={customDocroot} onChange={e=>setCustomDocroot(e.target.value)} placeholder="sites/blog/public_html" required /></FormField>}
-              <p className="text-sm text-muted-foreground">A DNS address record is added automatically through the parent zone’s configured DNS provider, including Cloudflare.</p>
-              {domain.trim()&&<p className="break-all text-sm font-medium">{kind==='subdomain'?`${domain.trim()}.${parent}`:domain.trim()}</p>}
+              {kind==='subdomain'?<div className="subdomain-dns-note"><FolderTree aria-hidden="true" /><p><strong>DNS is configured automatically.</strong><span>The address record is added through the parent zone’s active provider, including Cloudflare.</span></p></div>:<p className="text-sm text-muted-foreground">A DNS zone and website address records are added automatically.</p>}
             </DialogBody>
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>

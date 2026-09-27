@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ScrollText, RefreshCw, Server, FileCode, Search, X, Download, Activity } from 'lucide-react'
 import { get } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useDomainContext } from '@/hooks/useDomainContext'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -23,7 +24,6 @@ const LOG_TYPES = [
 export default function Logs() {
   const username = useAccountUsername()
   const [type, setType] = useState('error')
-  const [domain, setDomain] = useState('') // '' = primary domain (server default)
   const [severityInput, setSeverityInput] = useState('')
   const [severity, setSeverity] = useState('') // applied filter
   const [segment, setSegment] = useState('')
@@ -38,6 +38,7 @@ export default function Logs() {
     enabled: !!username,
   })
   const domains = domainsData?.domains || []
+  const [domain, setDomain] = useDomainContext(username, domains)
 
   const effectiveDomain = type !== 'php' ? domain : ''
   const { data, isLoading, isFetching, error, refetch } = useQuery({
@@ -113,7 +114,6 @@ export default function Logs() {
                   onChange={(e) => { setDomain(e.target.value); setSegment('') }}
                   className="sm:max-w-xs"
                 >
-                  <option value="">Primary domain (default)</option>
                   {domains.map((d) => (
                     <option key={d.domain} value={d.domain}>{d.domain}</option>
                   ))}

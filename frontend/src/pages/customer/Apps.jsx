@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Boxes, Plus, MoreHorizontal, Play, Square, RotateCw, ScrollText, Trash2, RefreshCw,
 } from 'lucide-react'
 import { get, post, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useDomainContext } from '@/hooks/useDomainContext'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
@@ -72,6 +73,13 @@ function AppsPanel({ username, type }) {
     enabled: !!username && createOpen,
   })
   const domains = domainsQuery.data?.domains || []
+  const [workingDomain, setWorkingDomain] = useDomainContext(username, domains)
+
+  useEffect(() => {
+    if (createOpen && workingDomain && form.domain !== workingDomain) {
+      setForm((current) => ({ ...current, domain: workingDomain }))
+    }
+  }, [createOpen, workingDomain, form.domain])
 
   const setField = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }))
 
@@ -255,7 +263,7 @@ function AppsPanel({ username, type }) {
           >
             <DialogBody className="space-y-4">
               <FormField label="Domain" required hint="The domain that will proxy to this application.">
-                <Select value={form.domain} onChange={setField('domain')} required disabled={domainsQuery.isLoading}>
+                <Select value={form.domain} onChange={(event) => { setWorkingDomain(event.target.value); setField('domain')(event) }} required disabled={domainsQuery.isLoading}>
                   <option value="" disabled>
                     {domainsQuery.isLoading ? 'Loading domains…' : 'Select a domain'}
                   </option>

@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowRightLeft, Construction, ExternalLink, FileWarning, Gauge, Shield, Zap } from 'lucide-react'
 import { get } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useDomainContext } from '@/hooks/useDomainContext'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Select } from '@/components/ui/Select'
 import { Card, CardContent } from '@/components/ui/Card'
@@ -23,14 +23,13 @@ const features = {
 export default function DomainFeature({ feature }) {
   const username = useAccountUsername()
   const definition = features[feature]
-  const [domain, setDomain] = useState('')
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['domains', username],
     queryFn: () => get(`/api/v1/accounts/${username}/domains`),
     enabled: !!username,
   })
   const domains = (data?.domains || []).filter((item) => item.kind !== 'parked')
-  useEffect(() => { if (!domain && domains[0]) setDomain(domains[0].domain) }, [domain, domains])
+  const [domain, setDomain] = useDomainContext(username, domains)
   if (!definition) return null
   const View = definition.view
 

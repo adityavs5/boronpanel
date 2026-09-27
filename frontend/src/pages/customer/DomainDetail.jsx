@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -31,6 +31,7 @@ import { ErrorState, EmptyState } from '@/components/ui/States'
 import { ProgressBar } from '@/components/ui/Progress'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useDomainContext } from '@/hooks/useDomainContext'
 
 const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV', 'CAA']
 // Record types Cloudflare can proxy (orange cloud).
@@ -2035,6 +2036,8 @@ export default function DomainDetail() {
     enabled: !!username,
   })
   const item = data?.domains?.find((entry) => entry.domain === domain)
+  const [, setWorkingDomain] = useDomainContext(username, data?.domains || [])
+  useEffect(() => { if (domain) setWorkingDomain(domain) }, [domain, setWorkingDomain])
 
   return (
     <div className="domain-settings-page">

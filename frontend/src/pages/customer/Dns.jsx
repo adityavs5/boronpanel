@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Network, Plus, Pencil, Trash2, Cloud, CheckCircle2, AlertTriangle, Wand2 } from 'lucide-react'
 import { get, post, put, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useDomainContext } from '@/hooks/useDomainContext'
 import { Badge } from '@/components/ui/Badge'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
@@ -21,7 +22,6 @@ const linesToList = (text) => (text || '').split('\n').map((s) => s.trim()).filt
 export default function Dns({ emailOnly = false }) {
   const username = useAccountUsername()
   const qc = useQueryClient()
-  const [domain, setDomain] = useState('')
   const [dialog, setDialog] = useState(null) // {mode, subdomain, type, ttl, values}
   const [toDelete, setToDelete] = useState(null)
   const [dmarc, setDmarc] = useState({ policy: 'none', subdomain_policy: 'none', rua: '' })
@@ -33,11 +33,7 @@ export default function Dns({ emailOnly = false }) {
     enabled: !!username,
   })
   const domains = domainsQuery.data?.domains || []
-
-  // Default to the first domain once the list loads.
-  useEffect(() => {
-    if (!domain && domains.length) setDomain(domains[0].domain)
-  }, [domain, domains])
+  const [domain, setDomain] = useDomainContext(username, domains)
 
   // --- records for the selected domain ------------------------------------
   const { data, isLoading, error, refetch } = useQuery({

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useDomainContext } from '@/hooks/useDomainContext'
 import { formatMB } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
@@ -1122,7 +1123,6 @@ export default function Email({ mode = 'accounts' }) {
   const requestedTab = searchParams.get('tab')
   const activeSection = allowedSections.has(requestedTab) ? requestedTab : config.sections[0][0]
   const username = useAccountUsername()
-  const [domain, setDomain] = useState('')
 
   const domainsQ = useQuery({
     queryKey: ['domains', username],
@@ -1130,10 +1130,7 @@ export default function Email({ mode = 'accounts' }) {
     enabled: !!username,
   })
   const domains = domainsQ.data?.domains || []
-
-  useEffect(() => {
-    if (!domain && domains.length) setDomain(domains[0].domain)
-  }, [domains, domain])
+  const [domain, setDomain] = useDomainContext(username, domains)
 
   const selectSection = (section) => setSearchParams((previous) => {
     const next = new URLSearchParams(previous)

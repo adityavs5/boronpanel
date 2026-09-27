@@ -3,19 +3,19 @@ import { Archive, CalendarClock, Cloud, DatabaseBackup, Download, FileArchive, H
 
 const customerGroups = {
   evolution: [
-    ['Account Manager', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns']],
+    ['Account Manager', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns', '/php']],
     ['E-mail Manager', ['/email', '/email?webmail=1', '/email/settings', '/email/dns', '/email/spam', '/email/migration']],
     ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis', '/git', '/cron']],
     ['Site Tools', ['/files', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
-    ['Advanced Tools', ['/php', '/ssh', '/terminal', '/logs', '/devtools', '/appearance']],
+    ['Advanced Tools', ['/ssh', '/terminal', '/logs', '/devtools', '/appearance']],
     ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security']],
   ],
   'paper-lantern': [
-    ['Domains', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns']],
+    ['Domains', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns', '/php']],
     ['Email', ['/email', '/email?webmail=1', '/email/settings', '/email/dns', '/email/spam', '/email/migration']],
     ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis', '/git', '/cron']],
     ['Site Tools', ['/files', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
-    ['Advanced Tools', ['/php', '/ssh', '/terminal', '/logs', '/devtools', '/appearance']],
+    ['Advanced Tools', ['/ssh', '/terminal', '/logs', '/devtools', '/appearance']],
     ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security']],
   ],
 }

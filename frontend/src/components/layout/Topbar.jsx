@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useLocation, Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Palette, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck } from 'lucide-react'
+import { Palette, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck, Globe2, Search } from 'lucide-react'
 import { ThemeSelector } from '@/components/themes/ThemeSelector'
 import { useBranding } from '@/hooks/useBranding'
 import { get } from '@/lib/api'
@@ -10,6 +10,8 @@ import { useAuth } from '@/store/auth'
 import { titleCase } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { useAccountUsername } from '@/hooks/useAccount'
+import { useDomainContext } from '@/hooks/useDomainContext'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator,
@@ -76,6 +78,49 @@ function AccountSwitcher() {
   )
 }
 
+function DomainSwitcher() {
+  const username = useAccountUsername()
+  const [query, setQuery] = useState('')
+  const { data, isLoading } = useQuery({
+    queryKey: ['domains', username],
+    queryFn: () => get(`/api/v1/accounts/${encodeURIComponent(username)}/domains`),
+    enabled: !!username,
+    staleTime: 30_000,
+    retry: false,
+  })
+  const domains = (data?.domains || []).filter((item) => item.kind !== 'parked').sort((left, right) => {
+    const rank = { primary: 0, addon: 1, subdomain: 2 }
+    return (rank[left.kind] ?? 3) - (rank[right.kind] ?? 3) || left.domain.localeCompare(right.domain)
+  })
+  const [domain, setDomain] = useDomainContext(username, domains)
+  const needle = query.trim().toLowerCase()
+  const visible = needle ? domains.filter((item) => item.domain.toLowerCase().includes(needle)) : domains
+
+  return <DropdownMenu onOpenChange={(open) => { if (!open) setQuery('') }}>
+    <DropdownMenuTrigger asChild>
+      <button className="domain-context-trigger" aria-label="Choose working domain" disabled={!username || isLoading || domains.length === 0}>
+        <Globe2 aria-hidden="true" />
+        <span>{isLoading ? 'Loading domains…' : domain || 'No domains'}</span>
+        <ChevronsUpDown aria-hidden="true" />
+      </button>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent align="end" className="domain-context-menu">
+      <DropdownMenuLabel>Working domain</DropdownMenuLabel>
+      <div className="domain-context-search" onKeyDown={(event) => event.stopPropagation()}>
+        <Search aria-hidden="true" />
+        <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter domains" aria-label="Filter domains" autoComplete="off" />
+      </div>
+      <div className="domain-context-list">
+        {visible.map((item) => <DropdownMenuItem key={item.domain} onSelect={() => setDomain(item.domain)}>
+          <span className="min-w-0 flex-1 truncate">{item.domain}</span>
+          {item.domain === domain && <Check className="h-4 w-4 text-accent" />}
+        </DropdownMenuItem>)}
+        {!visible.length && <div className="px-3 py-4 text-sm text-muted-foreground">No matching domains</div>}
+      </div>
+    </DropdownMenuContent>
+  </DropdownMenu>
+}
+
 export function Topbar() {
   const theme = useUI((s) => s.theme)
   const toggleTheme = useUI((s) => s.toggleTheme)
@@ -104,7 +149,9 @@ export function Topbar() {
       </div>
 
       <div className="flex items-center gap-2">
-        <span className="access-level"><span>Access Level</span><strong>{isAdmin ? 'Admin' : isReseller ? 'Reseller' : 'User'}</strong></span>
+        {isAdmin || isReseller
+          ? <span className="access-level"><span>Access Level</span><strong>{isAdmin ? 'Admin' : 'Reseller'}</strong></span>
+          : <DomainSwitcher />}
         <ThemeSelector />
 
 
