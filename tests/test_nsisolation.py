@@ -168,11 +168,10 @@ def test_teardown_account_calls_unmount_and_disable(fake_lsnsctl, isolated_db):
     account = Account(username="nstest1", status="terminating", uid=2000, gid=2000)
     nsisolation.teardown_account(account)
     subcommands = [c[-1] for c in calls]
-    assert "unmount" in subcommands
-    assert "disable-uid" in subcommands
+    assert subcommands == ["disable-uid", "unmount"]
 
 
-def test_teardown_account_one_failure_does_not_block_the_other(monkeypatch, isolated_db):
+def test_teardown_account_one_failure_runs_both_and_fails_closed(monkeypatch, isolated_db):
     calls = []
 
     def fake_run(args, timeout=15):
@@ -183,9 +182,9 @@ def test_teardown_account_one_failure_does_not_block_the_other(monkeypatch, isol
 
     monkeypatch.setattr(nsisolation, "run", fake_run)
     account = Account(username="nstest1", status="terminating", uid=2000, gid=2000)
-    nsisolation.teardown_account(account)  # must not raise despite unmount failing
-    assert "unmount" in calls
-    assert "disable-uid" in calls
+    with pytest.raises(nsisolation.NamespaceError, match="boom"):
+        nsisolation.teardown_account(account)
+    assert calls == ["disable-uid", "unmount"]
 
 
 def test_teardown_account_no_uid_is_noop():

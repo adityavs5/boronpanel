@@ -167,7 +167,10 @@ def unmount_uid(uid: int) -> None:
     processes still hold a reference to the old one -- safe to call even
     if this uid was never namespaced at all."""
     result = run([LSNSCTL_BIN, "--uid", str(uid), "unmount"], timeout=15)
-    _audit_lsnsctl("unmount", uid, result.ok, "" if result.ok else (result.stderr.strip() or result.stdout.strip()))
+    detail = "" if result.ok else (result.stderr.strip() or result.stdout.strip())
+    _audit_lsnsctl("unmount", uid, result.ok, detail)
+    if not result.ok:
+        raise NamespaceError(f"lsnsctl unmount failed for uid {uid}: {detail}")
 
 
 def get_status(username: str) -> dict:
@@ -233,14 +236,22 @@ def teardown_account(account: Account) -> None:
     unambiguously identified."""
     if account.uid is None:
         return
-    try:
-        unmount_uid(account.uid)
-    except Exception:
-        logger.exception("lsnsctl unmount failed for '%s' (uid %s)", account.username, account.uid)
+    errors = []
+    # Disable first: lsnsctl restarts the account external application while
+    # changing eligibility. Unmounting first lets that restart create a fresh
+    # persisted namespace after cleanup, which can then survive UID deletion.
     try:
         disable_uid(account.uid)
-    except Exception:
+    except Exception as exc:
+        errors.append(str(exc))
         logger.exception("lsnsctl disable-uid failed for '%s' (uid %s)", account.username, account.uid)
+    try:
+        unmount_uid(account.uid)
+    except Exception as exc:
+        errors.append(str(exc))
+        logger.exception("lsnsctl unmount failed for '%s' (uid %s)", account.username, account.uid)
+    if errors:
+        raise NamespaceError("; ".join(errors))
 
 
 # --- Step 3/4: admin bulk-enable job (async, same table+executor pattern as
