@@ -1,6 +1,6 @@
 # Mail, DNS, resource isolation, security and stack-management plan
 
-Status: **implemented as the v3.0.0 release candidate; final release verification is in progress** (2026-09-26).
+Status: **implemented, released and deployed in v3.0.1** (2026-09-27).
 
 This plan covers the requested webmail, database, DNS, branding, backup-mailbox, resource-control, filesystem-isolation, database-governor, firewall/WAF, OpenLiteSpeed and server-stack work. It is a large platform change. The implementation is divided into independently verifiable work packages, with high-risk enforcement introduced in monitor or canary mode before it becomes a server default.
 
@@ -421,3 +421,38 @@ The approved implementation uses the Ubuntu-native controls in this plan. It doe
 The deliberately staged defaults remain: DB Governor begins in Monitor, filesystem isolation is visible and canaried before wider enforcement, WAF begins in Detect, and an upgraded server keeps its existing DNS/provider assignments. OLS workers may take one reconciliation interval to enter their account cgroup. Stack jobs preserve configuration and stop on failed validation; package downgrades and cross-series MariaDB rollback require an operator snapshot or disposable-server migration workflow.
 
 The repository-level security diff review covered every changed runtime file and reported no high or critical findings. Its medium database-governor lifecycle finding and low temporary-policy expiry finding were corrected before the release candidate; dedicated mail-certificate separation and DKIM/SPF ownership defects found during architecture review were also corrected.
+
+## 11. Final release and deployment record
+
+The complete implementation shipped in the signed `v3.0.0` release. Live
+upgrade verification then exposed an OpenDKIM socket-directory ownership bug:
+the directory was group-readable but not writable by the service that creates
+the socket. The permanent `v3.0.1` correction gives that private `0750`
+directory to `opendkim:opendkim`, retains Postfix's narrow supplementary-group
+access, and includes regression coverage for the ownership contract.
+
+Final evidence on 2026-09-27:
+
+- `v3.0.1` is tagged at commit `a4b7e0b` and published with the archive,
+  SHA256 checksum and Ed25519 signature.
+- The mandatory release gate passed 3,847 tests with 9 environment-dependent
+  skips and no failures; the production React build and release-artifact
+  self-verification also passed.
+- Signed self-update job 18 upgraded the server from `2.0.1` to `3.0.0` with
+  checksum/signature verification, backup, staged extraction, migrations,
+  service restart and API/daemon health checks.
+- Signed self-update job 19 upgraded `3.0.0` to `3.0.1`; its detached finalizer
+  recorded `runtime-migration: ok`, restarted both Boron services, passed the
+  API/daemon health check and completed without rollback.
+- `/opt/boron` resolves to `/opt/boron-3.0.1`; Boron API, provision daemon,
+  OpenLiteSpeed, MariaDB, Postfix, Dovecot and OpenDKIM are active. The API
+  health endpoint returns HTTP 200, Dovecot and Postfix configuration checks
+  pass, the Roundcube SSO plugin is installed, dedicated mail TLS files have
+  the intended permissions, and the OpenDKIM socket is live inside the Postfix
+  chroot.
+
+Public-provider outcomes that require an operator-owned external recipient or
+third-party credentials remain environment-dependent and are not represented
+as automated proof. The released implementation provides the local signing,
+DNS/provider reconciliation, diagnostics and test hooks needed to run those
+checks without weakening the deployment's security boundaries.
