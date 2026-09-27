@@ -1,7 +1,7 @@
 # Account resource enforcement and isolation plan
 
 Date: 2026-09-27
-Status: **P0–P4 implemented; live verification and v3.0.3 release in progress. P5 remains a separate optional phase.**
+Status: **P0–P4 implemented and live-verified. v3.0.3 release gate pending. P5 remains a separate optional phase.**
 
 ## 1. Objective and boundaries
 
