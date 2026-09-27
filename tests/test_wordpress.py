@@ -31,6 +31,7 @@ def _fake_wp_zip() -> bytes:
     (0, '{"success":false,"password":"private-password"}', ""),
 ])
 def test_install_helper_errors_never_expose_subprocess_output(monkeypatch, returncode, stdout, stderr):
+    monkeypatch.setattr(wp.account_exec, "wrap", lambda username, args, **kwargs: args)
     monkeypatch.setattr(wp, "run", lambda args, **kwargs: ProcResult(
         args=args, returncode=returncode, stdout=stdout, stderr=stderr))
     with pytest.raises(wp.WordPressError) as failed:

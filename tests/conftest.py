@@ -46,6 +46,33 @@ def _isolate_request_logs(tmp_path_factory, monkeypatch):
     logsetup.reset()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_privileged_account_side_effects(monkeypatch, request):
+    """Keep mocked hosting identities from mutating the live test host.
+
+    Many control-plane unit tests deliberately replace create_linux_user with
+    a fake UID and never create a passwd entry or home. New account hooks must
+    therefore be stubbed centrally, while their dedicated unit suites retain
+    the real function under test. Live integration coverage is performed by
+    the disposable-account release probe, not by fictional demo1 users.
+    """
+    filename = request.node.path.name
+
+    from daemon import cgroups, filebrowser, nsisolation, resource_manager, sysops
+
+    if filename != "test_sysops.py":
+        monkeypatch.setattr(
+            sysops, "ensure_web_logs", lambda username: f"/home/{username}/logs"
+        )
+    if filename not in {"test_cgroups.py", "test_resource_manager.py", "test_resource_limits.py"}:
+        monkeypatch.setattr(cgroups, "apply_limits", lambda *args, **kwargs: None)
+        monkeypatch.setattr(resource_manager, "apply_account", lambda *args, **kwargs: None)
+    if filename != "test_nsisolation.py":
+        monkeypatch.setattr(nsisolation, "enable_for_account", lambda account: None)
+    if filename != "test_filebrowser_accounts.py":
+        monkeypatch.setattr(filebrowser, "add_source_for_account", lambda account: None)
+
+
 @pytest.fixture()
 def isolated_db(tmp_path, monkeypatch):
     """Point the control-plane DB at a throwaway SQLite file for this test
