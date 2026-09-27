@@ -58,6 +58,8 @@ def test_apply_limits_targets_canonical_user_slice(isolated_db, fake_systemctl, 
     assert "MemoryMax=1024M" in command
     assert "MemorySwapMax=0" in command
     assert "TasksMax=75" in command
+    assert command.index("IOReadBandwidthMax=") < command.index("IOReadBandwidthMax=/dev/vda 100M")
+    assert command.index("IOWriteBandwidthMax=") < command.index("IOWriteBandwidthMax=/dev/vda 100M")
     assert "IOReadBandwidthMax=/dev/vda 100M" in command
     assert "CPUAccounting=yes" in command
 

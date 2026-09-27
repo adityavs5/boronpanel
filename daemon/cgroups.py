@@ -196,9 +196,17 @@ def apply_policy(username: str, policy: dict, *, uid: int | None = None) -> None
         f"MemoryMax={'infinity' if maximum is None else f'{int(maximum)}M'}",
         "MemorySwapMax=0",
         f"TasksMax={'infinity' if nproc is None else int(nproc)}",
+        # systemd's per-device properties are lists. Clear each list in the
+        # same SetUnitProperties transaction before adding the detected
+        # device, otherwise a provider's stale vda/sda entry survives after a
+        # disk migration or upgrade and the dashboard overstates coverage.
+        "IOReadBandwidthMax=",
         f"IOReadBandwidthMax={device} {bandwidth(policy.get('io_read_bps'))}",
+        "IOWriteBandwidthMax=",
         f"IOWriteBandwidthMax={device} {bandwidth(policy.get('io_write_bps'))}",
+        "IOReadIOPSMax=",
         f"IOReadIOPSMax={device} {'infinity' if policy.get('io_read_iops') is None else int(policy['io_read_iops'])}",
+        "IOWriteIOPSMax=",
         f"IOWriteIOPSMax={device} {'infinity' if policy.get('io_write_iops') is None else int(policy['io_write_iops'])}",
         "CPUAccounting=yes",
         "MemoryAccounting=yes",
