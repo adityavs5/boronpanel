@@ -349,7 +349,7 @@ def test_overview_reports_evidence_states_instead_of_hardcoded_booleans(fake_lsn
     with write_session() as session:
         make_account(session, username="acct1", uid=2000)
     config = tmp_path / "httpd_config.conf"
-    config.write_text("CGIRLimit {\n cgroups 1\n}\n")
+    config.write_text("CGIRLimit {\n cgroups 2\n}\n")
     resource_root = tmp_path / "user-2000.slice"
     resource_root.mkdir()
     monkeypatch.setattr(nsisolation, "OLS_CONFIG_PATH", config)

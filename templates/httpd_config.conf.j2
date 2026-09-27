@@ -119,7 +119,10 @@ perClientConnLimit{
 CGIRLimit{
     # Native OLS cgroup placement occurs before CGI/PHP executes and uses the
     # owner's user-UID.slice, shared with PAM/logind login sessions.
-    cgroups                                1
+    {# OpenLiteSpeed's server-level tri-state uses 0=Disabled, 1=Off,
+       2=On (the installed WebAdmin disable_off_on mapping and lssetup
+       helper are authoritative for this build). #}
+    cgroups                                2
     maxCGIInstances                         20
     minUID                                  {{ min_uid }}
     minGID                                  {{ min_gid }}

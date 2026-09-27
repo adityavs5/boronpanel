@@ -388,7 +388,8 @@ def isolation_overview(params: dict | None = None) -> dict:
         host_mount_namespace = None
     try:
         ols_config = OLS_CONFIG_PATH.read_text()
-        cgroups_enabled = bool(re.search(r"CGIRLimit\s*\{[^}]*\bcgroups\s+1\b", ols_config, re.S))
+        # OLS's server-level tri-state is 0=Disabled, 1=Off, 2=On.
+        cgroups_enabled = bool(re.search(r"CGIRLimit\s*\{[^}]*\bcgroups\s+2\b", ols_config, re.S))
     except OSError:
         cgroups_enabled = False
 

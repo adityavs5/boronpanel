@@ -398,6 +398,9 @@ def test_render_httpd_config_empty_vhosts_has_no_virtualhost_block(monkeypatch):
     content = ols.render_httpd_config([], [])
     assert "virtualHost" not in content
     assert "listener HTTP{" in content
+    # Installed OLS tri-state: 0=Disabled, 1=Off, 2=On. A value of 1 is
+    # accepted syntax but leaves PHP in lshttpd.service.
+    assert "cgroups                                2" in content
 
 
 def test_render_httpd_config_includes_each_domain_as_its_own_vhost():
