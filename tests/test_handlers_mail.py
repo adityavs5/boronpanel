@@ -55,6 +55,9 @@ def stub_mail(monkeypatch):
     def change_mailbox_password(domain, local_part, new_password):
         calls.append(("change_mailbox_password", domain, local_part))
 
+    def revoke_webmail_sessions(mailbox):
+        calls.append(("revoke_webmail_sessions", mailbox))
+
     monkeypatch.setattr(hm.mail, "domain_exists", domain_exists)
     monkeypatch.setattr(hm.mail, "create_mail_domain", create_mail_domain)
     monkeypatch.setattr(hm.mail, "delete_mail_domain", delete_mail_domain)
@@ -62,6 +65,7 @@ def stub_mail(monkeypatch):
     monkeypatch.setattr(hm.mail, "delete_mailbox", delete_mailbox)
     monkeypatch.setattr(hm.mail, "list_mailboxes", list_mailboxes)
     monkeypatch.setattr(hm.mail, "change_mailbox_password", change_mailbox_password)
+    monkeypatch.setattr(hm.webmail_sso, "revoke_mailbox", revoke_webmail_sessions)
 
     forwards = {}
     catchall = {}
@@ -286,6 +290,32 @@ def test_delete_mailbox(isolated_db, stub_sysops, stub_mail):
     result = hm.delete_mailbox({"domain": "demo1.example", "local_part": "john"})
     assert result["status"] == "deleted"
     assert hm.list_mailboxes({"domain": "demo1.example"})["mailboxes"] == []
+    assert stub_mail.index(("revoke_webmail_sessions", "john@demo1.example")) < stub_mail.index(
+        ("delete_mailbox", "demo1.example", "john")
+    )
+
+
+def test_delete_mailbox_fails_closed_when_webmail_revocation_fails(
+    isolated_db, stub_sysops, stub_mail, monkeypatch
+):
+    from sqlalchemy import select
+    from shared.db import write_session
+    from shared.models import MailUser
+
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
+
+    def fail_revocation(_mailbox):
+        raise RuntimeError("session revocation failed")
+
+    monkeypatch.setattr(hm.webmail_sso, "revoke_mailbox", fail_revocation)
+    with pytest.raises(RuntimeError, match="session revocation failed"):
+        hm.delete_mailbox({"domain": "demo1.example", "local_part": "john"})
+
+    assert {item["local_part"] for item in hm.list_mailboxes({"domain": "demo1.example"})["mailboxes"]} == {"john"}
+    with write_session() as session:
+        assert session.scalar(select(MailUser).where(MailUser.domain == "demo1.example")) is not None
 
 
 def test_terminate_account_drops_mail_domains_and_mailboxes(isolated_db, stub_sysops, stub_mail):
