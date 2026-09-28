@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Box, CheckCircle2, AlertTriangle, RefreshCw, FlaskConical, CircleDashed } from 'lucide-react'
+import { Box, CheckCircle2, AlertTriangle, RefreshCw, FlaskConical, CircleDashed, Info } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
@@ -36,7 +36,7 @@ export default function FilesystemIsolation() {
   ]
   return <div>
     <PageHeader title="Filesystem Isolation" description="OpenLiteSpeed mount namespaces and hardened application services by account." icon={Box} />
-    <Card className="mb-5 border-warning/40 bg-warning/5"><CardContent className="flex gap-3 py-4"><AlertTriangle className="h-6 w-6 shrink-0 text-warning" /><div><p className="font-medium">Mount isolation boundary</p><p className="text-sm text-muted-foreground">{data.warning}</p></div></CardContent></Card>
+    <Card className="mb-5 border-info/40 bg-info/10"><CardContent className="flex gap-3 py-4" role="status"><Info className="h-6 w-6 shrink-0 text-info" /><div><p className="font-medium">About isolation status</p><p className="text-sm text-muted-foreground">{data.warning}</p></div></CardContent></Card>
     <div className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <Capability label="Private account filesystem" value={data.capabilities.mount_namespace} />
       <Capability label="Private temporary files" value={data.capabilities.private_tmp} />

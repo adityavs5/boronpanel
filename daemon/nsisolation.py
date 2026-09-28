@@ -681,7 +681,7 @@ def isolation_overview(params: dict | None = None) -> dict:
             "resource_enforcement": state("verified" if cgroups_enabled else "degraded", "OpenLiteSpeed native cgroup placement is enabled" if cgroups_enabled else "OpenLiteSpeed native cgroup placement is disabled"),
             "pid_namespace": state(pid_status, pid_reason, coverage="web_php"),
         },
-        "warning": "Filesystem visibility, temporary files, process visibility, and resource enforcement are separate controls. Runtime states below are measured when a workload is active.",
+        "warning": "Boron checks these protections while a website is active. An idle account may show Configured until its website receives a request; this does not mean there is a problem.",
     }
 
 
