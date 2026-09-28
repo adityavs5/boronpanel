@@ -13,9 +13,10 @@ Deliberately stores NO persistent per-account state of its own: "enabled"
 status is always derived live from `lsnsctl`'s own denylist + min_uid floor
 (both already persisted in /usr/local/lsws/lsns/conf/*.conf, surviving
 daemon restarts and OLS reloads) rather than a duplicate DB column/table
-that could drift out of sync with the actual gate. Scope accepted per
-docs/NAMESPACE-ANSWERS.md's "Scope decision": mount-only isolation, not
-`/proc`/process isolation, which OLS's native feature cannot provide.
+that could drift out of sync with the actual gate. The native mount
+namespace remains the compatibility fallback. Customer vhosts whose UID gate
+is enabled use OLS's integrated Bubblewrap launcher, which adds a private PID
+namespace without introducing a second persisted policy.
 """
 from __future__ import annotations
 
@@ -65,6 +66,77 @@ def _account_process_rows(uid: int) -> list[tuple[int, str, str]]:
             continue
         rows.append((int(entry.name), comm, path))
     return rows
+
+
+def _is_ols_php_worker(pid: int) -> bool:
+    """Require the real LSAPI executable and an OpenLiteSpeed ancestor.
+
+    A hosting user controls process names and can set ``comm`` to ``lsphp``.
+    Executable and ancestry checks keep dashboard/self-test evidence from
+    being satisfied by such a same-UID decoy process.
+    """
+    try:
+        executable = os.path.realpath(f"/proc/{pid}/exe")
+    except OSError:
+        return False
+    if not re.fullmatch(r"/usr/local/lsws/lsphp\d+/bin/lsphp", executable):
+        return False
+    current = pid
+    for _ in range(8):
+        try:
+            status = Path(f"/proc/{current}/status").read_text()
+            match = re.search(r"(?m)^PPid:\s+(\d+)\s*$", status)
+            if not match:
+                return False
+            current = int(match.group(1))
+            if current <= 1:
+                return False
+            ancestor_exe = os.path.realpath(f"/proc/{current}/exe")
+        except (OSError, ValueError):
+            return False
+        if ancestor_exe in {"/usr/local/lsws/bin/lshttpd", "/usr/local/lsws/bin/openlitespeed"}:
+            return True
+    return False
+
+
+def _php_process_rows(processes: list[tuple[int, str, str]]) -> list[tuple[int, str, str]]:
+    return [row for row in processes if row[1].startswith("lsphp") and _is_ols_php_worker(row[0])]
+
+
+def _private_tmp_observed(pid: int, mountinfo: str, host_tmp) -> bool:
+    """Recognize both supported private-/tmp layouts.
+
+    OLS's native namespace bind-mounts the account tmp directory directly at
+    /tmp, so mountinfo names that mount point. Bubblewrap instead creates
+    /tmp inside its per-worker private root tmpfs; it is private even though
+    mountinfo has no separate /tmp entry. Comparing the worker-root inode to
+    the host /tmp inode handles both without inferring privacy from the
+    namespace inode alone.
+    """
+    if any(
+        fields[4] == "/tmp"
+        for line in mountinfo.splitlines()
+        if len(fields := line.split()) > 4
+    ):
+        return True
+    if host_tmp is None:
+        return False
+    try:
+        worker_tmp = os.stat(f"/proc/{pid}/root/tmp")
+    except OSError:
+        return False
+    return (worker_tmp.st_dev, worker_tmp.st_ino) != (host_tmp.st_dev, host_tmp.st_ino)
+
+
+def _bubblewrap_server_configured() -> bool:
+    try:
+        config = OLS_CONFIG_PATH.read_text()
+    except OSError:
+        return False
+    return bool(
+        re.search(r"(?m)^bubbleWrap\s+1\s*$", config)
+        and re.search(r"(?m)^bubbleWrapCmd\s+/usr/bin/bwrap\b.*--unshare-all\b", config)
+    )
 
 
 def _account_uid(username: str) -> int:
@@ -194,6 +266,16 @@ def enable_namespace(params: dict) -> dict:
     username = validate_username(params["username"])
     uid = _account_uid(username)
     enable_uid(uid)
+    try:
+        from daemon import ols
+
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == username))
+        if account is not None:
+            ols.refresh_vhost(account)
+    except Exception:
+        disable_uid(uid)
+        raise
     return get_status(username)
 
 
@@ -202,6 +284,16 @@ def disable_namespace(params: dict) -> dict:
     username = validate_username(params["username"])
     uid = _account_uid(username)
     disable_uid(uid)
+    try:
+        from daemon import ols
+
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == username))
+        if account is not None:
+            ols.refresh_vhost(account)
+    except Exception:
+        enable_uid(uid)
+        raise
     return get_status(username)
 
 
@@ -220,6 +312,7 @@ def enable_for_account(account: Account) -> None:
     if account.uid is None:
         return
     try:
+        was_disabled = account.uid in set(list_disabled_uids())
         enable_uid(account.uid)
     except NamespaceError:
         logger.info(
@@ -227,6 +320,24 @@ def enable_for_account(account: Account) -> None:
             "expected until Step 4's migration lowers it",
             account.username, account.uid,
         )
+        return
+    try:
+        # A supplied primary domain is provisioned before CREATE_HOOKS. If a
+        # recycled UID was on the denylist, refresh its vhosts after clearing
+        # that gate so the generated Bubblewrap setting cannot stay stale.
+        from daemon import ols
+
+        ols.refresh_vhost(account)
+    except Exception:
+        # Restore a reused UID's prior explicit deny. A new UID that was
+        # already eligible stays eligible, preserving its native namespace
+        # fallback rather than reducing isolation because a refresh failed.
+        if was_disabled:
+            try:
+                disable_uid(account.uid)
+            except Exception:
+                logger.exception("could not restore isolation gate for '%s' after vhost refresh failure", account.username)
+        logger.exception("could not activate Bubblewrap vhost isolation for '%s'", account.username)
 
 
 def teardown_account(account: Account) -> None:
@@ -398,11 +509,21 @@ def isolation_overview(params: dict | None = None) -> dict:
     except OSError:
         host_mount_namespace = None
     try:
+        host_pid_namespace = os.stat("/proc/1/ns/pid").st_ino
+    except OSError:
+        host_pid_namespace = None
+    try:
+        host_tmp = os.stat("/tmp")
+    except OSError:
+        host_tmp = None
+    try:
         ols_config = OLS_CONFIG_PATH.read_text()
         # OLS's server-level tri-state is 0=Disabled, 1=Off, 2=On.
         cgroups_enabled = bool(re.search(r"CGIRLimit\s*\{[^}]*\bcgroups\s+2\b", ols_config, re.S))
+        bubblewrap_configured = _bubblewrap_server_configured()
     except OSError:
         cgroups_enabled = False
+        bubblewrap_configured = False
 
     def state(status: str, reason: str, **extra) -> dict:
         return {"status": status, "reason": reason, "checked_at": checked_at, **extra}
@@ -473,14 +594,16 @@ def isolation_overview(params: dict | None = None) -> dict:
                 processes = []
             else:
                 processes = _account_process_rows(account.uid)
-                php = [row for row in processes if row[1].startswith("lsphp")]
+                php = _php_process_rows(processes)
                 for pid, _comm, _path in php:
                     try:
                         mount_namespace = os.stat(f"/proc/{pid}/ns/mnt").st_ino
+                        pid_namespace = os.stat(f"/proc/{pid}/ns/pid").st_ino
                         mountinfo = Path(f"/proc/{pid}/mountinfo").read_text()
                         namespace_observations.append({
                             "separate_mount_namespace": host_mount_namespace is not None and mount_namespace != host_mount_namespace,
-                            "private_tmp_mount": any(line.split()[4] == "/tmp" for line in mountinfo.splitlines() if len(line.split()) > 4),
+                            "separate_pid_namespace": host_pid_namespace is not None and pid_namespace != host_pid_namespace,
+                            "private_tmp_mount": _private_tmp_observed(pid, mountinfo, host_tmp),
                         })
                     except OSError:
                         continue
@@ -535,15 +658,28 @@ def isolation_overview(params: dict | None = None) -> dict:
 
     mount_verified = bool(namespace_observations) and all(item["separate_mount_namespace"] for item in namespace_observations)
     tmp_verified = bool(namespace_observations) and all(item["private_tmp_mount"] for item in namespace_observations)
+    pid_verified = bool(namespace_observations) and all(item["separate_pid_namespace"] for item in namespace_observations)
     mount_status = "verified" if mount_verified else "degraded" if namespace_observations else "configured"
     tmp_status = "verified" if tmp_verified else "degraded" if namespace_observations else "configured"
+    pid_status = (
+        "verified" if pid_verified else
+        "degraded" if namespace_observations and bubblewrap_configured else
+        "configured" if bubblewrap_configured else
+        "unavailable"
+    )
+    pid_reason = (
+        "Live customer PHP workers use private PID namespaces" if pid_verified else
+        "A live customer PHP worker shares the host PID namespace" if namespace_observations and bubblewrap_configured else
+        "Configured for customer PHP; runtime verification awaits a PHP worker" if bubblewrap_configured else
+        "Private PID isolation is not configured for customer PHP"
+    )
     return {
         "min_uid": min_uid, "accounts": rows, "checked_at": checked_at,
         "capabilities": {
             "mount_namespace": state(mount_status, "Live PHP workers use a mount namespace distinct from the host" if mount_verified else "Live PHP namespace verification failed" if namespace_observations else "Configured; no live PHP worker was available to inspect"),
-            "private_tmp": state(tmp_status, "Live PHP workers have a private /tmp mount" if tmp_verified else "Live PHP private /tmp verification failed" if namespace_observations else "Configured; runtime verification awaits a PHP worker"),
+            "private_tmp": state(tmp_status, "Live PHP workers have a private /tmp filesystem" if tmp_verified else "Live PHP private /tmp verification failed" if namespace_observations else "Configured; runtime verification awaits a PHP worker"),
             "resource_enforcement": state("verified" if cgroups_enabled else "degraded", "OpenLiteSpeed native cgroup placement is enabled" if cgroups_enabled else "OpenLiteSpeed native cgroup placement is disabled"),
-            "pid_namespace": state("unavailable", "OpenLiteSpeed mount isolation does not provide a private PID namespace"),
+            "pid_namespace": state(pid_status, pid_reason, coverage="web_php"),
         },
         "warning": "Filesystem visibility, temporary files, process visibility, and resource enforcement are separate controls. Runtime states below are measured when a workload is active.",
     }
@@ -553,12 +689,14 @@ def rebuild_namespace(params: dict) -> dict:
     username = validate_username(params["username"])
     uid = _account_uid(username)
     unmount_uid(uid)
-    enable_uid(uid)
-    return get_status(username)
+    # Rebuild is also a policy activation. Use the same vhost refresh and
+    # rollback path as the normal enable operation so it cannot report an
+    # enabled gate while leaving PHP on the non-Bubblewrap vhost policy.
+    return enable_namespace({"username": username})
 
 
 def self_test(params: dict) -> dict:
-    """Run a metadata-only mount isolation canary without returning files."""
+    """Run a metadata-only isolation canary without returning user files."""
     username = validate_username(params["username"])
     uid = _account_uid(username)
     with write_session() as session:
@@ -577,15 +715,31 @@ def self_test(params: dict) -> dict:
         ], timeout=20)
         other_hidden = result.ok
     current = get_status(username)
+    php = _php_process_rows(_account_process_rows(uid))
+    bubblewrap_configured = _bubblewrap_server_configured()
+    process_isolation = "configured_no_live_worker" if bubblewrap_configured else "not_configured"
+    if php:
+        try:
+            host_pid_namespace = os.stat("/proc/1/ns/pid").st_ino
+            private = [
+                os.stat(f"/proc/{pid}/ns/pid").st_ino != host_pid_namespace
+                for pid, _comm, _path in php
+            ]
+            process_isolation = "verified" if all(private) else "failed"
+        except OSError:
+            process_isolation = "inspection_failed"
     skipped = []
     if other is None:
         skipped.append("peer_account_visibility")
-    passed = current["enabled"] and own.ok and other_hidden is True
+    if not php:
+        skipped.append("live_php_worker")
+    passed = current["enabled"] and own.ok and other_hidden is True and process_isolation == "verified"
     return {
         "username": username, "passed": passed,
         "status": "passed" if passed else "incomplete" if skipped and current["enabled"] and own.ok else "failed",
         "namespace_enabled": current["enabled"], "own_home_readable": own.ok,
         "other_home_hidden": other_hidden,
         "skipped": skipped,
-        "process_isolation": "not_supported_by_ols_mount_namespaces",
+        "process_isolation": process_isolation,
+        "process_isolation_scope": "web_php",
     }

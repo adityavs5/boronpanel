@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import base64
+import json
 import os
 import shutil
 import subprocess
@@ -16,10 +18,82 @@ sys.path.insert(0, str(ROOT))
 PASSWORD_QUERY = "password_query = SELECT auth.user, auth.password FROM (SELECT s.mailbox AS user, s.password, 0 AS priority FROM webmail_session s JOIN mail_user u ON CONCAT(u.local_part, '@', (SELECT domain FROM mail_domain WHERE id=u.domain_id))=s.mailbox JOIN mail_domain d ON d.id=u.domain_id WHERE s.mailbox='%u' AND s.revoked=0 AND s.expires_at>UTC_TIMESTAMP() AND u.active=1 AND d.active=1 UNION ALL SELECT CONCAT(u.local_part, '@', d.domain) AS user, u.password, 1 AS priority FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%u' AND u.active=1 AND d.active=1) auth ORDER BY auth.priority ASC LIMIT 1"
 SSL_DIR = Path("/etc/boron/ssl")
 DOVECOT_BORON_CONFIG = Path("/etc/dovecot/conf.d/90-boron.conf")
+MSMTP_CONFIG = Path("/etc/boron/msmtprc")
+APPARMOR_BWRAP_PROFILE = Path("/etc/apparmor.d/boron-bwrap")
+OLS_CONFIG = Path("/usr/local/lsws/conf/httpd_config.conf")
+OLS_VHOST_ROOT = Path("/usr/local/lsws/conf/vhosts")
+OLS_WAF_RUNTIME = Path("/etc/modsecurity/boron-runtime.conf")
+RUNTIME_BACKUP = Path("/var/lib/boron/update-runtime-backup.json")
 
 
 def command(args: list[str], timeout: int = 900) -> None:
     subprocess.run(args, check=True, timeout=timeout, env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
+
+
+def _runtime_paths() -> list[Path]:
+    paths = [MSMTP_CONFIG, APPARMOR_BWRAP_PROFILE, OLS_CONFIG, OLS_WAF_RUNTIME]
+    if OLS_VHOST_ROOT.exists():
+        paths.extend(sorted(OLS_VHOST_ROOT.glob("*/vhconf.conf")))
+    return paths
+
+
+def create_runtime_backup() -> None:
+    """Snapshot every host file this isolation migration can change."""
+    if RUNTIME_BACKUP.exists():
+        raise RuntimeError(
+            f"unresolved runtime migration backup exists at {RUNTIME_BACKUP}; run upgrade_runtime.py --rollback"
+        )
+    records = []
+    for path in _runtime_paths():
+        exists = path.is_file()
+        stat = path.stat() if exists else None
+        records.append({
+            "path": str(path),
+            "exists": exists,
+            "mode": stat.st_mode & 0o7777 if stat else None,
+            "uid": stat.st_uid if stat else None,
+            "gid": stat.st_gid if stat else None,
+            "data": base64.b64encode(path.read_bytes()).decode("ascii") if exists else "",
+        })
+    RUNTIME_BACKUP.parent.mkdir(parents=True, exist_ok=True)
+    temporary = RUNTIME_BACKUP.with_name(f".{RUNTIME_BACKUP.name}.tmp")
+    temporary.write_text(json.dumps({"version": 1, "records": records}, separators=(",", ":")))
+    temporary.chmod(0o600)
+    temporary.replace(RUNTIME_BACKUP)
+
+
+def restore_runtime_backup() -> None:
+    """Compensate host mutations when the application update rolls back."""
+    if not RUNTIME_BACKUP.exists():
+        return
+    manifest = json.loads(RUNTIME_BACKUP.read_text())
+    if manifest.get("version") != 1 or not isinstance(manifest.get("records"), list):
+        raise RuntimeError("runtime migration backup has an unsupported format")
+    records = manifest["records"]
+    apparmor_record = next((row for row in records if row["path"] == str(APPARMOR_BWRAP_PROFILE)), None)
+    if apparmor_record and not apparmor_record["exists"] and APPARMOR_BWRAP_PROFILE.exists():
+        command(["apparmor_parser", "-R", str(APPARMOR_BWRAP_PROFILE)], timeout=30)
+    for row in records:
+        path = Path(row["path"])
+        if not row["exists"]:
+            path.unlink(missing_ok=True)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.boron-rollback")
+        temporary.write_bytes(base64.b64decode(row["data"], validate=True))
+        temporary.chmod(int(row["mode"]))
+        os.chown(temporary, int(row["uid"]), int(row["gid"]))
+        temporary.replace(path)
+    if apparmor_record and apparmor_record["exists"]:
+        command(["apparmor_parser", "-r", str(APPARMOR_BWRAP_PROFILE)], timeout=30)
+    if any(row["path"] == str(OLS_CONFIG) and row["exists"] for row in records):
+        command(["/usr/local/lsws/bin/openlitespeed", "-t"], timeout=30)
+        command(["systemctl", "reload", "lshttpd"], timeout=60)
+    RUNTIME_BACKUP.unlink()
+
+
+def commit_runtime_backup() -> None:
+    RUNTIME_BACKUP.unlink(missing_ok=True)
 
 
 def configure_dovecot() -> None:
@@ -110,19 +184,81 @@ def configure_account_resource_parent() -> None:
     ], timeout=30)
 
 
-def main() -> int:
-    if shutil.which("opendkim") is None or shutil.which("opendkim-testkey") is None:
-        command(["apt-get", "update"])
-        command(["apt-get", "install", "-y", "opendkim", "opendkim-tools"])
-    from shared.db import init_db
-    from daemon import dkim, webmail_sso
+def configure_bubblewrap_mail() -> None:
+    """Install the sandbox-safe localhost mail submission configuration."""
+    from shared.config import settings
 
+    hostname = settings.panel_hostname or "localhost"
+    content = (
+        "defaults\n"
+        "auth off\n"
+        "tls off\n"
+        "syslog off\n\n"
+        "account default\n"
+        "host 127.0.0.1\n"
+        "port 25\n"
+        "auto_from on\n"
+        f"maildomain {hostname}\n"
+    )
+    MSMTP_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    temporary = MSMTP_CONFIG.with_name(f".{MSMTP_CONFIG.name}.boron-upgrade")
+    temporary.write_text(content)
+    temporary.chmod(0o644)
+    temporary.replace(MSMTP_CONFIG)
+
+
+def configure_bubblewrap_apparmor() -> None:
+    """Allow only Bubblewrap through Ubuntu 24.04's userns AppArmor gate."""
+    source = ROOT / "deploy" / "boron-bwrap.apparmor"
+    content = source.read_text()
+    APPARMOR_BWRAP_PROFILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = APPARMOR_BWRAP_PROFILE.with_name(f".{APPARMOR_BWRAP_PROFILE.name}.boron-upgrade")
+    temporary.write_text(content)
+    temporary.chmod(0o644)
+    temporary.replace(APPARMOR_BWRAP_PROFILE)
+    command(["apparmor_parser", "-r", str(APPARMOR_BWRAP_PROFILE)], timeout=30)
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["--rollback"]:
+        restore_runtime_backup()
+        return 0
+    if argv == ["--commit"]:
+        commit_runtime_backup()
+        return 0
+    if argv:
+        raise RuntimeError("usage: upgrade_runtime.py [--rollback|--commit]")
+    missing_packages = []
+    if shutil.which("opendkim") is None or shutil.which("opendkim-testkey") is None:
+        missing_packages.extend(["opendkim", "opendkim-tools"])
+    if shutil.which("bwrap") is None:
+        missing_packages.append("bubblewrap")
+    if shutil.which("msmtp") is None:
+        missing_packages.append("msmtp")
+    if shutil.which("apparmor_parser") is None:
+        missing_packages.append("apparmor")
+    if missing_packages:
+        command(["apt-get", "update"])
+        command(["apt-get", "install", "-y", *missing_packages])
+    from shared.db import init_db
+    from daemon import dkim, ols, webmail_sso
+
+    create_runtime_backup()
     init_db()
     webmail_sso.ensure_schema()
     configure_dovecot()
     configure_mail_tls()
     configure_roundcube()
     configure_account_resource_parent()
+    configure_bubblewrap_mail()
+    configure_bubblewrap_apparmor()
+    # Server policy is Off-by-default; refreshing main first keeps every
+    # existing vhost on the native namespace until its own atomic refresh
+    # enables Bubblewrap. A mid-migration failure therefore degrades to the
+    # already-verified compatibility backend instead of breaking PHP.
+    ols.refresh_main_config()
+    ols.refresh_all_vhosts()
     dkim.configure_signer()
     if Path("/etc/dovecot/dovecot.conf").exists():
         command(["doveconf", "-n"], timeout=30)

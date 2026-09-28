@@ -178,6 +178,28 @@ class Finalizer:
         self.log("runtime-migration", "ok", "host integrations reconciled")
         return True
 
+    def control_runtime_migration(self, action: str) -> bool:
+        """Commit or compensate the new release's host migration snapshot."""
+        if self.args.mode != "update":
+            return True
+        script = os.path.join(self.args.new_dir, "scripts", "upgrade_runtime.py")
+        python = os.path.join(self.args.new_dir, ".venv", "bin", "python")
+        if not os.path.isfile(script):
+            return True
+        if not os.path.isfile(python):
+            self.log(f"runtime-{action}", "failed", "release interpreter is missing")
+            return False
+        try:
+            proc = subprocess.run([python, script, f"--{action}"], capture_output=True, text=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.log(f"runtime-{action}", "failed", type(exc).__name__)
+            return False
+        if proc.returncode != 0:
+            self.log(f"runtime-{action}", "failed", f"rc={proc.returncode} {(proc.stderr or proc.stdout)[-500:]}")
+            return False
+        self.log(f"runtime-{action}", "ok", "host migration snapshot reconciled")
+        return True
+
     def check_api(self) -> bool:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -288,6 +310,10 @@ class Finalizer:
             healthy = self.health_check() if restarts_ok else False
             if restarts_ok and healthy:
                 self.log("healthcheck", "ok", "api + daemon responding")
+                # Only discard the host-config snapshot after the new
+                # application and daemon have both passed health checks.
+                if not self.control_runtime_migration("commit"):
+                    return self.fail_and_swap_back("runtime migration snapshot commit failed")
                 # Start the rollback-retention clock NOW: a first-ever update
                 # converted a months-old directory into the rollback target,
                 # whose stale mtime would otherwise look prunable to the
@@ -312,6 +338,7 @@ class Finalizer:
     def fail_and_swap_back(self, reason: str) -> int:
         a = self.args
         self.log("rollback", "running", reason)
+        runtime_rollback_ok = self.control_runtime_migration("rollback")
         swap_back_ok = True
         if self.swapped:
             try:
@@ -326,19 +353,33 @@ class Finalizer:
             self.log("rollback", "ok" if recovered else "failed",
                      "panel recovered on previous version" if recovered
                      else "panel NOT healthy after swap-back -- manual intervention required")
-        self.finish_job("failed", error=reason, rolled_back=self.swapped and swap_back_ok)
+        fully_rolled_back = self.swapped and swap_back_ok and runtime_rollback_ok
+        self.finish_job("failed", error=reason, rolled_back=fully_rolled_back)
+        if swap_back_ok and runtime_rollback_ok:
+            recovery_detail = (
+                f"The panel was automatically swapped back to {a.old_dir}, "
+                "the host runtime configuration was restored, and services were restarted.\n"
+            )
+        elif not swap_back_ok:
+            recovery_detail = (
+                f"Swapping back to {a.old_dir} ALSO failed -- the panel may be down. "
+                f"On the server: ln -sfn {a.old_dir} {a.live} && "
+                f"systemctl restart {a.units.replace(',', ' ')}\n"
+            )
+        else:
+            recovery_detail = (
+                f"The panel application was swapped back to {a.old_dir}, but restoring "
+                "the previous host runtime configuration failed. Inspect the update log, then run: "
+                f"{a.new_dir}/.venv/bin/python {a.new_dir}/scripts/upgrade_runtime.py --rollback\n"
+            )
         self.alert_admin(
             f"[Boron] {'Rollback' if a.mode == 'rollback' else 'Update'} FAILED"
-            + ("" if swap_back_ok else " -- MANUAL INTERVENTION REQUIRED"),
+            + ("" if swap_back_ok and runtime_rollback_ok else " -- MANUAL INTERVENTION REQUIRED"),
             f"Update job {a.job_id} failed: {reason}\n\n"
-            + (f"The panel was automatically swapped back to {a.old_dir} and restarted.\n"
-               if swap_back_ok else
-               f"Swapping back to {a.old_dir} ALSO failed -- the panel may be down. "
-               f"On the server: ln -sfn {a.old_dir} {a.live} && "
-               f"systemctl restart {a.units.replace(',', ' ')}\n")
+            + recovery_detail
             + f"Details: /var/log/boron/updates.log (job {a.job_id}).\n",
         )
-        return 1 if swap_back_ok else 2
+        return 1 if swap_back_ok and runtime_rollback_ok else 2
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

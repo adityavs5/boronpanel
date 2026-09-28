@@ -1,0 +1,14 @@
+# Ubuntu 24.04 restricts unprivileged user namespaces unless the executable
+# has an explicit AppArmor profile. This profile follows Ubuntu's packaged
+# runc/flatpak pattern: only /usr/bin/bwrap receives the userns permission;
+# the global kernel restriction stays enabled and Bubblewrap still defines
+# the filesystem, PID, IPC and UTS isolation policy for each PHP worker.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile boron-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/boron-bwrap>
+}

@@ -174,6 +174,23 @@ def _read_job(job_id) -> UpdateJob:
         return job
 
 
+def _install_runtime_migration_probe(sandbox, *, fail_action=None):
+    scripts = sandbox["new"] / "scripts"
+    scripts.mkdir()
+    venv_bin = sandbox["new"] / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(sys.executable)
+    actions = sandbox["base"] / "runtime-actions.log"
+    (scripts / "upgrade_runtime.py").write_text(
+        "import pathlib, sys\n"
+        f"path = pathlib.Path({str(actions)!r})\n"
+        "action = 'apply' if len(sys.argv) == 1 else sys.argv[1]\n"
+        "with path.open('a') as handle: handle.write(action + '\\n')\n"
+        f"raise SystemExit(1 if action == {fail_action!r} else 0)\n"
+    )
+    return actions
+
+
 # --- the tests --------------------------------------------------------------------
 
 
@@ -233,6 +250,63 @@ def test_update_failure_swaps_back_and_marks_rolled_back(sandbox):
     assert ("rollback", "ok") in steps
     # Failure path keeps the script copy for forensics.
     assert sandbox["script"].exists()
+
+
+def test_update_success_commits_runtime_migration_snapshot(sandbox, health_servers):
+    actions = _install_runtime_migration_probe(sandbox)
+    job_id = _make_job(old_dir=str(sandbox["old"]), new_dir=str(sandbox["new"]))
+
+    proc = _run_finalizer(sandbox, job_id, api_url=health_servers["api_url"])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert actions.read_text().splitlines() == ["apply", "--commit"]
+
+
+def test_runtime_commit_failure_rolls_back_application_and_host_config(sandbox, health_servers):
+    actions = _install_runtime_migration_probe(sandbox, fail_action="--commit")
+    job_id = _make_job(old_dir=str(sandbox["old"]), new_dir=str(sandbox["new"]))
+
+    proc = _run_finalizer(sandbox, job_id, api_url=health_servers["api_url"])
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert os.readlink(sandbox["live"]) == str(sandbox["old"])
+    assert actions.read_text().splitlines() == ["apply", "--commit", "--rollback"]
+    job = _read_job(job_id)
+    assert job.status == "failed"
+    assert job.rolled_back is True
+    assert "snapshot commit failed" in job.error
+
+
+def test_update_failure_compensates_runtime_migration_before_swap_back(sandbox):
+    actions = _install_runtime_migration_probe(sandbox)
+    job_id = _make_job(old_dir=str(sandbox["old"]), new_dir=str(sandbox["new"]))
+
+    proc = _run_finalizer(
+        sandbox, job_id, health_timeout=3,
+        api_url="http://127.0.0.1:1/healthz",
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert actions.read_text().splitlines() == ["apply", "--rollback"]
+    assert _read_job(job_id).rolled_back is True
+
+
+def test_runtime_compensation_failure_requires_manual_intervention(sandbox):
+    actions = _install_runtime_migration_probe(sandbox, fail_action="--rollback")
+    job_id = _make_job(old_dir=str(sandbox["old"]), new_dir=str(sandbox["new"]))
+
+    proc = _run_finalizer(
+        sandbox, job_id, health_timeout=3,
+        api_url="http://127.0.0.1:1/healthz",
+    )
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert os.readlink(sandbox["live"]) == str(sandbox["old"])
+    assert actions.read_text().splitlines() == ["apply", "--rollback"]
+    job = _read_job(job_id)
+    assert job.status == "failed"
+    assert job.rolled_back is False
+    assert "runtime-rollback" in sandbox["log"].read_text()
 
 
 def test_first_update_converts_real_dir_to_symlink_layout(sandbox, health_servers):

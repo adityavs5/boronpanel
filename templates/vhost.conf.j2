@@ -13,6 +13,12 @@ allowSymbolLink           0
 enableGzip                1
 enableIpGeo               0
 
+{# OLS's first-party Bubblewrap integration. The server-level setting is
+   deliberately "Off" (1), allowing only customer vhosts whose account
+   isolation gate is enabled to opt in (2). A vhost whose gate is disabled
+   uses 1; native namespace eligibility remains governed by OLS's UID policy. #}
+bubbleWrap                {{ 2 if bubblewrap_enabled else 1 }}
+
 {# Phase 2 feature 4: one vhost per DOMAIN now (not per account -- the
    Phase 1 gap this feature exists to fix: every domain under an account
    used to silently serve the same public_html content, since only one

@@ -392,6 +392,7 @@ def render_vhost_conf(
     forwarding: dict | None = None,
     maintenance: dict | None = None,
     error_pages: dict[int, str] | None = None,
+    bubblewrap_enabled: bool = True,
 ) -> str:
     home_dir = f"{settings.home_base}/{account.username}"
     template = _env.get_template("vhost.conf.j2")
@@ -422,7 +423,29 @@ def render_vhost_conf(
         error_pages=error_pages or domain.get("error_pages"),
         domain_log_level=domain.get("ols_log_level") or "WARN",
         default_error_pages_dir=str(DEFAULT_ERROR_PAGES_DIR),
+        bubblewrap_enabled=bubblewrap_enabled,
     )
+
+
+def _account_bubblewrap_enabled(account: Account) -> bool:
+    """Use the existing UID isolation gate as Bubblewrap's rollback switch.
+
+    OLS Bubblewrap has no UID denylist of its own. Keeping one canonical gate
+    means the existing enable/disable UI remains truthful: disabling the UID
+    disables both isolation backends, while an eligible vhost uses Bubblewrap.
+    A gate-read failure aborts regeneration so an unrelated domain/config
+    change cannot silently persist a weaker sandbox than the status reports.
+    """
+    if account.uid is None:
+        return False
+    from daemon import nsisolation
+
+    try:
+        return account.uid >= nsisolation.get_min_uid() and account.uid not in set(nsisolation.list_disabled_uids())
+    except Exception as exc:
+        raise RuntimeError(
+            f"could not read the isolation gate for account '{account.username}'; refusing vhost regeneration"
+        ) from exc
 
 
 def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
@@ -888,6 +911,7 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
         waf = waf_template_context(session)
         ols_settings = _ols_settings_from_session(session)
 
+    bubblewrap_enabled = _account_bubblewrap_enabled(account)
     error_pages_by_domain = {
         domain["domain"]: _error_pages_for_domain(
             account.username, domain["domain"], maintenance_active=bool(maintenance_by_domain[domain["domain"]])
@@ -911,6 +935,7 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
             forwarding=forwarding_by_domain[domain["domain"]],
             maintenance=maintenance_by_domain[domain["domain"]],
             error_pages=error_pages_by_domain[domain["domain"]],
+            bubblewrap_enabled=bubblewrap_enabled,
         )
 
     _attach_waf_config(targets, content, waf)

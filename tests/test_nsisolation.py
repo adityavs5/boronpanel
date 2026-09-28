@@ -163,6 +163,36 @@ def test_enable_for_account_no_uid_is_noop():
     nsisolation.enable_for_account(account)  # must not raise
 
 
+def test_enable_for_account_refresh_failure_preserves_enabled_native_fallback(monkeypatch):
+    from daemon import ols
+
+    account = Account(username="nstest1", status="active", uid=2000, gid=2000)
+    disabled = []
+    monkeypatch.setattr(nsisolation, "list_disabled_uids", lambda: [])
+    monkeypatch.setattr(nsisolation, "enable_uid", lambda uid: None)
+    monkeypatch.setattr(nsisolation, "disable_uid", lambda uid: disabled.append(uid))
+    monkeypatch.setattr(ols, "refresh_vhost", lambda account: (_ for _ in ()).throw(RuntimeError("refresh failed")))
+
+    nsisolation.enable_for_account(account)
+
+    assert disabled == []
+
+
+def test_enable_for_account_refresh_failure_restores_reused_uid_deny(monkeypatch):
+    from daemon import ols
+
+    account = Account(username="nstest1", status="active", uid=2000, gid=2000)
+    disabled = []
+    monkeypatch.setattr(nsisolation, "list_disabled_uids", lambda: [2000])
+    monkeypatch.setattr(nsisolation, "enable_uid", lambda uid: None)
+    monkeypatch.setattr(nsisolation, "disable_uid", lambda uid: disabled.append(uid))
+    monkeypatch.setattr(ols, "refresh_vhost", lambda account: (_ for _ in ()).throw(RuntimeError("refresh failed")))
+
+    nsisolation.enable_for_account(account)
+
+    assert disabled == [2000]
+
+
 def test_teardown_account_calls_unmount_and_disable(fake_lsnsctl, isolated_db):
     calls, _ = fake_lsnsctl
     account = Account(username="nstest1", status="terminating", uid=2000, gid=2000)
@@ -367,6 +397,64 @@ def test_overview_reports_evidence_states_instead_of_hardcoded_booleans(fake_lsn
     assert all(isinstance(value, dict) for value in result["capabilities"].values())
 
 
+def test_overview_reports_pid_isolation_configured_without_live_worker(fake_lsnsctl, isolated_db, monkeypatch, tmp_path):
+    with write_session() as session:
+        make_account(session, username="acct1", uid=2000)
+    config = tmp_path / "httpd_config.conf"
+    config.write_text(
+        "bubbleWrap 1\n"
+        "bubbleWrapCmd /usr/bin/bwrap --unshare-all --share-net --die-with-parent\n"
+    )
+    resource_root = tmp_path / "user-2000.slice"
+    resource_root.mkdir()
+    monkeypatch.setattr(nsisolation, "OLS_CONFIG_PATH", config)
+    monkeypatch.setattr(nsisolation, "_account_process_rows", lambda uid: [])
+    monkeypatch.setattr(nsisolation.cgroups, "_cgroup_path", lambda username, uid=None: resource_root)
+
+    result = nsisolation.isolation_overview({})
+
+    capability = result["capabilities"]["pid_namespace"]
+    assert capability["status"] == "configured"
+    assert capability["coverage"] == "web_php"
+
+
+def test_private_tmp_detects_bubblewrap_private_root_inode(monkeypatch):
+    class Stat:
+        def __init__(self, dev, ino):
+            self.st_dev = dev
+            self.st_ino = ino
+
+    monkeypatch.setattr(nsisolation.os, "stat", lambda path: Stat(72, 10))
+    assert nsisolation._private_tmp_observed(4242, "", Stat(2049, 24578)) is True
+
+
+def test_private_tmp_detects_native_tmp_mount_without_root_stat(monkeypatch):
+    def missing(_path):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(nsisolation.os, "stat", missing)
+    mountinfo = "99 98 0:72 / /tmp rw,nosuid - tmpfs tmpfs rw\n"
+    assert nsisolation._private_tmp_observed(4242, mountinfo, None) is True
+
+
+def test_php_process_rows_rejects_tenant_named_decoy(monkeypatch):
+    rows = [(111, "lsphp", "/user.slice/user-2000.slice"), (222, "lsphp", "/user.slice/user-2000.slice")]
+    monkeypatch.setattr(nsisolation, "_is_ols_php_worker", lambda pid: pid == 222)
+    assert nsisolation._php_process_rows(rows) == [rows[1]]
+
+
+def test_rebuild_namespace_uses_enable_refresh_path(monkeypatch):
+    calls = []
+    monkeypatch.setattr(nsisolation, "_account_uid", lambda username: 2000)
+    monkeypatch.setattr(nsisolation, "unmount_uid", lambda uid: calls.append(("unmount", uid)))
+    monkeypatch.setattr(nsisolation, "enable_namespace", lambda params: calls.append(("enable", params["username"])) or {"enabled": True})
+
+    result = nsisolation.rebuild_namespace({"username": "acct1"})
+
+    assert result == {"enabled": True}
+    assert calls == [("unmount", 2000), ("enable", "acct1")]
+
+
 def test_self_test_marks_missing_peer_check_incomplete(fake_lsnsctl, isolated_db, monkeypatch):
     with write_session() as session:
         make_account(session, username="acct1", uid=2000)
@@ -375,9 +463,13 @@ def test_self_test_marks_missing_peer_check_incomplete(fake_lsnsctl, isolated_db
         lambda args, timeout=20: ProcResult(args=args, returncode=0, stdout="", stderr=""),
     )
     monkeypatch.setattr(nsisolation, "get_status", lambda username: {"enabled": True})
+    monkeypatch.setattr(nsisolation, "_account_process_rows", lambda uid: [])
+    monkeypatch.setattr(nsisolation, "_bubblewrap_server_configured", lambda: True)
 
     result = nsisolation.self_test({"username": "acct1"})
 
     assert result["passed"] is False
     assert result["status"] == "incomplete"
-    assert result["skipped"] == ["peer_account_visibility"]
+    assert result["skipped"] == ["peer_account_visibility", "live_php_worker"]
+    assert result["process_isolation"] == "configured_no_live_worker"
+    assert result["process_isolation_scope"] == "web_php"

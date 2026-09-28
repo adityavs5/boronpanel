@@ -28,6 +28,22 @@ def test_render_vhost_conf_active_uses_real_docroot():
     assert "docRoot                   /home/demo1/public_html" in content
     assert "lsapi:demo1_php83 php" in content
     assert "_suspended" not in content
+    assert "bubbleWrap                2" in content
+
+
+def test_render_vhost_conf_can_use_native_namespace_fallback():
+    content = ols.render_vhost_conf(
+        make_account(), make_domain(), suspended=False, bubblewrap_enabled=False
+    )
+    assert "bubbleWrap                1" in content
+
+
+def test_account_bubblewrap_gate_read_failure_aborts_regeneration(monkeypatch):
+    from daemon import nsisolation
+
+    monkeypatch.setattr(nsisolation, "get_min_uid", lambda: (_ for _ in ()).throw(RuntimeError("lsnsctl failed")))
+    with pytest.raises(RuntimeError, match="refusing vhost regeneration"):
+        ols._account_bubblewrap_enabled(make_account())
 
 
 def test_render_vhost_conf_configures_retained_compressed_domain_logs():
@@ -401,6 +417,12 @@ def test_render_httpd_config_empty_vhosts_has_no_virtualhost_block(monkeypatch):
     # Installed OLS tri-state: 0=Disabled, 1=Off, 2=On. A value of 1 is
     # accepted syntax but leaves PHP in lshttpd.service.
     assert "cgroups                                2" in content
+    assert "bubbleWrap                        1" in content
+    assert "bubbleWrapCmd                     /usr/bin/bwrap" in content
+    assert "--unshare-all --share-net --die-with-parent" in content
+    assert "--bind-try /run/mysqld/mysqld.sock /run/mysqld/mysqld.sock" in content
+    assert "--ro-bind-try /usr/bin/msmtp /usr/sbin/sendmail" in content
+    assert "--ro-bind-try /etc/boron/msmtprc /etc/msmtprc" in content
 
 
 def test_render_httpd_config_includes_each_domain_as_its_own_vhost():

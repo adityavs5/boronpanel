@@ -85,6 +85,8 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
         "mariadb-server", "postfix", "dovecot-core", "pdns-server", "pure-ftpd",
         "certbot", "rclone", "spamassassin", "fail2ban", "ufw", "redis-server",
         "python3", "python3-pip", "nodejs", "composer", "imapsync", "geoipupdate",
+        "apparmor", "bubblewrap", "msmtp", "/etc/boron/msmtprc", "host 127.0.0.1",
+        "boron-bwrap.apparmor", "apparmor_parser -r",
         "roundcubemail-1.7.4-complete", "setup_webmail",
         "install_filebrowser", "certbot-dns-cloudflare", "boron-filebrowser.service",
     ):

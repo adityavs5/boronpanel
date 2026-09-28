@@ -276,7 +276,7 @@ preflight() {
 readonly BASE_PKGS=(
     python3 python3-venv python3-pip python3-dev build-essential libssl-dev
     curl wget jq sqlite3 ufw acl quota quotatool git ca-certificates
-    rsync zstd openssl cron logrotate apache2-utils geoipupdate
+    rsync zstd openssl cron logrotate apache2-utils geoipupdate apparmor bubblewrap msmtp
     nodejs npm composer sudo php-cli php-mysql
 )
 readonly STACK_PKGS=(
@@ -399,7 +399,30 @@ install_base_packages() {
 # host-exec additions when the installer is re-run.
 setup_ols_namespace() {
     info "Configuring OpenLiteSpeed namespace isolation"
-    run install -d -m 0755 /usr/local/lsws/conf /usr/local/lsws/lsns/conf
+    run install -d -m 0755 /usr/local/lsws/conf /usr/local/lsws/lsns/conf /etc/boron
+
+    # Ubuntu 24.04 keeps unprivileged user namespaces behind an AppArmor
+    # gate. Grant that one permission to the Bubblewrap executable instead
+    # of disabling the host-wide protection with a sysctl.
+    run install -m 0644 "$REPO_ROOT/deploy/boron-bwrap.apparmor" /etc/apparmor.d/boron-bwrap
+    run apparmor_parser -r /etc/apparmor.d/boron-bwrap
+
+    # Bubblewrapped PHP cannot use the native namespace hostexec escape for
+    # Postfix's sendmail binary. Give it a narrow sendmail-compatible client
+    # which submits over loopback (the Bubblewrap profile shares networking)
+    # without exposing Postfix configuration, queues, or privileged sockets.
+    write_file /etc/boron/msmtprc 0644 <<EOF
+defaults
+auth off
+tls off
+syslog off
+
+account default
+host 127.0.0.1
+port 25
+auto_from on
+maildomain ${PANEL_DOMAIN:-localhost}
+EOF
 
     write_file /usr/local/lsws/conf/nsconf.conf 0644 <<'EOF'
 $HOMEDIR/tmp /tmp,tmp
