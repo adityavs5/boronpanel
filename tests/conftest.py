@@ -58,7 +58,7 @@ def _isolate_privileged_account_side_effects(monkeypatch, request):
     """
     filename = request.node.path.name
 
-    from daemon import cgroups, filebrowser, nsisolation, resource_manager, sysops
+    from daemon import cgroups, filebrowser, nsisolation, resellers, resource_manager, sysops
 
     if filename != "test_sysops.py":
         monkeypatch.setattr(
@@ -67,9 +67,14 @@ def _isolate_privileged_account_side_effects(monkeypatch, request):
     if filename not in {"test_cgroups.py", "test_resource_manager.py", "test_resource_limits.py"}:
         monkeypatch.setattr(cgroups, "apply_limits", lambda *args, **kwargs: None)
         monkeypatch.setattr(resource_manager, "apply_account", lambda *args, **kwargs: None)
+    # daemon.server stores this one as a direct function reference rather than
+    # resolving resource_manager.apply_account at call time. Replace the
+    # per-test hook list so suite collection order cannot make reseller unit
+    # tests call the live host resource manager for fictional accounts.
+    monkeypatch.setattr(resellers, "RESOURCE_HOOKS", [])
     if filename != "test_nsisolation.py":
         monkeypatch.setattr(nsisolation, "enable_for_account", lambda account: None)
-    if filename != "test_filebrowser_accounts.py":
+    if not filename.startswith("test_filebrowser"):
         monkeypatch.setattr(filebrowser, "add_source_for_account", lambda account: None)
 
 
