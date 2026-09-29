@@ -92,6 +92,7 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 [data-skin=evolution] .tool-link:hover .tool-label{color:rgb(var(--link))}
 .tool-link{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:10px;min-height:112px;padding:10px 6px;border-radius:3px;text-decoration:none;border:1px solid transparent;transition:background .12s}
 .tool-link:hover{background:rgb(var(--muted));border-color:rgb(var(--border))}
+.tool-update-count{position:absolute;top:5px;left:calc(50% + 12px);z-index:3;display:inline-flex;min-width:20px;height:20px;align-items:center;justify-content:center;border:2px solid rgb(var(--card));border-radius:999px;background:#dc2626;padding:0 5px;color:#fff;font-size:11px;font-weight:700;line-height:1}
 .tool-label{text-align:center;font-size:14px;line-height:1.5;color:rgb(var(--link));max-width:150px;overflow-wrap:anywhere}
 .tool-icon{--icon-color:#41a6d5;--icon-fill:#cbeefc;position:relative;display:flex;align-items:center;justify-content:center;width:46px;height:46px;flex:none;color:var(--icon-color)}
 .tool-icon>svg,.tool-icon>img{width:40px;height:40px;object-fit:contain}

@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 
 from daemon import ols
+from daemon.procutil import ProcResult
 from shared.models import Account
 
 
@@ -55,6 +56,25 @@ def test_render_vhost_conf_configures_retained_compressed_domain_logs():
     assert content.count("rollingSize             50M") == 2
     assert content.count("keepDays                90") == 2
     assert content.count("compressArchive         1") == 2
+
+
+def test_admin_status_excludes_domains_from_terminated_accounts(isolated_db, monkeypatch):
+    from shared.db import write_session
+    from shared.models import Domain
+
+    with write_session() as session:
+        active = Account(username="active1", status="active")
+        terminated = Account(username="oldgone", status="terminated")
+        session.add_all([active, terminated]); session.flush()
+        session.add_all([
+            Domain(account_id=active.id, domain="active.example", kind="primary", docroot="/home/active1/public_html"),
+            Domain(account_id=terminated.id, domain="stale.example", kind="primary", docroot="/home/oldgone/public_html"),
+        ])
+    monkeypatch.setattr(ols, "run", lambda args, timeout=10: ProcResult(args=args, returncode=0, stdout="active", stderr=""))
+    result = ols.admin_status({})
+    assert result["accounts"] == 1
+    assert result["domains"] == 1
+    assert [row["domain"] for row in result["domain_logs"]] == ["active.example"]
 
 
 def test_expire_domain_log_debug_restores_previous_level(isolated_db, monkeypatch):

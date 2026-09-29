@@ -192,3 +192,8 @@ def test_list_slow_queries_caps_limit(monkeypatch):
     monkeypatch.setattr(slowquery.mariadb, "_connect", lambda: Conn())
     slowquery.list_slow_queries({"limit": 999999})
     assert captured["args"] == (1000,)
+def test_wait_for_status_retries_until_socket_is_ready(monkeypatch):
+    attempts = iter([OSError("socket missing"), {"enabled": True}])
+    monkeypatch.setattr(slowquery, "get_status", lambda _params: (_ for _ in ()).throw(value) if isinstance((value := next(attempts)), Exception) else value)
+    monkeypatch.setattr(slowquery.time, "sleep", lambda _seconds: None)
+    assert slowquery._wait_for_status(1) == {"enabled": True}

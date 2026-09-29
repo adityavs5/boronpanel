@@ -353,6 +353,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'namespace.rebuild': 'admin_account_username',
     'namespace.self_test': 'admin_account_username',
     'stack.inventory': 'global_admin',
+    'stack.check_updates': 'global_admin',
     'stack.preview': 'global_admin',
     'stack.start': 'global_admin',
     'stack.job.get': 'global_admin',

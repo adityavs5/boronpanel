@@ -14,8 +14,8 @@ import { toast } from '@/components/ui/Toast'
 
 const fields = [
   ['cpu_cores', 'CPU cores', .25, .25], ['cpu_weight', 'CPU priority weight', 1, 1],
-  ['memory_high_mb', 'Memory pressure (MB)', 64, 1],
-  ['memory_max_mb', 'Hard memory (MB)', 64, 1], ['io_read_iops', 'Read IOPS', 1, 1],
+  ['memory_high_gb', 'Soft memory limit (GB)', .0625, .0625],
+  ['memory_max_gb', 'Hard memory limit (GB)', .0625, .0625], ['io_read_iops', 'Read IOPS', 1, 1],
   ['io_write_iops', 'Write IOPS', 1, 1], ['nproc', 'NPROC', 10, 1],
   ['entry_processes', 'Entry processes', 1, 1],
 ]
@@ -26,7 +26,9 @@ const throughputFields = [
 function editValues(row) {
   const values = row.values || {}
   return {
-    ...Object.fromEntries(fields.map(([name]) => [name, values[name] ?? ''])),
+    ...Object.fromEntries(fields.map(([name]) => [name, name.endsWith('_gb') ? '' : values[name] ?? ''])),
+    memory_high_gb: values.memory_high_mb == null ? '' : values.memory_high_mb / 1024,
+    memory_max_gb: values.memory_max_mb == null ? '' : values.memory_max_mb / 1024,
     io_read_mb: values.io_read_bps == null ? '' : Math.round(values.io_read_bps / 1048576),
     io_write_mb: values.io_write_bps == null ? '' : Math.round(values.io_write_bps / 1048576),
     expires_at: row.policy?.expires_at ? new Date(row.policy.expires_at).toISOString().slice(0, 16) : '',
@@ -39,10 +41,12 @@ export default function ResourceManager() {
   const query = useQuery({ queryKey: ['resource-manager'], queryFn: () => get('/api/v1/admin/resources'), refetchInterval: 30000 })
   const save = useMutation({
     mutationFn: ({ username, values }) => put(`/api/v1/admin/resources/accounts/${username}`, {
-      ...values,
+      ...Object.fromEntries(Object.entries(values).filter(([name]) => !name.endsWith('_gb') && name !== 'io_read_mb' && name !== 'io_write_mb')),
+      memory_high_mb: values.memory_high_gb === '' ? null : Math.round(Number(values.memory_high_gb) * 1024),
+      memory_max_mb: values.memory_max_gb === '' ? null : Math.round(Number(values.memory_max_gb) * 1024),
       io_read_bps: values.io_read_mb === '' ? null : Number(values.io_read_mb) * 1048576,
       io_write_bps: values.io_write_mb === '' ? null : Number(values.io_write_mb) * 1048576,
-      ...Object.fromEntries(fields.map(([name]) => [name, values[name] === '' ? null : Number(values[name])])),
+      ...Object.fromEntries(fields.filter(([name]) => !name.endsWith('_gb')).map(([name]) => [name, values[name] === '' ? null : Number(values[name])])),
     }),
     onSuccess: () => { toast.success('Resource override applied'); setEdit(null); qc.invalidateQueries({ queryKey: ['resource-manager'] }) },
     onError: error => toast.error('Could not apply limits', error.message),
@@ -57,7 +61,7 @@ export default function ResourceManager() {
   const userColumns = [
     { key: 'username', header: 'Account', sortable: true, searchable: true, render: row => <button className="font-medium text-accent hover:underline" onClick={() => setEdit({ ...row, form: editValues(row) })}>{row.username}</button> },
     { key: 'cpu', header: 'CPU', render: row => <span>{row.usage ? `${row.usage.cpu_pct.toFixed(1)}%` : '—'} / {row.values.cpu_cores == null ? 'Unlimited' : `${row.values.cpu_cores} cores`}</span> },
-    { key: 'memory', header: 'Memory', render: row => <span>{row.usage ? formatBytes(row.usage.memory_bytes) : '—'} / {row.values.memory_max_mb == null ? 'Unlimited' : `${row.values.memory_max_mb} MB`}</span> },
+    { key: 'memory', header: 'Memory', render: row => <span>{row.usage ? formatBytes(row.usage.memory_bytes) : '—'} / {row.values.memory_max_mb == null ? 'Unlimited' : `${(row.values.memory_max_mb / 1024).toLocaleString(undefined, { maximumFractionDigits: 2 })} GB`}</span> },
     { key: 'pids', header: 'Processes', render: row => `${row.usage?.pids ?? '—'} / ${row.values.nproc ?? 'Unlimited'}` },
     { key: 'source', header: 'Policy source', render: row => <Badge variant={row.policy?.scope_type === 'account' ? 'warning' : 'neutral'}>{row.policy ? `${row.policy.scope_type}:${row.policy.scope_id}` : 'Legacy limits'}</Badge> },
     { key: 'faults', header: 'Recent faults', align: 'right', render: row => row.recent_faults.reduce((sum, fault) => sum + fault.count, 0) || '—' },
@@ -67,7 +71,7 @@ export default function ResourceManager() {
     { key: 'scope_type', header: 'Scope', render: row => <Badge variant="neutral">{row.scope_type}</Badge> },
     { key: 'scope_id', header: 'ID' }, { key: 'version', header: 'Version' },
     { key: 'cpu_cores', header: 'CPU', render: row => row.cpu_cores == null ? 'Unlimited' : `${row.cpu_cores} cores` },
-    { key: 'memory_max_mb', header: 'Memory', render: row => row.memory_max_mb == null ? 'Unlimited' : `${row.memory_max_mb} MB` },
+    { key: 'memory_max_mb', header: 'Memory', render: row => row.memory_max_mb == null ? 'Unlimited' : `${(row.memory_max_mb / 1024).toLocaleString(undefined, { maximumFractionDigits: 2 })} GB` },
     { key: 'last_apply_status', header: 'Last apply', render: row => <Badge variant={row.last_apply_status === 'failed' ? 'danger' : 'success'}>{row.last_apply_status || 'Not applied'}</Badge> },
   ]
   const historyColumns = [
@@ -90,6 +94,6 @@ export default function ResourceManager() {
       <TabsContent value="history"><DataTable columns={historyColumns} data={query.data?.history || []} loading={query.isLoading} getRowKey={(row, index) => `${row.account_id}-${row.sampled_at}-${index}`} pageSize={25} emptyTitle="No resource samples yet" /></TabsContent>
       <TabsContent value="faults"><DataTable columns={faultColumns} data={query.data?.faults || []} loading={query.isLoading} getRowKey={(row, index) => `${row.account_id}-${row.detected_at}-${index}`} pageSize={25} emptyTitle="No limit faults recorded" /></TabsContent>
     </Tabs>
-    <Dialog open={!!edit} onOpenChange={open => !open && setEdit(null)}><DialogContent size="lg"><DialogHeader><DialogTitle>Resource limits for {edit?.username}</DialogTitle><DialogDescription>Blank means Unlimited. An account override takes precedence over its plan until it is reset.</DialogDescription></DialogHeader>{edit && <form onSubmit={event => { event.preventDefault(); save.mutate({ username: edit.username, values: edit.form }) }}><DialogBody className="grid gap-4 sm:grid-cols-2">{fields.map(([name, label, min, step]) => <FormField key={name} label={label}><Input type="number" min={min} step={step} placeholder="Unlimited" value={edit.form[name]} onChange={event => setEdit(current => ({ ...current, form: { ...current.form, [name]: event.target.value } }))} /></FormField>)}{throughputFields.map(([name, label]) => <FormField key={name} label={label}><Input type="number" min="1" step="1" placeholder="Unlimited" value={edit.form[name]} onChange={event => setEdit(current => ({ ...current, form: { ...current.form, [name]: event.target.value } }))} /></FormField>)}<FormField label="Temporary override expires" hint="Leave blank for no expiry."><Input type="datetime-local" value={edit.form.expires_at} onChange={event => setEdit(current => ({ ...current, form: { ...current.form, expires_at: event.target.value } }))} /></FormField></DialogBody><DialogFooter><Button type="button" variant="ghost" loading={reset.isPending} onClick={() => reset.mutate(edit.username)}><RotateCcw className="h-4 w-4" /> Reset to plan</Button><Button type="button" variant="secondary" onClick={() => setEdit(null)}>Cancel</Button><Button type="submit" loading={save.isPending}>Apply limits</Button></DialogFooter></form>}</DialogContent></Dialog>
+    <Dialog open={!!edit} onOpenChange={open => !open && setEdit(null)}><DialogContent size="lg"><DialogHeader><DialogTitle>Resource limits for {edit?.username}</DialogTitle><DialogDescription>Blank means Unlimited. Soft memory starts reclaiming and throttling before the hard limit. This server exposes {query.data?.host?.cpu_cores ?? '…'} logical CPU cores.</DialogDescription></DialogHeader>{edit && <form onSubmit={event => { event.preventDefault(); save.mutate({ username: edit.username, values: edit.form }) }}><DialogBody className="grid gap-4 sm:grid-cols-2">{fields.map(([name, label, min, step]) => <FormField key={name} label={label} hint={name === 'memory_high_gb' ? 'The account can continue above this level until its hard limit.' : undefined}><Input type="number" min={min} max={name === 'cpu_cores' ? query.data?.host?.cpu_cores : undefined} step={step} placeholder="Unlimited" value={edit.form[name]} onChange={event => setEdit(current => ({ ...current, form: { ...current.form, [name]: event.target.value } }))} /></FormField>)}{throughputFields.map(([name, label]) => <FormField key={name} label={label}><Input type="number" min="1" step="1" placeholder="Unlimited" value={edit.form[name]} onChange={event => setEdit(current => ({ ...current, form: { ...current.form, [name]: event.target.value } }))} /></FormField>)}<FormField label="Temporary override expires" hint="Leave blank for no expiry."><Input type="datetime-local" value={edit.form.expires_at} onChange={event => setEdit(current => ({ ...current, form: { ...current.form, expires_at: event.target.value } }))} /></FormField></DialogBody><DialogFooter><Button type="button" variant="ghost" loading={reset.isPending} onClick={() => reset.mutate(edit.username)}><RotateCcw className="h-4 w-4" /> Reset to plan</Button><Button type="button" variant="secondary" onClick={() => setEdit(null)}>Cancel</Button><Button type="submit" loading={save.isPending}>Apply limits</Button></DialogFooter></form>}</DialogContent></Dialog>
   </div>
 }

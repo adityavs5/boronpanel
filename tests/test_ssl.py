@@ -365,10 +365,14 @@ def test_admin_ssl_dashboard_lists_every_account_without_impersonation(isolated_
     for username, domain in (("alpha", "alpha.example"), ("bravo", "bravo.example")):
         ha.create_account({"username": username})
         hd.add_domain({"username": username, "domain": domain, "kind": "primary"})
+    from shared.db import write_session
+    from shared.models import Account
+    with write_session() as session:
+        session.query(Account).filter_by(username="bravo").one().status = "terminated"
     result = fssl.get_admin_ssl_dashboard({})
     assert result["certbot_timer_active"] is True
     assert {(row["username"], row["domain"]) for row in result["domains"]} == {
-        ("alpha", "alpha.example"), ("bravo", "bravo.example"),
+        ("alpha", "alpha.example"),
     }
     assert all(row["cert_status"] == "missing" for row in result["domains"])
 

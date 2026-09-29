@@ -45,7 +45,7 @@ from daemon import ols
 from daemon.ols import WAF_AUDIT_LOG, WAF_RULES_FILE
 from daemon.safeio import secure_replace_file
 from daemon.procutil import run
-from shared.models import Domain, WafCustomRule, WafDomainOverride, WafException, WafSettings, utcnow
+from shared.models import Account, Domain, WafCustomRule, WafDomainOverride, WafException, WafSettings, utcnow
 
 MODSEC_MODULE_PATH = "/usr/local/lsws/modules/mod_security.so"
 
@@ -116,7 +116,10 @@ def get_status(params: dict) -> dict:
         exceptions = session.scalars(
             select(WafException).order_by(WafException.expires_at.desc())
         ).all()
-        hosted_domains = session.scalars(select(Domain.domain).order_by(Domain.domain)).all()
+        hosted_domains = session.scalars(
+            select(Domain.domain).join(Account, Account.id == Domain.account_id)
+            .where(Account.status != "terminated").order_by(Domain.domain)
+        ).all()
     return {
         "available": is_available(),
         "enabled": mode != "disabled",
@@ -150,7 +153,10 @@ def _domain_mode(row: WafDomainOverride) -> str:
 
 def _require_known_domain(session, value: str) -> str:
     domain = validate_domain(value)
-    exists = session.scalar(select(Domain.id).where(Domain.domain == domain)) is not None
+    exists = session.scalar(
+        select(Domain.id).join(Account, Account.id == Domain.account_id)
+        .where(Domain.domain == domain, Account.status != "terminated")
+    ) is not None
     if not exists and domain != settings.webmail_hostname:
         raise ValidationError(f"domain '{domain}' is not an active Boron virtual host")
     return domain

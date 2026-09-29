@@ -20,6 +20,12 @@ def inventory(identity: Identity = Depends(get_identity)):
     return call_daemon("stack.inventory", identity)
 
 
+@api_router.post("/check-updates")
+def check_updates(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("stack.check_updates", identity, refresh=True)
+
+
 @api_router.post("/preview")
 def preview(body: StackOperation, identity: Identity = Depends(get_identity)):
     require_admin(identity)

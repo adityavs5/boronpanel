@@ -1,6 +1,7 @@
 """Reseller plans, ownership boundaries, and reseller-panel API coverage."""
 from __future__ import annotations
 
+import json
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -62,6 +63,21 @@ def test_plan_validation_uses_field_names_and_account_minimums(isolated_db):
         make_plan(account_mem_mb=32)
     with pytest.raises(ValidationError, match="account_pids_max must be between 10"):
         make_plan(account_pids_max=5)
+
+
+def test_plan_list_is_json_serializable_and_exposes_host_capacity(isolated_db, monkeypatch):
+    monkeypatch.setattr(resellers.resource_manager, "available_cpu_cores", lambda: 6)
+    make_plan()
+    result = resellers.list_plans({})
+    json.dumps(result)
+    assert result["host_cpu_cores"] == 6
+    assert "T" in result["plans"][0]["created_at"]
+
+
+def test_plan_rejects_cpu_above_server_capacity(isolated_db, monkeypatch):
+    monkeypatch.setattr(resellers.resource_manager, "available_cpu_cores", lambda: 2)
+    with pytest.raises(ValidationError, match="account_cpu_pct must be between 1 and 200"):
+        make_plan(account_cpu_pct=201, account_cpu_cores=2.01)
 
 
 def test_plan_update_cannot_drop_below_current_allocation(isolated_db):

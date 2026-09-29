@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import time
 from pathlib import Path
+
+import pymysql
 
 from shared.validation import ValidationError
 
@@ -74,12 +77,25 @@ def bootstrap_slow_query_log(params: dict) -> dict:
         _restore(conf_path, backup_content)
         raise RuntimeError(f"mariadb restart failed: {result.stderr.strip() or result.stdout.strip()}")
 
-    status = get_status({})
+    status = _wait_for_status()
     if not status["enabled"]:
         _restore(conf_path, backup_content)
         run(["systemctl", "restart", "mariadb.service"], timeout=60)
         raise RuntimeError("slow query log did not take effect after restart -- config change rolled back")
     return status
+
+
+def _wait_for_status(timeout_seconds: float = 30) -> dict:
+    """Wait for MariaDB's post-restart socket before checking variables."""
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            return get_status({})
+        except (OSError, pymysql.MySQLError) as exc:
+            last_error = exc
+            time.sleep(.5)
+    raise RuntimeError(f"MariaDB did not become ready after restart: {last_error}")
 
 
 def _restore(conf_path: Path, backup_content: str | None) -> None:

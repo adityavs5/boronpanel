@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Copy, Plus, Users, ShieldCheck, Play, ArrowUpCircle } from 'lucide-react'
+import { Plus, Users, ShieldCheck, Play, ArrowUpCircle } from 'lucide-react'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
 import { useVersion } from '@/hooks/useVersion'
 import { get, patch, post } from '@/lib/api'
@@ -13,10 +13,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Input, Textarea, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Checkbox } from '@/components/ui/Toggle'
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter,
-  ConfirmDialog,
-} from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
 
 // Phase 8 feature 12: bulk action bar (suspend/unsuspend/update-limits/notify),
@@ -33,7 +30,8 @@ function BulkActionBar({ selected, clearSelection }) {
       const action_params = {}
       if (action === 'update_limits') {
         if (limits.cpu_cores !== '') action_params.cpu_pct = Math.round(Number(limits.cpu_cores) * 100)
-        for (const k of ['mem_mb', 'io_mb', 'pids_max']) if (limits[k] !== '') action_params[k] = Number(limits[k])
+        if (limits.mem_mb !== '') action_params.mem_mb = Math.round(Number(limits.mem_mb) * 1024)
+        for (const k of ['io_mb', 'pids_max']) if (limits[k] !== '') action_params[k] = Number(limits[k])
       }
       if (action === 'notify') { action_params.subject = notify.subject.trim(); action_params.body = notify.body.trim() }
       return post('/api/v1/admin/accounts/bulk-action', { action, usernames: [...selected], action_params })
@@ -70,8 +68,8 @@ function BulkActionBar({ selected, clearSelection }) {
       {action === 'update_limits' && (
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {['cpu_cores', 'mem_mb', 'io_mb', 'pids_max'].map((k) => (
-            <FormField key={k} label={{cpu_cores:'CPU cores',mem_mb:'Memory (MB)',io_mb:'Disk I/O (MB/s)',pids_max:'Processes'}[k]}>
-              <Input type="number" step={k === 'cpu_cores' ? '0.25' : '1'} placeholder="unchanged" value={limits[k]} onChange={(e) => setLimits((l) => ({ ...l, [k]: e.target.value }))} />
+            <FormField key={k} label={{cpu_cores:'CPU cores',mem_mb:'Memory (GB)',io_mb:'Disk I/O (MB/s)',pids_max:'Processes'}[k]}>
+              <Input type="number" step={k === 'cpu_cores' ? '0.25' : k === 'mem_mb' ? '0.0625' : '1'} placeholder="unchanged" value={limits[k]} onChange={(e) => setLimits((l) => ({ ...l, [k]: e.target.value }))} />
             </FormField>
           ))}
         </div>
@@ -104,34 +102,15 @@ export default function Accounts() {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [open, setOpen] = useState(false)
-  const [createStep, setCreateStep] = useState(1)
-  const [createdAccount, setCreatedAccount] = useState(null)
-  const [form, setForm] = useState({ username: '', primary_domain: '', plan_id: '', email: '', password: '', ip_selection: 'automatic', server_ip_id: '' })
   const [selected, setSelected] = useState(() => new Set())
   const listQuery = searchParams.get('q') || ''
   const listPage = Math.max(1, Number.parseInt(searchParams.get('page') || '1', 10) || 1)
   const sortKey = searchParams.get('sort')
   const listSort = sortKey ? { key: sortKey, dir: searchParams.get('dir') === 'desc' ? 'desc' : 'asc' } : null
-  const usernameError = form.username && !/^[a-z][a-z0-9]{0,15}$/.test(form.username)
-    ? 'Use 1–16 lowercase letters or digits, starting with a letter.'
-    : undefined
-  const domainError = form.primary_domain && !/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(form.primary_domain)
-    ? 'Enter a valid domain such as example.com.'
-    : undefined
-  const passwordError = form.password && !/^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}$/.test(form.password)
-    ? 'Use 12+ characters with upper, lower, number, and symbol.'
-    : undefined
-
   useEffect(() => {
     if (searchParams.get('new') !== '1') return
-    setOpen(true)
-    setSearchParams(previous => {
-      const next = new URLSearchParams(previous)
-      next.delete('new')
-      return next
-    }, { replace: true })
-  }, [searchParams, setSearchParams])
+    navigate('/accounts/new', { replace: true })
+  }, [navigate, searchParams])
 
   function setListParam(key, value, defaultValue = '') {
     setSearchParams((previous) => {
@@ -145,17 +124,6 @@ export default function Accounts() {
   const version = useVersion()
   const { data: updateStatus } = useUpdateStatus()
 
-  // Run A feature 1: optional plan applied atomically right after creation.
-  const { data: plansData } = useQuery({
-    queryKey: ['plans'],
-    queryFn: () => get('/api/v1/admin/plans'),
-  })
-  const plans = plansData?.plans || []
-  const { data: ipData } = useQuery({
-    queryKey: ['ip-management'],
-    queryFn: () => get('/api/v1/admin/ip-management'),
-  })
-  const availableIps = (ipData?.ips || []).filter((entry) => entry.active && entry.present_on_host)
   const { data: resellerData } = useQuery({
     queryKey: ['resellers'],
     queryFn: () => get('/api/v1/admin/resellers'),
@@ -183,20 +151,6 @@ export default function Accounts() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['accounts'],
     queryFn: () => get('/api/v1/accounts'),
-  })
-
-  const createMut = useMutation({
-    mutationFn: (body) => post('/api/v1/accounts', body),
-    onSuccess: (acc) => {
-      if (acc.plan_apply_error) toast.warning('Account created, but the plan needs attention', acc.plan_apply_error)
-      else toast.success('Account created', 'Save the one-time credentials before continuing.')
-      qc.invalidateQueries({ queryKey: ['accounts'] })
-      setOpen(false)
-      setCreateStep(1)
-      setForm({ username: '', primary_domain: '', plan_id: '', email: '', password: '', ip_selection: 'automatic', server_ip_id: '' })
-      setCreatedAccount(acc)
-    },
-    onError: (e) => toast.error('Could not create account', e.message),
   })
 
   const bulkMut = useMutation({
@@ -304,9 +258,7 @@ export default function Accounts() {
         <Button variant="secondary" onClick={() => setNsOpen(true)}>
           <ShieldCheck className="h-4 w-4" /> Namespace: bulk-enable
         </Button>
-        <Button onClick={() => setOpen(true)}>
-          <Plus className="h-4 w-4" /> Create account
-        </Button>
+        <Button asChild><Link to="/accounts/new"><Plus className="h-4 w-4" /> Create account</Link></Button>
       </PageHeader>
 
       {updateStatus?.update_available && (
@@ -368,189 +320,8 @@ export default function Accounts() {
         emptyTitle="No accounts yet"
         emptyDescription="Create your first hosting account to get started."
         emptyIcon={Users}
-        emptyAction={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Create account</Button>}
+        emptyAction={<Button asChild><Link to="/accounts/new"><Plus className="h-4 w-4" /> Create account</Link></Button>}
       />
-
-      <Dialog open={open} onOpenChange={(value) => {
-        setOpen(value)
-        if (!value && !createMut.isPending) setCreateStep(1)
-      }}>
-        <DialogContent size="sm">
-          <DialogHeader>
-            <DialogTitle>Create hosting account · Step {createStep} of 2</DialogTitle>
-          </DialogHeader>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (createStep === 1) {
-                setCreateStep(2)
-                return
-              }
-              createMut.mutate({
-                username: form.username,
-                primary_domain: form.primary_domain || undefined,
-                plan_id: form.plan_id ? Number(form.plan_id) : undefined,
-                email: form.email.trim() || undefined,
-                password: form.password || undefined,
-                ip_selection: form.ip_selection,
-                server_ip_id: form.ip_selection === 'specific' ? Number(form.server_ip_id) : undefined,
-              })
-            }}
-          >
-            {createStep === 1 ? (
-            <DialogBody className="space-y-4">
-              <FormField label="Username" required hint="Lowercase letters and digits, starts with a letter (max 16 chars)." error={usernameError}>
-                <Input
-                  autoFocus
-                  value={form.username}
-                  onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
-                  pattern="[a-z][a-z0-9]{0,15}"
-                  placeholder="acme1"
-                  required
-                />
-              </FormField>
-              <FormField label="Primary domain" hint="Optional — can be added later." error={domainError}>
-                <Input
-                  value={form.primary_domain}
-                  onChange={(e) => setForm((f) => ({ ...f, primary_domain: e.target.value }))}
-                  placeholder="example.com"
-                  pattern="(?=.{1,253}$)(?!-)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
-                />
-              </FormField>
-              <FormField label="Contact email" hint="Optional — used for the welcome email and account notifications. Can be added/changed later.">
-                <Input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                  placeholder="owner@example.com"
-                />
-              </FormField>
-              <FormField
-                label="Password"
-                hint="Optional — leave blank to auto-generate a strong password. If set: 12+ characters with upper, lower, a number, and a symbol."
-                error={passwordError}
-              >
-                <Input
-                  type="password"
-                  autoComplete="new-password"
-                  value={form.password}
-                  onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                  placeholder="Auto-generated if blank"
-                  pattern={form.password ? '(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}' : undefined}
-                  title="At least 12 characters, including an uppercase letter, a lowercase letter, a number, and a symbol."
-                />
-              </FormField>
-              <FormField label="Plan" hint="Optional — applies the plan's limits immediately after creation.">
-                <Select value={form.plan_id} onChange={(e) => setForm((f) => ({ ...f, plan_id: e.target.value }))}>
-                  <option value="">No plan (default limits)</option>
-                  {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </Select>
-              </FormField>
-              <FormField label="IP assignment" hint="Automatic follows the server-wide policy in IP Management.">
-                <Select value={form.ip_selection} onChange={(e) => setForm((f) => ({ ...f, ip_selection: e.target.value }))}>
-                  <option value="automatic">Automatic (server policy)</option>
-                  <option value="primary">Primary server IP</option>
-                  <option value="random">Random shared IP</option>
-                  <option value="specific">Choose a specific IP</option>
-                </Select>
-              </FormField>
-              {form.ip_selection === 'specific' && <FormField label="Server IP" required>
-                <Select required value={form.server_ip_id} onChange={(e) => setForm((f) => ({ ...f, server_ip_id: e.target.value }))}>
-                  <option value="">Choose an IP…</option>
-                  {availableIps.map((entry) => <option key={entry.id} value={entry.id}>{entry.address} — {entry.allocation_mode}{entry.label ? ` · ${entry.label}` : ''}</option>)}
-                </Select>
-              </FormField>}
-            </DialogBody>
-            ) : (
-              <DialogBody className="space-y-4">
-                <p className="text-sm text-muted-foreground">Review these settings before provisioning the account. You can return to edit without losing your entries.</p>
-                <dl className="divide-y divide-border rounded-card border border-border text-sm">
-                  {[
-                    ['Username', form.username],
-                    ['Primary domain', form.primary_domain || 'Add later'],
-                    ['Contact email', form.email.trim() || 'Add later'],
-                    ['Password', form.password ? 'Use the password entered' : 'Generate a strong password'],
-                    ['Plan', plans.find((plan) => String(plan.id) === String(form.plan_id))?.name || 'Default limits'],
-                    ['Server IP', form.ip_selection === 'specific' ? (availableIps.find((entry) => String(entry.id) === String(form.server_ip_id))?.address || 'Choose an IP') : ({ automatic: 'Automatic server policy', primary: 'Primary server IP', random: 'Random shared IP' }[form.ip_selection])],
-                  ].map(([label, value]) => (
-                    <div key={label} className="grid grid-cols-[7rem_1fr] gap-3 px-3 py-2.5">
-                      <dt className="text-muted-foreground">{label}</dt>
-                      <dd className="min-w-0 break-words font-medium text-foreground">{value}</dd>
-                    </div>
-                  ))}
-                </dl>
-                <div className="rounded-card border border-warning/40 bg-warning/5 p-3 text-sm text-foreground">
-                  Creating the account provisions system resources. If applying a plan fails after account creation, the account remains available so it can be repaired safely.
-                </div>
-              </DialogBody>
-            )}
-            <DialogFooter>
-              <Button type="button" variant="secondary" onClick={() => {
-                if (createStep === 1) {
-                  setOpen(false)
-                  setCreateStep(1)
-                } else setCreateStep(1)
-              }} disabled={createMut.isPending}>
-                {createStep === 1 ? 'Cancel' : 'Back'}
-              </Button>
-              <Button type="submit" loading={createMut.isPending}>{createStep === 1 ? 'Review account' : 'Create account'}</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={!!createdAccount} onOpenChange={() => {}}>
-        <DialogContent size="sm" showClose={false} onEscapeKeyDown={(event) => event.preventDefault()} onPointerDownOutside={(event) => event.preventDefault()}>
-          <DialogHeader>
-            <DialogTitle>Save the account credentials</DialogTitle>
-          </DialogHeader>
-          <DialogBody className="space-y-4">
-            <p className="text-sm text-muted-foreground">The initial password is shown only now. Copy it into your password manager before continuing.</p>
-            {createdAccount?.plan_apply_error && (
-              <div className="rounded-card border border-warning/40 bg-warning/10 p-3 text-sm text-foreground" role="alert">
-                <div className="font-medium">The account exists, but its plan was not fully applied.</div>
-                <div className="mt-1 text-muted-foreground">{createdAccount.plan_apply_error} Save the credentials, then review the account plan and limits.</div>
-              </div>
-            )}
-            {createdAccount?.ip_assignment_error && <div className="rounded-card border border-warning/40 bg-warning/10 p-3 text-sm text-foreground" role="alert"><div className="font-medium">The account exists, but its IP assignment needs attention.</div><div className="mt-1 text-muted-foreground">{createdAccount.ip_assignment_error} Save the credentials, then assign an IP from IP Management.</div></div>}
-            <div className="space-y-3 rounded-card border border-border p-3">
-              {[
-                ['Username', createdAccount?.username],
-                ['Initial password', createdAccount?.initial_password],
-              ].map(([label, value]) => (
-                <div key={label}>
-                  <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
-                  <div className="flex items-center gap-2">
-                    <code className="min-w-0 flex-1 select-all break-all rounded-btn bg-muted px-2.5 py-2 text-sm text-foreground">{value}</code>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      aria-label={`Copy ${label.toLowerCase()}`}
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(value || '')
-                          toast.success(`${label} copied`)
-                        } catch {
-                          toast.error('Copy failed', 'Select the value and copy it manually.')
-                        }
-                      }}
-                    >
-                      <Copy className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </DialogBody>
-          <DialogFooter>
-            <Button onClick={() => {
-              const username = createdAccount.username
-              setCreatedAccount(null)
-              navigate(`/accounts/${username}`)
-            }}>I saved the credentials</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <ConfirmDialog
         open={nsOpen}

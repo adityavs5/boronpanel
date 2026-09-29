@@ -35,8 +35,8 @@ class PlanBody(BaseModel):
     memory_max_mb: int | None = 1024
     io_read_bps: int | None = 52_428_800
     io_write_bps: int | None = 52_428_800
-    io_read_iops: int | None = None
-    io_write_iops: int | None = None
+    io_read_iops: int | None = 500
+    io_write_iops: int | None = 250
     nproc: int | None = 100
     entry_processes: int | None = 20
 

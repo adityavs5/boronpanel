@@ -39,7 +39,10 @@ def _bounded(value, name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 def _plan_dict(row: ResellerPlan, policy: ResourcePolicy | None = None) -> dict:
-    result = {column.name: getattr(row, column.name) for column in row.__table__.columns}
+    result = {}
+    for column in row.__table__.columns:
+        value = getattr(row, column.name)
+        result[column.name] = value.isoformat() if hasattr(value, "isoformat") else value
     values = ({field: getattr(policy, field) for field in resource_manager.POLICY_FIELDS}
               if policy is not None else {
                   "cpu_cores": row.account_cpu_pct / 100, "cpu_weight": 100,
@@ -47,7 +50,8 @@ def _plan_dict(row: ResellerPlan, policy: ResourcePolicy | None = None) -> dict:
                   "memory_max_mb": row.account_mem_mb,
                   "io_read_bps": row.account_io_mb * 1024 * 1024,
                   "io_write_bps": row.account_io_mb * 1024 * 1024,
-                  "io_read_iops": None, "io_write_iops": None,
+                  "io_read_iops": resource_manager.DEFAULT_READ_IOPS,
+                  "io_write_iops": resource_manager.DEFAULT_WRITE_IOPS,
                   "nproc": row.account_pids_max, "entry_processes": 20,
               })
     result.update({
@@ -79,8 +83,8 @@ def _resource_values(params: dict, fields: dict, current: ResourcePolicy | None 
         "memory_max_mb": fields["account_mem_mb"],
         "io_read_bps": read_mb * 1048576,
         "io_write_bps": None if write_mb is None else int(write_mb * 1048576),
-        "io_read_iops": params.get("account_io_read_iops", existing.get("io_read_iops")),
-        "io_write_iops": params.get("account_io_write_iops", existing.get("io_write_iops")),
+        "io_read_iops": params.get("account_io_read_iops", existing.get("io_read_iops", resource_manager.DEFAULT_READ_IOPS)),
+        "io_write_iops": params.get("account_io_write_iops", existing.get("io_write_iops", resource_manager.DEFAULT_WRITE_IOPS)),
         "nproc": fields["account_pids_max"],
         "entry_processes": params.get("account_entry_processes", existing.get("entry_processes", 20)),
     }
@@ -98,7 +102,10 @@ def _validate_plan(params: dict, current: ResellerPlan | None = None) -> dict:
         "max_total_disk_mb": _bounded(get("max_total_disk_mb", 102400), "max_total_disk_mb", 102400, 1, 100_000_000),
         "account_quota_soft_mb": _bounded(get("account_quota_soft_mb", 4096), "account_quota_soft_mb", 4096, 1, 10_000_000),
         "account_quota_hard_mb": _bounded(get("account_quota_hard_mb", 5120), "account_quota_hard_mb", 5120, 1, 10_000_000),
-        "account_cpu_pct": _bounded(get("account_cpu_pct", 50), "account_cpu_pct", 50, 1, 25600),
+        "account_cpu_pct": _bounded(
+            get("account_cpu_pct", 50), "account_cpu_pct", 50, 1,
+            resource_manager.available_cpu_cores() * 100,
+        ),
         "account_mem_mb": _bounded(get("account_mem_mb", 1024), "account_mem_mb", 1024, 64, 65536),
         "account_io_mb": _bounded(get("account_io_mb", 50), "account_io_mb", 50, 1, 10000),
         "account_pids_max": _bounded(get("account_pids_max", 100), "account_pids_max", 100, 10, 10000),
@@ -186,7 +193,10 @@ def list_plans(params: dict | None = None) -> dict:
             ResourcePolicy.scope_type == "reseller_plan"
         )).all()}
         counts = dict(session.execute(select(ResellerProfile.plan_id, func.count()).group_by(ResellerProfile.plan_id)).all())
-        return {"plans": [{**_plan_dict(row, policies.get(row.id)), "reseller_count": counts.get(row.id, 0)} for row in rows]}
+        return {
+            "plans": [{**_plan_dict(row, policies.get(row.id)), "reseller_count": counts.get(row.id, 0)} for row in rows],
+            "host_cpu_cores": resource_manager.available_cpu_cores(),
+        }
 
 
 def delete_plan(params: dict) -> dict:

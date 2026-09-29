@@ -24,7 +24,7 @@ export default function Plans() {
   const columns = [
     { key: 'name', header: 'Plan', sortable: true, searchable: true, render: row => <span className="font-semibold">{row.name}</span> },
     { key: 'cpu_cores', header: 'CPU', render: row => `${row.cpu_cores ?? row.cpu_pct / 100} cores` },
-    { key: 'mem_mb', header: 'RAM', render: row => `${row.mem_mb} MB` },
+    { key: 'mem_mb', header: 'RAM', render: row => `${(row.mem_mb / 1024).toLocaleString(undefined, { maximumFractionDigits: 2 })} GB` },
     { key: 'quota_hard_mb', header: 'Disk', render: row => `${Math.round(row.quota_hard_mb / 1024)} GB` },
     { key: 'bandwidth_limit_mb', header: 'Bandwidth', render: row => row.bandwidth_limit_mb ? `${Math.round(row.bandwidth_limit_mb / 1024)} GB/mo` : 'Unlimited' },
     { key: 'email_account_limit', header: 'Email', render: row => row.email_account_limit ?? 'Unlimited' },

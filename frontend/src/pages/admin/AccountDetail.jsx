@@ -125,7 +125,7 @@ function PhpAndLimits({ username, account }) {
   const qc = useQueryClient()
   const [phpVersion, setPhpVersion] = useState(account.php_version)
   const [limits, setLimits] = useState({
-    cpu_cores: account.cpu_cores ?? account.cpu_pct / 100, mem_mb: account.mem_mb, io_mb: account.io_mb, pids_max: account.pids_max,
+    cpu_cores: account.cpu_cores ?? account.cpu_pct / 100, memory_gb: account.mem_mb / 1024, io_mb: account.io_mb, pids_max: account.pids_max,
   })
   const invalidate = () => qc.invalidateQueries({ queryKey: ['account', username] })
 
@@ -136,7 +136,7 @@ function PhpAndLimits({ username, account }) {
   })
   const limitsMut = useMutation({
     mutationFn: () => patch(`/api/v1/accounts/${username}/limits`, {
-      cpu_pct: Math.round(Number(limits.cpu_cores) * 100), mem_mb: Number(limits.mem_mb), io_mb: Number(limits.io_mb), pids_max: Number(limits.pids_max),
+      cpu_pct: Math.round(Number(limits.cpu_cores) * 100), mem_mb: Math.round(Number(limits.memory_gb) * 1024), io_mb: Number(limits.io_mb), pids_max: Number(limits.pids_max),
     }),
     onSuccess: () => { toast.success('Limits updated'); invalidate() },
     onError: (e) => toast.error('Failed', e.message),
@@ -160,8 +160,8 @@ function PhpAndLimits({ username, account }) {
         <CardHeader><CardTitle>Resource limits</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <FormField label="CPU cores"><Input type="number" min="0.01" max="256" step="0.25" value={limits.cpu_cores} onChange={(e) => setLimits((l) => ({ ...l, cpu_cores: e.target.value }))} /></FormField>
-            <FormField label="Memory (MB)"><Input type="number" min="64" value={limits.mem_mb} onChange={(e) => setLimits((l) => ({ ...l, mem_mb: e.target.value }))} /></FormField>
+            <FormField label="CPU cores" hint={`Maximum ${account.host_cpu_cores ?? 'server'} cores available.`}><Input type="number" min="0.01" max={account.host_cpu_cores} step="0.25" value={limits.cpu_cores} onChange={(e) => setLimits((l) => ({ ...l, cpu_cores: e.target.value }))} /></FormField>
+            <FormField label="Memory (GB)"><Input type="number" min="0.0625" step="0.0625" value={limits.memory_gb} onChange={(e) => setLimits((l) => ({ ...l, memory_gb: e.target.value }))} /></FormField>
             <FormField label="Disk IO (MB/s)"><Input type="number" min="1" value={limits.io_mb} onChange={(e) => setLimits((l) => ({ ...l, io_mb: e.target.value }))} /></FormField>
             <FormField label="Max processes"><Input type="number" min="10" value={limits.pids_max} onChange={(e) => setLimits((l) => ({ ...l, pids_max: e.target.value }))} /></FormField>
           </div>
@@ -235,7 +235,7 @@ function NamespaceCard({ username }) {
 }
 
 const USAGE_LIMIT_FIELDS = [
-  { key: 'bandwidth_limit_mb', label: 'Bandwidth limit (MB/month)' },
+  { key: 'bandwidth_limit_gb', apiKey: 'bandwidth_limit_mb', label: 'Bandwidth limit (GB/month)' },
   { key: 'database_limit', label: 'Database limit' },
   { key: 'email_account_limit', label: 'Email account limit' },
   { key: 'subdomain_limit', label: 'Subdomain limit' },
@@ -244,7 +244,7 @@ const USAGE_LIMIT_FIELDS = [
 function UsageLimitsForm({ username, data }) {
   const qc = useQueryClient()
   const [form, setForm] = useState({
-    bandwidth_limit_mb: data.bandwidth_limit_mb ?? '',
+    bandwidth_limit_gb: data.bandwidth_limit_mb == null ? '' : data.bandwidth_limit_mb / 1024,
     database_limit: data.database_limit ?? '',
     email_account_limit: data.email_account_limit ?? '',
     subdomain_limit: data.subdomain_limit ?? '',
@@ -260,9 +260,11 @@ function UsageLimitsForm({ username, data }) {
   const save = () => {
     const body = {}
     for (const f of USAGE_LIMIT_FIELDS) {
+      const apiKey = f.apiKey || f.key
       const current = form[f.key] === '' ? null : Number(form[f.key])
-      const original = data[f.key] ?? null
-      if (current !== original) body[f.key] = current
+      const apiValue = f.apiKey && current != null ? Math.round(current * 1024) : current
+      const original = data[apiKey] ?? null
+      if (apiValue !== original) body[apiKey] = apiValue
     }
     if (form.auto_suspend_at_100 !== !!data.auto_suspend_at_100) body.auto_suspend_at_100 = form.auto_suspend_at_100
     if (Object.keys(body).length === 0) { toast.info('No changes to save'); return }

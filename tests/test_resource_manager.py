@@ -1,10 +1,20 @@
 import datetime as dt
 
+import pytest
+
 from sqlalchemy import select
 
 from daemon import resource_manager
 from shared.db import write_session
 from shared.models import Account, Plan, ResourcePolicy, ResourceSample
+from shared.validation import ValidationError
+
+
+def test_cpu_policy_uses_effective_host_capacity(monkeypatch):
+    monkeypatch.setattr(resource_manager, "available_cpu_cores", lambda: 4)
+    assert resource_manager.validate_policy({"cpu_cores": 4})["cpu_cores"] == 4
+    with pytest.raises(ValidationError, match="between 0.25 and 4"):
+        resource_manager.validate_policy({"cpu_cores": 4.25})
 
 
 def _account_and_plan():

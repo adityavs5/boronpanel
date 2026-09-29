@@ -40,6 +40,7 @@ const DiskUsage = lazy(() => import('@/pages/customer/DiskUsage'))
 const MalwareScanner = lazy(() => import('@/pages/MalwareScanner'))
 
 const Accounts = lazy(() => import('@/pages/admin/Accounts'))
+const CreateAccount = lazy(() => import('@/pages/admin/CreateAccount'))
 const AccountDetail = lazy(() => import('@/pages/admin/AccountDetail'))
 const Plans = lazy(() => import('@/pages/admin/Plans'))
 const PlanEditor = lazy(() => import('@/pages/admin/PlanEditor'))
@@ -173,6 +174,7 @@ export const router = createBrowserRouter(
 
         // Admin pages.
         { path: 'accounts', element: admin(<Accounts />) },
+        { path: 'accounts/new', element: admin(<CreateAccount />) },
         { path: 'accounts/:username', element: admin(<AccountDetail />) },
         { path: 'plans', element: admin(<Plans />) },
         { path: 'plans/new', element: admin(<PlanEditor />) },

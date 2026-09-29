@@ -1272,15 +1272,18 @@ def admin_status(params: dict) -> dict:
     admin_cert = Path(f"{OLS_SERVER_BASE}/admin/conf/webadmin.crt")
     tls_check = run(["openssl", "x509", "-in", str(admin_cert), "-noout", "-checkhost", settings.panel_hostname], timeout=10) if admin_cert.exists() else None
     with write_session() as session:
-        accounts = session.scalar(select(func.count()).select_from(Account)) or 0
-        domains = session.scalar(select(func.count()).select_from(Domain)) or 0
+        accounts = session.scalar(select(func.count()).select_from(Account).where(Account.status != "terminated")) or 0
+        domains = session.scalar(select(func.count()).select_from(Domain).join(Account, Account.id == Domain.account_id).where(Account.status != "terminated")) or 0
         domain_logs = [
             {
                 "domain": row.domain,
                 "log_level": row.ols_log_level or "WARN",
                 "debug_until": row.ols_log_debug_until.isoformat() if row.ols_log_debug_until else None,
             }
-            for row in session.scalars(select(Domain).order_by(Domain.domain)).all()
+            for row in session.scalars(
+                select(Domain).join(Account, Account.id == Domain.account_id)
+                .where(Account.status != "terminated").order_by(Domain.domain)
+            ).all()
         ]
     return {
         "active": service.stdout.strip() == "active",
@@ -1313,7 +1316,10 @@ def update_domain_log_settings(params: dict) -> dict:
     account = None
     debug_until = None
     with write_session() as session:
-        row = session.scalar(select(Domain).where(Domain.domain == domain_name))
+        row = session.scalar(
+            select(Domain).join(Account, Account.id == Domain.account_id)
+            .where(Domain.domain == domain_name, Account.status != "terminated")
+        )
         if row is None:
             raise ValidationError(f"domain '{domain_name}' is not hosted on this server")
         account = session.get(Account, row.account_id)

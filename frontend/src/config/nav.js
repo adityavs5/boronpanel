@@ -65,7 +65,7 @@ export const adminNav = [
   { label: 'Dashboard', to: '/overview', icon: LayoutDashboard },
   { label: 'WordPress Installations', to: '/wordpress', icon: WordPressIcon },
   { label: 'Accounts', to: '/accounts', icon: Users },
-  { label: 'Add New User', to: '/accounts?new=1', icon: Users },
+  { label: 'Add New User', to: '/accounts/new', icon: Users },
   { label: 'Resellers', to: '/resellers', icon: Store },
   { label: 'Administrators', to: '/administrators', icon: ShieldCheck },
   { label: 'Server Health', to: '/health', icon: Activity },

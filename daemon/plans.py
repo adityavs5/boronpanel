@@ -84,8 +84,8 @@ def _resource_values(params: dict, *, cpu_pct: int, mem_mb: int, io_mb: int, pid
         "memory_max_mb": params.get("memory_max_mb", mem_mb),
         "io_read_bps": params.get("io_read_bps", io_mb * 1024 * 1024),
         "io_write_bps": params.get("io_write_bps", io_mb * 1024 * 1024),
-        "io_read_iops": params.get("io_read_iops"),
-        "io_write_iops": params.get("io_write_iops"),
+        "io_read_iops": params.get("io_read_iops", resource_manager.DEFAULT_READ_IOPS),
+        "io_write_iops": params.get("io_write_iops", resource_manager.DEFAULT_WRITE_IOPS),
         "nproc": params.get("nproc", pids_max),
         "entry_processes": params.get("entry_processes", 20),
     }
@@ -127,7 +127,10 @@ def list_plans(params: dict) -> dict:
     with write_session() as session:
         plans = session.scalars(select(Plan).order_by(Plan.name)).all()
         policies = {row.scope_id: row for row in session.scalars(select(ResourcePolicy).where(ResourcePolicy.scope_type == "plan")).all()}
-        return {"plans": [_plan_to_dict(p, policies.get(p.id)) for p in plans]}
+        return {
+            "plans": [_plan_to_dict(p, policies.get(p.id)) for p in plans],
+            "host_cpu_cores": resource_manager.available_cpu_cores(),
+        }
 
 
 def get_plan(params: dict) -> dict:

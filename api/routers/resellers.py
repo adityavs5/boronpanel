@@ -25,8 +25,8 @@ class PlanBody(BaseModel):
     account_cpu_weight: int | None = 100
     account_memory_high_mb: int | None = 896
     account_io_write_mb: int | None = 50
-    account_io_read_iops: int | None = None
-    account_io_write_iops: int | None = None
+    account_io_read_iops: int | None = 500
+    account_io_write_iops: int | None = 250
     account_entry_processes: int | None = 20
     php_version: str = "8.3"
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from pathlib import Path
 
 from sqlalchemy import delete, or_, select, text
@@ -20,6 +21,21 @@ POLICY_FIELDS = (
     "io_read_bps", "io_write_bps", "io_read_iops", "io_write_iops",
     "nproc", "entry_processes",
 )
+
+DEFAULT_READ_IOPS = 500
+DEFAULT_WRITE_IOPS = 250
+
+
+def available_cpu_cores() -> int:
+    """Return CPU capacity visible to borond, including affinity limits.
+
+    sched_getaffinity reflects VM hotplug and service/cgroup CPU affinity at
+    the time the policy is validated.  os.cpu_count is the portable fallback.
+    """
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        return max(1, os.cpu_count() or 1)
 
 
 def _now() -> dt.datetime:
@@ -107,8 +123,9 @@ def _number(value, field: str, minimum: float, maximum: float, *, integer: bool 
 
 
 def validate_policy(params: dict) -> dict:
+    cpu_capacity = available_cpu_cores()
     policy = {
-        "cpu_cores": _number(params.get("cpu_cores"), "CPU cores", .25, 256, integer=False),
+        "cpu_cores": _number(params.get("cpu_cores"), "CPU cores", .25, cpu_capacity, integer=False),
         "cpu_weight": _number(params.get("cpu_weight", 100), "CPU weight", 1, 10000),
         "memory_high_mb": _number(params.get("memory_high_mb"), "Memory high", 64, 1048576),
         "memory_max_mb": _number(params.get("memory_max_mb"), "Memory maximum", 64, 1048576),
@@ -255,6 +272,7 @@ def overview(_params: dict | None = None) -> dict:
         history = db.scalars(select(ResourceSample).order_by(ResourceSample.sampled_at.desc()).limit(500)).all()
         fault_rows = db.scalars(select(ResourceFault).order_by(ResourceFault.detected_at.desc()).limit(500)).all()
         return {
+            "host": {"cpu_cores": available_cpu_cores()},
             "users": rows, "policies": [_policy_dict(row) for row in policies],
             "history": [{"account_id": row.account_id, "cpu_pct": row.cpu_pct,
                          "memory_bytes": row.memory_bytes, "io_read_bytes": row.io_read_bytes,

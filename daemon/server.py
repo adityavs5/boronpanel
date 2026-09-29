@@ -14,6 +14,7 @@ import os
 import pwd
 import socket
 import stat
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -126,6 +127,7 @@ OP_TABLE = {
     "domain.set_suspended": handlers_domain.set_suspended,
     "htaccess.reload": htaccess.reload_domain,
     "stack.inventory": stack_manager.inventory,
+    "stack.check_updates": stack_manager.check_updates,
     "stack.preview": stack_manager.preview,
     "stack.start": stack_manager.start,
     "stack.job.get": stack_manager.get_job,
@@ -711,6 +713,7 @@ REPORTING_OPS = {
     # stall the default executor (same reasoning as services.status above).
     "cf.health",
     "dnssetup.diagnostics",
+    "stack.inventory", "stack.check_updates",
     # Phase 2+3 feature 1: adding/testing a pool account live-verifies its
     # token against api.cloudflare.com -- same outbound-HTTPS isolation.
     "cf.account_add", "cf.account_test",
@@ -1096,6 +1099,24 @@ async def _temporary_firewall_ban_loop() -> None:
         await asyncio.sleep(60)
 
 
+async def _stack_update_check_loop() -> None:
+    """Refresh package metadata at most once per 24 hours, including after reboot."""
+    while True:
+        try:
+            state = stack_manager._read_update_state()
+            if state.get("checking"):
+                await asyncio.sleep(60 * 60)
+                continue
+            age = time.time() - float(state.get("checked_at_epoch") or 0)
+            if age >= stack_manager.UPDATE_INTERVAL_SECONDS:
+                await asyncio.get_running_loop().run_in_executor(
+                    REPORTING_EXECUTOR, stack_manager.check_updates, {"refresh": True, "background": True}
+                )
+        except Exception:
+            logger.exception("daily stack update check failed")
+        await asyncio.sleep(60 * 60)
+
+
 async def _reconcile_acme_renewals() -> None:
     from certbot.errors import LockError
     from daemon.acme_http import migrate_renewals
@@ -1149,6 +1170,7 @@ async def amain() -> None:
     asyncio.create_task(_resource_sample_loop())
     asyncio.create_task(_htaccess_watch_loop())
     asyncio.create_task(_temporary_firewall_ban_loop())
+    asyncio.create_task(_stack_update_check_loop())
     try:
         await asyncio.get_running_loop().run_in_executor(None, fail2ban.reconcile_managed_jails)
     except Exception:

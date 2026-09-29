@@ -82,6 +82,19 @@ def test_parse_audit_log_extracts_both_transactions():
     assert "Anomaly Score Exceeded" in first["message"]
 
 
+def test_status_excludes_terminated_account_domains(isolated_db):
+    with write_session() as session:
+        active = Account(username="active1", status="active")
+        terminated = Account(username="oldgone", status="terminated")
+        session.add_all([active, terminated]); session.flush()
+        session.add_all([
+            Domain(account_id=active.id, domain="active.example", kind="primary", docroot="/home/active1/public_html"),
+            Domain(account_id=terminated.id, domain="stale.example", kind="primary", docroot="/home/oldgone/public_html"),
+        ])
+    assert "active.example" in waf.get_status({})["available_domains"]
+    assert "stale.example" not in waf.get_status({})["available_domains"]
+
+
 def test_parse_audit_log_second_transaction_different_host():
     events = waf._parse_audit_log(REAL_AUDIT_LOG_SAMPLE)
     assert events[1]["host"] == "another.example.com"

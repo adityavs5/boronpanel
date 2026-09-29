@@ -22,7 +22,7 @@ export function ToolIcon({ icon: Icon, tone = 'sky', to, skin }) {
   return <span className={`tool-icon tone-${tone}`} aria-hidden="true"><Icon strokeWidth={1.7} /><span className="icon-detail" /></span>
 }
 
-function ToolGroup({ group, role, skin }) {
+function ToolGroup({ group, role, skin, stackUpdateCount = 0 }) {
   const key = `${skin}:${role}:${group.title}`
   const closed = useUI((s) => !!s.closedToolGroups[key])
   const toggle = useUI((s) => s.toggleToolGroup)
@@ -37,7 +37,8 @@ function ToolGroup({ group, role, skin }) {
     </button></h2>
     <div id={id} className="tool-grid" hidden={!expanded}>
       {group.items.map((item) => {
-        const content = <><ToolIcon icon={item.icon} tone={item.tone} to={item.to} skin={skin} /><span className="tool-label">{item.label}</span>{item.external && <ExternalLink className="tool-external" size={11} aria-label="Opens in a new tab" />}</>
+        const count = item.to === '/stack-manager' ? stackUpdateCount : 0
+        const content = <><ToolIcon icon={item.icon} tone={item.tone} to={item.to} skin={skin} />{count > 0 && <span className="tool-update-count" aria-label={`${count} stack updates available`}>{count}</span>}<span className="tool-label">{item.label}</span>{item.external && <ExternalLink className="tool-external" size={11} aria-label="Opens in a new tab" />}</>
         return item.external
           ? <a key={item.to} href={item.to} target="_blank" rel="noopener noreferrer" className="tool-link">{content}</a>
           : <Link key={item.to} to={item.to} className="tool-link">{content}</Link>
@@ -76,6 +77,7 @@ export default function ToolDashboard() {
   const options = { retry: false, staleTime: 30_000 }
   const health = useQuery({ queryKey: ['health'], queryFn: () => get('/api/v1/health'), enabled: isAdmin, refetchInterval: 30_000, ...options })
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: () => get('/api/v1/accounts'), enabled: isAdmin, ...options })
+  const stack = useQuery({ queryKey: ['stack-manager'], queryFn: () => get('/api/v1/admin/stack'), enabled: isAdmin, staleTime: 5 * 60_000, retry: false })
   const account = useQuery({ queryKey: ['account', username], queryFn: () => get(`/api/v1/accounts/${username}`), enabled: !isAdmin && !!username, ...options })
   const usage = useQuery({ queryKey: ['usage', username], queryFn: () => get(`/api/v1/accounts/${username}/usage`), enabled: !isAdmin && !!username, refetchInterval: 5000, ...options })
   const alerts = useQuery({ queryKey: ['alerts', username], queryFn: () => get(`/api/v1/accounts/${username}/alerts`), enabled: !isAdmin && !!username, ...options })
@@ -107,7 +109,7 @@ export default function ToolDashboard() {
     <DashboardSearch />
     <div className="dashboard-columns">
       <div className="tools-column">
-        {allGroups.map((group) => <ToolGroup key={group.title} group={group} role={role} skin={skin} />)}
+        {allGroups.map((group) => <ToolGroup key={group.title} group={group} role={role} skin={skin} stackUpdateCount={stack.data?.pending_update_count || 0} />)}
       </div>
       <aside className="dashboard-stats" aria-label="Account and resource overview">
         <StatsPanel title={skin === 'evolution' ? (isAdmin ? 'Admin Stats' : 'Your Account') : 'General Information'} link={{ to: isAdmin ? '/health' : '/domains', label: isAdmin ? 'Full server information' : 'Manage domains' }}>

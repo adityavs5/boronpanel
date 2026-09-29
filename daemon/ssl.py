@@ -460,6 +460,7 @@ def get_admin_ssl_dashboard(params: dict) -> dict:
         rows = session.execute(
             select(Domain.domain, Domain.ssl_status, Domain.ssl_is_wildcard, Account.username, Account.status)
             .join(Account, Account.id == Domain.account_id)
+            .where(Account.status != "terminated")
             .order_by(Account.username, Domain.domain)
         ).all()
     domain_data = [

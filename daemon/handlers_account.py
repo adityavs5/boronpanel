@@ -50,6 +50,7 @@ LIMITS_HOOKS: list[Callable[[Account], None]] = []
 
 
 def _account_to_dict(account: Account) -> dict:
+    from daemon.resource_manager import available_cpu_cores
     return {
         "id": account.id,
         "username": account.username,
@@ -62,6 +63,7 @@ def _account_to_dict(account: Account) -> dict:
         "quota_hard_mb": account.quota_hard_mb,
         "cpu_pct": account.cpu_pct,
         "cpu_cores": account.cpu_pct / 100,
+        "host_cpu_cores": available_cpu_cores(),
         "mem_mb": account.mem_mb,
         "io_mb": account.io_mb,
         "pids_max": account.pids_max,
@@ -78,8 +80,12 @@ def _validate_limits(cpu_pct: int, mem_mb: int, io_mb: int, pids_max: int) -> No
     # 100%. Boron's storage remains percentage-based for upgrade/backup
     # compatibility, while the API/UI expose the easier-to-understand core
     # value (cpu_pct / 100).
-    if not (1 <= cpu_pct <= 25600):
-        raise ValidationError("cpu limit must be between 0.01 and 256 cores")
+    from daemon.resource_manager import available_cpu_cores
+    maximum = available_cpu_cores() * 100
+    if not (1 <= cpu_pct <= maximum):
+        raise ValidationError(
+            f"cpu limit must be between 0.01 and {available_cpu_cores():g} cores on this server"
+        )
     if not (64 <= mem_mb <= 65536):
         raise ValidationError("mem_mb must be between 64 and 65536")
     if not (1 <= io_mb <= 10000):
