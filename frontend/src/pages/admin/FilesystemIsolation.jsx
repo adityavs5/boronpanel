@@ -7,6 +7,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/com
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { DataTable } from '@/components/ui/Table'
+import { ConfirmDialog } from '@/components/ui/Dialog'
 import { ErrorState } from '@/components/ui/States'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { toast } from '@/components/ui/Toast'
@@ -14,11 +15,12 @@ import { toast } from '@/components/ui/Toast'
 export default function FilesystemIsolation() {
   const qc = useQueryClient()
   const [running, setRunning] = useState(null)
+  const [rebuildTarget, setRebuildTarget] = useState(null)
   const query = useQuery({ queryKey: ['filesystem-isolation'], queryFn: () => get('/api/v1/admin/isolation') })
   const action = useMutation({
     mutationFn: ({ username, type }) => post(`/api/v1/admin/isolation/${username}/${type}`, {}),
     onMutate: value => setRunning(`${value.username}:${value.type}`),
-    onSuccess: (result, value) => { toast.success(value.type === 'rebuild' ? 'Namespace rebuilt' : result.passed ? 'Isolation self-test passed' : 'Isolation self-test found a problem'); qc.invalidateQueries({ queryKey: ['filesystem-isolation'] }) },
+    onSuccess: (result, value) => { toast.success(value.type === 'rebuild' ? 'Namespace rebuilt' : result.passed ? 'Isolation self-test passed' : 'Isolation self-test found a problem'); if (value.type === 'rebuild') setRebuildTarget(null); qc.invalidateQueries({ queryKey: ['filesystem-isolation'] }) },
     onError: e => toast.error('Isolation action failed', e.message), onSettled: () => setRunning(null),
   })
   if (query.isLoading) return <CardSkeleton />
@@ -32,7 +34,7 @@ export default function FilesystemIsolation() {
     { key: 'file_manager', header: 'File Manager', render: r => <State value={r.file_manager} /> },
     { key: 'ssh_sftp', header: 'SSH / SFTP', render: r => <State value={r.ssh_sftp} /> },
     { key: 'resource', header: 'Resource budget', render: r => <State value={r.resource} /> },
-    { key: 'actions', header: '', align: 'right', render: r => <div className="flex justify-end gap-2"><Button variant="ghost" size="sm" loading={running === `${r.username}:self-test`} onClick={() => action.mutate({ username: r.username, type: 'self-test' })}><FlaskConical className="h-4 w-4" />Test</Button><Button variant="secondary" size="sm" loading={running === `${r.username}:rebuild`} onClick={() => action.mutate({ username: r.username, type: 'rebuild' })}><RefreshCw className="h-4 w-4" />Rebuild</Button></div> },
+    { key: 'actions', header: '', align: 'right', render: r => <div className="flex justify-end gap-2"><Button variant="ghost" size="sm" loading={running === `${r.username}:self-test`} onClick={() => action.mutate({ username: r.username, type: 'self-test' })}><FlaskConical className="h-4 w-4" />Test</Button><Button variant="secondary" size="sm" loading={running === `${r.username}:rebuild`} onClick={() => setRebuildTarget(r.username)}><RefreshCw className="h-4 w-4" />Rebuild</Button></div> },
   ]
   return <div>
     <PageHeader title="Filesystem Isolation" description="OpenLiteSpeed mount namespaces and hardened application services by account." icon={Box} />
@@ -44,6 +46,16 @@ export default function FilesystemIsolation() {
       <Capability label="Private process namespace" value={data.capabilities.pid_namespace} />
     </div>
     <Card><CardHeader><CardTitle>Account coverage</CardTitle><CardDescription>Web/PHP uses the OLS namespace. Node.js, Python, and Redis units use systemd hardening and the account cgroup. SSH coverage is shown separately.</CardDescription></CardHeader><CardContent><DataTable columns={columns} data={data.accounts} getRowKey={r => r.username} pageSize={25} emptyTitle="No hosting accounts" emptyDescription="Accounts appear here after creation." emptyIcon={Box} /></CardContent></Card>
+    <ConfirmDialog
+      open={!!rebuildTarget}
+      onOpenChange={open => { if (!open && !action.isPending) setRebuildTarget(null) }}
+      title={`Rebuild isolation for ${rebuildTarget || 'this account'}?`}
+      description="Boron will create a fresh isolation environment and gracefully reload the web server configuration. Website files, databases, email, SSL certificates, backups, and PHP sessions are not changed. Active web requests may be interrupted briefly, and temporary files from the old private temporary directory are discarded."
+      confirmLabel="Rebuild isolation"
+      variant="warning"
+      loading={running === `${rebuildTarget}:rebuild`}
+      onConfirm={() => action.mutate({ username: rebuildTarget, type: 'rebuild' })}
+    />
   </div>
 }
 

@@ -59,6 +59,11 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
     await expect(page.getByRole('heading', { name: 'Filesystem Isolation' })).toBeVisible()
     await expect(page.getByRole('cell', { name: 'hostingdemo', exact: true })).toBeVisible()
     await expect(page.getByText('account permissions').filter({ visible: true }).first()).toBeVisible()
+    await page.getByRole('button', { name: 'Rebuild' }).click()
+    const rebuildDialog = page.getByRole('dialog')
+    await expect(rebuildDialog.getByRole('heading', { name: 'Rebuild isolation for hostingdemo?' })).toBeVisible()
+    await expect(rebuildDialog.getByText(/Website files, databases, email, SSL certificates, backups, and PHP sessions are not changed/)).toBeVisible()
+    await rebuildDialog.getByRole('button', { name: 'Cancel' }).click()
 
     await page.goto('/app/security-center')
     await expect(page.getByRole('heading', { name: 'Security Center' })).toBeVisible()
