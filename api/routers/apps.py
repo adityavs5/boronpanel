@@ -16,7 +16,6 @@ ui_router = APIRouter(prefix="/ui/accounts/{username}/domains/{domain}/apps", ta
 APP_CHOICES = [
     ("wordpress", "WordPress"),
     ("joomla", "Joomla"),
-    ("drupal", "Drupal"),
     ("prestashop", "PrestaShop"),
     ("laravel", "Laravel (skeleton)"),
     ("static", "Static HTML"),

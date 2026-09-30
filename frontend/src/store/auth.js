@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import * as apiAuth from '@/lib/api'
+import { queryClient } from '@/lib/queryClient'
+
+function clearSessionCache() {
+  // Cancelled query promises cannot publish late results into the next login.
+  queryClient.cancelQueries()
+  queryClient.clear()
+}
 
 // Identity is derived at login time from the redirect URL (see lib/api.login)
 // and persisted so a page refresh keeps the user in place. The httponly session
@@ -24,6 +31,8 @@ export const useAuth = create(
       async syncIdentity() {
         try {
           const me = await apiAuth.whoami()
+          if (get().role !== me.role || get().username !== me.username ||
+              get().impersonating !== !!me.impersonating) clearSessionCache()
           set({
             role: me.role,
             username: me.username,
@@ -37,6 +46,7 @@ export const useAuth = create(
       },
 
       async returnToAdmin() {
+        clearSessionCache()
         try {
           await apiAuth.returnToAdmin()
         } finally {
@@ -46,12 +56,14 @@ export const useAuth = create(
       },
 
       async login(username, password) {
+        clearSessionCache()
         const result = await apiAuth.login(username, password)
         if (result.needs2fa) {
           set({ pending2fa: { pendingToken: result.pendingToken } })
           return { needs2fa: true }
         }
-        set({ role: result.role, username: result.username, pending2fa: null })
+        clearSessionCache()
+        set({ role: result.role, username: result.username, pending2fa: null, impersonating: false, impersonator: null })
         return { needs2fa: false, role: result.role }
       },
 
@@ -59,18 +71,25 @@ export const useAuth = create(
         const { pending2fa } = get()
         if (!pending2fa) throw new Error('No pending 2FA session.')
         const result = await apiAuth.loginVerify2fa(pending2fa.pendingToken, code)
-        set({ role: result.role, username: result.username, pending2fa: null })
+        clearSessionCache()
+        set({ role: result.role, username: result.username, pending2fa: null, impersonating: false, impersonator: null })
         return { role: result.role }
       },
 
       async logout() {
-        await apiAuth.logout()
-        set({ role: null, username: null, pending2fa: null })
+        clearSessionCache()
+        try {
+          await apiAuth.logout()
+        } finally {
+          clearSessionCache()
+          set({ role: null, username: null, pending2fa: null, impersonating: false, impersonator: null })
+        }
       },
 
       // Clear local identity without an API round-trip (used by the 401 handler).
       clear() {
-        set({ role: null, username: null, pending2fa: null })
+        clearSessionCache()
+        set({ role: null, username: null, pending2fa: null, impersonating: false, impersonator: null })
       },
     }),
     {

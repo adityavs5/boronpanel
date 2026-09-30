@@ -79,6 +79,7 @@ def _resolve_protected_dir(username: str, relative_path: str) -> tuple[str, str,
     if not os.path.isdir(resolved):
         raise FileAuthError(f"'{relative_path}' is not a directory")
     normalized_relative = os.path.relpath(resolved, home)
+    validate_protected_dir_relative_path(normalized_relative)
     return resolved, home, normalized_relative
 
 
@@ -127,7 +128,7 @@ def _read_htpasswd_beneath(home: str, relative_path: str) -> str | None:
     dir_fd = open_dir_beneath(home, relative_path)
     try:
         try:
-            fd = os.open(HTPASSWD_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+            fd = os.open(HTPASSWD_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)
         except FileNotFoundError:
             return None
         except OSError as exc:

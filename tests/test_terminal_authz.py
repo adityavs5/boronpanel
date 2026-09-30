@@ -134,3 +134,21 @@ def test_missing_host_keys_and_remote_terminal_fail_closed(tmp_path, monkeypatch
         terminal._connect_ssh('alice', 'unused', '127.0.0.1', 22)
     with pytest.raises(RuntimeError, match='local server'):
         terminal._connect_ssh('alice', 'unused', 'example.com', 22)
+
+
+def test_terminal_upgrade_enforces_panel_ip_whitelist(isolated_db, monkeypatch):
+    from shared.db import write_session
+    from shared.models import IpWhitelistEntry
+    from types import SimpleNamespace
+    with write_session() as session:
+        session.add(IpWhitelistEntry(value='198.51.100.10'))
+    monkeypatch.setattr(terminal, '_ws_identity', lambda _: (_ for _ in ()).throw(AssertionError('identity reached')))
+    class Socket:
+        url = URL('wss://panel.example:2222/ws/accounts/alice/terminal')
+        headers = Headers({'origin': 'https://panel.example:2222'})
+        client = SimpleNamespace(host='198.51.100.11')
+        closed = None
+        async def close(self, code): self.closed = code
+    socket = Socket()
+    asyncio.run(terminal.terminal_ws(socket, 'alice'))
+    assert socket.closed == 4403

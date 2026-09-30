@@ -175,6 +175,16 @@ async def terminal_ws(websocket: WebSocket, username: str):
     if not _same_origin(websocket):
         await websocket.close(code=4403)
         return
+    # HTTP middleware does not run for WebSocket upgrades.
+    from api.main import ip_allowed
+    from shared.db import read_session
+    from shared.models import IpWhitelistEntry
+    from sqlalchemy import select
+    with read_session() as session:
+        allowed = list(session.scalars(select(IpWhitelistEntry.value)).all())
+    if not ip_allowed(websocket.client.host if websocket.client else None, allowed):
+        await websocket.close(code=4403)
+        return
     identity = _ws_identity(websocket)
     if identity is None:
         await websocket.close(code=4401)  # unauthenticated

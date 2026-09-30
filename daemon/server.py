@@ -1134,6 +1134,7 @@ async def _reconcile_acme_renewals() -> None:
 
 async def amain() -> None:
     init_db()
+    imapsync.recover_interrupted()
     from daemon import jobcredentials
     jobcredentials.migrate()
     try:

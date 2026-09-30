@@ -5,14 +5,20 @@ from daemon import directadmin_restore as restore
 from daemon import cpanel_import as ci
 
 
-def test_mail_restores_password_hash_without_reporting_it(tmp_path, monkeypatch):
+def test_mail_restores_password_hash_without_reporting_it(tmp_path, monkeypatch, isolated_db):
+    from shared.db import write_session
+    from shared.models import Account, MailDomain
+    with write_session() as session:
+        account = Account(username='alice', status='active', uid=2000, gid=2000)
+        session.add(account); session.flush()
+        session.add(MailDomain(domain='example.com', account_id=account.id))
     hashed='$6$salt$'+'a'*86
     entry={'domain':'example.com','local_part':'sales','password_hash':'{CRYPT}'+hashed,'quota_mb':500}
     monkeypatch.setattr(restore.handlers_mail,'create_mailbox',lambda p: None)
     conn=MagicMock(); cursor=conn.cursor.return_value.__enter__.return_value;cursor.rowcount=1
     monkeypatch.setattr(restore.mail,'_connect',lambda:conn)
     monkeypatch.setattr(restore.mail,'_domain_id',lambda domain:17)
-    result=restore.restore_mail(tmp_path,entry)
+    result=restore.restore_mail(tmp_path,entry,username="alice")
     assert hashed not in result
     assert cursor.execute.call_args.args[1]==('{CRYPT}'+hashed,17,'sales')
 

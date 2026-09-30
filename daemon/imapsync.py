@@ -273,7 +273,7 @@ def start_migration(params: dict) -> dict:
         existing_active = session.scalar(
             select(ImapMigrationJob).where(
                 ImapMigrationJob.account_id == account.id,
-                ImapMigrationJob.status.in_(("pending", "connecting", "running")),
+                ImapMigrationJob.status.in_(("pending", "connecting", "running", "cancelling")),
             )
         )
         if existing_active is not None:
@@ -326,10 +326,13 @@ def _update_job(job_id: int, **fields) -> str | None:
     """Returns the (possibly just-updated) status, so the worker loop can
     check for a cancellation request without a second query."""
     with write_session() as session:
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         job = session.get(ImapMigrationJob, job_id)
         if job is None:
             return None
         for key, value in fields.items():
+            if job.status == 'cancelling' and key in ('status', 'progress_message', 'completed_at'):
+                continue  # Only the worker's finally block releases admission.
             setattr(job, key, value)
         session.flush()
         return job.status
@@ -357,6 +360,7 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
     try:
         try:
             with write_session() as session:
+                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
                 job = session.get(ImapMigrationJob, job_id)
                 if job is None or job.status != "pending":
                     return
@@ -369,6 +373,7 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
                     raise RuntimeError(f"cannot migrate mail for an account in status '{account.status}'")
                 requested_folders = list(job.folders or [])
                 source_host, source_port, source_email = job.source_host, job.source_port, job.source_email
+                job.status = 'connecting'  # Claim before cancellation can see pending.
         except Exception as exc:  # noqa: BLE001
             _update_job(job_id, status="failed", error=str(exc)[:4000], completed_at=utcnow())
             return
@@ -396,7 +401,8 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
             _update_job(job_id, status="failed", error=str(exc), completed_at=utcnow())
             return
 
-        _update_job(job_id, status="connecting", progress_message="Listing source folders")
+        if _update_job(job_id, status="connecting", progress_message="Listing source folders") == 'cancelling':
+            return
         try:
             folders = requested_folders or list_source_folders(source_host, source_port, source_email, source_password, use_ssl)
         except ImapSyncError as exc:
@@ -407,6 +413,8 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
             return
 
         status = _update_job(job_id, status="running", folders_total=len(folders), progress_message="Starting migration")
+        if status == 'cancelling':
+            return
         dir_path = _job_passfile_dir(job_id)
         source_passfile = _write_passfile(dir_path, "passfile1", source_password)
         dest_passfile = _write_passfile(dir_path, "passfile2", dest_password)
@@ -416,7 +424,7 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
         messages_done = 0
         for folder in folders:
             status = _update_job(job_id, current_folder=folder, progress_message=f"Syncing folder '{folder}'")
-            if status == "cancelled":
+            if status in ("cancelled", "cancelling"):
                 break
 
             args = [
@@ -449,22 +457,33 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
                 job_id, folders_done=folders_done, messages_done=messages_done, results=results,
                 progress_message=f"Completed folder '{folder}' ({folders_done}/{len(folders)})",
             )
-            if status == "cancelled":
+            if status in ("cancelled", "cancelling"):
                 break
 
-        final_status = "cancelled" if status == "cancelled" else ("completed" if all(r["status"] == "ok" for r in results) else "failed")
+        final_status = "cancelled" if status in ("cancelled", "cancelling") else ("completed" if all(r["status"] == "ok" for r in results) else "failed")
         error = None if final_status != "failed" else "one or more folders failed to sync -- see results for detail"
         _update_job(
             job_id, status=final_status, current_folder=None, results=results,
             progress_message="Migration cancelled" if final_status == "cancelled" else "Migration finished",
             error=error, completed_at=utcnow(),
         )
+    except Exception:
+        _update_job(job_id, status='failed', error='Mail migration stopped unexpectedly; check server logs', completed_at=utcnow())
+        raise
     finally:
         # source_password/dest_password fall out of scope with this function
         # returning -- never assigned to any object that outlives it, never
         # written anywhere but the passfiles just removed here.
         if dir_path is not None:
             _cleanup_passfile_dir(dir_path)
+        with write_session() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            job = session.get(ImapMigrationJob, job_id)
+            if job is not None and job.status == 'cancelling':
+                job.status = 'cancelled'
+                job.progress_message = 'Migration cancelled'
+                job.current_folder = None
+                job.completed_at = utcnow()
 
 
 def _job_for_account(session, job_id: int, username: str) -> ImapMigrationJob:
@@ -500,15 +519,40 @@ def list_jobs(params: dict) -> dict:
 
 def cancel_migration(params: dict) -> dict:
     with write_session() as session:
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         job = _job_for_account(session, int(params["id"]), validate_username(params["username"]))
         if job.status in ("completed", "failed", "cancelled"):
             return _job_to_dict(job)
-        job.status = "cancelled"
+        job.status = "cancelled" if job.status == 'pending' else "cancelling"
+        job.progress_message = ('Migration cancelled' if job.status == 'cancelled'
+                                else 'Cancellation requested; waiting for the current operation to stop')
+        if job.status == 'cancelled':
+            job.completed_at = utcnow()
         session.flush()
         return _job_to_dict(job)
 
 
-ACTIVE_STATUSES = ("pending", "connecting", "running")
+ACTIVE_STATUSES = ("pending", "connecting", "running", "cancelling")
+
+
+def recover_interrupted():
+    """Startup only, before RPC admission; systemd has killed the old cgroup.
+
+    Passwords are not persisted in the job rows, so interrupted jobs cannot
+    safely resume. Release their admission slots and let the owner retry.
+    """
+    with write_session() as session:
+        session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+        jobs = session.scalars(select(ImapMigrationJob).where(
+            ImapMigrationJob.status.in_(ACTIVE_STATUSES))).all()
+        for job in jobs:
+            _cleanup_passfile_dir(str(Path(IMAPSYNC_RUN_DIR) / str(job.id)))
+            job.status = 'cancelled' if job.status == 'cancelling' else 'failed'
+            job.error = 'Mail migration interrupted by a server restart; start it again to continue syncing.'
+            job.progress_message = 'Interrupted by server restart'
+            job.current_folder = None
+            job.completed_at = utcnow()
+        return len(jobs)
 
 
 def list_active_admin(params: dict) -> dict:

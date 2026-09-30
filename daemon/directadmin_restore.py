@@ -14,6 +14,8 @@ from shared.validation import ValidationError, generate_strong_password, validat
 from daemon import handlers_domain, handlers_mail, mail, ols, nodeapps, pythonapps
 from daemon.directadmin_fidelity import password_hash, relative_path
 from daemon.procutil import run
+from daemon.database_operations import serialized_worker
+from daemon.mail_mutation import require_domain_owner
 
 
 def apply_domain(username, entry):
@@ -35,10 +37,13 @@ def apply_domain(username, entry):
     return f"restored document root {relative}; PHP {entry.get('php_version') or 'not required by static site'}"
 
 
-def restore_mail(root, entry):
+@serialized_worker
+def restore_mail(root, entry, *, username):
     hashed = password_hash(entry['password_hash'])
     domain, local = entry['domain'], entry['local_part']
-    handlers_mail.create_mailbox({'domain': domain, 'local_part': local, 'password': generate_strong_password(), 'quota_mb': entry['quota_mb']})
+    with write_session() as session:
+        require_domain_owner(session, username, domain, require_mail=True)
+    handlers_mail.create_mailbox({'username': username, 'domain': domain, 'local_part': local, 'password': generate_strong_password(), 'quota_mb': entry['quota_mb']})
     # Parameterized SQL; never shell out with an original credential/hash.
     conn = mail._connect()
     try:

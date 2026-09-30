@@ -241,6 +241,9 @@ def main(argv: list[str] | None = None) -> int:
     if missing_packages:
         command(["apt-get", "update"])
         command(["apt-get", "install", "-y", *missing_packages])
+    # Rotate historically readable keys before loading settings into memory.
+    command([sys.executable, str(ROOT / 'scripts/reconcile_powerdns_credentials.py'),
+             '--defer-panel-restart'], timeout=180)
     from shared.db import init_db
     from daemon import dkim, ols, webmail_sso
 

@@ -162,3 +162,29 @@ def test_enable_protection_calls_refresh_vhost(account_with_docroot, monkeypatch
     monkeypatch.setattr(fileauth.ols, "refresh_vhost", lambda account: calls.append(account.username))
     fileauth.enable_protection({"username": "demo1", "path": "public_html/members"})
     assert calls == ["demo1"]
+
+
+def test_canonical_protection_path_cannot_inject_ols_directives(account_with_docroot):
+    docroot = account_with_docroot['docroot']
+    unsafe = docroot / 'member\ncontext injected {'
+    unsafe.mkdir()
+    (docroot / 'alias').symlink_to(unsafe, target_is_directory=True)
+    with pytest.raises(ValidationError):
+        fileauth.enable_protection({'username': 'demo1', 'path': 'public_html/alias'})
+    assert not (unsafe / '.htpasswd').exists()
+
+
+def test_existing_protection_revalidates_canonical_path_at_ols_render(account_with_docroot):
+    from shared.db import write_session
+    from shared.models import Account
+    from sqlalchemy import select
+    docroot = account_with_docroot['docroot']
+    fileauth.enable_protection({'username': 'demo1', 'path': 'public_html/members'})
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == 'demo1'))
+        assert len(fileauth.ols._protected_dirs_for_domain(session, 'demo1', account.id, str(docroot))) == 1
+        unsafe = docroot / 'renamed\ncontext injected {'
+        (docroot / 'members').rename(unsafe)
+        (docroot / 'members').symlink_to(unsafe, target_is_directory=True)
+        with pytest.raises(ValidationError):
+            fileauth.ols._protected_dirs_for_domain(session, 'demo1', account.id, str(docroot))

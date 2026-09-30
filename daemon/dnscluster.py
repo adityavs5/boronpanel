@@ -318,16 +318,44 @@ def _cpanel_record_params(zone: str, rr: dict, value: str) -> dict:
     return params
 
 
-def _send_cpanel(peer: DnsClusterPeer, action: str, payload: dict | None, zone: str) -> None:
+def _send_cpanel(peer: DnsClusterPeer, action: str, payload: dict | None, zone: str,
+                 *, boron_managed_remote: bool = False) -> str:
     with _client(peer) as client:
         if action == "delete":
+            if not boron_managed_remote:
+                return 'skipped-existing'
             _cpanel_call(client, peer, "killdns", {"domain": zone}, allow_absent=True)
-            return
+            return 'sent-owned'
         assert payload is not None
         apex = next((v for r in payload["rrsets"] if r["type"] == "A" and r["name"].rstrip(".") == zone
                      for v in r["values"]), "127.0.0.1")
-        _cpanel_call(client, peer, "adddns", {"domain": zone, "ip": apex, "allowoverwrite": 1})
-        dump = _cpanel_call(client, peer, "dumpzone", {"domain": zone})
+        dump = None
+        if boron_managed_remote:
+            dump = _cpanel_call(client, peer, 'dumpzone', {'domain': zone}, allow_absent=True)
+            if int((dump.get('metadata') or {}).get('result', 0)) != 1:
+                # An observed deletion invalidates prior ownership. Recreate
+                # atomically without overwriting a zone added in the meantime.
+                with write_session() as db:
+                    state = db.scalar(select(DnsClusterZoneState).where(
+                        DnsClusterZoneState.peer_id == peer.id, DnsClusterZoneState.zone == zone))
+                    if state is not None:
+                        state.direction = 'missing'
+                boron_managed_remote = False
+                dump = None
+        if not boron_managed_remote:
+            # Creation itself must refuse a collision, including one appearing
+            # between a remote existence query and this request.
+            _cpanel_call(client, peer, "adddns", {"domain": zone, "ip": apex, "allowoverwrite": 0})
+            # Retain provenance if later record replacement fails and retries.
+            with write_session() as db:
+                state = db.scalar(select(DnsClusterZoneState).where(
+                    DnsClusterZoneState.peer_id == peer.id, DnsClusterZoneState.zone == zone))
+                if state is None:
+                    state = DnsClusterZoneState(peer_id=peer.id, zone=zone)
+                    db.add(state)
+                state.direction = 'sent-owned'
+        if dump is None:
+            dump = _cpanel_call(client, peer, "dumpzone", {"domain": zone})
         rows = (dump.get("data") or {}).get("zone") or []
         removable = [(r, r.get("Line", r.get("line"))) for r in rows
                      if str(r.get("type", "")).upper() != "SOA" and r.get("Line", r.get("line"))]
@@ -338,6 +366,7 @@ def _send_cpanel(peer: DnsClusterPeer, action: str, payload: dict | None, zone: 
                 continue
             for value in rr["values"]:
                 _cpanel_call(client, peer, "addzonerecord", _cpanel_record_params(zone, rr, value))
+    return 'sent-owned'
 
 
 def _directadmin_zone_exists(client: httpx.Client, peer: DnsClusterPeer, auth: tuple[str, str], zone: str) -> bool:
@@ -419,8 +448,7 @@ def _send(
         return _send_directadmin(
             peer, action, payload, zone, boron_managed_remote=boron_managed_remote
         )
-    _send_cpanel(peer, action, payload, zone)
-    return "sent"
+    return _send_cpanel(peer, action, payload, zone, boron_managed_remote=boron_managed_remote)
 
 
 def process_one() -> bool:
@@ -446,7 +474,7 @@ def process_one() -> bool:
                 DnsClusterZoneState.peer_id == peer.id,
                 DnsClusterZoneState.zone == job.zone,
             ))
-            if peer.peer_type == "directadmin":
+            if peer.peer_type in ("directadmin", "cpanel"):
                 # Legacy `sent` rows predate the existence guard and cannot
                 # prove who created the remote zone. Trust only the marker
                 # written after an absent check followed by rawsave.

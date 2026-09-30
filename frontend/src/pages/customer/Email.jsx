@@ -874,7 +874,7 @@ function MailboxSpamFiltersTab({ username, domain }) {
 // --- IMAPSync migrations (missing-features batch, goal feature 1) --------
 
 const IMAP_JOB_STATUS_VARIANT = {
-  pending: 'neutral', connecting: 'info', running: 'info',
+  pending: 'neutral', connecting: 'info', running: 'info', cancelling: 'info',
   completed: 'success', failed: 'danger', cancelled: 'neutral',
 }
 
@@ -903,7 +903,7 @@ function ImapMigrateTab({ username, domain }) {
     queryKey: jobsKey,
     queryFn: () => get(`/api/v1/accounts/${username}/email/imap-migrate`),
     enabled: !!username,
-    refetchInterval: (q) => (q.state.data?.jobs || []).some((j) => ['pending', 'connecting', 'running'].includes(j.status)) ? 3000 : false,
+    refetchInterval: (q) => (q.state.data?.jobs || []).some((j) => ['pending', 'connecting', 'running', 'cancelling'].includes(j.status)) ? 3000 : false,
   })
   const jobs = jobsQ.data?.jobs || []
 
@@ -1026,13 +1026,13 @@ function ImapMigrateTab({ username, domain }) {
                 <div key={job.id} className="rounded-card border border-border p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      {['pending', 'connecting', 'running'].includes(job.status) && <Loader2 className="h-3.5 w-3.5 animate-spin text-info" />}
+                      {['pending', 'connecting', 'running', 'cancelling'].includes(job.status) && <Loader2 className="h-3.5 w-3.5 animate-spin text-info" />}
                       <span className="text-sm font-medium text-foreground">{job.mailbox}</span>
                       <span className="text-xs text-muted-foreground">from {job.source_host}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge variant={IMAP_JOB_STATUS_VARIANT[job.status] || 'neutral'}>{job.status}</Badge>
-                      {['pending', 'connecting', 'running'].includes(job.status) && (
+                      {['pending', 'connecting', 'running', 'cancelling'].includes(job.status) && (
                         <button type="button" onClick={() => cancelMut.mutate(job.id)} className="rounded-btn p-1 text-muted-foreground hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" title="Cancel" aria-label={`Cancel migration job ${job.id}`}>
                           <XCircle className="h-4 w-4" />
                         </button>

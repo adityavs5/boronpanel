@@ -132,7 +132,7 @@ def _append_result(job_id: int, item: str, status: str, detail: str = "") -> Non
     logger.info("cpanel import job %d: %s -> %s (%s)", job_id, item, status, detail)
 
 
-def _run_step(job_id: int, item: str, fn) -> None:
+def _run_step(job_id: int, item: str, fn) -> bool:
     """Runs one import sub-step, recording ok/failed/skipped -- never lets an
     individual item's exception escape and abort the whole job (goal:
     "fail gracefully on unsupported items, import rest")."""
@@ -140,11 +140,13 @@ def _run_step(job_id: int, item: str, fn) -> None:
         _update_job(job_id, progress_message=f"restoring {item}")
         detail = fn()
         _append_result(job_id, item, "ok", detail or "")
+        return True
     except _Skip as skip:
         _append_result(job_id, item, "skipped", str(skip))
     except Exception as exc:  # noqa: BLE001 - one item's failure must not abort the job
         logger.exception("cpanel import job %d: item '%s' failed", job_id, item)
         _append_result(job_id, item, "failed", str(exc))
+    return False
 
 
 class _Skip(Exception):
@@ -746,7 +748,7 @@ def _parse_bind_zone_records(zone_path: Path, domain: str) -> list[dict]:
     import dns.zone
 
     try:
-        zone = dns.zone.from_file(str(zone_path), origin=domain, check_origin=False)
+        zone = dns.zone.from_file(str(zone_path), origin=domain, check_origin=False, allow_include=False)
     except (dns.exception.DNSException, OSError) as exc:
         raise CpanelImportError(f"could not parse BIND zone file '{zone_path.name}': {exc}") from exc
 
@@ -888,7 +890,11 @@ def _parse_mailboxes(root: Path, domains: list[str]) -> list[tuple[str, str]]:
     return found
 
 
-def _import_mailbox(domain: str, local_part: str, maildir_src: Path) -> str:
+@serialized_worker
+def _import_mailbox(domain: str, local_part: str, maildir_src: Path, *, username: str) -> str:
+    from daemon.mail_mutation import require_domain_owner
+    with write_session() as session:
+        require_domain_owner(session, username, domain, require_mail=True)
     local_part = validate_mailbox_local_part(local_part)
     # Original mailbox passwords are cPanel-side crypt hashes in a scheme
     # this project's Dovecot config isn't guaranteed to share -- same
@@ -896,7 +902,7 @@ def _import_mailbox(domain: str, local_part: str, maildir_src: Path) -> str:
     # full-restore path already takes for mail_users (see its comment),
     # applied here for the identical reason.
     password = generate_strong_password()
-    handlers_mail.create_mailbox({"domain": domain, "local_part": local_part, "password": password})
+    handlers_mail.create_mailbox({"username": username, "domain": domain, "local_part": local_part, "password": password})
     dest = Path(settings.mail_base) / domain / local_part
     if dest.exists():
         shutil.rmtree(dest)
@@ -1315,6 +1321,25 @@ def _cleanup_failed_import(job_id, username, ownership):
         _update_job(job_id, progress_message="failed — cleanup needs attention", initial_password=None)
 
 
+@serialized_worker
+def _prepare_import_mail_domain(username, domain):
+    from daemon.mail_mutation import require_domain_owner
+    with write_session() as session:
+        require_domain_owner(session, username, domain)
+    handlers_mail.ensure_mail_domain(domain)
+    with write_session() as session:
+        require_domain_owner(session, username, domain, require_mail=True)
+    return 'owned mail domain ready'
+
+
+def _preflight_domain_ownership(session, domains):
+    from daemon.domain_ownership import require_available
+    for domain in domains:
+        require_available(session, domain, None)
+        if session.scalar(select(Domain.id).where(Domain.domain == domain)) is not None:
+            raise CpanelImportError(f"domain '{domain}' already belongs to an existing account")
+
+
 def _run_import_job(job_id: int, params: dict) -> None:
     ownership = None
     da_manifest = None
@@ -1425,6 +1450,11 @@ def _run_import_job(job_id: int, params: dict) -> None:
                         raise CpanelImportError("Destination account appeared during import; refusing to overwrite")
                     if session.scalar(select(PanelUser.id).where(PanelUser.username == username)) is not None:
                         raise CpanelImportError("Destination login appeared during import; refusing to overwrite")
+                    imported_names = {entry['domain'] for entry in domains}
+                    if da_manifest:
+                        for category in ('domains', 'mailboxes', 'forwards', 'catchalls'):
+                            imported_names.update(entry['domain'] for entry in da_manifest[category])
+                    _preflight_domain_ownership(session, imported_names)
                 try:
                     created_account = handlers_account.create_account({
                         "username": username,
@@ -1520,27 +1550,30 @@ def _run_import_job(job_id: int, params: dict) -> None:
 
             if da_manifest:
                 from daemon.directadmin_restore import restore_mail, restore_app
+                ready_mail_domains = set()
                 for domain in {entry['domain'] for entry in da_manifest['mailboxes'] + da_manifest['forwards'] + da_manifest['catchalls']}:
-                    _run_step(job_id, f'mail-domain:{domain}', lambda domain=domain: handlers_mail.create_mail_domain({'username': username, 'domain': domain}) and 'created')
+                    if _run_step(job_id, f'mail-domain:{domain}', lambda domain=domain: _prepare_import_mail_domain(username, domain)):
+                        ready_mail_domains.add(domain)
                 for entry in da_manifest['mailboxes']:
-                    _run_step(job_id, f"mailbox:{entry['local_part']}@{entry['domain']}", lambda entry=entry: restore_mail(root, entry))
+                    if entry['domain'] in ready_mail_domains:
+                        _run_step(job_id, f"mailbox:{entry['local_part']}@{entry['domain']}", lambda entry=entry: restore_mail(root, entry, username=username))
                 for entry in da_manifest['forwards']:
-                    _run_step(job_id, f"forward:{entry['local_part']}@{entry['domain']}", lambda entry=entry: handlers_mail.create_forward(entry) and 'restored')
+                    if entry['domain'] in ready_mail_domains:
+                        _run_step(job_id, f"forward:{entry['local_part']}@{entry['domain']}", lambda entry=entry: handlers_mail.create_forward({**entry, 'username': username}) and 'restored')
                 for entry in da_manifest['catchalls']:
-                    _run_step(job_id, f"catchall:{entry['domain']}", lambda entry=entry: handlers_mail.set_catchall(entry) and 'restored')
+                    if entry['domain'] in ready_mail_domains:
+                        _run_step(job_id, f"catchall:{entry['domain']}", lambda entry=entry: handlers_mail.set_catchall({**entry, 'username': username}) and 'restored')
                 for entry in da_manifest['apps']:
                     _run_step(job_id, f"application:{entry['domain']}", lambda entry=entry: restore_app(root, username, entry, db_name_map, db_credentials))
             mailboxes = [] if da_manifest else _parse_mailboxes(root, [d["domain"] for d in domains])
             mail_domains_created: set[str] = set()
             for domain_name, local_part in mailboxes:
                 if domain_name not in mail_domains_created:
-                    try:
-                        handlers_mail.create_mail_domain({"username": username, "domain": domain_name})
-                    except Exception:  # noqa: BLE001
-                        pass
+                    if not _run_step(job_id, f'mail-domain:{domain_name}', lambda d=domain_name: _prepare_import_mail_domain(username, d)):
+                        continue
                     mail_domains_created.add(domain_name)
                 src = root / "homedir" / "mail" / domain_name / local_part
-                _run_step(job_id, f"mailbox:{local_part}@{domain_name}", lambda d=domain_name, lp=local_part, s=src: _import_mailbox(d, lp, s))
+                _run_step(job_id, f"mailbox:{local_part}@{domain_name}", lambda d=domain_name, lp=local_part, s=src: _import_mailbox(d, lp, s, username=username))
 
             ftp_accounts = _parse_ftp_accounts(root, [d["domain"] for d in domains])
             for ftp_login, domain_name in ftp_accounts:

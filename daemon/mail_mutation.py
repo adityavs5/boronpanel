@@ -58,6 +58,27 @@ def serialized(function):
         bound = signature.bind_partial(*args, **kwargs)
         target = bound.arguments.get(first)
         with write_session() as session:
+            if isinstance(target, dict) and target.get('username') and target.get('domain'):
+                require_domain_owner(session, target['username'], target['domain'])
             require_accounts_available(session, _owners(session, target))
         return function(*args, **kwargs)
     return wrapped
+
+
+def require_domain_owner(session, username, domain, *, require_mail=False):
+    """Internal callers must retain the intended destination account identity."""
+    account = session.scalar(select(Account).where(Account.username == validate_username(username)))
+    if account is None:
+        raise ValidationError('Mail destination account does not exist')
+    domain = validate_domain(domain)
+    mail_row = None
+    for model in (Domain, MailDomain):
+        row = session.scalar(select(model).where(model.domain == domain))
+        if row is not None and row.account_id != account.id:
+            raise ValidationError('Imported mail domain belongs to another account')
+        if model is MailDomain:
+            mail_row = row
+    if require_mail and mail_row is None:
+        raise ValidationError('Owned mail domain provisioning must finish before restoring mail')
+    require_accounts_available(session, {account.id})
+    return account.id

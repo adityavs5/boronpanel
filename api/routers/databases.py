@@ -9,10 +9,11 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from api.rpc import call_daemon
+from api.upload_guard import BoundedUploadRoute
 from api.security import Identity, get_identity, require_account_access
 
-api_router = APIRouter(prefix="/api/v1/accounts/{username}/databases", tags=["databases"])
-ui_router = APIRouter(prefix="/ui/accounts/{username}/databases", tags=["ui:databases"])
+api_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/accounts/{username}/databases", tags=["databases"])
+ui_router = APIRouter(route_class=BoundedUploadRoute, prefix="/ui/accounts/{username}/databases", tags=["ui:databases"])
 
 
 class CreateDatabaseBody(BaseModel):

@@ -212,3 +212,56 @@ def test_cpanel_adapter_replaces_template_records_and_preserves_source_ns(isolat
     assert commands.count("addzonerecord") == 4
     bodies = [body for command, _query, body in calls if command == "addzonerecord"]
     assert any("type=NS" in body and "nsdname=ns1.example.test." in body for body in bodies)
+
+
+def test_cpanel_foreign_zone_is_not_overwritten_or_deleted(isolated_db):
+    result = _peer('cpanel', 'whm-token')
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={'metadata': {'result': 0, 'reason': 'zone already exists'}})
+    dnscluster._transport = httpx.MockTransport(handler)
+    try:
+        with write_session() as db:
+            peer = db.get(DnsClusterPeer, result['id']); db.expunge(peer)
+        with pytest.raises(Exception):
+            dnscluster._send_cpanel(peer, 'upsert', ZONE_PAYLOAD, 'example.test')
+        assert len(calls) == 1 and calls[0].url.path.endswith('/adddns')
+        assert b'allowoverwrite=0' in calls[0].read()
+        assert dnscluster._send_cpanel(peer, 'delete', {}, 'example.test') == 'skipped-existing'
+        assert len(calls) == 1
+    finally:
+        dnscluster._transport = None
+
+
+@pytest.mark.parametrize('collision', [False, True])
+def test_cpanel_owned_zone_recreation_cannot_adopt_racing_foreign_zone(isolated_db, collision):
+    from shared.models import DnsClusterZoneState
+    result = _peer('cpanel', 'whm-token')
+    with write_session() as db:
+        db.add(DnsClusterZoneState(peer_id=result['id'], zone='example.test', direction='sent-owned'))
+        peer = db.get(DnsClusterPeer, result['id']); db.expunge(peer)
+    calls = []
+    def handler(request):
+        command = request.url.path.rsplit('/', 1)[-1]; calls.append(command)
+        if len(calls) == 1:
+            return httpx.Response(200, json={'metadata': {'result': 0, 'reason': 'zone does not exist'}})
+        if command == 'adddns':
+            assert b'allowoverwrite=0' in request.read()
+            if collision:
+                return httpx.Response(200, json={'metadata': {'result': 0, 'reason': 'zone already exists'}})
+        return httpx.Response(200, json={'metadata': {'result': 1}, 'data': {'zone': []}})
+    dnscluster._transport = httpx.MockTransport(handler)
+    try:
+        if collision:
+            with pytest.raises(RuntimeError, match='already exists'):
+                dnscluster._send_cpanel(peer, 'upsert', ZONE_PAYLOAD, 'example.test', boron_managed_remote=True)
+            assert calls == ['dumpzone', 'adddns']
+        else:
+            assert dnscluster._send_cpanel(peer, 'upsert', ZONE_PAYLOAD, 'example.test', boron_managed_remote=True) == 'sent-owned'
+            assert calls[:3] == ['dumpzone', 'adddns', 'dumpzone']
+        with write_session() as db:
+            state = db.scalar(select(DnsClusterZoneState).where(DnsClusterZoneState.peer_id == peer.id))
+            assert state.direction == ('missing' if collision else 'sent-owned')
+    finally:
+        dnscluster._transport = None

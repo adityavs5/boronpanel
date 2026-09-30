@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import selectors
 import signal
 import time
@@ -48,6 +49,26 @@ class ProcResult:
 
 
 MAX_TENANT_OUTPUT = 4 * 1024 * 1024
+
+
+def _account_unit(args):
+    if not args or args[0] != '/usr/bin/systemd-run' or '--' not in args:
+        return None
+    for value in args[1:args.index('--')]:
+        if re.fullmatch(r'--unit=boron-account-[1-9][0-9]*-[a-z0-9-]{1,48}', value):
+            return value.split('=', 1)[1] + '.service'
+    return None
+
+
+def _stop_account_unit(unit):
+    # systemd-run is a client; killing its process group does not kill the
+    # transient service. Stop the cgroup before releasing the caller's job.
+    for action in (['kill', '--signal=KILL', '--kill-whom=all'], ['stop']):
+        try:
+            subprocess.run(['/usr/bin/systemctl', *action, unit],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            logger.warning('Could not finish transient account unit cleanup: %s', unit)
 
 
 def _bounded_run(args, *, input_text, source, discard_stdout, timeout, cwd, privileges, limit, env):
@@ -143,14 +164,24 @@ def run(
             privilege_args = {"user": uid, "group": gid, "extra_groups": ()}
         # Tenant package hooks and CLI commands can print arbitrary data.
         # Their output must be bounded before collection, not sliced afterward.
-        if output_limit is None and (uid is not None or os.path.basename(args[0]) == 'runuser'):
+        account_unit = _account_unit(args)
+        if account_unit:
+            # Independently bound detached service lifetime, including failure
+            # during local client cleanup. Never modify the caller's argv.
+            args = [args[0], f'--property=RuntimeMaxSec={float(timeout)}s', *args[1:]]
+        if output_limit is None and (uid is not None or os.path.basename(args[0]) == 'runuser' or account_unit):
             output_limit = MAX_TENANT_OUTPUT
         if output_limit is not None:
             if output_limit <= 0:
                 raise ValueError('output_limit must be positive')
-            proc = _bounded_run(args, input_text=input_text, source=source,
-                discard_stdout=discard_stdout, timeout=timeout, cwd=cwd,
-                privileges=privilege_args, limit=output_limit, env=env)
+            try:
+                proc = _bounded_run(args, input_text=input_text, source=source,
+                    discard_stdout=discard_stdout, timeout=timeout, cwd=cwd,
+                    privileges=privilege_args, limit=output_limit, env=env)
+            except BaseException:
+                if account_unit:
+                    _stop_account_unit(account_unit)
+                raise
         else:
             proc = subprocess.run(
                 args,

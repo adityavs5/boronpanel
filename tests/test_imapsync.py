@@ -429,3 +429,31 @@ def test_discovered_folder_list_cannot_bypass_job_limit():
     output = 'Host1: folders list\n' + '\n'.join(f'[folder{i}]' for i in range(im.MAX_FOLDERS_PER_JOB + 1))
     with pytest.raises(im.ImapSyncError, match='folder limit'):
         im._parse_host1_folders(output)
+
+
+def test_cancel_running_job_keeps_admission_until_worker_exits(mailbox, monkeypatch):
+    monkeypatch.setattr(im.IMAPSYNC_EXECUTOR, 'submit', lambda *args: None)
+    params = dict(domain='demo1.example', local_part='sales', source_host='imap.example.net',
+                  source_port=993, source_email='old@example.net', source_password='source', dest_password='dest')
+    job = im.start_migration(params)
+    im._update_job(job['id'], status='running')
+    result = im.cancel_migration({'id': job['id'], 'username': 'demo1'})
+    assert result['status'] == 'cancelling'
+    assert im._update_job(job['id'], status='running') == 'cancelling'
+    with pytest.raises(Exception, match='already'):
+        im.start_migration(params)
+
+
+@pytest.mark.parametrize('status', ['pending', 'connecting', 'running', 'cancelling'])
+def test_startup_recovers_interrupted_jobs_and_allows_retry(mailbox, monkeypatch, tmp_path, status):
+    monkeypatch.setattr(im.IMAPSYNC_EXECUTOR, 'submit', lambda *args: None)
+    monkeypatch.setattr(im, 'IMAPSYNC_RUN_DIR', str(tmp_path / 'passfiles'))
+    params = dict(domain='demo1.example', local_part='sales', source_host='imap.example.net',
+                  source_port=993, source_email='old@example.net', source_password='source', dest_password='dest')
+    job = im.start_migration(params)
+    im._update_job(job['id'], status=status)
+    secret = im._write_passfile(im._job_passfile_dir(job['id']), 'passfile1', 'test-only')
+    assert im.recover_interrupted() == 1
+    assert not __import__('pathlib').Path(secret).exists()
+    assert im.get_status({'id': job['id'], 'username': 'demo1'})['status'] in ('failed', 'cancelled')
+    assert im.start_migration(params)['status'] == 'pending'

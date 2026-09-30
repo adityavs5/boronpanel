@@ -350,6 +350,11 @@ def _protected_dirs_for_domain(session, username: str, account_id: int, docroot:
         if absolute != docroot_real and not absolute.startswith(docroot_real + os.sep):
             continue
         relative_to_docroot = os.path.relpath(absolute, docroot_real)
+        # Canonicalization follows mutable tenant symlinks. Validate the final
+        # representation at the configuration sink, even for existing rows.
+        from shared.validation import validate_protected_dir_relative_path
+        validate_protected_dir_relative_path(absolute)
+        validate_protected_dir_relative_path(relative_to_docroot)
         result.append({
             "realm_name": row.realm_name,
             "relative_path": "" if relative_to_docroot == "." else relative_to_docroot,

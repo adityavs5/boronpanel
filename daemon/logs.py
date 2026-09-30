@@ -134,7 +134,7 @@ def _safe_read_segment(username: str, name: str, *, max_bytes: int) -> bytes:
         raise LogsError("log directory is missing or inaccessible") from exc
     try:
         try:
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
         except OSError as exc:
             raise LogsError("log segment is missing or inaccessible") from exc
         try:

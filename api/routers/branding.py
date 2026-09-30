@@ -25,10 +25,11 @@ from shared.db import read_session
 from shared.models import BrandingSettings
 
 from api.rpc import call_daemon
+from api.upload_guard import BoundedUploadRoute
 from api.security import Identity, get_identity, require_admin
 
-api_router = APIRouter(prefix="/api/v1/branding", tags=["branding"])
-admin_api_router = APIRouter(prefix="/api/v1/admin/branding", tags=["branding"])
+api_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/branding", tags=["branding"])
+admin_api_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/admin/branding", tags=["branding"])
 
 _MEDIA_TYPES = {"png": "image/png", "svg": "image/svg+xml", "ico": "image/x-icon"}
 

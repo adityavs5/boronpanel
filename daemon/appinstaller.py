@@ -36,7 +36,7 @@ own on-disk artifacts:
     for its absence before serving the site normally, the same role
     WordPress's presence-of-wp-config.php check plays.
 
-Drupal / PrestaShop / Laravel skeleton: real download + configuration,
+PrestaShop / Laravel skeleton: real download + configuration,
 using each project's best-known documented non-interactive/CLI install
 path. Genuinely implemented, but -- unlike Joomla -- not independently
 live-verified against a real running install in this pass; see
@@ -482,9 +482,8 @@ def _sql_str(value: str) -> str:
     return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-# --- Drupal: real download + Drupal's own documented pre-configured-
-# settings.php install.php flow. NOT independently live-verified this
-# pass -- see CHECKPOINT-phase4-8-app-installer.md. ------------------------
+# --- Drupal: release metadata retained; automatic installation disabled
+# until initialization can finish before any installer becomes public. ----
 
 DRUPAL_RELEASE_HISTORY_URL = "https://updates.drupal.org/release-history/drupal/current"
 
@@ -512,58 +511,10 @@ def fetch_drupal_latest_version_and_url() -> tuple[str, str]:
 
 
 def install_drupal(username: str, domain_name: str, title: str, admin_user: str, admin_email: str, admin_password: str) -> dict:
-    account_id, docroot = _account_and_domain(username, domain_name)
-    if not _docroot_is_empty_enough(docroot):
-        raise AppInstallError(f"'{docroot}' is not empty -- refusing to overwrite existing content")
-
-    version, download_url = fetch_drupal_latest_version_and_url()
-    grant = _allocate_database(username, "dr")
-    db_name, db_user, db_password = grant["db_name"], grant["db_user"], grant["password"]
-
-    staging = Path(settings.app_staging_dir)
-    staging.mkdir(parents=True, exist_ok=True, mode=0o755)
-    with tempfile.TemporaryDirectory(dir=str(staging)) as tmp:
-        archive_path = Path(tmp) / "drupal.tar.gz"
-        _download(download_url, archive_path)
-        # Drupal's tarball wraps everything in one drupal-<version> directory.
-        # The account-UID worker validates member types, paths and expansion
-        # before extraction, then moves the files under the same identity.
-        _files_as_account(username, 'tar', docroot, archive=archive_path)
-
-    db_config = (
-        "\n$databases['default']['default'] = [\n"
-        f"  'database' => {_php_str(db_name)},\n"
-        f"  'username' => {_php_str(db_user)},\n"
-        f"  'password' => {_php_str(db_password)},\n"
-        f"  'host' => {_php_str('localhost')},\n"
-        f"  'unix_socket' => {_php_str(settings.mariadb_socket)},\n"
-        "  'driver' => 'mysql',\n"
-        "  'prefix' => '',\n"
-        "];\n"
-        f"$settings['hash_salt'] = {_php_str(secrets.token_hex(32))};\n"
+    raise AppInstallError(
+        'Drupal automatic installation is unavailable until secure unattended initialization is supported. '
+        'Existing Drupal sites are unaffected; install Drupal manually using its official instructions.'
     )
-    _files_as_account(username, 'drupal-config', docroot, payload={'content': db_config})
-
-    _set_ownership(username, docroot)
-
-    # Drupal's own documented non-interactive path: with settings.php
-    # already fully configured (done above), the install wizard reduces to
-    # a single POST to install.php's final "site configuration" step --
-    # driven here as the account's own user via runuser, matching every
-    # other per-account operation's identity model.
-    install_url = f"http://localhost/index.php" if False else None
-    logger.info(
-        "Drupal %s downloaded and configured for %s -- automated install.php POST not run in this pass "
-        "(see CHECKPOINT-phase4-8-app-installer.md); complete setup at https://%s/core/install.php",
-        version, domain_name, domain_name,
-    )
-
-    return {
-        "version": version,
-        "admin_url": f"https://{domain_name}/core/install.php",
-        "admin_user": admin_user,
-        "admin_password": admin_password,
-    }
 
 
 # --- PrestaShop: real download + its own documented CLI installer -------
@@ -758,6 +709,8 @@ def trigger_install(params: dict) -> dict:
     app_id = params["app_id"]
     if app_id not in APPS:
         raise AppInstallError(f"unknown app_id '{app_id}' -- must be one of {sorted(APPS)}")
+    if app_id == 'drupal':
+        install_drupal(username, domain_name, '', '', '', '')
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))

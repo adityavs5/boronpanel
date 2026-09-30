@@ -20,13 +20,14 @@ from starlette.requests import Request
 from pydantic import BaseModel, Field
 
 from api.rpc import call_daemon
+from api.upload_guard import BoundedUploadRoute
 from api.security import Identity, get_identity, require_admin
 from api.templates import templates
 from shared.config import settings
 
-api_router = APIRouter(prefix="/api/v1/admin/import/cpanel", tags=["cpanel-import"])
-accounts_api_router = APIRouter(prefix="/api/v1/admin/import/accounts", tags=["account-imports"])
-ui_router = APIRouter(prefix="/ui/admin/import/cpanel", tags=["ui:cpanel-import"])
+api_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/admin/import/cpanel", tags=["cpanel-import"])
+accounts_api_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/admin/import/accounts", tags=["account-imports"])
+ui_router = APIRouter(route_class=BoundedUploadRoute, prefix="/ui/admin/import/cpanel", tags=["ui:cpanel-import"])
 
 
 def _spool_upload(file: UploadFile) -> str:

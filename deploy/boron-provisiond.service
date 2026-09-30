@@ -12,6 +12,9 @@ Environment=BORON_CONFIG=/etc/boron/boron.toml
 Environment=BORON_SECRETS=/etc/boron/secrets.env
 Restart=on-failure
 RestartSec=3
+# Startup recovery assumes no prior IMAP worker survives the service restart.
+KillMode=control-group
+SendSIGKILL=yes
 RuntimeDirectory=boron
 RuntimeDirectoryMode=0750
 UMask=0027

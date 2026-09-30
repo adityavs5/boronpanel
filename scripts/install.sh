@@ -863,7 +863,8 @@ SQL
 setup_powerdns() {
     info "Configuring PowerDNS (gsqlite3 + REST API)"
     if [[ -f /etc/powerdns/pdns.d/boron.conf ]]; then
-        skip "PowerDNS already configured"
+        run python3 "${DEST}/scripts/reconcile_powerdns_credentials.py"
+        skip "PowerDNS already configured; credential permissions reconciled"
         return 0
     fi
     if $DRY_RUN; then
@@ -877,7 +878,11 @@ setup_powerdns() {
         chown pdns:pdns /var/lib/powerdns/pdns.sqlite3
         chmod 660 /var/lib/powerdns/pdns.sqlite3
     fi
-    cat >/etc/powerdns/pdns.d/boron.conf <<EOF
+    local pdns_config
+    pdns_config="$(mktemp /etc/powerdns/pdns.d/.boron.XXXXXX)"
+    chown root:pdns "${pdns_config}"
+    chmod 640 "${pdns_config}"
+    cat >"${pdns_config}" <<EOF
 launch+=gsqlite3
 gsqlite3-database=/var/lib/powerdns/pdns.sqlite3
 gsqlite3-dnssec=no
@@ -889,12 +894,18 @@ api=yes
 api-key=${pdns_key}
 default-soa-content=ns1.boron.invalid hostmaster.@ 0 10800 3600 604800 3600
 EOF
+    mv -f "${pdns_config}" /etc/powerdns/pdns.d/boron.conf
+    touch "${CONF_DIR}/secrets.env"; chmod 600 "${CONF_DIR}/secrets.env"
     printf 'POWERDNS_API_KEY=%s\n' "${pdns_key}" >>"${CONF_DIR}/secrets.env"
     mkdir -p "${CONF_DIR}/ssl"
+    ( umask 077
+    touch "${CONF_DIR}/ssl/powerdns-credentials.ini"
+    chmod 600 "${CONF_DIR}/ssl/powerdns-credentials.ini"
     cat >"${CONF_DIR}/ssl/powerdns-credentials.ini" <<EOF
 dns_powerdns_api_url = http://127.0.0.1:8081/api/v1
 dns_powerdns_api_key = ${pdns_key}
 EOF
+    )
     chmod 600 "${CONF_DIR}/ssl/powerdns-credentials.ini"
     systemctl restart pdns
     ok "PowerDNS configured (API on 127.0.0.1:8081)"

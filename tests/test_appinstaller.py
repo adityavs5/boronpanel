@@ -579,3 +579,13 @@ def test_release_metadata_stream_is_bounded(monkeypatch):
     monkeypatch.setattr(ai.httpx, 'stream', stream)
     with pytest.raises(ai.AppInstallError, match='size limit'):
         ai._release_metadata('https://vendor.example/metadata')
+
+
+def test_incomplete_drupal_installer_cannot_publish_claimable_site(account_with_domain, monkeypatch):
+    monkeypatch.setattr(ai, '_allocate_database', lambda *a: pytest.fail('must not allocate a database'))
+    monkeypatch.setattr(ai, '_download', lambda *a: pytest.fail('must not publish installer files'))
+    with pytest.raises(ai.AppInstallError, match='unavailable'):
+        ai.trigger_install({'username': 'demo1', 'domain': 'demo1.example', 'app_id': 'drupal'})
+    with pytest.raises(ai.AppInstallError, match='unavailable'):
+        ai.install_drupal('demo1', 'demo1.example', 'site', 'admin', 'admin@example.com', 'password')
+    assert not list(account_with_domain['docroot'].iterdir())

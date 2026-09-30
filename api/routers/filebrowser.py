@@ -162,7 +162,7 @@ def _build_upstream_headers(request: Request, target: str) -> list[tuple[str, st
     so the panel session cookie is never leaked to it), and ANY client-supplied
     copy of the trusted identity header. Then inject the trusted header."""
     header_name = settings.filebrowser_header
-    drop = _HOP_BY_HOP | {"host", "content-length", "cookie", header_name.lower()}
+    drop = _HOP_BY_HOP | {"host", "content-length", "cookie", "authorization", header_name.lower()}
     out: list[tuple[str, str]] = [
         (k, v) for k, v in request.headers.items() if k.lower() not in drop
     ]
@@ -292,29 +292,42 @@ async def proxy(request: Request, path: str = ""):
     # through untouched; the main-app CSP middleware leaves /files responses
     # that already carry a CSP alone and stamps its static fallback on the
     # rest.
-    if upstream.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "text/html":
+    is_html = upstream.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "text/html"
+    if is_html and not is_data_api and _is_spa_shell(request, upstream):
+        import asyncio
         try:
-            body = await upstream.aread()
+            body = bytearray()
+            async with asyncio.timeout(30):
+                async for chunk in upstream.aiter_bytes(chunk_size=65536):
+                    if len(body) + len(chunk) > 1024 * 1024:
+                        raise HTTPException(status_code=502, detail="file manager shell exceeds the size limit")
+                    body.extend(chunk)
+        except TimeoutError:
+            raise HTTPException(status_code=504, detail="file manager shell timed out") from None
         finally:
             await upstream.aclose()
         headers = dict(_build_response_headers(upstream))
-        if _is_spa_shell(request, upstream):
-            headers["content-security-policy"] = html_csp(body)
-        else:
-            headers["content-security-policy"] = untrusted_html_csp()
-            headers["content-disposition"] = "attachment"
-            headers["x-content-type-options"] = "nosniff"
-        return Response(content=body, status_code=upstream.status_code, headers=headers)
+        headers.pop('content-encoding', None)
+        headers["content-security-policy"] = html_csp(bytes(body))
+        return Response(content=bytes(body), status_code=upstream.status_code, headers=headers)
 
     headers = dict(_build_response_headers(upstream))
-    if is_data_api or _is_active_document(upstream):
+    if is_html:
+        headers["content-disposition"] = "attachment"
+    if is_data_api or is_html or _is_active_document(upstream):
         # An uploaded SVG/XHTML can be a browser document with script execution
         # privileges even though its MIME type is not text/html. Keep bundled
         # FB icons renderable as images while sandboxing direct navigation.
         headers["content-security-policy"] = untrusted_html_csp()
         headers["x-content-type-options"] = "nosniff"
+    async def stream_body():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
     return StreamingResponse(
-        upstream.aiter_raw(),
+        stream_body(),
         status_code=upstream.status_code,
         headers=headers,
         background=BackgroundTask(upstream.aclose),

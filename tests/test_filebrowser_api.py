@@ -83,6 +83,8 @@ def test_build_upstream_headers_strips_client_identity_and_cookie():
             ("host", "panel.example"),
             ("content-length", "10"),
             ("cookie", "fh_session=abc; fh_fb_target=def"),
+            ("Authorization", "Bearer panel-secret"),
+            ("Range", "bytes=0-99"),
             (header_name, "attacker"),           # client-supplied identity — MUST be stripped
             (header_name.upper(), "attacker2"),  # case variant — MUST be stripped
             ("accept", "application/json"),
@@ -93,6 +95,8 @@ def test_build_upstream_headers_strips_client_identity_and_cookie():
     assert "host" not in keys
     assert "content-length" not in keys
     assert "cookie" not in keys
+    assert "authorization" not in keys
+    assert ("range", "bytes=0-99") in out
     # exactly one trusted identity header, set to the server-chosen target
     idents = [(k, v) for k, v in out if k.lower() == header_name.lower()]
     assert idents == [(header_name, "demo1")]
@@ -250,8 +254,8 @@ def test_proxy_html_gets_hashed_csp_not_middleware_fallback(monkeypatch):
         status_code = 200
         headers = httpx.Headers({"content-type": "text/html; charset=utf-8", "Content-Disposition": "inline; filename=evil.html", "Content-Security-Policy": "default-src *", "X-Content-Type-Options": "upstream"})
 
-        async def aread(self):
-            return html
+        async def aiter_bytes(self, chunk_size=None):
+            yield html
 
         async def aclose(self):
             pass
@@ -382,3 +386,40 @@ def test_backend_cannot_set_panel_cookies_or_origin_wide_controls():
         'Content-Type':'application/json'})
     headers = dict(fbr._build_response_headers(upstream))
     assert set(headers) == {'content-type'}
+
+
+def test_proxy_bounds_only_trusted_shell_and_closes_upstream(monkeypatch):
+    import asyncio
+    import httpx
+    from starlette.requests import Request
+    from fastapi import HTTPException
+    admin = Identity(panel_user_id=1, username='admin', role='admin', account_id=None, auth_method='session')
+    monkeypatch.setattr(fbr, '_resolve_identity', lambda _: admin)
+    class Reply:
+        status_code = 200
+        headers = httpx.Headers({'content-type': 'text/html'})
+        closed = False
+        async def aiter_bytes(self, chunk_size=None):
+            for _ in range(17): yield b'x' * 65536
+        async def aiter_raw(self):
+            yield b'first chunk'
+            raise AssertionError('Must not prefetch tenant HTML')
+        async def aclose(self): self.closed = True
+    reply = Reply()
+    async def send(*a, **kw): return reply
+    monkeypatch.setattr(fbr._client, 'send', send)
+    def request(path):
+        return Request({'type': 'http', 'scheme': 'https', 'server': ('panel.example', 443),
+                        'path': '/files/' + path, 'method': 'GET',
+                        'headers': [(b'host', b'panel.example'), (b'cookie', (fbr.FB_TARGET_COOKIE + '=' + fbr._sign_target('alice')).encode())]})
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(fbr.proxy(request(''), ''))
+    assert error.value.status_code == 502 and reply.closed
+    reply.closed = False
+    async def download():
+        response = await fbr.proxy(request('api/resources/site.html'), 'api/resources/site.html')
+        assert not reply.closed
+        assert await anext(response.body_iterator) == b'first chunk'
+        await response.body_iterator.aclose()
+    asyncio.run(download())
+    assert reply.closed

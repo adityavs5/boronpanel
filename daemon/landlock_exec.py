@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import stat
 import sys
 
 
@@ -97,11 +98,26 @@ def _existing(paths: list[str]) -> list[str]:
 
 
 def _add_rule(library, ruleset_fd: int, fds: list[int], path: str, rights: int) -> None:
-    real = Path(path).resolve(strict=True)
-    mode = real.stat().st_mode
-    if not real.is_dir():
-        rights &= FILE_ONLY_MASK
-    fd = os.open(real, os.O_PATH | os.O_CLOEXEC)
+    # Pin every component without following links. Resolving then opening a
+    # tenant-writable pathname would authorize a different tree after a swap.
+    parts = Path(os.path.abspath(path)).parts
+    fd = os.open('/', os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for index, part in enumerate(parts[1:]):
+            flags = os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC
+            if index < len(parts) - 2:
+                flags |= os.O_DIRECTORY
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        mode = os.fstat(fd).st_mode
+        if stat.S_ISLNK(mode):
+            raise ValueError('Sandbox roots cannot use symbolic links')
+        if not stat.S_ISDIR(mode):
+            rights &= FILE_ONLY_MASK
+    except BaseException:
+        os.close(fd)
+        raise
     fds.append(fd)
     rule = PathBeneathAttr(ctypes.c_uint64(rights), fd)
     _syscall(library, SYS_LANDLOCK_ADD_RULE, ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, ctypes.byref(rule), 0)
@@ -163,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         "/dev/urandom",
     ]))
     read_write_files = _existing(["/dev/null"])
-    _restrict(_existing(args.ro), _existing(args.rw), sorted(exec_files), read_write_files)
+    _restrict(args.ro, args.rw, sorted(exec_files), read_write_files)
     os.execvp(args.command[0], args.command)
     return 127
 

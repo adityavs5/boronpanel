@@ -986,20 +986,6 @@ def sandbox_roots(account, paths):
     return list(dict.fromkeys(roots))
 
 
-def _path_size(path):
-    if path.is_symlink():return 0
-    if path.is_file():return path.stat().st_size
-    total=0
-    for root,dirs,files in os.walk(path,followlinks=False):
-        dirs[:]=[name for name in dirs if not (Path(root)/name).is_symlink()]
-        for name in files:
-            item=Path(root)/name
-            try:
-                if not item.is_symlink():total+=item.stat().st_size
-            except FileNotFoundError:continue
-    return total
-
-
 def _portable_archive(run_id,account,paths,options,recovery_key_file=None):
     """Build a self-identifying tar artifact alongside restic's raw recovery data."""
     work=private_directory('exports',f'run-{run_id}')
@@ -1009,34 +995,20 @@ def _portable_archive(run_id,account,paths,options,recovery_key_file=None):
     mode=options['mode'];compressed=mode=='compressed'
     suffix='.boron.tar.gz' if compressed else '.boron.tar'
     artifact=work/f'{account.username}-{utcnow().strftime("%Y%m%d-%H%M%S")}{suffix}'
-    estimated=sum(_path_size(Path(value)) for value in paths)
-    free=shutil.disk_usage(work).free
-    reserve=max(256*1024*1024,int(estimated*.1))
-    if free < estimated+reserve:
-        raise ValidationError(f'Portable archive needs about {estimated+reserve} bytes of staging space; only {free} bytes are free')
-    home=Path(settings.home_base)/account.username;mail=Path(settings.mail_base)
-    inventory=[]
-    for value in paths:
-        source=Path(value)
-        if source==home:arcname=Path('account/home')
-        elif source.is_relative_to(home):arcname=Path('account/home')/source.relative_to(home)
-        elif source.is_relative_to(mail):arcname=Path('account/mail')/source.relative_to(mail)
-        else:arcname=Path('account/metadata')
-        inventory.append({'source':str(source),'archive_path':arcname.as_posix(),'size_bytes':_path_size(source)})
-    manifest={'format':'boron-account-snapshot','format_version':1,'account_id':account.id,
-        'username':account.username,'created_at':utcnow().isoformat(),'mode':mode,
-        'components':options['components'],'inventory':inventory}
-    manifest_path=work/'manifest.json';manifest_path.write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
-    patterns=options.get('exclude_patterns',[])
-    def archive_filter(info):
-        relative=info.name.removeprefix('account/')
-        return None if any(fnmatch.fnmatch(relative,pattern) or fnmatch.fnmatch(Path(relative).name,pattern) for pattern in patterns) else info
-    try:
-        with tarfile.open(artifact,'w:gz' if compressed else 'w',format=tarfile.PAX_FORMAT) as archive:
-            archive.add(manifest_path,arcname='account/manifest.json',recursive=False)
-            for item,entry in zip(paths,inventory):archive.add(item,arcname=entry['archive_path'],recursive=True,filter=archive_filter)
-    except (OSError,tarfile.TarError) as exc:
-        raise ValidationError(f'Could not create portable account archive: {exc}') from exc
+    import sys
+    payload = {
+        'work': str(work), 'artifact': str(artifact), 'paths': paths,
+        'home': str(Path(settings.home_base) / account.username),
+        'mail': str(settings.mail_base), 'roots': sandbox_roots(account, paths),
+        'options': options,
+        'manifest': {'format': 'boron-account-snapshot', 'format_version': 1,
+                     'account_id': account.id, 'username': account.username,
+                     'created_at': utcnow().isoformat(), 'mode': mode,
+                     'components': options['components']},
+    }
+    run([sys.executable, '-I', str(Path(__file__).with_name('snapshot_archive_worker.py'))],
+        input_text=json.dumps(payload), timeout=3600, output_limit=65536,
+        redact=[json.dumps(payload)]).raise_if_failed('Portable account archive')
     plain_digest=hashlib.sha256()
     with artifact.open('rb') as handle:
         for chunk in iter(lambda:handle.read(1024*1024),b''):plain_digest.update(chunk)
@@ -1154,7 +1126,7 @@ def execute_run(ident):
                 quiesced=handlers_maintenance.quiesce_account(account)
             _update(ident,status='running',progress_message='Preparing account files and databases')
             paths=sources(account,row.options)
-            estimate=_preflight_capacity(paths,row.options)
+            estimate=_preflight_capacity(paths,row.options,account)
             automatic_config=None
             if row.trigger=='scheduled':
                 from daemon.snapshot_config import automatic_export
@@ -1222,20 +1194,17 @@ def execute_run(ident):
         if should_notify and account is not None:_notify(_row(SnapshotRun,ident),account)
 
 
-def _preflight_capacity(paths,options):
+def _preflight_capacity(paths,options,account):
     """Reject portable staging that would consume the configured free-space reserve."""
     reserve=int(options.get('minimum_free_mb',2048))*1024*1024;estimated=0
     if options.get('mode') in ('compressed','archive'):
-        for value in paths:
-            path=Path(value)
-            if path.is_file() and not path.is_symlink():estimated+=path.stat().st_size
-            elif path.is_dir() and not path.is_symlink():
-                for root,_dirs,files in os.walk(path,followlinks=False):
-                    for name in files:
-                        item=Path(root)/name
-                        try:
-                            if not item.is_symlink():estimated+=item.stat().st_size
-                        except FileNotFoundError:continue
+        import sys
+        payload = {'measure_only': True, 'paths': paths, 'options': options,
+                   'work': str(private_directory()), 'roots': sandbox_roots(account, paths)}
+        result = run([sys.executable, '-I', str(Path(__file__).with_name('snapshot_archive_worker.py'))],
+                     input_text=json.dumps(payload), timeout=300, output_limit=65536)
+        result.raise_if_failed('Portable archive capacity check')
+        estimated = json.loads(result.stdout)['estimated_source_bytes']
         free=shutil.disk_usage(private_directory()).free
         staging=estimated*(2 if options.get('encrypt_portable') else 1)
         if free-staging<reserve:

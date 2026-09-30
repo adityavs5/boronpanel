@@ -746,7 +746,7 @@ def execute(ident):
             _update(ident,progress_message='Saving current files before restore')
             current=[str(p) for p in paths if p.exists() or p.is_symlink()]
             if current:
-                safety=storage.backup(repo,account.id,current)
+                safety=storage.backup(repo,account.id,current,sandbox_roots=[str(home)])
                 _update(ident,safety_snapshot_id=safety['snapshot_id'])
             _update(ident,progress_message='Restoring account files')
             payload=dict(uid=account.uid,gid=account.gid,home=str(home),source=str(data/str(home).lstrip('/')),

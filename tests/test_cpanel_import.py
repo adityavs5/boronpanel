@@ -767,3 +767,12 @@ def test_import_rejects_internal_symlink_cycle_before_extraction(tmp_path):
     with pytest.raises(ci.CpanelImportError, match='unsupported links'):
         ci._extract_archive(archive,destination)
     assert not list(destination.iterdir())
+
+
+def test_parse_bind_zone_records_rejects_external_include(tmp_path):
+    foreign = tmp_path / 'foreign-zone-fragment'
+    foreign.write_text('@ 3600 IN TXT "foreign-canary"\n')
+    zone = tmp_path / 'source.zone'
+    zone.write_text('$ORIGIN example.com.\n$TTL 3600\n$INCLUDE ' + str(foreign) + '\n')
+    with pytest.raises(ci.CpanelImportError, match='could not parse BIND'):
+        ci._parse_bind_zone_records(zone, 'example.com')

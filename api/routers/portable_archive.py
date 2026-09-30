@@ -10,11 +10,12 @@ from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from api.rpc import call_daemon
+from api.upload_guard import BoundedUploadRoute
 from api.security import Identity, get_identity, require_admin
 from shared.config import settings
 
-import_router = APIRouter(prefix="/api/v1/admin/import/boron", tags=["account-archives"])
-export_router = APIRouter(prefix="/api/v1/admin/account-archives", tags=["account-archives"])
+import_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/admin/import/boron", tags=["account-archives"])
+export_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/admin/account-archives", tags=["account-archives"])
 
 
 def _spool(file: UploadFile) -> str:

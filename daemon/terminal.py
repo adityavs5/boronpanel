@@ -155,7 +155,7 @@ def _open_ssh_dir(ssh_dir: str) -> int:
 
 def _read_lines(dir_fd: int) -> list[str]:
     try:
-        fd = os.open("authorized_keys", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+        fd = os.open("authorized_keys", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)
     except FileNotFoundError:
         return []
     except OSError as exc:
@@ -163,8 +163,11 @@ def _read_lines(dir_fd: int) -> list[str]:
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise UnsafePathError("authorized_keys is not a regular file")
-        with os.fdopen(fd, "r", closefd=False) as f:
-            return [ln.rstrip("\n") for ln in f if ln.strip()]
+        with os.fdopen(fd, "rb", closefd=False) as f:
+            data = f.read(1024 * 1024 + 1)
+        if len(data) > 1024 * 1024:
+            raise UnsafePathError("authorized_keys exceeds the 1 MiB safety limit")
+        return [line for line in data.decode('utf-8').splitlines() if line.strip()]
     finally:
         os.close(fd)
 
@@ -200,12 +203,16 @@ def _write_lines(dir_fd: int, lines: list[str], uid: int, gid: int) -> None:
                 logger.warning("failed to remove temporary authorized_keys file %s", tmp)
 
 
-def _locked(dir_fd: int):
-    """A lock on <ssh_dir>/.boron-terminal.lock serializing authorized_keys
-    read-modify-write across concurrent open/close (this module and, harmlessly,
-    only this module -- the SSH-keys feature edits distinct lines)."""
-    fd = os.open(".boron-terminal.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
-    fcntl.flock(fd, fcntl.LOCK_EX)
+def _locked(username: str):
+    """Root-private, nonblocking lock: a customer cannot hold this inode."""
+    from daemon.snapshot_jobs import private_directory
+    path = private_directory('locks') / ('terminal-' + validate_username(username))
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException:
+        os.close(fd)
+        raise
     return fd
 
 
@@ -232,7 +239,11 @@ def open_session(params: dict) -> dict:
     private_pem, public_openssh = generate_keypair()
 
     dir_fd = _open_ssh_dir(ssh_dir)
-    fd = _locked(dir_fd)
+    try:
+        fd = _locked(username)
+    except BaseException:
+        os.close(dir_fd)
+        raise
     try:
         lines = _read_lines(dir_fd)
         lines, active = prune_and_count(lines, now)
@@ -270,7 +281,11 @@ def close_session(params: dict) -> dict:
         dir_fd = _open_ssh_dir(ssh_dir)
     except OSError:
         return {"status": "not_found"}
-    fd = _locked(dir_fd)
+    try:
+        fd = _locked(username)
+    except BaseException:
+        os.close(dir_fd)
+        raise
     try:
         lines = _read_lines(dir_fd)
         remaining = remove_session_line(lines, session_id)
