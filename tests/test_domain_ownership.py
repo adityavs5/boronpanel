@@ -87,6 +87,8 @@ def test_orphaned_external_mail_cannot_be_adopted_by_new_web_owner(owners, monke
 def test_mail_create_rejects_mismatched_host_owner(owners, monkeypatch):
     effects = []
     monkeypatch.setattr(handlers_mail.mail, 'create_mail_domain', lambda *a: effects.append(True))
-    with pytest.raises(ValidationError, match='ownership must match'):
+    # The serialized mutation guard now rejects the foreign owner before
+    # create_mail_domain reaches its older ownership consistency check.
+    with pytest.raises(ValidationError, match='belongs to another account'):
         handlers_mail.create_mail_domain({'username': 'bob', 'domain': 'alice.example'})
     assert effects == []
