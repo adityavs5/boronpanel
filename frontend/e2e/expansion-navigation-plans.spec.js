@@ -21,6 +21,7 @@ async function session(page, role, skin) {
     else if (path.endsWith('/usage')) data = { current: {}, quota_hard_mb: 6144 }
     else if (path.endsWith('/health')) data = { cpu_pct: 1, mem_pct: 2, disks: [] }
     else if (path.endsWith('/admin/plans')) data = { plans: [] }
+    else if (path === '/api/v1/admin/resources') data = { host: { cpu_cores: 2 }, users: [], policies: [] }
     else if (path.endsWith('/parked-domains')) data = { parked_domains: [] }
     else data = { mailboxes: [], forwarders: [], entries: [], jobs: [] }
     await route.fulfill({ json: data })
@@ -28,7 +29,7 @@ async function session(page, role, skin) {
 }
 
 const expectedCustomerStart = [
-  '/app/domains', '/app/subdomains', '/app/ftp', '/app/ssl', '/app/databases', '/app/dns',
+  '/app/domains', '/app/subdomains', '/app/ftp', '/app/ssl', '/app/databases', '/app/dns', '/app/php',
   '/app/email', '/app/email?webmail=1', '/app/email/settings', '/app/email/dns', '/app/email/spam', '/app/email/migration',
   '/app/wordpress', '/app/node-apps', '/app/python-apps', '/app/redis', '/app/git', '/app/cron',
 ]
@@ -78,15 +79,47 @@ test('plan creation is a full page with four editable templates', async ({ page 
   const template = page.getByLabel('Starting template')
   await expect(template.locator('option')).toHaveCount(4)
   await expect(template).toHaveValue('wordpress')
-  await expect(page.getByLabel('Hard memory limit (MB)')).toHaveValue('1024')
+  await expect(page.getByLabel('Hard memory limit (GB)')).toHaveValue('1')
+  await expect(page.getByLabel('Read IOPS')).toHaveValue('500')
+  await expect(page.getByLabel('Write IOPS')).toHaveValue('250')
+  const cpu = page.getByLabel('CPU allocation')
+  await expect(cpu.locator('option[value="2"]')).toHaveCount(1)
+  await expect(cpu.locator('option[value="4"]')).toHaveCount(0)
   await expect(page.getByText('Compute resources', { exact: true })).toBeVisible()
   await expect(page.getByText('Disk, I/O and traffic', { exact: true })).toBeVisible()
   await expect(page.getByText(/Provision an isolated Redis instance/)).toBeVisible()
 
   await template.selectOption('starter')
   await expect(page.getByLabel('Plan name')).toHaveValue('Starter')
-  await expect(page.getByLabel('Disk hard quota (MB)')).toHaveValue('3072')
+  await expect(page.getByLabel('Disk hard quota (GB)')).toHaveValue('3')
 
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
+
+for (const skin of ['evolution', 'paper-lantern']) {
+  test(`${skin}: account creation uses a full page and generates credentials`, async ({ page }) => {
+    await session(page, 'admin', skin)
+    let payload
+    await page.route('**/api/v1/accounts', async route => {
+      if (route.request().method() === 'POST') {
+        payload = route.request().postDataJSON()
+        await route.fulfill({ json: { username: payload.username, initial_password: 'Test-Only-Account-42!' } })
+      } else await route.fulfill({ json: [] })
+    })
+    await page.goto('/app/accounts')
+    await page.getByRole('link', { name: 'Create account', exact: true }).first().click()
+    await expect(page).toHaveURL(/\/accounts\/new$/)
+    await expect(page.getByRole('heading', { name: 'Create hosting account' })).toBeVisible()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await page.getByRole('textbox', { name: 'Username required', exact: true }).fill('newsite')
+    await page.getByLabel('Primary domain', { exact: true }).fill('newsite.example.com')
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.getByRole('button', { name: 'Create hosting account' }).click()
+    await expect(page.getByRole('heading', { name: 'Account created' })).toBeVisible()
+    await expect(page.getByText('Test-Only-Account-42!', { exact: true })).toBeVisible()
+    expect(payload).toMatchObject({ username: 'newsite', primary_domain: 'newsite.example.com', ip_selection: 'automatic' })
+    expect(payload.password).toBeUndefined()
+  })
+}
