@@ -273,10 +273,36 @@ def terminate_account_mail(account: Account) -> None:
 
 
 @serialized
+def set_mailbox_quota(params: dict) -> dict:
+    domain_name = validate_domain(params['domain'])
+    local = validate_mailbox_local_part(params['local_part'])
+    try:
+        quota = int(params['quota_mb'])
+    except (TypeError, ValueError):
+        raise ValidationError('Enter a mailbox quota in GB') from None
+    if not MAILBOX_QUOTA_MIN_MB <= quota <= MAILBOX_QUOTA_MAX_MB:
+        raise ValidationError('Mailbox quota must be between 0.0009765625 and 100 GB')
+    with write_session() as session:
+        row = session.scalar(select(MailUser).where(MailUser.domain == domain_name, MailUser.local_part == local))
+        if row is None:
+            raise ValidationError('This mailbox does not exist')
+        previous, mailbox_id = row.quota_mb, row.id
+    mail.set_mailbox_quota(domain_name, local, quota)
+    try:
+        with write_session() as session:
+            session.get(MailUser, mailbox_id).quota_mb = quota
+    except Exception:
+        mail.set_mailbox_quota(domain_name, local, previous)
+        raise
+    return {'domain': domain_name, 'local_part': local, 'quota_mb': quota}
+
+
+@serialized
 def create_forward(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
     destination = validate_email_address(params["destination"])
+    ensure_mail_domain(domain_name)
     return mail.create_forward(domain_name, local_part, destination)
 
 
@@ -291,6 +317,8 @@ def delete_forward(params: dict) -> dict:
 
 def list_forwards(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
+    if not mail.domain_exists(domain_name):
+        return {'domain': domain_name, 'forwards': []}
     return {"domain": domain_name, "forwards": mail.list_forwards(domain_name)}
 
 
@@ -301,11 +329,14 @@ def list_forwards(params: dict) -> dict:
 def set_catchall(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     destination = validate_email_address(params["destination"])
+    ensure_mail_domain(domain_name)
     return mail.set_catchall(domain_name, destination)
 
 
 def get_catchall(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
+    if not mail.domain_exists(domain_name):
+        return {'domain': domain_name, 'catchall': None}
     catchall = mail.get_catchall(domain_name)
     return {"domain": domain_name, "catchall": catchall}
 

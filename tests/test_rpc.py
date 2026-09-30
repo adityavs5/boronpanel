@@ -103,3 +103,18 @@ def test_root_daemon_rejects_peer_without_kernel_credentials():
     writer = Writer()
     asyncio.run(handle_client(None, writer))
     assert writer.closed
+
+
+def test_python_provisioning_has_deadline_above_both_bounded_commands(monkeypatch):
+    from api import rpc as api_rpc
+    from api.security import Identity
+    called = []
+    class Client:
+        def call(self, op, **params):
+            called.append((op, params['rpc_credential']))
+            return {'created': True}
+    assert api_rpc._python_provision_client.timeout > 180 + 180
+    monkeypatch.setattr(api_rpc, '_python_provision_client', Client())
+    identity = Identity(1, 'admin', 'admin', None, 'session', rpc_credential='opaque-session')
+    assert api_rpc.call_daemon('apps.python.create', identity, username='alpha') == {'created': True}
+    assert called == [('apps.python.create', {'type': 'session', 'value': 'opaque-session'})]

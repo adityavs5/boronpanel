@@ -11,7 +11,7 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
       localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
       localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'customer', username: 'alpha' }, version: 0 }))
     }, { skin, theme })
-    let active = false, failRestart = true
+    let active = 'inactive', failRestart = true
     const writes = []
     await page.route('**/api/**', async route => {
       const req = route.request(), p = new URL(req.url()).pathname
@@ -20,8 +20,8 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
       if (p.endsWith('/whoami')) data = { role: 'customer', username: 'alpha' }
       else if (p.endsWith('/onboarding')) data = { completed: true }
       else if (/\/apps\/(node|python)$/.test(p)) data = { apps: [{ id: 7, name: 'my-api', active, domain: 'api.example.com', port: 3001, entry_point: 'server.js' }] }
-      else if (p.endsWith('/7/start')) active = true
-      else if (p.endsWith('/7/stop')) active = false
+      else if (p.endsWith('/7/start')) active = 'active'
+      else if (p.endsWith('/7/stop')) active = 'inactive'
       else if (p.endsWith('/7/restart') && failRestart) {
         failRestart = false
         await route.fulfill({ status: 500, json: { detail: 'Service could not restart' } })

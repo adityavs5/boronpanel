@@ -16,6 +16,26 @@ from sqlalchemy import select
 from shared.validation import ValidationError, validate_db_identifier, validate_username
 
 
+def _registered_database(username, name, user):
+    with write_session() as session:
+        return session.scalar(select(DatabaseGrant.id).join(Account, Account.id == DatabaseGrant.account_id).where(
+            Account.username == username, Account.status.in_(['active', 'suspended']),
+            DatabaseGrant.db_name == name, DatabaseGrant.db_user == user)) is not None
+
+
+def _registered_user(username, user, host):
+    with write_session() as session:
+        account = session.scalar(select(Account.id).where(Account.username == username,
+            Account.status.in_(['active', 'suspended'])))
+        if account is None:
+            return False
+        if session.scalar(select(DatabaseUser.id).where(DatabaseUser.account_id == account,
+                DatabaseUser.db_user == user, DatabaseUser.host == host)) is not None:
+            return True
+        return host == 'localhost' and session.scalar(select(DatabaseGrant.id).where(
+            DatabaseGrant.account_id == account, DatabaseGrant.db_user == user)) is not None
+
+
 def validate_entry(username, entry):
     validate_username(username)
     if not isinstance(entry, dict):
@@ -23,7 +43,7 @@ def validate_entry(username, entry):
     name, user = entry.get('name'), entry.get('user')
     _database_name(name)
     validate_db_identifier(user)
-    if not name.startswith(username + '_') or not user.startswith(username + '_'):
+    if (not name.startswith(username + '_') or not user.startswith(username + '_')) and not _registered_database(username, name, user):
         raise ValidationError('Database recovery metadata belongs to another account')
     if entry.get('host') != 'localhost' or entry.get('plugin') != 'mysql_native_password':
         raise ValidationError('Unsupported database recovery authentication')
@@ -39,7 +59,7 @@ def _validate_user(username, entry):
     if not isinstance(entry, dict):
         raise ValidationError('Invalid database user recovery metadata')
     user = validate_db_identifier(entry.get('user'))
-    if not user.startswith(username + '_'):
+    if not user.startswith(username + '_') and not _registered_user(username, user, entry.get('host')):
         raise ValidationError('Database user recovery metadata belongs to another account')
     host = mariadb.validate_database_host(entry.get('host'))
     if entry.get('plugin') != 'mysql_native_password' or not re.fullmatch(r'\*[0-9A-F]{40}', str(entry.get('password_hash', ''))):
@@ -104,7 +124,7 @@ def capture(username, grants):
                 name, user = grant.db_name, grant.db_user
                 _database_name(name)
                 validate_db_identifier(user)
-                if not name.startswith(username + '_') or not user.startswith(username + '_'):
+                if (not name.startswith(username + '_') or not user.startswith(username + '_')) and not _registered_database(username, name, user):
                     raise ValidationError('Database registration belongs to another account')
                 cursor.execute('SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s', (name,))
                 schema = cursor.fetchone()

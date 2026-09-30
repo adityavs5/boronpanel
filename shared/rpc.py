@@ -23,9 +23,10 @@ MAX_FRAME_BYTES = 16 * 1024 * 1024
 
 
 class RpcError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, diagnostic: dict | None = None):
         self.code = code
         self.message = message
+        self.diagnostic = diagnostic
         super().__init__(f"{code}: {message}")
 
 
@@ -44,11 +45,13 @@ class RpcRequest:
         return _LEN_STRUCT.pack(len(payload)) + payload
 
 
-def encode_response(ok: bool, result: Any = None, error_code: str = "", error_message: str = "") -> bytes:
+def encode_response(ok: bool, result: Any = None, error_code: str = "", error_message: str = "", diagnostic: dict | None = None) -> bytes:
     if ok:
         body = {"ok": True, "result": result}
     else:
         body = {"ok": False, "error": {"code": error_code, "message": error_message}}
+        if diagnostic:
+            body['error']['diagnostic'] = diagnostic
     payload = json.dumps(body).encode("utf-8")
     return _LEN_STRUCT.pack(len(payload)) + payload
 
@@ -112,4 +115,4 @@ class RpcClient:
         if response.get("ok"):
             return response.get("result")
         error = response.get("error", {})
-        raise RpcError(error.get("code", "unknown"), error.get("message", "unknown error"))
+        raise RpcError(error.get("code", "unknown"), error.get("message", "unknown error"), error.get('diagnostic'))

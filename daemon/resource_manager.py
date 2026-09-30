@@ -42,6 +42,13 @@ def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
 
+def host_memory_gb() -> float:
+    try:
+        return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / 1024 ** 3
+    except (ValueError, OSError, AttributeError):
+        return 0
+
+
 def _policy_dict(row: ResourcePolicy) -> dict:
     return {
         "id": row.id, "scope_type": row.scope_type, "scope_id": row.scope_id,
@@ -107,7 +114,13 @@ def effective_for_account(db, account: Account) -> dict:
         for field in POLICY_FIELDS:
             effective[field] = getattr(row, field)
             sources[field] = label
-    return {"values": effective, "sources": sources, "policy": _policy_dict(candidates[-1]) if candidates else None}
+    requested_cpu = effective['cpu_cores']
+    capacity = available_cpu_cores()
+    if requested_cpu is not None and requested_cpu > capacity:
+        effective['cpu_cores'] = capacity
+    return {"values": effective, "sources": sources, "policy": _policy_dict(candidates[-1]) if candidates else None,
+            "configured_cpu_cores": requested_cpu,
+            "capacity_adjusted": requested_cpu is not None and requested_cpu > capacity}
 
 
 def _number(value, field: str, minimum: float, maximum: float, *, integer: bool = True):
@@ -118,7 +131,7 @@ def _number(value, field: str, minimum: float, maximum: float, *, integer: bool 
     except (TypeError, ValueError):
         raise ValidationError(f"{field} must be a number or Unlimited") from None
     if not minimum <= result <= maximum:
-        raise ValidationError(f"{field} must be between {minimum:g} and {maximum:g}")
+        raise ValidationError(f"{field} must be between {minimum / 1024:g} and {maximum / 1024:g} GB" if field.startswith("Memory") else f"{field} must be between {minimum:g} and {maximum:g}")
     return result
 
 
@@ -137,7 +150,7 @@ def validate_policy(params: dict) -> dict:
         "entry_processes": _number(params.get("entry_processes"), "Entry processes", 1, 10000),
     }
     if policy["memory_high_mb"] and policy["memory_max_mb"] and policy["memory_high_mb"] > policy["memory_max_mb"]:
-        raise ValidationError("Memory high must not exceed the hard memory limit")
+        raise ValidationError("Soft memory limit must not exceed the hard memory limit")
     return policy
 
 
@@ -272,7 +285,7 @@ def overview(_params: dict | None = None) -> dict:
         history = db.scalars(select(ResourceSample).order_by(ResourceSample.sampled_at.desc()).limit(500)).all()
         fault_rows = db.scalars(select(ResourceFault).order_by(ResourceFault.detected_at.desc()).limit(500)).all()
         return {
-            "host": {"cpu_cores": available_cpu_cores()},
+            "host": {"cpu_cores": available_cpu_cores(), "memory_gb": host_memory_gb()},
             "users": rows, "policies": [_policy_dict(row) for row in policies],
             "history": [{"account_id": row.account_id, "cpu_pct": row.cpu_pct,
                          "memory_bytes": row.memory_bytes, "io_read_bytes": row.io_read_bytes,

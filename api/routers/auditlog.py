@@ -1,15 +1,9 @@
-"""Phase 5 feature 6: audit log. Admin-only, read-only -- every admin and
-customer action is already recorded by `daemon/audit.py`'s `record()`,
-called unconditionally (success or failure) from `daemon/server.py`'s
-`dispatch()` for every single RPC op, so nothing new was needed to make
-"every action logged" true; this feature only adds a searchable/
-filterable view over the table that already exists.
+"""Read-only administrator audit views.
 
-Reads `AuditLog` directly via `read_session()`, the same "boron-api
-opens the same SQLite file read-only for fast list/get queries"
-data-access pattern ARCHITECTURE.md SS4 already establishes (e.g.
-`tokens.py`) -- there is deliberately no write/delete route anywhere in
-this file (goal: "cannot delete via UI").
+Writes and failed operations are recorded at the root RPC boundary. Successful
+explicitly read-only operations are omitted to keep changes visible; legacy
+read entries remain available through the include_reads filter. No delete
+route is exposed here.
 """
 from __future__ import annotations
 
@@ -25,6 +19,7 @@ from api.security import Identity, get_identity, require_admin
 from api.templates import templates
 from shared.db import read_session
 from shared.models import AccountEvent, AuditLog
+from shared.token_policy import READ_ONLY_OPERATIONS
 
 api_router = APIRouter(prefix="/api/v1/audit-log", tags=["audit-log"])
 ui_router = APIRouter(prefix="/ui/audit-log", tags=["ui:audit-log"])
@@ -32,13 +27,15 @@ ui_router = APIRouter(prefix="/ui/audit-log", tags=["ui:audit-log"])
 MAX_PAGE_SIZE = 500
 
 
-def _apply_filters(query, actor: str, op: str, result: str, target: str, q: str):
+def _apply_filters(query, actor: str, op: str, result: str, target: str, q: str, include_reads: bool = False):
+    if not include_reads:
+        query = query.where(~((AuditLog.result == 'ok') & AuditLog.op.in_(READ_ONLY_OPERATIONS)))
     if actor:
         query = query.where(AuditLog.actor.contains(actor))
     if op:
         query = query.where(AuditLog.op.contains(op))
     if result:
-        query = query.where(AuditLog.result == result)
+        query = query.where(AuditLog.result == ('failed' if result == 'error' else result))
     if target:
         query = query.where(AuditLog.target.contains(target))
     if q:
@@ -63,12 +60,12 @@ def _row_dict(row: AuditLog) -> dict:
     }
 
 
-def _query_rows(actor: str, op: str, result: str, target: str, q: str, page: int, page_size: int) -> tuple[list[AuditLog], int]:
+def _query_rows(actor: str, op: str, result: str, target: str, q: str, page: int, page_size: int, include_reads: bool = False) -> tuple[list[AuditLog], int]:
     page_size = max(1, min(page_size, MAX_PAGE_SIZE))
     page = max(1, page)
     with read_session() as db:
         base = select(AuditLog)
-        base = _apply_filters(base, actor, op, result, target, q)
+        base = _apply_filters(base, actor, op, result, target, q, include_reads)
         total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
         rows = db.scalars(
             base.order_by(AuditLog.id.desc()).offset((page - 1) * page_size).limit(page_size)
@@ -83,12 +80,13 @@ def list_audit_log(
     result: str = "",
     target: str = "",
     q: str = "",
+    include_reads: bool = False,
     page: int = 1,
     page_size: int = 50,
     identity: Identity = Depends(get_identity),
 ):
     require_admin(identity)
-    rows, total = _query_rows(actor, op, result, target, q, page, page_size)
+    rows, total = _query_rows(actor, op, result, target, q, page, page_size, include_reads)
     return {"entries": [_row_dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
 
 
@@ -211,10 +209,11 @@ def export_csv(
     result: str = "",
     target: str = "",
     q: str = "",
+    include_reads: bool = False,
     identity: Identity = Depends(get_identity),
 ):
     require_admin(identity)
-    query = _apply_filters(select(AuditLog), actor, op, result, target, q)
+    query = _apply_filters(select(AuditLog), actor, op, result, target, q, include_reads)
     return _csv_response(AuditLog, query,
         ['id', 'created_at', 'actor', 'role', 'op', 'target', 'result', 'detail'],
         'boron-audit-log.csv')
@@ -231,12 +230,13 @@ def ui_audit_log(
     result: str = "",
     target: str = "",
     q: str = "",
+    include_reads: bool = False,
     page: int = 1,
     identity: Identity = Depends(get_identity),
 ):
     require_admin(identity)
     page_size = 50
-    rows, total = _query_rows(actor, op, result, target, q, page, page_size)
+    rows, total = _query_rows(actor, op, result, target, q, page, page_size, include_reads)
     total_pages = max(1, (total + page_size - 1) // page_size)
     return templates.TemplateResponse(
         request,

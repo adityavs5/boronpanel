@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import * as ToastPrimitive from '@radix-ui/react-toast'
 import { CheckCircle2, AlertCircle, Info, X, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { useAuth } from '@/store/auth'
 
 // Global toast store — call toast.success('...'), toast.error(err), etc. from
 // anywhere (including outside React, e.g. mutation onError handlers).
@@ -44,11 +45,13 @@ const ACCENTS = {
 }
 
 export function Toaster() {
+  const admin = useAuth((state) => state.role === 'admin')
   const toasts = useToastStore((s) => s.toasts)
   const dismiss = useToastStore((s) => s.dismiss)
   return (
     <ToastPrimitive.Provider swipeDirection="right">
       {toasts.map((t) => {
+        const reference = `${t.title || ''} ${t.description || ''}`.match(/reference: ([a-f0-9]{16})/)?.[1]
         const Icon = ICONS[t.variant] || Info
         const rail = {
           success: 'border-l-success',
@@ -74,6 +77,7 @@ export function Toaster() {
                   {t.description}
                 </ToastPrimitive.Description>
               )}
+              {reference && admin && <a className="mt-1 block text-sm text-accent underline" href={`/app/error-log?reference=${reference}`}>View error details</a>}
             </div>
             <ToastPrimitive.Close aria-label="Dismiss notification" className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground">
               <X className="h-4 w-4" />

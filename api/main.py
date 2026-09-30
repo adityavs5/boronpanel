@@ -8,6 +8,8 @@ require_*_access dependencies regardless of HTTP verb (SS9).
 from __future__ import annotations
 
 import math
+import html
+import re
 import time
 from urllib.parse import urlsplit
 
@@ -19,7 +21,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from api.static_assets import PanelStaticFiles
 from sqlalchemy import select
 
@@ -206,6 +208,7 @@ async def _security_headers(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
     response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
     # The legacy Jinja UI keeps `script-src 'none'` (audit finding F10 — it has
     # no scripts at all). The React SPA under /app is a bundled, same-origin app
@@ -283,14 +286,20 @@ async def _access_log(request, call_next):
     try:
         response = await call_next(request)
         status = response.status_code
-    except Exception:
+    except Exception as exc:
         # An unhandled exception propagates past the inner ExceptionMiddleware
         # and is turned into a 500 by Starlette's outermost error handler --
         # which sits OUTSIDE this middleware, so without catching here the
-        # crash would never reach the error log. Record it as a 500, then
-        # re-raise so the real 500 response is still produced upstream.
+        # crash would never reach the error log. Record safe diagnostics and
+        # return a correlated error without vendor text or a raw traceback.
+        from shared.failures import describe_failure
+        diagnostic = describe_failure(f'{request.method} {request.url.path}', exc)
+        identity = getattr(request.state, 'identity', None)
+        logsetup.record_operation_error(diagnostic, getattr(identity, 'username', None),
+                                        request.client.host if request.client else None, status=500)
         _log(request, 500, (time.monotonic() - start) * 1000.0)
-        raise
+        return JSONResponse({'detail': f"Internal operation failure (reference: {diagnostic['reference']})"},
+                            status_code=500, headers={'X-Boron-Error-Reference': diagnostic['reference']})
     _log(request, status, (time.monotonic() - start) * 1000.0)
     return response
 
@@ -489,5 +498,7 @@ def spa(spa_path: str = ""):
         # index.html must revalidate on every load: its asset URLs are content-
         # hashed, so a cached copy keeps serving an entire stale bundle after a
         # deploy. The hashed assets themselves stay long-cacheable.
-        return FileResponse(str(SPA_INDEX), headers={"Cache-Control": "no-cache"})
+        name = branding.get_branding()["panel_name"]
+        content = re.sub(r"<title>.*?</title>", lambda match: f"<title>{html.escape(name)}</title>", SPA_INDEX.read_text(), count=1, flags=re.DOTALL)
+        return HTMLResponse(content, headers={"Cache-Control": "no-cache"})
     return PlainTextResponse("SPA build not found. Run `npm run build` in frontend/.", status_code=503)

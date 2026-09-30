@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 from pathlib import Path
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -695,6 +696,29 @@ def rebuild_namespace(params: dict) -> dict:
     return enable_namespace({"username": username})
 
 
+def _filesystem_home_checks(root: Path, username: str, uid: int, other: str | None):
+    """Inspect directory metadata in a validated PHP worker's actual root.
+
+    Do not execute binaries or read customer content inside a tenant mount.
+    The owner needs read/traversal; another account's home must be absent.
+    """
+    try:
+        own = (root / 'home' / username).stat()
+        readable = stat.S_ISDIR(own.st_mode) and own.st_uid == uid and own.st_mode & 0o500 == 0o500
+    except OSError:
+        readable = False
+    hidden = None
+    if other:
+        try:
+            (root / 'home' / other).lstat()
+            hidden = False
+        except FileNotFoundError:
+            hidden = True
+        except OSError:
+            hidden = False
+    return readable, hidden
+
+
 def self_test(params: dict) -> dict:
     """Run a metadata-only isolation canary without returning user files."""
     username = validate_username(params["username"])
@@ -703,20 +727,31 @@ def self_test(params: dict) -> dict:
         other = session.scalar(select(Account.username).where(
             Account.username != username, Account.status == "active"
         ).order_by(Account.id))
-    own = run([
-        "/usr/local/lsws/lsns/bin/cmd_ns", "-u", str(uid), "-c", "-o",
-        "/usr/bin/test", "-r", f"/home/{username}",
-    ], timeout=20)
-    other_hidden = None
-    if other:
-        result = run([
-            "/usr/local/lsws/lsns/bin/cmd_ns", "-u", str(uid), "-c", "-o",
-            "/usr/bin/test", "!", "-r", f"/home/{other}",
-        ], timeout=20)
-        other_hidden = result.ok
     current = get_status(username)
     php = _php_process_rows(_account_process_rows(uid))
     bubblewrap_configured = _bubblewrap_server_configured()
+    if php:
+        observations = [_filesystem_home_checks(Path(f'/proc/{pid}/root'), username, uid, other)
+                        for pid, _comm, _path in php]
+        own_readable = all(own for own, _peer in observations)
+        other_hidden = all(peer for _own, peer in observations) if other else None
+    elif bubblewrap_configured:
+        # An idle Bubblewrap account has no live root to inspect. Entering
+        # the unrelated native fallback would produce false failures.
+        own_readable = other_hidden = None
+    else:
+        own = run([
+            '/usr/local/lsws/lsns/bin/cmd_ns', '-u', str(uid), '-c', '-o',
+            '/usr/bin/test', '-r', f'/home/{username}',
+        ], timeout=20)
+        own_readable = own.ok
+        other_hidden = None
+        if other:
+            result = run([
+                '/usr/local/lsws/lsns/bin/cmd_ns', '-u', str(uid), '-c', '-o',
+                '/usr/bin/test', '!', '-r', f'/home/{other}',
+            ], timeout=20)
+            other_hidden = result.ok
     process_isolation = "configured_no_live_worker" if bubblewrap_configured else "not_configured"
     if php:
         try:
@@ -733,11 +768,15 @@ def self_test(params: dict) -> dict:
         skipped.append("peer_account_visibility")
     if not php:
         skipped.append("live_php_worker")
-    passed = current["enabled"] and own.ok and other_hidden is True and process_isolation == "verified"
+        if bubblewrap_configured:
+            skipped.append("account_home_visibility")
+    passed = bool(current["enabled"] and own_readable and other_hidden is True and process_isolation == "verified")
+    failed = (not current["enabled"] or own_readable is False or other_hidden is False
+              or process_isolation in ("failed", "inspection_failed", "not_configured"))
     return {
         "username": username, "passed": passed,
-        "status": "passed" if passed else "incomplete" if skipped and current["enabled"] and own.ok else "failed",
-        "namespace_enabled": current["enabled"], "own_home_readable": own.ok,
+        "status": "failed" if failed else "passed" if passed else "incomplete",
+        "namespace_enabled": current["enabled"], "own_home_readable": own_readable,
         "other_home_hidden": other_hidden,
         "skipped": skipped,
         "process_isolation": process_isolation,

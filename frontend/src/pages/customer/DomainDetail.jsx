@@ -2029,7 +2029,8 @@ export function StatsTab({ username, domain }) {
 
 export default function DomainDetail() {
   const username = useAccountUsername()
-  const { domain } = useParams()
+  const { domain, username: scopedUsername } = useParams()
+  const backPath = scopedUsername ? `/accounts/${username}?tab=domains` : '/domains'
   const { data, isLoading } = useQuery({
     queryKey: ['domains', username],
     queryFn: () => get(`/api/v1/accounts/${username}/domains`),
@@ -2041,7 +2042,7 @@ export default function DomainDetail() {
 
   return (
     <div className="domain-settings-page">
-      <Link to="/domains" className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+      <Link to={backPath} className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft className="h-4 w-4" /> All domains
       </Link>
       <PageHeader title={domain} description="Domain setup and advanced hosting settings." icon={Globe} />
@@ -2061,10 +2062,11 @@ export default function DomainDetail() {
         <Card>
           <CardHeader><div><CardTitle>Advanced settings</CardTitle><CardDescription>Changes here affect how this domain is served.</CardDescription></div></CardHeader>
           <CardContent className="space-y-4">
-            <p className="text-sm text-muted-foreground">Document-root and PHP changes are available from the dedicated PHP settings screen. Account suspension and disk or bandwidth limits are controlled by the account administrator.</p>
+            <p className="text-sm text-muted-foreground">PHP versions and runtime settings are available from the PHP settings screen. The current document root is shown above. Account suspension and disk or bandwidth limits are controlled by the account administrator.</p>
             <div className="flex flex-wrap gap-2">
-              <Button asChild><Link to="/php">PHP & document root settings</Link></Button>
-              <Button asChild variant="secondary"><Link to="/domains">Add another domain</Link></Button>
+              <Button asChild><Link to={scopedUsername ? `/accounts/${username}/php` : '/php'}>PHP settings</Link></Button>
+              {scopedUsername && <><Button asChild variant="secondary"><Link to={`/accounts/${username}/dns`}>DNS records</Link></Button><Button asChild variant="secondary"><Link to={`/accounts/${username}/ssl`}>SSL certificates</Link></Button><Button asChild variant="secondary"><Link to={`/accounts/${username}/redirects`}>Redirects</Link></Button></>}
+              <Button asChild variant="secondary"><Link to={backPath}>Add another domain</Link></Button>
             </div>
           </CardContent>
         </Card>

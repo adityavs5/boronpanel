@@ -69,9 +69,16 @@ def test_create_webhook_uses_given_secret(isolated_db):
 
 
 def test_create_webhook_bounds_signing_secret(isolated_db):
-    for secret in ("", "x" * 129):
+    for secret in ("x" * 129, 123):
         with pytest.raises(Exception, match="1 to 128"):
             wh.create_webhook({"url": "https://example.com/hook", "events": ["account.created"], "secret": secret})
+
+
+def test_blank_webhook_secret_is_generated(isolated_db):
+    first = wh.create_webhook({"url": "https://example.com/hook", "events": ["account.created"], "secret": ""})
+    second = wh.create_webhook({"url": "https://example.com/hook", "events": ["account.created"], "secret": ""})
+    assert len(first["secret"]) >= 32
+    assert first["secret"] != second["secret"]
 
 
 def test_list_webhooks_never_exposes_secret(isolated_db):

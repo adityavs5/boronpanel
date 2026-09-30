@@ -26,8 +26,12 @@ from shared.models import (
     AccountNotificationPrefs,
     Domain,
     FtpAccount,
+    GitRepo,
     NodeApp,
     PythonApp,
+    PanelUser,
+    Session,
+    RedisInstance,
 )
 from shared.validation import (
     ValidationError,
@@ -37,7 +41,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import cgroups, ols, sysops
+from daemon import account_mutation, cgroups, ols, sysops
 
 logger = logging.getLogger("borond.identity_admin")
 
@@ -52,6 +56,7 @@ def _account_or_raise(session, username: str) -> Account:
 # --- account (Linux) password ---------------------------------------------
 
 
+@account_mutation.locked
 def set_account_password(params: dict) -> dict:
     """Reset the account's own Linux/system password (its FTP main login +
     SSH credential), via chpasswd -- never handled in Python (ARCHITECTURE.md
@@ -63,11 +68,20 @@ def set_account_password(params: dict) -> dict:
     with write_session() as session:
         account = _account_or_raise(session, username)
         status = account.status
+        login = session.scalar(select(PanelUser).where(PanelUser.username == username))
+        if login is not None and (login.role != "customer" or login.account_id != account.id):
+            raise ValidationError("The panel login name is already used by another account")
     if status not in ("active", "suspended"):
         raise RuntimeError(f"cannot set password for an account in status '{status}'")
     sysops.set_initial_password(username, password)
     if status == "suspended":
         sysops.lock_user(username)
+    # Legacy account creation provisioned only the Linux password. An
+    # explicit account password reset repairs that missing panel identity.
+    from daemon.handlers_account import ensure_customer_login
+    with write_session() as session:
+        account = _account_or_raise(session, username)
+        ensure_customer_login(session, account, password)
     return {"username": username, "status": "password_changed"}
 
 
@@ -98,6 +112,7 @@ def set_contact_email(params: dict) -> dict:
 
 
 @database_operations.serialized
+@account_mutation.locked
 def set_primary_domain(params: dict) -> dict:
     """Rename the account's primary domain (the apex served from
     public_html). If the account has no primary domain yet, this creates it.
@@ -117,30 +132,52 @@ def set_primary_domain(params: dict) -> dict:
         clash = session.scalar(select(Domain).where(Domain.domain == new_domain))
         if clash is not None and clash.account_id != account.id:
             raise RuntimeError(f"domain '{new_domain}' is already in use")
-        if clash is not None and clash.account_id == account.id:
-            raise RuntimeError(f"domain '{new_domain}' already belongs to this account -- promote via the domains tab instead")
-
         primary = session.scalar(
             select(Domain).where(Domain.account_id == account.id, Domain.kind == "primary")
         )
         old_domain = primary.domain if primary is not None else None
+        previous_primary = account.primary_domain
+        account_id = account.id
+        previous_rows = {row.id: (row.domain, row.kind, row.docroot) for row in (primary, clash) if row is not None}
+        promoting = clash is not None
+        created_id = None
         docroot = f"{settings.home_base}/{username}/public_html"
-        if primary is None:
+        if promoting:
+            # Promotion is a metadata change, not a request to move files.
+            # Preserve both websites' document roots and the former primary.
+            if clash.kind == "subdomain":
+                raise ValidationError("Choose an existing main domain, not a subdomain, as the primary domain")
+            if primary is not None and primary.id != clash.id:
+                primary.kind = "addon"
+            clash.kind = "primary"
+        elif primary is None:
             from daemon import handlers_domain
 
             handlers_domain.ensure_docroot(username, docroot)
             primary = Domain(account_id=account.id, domain=new_domain, kind="primary", docroot=docroot)
             session.add(primary)
+            session.flush()
+            created_id = primary.id
         else:
             primary.domain = new_domain
         account.primary_domain = new_domain
         account_snapshot = account
 
-    ols.refresh_vhost(account_snapshot)
+    try:
+        ols.refresh_vhost(account_snapshot)
+    except Exception:
+        with write_session() as session:
+            session.get(Account, account_id).primary_domain = previous_primary
+            if created_id is not None:
+                session.delete(session.get(Domain, created_id))
+            for row_id, (domain, kind, root) in previous_rows.items():
+                row = session.get(Domain, row_id)
+                row.domain, row.kind, row.docroot = domain, kind, root
+        raise
     # Remove the old primary domain's now-stale vhost directory (keyed by the
     # old domain name; refresh_vhost already regenerated httpd_config without
     # it, but the per-domain vhconf dir must be swept too).
-    if old_domain and old_domain != new_domain:
+    if old_domain and old_domain != new_domain and not promoting:
         _remove_vhost_dir(old_domain)
     return {"username": username, "primary_domain": new_domain, "previous": old_domain}
 
@@ -156,6 +193,8 @@ def _remove_vhost_dir(domain_name: str) -> None:
 # --- username rename (xhigh: atomic, rollback on failure) ------------------
 
 
+@database_operations.serialized
+@account_mutation.locked
 def rename_account(params: dict) -> dict:
     """Atomically rename an account: Linux login + group + home dir + OLS
     vhosts + PHP extProcessor + cgroup slice + the panel's own DB rows
@@ -182,28 +221,34 @@ def rename_account(params: dict) -> dict:
         if account.status not in ("active", "suspended"):
             raise RuntimeError(f"cannot rename an account in status '{account.status}'")
         clash = session.scalar(select(Account).where(Account.username == new))
-        if clash is not None:
-            raise RuntimeError(f"account '{new}' already exists")
+        login_clash = session.scalar(select(PanelUser).where(PanelUser.username == new))
+        if clash is not None or login_clash is not None:
+            raise ValidationError(f"account '{new}' already exists")
         node = session.scalar(select(NodeApp).where(NodeApp.account_id == account.id))
         py = session.scalar(select(PythonApp).where(PythonApp.account_id == account.id))
         ftp = session.scalar(select(FtpAccount).where(FtpAccount.account_id == account.id))
         if node is not None or py is not None:
-            raise RuntimeError(
+            raise ValidationError(
                 "cannot rename an account that hosts NodeJS/Python apps -- their systemd units "
                 "reference the absolute home path; remove the apps first"
             )
         if ftp is not None:
-            raise RuntimeError(
+            raise ValidationError(
                 "cannot rename an account with FTP sub-accounts -- their chroot paths are stored "
                 "in Pure-FTPd's PureDB; remove the FTP sub-accounts first"
             )
+        redis = session.scalar(select(RedisInstance).where(RedisInstance.account_id == account.id))
+        if redis is not None:
+            raise ValidationError('Remove the account Redis instance before renaming. Applications may use its username-dependent socket path.')
         limits = (account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
         status = account.status
+        account_id = account.id
 
     if sysops.user_exists(new):
-        raise RuntimeError(f"a Linux user named '{new}' already exists outside this panel")
+        raise ValidationError(f"a Linux user named '{new}' already exists outside this panel")
 
     undo: list = []
+    resume = _pause_for_rename(account_id)
     try:
         sysops.rename_login(old, new)
         undo.append(lambda: sysops.rename_login(new, old))
@@ -217,9 +262,10 @@ def rename_account(params: dict) -> dict:
         _rewrite_db_username(old, new, old_home, new_home)
         undo.append(lambda: _rewrite_db_username(new, old, new_home, old_home))
 
-        cgroups.remove_slice(old)
+        # The native slice is keyed by UID, which rename preserves. Removing
+        # it would stop the account and erase its aggregate limits.
         cgroups.apply_limits(new, *limits)
-        undo.append(lambda: (_readd_old_slice(old, limits), cgroups.remove_slice(new)))
+        _refresh_git_paths(account_id, new)
 
         # OLS is the last mutating step and is intentionally NOT on the undo
         # stack: ConfigWriterMulti self-rolls-back its own config files on a
@@ -254,9 +300,81 @@ def rename_account(params: dict) -> dict:
                 ols.refresh_vhost(restored)
         except Exception:
             logger.exception("OLS reconcile after failed rename %s -> %s also failed", old, new)
-        raise RuntimeError(f"rename failed and was rolled back: {exc}") from exc
+        raise RuntimeError("Rename failed; completed changes were rolled back") from exc
+    finally:
+        resume()
 
     return {"old_username": old, "new_username": new, "status": status}
+
+
+def _pause_for_rename(account_id: int):
+    """Close account sessions and pause managed workloads before usermod.
+
+    This never stops OLS globally. The original website/shell/Redis state is
+    restored under the final (or rolled-back) name, including on failure.
+    """
+    from daemon import appunits, cron, filebrowser_accounts, redisacct, nsisolation
+    with write_session() as session:
+        account = session.get(Account, account_id)
+        old, status = account.username, account.status
+        redis = session.scalar(select(RedisInstance).where(RedisInstance.account_id == account_id))
+        redis_state = (redis.id, redis.mem_mb, redis.enabled) if redis else None
+    shell = sysops.get_shell(old)
+    if shell not in (sysops.LOGIN_SHELL, sysops.NOLOGIN_SHELL):
+        raise ValidationError("Set a supported account shell before renaming this account")
+    crontab = cron._read_raw(old)
+
+    def resume():
+        with write_session() as session:
+            current = session.get(Account, account_id)
+            current.status = status
+            name = current.username
+        sysops.set_shell(name, shell)
+        _refresh_git_paths(account_id, name)
+        old_home = f"{settings.home_base}/{old}"
+        new_home = f"{settings.home_base}/{name}"
+        cron._write_raw(name, [line.replace(old_home + "/", new_home + "/") for line in crontab])
+        if redis_state:
+            instance_id, memory, enabled = redis_state
+            redisacct._provision_filesystem(name)
+            unit = redisacct._write_unit(name, instance_id, memory)
+            if enabled and status == "active":
+                appunits.enable_start(unit)
+            if name != old:
+                appunits.remove_unit(appunits.unit_name("redis", old, instance_id))
+        ols.refresh_vhost(current)
+
+    try:
+        # Pause scheduled launches before waiting for UID processes to exit.
+        cron.delete_all_jobs(old)
+        sysops.set_shell(old, sysops.NOLOGIN_SHELL)
+        with write_session() as session:
+            paused = session.get(Account, account_id)
+            paused.status = "suspended"
+        ols.refresh_vhost(paused)
+        filebrowser_accounts.stop(old)
+        if redis_state:
+            appunits.stop(appunits.unit_name("redis", old, redis_state[0]))
+        sysops.quiesce_user(old)
+        # Cached mount namespaces can still refer to /home/<old>. All account
+        # workloads have stopped, so retire that cache before moving the home.
+        namespace = nsisolation.get_status(old)
+        if namespace.get("enabled"):
+            nsisolation.unmount_uid(account.uid)
+    except Exception:
+        resume()
+        raise
+    return resume
+
+
+def _refresh_git_paths(account_id, username):
+    from daemon import gitrepo
+    with write_session() as db:
+        repos = db.scalars(select(GitRepo).where(GitRepo.account_id == account_id,
+                                                GitRepo.deploy_target.is_not(None))).all()
+    for repo in repos:
+        gitrepo.set_deploy_target({'username': username, 'name': repo.name,
+                                  'deploy_target': repo.deploy_target})
 
 
 def _readd_old_slice(username: str, limits: tuple) -> None:
@@ -276,6 +394,13 @@ def _rewrite_db_username(old: str, new: str, old_home: str, new_home: str) -> No
         if account is None:
             raise RuntimeError(f"account '{old}' vanished mid-rename")
         account.username = new
+        login = session.scalar(select(PanelUser).where(PanelUser.username == old,
+                                                     PanelUser.account_id == account.id))
+        if login is not None:
+            login.username = new
+        for row in session.scalars(select(Session).join(PanelUser, Session.panel_user_id == PanelUser.id)
+                                   .where(PanelUser.account_id == account.id)).all():
+            row.revoked = True
         domains = session.scalars(select(Domain).where(Domain.account_id == account.id)).all()
         for d in domains:
             if d.docroot == old_home:

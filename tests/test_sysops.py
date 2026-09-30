@@ -107,3 +107,13 @@ def test_ensure_web_logs_grants_only_ols_named_acl(account_with_home, monkeypatc
     assert stat.S_IMODE(os.stat(logs).st_mode) == 0o750
     assert calls == [(["setfacl", "-m", "u:nobody:rwx", "-m", "d:u:nobody:rwX", logs],
                       {"uid": os.getuid(), "gid": os.getgid(), "check": True})]
+
+
+def test_new_account_has_private_default_backup_folder(account_with_home, monkeypatch):
+    monkeypatch.setattr(sysops, 'user_exists', lambda _: False)
+    monkeypatch.setattr(sysops, 'run', lambda *a, **kw: None)
+    uid, gid = sysops.create_linux_user('demo1')
+    root = account_with_home / 'public_html'
+    assert root.is_dir()
+    assert stat.S_IMODE(root.stat().st_mode) == 0o750
+    assert (root.stat().st_uid, root.stat().st_gid) == (uid, gid)

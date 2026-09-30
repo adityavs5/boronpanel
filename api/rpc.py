@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from api.security import Identity
 
 _client = RpcClient(settings.rpc_socket, timeout=200.0)
+_python_provision_client = RpcClient(settings.rpc_socket, timeout=450.0)
 
 
 def call_daemon(op: str, identity: "Identity", **params) -> dict:
@@ -27,10 +28,16 @@ def call_daemon(op: str, identity: "Identity", **params) -> dict:
     """
     try:
         credential = {"type": identity.auth_method, "value": identity.rpc_credential or ""}
-        return _client.call(op, rpc_credential=credential, _ip=getattr(identity, "ip", None), **params)
+        client = _python_provision_client if op == 'apps.python.create' else _client
+        return client.call(op, rpc_credential=credential, _ip=getattr(identity, "ip", None), **params)
     except RpcError as exc:
         status = {"bad_request": 400, "forbidden": 403, "unauthenticated": 401}.get(exc.code, 502)
-        raise HTTPException(status_code=status, detail=exc.message) from exc
+        headers = None
+        if exc.diagnostic:
+            from api.logsetup import record_operation_error
+            record_operation_error(exc.diagnostic, identity.username, getattr(identity, 'ip', None))
+            headers = {'X-Boron-Error-Reference': exc.diagnostic['reference']}
+        raise HTTPException(status_code=status, detail=exc.message, headers=headers) from exc
     except (ConnectionError, OSError) as exc:
         raise HTTPException(status_code=503, detail=f"provisioning daemon unreachable: {exc}") from exc
 

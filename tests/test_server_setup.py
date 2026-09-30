@@ -117,3 +117,10 @@ def test_public_result_filter_redacts_nested_credentials():
     assert server_setup._public({
         "name": "provider", "api_token": "secret", "nested": {"password": "secret", "ok": True},
     }) == {"name": "provider", "nested": {"ok": True}}
+
+
+def test_setup_progress_reconciles_legacy_out_of_order_steps():
+    row = ServerSetupState(id=1, current_step=7, completed=False, step_results={'1': {'state': 'completed'}, '2': {'state': 'completed'}, '5': {'state': 'completed'}})
+    state = server_setup._state_dict(row)
+    assert state['current_step'] == 3
+    assert state['completed_steps'] == 3

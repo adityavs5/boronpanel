@@ -20,6 +20,13 @@ from dataclasses import dataclass
 logger = logging.getLogger("borond.proc")
 
 
+class CommandFailure(RuntimeError):
+    """Carries a safe exit status without exposing command output to clients."""
+    def __init__(self, message: str, returncode: int):
+        self.returncode = returncode
+        super().__init__(message)
+
+
 def _redact_value(arg: str, secrets: list[str]) -> str:
     for secret in secrets:
         if secret:
@@ -40,9 +47,9 @@ class ProcResult:
 
     def raise_if_failed(self, context: str = "") -> "ProcResult":
         if not self.ok:
-            raise RuntimeError(
+            raise CommandFailure(
                 f"{context or self.args[0]} failed (rc={self.returncode}): "
-                f"{self.stderr.strip() or self.stdout.strip()}"
+                f"{self.stderr.strip() or self.stdout.strip()}", self.returncode
             )
         return self
 

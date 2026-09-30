@@ -93,6 +93,17 @@ def _resolve_existing_db_name(username: str, name: str) -> str:
     unconditionally prefixes, so a legitimately suffix-starting-with-
     username create request is never reinterpreted."""
     candidate = validate_db_identifier(name, max_len=64)
+    # Renames and imports may retain original SQL identifiers. Resolve exact
+    # names through ownership, rather than inferring ownership from a prefix.
+    with write_session() as db:
+        account = db.scalar(select(Account).where(Account.username == username))
+        if account is not None:
+            grant = db.scalar(select(DatabaseGrant.id).where(DatabaseGrant.account_id == account.id,
+                                                             DatabaseGrant.db_name == candidate))
+            user = db.scalar(select(DatabaseUser.id).where(DatabaseUser.account_id == account.id,
+                                                           DatabaseUser.db_user == candidate))
+            if grant is not None or user is not None:
+                return candidate
     prefix = f"{username}_"
     if candidate.startswith(prefix):
         return candidate

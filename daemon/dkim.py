@@ -78,11 +78,19 @@ def generate_keypair(domain: str, selector: str = DEFAULT_SELECTOR) -> Path:
         if not result.ok:
             raise DkimError(f"openssl genrsa failed for '{domain}': {result.stderr.strip()}")
     gid = _opendkim_gid()
+    # The signer needs traversal of the shared parent as well as the domain
+    # directory. Keep both restricted to root and the signing service group.
+    base = Path(settings.dkim_base_dir)
+    os.chmod(base, 0o750 if gid is not None else 0o700)
+    if gid is not None:
+        os.chown(base, 0, gid)
     os.chmod(_domain_dir(domain), 0o750)
-    os.chmod(key_path, 0o640 if gid is not None else 0o600)
+    os.chmod(key_path, 0o600)
     if gid is not None:
         os.chown(_domain_dir(domain), 0, gid)
-        os.chown(key_path, 0, gid)
+        # Postfix shares the socket group but must never read signing keys.
+        # Owner-only keys also satisfy OpenDKIM's RequireSafeKeys check.
+        os.chown(key_path, pwd.getpwnam('opendkim').pw_uid, gid)
     return key_path
 
 

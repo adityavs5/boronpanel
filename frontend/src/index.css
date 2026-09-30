@@ -142,3 +142,11 @@
     }
   }
 }
+
+/* Readable semantic text on both hosting themes. Solid danger buttons retain
+   dark red backgrounds so their white labels meet AA as well. */
+@layer utilities {
+  .dark .text-danger { color: #fca5a5; }
+  .dark .text-success { color: #6ee7b7; }
+  .dark .text-muted-foreground { color: #b3bdcb; }
+}

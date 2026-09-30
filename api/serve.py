@@ -25,7 +25,7 @@ def main():
     ports=listener_ports()
     config=uvicorn.Config('api.main:app',host=settings.api_bind_host,port=ports[0],
         ssl_keyfile='/etc/boron/ssl/api/panel.key',ssl_certfile='/etc/boron/ssl/api/panel.crt',
-        timeout_graceful_shutdown=15,proxy_headers=False)
+        timeout_graceful_shutdown=15,proxy_headers=False,server_header=False)
     sockets=bind_listeners(settings.api_bind_host,ports)
     try:uvicorn.Server(config).run(sockets=sockets)
     finally:

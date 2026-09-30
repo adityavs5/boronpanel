@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
 
-const EMPTY_FORM = { label: '', role: 'admin', account_id: '' }
+const EMPTY_FORM = { label: '', role: 'admin', account_id: '', scope: 'read-only', expires_in_days: '30' }
 
 export default function ApiTokens() {
   const username = useAccountUsername()
@@ -35,6 +35,9 @@ export default function ApiTokens() {
     queryKey: ['api-tokens', username],
     queryFn: () => get('/api/v1/tokens'),
   })
+
+  const accountQuery = useQuery({ queryKey: ['accounts'], queryFn: () => get('/api/v1/accounts'), enabled: createOpen })
+  const activeAccounts = (Array.isArray(accountQuery.data) ? accountQuery.data : []).filter(account => account.status === 'active')
 
   const createMut = useMutation({
     mutationFn: (body) => post('/api/v1/tokens', body),
@@ -73,9 +76,10 @@ export default function ApiTokens() {
 
   const submitCreate = (e) => {
     e.preventDefault()
-    const body = { label: form.label.trim(), role: form.role }
+    const body = { label: form.label.trim(), role: form.role, scope: form.scope, expires_in_days: Number(form.expires_in_days) }
     const id = Number.parseInt(form.account_id, 10)
     if (form.role === 'customer' && Number.isInteger(id) && id > 0) body.account_id = id
+    if (form.role === 'customer' && !body.account_id) { toast.error('Choose a hosting account'); return }
     createMut.mutate(body)
   }
 
@@ -105,12 +109,14 @@ export default function ApiTokens() {
           <span className="text-muted-foreground">Global</span>
         ),
     },
+    { key: 'scope', header: 'Permissions', render: row => row.scope === 'read-only' ? 'Read only' : 'Read and manage' },
+    { key: 'expires_at', header: 'Expires', render: row => new Date(row.expires_at).toLocaleString() },
     {
       key: 'revoked',
       header: 'Status',
       sortable: true,
       sortValue: (r) => (r.revoked ? 1 : 0),
-      render: (r) => <StatusBadge status={r.revoked ? 'revoked' : 'active'} />,
+      render: (r) => <StatusBadge status={r.revoked ? 'revoked' : new Date(r.expires_at).getTime() <= Date.now() ? 'expired' : 'active'} />,
     },
     {
       key: 'actions',
@@ -183,7 +189,7 @@ export default function ApiTokens() {
                   required
                 />
               </FormField>
-              <FormField label="Role" required error={createMut.error?.fields?.role} hint="Admin tokens can call every endpoint; customer tokens are scoped to one account.">
+              <FormField label="Role" required error={createMut.error?.fields?.role} hint="Administrator tokens apply to the server. Customer tokens apply to the selected hosting account. Permissions below limit their access.">
                 <Select
                   value={form.role}
                   onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
@@ -192,18 +198,9 @@ export default function ApiTokens() {
                   <option value="customer">customer</option>
                 </Select>
               </FormField>
-              {form.role === 'customer' && (
-                <FormField label="Account ID" error={createMut.error?.fields?.account_id} hint="Numeric account id this customer token is scoped to. Leave blank for none.">
-                  <Input
-                    type="number"
-                    min="1"
-                    value={form.account_id}
-                    onChange={(e) => setForm((f) => ({ ...f, account_id: e.target.value }))}
-                    placeholder="42"
-                    className="tabular-nums"
-                  />
-                </FormField>
-              )}
+              {form.role === 'customer' && <FormField label="Hosting account" required hint="Customer tokens must belong to an active account."><Select required value={form.account_id} onChange={event => setForm(current => ({ ...current, account_id: event.target.value }))}><option value="">Choose an account…</option>{activeAccounts.map(account => <option key={account.id} value={account.id}>{account.username} {account.primary_domain ? `· ${account.primary_domain}` : ''}</option>)}</Select></FormField>}
+              <FormField label="Permissions"><Select value={form.scope} onChange={event => setForm(current => ({ ...current, scope: event.target.value }))}><option value="read-only">Read only</option><option value="full">Read and manage</option></Select></FormField>
+              <FormField label="Expires after"><Select value={form.expires_in_days} onChange={event => setForm(current => ({ ...current, expires_in_days: event.target.value }))}>{[1,7,30,60,90].map(days => <option key={days} value={days}>{days} days</option>)}</Select></FormField>
             </DialogBody>
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>

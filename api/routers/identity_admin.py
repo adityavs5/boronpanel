@@ -29,6 +29,11 @@ class AdministratorStatusBody(BaseModel):
     disabled: bool
 
 
+class AdministratorActionBody(BaseModel):
+    action: str
+    password: str | None = None
+
+
 @administrator_router.get("")
 def list_administrators(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -48,6 +53,12 @@ def set_administrator_status(username: str, body: AdministratorStatusBody, ident
         "admin_user.set_status", identity, username=username,
         actor_username=identity.username, disabled=body.disabled,
     )
+
+
+@administrator_router.post("/{username}/actions")
+def manage_administrator(username: str, body: AdministratorActionBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('admin_user.manage', identity, username=username, **body.model_dump(exclude_none=True))
 
 
 class IdentityBody(BaseModel):

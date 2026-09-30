@@ -260,7 +260,7 @@ def database_options(params):
             from daemon.snapshot_databases import _database_name
             _database_name(name)
         except ValidationError:continue
-        state,reason=_database_state(account,name,metadata) if name.startswith(account.username+'_') else ('unavailable','Database not found for this account')
+        state,reason=_database_state(account,name,metadata)
         databases.append({'name':name,'size':node.get('size',0),'available':state!='unavailable','action':state,'reason':reason})
     return {'databases':sorted(databases,key=lambda item:item['name'])}
 
@@ -595,13 +595,14 @@ def _owned_databases(account, names):
         owned=set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id==account.id)).all())
     for name in names:
         _database_name(name)
-        if name not in owned or not name.startswith(account.username+'_'):
+        if name not in owned:
             raise ValidationError('Database not found for this account')
     return sorted(set(names))
 
 
 @serialized_worker
-def _restore_databases(ident,account,row,repo,snapshot_id,work):
+def _restore_databases(ident,account,row,repo,snapshot_id,work,update=None):
+    update = update or _update
     from daemon import snapshot_databases as database, mariadb
     names=row.selection['databases']
     metadata={} if row.selection.get('source_snapshot_id') else _recovery_metadata(repo,account,snapshot_id)
@@ -624,13 +625,13 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
     dumps=stage/'databases'
     if dumps.exists():shutil.rmtree(dumps)
     dumps.mkdir(mode=0o700)
-    _update(ident,progress_message='Saving current databases before restore')
+    update(ident,progress_message='Saving current databases before restore')
     try:
         existing=[name for name in names if mariadb.database_exists(name)]
         for name in existing:database.dump_database(name,dumps/f'{name}.sql',stage)
         if existing:
             safety=storage.backup(repo,account.id,[str(dumps)])
-            _update(ident,safety_snapshot_id=safety['snapshot_id'],summary={'safety_databases':existing})
+            update(ident,safety_snapshot_id=safety['snapshot_id'],summary={'safety_databases':existing})
         completed=[]
         reconstructed=[]
         for name,path in zip(names,paths):
@@ -642,7 +643,7 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
                     registration=session.scalar(select(DatabaseGrant).where(DatabaseGrant.db_name==name))
                     if registration is None:
                         session.add(DatabaseGrant(account_id=account.id,db_name=name,db_user=metadata[name]['user']))
-                _update(ident,progress_message='Recreating database resources for '+name,
+                update(ident,progress_message='Recreating database resources for '+name,
                     summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),'safety_databases':existing,'reconstruction_pending':[name]})
                 (recreate_missing if state=='recreate' else repair_missing)(account.username,metadata[name])
                 with write_session() as session:
@@ -651,18 +652,18 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work):
                         if name in pending:
                             previous.summary={**previous.summary,'reconstruction_pending':[n for n in pending if n!=name]}
                 reconstructed.append(name)
-                _update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),'safety_databases':existing})
+                update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),'safety_databases':existing})
             _owned_databases(account,[name])
-            _update(ident,progress_message='Restoring database '+name)
+            update(ident,progress_message='Restoring database '+name)
             database.restore_database(name,data/str(path).lstrip('/'),work,replace_tables=True)
             completed.append(name)
-            _update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),'safety_databases':existing})
+            update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),'safety_databases':existing})
         if metadata:
             from daemon.snapshot_db_metadata import restore_access
             access = restore_access(account.username, names, metadata)
-            _update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),
+            update(ident,summary={'databases':completed.copy(),'reconstructed':reconstructed.copy(),
                 'safety_databases':existing,'database_users':access['users'],'database_grants':access['grants']})
-        _update(ident,status='completed',progress_message='Selected databases restored',completed_at=utcnow())
+        update(ident,status='completed',progress_message='Selected databases restored',completed_at=utcnow())
     finally:
         shutil.rmtree(dumps,ignore_errors=True)
 
@@ -702,6 +703,13 @@ def execute(ident):
     source=jobs._row(SnapshotRun,row.run_id)
     if row.selection.get('kind')=='full':return _execute_full(ident,row,source)
     work=None
+    completion=None
+    def after_release(restore_id, **values):
+        nonlocal completion
+        if values.get('status') == 'completed':
+            completion = values
+        else:
+            _update(restore_id, **values)
     try:
         with jobs.lock(f'account-{row.account_id}'),jobs.lock(f'repository-{source.destination_id}'):
             row=jobs._row(SnapshotRestore,ident)
@@ -736,10 +744,10 @@ def execute(ident):
                 if sections not in (['cron'], ['php'], ['domains'], ['dns']):
                     raise ValidationError('Unsupported configuration recovery section')
                 worker = {'cron': restore_cron, 'php': restore_php, 'domains':restore_domains, 'dns': restore_dns}[sections[0]]
-                worker(ident, account, row, repo, snapshot_id, work, _update)
+                worker(ident, account, row, repo, snapshot_id, work, after_release)
                 return
             if row.selection['kind']=='databases':
-                _restore_databases(ident,account,row,repo,snapshot_id,work)
+                _restore_databases(ident,account,row,repo,snapshot_id,work,after_release)
                 return
             home,paths=_restore_paths(account,snapshot,row.selection)
             data=storage.restore_to(repo,account.id,snapshot_id,str(work/'data'),selected_paths=[str(p) for p in paths])
@@ -755,7 +763,7 @@ def execute(ident):
                 input_text=json.dumps(payload),timeout=3600)
             result.raise_if_failed('Apply file restore')
             summary=json.loads(result.stdout)
-            _update(ident,status='completed',progress_message='Selected files restored; unrelated files retained',summary=summary,completed_at=utcnow())
+            completion=dict(status='completed',progress_message='Selected files restored; unrelated files retained',summary=summary,completed_at=utcnow())
     except Exception as exc:
         if row.selection.get('kind') == 'mail_routing':
             from daemon.snapshot_routing_worker import failed
@@ -783,6 +791,11 @@ def execute(ident):
     finally:
         if work:
             shutil.rmtree(work,ignore_errors=True)
+        # File, database and configuration completion is published only after
+        # releasing account/repository locks and removing temporary copies.
+        # Mail and routing keep their separate durable finalization journals.
+        if completion is not None:
+            _update(ident, **completion)
         final=jobs._row(SnapshotRestore,ident)
         if final.status in ('completed','failed'):
             from daemon import backup_notifications

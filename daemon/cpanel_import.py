@@ -62,7 +62,7 @@ from cryptography.x509.oid import NameOID
 from sqlalchemy import select, or_
 
 from shared.config import settings
-from shared.db import write_session
+from shared.db import write_session, read_session
 from shared.models import Account, CpanelImportJob, Domain, PanelUser, utcnow
 from shared.validation import (
     ValidationError,
@@ -96,12 +96,16 @@ class CpanelImportError(Exception):
 
 
 def _job_to_dict(job: CpanelImportJob, *, include_source_ref: bool = False) -> dict:
+    with read_session() as session:
+        account = session.scalar(select(Account).where(Account.username == job.username))
+        account_state = account.status if account is not None else 'absent'
     d = {
         "id": job.id,
         "username": job.username,
         "panel": job.panel,
         "source": job.source,
         "status": job.status,
+        "current_account_status": account_state,
         "progress_message": job.progress_message,
         "results": job.results,
         "error": job.error,
@@ -1470,12 +1474,12 @@ def _run_import_job(job_id: int, params: dict) -> None:
                         account = session.scalar(select(Account).where(Account.username == username))
                         if account is not None:
                             ownership = (account.id, account.created_at)
-            handlers_auth.create_panel_user({
-                "username": username,
-                "password": account_password,
-                "role": "customer",
-                "account_id": created_account["id"],
-            })
+            # The canonical account provisioner creates the customer login.
+            # A second create would turn a successful import into a rollback.
+            with write_session() as session:
+                login = session.scalar(select(PanelUser).where(PanelUser.username == username))
+                if login is None or login.role != "customer" or login.account_id != created_account["id"] or login.disabled:
+                    raise CpanelImportError("Account creation did not provision its customer login")
             audit.record_account_event(
                 "created", username, actor="system", role="system",
                 detail=f"{'DirectAdmin' if panel == 'directadmin' else 'cPanel'} import",

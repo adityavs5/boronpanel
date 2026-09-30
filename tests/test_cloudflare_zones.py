@@ -368,3 +368,20 @@ def test_nameservers_local_zone_unchanged(managed_zone):
     result = nameservers.list_nameservers({"domain": ZONE})
     assert result["provider"] == "local"
     assert result["nameservers"] == [f"ns1.{ZONE}", f"ns2.{ZONE}"]
+
+
+@pytest.mark.parametrize("operation", ["get_zone", "list_records", "upsert_record", "delete_record"])
+def test_active_zone_dispatch_uses_its_pool_token(monkeypatch, operation):
+    from types import SimpleNamespace
+    monkeypatch.setattr(dnsprovider, "cloudflare_zone_row", lambda zone: SimpleNamespace(status="active", cf_zone_id="zone-pool", cf_account_id=42))
+    monkeypatch.setattr(dnsprovider.cloudflare_accounts, "token_for_id", lambda account_id: "pooled-token" if account_id == 42 else None)
+    captured = []
+    def primitive(*args, **kwargs):
+        captured.append((cloudflare._active_token(), kwargs["zone_id"]))
+        return {"records": []}
+    monkeypatch.setattr(cloudflare, operation, primitive)
+    previous = cloudflare._active_token()
+    args = (ZONE, "www", "A", ["192.0.2.10"]) if operation == "upsert_record" else (ZONE, "www", "A") if operation == "delete_record" else (ZONE,)
+    getattr(dnsprovider, operation)(*args)
+    assert captured == [("pooled-token", "zone-pool")]
+    assert cloudflare._active_token() == previous

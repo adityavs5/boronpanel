@@ -30,6 +30,7 @@ import shutil
 import tarfile
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 
 from sqlalchemy import select
@@ -325,7 +326,10 @@ def _trigger_backup_locked(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise BackupError(f"account '{username}' not found")
+            raise ValidationError(f"account '{username}' not found")
+
+        if account.status != "active":
+            raise ValidationError("Only active accounts can start a new backup")
 
         _authorize_item(session, account, kind, item_ref)
 
@@ -363,10 +367,27 @@ def _trigger_backup_locked(params: dict) -> dict:
         if destination_id is None:
             schedule = get_effective_schedule(session, account.id)
             if schedule is None:
-                raise BackupError(
-                    "no destination_id given and no backup schedule (per-account or server default) is configured"
-                )
-            destination_id = schedule.destination_id
+                # Central snapshot destinations are a different model. Do not
+                # reuse their IDs or silently create a recurring schedule.
+                path = Path(settings.backup_dir) / "account-archives"
+                path.mkdir(mode=0o700, parents=True, exist_ok=True)
+                if path.is_symlink() or path.stat().st_uid != os.geteuid():
+                    raise ValidationError("The local backup directory needs administrator permission repair")
+                path.chmod(0o700)
+                if shutil.disk_usage(path).free < 512 * 1024 * 1024:
+                    raise ValidationError("Less than 512 MB is free on backup storage. Free space before starting a backup.")
+                destination = session.scalar(select(BackupDestination).where(
+                    BackupDestination.kind == "local", BackupDestination.local_path == str(path)))
+                if destination is None:
+                    name = "On-demand account archives"
+                    if session.scalar(select(BackupDestination.id).where(BackupDestination.name == name)):
+                        name += " " + secrets.token_hex(4)
+                    destination = BackupDestination(name=name, kind="local", local_path=str(path))
+                    session.add(destination)
+                    session.flush()
+                destination_id = destination.id
+            else:
+                destination_id = schedule.destination_id
         else:
             destination_id = int(destination_id)
         if session.get(BackupDestination, destination_id) is None:
@@ -663,6 +684,7 @@ def _run_backup_job(job_id: int) -> None:
     staging_dir = Path(settings.backup_staging_dir) / f"job-{job_id}"
     kind = None
     account_snapshot = None
+    guard = ExitStack()
     try:
         with write_session() as session:
             job = session.get(BackupJob, job_id)
@@ -689,6 +711,13 @@ def _run_backup_job(job_id: int) -> None:
             job.status = "running"
             job.progress_message = "starting"
 
+        from daemon.snapshot_jobs import lock
+        guard.enter_context(lock(f'account-{account_snapshot.id}'))
+        with write_session() as session:
+            current = session.get(Account, account_snapshot.id)
+            if current is None or current.username != username or current.status != 'active':
+                raise BackupError('Backup account changed while waiting to start')
+            _authorize_item(session, current, kind, item_ref)
         staging_dir.mkdir(parents=True, exist_ok=True)
         timestamp = utcnow().strftime("%Y%m%d-%H%M%S")
 
@@ -723,6 +752,8 @@ def _run_backup_job(job_id: int) -> None:
             )
             rclone.copy(str(local_artifact), final_path)
 
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        guard.close()
         _update_job(
             job_id,
             status="completed",
@@ -742,23 +773,40 @@ def _run_backup_job(job_id: int) -> None:
             events.emit("backup.completed", account_snapshot, job_id=job_id)
     except Exception as exc:  # noqa: BLE001
         logger.exception("backup job %d failed", job_id)
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        guard.close()
         _update_job(job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
         if kind == "full" and account_snapshot is not None:
             events.emit("backup.failed", account_snapshot, job_id=job_id, error=str(exc))
     finally:
         if staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
+        guard.close()
 
 
 def _enforce_retention(job_id: int) -> None:
+    from daemon.snapshot_jobs import lock
+    # Restore queue admission and artifact expiry must be mutually exclusive.
+    with lock('queue'):
+        _enforce_retention_locked(job_id)
+
+
+def _enforce_retention_locked(job_id: int) -> None:
     with write_session() as session:
         job = session.get(BackupJob, job_id)
         account_id = job.account_id
         destination_id = job.destination_id
         schedule = get_effective_schedule(session, account_id)
-        if schedule is None:
+        destination = session.get(BackupDestination, destination_id)
+        if schedule is not None:
+            retention_count = schedule.retention_count
+        elif (destination.kind == "local" and destination.local_path ==
+              str(Path(settings.backup_dir) / "account-archives")):
+            # Bound the new self-service storage; existing unscheduled
+            # destinations retain their operator-defined behavior.
+            retention_count = 3
+        else:
             return
-        retention_count = schedule.retention_count
         completed = session.scalars(
             select(BackupJob)
             .where(
@@ -775,6 +823,10 @@ def _enforce_retention(job_id: int) -> None:
         victims = [(j.id, j.artifact_path) for j in to_delete]
 
     for old_job_id, artifact_path in victims:
+        with write_session() as session:
+            if session.scalar(select(RestoreJob.id).where(RestoreJob.backup_job_id == old_job_id,
+                    RestoreJob.status.in_(['pending', 'running']))) is not None:
+                continue
         try:
             if dest_kind == "local":
                 if artifact_path and Path(artifact_path).exists():
@@ -783,10 +835,17 @@ def _enforce_retention(job_id: int) -> None:
                 rclone.delete_path(artifact_path)
         except Exception:  # noqa: BLE001
             logger.exception("failed to delete old backup artifact for retention (job %d)", old_job_id)
+            continue
         with write_session() as session:
             old_job = session.get(BackupJob, old_job_id)
             if old_job is not None:
-                session.delete(old_job)
+                if session.scalar(select(RestoreJob.id).where(RestoreJob.backup_job_id == old_job_id)) is not None:
+                    # Keep the referenced history row; its artifact has expired.
+                    old_job.status = 'expired'
+                    old_job.artifact_path = None
+                    old_job.progress_message = 'Expired by backup retention'
+                else:
+                    session.delete(old_job)
 
 
 def run_scheduled_backups() -> int:
@@ -1260,6 +1319,11 @@ def _restore_file(username: str, item_ref: str, local_artifact: str, restore_job
     _restore_tree(local_artifact, home_dir, pw)
 
 
+def _trusted_python_interpreter_link(member, destination: Path) -> bool:
+    from shared.archive_links import standard_python_venv_link
+    return member.issym() and standard_python_venv_link(member.name, member.linkname, destination)
+
+
 def _restore_tree(artifact, destination, owner, prefix=None):
     """Validate a private archive copy, then extract with destination privileges."""
     if owner.pw_uid <= 0 or owner.pw_gid <= 0:
@@ -1301,7 +1365,8 @@ def _restore_tree(artifact, destination, owner, prefix=None):
                 try:
                     tarfile.data_filter(checked, str(destination))
                 except (tarfile.FilterError, OSError) as exc:
-                    raise BackupError("unsafe restore archive path or link") from exc
+                    if not _trusted_python_interpreter_link(checked, Path(destination)):
+                        raise BackupError("unsafe restore archive path or link") from exc
                 expanded += member.size if member.isreg() else 0
                 if expanded > settings.cpanel_import_max_extracted_bytes:
                     raise BackupError("restore archive exceeds the expansion limit")
@@ -1351,6 +1416,7 @@ def _restore_mailbox(item_ref: str, local_artifact: str, restore_job_id: int) ->
 
 def _run_restore_job(restore_job_id: int) -> None:
     tmp_dir = None
+    guard = ExitStack()
     try:
         with write_session() as session:
             restore_job = session.get(RestoreJob, restore_job_id)
@@ -1373,6 +1439,13 @@ def _run_restore_job(restore_job_id: int) -> None:
             restore_job.status = "running"
             restore_job.progress_message = "fetching backup artifact"
 
+        from daemon.snapshot_jobs import lock
+        guard.enter_context(lock(f'account-{account.id}'))
+        with write_session() as session:
+            current = session.get(Account, account.id)
+            if current is None or current.username != username or current.status != 'active':
+                raise BackupError('Restore account changed while waiting to start')
+            _authorize_item(session, current, kind, item_ref)
         tmp_dir = tempfile.mkdtemp(dir=settings.backup_staging_dir, prefix=f"restore-{restore_job_id}-")
         local_artifact = _fetch_artifact_locally(artifact_path, dest_kind, tmp_dir)
 
@@ -1389,10 +1462,18 @@ def _run_restore_job(restore_job_id: int) -> None:
         else:
             raise BackupError(f"unknown restore kind '{kind}'")
 
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir = None
+        guard.close()
         _update_restore(restore_job_id, status="completed", progress_message="completed", completed_at=utcnow())
     except Exception as exc:  # noqa: BLE001
         logger.exception("restore job %d failed", restore_job_id)
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            tmp_dir = None
+        guard.close()
         _update_restore(restore_job_id, status="failed", error=str(exc), progress_message="failed", completed_at=utcnow())
     finally:
         if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors=True)
+        guard.close()

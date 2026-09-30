@@ -12,7 +12,7 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
    const p=new URL(route.request().url()).pathname;const method=route.request().method();let data={}
    if(p.endsWith('/whoami'))data={role:'admin',username:'admin'}
    else if(p.endsWith('/onboarding'))data={completed:true}
-   else if(p==='/api/v1/accounts')data={accounts:[{username:'alpha'},{username:'bravo'}]}
+   else if(p==='/api/v1/accounts')data=[{username:'alpha',status:'active'},{username:'bravo',status:'active'}]
    else if(p.endsWith('/snapshots/destinations'))data={destinations:[dest]}
    else if(p.endsWith('/recovery-key')){recoveryRequests++;data={password:'TEST-ONLY-RECOVERY-KEY',kind:'ssh',path:dest.path,namespace:'testnamespace'}}
    else if(p.endsWith('/initialize'))data=dest

@@ -38,6 +38,28 @@ def _private_file(value):
     return path
 
 
+def validate_local_destination(value):
+    path = _absolute(value)
+    resolved = path.resolve(strict=False)
+    forbidden = ['/proc', '/sys', '/dev', '/run', '/etc', '/boot', '/usr', '/bin', '/sbin', '/lib', settings.home_base, settings.mail_base, settings.snapshot_private_dir]
+    if any(resolved == Path(root) or Path(root) in resolved.parents for root in forbidden):
+        raise ValidationError('Choose a dedicated backup directory, such as /var/backups/boron, outside system and account directories')
+    existing = path
+    while not existing.exists():
+        if existing.is_symlink():
+            raise ValidationError('Local backup storage cannot use a symbolic link')
+        existing = existing.parent
+    info = existing.stat()
+    if not existing.is_dir() or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        raise ValidationError('The existing parent must be a backup-service-owned directory that other users cannot modify')
+    for parent in (path, *path.parents):
+        if parent.is_symlink():
+            raise ValidationError('Local backup storage cannot use symbolic links')
+    if os.statvfs(existing).f_flag & os.ST_RDONLY:
+        raise ValidationError('The backup filesystem is read-only')
+    return path
+
+
 def _positive(value):
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValidationError('Invalid backup account or policy identifier')

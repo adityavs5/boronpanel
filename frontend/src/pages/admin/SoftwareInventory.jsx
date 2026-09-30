@@ -22,7 +22,7 @@ export default function SoftwareInventory({ type }) {
     { key: 'runtime', header: 'Runtime', render: row => node ? `Node ${row.node_version}` : row.app_type.toUpperCase() },
     { key: 'entry_point', header: 'Entry point', searchable: true, render: row => <code className="text-xs">{row.entry_point}</code> },
     { key: 'port', header: 'Port' },
-    { key: 'active', header: 'Status', render: row => <StatusBadge status={row.active ? 'active' : row.enabled ? 'stopped' : 'disabled'} /> },
+    { key: 'active', header: 'Status', render: row => <StatusBadge status={row.active === 'active' ? 'active' : row.enabled ? 'stopped' : 'disabled'} /> },
   ]
   return <div>
     <PageHeader title={title} description={`Server-wide inventory of every ${node ? 'Node.js' : 'Python'} application and its owning account.`} icon={Icon} />

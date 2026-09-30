@@ -132,6 +132,20 @@ def set_domain_active(domain: str, active: bool) -> bool:
         conn.close()
 
 
+def set_mailbox_quota(domain: str, local_part: str, quota_mb: int) -> None:
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT m.id FROM mail_user m JOIN mail_domain d ON d.id=m.domain_id WHERE d.domain=%s AND m.local_part=%s', (domain, local_part))
+            row = cur.fetchone()
+            if row is None:
+                raise ValidationError('This mailbox does not exist')
+            cur.execute('UPDATE mail_user SET quota_mb=%s WHERE id=%s', (quota_mb, row['id']))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _domain_id(domain: str) -> int:
     conn = _connect()
     try:

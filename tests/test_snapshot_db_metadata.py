@@ -8,7 +8,7 @@ import pytest
 from daemon import mariadb, snapshot_db_metadata as metadata, snapshot_databases as database
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account
+from shared.models import Account, DatabaseGrant
 from tests.test_snapshot_databases import sql_server, sql
 
 
@@ -60,6 +60,20 @@ def test_existing_database_or_login_is_never_adopted(sql):
         metadata.recreate_missing('alpha', saved)
     assert not mariadb.database_exists('alpha_wp')
     assert mariadb.user_exists('alpha_wp')
+
+
+def test_renamed_account_metadata_uses_registered_ownership_not_sql_prefix(sql):
+    from sqlalchemy import select
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == 'alpha'))
+        session.add(DatabaseGrant(account_id=account.id, db_name='alpha_wp', db_user='alpha_wp'))
+        account.username = 'renamed'
+    saved = metadata.capture('renamed', [SimpleNamespace(db_name='alpha_wp', db_user='alpha_wp')])
+    assert saved['username'] == 'renamed'
+    assert saved['databases'][0]['name'] == 'alpha_wp'
+    assert saved['users'][0]['user'] == 'alpha_wp'
+    with pytest.raises(Exception, match='another account'):
+        metadata.validate_entry('renamed', {**saved['databases'][0], 'name': 'bravo_wp'})
 
 
 def test_failed_reconstruction_removes_only_new_resources(sql, monkeypatch):

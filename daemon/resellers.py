@@ -29,12 +29,21 @@ class ResellerError(Exception):
 
 
 def _bounded(value, name: str, default: int, minimum: int, maximum: int) -> int:
+    labels = {'max_accounts': 'Account count', 'max_total_disk_mb': 'Total disk allocation',
+              'account_quota_soft_mb': 'Account soft disk quota', 'account_quota_hard_mb': 'Account hard disk quota',
+              'account_mem_mb': 'Account memory limit', 'account_cpu_pct': 'Account CPU allocation',
+              'account_io_mb': 'Account disk I/O throughput', 'account_pids_max': 'Account process limit'}
+    label = labels.get(name, name.replace('_', ' '))
     try:
         value = int(default if value is None else value)
     except (TypeError, ValueError) as exc:
-        raise ValidationError(f"{name} must be an integer") from exc
+        raise ValidationError(f"{label} must be a valid number") from exc
     if value < minimum or value > maximum:
-        raise ValidationError(f"{name} must be between {minimum} and {maximum}")
+        if name.endswith('_mb') and name != 'account_io_mb':
+            raise ValidationError(f"{label} must be between {minimum / 1024:g} and {maximum / 1024:g} GB")
+        if name == 'account_cpu_pct':
+            raise ValidationError(f"{label} must be between {minimum / 100:g} and {maximum / 100:g} cores")
+        raise ValidationError(f"{label} must be between {minimum} and {maximum}")
     return value
 
 
@@ -112,9 +121,9 @@ def _validate_plan(params: dict, current: ResellerPlan | None = None) -> dict:
         "php_version": validate_php_version(str(get("php_version", settings.default_php_version)), settings.php_versions),
     }
     if fields["account_quota_hard_mb"] < fields["account_quota_soft_mb"]:
-        raise ValidationError("account_quota_hard_mb must be at least account_quota_soft_mb")
+        raise ValidationError("Account hard disk quota must be at least the soft disk quota")
     if fields["max_total_disk_mb"] < fields["account_quota_hard_mb"]:
-        raise ValidationError("max_total_disk_mb must fit at least one account hard quota")
+        raise ValidationError("Total disk allocation must fit at least one account hard disk quota")
     return fields
 
 
@@ -196,6 +205,7 @@ def list_plans(params: dict | None = None) -> dict:
         return {
             "plans": [{**_plan_dict(row, policies.get(row.id)), "reseller_count": counts.get(row.id, 0)} for row in rows],
             "host_cpu_cores": resource_manager.available_cpu_cores(),
+            "host_memory_gb": resource_manager.host_memory_gb(),
         }
 
 
@@ -424,8 +434,12 @@ def create_account(params: dict) -> dict:
             "pids_max": plan_values["account_pids_max"],
         })
         try:
-            handlers_auth.create_panel_user({"username": username, "password": password, "role": "customer", "account_id": account["id"]})
             with write_session() as session:
+                # Account creation owns the canonical customer login lifecycle.
+                # Creating it again here fails after successful provisioning.
+                user = session.scalar(select(PanelUser).where(PanelUser.username == username))
+                if user is None or user.role != "customer" or user.account_id != account["id"] or user.disabled:
+                    raise ResellerError("Account creation did not provision its customer login")
                 session.add(ResellerAccount(reseller_id=profile_id, account_id=account["id"]))
             _reconcile_account(account["id"])
         except Exception:

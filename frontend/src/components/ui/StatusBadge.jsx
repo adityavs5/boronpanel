@@ -18,6 +18,8 @@ const STATUS_MAP = {
   pending: { variant: 'warning', dot: 'bg-warning' },
   provisioning: { variant: 'warning', dot: 'bg-warning' },
   terminating: { variant: 'warning', dot: 'bg-warning' },
+  activating: { variant: 'info', dot: 'bg-info' },
+  deactivating: { variant: 'info', dot: 'bg-info' },
   queued: { variant: 'warning', dot: 'bg-warning' },
   deferred: { variant: 'warning', dot: 'bg-warning' },
   expiring: { variant: 'warning', dot: 'bg-warning' },

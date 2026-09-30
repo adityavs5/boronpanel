@@ -26,7 +26,7 @@ export default function SecurityCenter() {
   return <div>
     <PageHeader title="Security Center" description="Firewall, web application protection, and OpenLiteSpeed request controls in one place." icon={ShieldCheck} />
     <div className="grid gap-4 lg:grid-cols-3">
-      <Summary icon={Flame} title="Server firewall" status={firewall.active ? 'Active' : 'Disabled'} good={firewall.active} description={`${firewall.rules?.length || firewall.rule_count || 0} managed rules`} to="/firewall" />
+      <Summary icon={Flame} title="Server firewall" status={firewall.active ? 'Active' : 'Disabled'} good={firewall.active} description={`${firewall.rule_count ?? 0} configured firewall rules · WAF configured separately`} to="/firewall" />
       <Summary icon={ShieldHalf} title="Web application firewall" status={waf.mode} good={waf.mode === 'protect'} description={`${waf.exceptions?.filter(item => item.active).length || 0} active exceptions`} to="/waf" />
       <Summary icon={Gauge} title="Application abuse controls" status={throttle} good={throttle !== 'disabled'} description="OpenLiteSpeed per-client connection and request limits" to="/openlitespeed" />
     </div>

@@ -44,8 +44,12 @@ def _public(value):
 
 
 def _state_dict(row: ServerSetupState) -> dict:
+    results = dict(row.step_results or {})
+    next_step = next((number for number in range(1, 9)
+                      if results.get(str(number), {}).get("state") != "completed"), 9)
     return {
-        "current_step": row.current_step, "completed": row.completed,
+        "current_step": next_step, "completed": row.completed,
+        "completed_steps": sum(item.get("state") == "completed" for item in results.values()),
         "contact_email": row.contact_email, "maxmind_skipped": row.maxmind_skipped,
         "draft": dict(row.draft or {}), "step_results": dict(row.step_results or {}),
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -96,7 +100,8 @@ def _record(step: int, state: str, result: dict, *, draft: dict | None = None,
         if maxmind_skipped is not None:
             row.maxmind_skipped = maxmind_skipped
         if state == "completed":
-            row.current_step = max(row.current_step, min(9, step + 1))
+            row.current_step = next((number for number in range(1, 9)
+                if results.get(str(number), {}).get('state') != 'completed'), 9)
         if step == 9 and state == "completed":
             row.completed = True
 

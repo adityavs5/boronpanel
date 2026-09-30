@@ -8,7 +8,7 @@ export function BrandingBootstrap() {
   const { brandingReady, panelName, faviconUrl } = useBranding()
 
   useEffect(() => {
-    if (brandingReady) document.title = panelName
+    if (brandingReady) { const page = document.documentElement.dataset.pageTitle; document.title = page ? `${page} · ${panelName}` : panelName }
   }, [brandingReady, panelName])
 
   useEffect(() => {

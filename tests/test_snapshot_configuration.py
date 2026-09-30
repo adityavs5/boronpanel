@@ -26,8 +26,17 @@ def configuration(environment, fake_crontab):
     return root, ident, dest, fake_crontab
 
 
-def test_real_encrypted_configuration_restore_and_undo(configuration):
+def test_real_encrypted_configuration_restore_and_undo(configuration, monkeypatch):
     root, ident, dest, state = configuration
+    original_update = restores._update
+    def verify_completed(restore_id, **values):
+        if values.get('status') == 'completed':
+            account_id = jobs._row(SnapshotRestore, restore_id).account_id
+            with jobs.lock(f'account-{account_id}', blocking=False):
+                pass
+            assert not (root/'private/restores'/f'restore-{restore_id}').exists()
+        return original_update(restore_id, **values)
+    monkeypatch.setattr(restores, '_update', verify_completed)
     original = state['alpha']
     state['alpha'] = 'MAILTO=current@example.test\n@hourly /bin/false\n'
     before = state['alpha']

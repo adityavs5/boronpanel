@@ -24,6 +24,7 @@ function BulkActionBar({ selected, clearSelection }) {
   const [limits, setLimits] = useState({ cpu_cores: '', mem_mb: '', io_mb: '', pids_max: '' })
   const [notify, setNotify] = useState({ subject: '', body: '' })
   const [jobId, setJobId] = useState(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const triggerMut = useMutation({
     mutationFn: () => {
@@ -36,7 +37,7 @@ function BulkActionBar({ selected, clearSelection }) {
       if (action === 'notify') { action_params.subject = notify.subject.trim(); action_params.body = notify.body.trim() }
       return post('/api/v1/admin/accounts/bulk-action', { action, usernames: [...selected], action_params })
     },
-    onSuccess: (job) => { setJobId(job.id); toast.success('Bulk action started', `${selected.size} accounts`) },
+    onSuccess: (job) => { setConfirmOpen(false); setJobId(job.id); toast.success('Bulk action started', `${selected.size} accounts`) },
     onError: (e) => toast.error('Could not start bulk action', e.message),
   })
 
@@ -47,10 +48,12 @@ function BulkActionBar({ selected, clearSelection }) {
     refetchInterval: (q) => { const s = q.state.data?.status; return s === 'pending' || s === 'running' ? 1500 : false },
   })
   const finished = job && (job.status === 'completed' || job.status === 'failed')
-  if (finished && jobId) { qc.invalidateQueries({ queryKey: ['accounts'] }) }
+  const running = triggerMut.isPending || job?.status === 'pending' || job?.status === 'running'
+  useEffect(() => { if (finished && jobId) qc.invalidateQueries({ queryKey: ['accounts'] }) }, [finished, jobId, qc])
 
   return (
     <div className="mb-4 rounded-card border border-accent/40 bg-accent/5 p-4">
+      <ConfirmDialog open={confirmOpen} onOpenChange={setConfirmOpen} title={`Apply ${action.replaceAll('_', ' ')} to ${selected.size} accounts?`} description={`Accounts: ${[...selected].join(', ')}. Changes run in order and stop if an account fails. Individual results appear below.`} confirmLabel="Apply to selected accounts" variant={action === 'suspend' ? 'danger' : 'primary'} loading={triggerMut.isPending} onConfirm={() => triggerMut.mutate()} />
       <div className="flex flex-wrap items-end gap-3">
         <span className="text-sm font-medium text-foreground">{selected.size} selected</span>
         <FormField label="Action" className="w-48">
@@ -61,8 +64,8 @@ function BulkActionBar({ selected, clearSelection }) {
             <option value="notify">Send notification</option>
           </Select>
         </FormField>
-        <Button loading={triggerMut.isPending} onClick={() => triggerMut.mutate()}><Play className="h-4 w-4" /> Apply</Button>
-        <Button variant="ghost" onClick={clearSelection}>Clear</Button>
+        <Button loading={running} disabled={running} onClick={() => setConfirmOpen(true)}><Play className="h-4 w-4" /> Apply</Button>
+        <Button variant="ghost" disabled={running} onClick={clearSelection}>Clear</Button>
       </div>
 
       {action === 'update_limits' && (
@@ -211,7 +214,7 @@ export default function Accounts() {
       </>
     )
   } else {
-    nsDescription = 'Enables mount-namespace isolation for every currently active account that is not already enabled, one at a time. It stops at the first account that fails verification. This runs in the background and may take a while.'
+    nsDescription = 'Restricts each active account’s website and PHP filesystem visibility and uses a private temporary directory. Existing account files are preserved. This enables eligible accounts one at a time, refreshes their website configuration, and stops if verification fails. Terminal and SSH remain separate account-permission boundaries.'
   }
 
   // Terminated accounts are gone for good — the API already excludes them,
@@ -256,7 +259,7 @@ export default function Accounts() {
         icon={Users}
       >
         <Button variant="secondary" onClick={() => setNsOpen(true)}>
-          <ShieldCheck className="h-4 w-4" /> Namespace: bulk-enable
+          <ShieldCheck className="h-4 w-4" /> Enable website isolation
         </Button>
         <Button asChild><Link to="/accounts/new"><Plus className="h-4 w-4" /> Create account</Link></Button>
       </PageHeader>

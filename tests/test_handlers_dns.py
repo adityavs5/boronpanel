@@ -115,3 +115,30 @@ def test_create_zone_rejects_unowned_domain_cleanly(isolated_db):
     ValidationError."""
     with pytest.raises(ValidationError):
         hdns.create_zone({"domain": "unowned-example.com"})
+
+
+def test_dns_add_preserves_existing_rrset(monkeypatch):
+    monkeypatch.setattr(hdns.dnsprovider, 'list_records', lambda zone: [{'name': 'example.com.', 'type': 'A', 'values': ['192.0.2.1']}])
+    calls = []
+    monkeypatch.setattr(hdns.dnsprovider, 'upsert_record', lambda *a, **kw: calls.append((a, kw)))
+    result = hdns.set_record({'domain': 'example.com', 'type': 'A', 'values': ['192.0.2.2'], 'mode': 'add'})
+    assert result['values'] == ['192.0.2.1', '192.0.2.2']
+    assert calls[0][0][3] == result['values']
+    replaced = hdns.set_record({'domain': 'example.com', 'type': 'A', 'values': ['192.0.2.3'], 'mode': 'replace'})
+    assert replaced['values'] == ['192.0.2.3']
+
+
+@pytest.mark.parametrize('name', ['bad/name', 'bad name', 'outside.test.', 'a..b', '*.*'])
+def test_dns_invalid_owner_names_are_actionable(name):
+    with pytest.raises(ValidationError):
+        hdns.set_record({'domain': 'example.com', 'subdomain': name, 'type': 'A', 'values': ['192.0.2.2']})
+
+
+@pytest.mark.parametrize('name,existing', [('@', []), ('www', [{'name': 'www.example.com', 'type': 'A', 'values': ['192.0.2.1']}])])
+def test_dns_cname_conflicts_rejected_before_provider_write(monkeypatch, name, existing):
+    monkeypatch.setattr(hdns.dnsprovider, 'list_records', lambda zone: existing)
+    calls = []
+    monkeypatch.setattr(hdns.dnsprovider, 'upsert_record', lambda *a, **kw: calls.append(a))
+    with pytest.raises(ValidationError, match='CNAME'):
+        hdns.set_record({'domain': 'example.com', 'subdomain': name, 'type': 'CNAME', 'values': ['target.example.com']})
+    assert calls == []

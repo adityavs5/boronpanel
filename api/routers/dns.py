@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from starlette.requests import Request
 
@@ -33,6 +33,7 @@ class SetRecordBody(BaseModel):
     # zones only. Accepted end-to-end but forced false at write time until
     # the Phase 2 real-IP rails exist (docs/PLAN-cloudflare.md SS1.5).
     proxied: bool = False
+    mode: str = "replace"
 
 
 @api_router.post("/zones")
@@ -83,6 +84,7 @@ def set_record(domain: str, body: SetRecordBody, identity: Identity = Depends(ge
         values=body.values,
         ttl=body.ttl,
         proxied=body.proxied,
+        mode=body.mode,
     )
 
 
@@ -92,6 +94,40 @@ def delete_record(domain: str, subdomain: str, type: str, identity: Identity = D
     return call_daemon(
         "dns.delete_record", identity, domain=domain, subdomain=subdomain, type=type
     )
+
+
+class RawZoneBody(BaseModel):
+    text: str = Field(max_length=262144)
+    fingerprint: str = Field(min_length=64, max_length=64)
+    confirmation: str | None = None
+
+
+class ZoneTemplateBody(BaseModel):
+    template: str
+
+
+@api_router.get('/zones/{domain}/advanced')
+def advanced_zone(domain: str, identity: Identity = Depends(get_identity)):
+    require_domain_access(identity, domain)
+    return call_daemon('dns.raw.get', identity, domain=domain)
+
+
+@api_router.post('/zones/{domain}/advanced/preview')
+def preview_advanced_zone(domain: str, body: RawZoneBody, identity: Identity = Depends(get_identity)):
+    require_domain_access(identity, domain)
+    return call_daemon('dns.raw.preview', identity, domain=domain, **body.model_dump(exclude_none=True))
+
+
+@api_router.post('/zones/{domain}/advanced/template')
+def preview_zone_template(domain: str, body: ZoneTemplateBody, identity: Identity = Depends(get_identity)):
+    require_domain_access(identity, domain)
+    return call_daemon('dns.raw.template', identity, domain=domain, template=body.template)
+
+
+@api_router.put('/zones/{domain}/advanced')
+def save_advanced_zone(domain: str, body: RawZoneBody, identity: Identity = Depends(get_identity)):
+    require_domain_access(identity, domain)
+    return call_daemon('dns.raw.apply', identity, domain=domain, **body.model_dump(exclude_none=True))
 
 
 @ui_router.get("/{domain}")

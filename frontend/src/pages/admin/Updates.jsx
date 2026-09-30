@@ -301,7 +301,7 @@ export default function Updates() {
                 )}
                 <Button onClick={() => setUpdateOpen(true)}
                         disabled={!status.update_available || Boolean(active)}>
-                  <ArrowUpCircle className="h-4 w-4" /> Update to v{status.latest_version || '…'}
+                  <ArrowUpCircle className="h-4 w-4" /> {status.update_available ? `Update to v${status.latest_version}` : 'Panel is up to date'}
                 </Button>
               </div>
             </div>

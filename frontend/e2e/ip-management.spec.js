@@ -48,7 +48,7 @@ for (const skin of ['evolution', 'paper-lantern']) {
     await expect.poll(() => writes.some((item) => item.path.endsWith('/accounts/hostingdemo'))).toBe(true)
 
     await page.goto('/app/accounts')
-    await page.getByRole('button', { name: 'Create account' }).first().click()
+    await page.getByRole('link', { name: 'Create account' }).first().click()
     await expect(page.getByLabel('IP assignment')).toBeVisible()
     await page.getByLabel('IP assignment').selectOption('specific')
     await expect(page.getByLabel('Server IP')).toBeVisible()

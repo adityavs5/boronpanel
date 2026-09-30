@@ -93,7 +93,7 @@ def validate_db_identifier(name: str, max_len: int = 64) -> str:
 def validate_record_type(rtype: str) -> str:
     # Phase 3 feature 1: full zone editor -- PTR/SRV/CAA added to the
     # original A/AAAA/CNAME/MX/TXT set (Phase c's v1 scope).
-    allowed = {"A", "AAAA", "CNAME", "MX", "TXT", "PTR", "SRV", "CAA"}
+    allowed = {"A", "AAAA", "CNAME", "MX", "TXT", "NS", "PTR", "SRV", "CAA"}
     if rtype not in allowed:
         raise ValidationError(f"record type '{rtype}' not supported (allowed: {sorted(allowed)})")
     return rtype
@@ -234,11 +234,11 @@ def validate_redirect_target(url: str) -> str:
         parsed = urllib.parse.urlparse(url)
         port = parsed.port
     except ValueError:
-        raise ValidationError('Webhook URL has an invalid port') from None
+        raise ValidationError('Redirect target URL has an invalid port') from None
     if (parsed.scheme not in ("http", "https") or not parsed.hostname
             or parsed.username is not None or parsed.password is not None
             or (port is not None and not 1 <= port <= 65535)):
-        raise ValidationError('Webhook URL must be an absolute HTTP(S) URL without embedded credentials')
+        raise ValidationError('Redirect target URL must be an absolute HTTP(S) URL without embedded credentials')
     return url
 
 
@@ -625,6 +625,8 @@ def validate_webhook_url(url: str) -> str:
     # hostname-based targets and DNS-rebinding, which a literal-IP check here
     # cannot).
     host = parsed.hostname
+    if host and (host.lower().rstrip('.') == 'localhost' or host.lower().rstrip('.').endswith('.localhost')):
+        raise ValidationError('Webhook targets must use a public hostname; localhost is not allowed')
     if host:
         try:
             ip = ipaddress.ip_address(host)
@@ -648,12 +650,13 @@ def validate_webhook_url(url: str) -> str:
 def validate_resource_limit(value, field: str) -> int | None:
     if value is None or value == "":
         return None
+    label = {'bandwidth_limit_mb': 'Bandwidth allocation', 'database_limit': 'Database count', 'email_account_limit': 'Email account count', 'subdomain_limit': 'Subdomain count', 'ftp_account_limit': 'FTP account count', 'app_limit': 'Application count'}.get(field, field)
     try:
         limit = int(value)
     except (TypeError, ValueError):
-        raise ValidationError(f"{field} must be an integer or empty (untracked)") from None
+        raise ValidationError(f"{label} must be a valid GB amount or empty (unlimited)" if field == "bandwidth_limit_mb" else f"{label} must be a whole count or empty (unlimited)") from None
     if limit < 1:
-        raise ValidationError(f"{field} must be at least 1 (use empty/None for 'not tracked')")
+        raise ValidationError(f"{label} must be positive in GB; leave blank for unlimited" if field == "bandwidth_limit_mb" else f"{label} must be positive; leave blank for unlimited")
     return limit
 
 

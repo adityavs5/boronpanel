@@ -84,6 +84,9 @@ def create_linux_user(username: str) -> tuple[int, int]:
 
     pw = pwd.getpwnam(username)
     ensure_tmp_dir(username)
+    # The default file-backup scope must exist even before a first domain.
+    # Keep it private; domain provisioning adds the web-server ACL later.
+    secure_mkdirs(home_dir, "public_html", pw.pw_uid, pw.pw_gid, 0o750)
     return pw.pw_uid, pw.pw_gid
 
 
@@ -196,6 +199,28 @@ def recycle_php_workers(username: str) -> None:
     workers so an active SSH session (Phase 4 feature 6) or a running
     cron/git-deploy job for this same account is left alone."""
     run(["pkill", "-u", username, "-f", "lsphp"], timeout=15)
+
+
+def quiesce_user(username: str) -> None:
+    """End account sessions before an explicitly requested identity change."""
+    import time
+    _assert_safe_username(username)
+    owner = pwd.getpwnam(username)
+    if owner.pw_uid < 1000:
+        raise ValidationError("Refusing to stop a system user's processes")
+    run(["loginctl", "terminate-user", str(owner.pw_uid)], timeout=15)
+    run(["pkill", "-TERM", "-u", str(owner.pw_uid)], timeout=15)
+    deadline = time.monotonic() + 5
+    while run(["pgrep", "-u", str(owner.pw_uid)], timeout=5).ok:
+        if time.monotonic() >= deadline:
+            run(["pkill", "-KILL", "-u", str(owner.pw_uid)], timeout=15)
+            reap_deadline = time.monotonic() + 3
+            while run(["pgrep", "-u", str(owner.pw_uid)], timeout=5).ok:
+                if time.monotonic() >= reap_deadline:
+                    raise ValidationError("Account processes are still shutting down. Retry the rename shortly.")
+                time.sleep(0.1)
+            break
+        time.sleep(0.1)
 
 
 def delete_linux_user(username: str, *, remove_home: bool = True) -> None:

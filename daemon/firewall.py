@@ -524,7 +524,10 @@ def delete_rule(params: dict) -> dict:
 def get_status(params: dict) -> dict:
     result = run(["ufw", "status", "verbose"], timeout=15)
     active = result.stdout.strip().startswith("Status: active")
-    return {"active": active, "raw": result.stdout, "pending_change": _public_pending(_read_pending())}
+    rules = _current_rules()
+    return {"active": active, "raw": result.stdout, "rule_count": len(rules),
+            "inbound_rule_count": sum(rule.get("direction", "in") == "in" for rule in rules),
+            "pending_change": _public_pending(_read_pending())}
 
 
 # --- Phase 2+3 feature 9: Cloudflare-only web lockdown ----------------------

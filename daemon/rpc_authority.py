@@ -36,6 +36,7 @@ class Principal:
     session_hash: str | None = None
     reseller_id: int | None = None
     impersonating: bool = False
+    token_scope: str = 'full'
 
 
 def _utc(value: dt.datetime) -> dt.datetime:
@@ -96,7 +97,8 @@ def resolve_principal(credential: object) -> Principal:
 
         digest = hashlib.sha256(raw.encode()).hexdigest()
         token = db.scalar(select(ApiToken).where(ApiToken.token_hash == digest))
-        if token is None or token.revoked_at is not None or _utc(token.created_at) + TOKEN_MAX_AGE <= now:
+        if (token is None or token.revoked_at is not None or _utc(token.created_at) + TOKEN_MAX_AGE <= now
+                or (token.expires_at is not None and _utc(token.expires_at) <= now)):
             raise AuthenticationError("invalid or expired API token")
         if token.role not in ("admin", "customer"):
             raise AuthenticationError("invalid API token role")
@@ -104,7 +106,9 @@ def resolve_principal(credential: object) -> Principal:
             account = db.get(Account, token.account_id) if token.account_id is not None else None
             if account is None or account.status != "active":
                 raise AuthenticationError("API token account unavailable")
-        return Principal(token.role, token.label, token.account_id, None, "token")
+        if token.scope not in ('full', 'read-only'):
+            raise AuthenticationError('invalid API token scope')
+        return Principal(token.role, token.label, token.account_id, None, "token", token_scope=token.scope)
 
 
 def _target_account_id(db, params: dict, *, allow_new_domain: bool = False) -> int | None:
@@ -147,6 +151,10 @@ def _owns_account(db, principal: Principal, account_id: int) -> bool:
 
 
 def authorize(op: str, params: dict, principal: Principal | None) -> None:
+    if principal is not None and principal.auth_method == 'token' and principal.token_scope == 'read-only':
+        from shared.token_policy import READ_ONLY_OPERATIONS
+        if op not in READ_ONLY_OPERATIONS:
+            raise AuthorizationError('This API token is read-only and cannot perform this operation')
     disposition = POLICY_BY_OPERATION.get(op)
     if disposition is None:
         raise AuthorizationError("operation has no reviewed policy")

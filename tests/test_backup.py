@@ -331,7 +331,7 @@ def test_build_all_databases_backup_has_manifest_and_owned_dumps(isolated_db, fa
 # --- running backup jobs end to end (synchronous, no thread pool) -----------------
 
 
-def test_run_backup_job_full_to_local_destination(isolated_db, fake_home, fake_mail_base, fake_staging, stub_dump_database, stub_cron_and_dns, tmp_path, stub_tenant_tar):
+def test_run_backup_job_full_to_local_destination(isolated_db, fake_home, fake_mail_base, fake_staging, stub_dump_database, stub_cron_and_dns, tmp_path, stub_tenant_tar, monkeypatch):
     with write_session() as session:
         account = make_account(session)
         session.add(Domain(account_id=account.id, domain="demo1.example", kind="primary", docroot=f"{fake_home}/demo1/public_html"))
@@ -346,6 +346,21 @@ def test_run_backup_job_full_to_local_destination(isolated_db, fake_home, fake_m
         session.flush()
         job_id = job.id
 
+    from daemon.snapshot_jobs import lock
+    build = backup._build_full_backup
+    update = backup._update_job
+    def guarded_build(*args, **kwargs):
+        with pytest.raises(BlockingIOError):
+            with lock(f'account-{account.id}', blocking=False):
+                pass
+        return build(*args, **kwargs)
+    def ready_after_release(ident, **fields):
+        if fields.get('status') == 'completed':
+            with lock(f'account-{account.id}', blocking=False):
+                assert not (Path(backup.settings.backup_staging_dir) / f'job-{job_id}').exists()
+        return update(ident, **fields)
+    monkeypatch.setattr(backup, '_build_full_backup', guarded_build)
+    monkeypatch.setattr(backup, '_update_job', ready_after_release)
     backup._run_backup_job(job_id)
 
     with write_session() as session:
@@ -537,11 +552,18 @@ def test_trigger_backup_resolves_destination_from_schedule(isolated_db, tmp_path
     assert result["destination_id"] == dest["id"]
 
 
-def test_trigger_backup_without_destination_or_schedule_raises(isolated_db, stub_executor):
+def test_trigger_backup_without_schedule_uses_local_archives(isolated_db, tmp_path, stub_executor, monkeypatch):
+    monkeypatch.setattr(backup.settings, "backup_dir", str(tmp_path / "backups"))
     with write_session() as session:
         make_account(session)
-    with pytest.raises(backup.BackupError):
-        backup.trigger_backup({"username": "demo1", "kind": "full"})
+    job = backup.trigger_backup({"username": "demo1", "kind": "full"})
+    with write_session() as session:
+        destination = session.get(BackupDestination, job["destination_id"])
+        assert destination.kind == "local"
+        assert destination.local_path == str(tmp_path / "backups" / "account-archives")
+        assert session.scalar(select(BackupSchedule)) is None
+    assert job["status"] == "pending"
+    assert len(stub_executor) == 1
 
 
 def test_trigger_backup_requires_item_ref_for_granular_kinds(isolated_db, tmp_path, stub_executor):
@@ -566,7 +588,7 @@ def test_trigger_all_databases_backup_needs_no_manual_name(isolated_db, tmp_path
 
 
 def test_trigger_backup_unknown_account_raises(isolated_db, stub_executor):
-    with pytest.raises(backup.BackupError):
+    with pytest.raises(backup.ValidationError):
         backup.trigger_backup({"username": "ghost", "kind": "full"})
 
 
@@ -990,6 +1012,10 @@ def test_run_restore_job_database_end_to_end(isolated_db, tmp_path, fake_staging
     ran = []
 
     def fake_run(args, **kwargs):
+        from daemon.snapshot_jobs import lock
+        with pytest.raises(BlockingIOError):
+            with lock(f'account-{account.id}', blocking=False):
+                pass
         ran.append(args)
         from daemon.procutil import ProcResult
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
@@ -1006,6 +1032,14 @@ def test_run_restore_job_database_end_to_end(isolated_db, tmp_path, fake_staging
         session.flush()
         restore_job_id = restore_job.id
 
+    from daemon.snapshot_jobs import lock
+    update = backup._update_restore
+    def ready_after_release(ident, **fields):
+        if fields.get('status') == 'completed':
+            with lock(f'account-{account.id}', blocking=False):
+                assert not list(Path(backup.settings.backup_staging_dir).glob(f'restore-{restore_job_id}-*'))
+        return update(ident, **fields)
+    monkeypatch.setattr(backup, '_update_restore', ready_after_release)
     backup._run_restore_job(restore_job_id)
 
     with write_session() as session:
@@ -1168,3 +1202,26 @@ def stub_tenant_tar(monkeypatch):
         with tarfile.open(output, 'w:gz') as archive:
             archive.add(Path(directory) / item, arcname=item)
     monkeypatch.setattr(backup, '_build_user_tar', package)
+
+
+@pytest.mark.parametrize('restore_status',['pending','running','completed','failed'])
+def test_retention_preserves_restore_history_and_active_artifacts(isolated_db,tmp_path,restore_status):
+    import datetime as dt
+    with write_session() as db:
+        account=make_account(db);aid=account.id
+    dest=backup.create_destination({'name':'retention QA','kind':'local','local_path':str(tmp_path/'dest')})
+    backup.set_schedule({'frequency':'daily','retention_count':1,'destination_id':dest['id']})
+    old_artifact=tmp_path/'old.tar';old_artifact.write_bytes(b'old archive')
+    with write_session() as db:
+        old=BackupJob(account_id=aid,kind='file',item_ref='public_html',destination_id=dest['id'],status='completed',artifact_path=str(old_artifact),completed_at=backup.utcnow()-dt.timedelta(days=1))
+        new=BackupJob(account_id=aid,kind='file',item_ref='public_html',destination_id=dest['id'],status='completed',completed_at=backup.utcnow())
+        db.add_all([old,new]);db.flush();old_id,new_id=old.id,new.id
+        db.add(RestoreJob(account_id=aid,backup_job_id=old.id,kind='file',item_ref='public_html',status=restore_status))
+    backup._enforce_retention(new_id)
+    with write_session() as db:
+        row=db.get(BackupJob,old_id)
+        assert db.scalar(select(RestoreJob.id)) is not None
+        if restore_status in ('pending','running'):
+            assert row.status=='completed' and old_artifact.exists()
+        else:
+            assert row.status=='expired' and row.artifact_path is None and not old_artifact.exists()

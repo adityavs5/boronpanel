@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { AlertOctagon, RefreshCw } from 'lucide-react'
 import { get } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
@@ -11,12 +12,14 @@ import { EmptyState, ErrorState } from '@/components/ui/States'
 // Run A feature 7: the last 100 5xx responses from the panel's own API,
 // read from /var/log/boron/api-error.log via GET /admin/logs/errors.
 export default function ErrorLog() {
+  const [params, setParams] = useSearchParams()
+  const reference = params.get('reference')
   const { data, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: ['admin-error-log'],
     queryFn: () => get('/api/v1/admin/logs/errors'),
   })
 
-  const errors = data?.errors || []
+  const errors = (data?.errors || []).filter(error => !reference || error.reference === reference)
 
   return (
     <div>
@@ -29,6 +32,7 @@ export default function ErrorLog() {
           <RefreshCw className="h-4 w-4" /> Refresh
         </Button>
       </PageHeader>
+      {reference && <div className="mb-4 flex items-center gap-3"><span>Reference: <code>{reference}</code></span><Button variant="outline" size="sm" onClick={() => setParams({})}>Show all errors</Button></div>}
 
       <div className="rounded-card border border-border bg-card overflow-hidden">
         {isLoading ? (
@@ -49,6 +53,7 @@ export default function ErrorLog() {
                 <TH>Status</TH>
                 <TH>Method</TH>
                 <TH>Path</TH>
+                <TH>Details</TH>
                 <TH>User</TH>
                 <TH>IP</TH>
                 <TH>Duration</TH>
@@ -70,6 +75,14 @@ export default function ErrorLog() {
                     <span className="block truncate font-mono text-xs" title={e.path}>
                       {e.path}
                     </span>
+                  </TD>
+                  <TD className="min-w-64 max-w-lg whitespace-normal">
+                    {e.operation && <div className="font-medium">{e.operation} · {e.error_type}</div>}
+                    {e.reference && <div className="font-mono text-xs">Reference: {e.reference}</div>}
+                    {e.returncode != null && <div>Command exit status: {e.returncode}</div>}
+                    {e.errno != null && <div>OS error number: {e.errno}</div>}
+                    {e.frames?.map((frame, index) => <div key={index} className="break-all font-mono text-xs text-muted-foreground">{frame}</div>)}
+                    {!e.reference && <span className="text-muted-foreground">Older request record; no diagnostic reference recorded.</span>}
                   </TD>
                   <TD className="text-muted-foreground">{e.user || '—'}</TD>
                   <TD className="whitespace-nowrap font-mono text-xs text-muted-foreground">

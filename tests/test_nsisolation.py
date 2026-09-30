@@ -470,6 +470,42 @@ def test_self_test_marks_missing_peer_check_incomplete(fake_lsnsctl, isolated_db
 
     assert result["passed"] is False
     assert result["status"] == "incomplete"
-    assert result["skipped"] == ["peer_account_visibility", "live_php_worker"]
+    assert result["skipped"] == ["peer_account_visibility", "live_php_worker", "account_home_visibility"]
+    assert result["own_home_readable"] is None
     assert result["process_isolation"] == "configured_no_live_worker"
     assert result["process_isolation_scope"] == "web_php"
+
+
+def test_live_worker_home_checks_inspect_metadata_without_reading_files(tmp_path):
+    import os
+    root = tmp_path / 'worker-root'
+    own = root / 'home' / 'acct1'
+    own.mkdir(parents=True);own.chmod(0o750)
+    (own / 'secret').write_text('never read')
+    assert nsisolation._filesystem_home_checks(root, 'acct1', os.getuid(), 'other') == (True, True)
+    (root / 'home' / 'other').mkdir()
+    assert nsisolation._filesystem_home_checks(root, 'acct1', os.getuid(), 'other') == (True, False)
+    own.chmod(0o300)
+    assert nsisolation._filesystem_home_checks(root, 'acct1', os.getuid(), None) == (False, None)
+
+
+def test_selftest_uses_live_php_root_instead_of_inactive_native_layer(fake_lsnsctl, isolated_db, monkeypatch):
+    from types import SimpleNamespace
+    with write_session() as session:
+        make_account(session, username='acct1', uid=2000)
+        make_account(session, username='other', uid=2001)
+    monkeypatch.setattr(nsisolation, 'get_status', lambda username: {'enabled': True})
+    monkeypatch.setattr(nsisolation, '_account_process_rows', lambda uid: [(123, 'lsphp', '')])
+    monkeypatch.setattr(nsisolation, '_php_process_rows', lambda rows: rows)
+    monkeypatch.setattr(nsisolation, '_bubblewrap_server_configured', lambda: True)
+    monkeypatch.setattr(nsisolation, '_filesystem_home_checks', lambda root, username, uid, other: (True, True))
+    original = nsisolation.os.stat
+    def namespaced(path, *args, **kwargs):
+        if str(path) == '/proc/1/ns/pid': return SimpleNamespace(st_ino=1)
+        if str(path) == '/proc/123/ns/pid': return SimpleNamespace(st_ino=2)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(nsisolation.os, 'stat', namespaced)
+    monkeypatch.setattr(nsisolation, 'run', lambda *a, **kw: pytest.fail('Do not enter the inactive native mount'))
+    result = nsisolation.self_test({'username': 'acct1'})
+    assert result['status'] == 'passed' and result['passed']
+    assert result['own_home_readable'] and result['other_home_hidden']

@@ -64,7 +64,7 @@ function AppsPanel({ username, type }) {
     enabled: !!username,
     // Poll every 5s while any app is running so status/logs stay live.
     refetchInterval: (query) =>
-      (query.state.data?.apps || []).some((a) => a.active) ? 5000 : false,
+      (query.state.data?.apps || []).some((a) => a.active === 'active') ? 5000 : false,
   })
 
   const domainsQuery = useQuery({
@@ -143,8 +143,8 @@ function AppsPanel({ username, type }) {
       key: 'status',
       header: 'Status',
       sortable: true,
-      sortValue: (r) => (r.active ? 1 : 0),
-      render: (r) => <StatusBadge status={r.active ? 'running' : 'stopped'} />,
+      sortValue: (r) => (r.active === 'active' ? 1 : 0),
+      render: (r) => <StatusBadge status={r.active === 'active' ? 'running' : r.active || 'stopped'} />,
     },
     {
       key: 'actions',
@@ -161,10 +161,10 @@ function AppsPanel({ username, type }) {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
-              <DropdownMenuItem disabled={r.active || actionMut.isPending} onSelect={() => actionMut.mutate({ app: r, action: 'start' })}>
+              <DropdownMenuItem disabled={r.active === 'active' || actionMut.isPending} onSelect={() => actionMut.mutate({ app: r, action: 'start' })}>
                 <Play className="h-4 w-4" /> Start
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={!r.active || actionMut.isPending} onSelect={() => actionMut.mutate({ app: r, action: 'stop' })}>
+              <DropdownMenuItem disabled={r.active !== 'active' || actionMut.isPending} onSelect={() => actionMut.mutate({ app: r, action: 'stop' })}>
                 <Square className="h-4 w-4" /> Stop
               </DropdownMenuItem>
               <DropdownMenuItem disabled={actionMut.isPending} onSelect={() => actionMut.mutate({ app: r, action: 'restart' })}>
@@ -217,15 +217,15 @@ function AppsPanel({ username, type }) {
           </DialogHeader>
           {selected && <DialogBody className="space-y-4">
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-3 text-sm">
-              <dt className="text-muted-foreground">Status</dt><dd><StatusBadge status={selected.active ? 'running' : 'stopped'} /></dd>
+              <dt className="text-muted-foreground">Status</dt><dd><StatusBadge status={selected.active === 'active' ? 'running' : selected.active || 'stopped'} /></dd>
               <dt className="text-muted-foreground">Domain</dt><dd className="break-all">{selected.domain || '—'}</dd>
               <dt className="text-muted-foreground">Port</dt><dd>{selected.port || '—'}</dd>
               <dt className="text-muted-foreground">Entry point</dt><dd className="break-all font-mono">{selected.entry_point || '—'}</dd>
             </dl>
             <div className="flex flex-wrap gap-2">
-              <Button disabled={actionMut.isPending} onClick={() => actionMut.mutate({ app: selected, action: selected.active ? 'stop' : 'start' })}>
-                {selected.active ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                {selected.active ? 'Stop' : 'Start'}
+              <Button disabled={actionMut.isPending} onClick={() => actionMut.mutate({ app: selected, action: selected.active === 'active' ? 'stop' : 'start' })}>
+                {selected.active === 'active' ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                {selected.active === 'active' ? 'Stop' : 'Start'}
               </Button>
               <Button variant="outline" disabled={actionMut.isPending} onClick={() => actionMut.mutate({ app: selected, action: 'restart' })}><RotateCw className="h-4 w-4" />Restart</Button>
               <Button variant="outline" onClick={() => { setLogsApp(selected); setSelectedId(null) }}><ScrollText className="h-4 w-4" />View logs</Button>

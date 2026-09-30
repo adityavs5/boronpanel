@@ -144,3 +144,20 @@ def test_backup_quiesce_does_not_change_existing_maintenance(domain_row):
     with write_session() as session:account=session.query(Account).filter_by(username='demo1').one()
     assert hm.quiesce_account(account)==[]
     assert hm.get_maintenance({'domain':'demo1.example'})['title']=='Planned maintenance'
+
+
+def test_termination_and_stale_sweep_remove_operational_maintenance(domain_row):
+    from shared.db import write_session
+    from shared.models import Account, MaintenanceMode
+    from sqlalchemy import select
+    hm.set_maintenance({'domain':'demo1.example','enabled':True})
+    with write_session() as db:
+        account=db.scalar(select(Account).where(Account.username=='demo1'))
+    hm.terminate_account_maintenance(account)
+    with write_session() as db:
+        assert db.scalar(select(MaintenanceMode).where(MaintenanceMode.domain=='demo1.example')) is None
+        db.add(MaintenanceMode(domain='already-removed.example',enabled=True,bypass_token='test-only-bypass'))
+    hm.sweep_expired()
+    with write_session() as db:
+        assert db.scalar(select(MaintenanceMode).where(MaintenanceMode.domain=='already-removed.example')).enabled is False
+    assert hm.list_active_maintenance({})['domains']==[]

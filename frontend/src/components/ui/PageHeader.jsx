@@ -1,8 +1,18 @@
+import { useEffect } from 'react'
+import { useBranding } from '@/hooks/useBranding'
 import { cn } from '@/lib/cn'
 
 // Standard page header: title + optional description on the left, actions on
 // the right. Used at the top of every page.
 export function PageHeader({ title, description, children, className, icon: Icon }) {
+  const { panelName } = useBranding()
+  useEffect(() => {
+    document.documentElement.dataset.pageTitle = title
+    if (panelName) document.title = `${title} · ${panelName}`
+    return () => {
+      if (document.documentElement.dataset.pageTitle === title) delete document.documentElement.dataset.pageTitle
+    }
+  }, [title, panelName])
   return (
     <div className={cn('panel-page-heading flex flex-wrap items-start justify-between gap-4 mb-6', className)}>
       <div className="flex items-start gap-3 min-w-0">

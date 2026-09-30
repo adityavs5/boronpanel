@@ -11,6 +11,7 @@ from sqlalchemy import select
 from shared.db import write_session
 from shared.models import Account, Domain, Redirect
 from shared.validation import (
+    ValidationError,
     validate_domain,
     validate_redirect_path,
     validate_redirect_status_code,
@@ -53,6 +54,12 @@ def _set_redirect(params: dict) -> dict:
     path = validate_redirect_path(params["path"])
     target_url = validate_redirect_target(params["target_url"])
     status_code = validate_redirect_status_code(params.get("status_code", 301))
+    from urllib.parse import urlsplit, unquote
+    target = urlsplit(target_url)
+    target_path = unquote(target.path or '/').rstrip('/') or '/'
+    source_path = unquote(path).rstrip('/') or '/'
+    if target.hostname.lower().rstrip('.') == domain_name and target_path == source_path:
+        raise ValidationError("The redirect points back to the same domain and path and would create a loop")
 
     with write_session() as session:
         _domain_row, account = _domain_account(session, domain_name)

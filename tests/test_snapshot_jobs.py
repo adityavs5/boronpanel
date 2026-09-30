@@ -578,3 +578,34 @@ def test_retention_keeps_recent_daily_weekly_and_monthly_points():
         'retention_weekly':2,'retention_monthly':2})
     assert {'0','2','3','4'} <= kept
     assert '1' not in kept
+
+
+def test_snapshot_ready_waits_for_website_resume_and_lock_release(environment, monkeypatch):
+    from daemon import handlers_maintenance
+    root,_=environment
+    dest=make_destination(root)
+    policy=make_policy(dest,quiesce_apps=True)
+    ident=jobs.queue_policy({'id':policy['id']})['run_ids'][0]
+    row=jobs._row(SnapshotRun,ident)
+    restored=[]
+    monkeypatch.setattr(handlers_maintenance,'quiesce_account',lambda _: ['paused website'])
+    def resume(account, state):
+        assert state==['paused website']
+        assert jobs._row(SnapshotRun,ident).status=='running'
+        with pytest.raises(BlockingIOError):
+            with jobs.lock(f'account-{account.id}',blocking=False):
+                pytest.fail('Website resume must retain the account mutation lock')
+        restored.append(True)
+    monkeypatch.setattr(handlers_maintenance,'restore_quiesced_account',resume)
+    jobs.execute_run(ident)
+    assert restored==[True]
+    assert jobs._row(SnapshotRun,ident).status=='completed'
+    with jobs.lock(f'account-{row.account_id}',blocking=False):
+        pass
+
+
+def test_missing_selected_backup_folder_is_actionable(environment):
+    root,_=environment
+    account=jobs._account('alpha')
+    with pytest.raises(Exception,match='does not exist: public_html'):
+        jobs.sources(account,{'components':['files'],'include_paths':['public_html']})

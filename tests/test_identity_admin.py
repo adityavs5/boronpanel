@@ -125,6 +125,7 @@ def _patch_system(monkeypatch, fail_on=None):
     monkeypatch.setattr(identity_admin.cgroups, "remove_slice", rec("remove_slice"))
     monkeypatch.setattr(identity_admin.cgroups, "apply_limits", rec("apply_limits"))
     monkeypatch.setattr(identity_admin.ols, "refresh_vhost", rec("refresh_vhost"))
+    monkeypatch.setattr(identity_admin, "_pause_for_rename", lambda account_id: lambda: None)
     return log
 
 
@@ -153,7 +154,7 @@ def test_rename_rejects_duplicate(isolated_db, monkeypatch):
     _make_account("oldname")
     _make_account("taken", uid=5002)
     _patch_system(monkeypatch)
-    with pytest.raises(RuntimeError, match="already exists"):
+    with pytest.raises(ValidationError, match="already exists"):
         identity_admin.rename_account({"username": "oldname", "new_username": "taken"})
 
 
@@ -169,7 +170,7 @@ def test_rename_refuses_with_node_app(isolated_db, monkeypatch):
         db.add(NodeApp(account_id=account_id, domain="app.com", name="app", entry_point="index.js",
                        port=30001, node_version="20"))
     _patch_system(monkeypatch)
-    with pytest.raises(RuntimeError, match="NodeJS/Python"):
+    with pytest.raises(ValidationError, match="NodeJS/Python"):
         identity_admin.rename_account({"username": "oldname", "new_username": "newname"})
 
 
@@ -178,7 +179,7 @@ def test_rename_refuses_with_ftp_subaccount(isolated_db, monkeypatch):
     with write_session() as db:
         db.add(FtpAccount(account_id=account_id, ftp_login="oldname_sub", path="/home/oldname/pub"))
     _patch_system(monkeypatch)
-    with pytest.raises(RuntimeError, match="FTP sub-accounts"):
+    with pytest.raises(ValidationError, match="FTP sub-accounts"):
         identity_admin.rename_account({"username": "oldname", "new_username": "newname"})
 
 
@@ -205,3 +206,97 @@ def test_rename_rolls_back_on_ols_failure(isolated_db, monkeypatch):
     assert len(rename_login_calls) == 2
     assert rename_login_calls[0][1] == ("oldname", "newname")
     assert rename_login_calls[1][1] == ("newname", "oldname")
+
+
+def test_promote_owned_addon_preserves_sites(isolated_db, monkeypatch):
+    account_id = _make_account()
+    _add_domain(account_id, 'old.example.com', 'primary', '/home/demo1/public_html')
+    _add_domain(account_id, 'addon.example.com', 'addon', '/home/demo1/domains/addon')
+    monkeypatch.setattr(identity_admin.ols, 'refresh_vhost', lambda account: None)
+    monkeypatch.setattr(identity_admin, '_remove_vhost_dir', lambda domain: pytest.fail('promotion must retain both sites'))
+    identity_admin.set_primary_domain({'username': 'demo1', 'domain': 'addon.example.com'})
+    with write_session() as db:
+        assert db.get(Account, account_id).primary_domain == 'addon.example.com'
+        rows = {row.domain: row for row in db.scalars(select(Domain)).all()}
+        assert rows['old.example.com'].kind == 'addon'
+        assert rows['old.example.com'].docroot == '/home/demo1/public_html'
+        assert rows['addon.example.com'].kind == 'primary'
+        assert rows['addon.example.com'].docroot == '/home/demo1/domains/addon'
+
+
+def test_promotion_compensates_ols_failure(isolated_db, monkeypatch):
+    account_id = _make_account()
+    with write_session() as db:
+        db.get(Account, account_id).primary_domain = 'old.example.com'
+    _add_domain(account_id, 'old.example.com', 'primary', '/home/demo1/public_html')
+    _add_domain(account_id, 'addon.example.com', 'addon', '/home/demo1/domains/addon')
+    def fail(account):
+        raise RuntimeError('config rejected')
+    monkeypatch.setattr(identity_admin.ols, 'refresh_vhost', fail)
+    with pytest.raises(RuntimeError):
+        identity_admin.set_primary_domain({'username': 'demo1', 'domain': 'addon.example.com'})
+    with write_session() as db:
+        assert db.get(Account, account_id).primary_domain == 'old.example.com'
+        assert db.scalar(select(Domain).where(Domain.domain == 'old.example.com')).kind == 'primary'
+        assert db.scalar(select(Domain).where(Domain.domain == 'addon.example.com')).kind == 'addon'
+
+
+def test_password_reset_repairs_customer_login(isolated_db, monkeypatch):
+    from daemon import handlers_auth
+    _make_account()
+    monkeypatch.setattr(identity_admin.sysops, 'set_initial_password', lambda *args: None)
+    identity_admin.set_account_password({'username': 'demo1', 'password': 'NewStrongPass1!'})
+    result = handlers_auth.login_begin({'username': 'demo1', 'password': 'NewStrongPass1!'})
+    assert result['valid'] and result['role'] == 'customer'
+    assert not handlers_auth.login_begin({'username': 'demo1', 'password': 'WrongStrongPass1!'})['valid']
+
+
+def test_rename_preserves_panel_identity_and_revokes_session(isolated_db, monkeypatch):
+    from daemon import handlers_account, handlers_auth
+    from shared.models import PanelUser, Session
+    account_id = _make_account('oldname')
+    with write_session() as db:
+        handlers_account.ensure_customer_login(db, db.get(Account, account_id), 'StrongInitialPass1!')
+    session_result = handlers_auth.login_begin({'username': 'oldname', 'password': 'StrongInitialPass1!'})
+    _patch_system(monkeypatch)
+    identity_admin.rename_account({'username': 'oldname', 'new_username': 'newname'})
+    with write_session() as db:
+        assert db.scalar(select(PanelUser).where(PanelUser.username == 'newname')).account_id == account_id
+        assert all(row.revoked for row in db.scalars(select(Session)).all())
+    assert handlers_auth.login_begin({'username': 'newname', 'password': 'StrongInitialPass1!'})['valid']
+    assert not handlers_auth.login_begin({'username': 'oldname', 'password': 'StrongInitialPass1!'})['valid']
+
+
+def test_rename_pause_preserves_cron_and_retires_namespace(isolated_db, monkeypatch):
+    from daemon import cron, filebrowser_accounts, nsisolation
+    account_id=_make_account('demo1')
+    monkeypatch.setattr(identity_admin.sysops,'get_shell',lambda _:identity_admin.sysops.LOGIN_SHELL)
+    calls=[]
+    monkeypatch.setattr(identity_admin.sysops,'set_shell',lambda name,shell:calls.append(('shell',name,shell)))
+    monkeypatch.setattr(identity_admin.sysops,'quiesce_user',lambda name:calls.append(('quiesce',name)))
+    monkeypatch.setattr(cron,'_read_raw',lambda _: ['0 2 * * * /usr/bin/php /home/demo1/public_html/task.php'])
+    monkeypatch.setattr(cron,'delete_all_jobs',lambda name:calls.append(('pause-cron',name)))
+    monkeypatch.setattr(cron,'_write_raw',lambda name,lines:calls.append(('resume-cron',name,lines)))
+    monkeypatch.setattr(filebrowser_accounts,'stop',lambda name:calls.append(('stop-files',name)))
+    monkeypatch.setattr(nsisolation,'get_status',lambda name:{'enabled':True})
+    monkeypatch.setattr(nsisolation,'unmount_uid',lambda uid:calls.append(('unmount',uid)))
+    monkeypatch.setattr(identity_admin.ols,'refresh_vhost',lambda account:calls.append(('web',account.username,account.status)))
+    resume=identity_admin._pause_for_rename(account_id)
+    with write_session() as db:
+        assert db.get(Account,account_id).status=='suspended'
+        db.get(Account,account_id).username='newname'
+    resume()
+    assert calls.index(('pause-cron','demo1')) < calls.index(('quiesce','demo1')) < calls.index(('unmount',5001))
+    assert ('resume-cron','newname',['0 2 * * * /usr/bin/php /home/newname/public_html/task.php']) in calls
+    with write_session() as db:
+        assert db.get(Account,account_id).status=='active'
+
+
+def test_rename_refuses_redis_socket_dependency_before_any_changes(isolated_db, monkeypatch):
+    from shared.models import RedisInstance
+    account_id=_make_account('demo1')
+    with write_session() as db:
+        db.add(RedisInstance(account_id=account_id,mem_mb=64,enabled=True))
+    monkeypatch.setattr(identity_admin,'_pause_for_rename',lambda _:pytest.fail('Dependent Redis account was paused'))
+    with pytest.raises(ValidationError,match='socket path'):
+        identity_admin.rename_account({'username':'demo1','new_username':'newname'})

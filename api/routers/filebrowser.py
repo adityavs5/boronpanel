@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 
 import httpx
@@ -34,7 +35,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from sqlalchemy import select
 from starlette.background import BackgroundTask
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response, StreamingResponse
+from starlette.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from api.rpc import call_daemon
 from api.security import (
@@ -69,6 +70,49 @@ _HOP_BY_HOP = {
 
 # Reuse an isolated Unix-socket client for each authorized account.
 _clients: dict[str, httpx.AsyncClient] = {}
+
+
+def _account_source_usage(payload: dict, username: str) -> dict:
+    """Adapt pinned Quantum Stats {used, usedAlt, total} to a hosting quota.
+
+    The account index reports its own files; usedAlt/total otherwise report
+    the host partition, which is neither an account's usage nor its limit.
+    """
+    with read_session() as db:
+        account = db.scalar(select(Account).where(Account.username == username))
+        if account is None or account.status != 'active':
+            raise HTTPException(status_code=403, detail='Hosting account unavailable')
+        quota = account.quota_hard_mb * 1024 * 1024
+    for source in payload.values():
+        if isinstance(source, dict) and 'total' in source and 'used' in source:
+            source['total'] = quota
+            source['usedAlt'] = source['used']
+            source['quotaManaged'] = True
+    return payload
+
+
+def _account_source_event(frame: bytes, username: str) -> bytes:
+    """Keep Quantum's sourceUpdate events consistent with its initial quota."""
+    lines = frame.splitlines()
+    data = [line[5:].lstrip() for line in lines if line.startswith(b'data:')]
+    if not data:
+        return frame + b'\n\n'
+    try:
+        event = json.loads(b'\n'.join(data))
+    except (ValueError, UnicodeError):
+        return frame + b'\n\n'
+    if not isinstance(event, dict) or event.get('eventType') != 'sourceUpdate':
+        return frame + b'\n\n'
+    try:
+        source = json.loads(event['message'])
+        if not isinstance(source, dict):
+            return b': invalid source statistics\n\n'
+        event['message'] = json.dumps(_account_source_usage(source, username))
+    except (KeyError, TypeError, ValueError):
+        return b': invalid source statistics\n\n'
+    kept = [line for line in lines if not line.startswith(b'data:')]
+    kept.append(b'data: ' + json.dumps(event).encode())
+    return b'\n'.join(kept) + b'\n\n'
 
 
 def _frontend_client() -> httpx.AsyncClient:
@@ -285,6 +329,46 @@ async def proxy(request: Request, path: str = ""):
         upstream = await client.send(upstream_req, stream=True)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"file manager backend unreachable: {exc}") from exc
+
+    if request.method == 'GET' and path.rstrip('/') == 'api/events' and upstream.status_code == 200:
+        async def quota_events():
+            pending = bytearray()
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    pending.extend(chunk)
+                    while True:
+                        boundary = re.search(rb'\r?\n\r?\n', pending)
+                        if boundary is None:
+                            break
+                        if boundary.start() > 1024 * 1024:
+                            return
+                        frame = bytes(pending[:boundary.start()])
+                        del pending[:boundary.end()]
+                        yield _account_source_event(frame, target)
+                    if len(pending) > 1024 * 1024:
+                        return
+            finally:
+                await upstream.aclose()
+        return StreamingResponse(quota_events(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-store'})
+
+    if request.method == 'GET' and path.rstrip('/') == 'api/settings/sources' and upstream.status_code == 200:
+        import asyncio
+        try:
+            body = bytearray()
+            async with asyncio.timeout(15):
+                async for chunk in upstream.aiter_bytes(chunk_size=65536):
+                    if len(body) + len(chunk) > 1024 * 1024:
+                        raise HTTPException(status_code=502, detail='File Manager usage response is too large')
+                    body.extend(chunk)
+            payload = json.loads(body)
+            if not isinstance(payload, dict):
+                raise ValueError('invalid source statistics')
+            return JSONResponse(_account_source_usage(payload, target), headers={'Cache-Control': 'no-store'})
+        except (ValueError, TimeoutError):
+            raise HTTPException(status_code=502, detail='File Manager usage could not be loaded') from None
+        finally:
+            await upstream.aclose()
 
     # HTML (the SPA shell, ~15KB) is buffered so its CSP can carry the hashes
     # of its own inline bootstrap script — see html_csp(). Everything else

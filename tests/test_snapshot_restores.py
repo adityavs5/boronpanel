@@ -47,6 +47,15 @@ def test_real_selected_file_restore_keeps_other_files_and_safety_snapshot(enviro
         backup.trigger_backup({'username':'alpha','kind':'full'})
     with pytest.raises(Exception,match='already in progress'):
         restores.trigger({'username':'alpha','run_id':ident,'confirmation':'alpha'})
+    original_update=restores._update
+    account_id=jobs._row(SnapshotRestore,request['id']).account_id
+    def verify_completion(restore_id, **values):
+        if restore_id==request['id'] and values.get('status')=='completed':
+            with jobs.lock(f'account-{account_id}',blocking=False):
+                pass
+            assert not (root/'private/restores'/f'restore-{restore_id}').exists()
+        return original_update(restore_id, **values)
+    monkeypatch.setattr(restores,'_update',verify_completion)
     restores.execute(request['id'])
     result=restores.list_restores({'username':'alpha'})['restores'][0]
     assert result['status']=='completed',result['error']
@@ -257,3 +266,18 @@ def test_restore_queue_rechecks_account_after_request_preparation(environment, m
     with write_session() as session:
         assert not session.scalars(select(SnapshotRestore)).all()
     assert (home/'site.txt').read_text() == 'original'
+
+
+def test_snapshot_file_worker_restores_standard_venv_interpreter_links(tmp_path):
+    if os.geteuid()!=0:pytest.skip('requires root')
+    source=tmp_path/'source';source.mkdir()
+    bindir=source/'pythonapps/app/venv/bin';bindir.mkdir(parents=True)
+    (bindir/'python3').symlink_to('/usr/bin/python3')
+    (bindir/'python').symlink_to('python3')
+    (source/'site.txt').write_text('restored')
+    home=tmp_path/'home';home.mkdir();os.chown(home,65534,65534)
+    result=worker(source,home,['.'])
+    assert result.ok,result.stderr
+    assert os.readlink(home/'pythonapps/app/venv/bin/python3')=='/usr/bin/python3'
+    assert (home/'site.txt').read_text()=='restored'
+    assert (home/'site.txt').stat().st_uid==65534

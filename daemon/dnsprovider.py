@@ -163,7 +163,8 @@ def delete_zone(zone: str) -> None:
 def get_zone(zone: str) -> dict:
     row = cloudflare_zone_row(zone)
     if row is not None and row.status == "active":
-        return cloudflare.get_zone(zone, zone_id=row.cf_zone_id)
+        with cloudflare.use_token(cloudflare_accounts.token_for_id(getattr(row, "cf_account_id", None))):
+            return cloudflare.get_zone(zone, zone_id=row.cf_zone_id)
     return powerdns.get_zone(zone)
 
 
@@ -180,7 +181,8 @@ def upsert_record(
         proxied = False  # accepted end-to-end, forced off until the Phase 2 rails exist
     row = cloudflare_zone_row(zone)
     if row is not None and row.status == "active":
-        cloudflare.upsert_record(zone, subdomain, rtype, values, ttl=ttl, proxied=proxied, zone_id=row.cf_zone_id)
+        with cloudflare.use_token(cloudflare_accounts.token_for_id(getattr(row, "cf_account_id", None))):
+            cloudflare.upsert_record(zone, subdomain, rtype, values, ttl=ttl, proxied=proxied, zone_id=row.cf_zone_id)
     else:
         powerdns.upsert_record(zone, subdomain, rtype, values, ttl=ttl)
         _cluster_notify(zone)
@@ -190,7 +192,8 @@ def upsert_record(
 def delete_record(zone: str, subdomain: str, rtype: str) -> None:
     row = cloudflare_zone_row(zone)
     if row is not None and row.status == "active":
-        cloudflare.delete_record(zone, subdomain, rtype, zone_id=row.cf_zone_id)
+        with cloudflare.use_token(cloudflare_accounts.token_for_id(getattr(row, "cf_account_id", None))):
+            cloudflare.delete_record(zone, subdomain, rtype, zone_id=row.cf_zone_id)
     else:
         powerdns.delete_record(zone, subdomain, rtype)
         _cluster_notify(zone)
@@ -199,5 +202,6 @@ def delete_record(zone: str, subdomain: str, rtype: str) -> None:
 def list_records(zone: str) -> list[dict]:
     row = cloudflare_zone_row(zone)
     if row is not None and row.status == "active":
-        return cloudflare.list_records(zone, zone_id=row.cf_zone_id)
+        with cloudflare.use_token(cloudflare_accounts.token_for_id(getattr(row, "cf_account_id", None))):
+            return cloudflare.list_records(zone, zone_id=row.cf_zone_id)
     return powerdns.list_records(zone)

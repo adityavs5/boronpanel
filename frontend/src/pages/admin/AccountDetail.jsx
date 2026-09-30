@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog, FolderOpen, Layers, Ban } from 'lucide-react'
 import { get, post, put, patch, del, impersonate as apiImpersonate } from '@/lib/api'
@@ -45,6 +45,7 @@ const ACCOUNT_TABS = [
 ]
 
 function AdminActions({ username, account }) {
+  const navigate = useNavigate()
   const qc = useQueryClient()
   const [confirm, setConfirm] = useState(null) // 'terminate' | null
   const invalidate = () => {
@@ -61,7 +62,7 @@ function AdminActions({ username, account }) {
   const unsuspendMut = act('unsuspend')
   const terminateMut = useMutation({
     mutationFn: () => post(`/api/v1/accounts/${username}/terminate`),
-    onSuccess: () => { toast.success('Account terminated'); invalidate(); setConfirm(null) },
+    onSuccess: () => { toast.success('Account terminated'); invalidate(); setConfirm(null); navigate('/accounts', { replace: true }) },
     onError: (e) => { toast.error('Could not terminate', e.message); setConfirm(null) },
   })
   // Phase 8 feature 1: "Login as user" -> mint+redeem an impersonation token,
@@ -74,7 +75,7 @@ function AdminActions({ username, account }) {
 
   return (
     <div className="flex flex-wrap gap-2">
-      {['active', 'suspended'].includes(account.status) && (
+      {account.status === 'active' && (
         <Button variant="secondary" size="sm" loading={impersonateMut.isPending} onClick={() => impersonateMut.mutate()}>
           <UserCog className="h-4 w-4" /> Login as user
         </Button>
@@ -83,7 +84,7 @@ function AdminActions({ username, account }) {
           authorizes this admin for the account, audits the access, and opens
           FileBrowser Quantum scoped to the account's home — in its own tab
           so the admin panel stays open. */}
-      {['active', 'suspended'].includes(account.status) && (
+      {account.status === 'active' && (
         <Button
           variant="secondary"
           size="sm"
@@ -93,12 +94,12 @@ function AdminActions({ username, account }) {
         </Button>
       )}
       {account.status === 'active' && (
-        <Button variant="warning" size="sm" loading={suspendMut.isPending} onClick={() => suspendMut.mutate()}>
+        <Button variant="warning" size="sm" loading={suspendMut.isPending} onClick={() => setConfirm('suspend')}>
           <Pause className="h-4 w-4" /> Suspend
         </Button>
       )}
       {account.status === 'suspended' && (
-        <Button variant="success" size="sm" loading={unsuspendMut.isPending} onClick={() => unsuspendMut.mutate()}>
+        <Button variant="success" size="sm" loading={unsuspendMut.isPending} onClick={() => setConfirm('unsuspend')}>
           <Play className="h-4 w-4" /> Unsuspend
         </Button>
       )}
@@ -107,6 +108,7 @@ function AdminActions({ username, account }) {
           <Trash2 className="h-4 w-4" /> Terminate
         </Button>
       )}
+      <ConfirmDialog open={confirm === 'suspend' || confirm === 'unsuspend'} onOpenChange={open => !open && setConfirm(null)} title={`${confirm === 'suspend' ? 'Suspend' : 'Unsuspend'} ${username}?`} description={confirm === 'suspend' ? 'Hosting and customer access will be paused. Account files are retained.' : 'Hosting and customer access will resume.'} confirmLabel={confirm === 'suspend' ? 'Suspend account' : 'Unsuspend account'} loading={suspendMut.isPending || unsuspendMut.isPending} onConfirm={() => { (confirm === 'suspend' ? suspendMut : unsuspendMut).mutate(undefined, { onSuccess: () => setConfirm(null) }) }} />
       <ConfirmDialog
         open={confirm === 'terminate'}
         onOpenChange={(o) => !o && setConfirm(null)}
@@ -127,6 +129,7 @@ function PhpAndLimits({ username, account }) {
   const [limits, setLimits] = useState({
     cpu_cores: account.cpu_cores ?? account.cpu_pct / 100, memory_gb: account.mem_mb / 1024, io_mb: account.io_mb, pids_max: account.pids_max,
   })
+  useEffect(() => { setPhpVersion(account.php_version); setLimits({ cpu_cores: account.cpu_cores ?? account.cpu_pct / 100, memory_gb: account.mem_mb / 1024, io_mb: account.io_mb, pids_max: account.pids_max }) }, [account.php_version, account.cpu_cores, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max])
   const invalidate = () => qc.invalidateQueries({ queryKey: ['account', username] })
 
   const phpMut = useMutation({
@@ -160,11 +163,13 @@ function PhpAndLimits({ username, account }) {
         <CardHeader><CardTitle>Resource limits</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <FormField label="CPU cores" hint={`Maximum ${account.host_cpu_cores ?? 'server'} cores available.`}><Input type="number" min="0.01" max={account.host_cpu_cores} step="0.25" value={limits.cpu_cores} onChange={(e) => setLimits((l) => ({ ...l, cpu_cores: e.target.value }))} /></FormField>
-            <FormField label="Memory (GB)"><Input type="number" min="0.0625" step="0.0625" value={limits.memory_gb} onChange={(e) => setLimits((l) => ({ ...l, memory_gb: e.target.value }))} /></FormField>
+            <FormField label="CPU cores" hint={`Maximum ${account.host_cpu_cores ?? 'server'} cores available.`}><Input type="number" min="0.01" max={account.host_cpu_cores} step="0.01" value={limits.cpu_cores} onChange={(e) => setLimits((l) => ({ ...l, cpu_cores: e.target.value }))} /></FormField>
+            <FormField label="Memory (GB)" hint={`Server RAM: ${account.host_memory_gb?.toFixed(1) ?? "…"} GB. Allocations can overcommit shared RAM.`}><Input type="number" min="0.0625" step="0.0625" value={limits.memory_gb} onChange={(e) => setLimits((l) => ({ ...l, memory_gb: e.target.value }))} /></FormField>
             <FormField label="Disk IO (MB/s)"><Input type="number" min="1" value={limits.io_mb} onChange={(e) => setLimits((l) => ({ ...l, io_mb: e.target.value }))} /></FormField>
             <FormField label="Max processes"><Input type="number" min="10" value={limits.pids_max} onChange={(e) => setLimits((l) => ({ ...l, pids_max: e.target.value }))} /></FormField>
           </div>
+          {account.configured_cpu_cores > account.host_cpu_cores && <p className="text-sm text-info">The old allocation was {account.configured_cpu_cores} cores. Effective enforcement is capped at this server's {account.host_cpu_cores} cores; save to reconcile the stored limit.</p>}
+          {Number(limits.memory_gb) > account.host_memory_gb && <p className="text-sm text-warning">This allocation exceeds total server RAM. Simultaneous usage by accounts can exhaust memory.</p>}
           <Button loading={limitsMut.isPending} onClick={() => limitsMut.mutate()}><Save className="h-4 w-4" /> Update limits</Button>
         </CardContent>
       </Card>
@@ -437,6 +442,7 @@ function PhpFunctionsTab({ username }) {
 }
 
 export default function AccountDetail() {
+  const navigate = useNavigate()
   const { username } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const validTabs = new Set(ACCOUNT_TABS.map(([value]) => value))
@@ -447,6 +453,8 @@ export default function AccountDetail() {
     queryFn: () => get(`/api/v1/accounts/${username}`),
     enabled: !!username,
   })
+
+  useEffect(() => { if (account?.status === 'terminated') { toast.info('This account has been terminated'); navigate('/accounts', { replace: true }) } }, [account?.status, navigate])
 
   return (
     <div>

@@ -111,10 +111,10 @@ def test_db_identifier_accepted():
 def test_record_type_allowed_set():
     # Phase 3 feature 1 widened this from A/AAAA/CNAME/MX/TXT to also
     # include PTR/SRV/CAA (the full zone editor's record-type scope).
-    for rt in ["A", "AAAA", "CNAME", "MX", "TXT", "PTR", "SRV", "CAA"]:
+    for rt in ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "PTR", "SRV", "CAA"]:
         assert validate_record_type(rt) == rt
     with pytest.raises(ValidationError):
-        validate_record_type("NS")
+        validate_record_type("SOA")
 
 
 def test_mailbox_local_part():

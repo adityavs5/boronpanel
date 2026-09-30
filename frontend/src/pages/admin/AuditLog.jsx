@@ -15,7 +15,7 @@ import { TableSkeleton } from '@/components/ui/Skeleton'
 import { EmptyState, ErrorState } from '@/components/ui/States'
 
 const PAGE_SIZE = 50
-const EMPTY_FILTERS = { q: '', actor: '', op: '', result: '' }
+const EMPTY_FILTERS = { q: '', actor: '', op: '', result: '', include_reads: '' }
 
 // Build a query string from the applied filters, optionally including paging.
 function buildParams(filters, page, withPaging) {
@@ -113,6 +113,7 @@ export default function AuditLog() {
                   placeholder="e.g. admin"
                 />
               </FormField>
+              <FormField label="Historical read-only activity"><Select value={draft.include_reads} onChange={setField('include_reads')}><option value="">Hide successful reads</option><option value="true">Include historical reads</option></Select></FormField>
               <FormField label="Operation" htmlFor="audit-op">
                 <Input
                   id="audit-op"
@@ -125,7 +126,7 @@ export default function AuditLog() {
                 <Select id="audit-result" value={draft.result} onChange={setField('result')}>
                   <option value="">All results</option>
                   <option value="ok">Ok</option>
-                  <option value="error">Error</option>
+                  <option value="failed">Failed</option>
                 </Select>
               </FormField>
             </div>

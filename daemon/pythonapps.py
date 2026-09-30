@@ -19,6 +19,7 @@ customer-supplied installs implicitly" posture as nodeapps.npm_install).
 from __future__ import annotations
 
 import os
+import subprocess
 import pwd
 from pathlib import Path
 
@@ -78,9 +79,9 @@ def _get_domain_for_account(session, account: Account, domain_name: str) -> Doma
 
 def _assert_domain_free(session, domain_name: str) -> None:
     if session.scalar(select(NodeApp).where(NodeApp.domain == domain_name)) is not None:
-        raise RuntimeError(f"domain '{domain_name}' already has a NodeJS app bound to it")
+        raise ValidationError(f"domain '{domain_name}' already has a NodeJS app bound to it")
     if session.scalar(select(PythonApp).where(PythonApp.domain == domain_name)) is not None:
-        raise RuntimeError(f"domain '{domain_name}' already has a Python app bound to it")
+        raise ValidationError(f"domain '{domain_name}' already has a Python app bound to it")
 
 
 def _get_row(session, username: str, app_id: int) -> tuple[Account, PythonApp]:
@@ -133,12 +134,20 @@ def _create_venv(username: str, name: str) -> None:
     inside it is owned by the account, never root."""
     app_dir = _app_dir(username, name)
     venv_dir = _venv_dir(username, name)
-    result = run(account_exec.wrap(username, [settings.python_bin, "-m", "venv", venv_dir], cwd=app_dir), cwd=app_dir, timeout=60)
+    # ensurepip compiles its bundled packages under the account's CPU quota.
+    # A small hosting allocation can legitimately exceed the old 60 seconds.
+    try:
+        result = run(account_exec.wrap(username, [settings.python_bin, "-m", "venv", venv_dir], cwd=app_dir), cwd=app_dir, timeout=180)
+    except subprocess.TimeoutExpired:
+        raise ValidationError('Python environment preparation exceeded three minutes. Check account resource limits and retry; no application was registered.') from None
     if not result.ok:
         raise RuntimeError(f"failed to create virtualenv: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
 
     pip = f"{venv_dir}/bin/pip"
-    result = run(account_exec.wrap(username, [pip, "install", "--quiet", "--disable-pip-version-check", "gunicorn", "uvicorn"], cwd=app_dir), cwd=app_dir, timeout=180)
+    try:
+        result = run(account_exec.wrap(username, [pip, "install", "--quiet", "--disable-pip-version-check", "gunicorn", "uvicorn"], cwd=app_dir), cwd=app_dir, timeout=180)
+    except subprocess.TimeoutExpired:
+        raise ValidationError('Python package installation exceeded three minutes. Check outbound package access and account resource limits, then retry.') from None
     if not result.ok:
         raise RuntimeError(f"failed to install gunicorn/uvicorn: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
 
@@ -208,7 +217,7 @@ def create_app(params: dict) -> dict:
         _get_domain_for_account(session, account, domain_name)
         _assert_domain_free(session, domain_name)
         if session.scalar(select(PythonApp).where(PythonApp.account_id == account.id, PythonApp.name == name)) is not None:
-            raise RuntimeError(f"app name '{name}' already exists for account '{username}'")
+            raise ValidationError(f"app name '{name}' already exists for account '{username}'")
         resource_limits.require_capacity(session, account.id, "app")
 
         port = allocate_port(session)

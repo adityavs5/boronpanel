@@ -115,6 +115,20 @@ def test_create_python_app_defaults_to_wsgi(account_with_domain):
     assert result["app_type"] == "wsgi"
 
 
+def test_environment_timeout_rolls_back_application_and_returns_actionable_error(account_with_domain, monkeypatch):
+    import subprocess
+    timeouts = []
+    def timed_out(args, **kwargs):
+        timeouts.append(kwargs['timeout'])
+        raise subprocess.TimeoutExpired(args, kwargs['timeout'])
+    monkeypatch.setattr(pythonapps, 'run', timed_out)
+    with pytest.raises(ValidationError, match='Check account resource limits and retry'):
+        pythonapps.create_app({'username':'demo1','domain':'demo1.example','name':'timeout-test','entry_point':'app:app'})
+    assert timeouts == [180]
+    with write_session() as db:
+        assert db.scalar(select(PythonApp.id)) is None
+
+
 def test_create_python_app_creates_app_dir_and_log_file(account_with_domain):
     result = pythonapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "app:app"})
     assert os.path.isdir(result["app_dir"])
@@ -170,13 +184,13 @@ def test_create_rejects_domain_already_bound_to_node_app(account_with_domain):
     # too, with no extra patching needed here.
     result = nodeapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "n1", "entry_point": "a.js"})
     assert result["domain"] == "demo1.example"
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValidationError, match='NodeJS app'):
         pythonapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "p1", "entry_point": "app:app"})
 
 
 def test_create_rejects_duplicate_domain_binding(account_with_domain):
     pythonapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "app-one", "entry_point": "a:a"})
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValidationError, match='Python app'):
         pythonapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "app-two", "entry_point": "b:b"})
 
 

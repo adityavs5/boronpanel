@@ -67,6 +67,7 @@ class Identity:
     # get_identity, forwarded to the daemon (`_ip`) so the account-events log
     # can record where lifecycle actions came from.
     ip: str | None = None
+    token_scope: str = 'full'
 
     @property
     def is_impersonating(self) -> bool:
@@ -126,6 +127,12 @@ def _identity_from_bearer_token(token: str) -> Identity | None:
         created = row.created_at.replace(tzinfo=dt.timezone.utc) if row.created_at.tzinfo is None else row.created_at
         if (dt.datetime.now(dt.timezone.utc) - created).total_seconds() > API_TOKEN_MAX_AGE_SECONDS:
             return None
+        if row.expires_at is not None:
+            expires = row.expires_at.replace(tzinfo=dt.timezone.utc) if row.expires_at.tzinfo is None else row.expires_at
+            if expires <= dt.datetime.now(dt.timezone.utc):
+                return None
+        if row.scope not in ('full', 'read-only'):
+            return None
         if row.role not in ("admin", "customer"):
             return None
         if row.role == "customer":
@@ -133,7 +140,7 @@ def _identity_from_bearer_token(token: str) -> Identity | None:
             if account is None or account.status != "active":
                 return None
         return Identity(panel_user_id=-1, username=row.label, role=row.role, account_id=row.account_id,
-                        auth_method="token", rpc_credential=token)
+                        auth_method="token", rpc_credential=token, token_scope=row.scope)
 
 
 def enforce_listener_role(identity,connection):
@@ -161,6 +168,8 @@ def get_identity(
     if authorization and authorization.lower().startswith("bearer "):
         identity = _identity_from_bearer_token(authorization[7:].strip())
         if identity is not None:
+            if identity.token_scope == 'read-only' and request.method not in ('GET', 'HEAD', 'OPTIONS'):
+                raise HTTPException(status_code=403, detail='This API token is read-only')
             enforce_listener_role(identity,request)
             identity.ip = client_ip
             # Run A feature 7: let the access-log middleware name the user

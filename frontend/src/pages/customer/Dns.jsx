@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Network, Plus, Pencil, Trash2, Cloud, CheckCircle2, AlertTriangle, Wand2 } from 'lucide-react'
+import { Network, Plus, Pencil, Trash2, Cloud, CheckCircle2, AlertTriangle, Wand2, FileCode2 } from 'lucide-react'
 import { get, post, put, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { useDomainContext } from '@/hooks/useDomainContext'
@@ -16,7 +16,7 @@ import {
 import { toast } from '@/components/ui/Toast'
 import { EmptyState } from '@/components/ui/States'
 
-const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS']
+const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV', 'CAA']
 const linesToList = (text) => (text || '').split('\n').map((s) => s.trim()).filter(Boolean)
 
 export default function Dns({ emailOnly = false }) {
@@ -24,6 +24,8 @@ export default function Dns({ emailOnly = false }) {
   const qc = useQueryClient()
   const [dialog, setDialog] = useState(null) // {mode, subdomain, type, ttl, values}
   const [toDelete, setToDelete] = useState(null)
+  const [advanced, setAdvanced] = useState(null)
+  const [template, setTemplate] = useState('hosting')
   const [dmarc, setDmarc] = useState({ policy: 'none', subdomain_policy: 'none', rua: '' })
 
   // --- domains for the picker ---------------------------------------------
@@ -72,6 +74,7 @@ export default function Dns({ emailOnly = false }) {
         type: form.type,
         values: linesToList(form.values),
         ttl: Number(form.ttl) || 3600,
+        mode: isEdit ? 'replace' : 'add',
       }),
     onSuccess: () => { toast.success('DNS record saved'); invalidate(); setDialog(null) },
     onError: (e) => toast.error('Could not save record', e.message),
@@ -91,6 +94,27 @@ export default function Dns({ emailOnly = false }) {
     mutationFn: () => put(`/api/v1/accounts/${username}/email/domains/${domain}/dmarc`, dmarc),
     onSuccess: () => { toast.success('DMARC policy installed'); readiness.refetch(); invalidate() },
     onError: e => toast.error('Could not install DMARC', e.message),
+  })
+
+  const advancedLoad = useMutation({
+    mutationFn: () => get(`/api/v1/dns/zones/${domain}/advanced`),
+    onSuccess: data => setAdvanced({ ...data, confirmation: '', changes: null, conflicts: [] }),
+    onError: e => toast.error('Could not load zone editor', e.message),
+  })
+  const advancedPreview = useMutation({
+    mutationFn: () => post(`/api/v1/dns/zones/${advanced.zone}/advanced/preview`, { text: advanced.text, fingerprint: advanced.fingerprint }),
+    onSuccess: data => setAdvanced(current => ({ ...current, changes: data.changes, reviewedText: current.text })),
+    onError: e => toast.error('Could not preview DNS changes', e.message),
+  })
+  const templateLoad = useMutation({
+    mutationFn: () => post(`/api/v1/dns/zones/${advanced.zone}/advanced/template`, { template }),
+    onSuccess: data => setAdvanced(current => ({ ...current, ...data, confirmation: '', changes: null })),
+    onError: e => toast.error('Could not load DNS template', e.message),
+  })
+  const advancedSave = useMutation({
+    mutationFn: () => put(`/api/v1/dns/zones/${advanced.zone}/advanced`, { text: advanced.text, fingerprint: advanced.fingerprint, confirmation: advanced.confirmation }),
+    onSuccess: data => { toast.success('DNS changes applied', `${data.changed} record sets updated. Previous configuration retained for administrator recovery.`); qc.invalidateQueries({ queryKey: ['dns-records', data.zone] }); setAdvanced(null) },
+    onError: e => toast.error('Could not apply DNS changes', e.message),
   })
 
   const columns = [
@@ -121,6 +145,19 @@ export default function Dns({ emailOnly = false }) {
 
   return (
     <div>
+      <Dialog open={!!advanced} onOpenChange={open => { if (!open && !advancedSave.isPending) setAdvanced(null) }}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader><DialogTitle>Zone editor · {advanced?.zone}</DialogTitle><DialogDescription>Edit BIND-format records, preview every change, then type the zone name to apply. SOA, apex NS, DNSSEC, disabled records and provider-managed settings are preserved.</DialogDescription></DialogHeader>
+          <DialogBody>{advanced && <div className="space-y-4">
+            <div className="flex flex-wrap items-end gap-3"><FormField label="DNS template" hint="Adds missing defaults and keeps existing values. Loading replaces unsaved editor text."><Select value={template} onChange={e => setTemplate(e.target.value)}>{advanced.templates.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></FormField><Button variant="secondary" loading={templateLoad.isPending} disabled={advancedSave.isPending} onClick={() => templateLoad.mutate()}>Load template</Button></div>
+            {advanced.conflicts?.length > 0 && <div className="text-sm text-muted-foreground" role="status">Existing records preserved: {advanced.conflicts.map(item => `${item.name} (${item.type})`).join(', ')}. Review any intended replacements manually.</div>}
+            <FormField label="Editable zone records"><Textarea rows={16} value={advanced.text} disabled={advancedSave.isPending} onChange={e => setAdvanced(current => ({ ...current, text: e.target.value, changes: null, confirmation: '' }))} /></FormField>
+            {advanced.changes && <div className="space-y-2"><p className="font-semibold">{advanced.changes.length} record sets will change</p><div className="max-h-48 overflow-auto">{advanced.changes.map(item => <div key={`${item.name}-${item.type}`} className="border-b border-border py-2 text-sm"><strong>{item.action} · {item.name} · {item.type}</strong><div className="break-all font-mono text-xs">Before: {item.before.join(' / ') || 'None'}</div><div className="break-all font-mono text-xs">After: {item.after.join(' / ') || 'Removed'}</div></div>)}</div><FormField label="Confirm zone name" hint={`Type ${advanced.zone} to apply this preview.`}><Input value={advanced.confirmation} onChange={e => setAdvanced(current => ({ ...current, confirmation: e.target.value }))} autoComplete="off" /></FormField></div>}
+          </div>}</DialogBody>
+          <DialogFooter><Button variant="secondary" disabled={advancedSave.isPending} onClick={() => setAdvanced(null)}>Cancel</Button><Button variant="secondary" disabled={!advanced || advancedSave.isPending || templateLoad.isPending} loading={advancedPreview.isPending} onClick={() => advancedPreview.mutate()}>Preview changes</Button><Button disabled={!advanced?.changes?.length || advanced.reviewedText !== advanced.text || advanced.confirmation !== advanced.zone || advancedPreview.isPending || templateLoad.isPending} loading={advancedSave.isPending} onClick={() => advancedSave.mutate()}>Apply DNS changes</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <PageHeader title={emailOnly ? 'Email DNS Records' : 'DNS'} description={emailOnly ? 'Manage MX, SPF, DKIM, DMARC, webmail, and automatic-client records.' : 'Manage the DNS zone records for your domains.'} icon={Network}>
         <Button
           onClick={() => setDialog({ mode: 'add', subdomain: '@', type: emailOnly ? 'MX' : 'A', ttl: '3600', values: '' })}
@@ -129,6 +166,8 @@ export default function Dns({ emailOnly = false }) {
           <Plus className="h-4 w-4" /> Add record
         </Button>
       </PageHeader>
+
+      {!emailOnly && <div className="mb-4 flex flex-wrap gap-2"><Button variant="secondary" size="sm" disabled={!domain || unmanaged} loading={advancedLoad.isPending} onClick={() => advancedLoad.mutate()}><FileCode2 className="h-4 w-4" /> Zone editor and templates</Button></div>}
 
       <div className="mb-4 flex items-end gap-3">
         <div className="max-w-sm flex-1">
@@ -209,7 +248,7 @@ export default function Dns({ emailOnly = false }) {
         <DialogContent size="md">
           <DialogHeader>
             <DialogTitle>{isEdit ? 'Edit DNS record' : 'Add DNS record'}</DialogTitle>
-            <DialogDescription>Saving a name + type replaces its entire value list (one value per line).</DialogDescription>
+            <DialogDescription>{isEdit ? 'Edit the full value list for this name and type. One value per line.' : 'New values are added to any existing records with the same name and type. Existing values are kept.'}</DialogDescription>
           </DialogHeader>
           {dialog && (
             <form onSubmit={(e) => { e.preventDefault(); saveMut.mutate(dialog) }}>

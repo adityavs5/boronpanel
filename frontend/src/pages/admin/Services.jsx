@@ -89,7 +89,7 @@ export default function Services() {
       sortable: true,
       render: (r) => (
         <Badge variant={r.enabled === 'enabled' ? 'success' : 'neutral'} className="capitalize">
-          {r.enabled}
+          {({ enabled: 'Starts at boot', 'enabled-runtime': 'Enabled for this boot', disabled: 'Manual start', static: 'Started by dependency', masked: 'Blocked' })[r.enabled] || r.enabled}
         </Badge>
       ),
     },

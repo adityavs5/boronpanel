@@ -168,6 +168,33 @@ def _cf_dns01_args(row) -> list[str]:
     ]
 
 
+def _local_dns_is_publicly_authoritative(zone: str) -> bool:
+    """A local zone copy does not establish public DNS delegation.
+
+    Query public recursive resolvers so the server's own PowerDNS zone cannot
+    make an undelegated copy appear authoritative. Ordinary sites fall back
+    to HTTP validation; wildcard requests must still have working DNS control.
+    """
+    import dns.exception
+    import dns.resolver
+    import httpx
+    try:
+        records = dnsprovider.list_records(zone)
+        expected = {value.lower().rstrip('.') for row in records
+                    if row.get('type') == 'NS' and row.get('name', '').lower().rstrip('.') == zone
+                    for value in row.get('values', [])}
+        if not expected:
+            return False
+        resolver = dns.resolver.Resolver(configure=False)
+        resolver.nameservers = ['1.1.1.1', '8.8.8.8']
+        resolver.timeout = 1.5
+        answer = resolver.resolve(zone, 'NS', lifetime=3)
+        actual = {str(row.target).lower().rstrip('.') for row in answer}
+        return bool(actual) and actual <= expected
+    except (dns.exception.DNSException, OSError, httpx.HTTPError, dnsprovider.PowerDnsError):
+        return False
+
+
 def _dns01_plan(domain: str) -> list[str] | None:
     """Phase 2+3 feature 5: pick the DNS-01 authenticator by the zone's live
     provider. A Cloudflare-ACTIVE zone MUST use dns-cloudflare (Cloudflare is
@@ -182,7 +209,8 @@ def _dns01_plan(domain: str) -> list[str] | None:
         return _cf_dns01_args(row)
     with write_session() as session:
         if session.scalar(select(DnsZone).where(DnsZone.zone == zone)) is not None:
-            return _dns01_args()
+            if _local_dns_is_publicly_authoritative(zone):
+                return _dns01_args()
     return None
 
 
@@ -265,6 +293,13 @@ def issue_certificate(params: dict) -> dict:
     if not result.ok:
         raise SslError(f"certbot failed ({mode}): {result.stderr.strip() or result.stdout.strip()}")
 
+    # Certbot skips deploy hooks when it retains an unexpired certificate.
+    # Repair mail-service deployment as well as fresh issuance/renewal.
+    canonical_mail = settings.mail_hostname or settings.webmail_hostname or settings.panel_hostname
+    if domain == canonical_mail:
+        from scripts.ssl_deploy_hook import _deploy_mail_service_certificate
+        _deploy_mail_service_certificate(domain)
+
     response = {"domain": domain, "challenge": mode, "status": "issued"}
     if _service_hostname(domain):
         response["diagnostics"] = service_certificate_diagnostics({"domain": domain})
@@ -306,7 +341,7 @@ def issue_wildcard_certificate(params: dict) -> dict:
             f"wildcard SSL for '{domain}' requires its DNS zone to be managed by Boron "
             "(local PowerDNS or a Cloudflare-active zone) -- DNS-01 is the only ACME challenge type that "
             "supports wildcard names, and it needs the _acme-challenge TXT to be creatable through the "
-            "zone's own DNS API. Create a Boron-managed zone for this domain first."
+            "zone's own DNS API. Configure public nameserver delegation to the local DNS server, or activate the authoritative Cloudflare zone in Boron first."
         )
 
     force_args = ["--force-renewal"] if params.get("force") else []

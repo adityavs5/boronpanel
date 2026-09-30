@@ -97,6 +97,8 @@ def add_domain(params: dict) -> dict:
             resource_limits.require_capacity(session, account.id, "subdomain")
 
         owned_rows=session.scalars(select(Domain).where(Domain.account_id==account.id)).all()
+        if kind == 'addon' and not account.primary_domain and not any(row.kind == 'primary' for row in owned_rows):
+            kind = 'primary'
         owned_domains=[row.domain for row in owned_rows]
         parent_row = None
         if kind == 'subdomain':

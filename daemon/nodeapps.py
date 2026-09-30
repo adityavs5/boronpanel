@@ -87,9 +87,9 @@ def _assert_domain_free(session, domain_name: str) -> None:
     or Python) at a time -- reusing it for a second app would silently
     make one of them unreachable with no indication why."""
     if session.scalar(select(NodeApp).where(NodeApp.domain == domain_name)) is not None:
-        raise RuntimeError(f"domain '{domain_name}' already has a NodeJS app bound to it")
+        raise ValidationError(f"domain '{domain_name}' already has a NodeJS app bound to it")
     if session.scalar(select(PythonApp).where(PythonApp.domain == domain_name)) is not None:
-        raise RuntimeError(f"domain '{domain_name}' already has a Python app bound to it")
+        raise ValidationError(f"domain '{domain_name}' already has a Python app bound to it")
 
 
 def _get_row(session, username: str, app_id: int) -> tuple[Account, NodeApp]:
@@ -184,7 +184,7 @@ def create_app(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     name = validate_app_name(params["name"])
     entry_point = validate_app_entry_point(params["entry_point"])
-    node_version = _validate_node_version(params.get("node_version", settings.default_node_version))
+    node_version = _validate_node_version(params.get("node_version") or settings.default_node_version)
     env_vars = validate_env_vars(params.get("env_vars") or {})
 
     with write_session() as session:
@@ -192,7 +192,7 @@ def create_app(params: dict) -> dict:
         _get_domain_for_account(session, account, domain_name)
         _assert_domain_free(session, domain_name)
         if session.scalar(select(NodeApp).where(NodeApp.account_id == account.id, NodeApp.name == name)) is not None:
-            raise RuntimeError(f"app name '{name}' already exists for account '{username}'")
+            raise ValidationError(f"app name '{name}' already exists for account '{username}'")
         resource_limits.require_capacity(session, account.id, "app")
 
         port = allocate_port(session)

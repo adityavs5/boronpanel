@@ -423,3 +423,40 @@ def test_proxy_bounds_only_trusted_shell_and_closes_upstream(monkeypatch):
         await response.body_iterator.aclose()
     asyncio.run(download())
     assert reply.closed
+
+
+def test_file_manager_usage_uses_account_quota_not_host_partition(isolated_db):
+    from shared.db import write_session
+    from shared.models import Account
+    with write_session() as db:
+        db.add(Account(username='quotauser',status='active',quota_hard_mb=12*1024))
+    payload = {'home': {'used': 12345, 'usedAlt': 999999, 'total': 3.8*1024**3, 'status':'ready'}}
+    result = fbr._account_source_usage(payload, 'quotauser')
+    assert result['home']['total'] == 12*1024**3
+    assert result['home']['usedAlt'] == result['home']['used'] == 12345
+    with write_session() as db:
+        from sqlalchemy import select
+        db.scalar(select(Account).where(Account.username=='quotauser')).status='suspended'
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as error:
+        fbr._account_source_usage(payload, 'quotauser')
+    assert error.value.status_code == 403
+
+
+def test_file_manager_live_source_events_preserve_quota_and_other_events(isolated_db):
+    import json
+    from shared.db import write_session
+    from shared.models import Account
+    with write_session() as db:
+        db.add(Account(username='quotauser', status='active', quota_hard_mb=12*1024))
+    payload = {'home': {'used': 100, 'usedAlt': 20000, 'total': 3.8*1024**3}}
+    event = {'eventType': 'sourceUpdate', 'message': json.dumps(payload)}
+    frame = b'id: 42\r\ndata: ' + json.dumps(event).encode()
+    rewritten = fbr._account_source_event(frame, 'quotauser')
+    assert rewritten.startswith(b'id: 42\n')
+    source = json.loads(json.loads(rewritten.split(b'data: ',1)[1])['message'])['home']
+    assert source['total'] == 12*1024**3 and source['usedAlt'] == source['used'] == 100
+    untouched = b'data: {"eventType":"watchDirChange","message":"changed"}'
+    assert fbr._account_source_event(untouched, 'quotauser') == untouched+b'\n\n'
+    malformed = b'data: {"eventType":"sourceUpdate","message":"invalid"}'
+    assert fbr._account_source_event(malformed, 'quotauser') == b': invalid source statistics\n\n'

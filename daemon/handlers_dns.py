@@ -27,6 +27,7 @@ RECORD_VALUE_VALIDATORS = {
     "MX": lambda v: _validate_mx(v),
     "TXT": lambda v: _validate_txt(v),
     "PTR": lambda v: validate_domain(v.rstrip(".")) + ".",
+    "NS": lambda v: validate_domain(v.rstrip(".")) + ".",
     "SRV": lambda v: _validate_srv(v),
     "CAA": lambda v: _validate_caa(v),
 }
@@ -250,7 +251,7 @@ def list_records(params: dict) -> dict:
 @dns_operations.serialized
 def set_record(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
-    subdomain = params.get("subdomain", "@") or "@"
+    subdomain = _record_label(domain_name, params.get("subdomain", "@") or "@")
     rtype = validate_record_type(params["type"])
     raw_values = params["values"]
     if not isinstance(raw_values, list) or not raw_values:
@@ -265,14 +266,56 @@ def set_record(params: dict) -> dict:
     validator = RECORD_VALUE_VALIDATORS[rtype]
     values = [validator(v) for v in raw_values]
 
+    name = domain_name if subdomain == '@' else f'{subdomain}.{domain_name}'
+    records = dnsprovider.list_records(domain_name)
+    same_name = [row for row in records if row.get('name', '').lower().rstrip('.') == name]
+    if rtype == 'CNAME':
+        if subdomain == '@':
+            raise ValidationError('The zone apex needs SOA/NS records and cannot be a CNAME. Use A or AAAA instead.')
+        if any(row.get('type') != 'CNAME' for row in same_name):
+            raise ValidationError('A CNAME cannot share a name with other record types. Remove the conflicting records first.')
+        if len(set(values)) != 1:
+            raise ValidationError('A CNAME must have exactly one target')
+    elif any(row.get('type') == 'CNAME' for row in same_name):
+        raise ValidationError('This name already has a CNAME. Remove it before adding another record type.')
+    mode = params.get('mode', 'replace')
+    if mode not in ('add', 'replace'):
+        raise ValidationError('DNS save mode must be add or replace')
+    if mode == 'add':
+        for row in same_name:
+            if row.get('type') == rtype:
+                previous = row.get('values', row.get('records', []))
+                values = list(dict.fromkeys([*(item if isinstance(item, str) else item['content'] for item in previous), *values]))
+        if rtype == 'CNAME' and len(values) > 1:
+            raise ValidationError('This name already has a different CNAME. Edit the existing record to replace it.')
+
     dnsprovider.upsert_record(domain_name, subdomain, rtype, values, ttl=ttl, proxied=proxied)
     return {"zone": domain_name, "subdomain": subdomain, "type": rtype, "values": values, "ttl": ttl}
+
+
+def _record_label(zone: str, name: str) -> str:
+    import re
+    if not isinstance(name, str):
+        raise ValidationError('Record name must be @ or a name within this DNS zone')
+    name = name.strip().lower()
+    absolute = name.endswith('.')
+    name = name.rstrip('.')
+    if name in ('@', '', zone):
+        return '@'
+    if name.endswith('.' + zone):
+        name = name[:-(len(zone) + 1)]
+    elif absolute:
+        raise ValidationError('The record name is outside this DNS zone')
+    labels = name.split('.')
+    if len(f'{name}.{zone}') > 253 or any(not re.fullmatch(r'(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?|\*)', label) for label in labels) or '*' in labels[1:]:
+        raise ValidationError('Use a valid DNS name within this zone; spaces, slashes and empty labels are not allowed')
+    return name
 
 
 @dns_operations.serialized
 def delete_record(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
-    subdomain = params.get("subdomain", "@") or "@"
+    subdomain = _record_label(domain_name, params.get("subdomain", "@") or "@")
     rtype = validate_record_type(params["type"])
     dnsprovider.delete_record(domain_name, subdomain, rtype)
     return {"zone": domain_name, "subdomain": subdomain, "type": rtype, "status": "deleted"}

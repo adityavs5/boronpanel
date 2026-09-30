@@ -152,6 +152,7 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 [data-skin=evolution] .tools-dashboard .stats-panel{border-radius:4px;border-color:rgb(var(--border)/.85);box-shadow:0 2px 8px rgb(20 50 70/.055)}
 [data-skin=evolution] .tools-dashboard .stats-heading{padding:16px 17px;border-top:3px solid rgb(var(--accent));background:linear-gradient(180deg,rgb(var(--accent-50)),rgb(var(--surface)));font-size:19px}
 [data-skin=evolution] .tools-dashboard .usage-row{padding:12px 14px}
+[data-skin=evolution] .tools-dashboard.dashboard-customer .usage-row{padding:10px 14px}
 [data-skin=evolution] .tools-dashboard .usage-track{height:4px}
 .query-notice{padding:14px;font-size:13px;color:rgb(var(--muted-fg))}.query-notice button{display:inline-flex;gap:4px;align-items:center;color:rgb(var(--link));margin-left:8px}
 .dashboard-footer{display:flex;justify-content:space-between;gap:12px;padding-top:20px;margin-top:12px;border-top:1px solid rgb(var(--border));font-size:13px;color:rgb(var(--muted-fg))}

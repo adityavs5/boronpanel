@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import re
 import secrets
 import string
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 
 from shared.db import write_session
-from shared.models import Account, ApiToken, LoginAttempt, LoginChallenge, PanelUser, Session, TotpCredential, utcnow
+from shared.models import Account, ApiToken, ImpersonationSession, LoginAttempt, LoginChallenge, PanelUser, Session, TotpCredential, TotpRecoveryCode, utcnow
 from shared.passwords import hash_password, verify_password
 from shared.validation import ValidationError, generate_strong_password, validate_password_strength, validate_username
 from shared.session_ids import session_digest
@@ -82,7 +83,13 @@ def list_administrators(params: dict | None = None) -> dict:
         rows = session.scalars(
             select(PanelUser).where(PanelUser.role == "admin").order_by(PanelUser.username)
         ).all()
-        return {"administrators": [_panel_user_dict(row) for row in rows]}
+        result = []
+        for row in rows:
+            data = _panel_user_dict(row)
+            credential = session.scalar(select(TotpCredential).where(TotpCredential.panel_user_id == row.id))
+            data['two_factor_enabled'] = bool(credential and credential.enabled)
+            result.append(data)
+        return {"administrators": result}
 
 
 def create_administrator(params: dict) -> dict:
@@ -93,8 +100,16 @@ def create_administrator(params: dict) -> dict:
     return result
 
 
+def _administrator_username(value):
+    # Administrator logins are panel identities, not Linux accounts. Existing
+    # bootstrap names such as admin/administrator are valid here.
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', value):
+        raise ValidationError('Enter a valid administrator login name')
+    return value
+
+
 def set_administrator_status(params: dict) -> dict:
-    username = validate_username(params["username"])
+    username = _administrator_username(params["username"])
     actor_username = str(params.get("actor_username") or "")
     disabled = bool(params["disabled"])
     with write_session() as session:
@@ -142,6 +157,38 @@ def set_panel_user_password(params: dict) -> dict:
         for row in active_sessions:
             row.revoked = True
         return {"username": username, "status": "password_changed"}
+
+
+def manage_administrator(params: dict) -> dict:
+    """Revoke credentials atomically; preserve recorded operation history."""
+    username = _administrator_username(params['username'])
+    action = params.get('action')
+    if action not in ('password', 'reset_2fa', 'delete'):
+        raise ValidationError('Choose a supported administrator action')
+    if username == params.get('actor_username'):
+        raise ValidationError('Use your own account security settings to change your login')
+    password = validate_password_strength(params.get('password')) if action == 'password' else None
+    with write_session() as db:
+        user = db.scalar(select(PanelUser).where(PanelUser.username == username, PanelUser.role == 'admin'))
+        if user is None:
+            raise ValidationError('Administrator not found')
+        enabled = db.scalar(select(func.count()).select_from(PanelUser).where(PanelUser.role == 'admin', PanelUser.disabled.is_(False))) or 0
+        if action == 'delete' and not user.disabled and enabled <= 1:
+            raise ValidationError('At least one administrator must remain enabled')
+        if action == 'delete' and db.scalar(select(ImpersonationSession.id).where(ImpersonationSession.admin_panel_user_id == user.id).limit(1)) is not None:
+            raise ValidationError('This administrator has impersonation history. Disable the login to retain that history.')
+        for row in db.scalars(select(Session).where(Session.panel_user_id == user.id)).all():
+            row.revoked = True
+        db.execute(delete(LoginChallenge).where(LoginChallenge.panel_user_id == user.id))
+        if action in ('reset_2fa', 'delete'):
+            db.execute(delete(TotpRecoveryCode).where(TotpRecoveryCode.panel_user_id == user.id))
+            db.execute(delete(TotpCredential).where(TotpCredential.panel_user_id == user.id))
+        if action == 'password':
+            user.password_hash = hash_password(password)
+        elif action == 'delete':
+            db.execute(delete(Session).where(Session.panel_user_id == user.id))
+            db.delete(user)
+    return {'username': username, 'status': {'password': 'password_changed', 'reset_2fa': 'two_factor_reset', 'delete': 'deleted'}[action]}
 
 
 def check_login_lockout(params: dict) -> dict:
@@ -315,15 +362,33 @@ def _generate_token(role: str) -> tuple[str, str]:
 
 
 def create_api_token(params: dict) -> dict:
-    label = params["label"]
+    label = str(params['label']).strip()
+    if not 1 <= len(label) <= 128:
+        raise ValidationError('Enter a token label of 1 to 128 characters')
     role = params.get("role", "admin")
     account_id = params.get("account_id")
     if role not in ("admin", "customer"):
         raise ValidationError("role must be 'admin' or 'customer'")
+    scope = params.get('scope', 'full')
+    if scope not in ('full', 'read-only'):
+        raise ValidationError('Choose full access or read-only token scope')
+    try:
+        days = int(params.get('expires_in_days', 30))
+    except (TypeError, ValueError):
+        raise ValidationError('Token expiry must be a number of days') from None
+    if not 1 <= days <= 90:
+        raise ValidationError('Token expiry must be between 1 and 90 days')
+    expires = utcnow() + dt.timedelta(days=days)
 
     raw_token, token_hash = _generate_token(role)
     with write_session() as db:
-        row = ApiToken(token_hash=token_hash, label=label, role=role, account_id=account_id)
+        if role == 'customer':
+            account = db.get(Account, account_id) if account_id is not None else None
+            if account is None or account.status != 'active':
+                raise ValidationError('Choose an active hosting account for a customer token')
+        elif account_id is not None:
+            raise ValidationError('Administrator tokens are server-wide; use a customer token for one account')
+        row = ApiToken(token_hash=token_hash, label=label, role=role, account_id=account_id, scope=scope, expires_at=expires)
         db.add(row)
         db.flush()
         token_id = row.id
@@ -333,7 +398,8 @@ def create_api_token(params: dict) -> dict:
         "role": role,
         "account_id": account_id,
         "token": raw_token,
-        "expires_at": (utcnow() + dt.timedelta(days=90)).isoformat(),
+        "expires_at": expires.isoformat(),
+        "scope": scope,
     }
 
 

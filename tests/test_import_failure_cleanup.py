@@ -4,6 +4,7 @@ from sqlalchemy import select
 from daemon import cpanel_import as ci
 from shared.db import write_session
 from shared.models import Account, CpanelImportJob, PanelUser, Session, Domain, utcnow
+from shared.passwords import verify_password
 
 
 def setup_rows():
@@ -68,6 +69,8 @@ def test_worker_rolls_back_new_account_on_failure(isolated_db, tmp_path, monkeyp
             account = Account(username=params['username'], primary_domain=params['primary_domain'])
             db.add(account)
             db.flush()
+            if failure != 'panel_login':
+                ci.handlers_account.ensure_customer_login(db, account, params['password'])
             result = {'id': account.id}
             if params['primary_domain']:
                 db.add(Domain(account_id=account.id, domain=params['primary_domain'], kind='primary', docroot='/unused'))
@@ -76,7 +79,7 @@ def test_worker_rolls_back_new_account_on_failure(isolated_db, tmp_path, monkeyp
         return result
     monkeypatch.setattr(ci.handlers_account, 'create_account', create)
     monkeypatch.setattr(ci.handlers_account, '_terminate_account', lambda p: {'status': 'terminated'})
-    monkeypatch.setattr(ci.handlers_auth, 'create_panel_user', fail if failure == 'panel_login' else lambda p: None)
+    monkeypatch.setattr(ci.handlers_auth, 'create_panel_user', lambda p: pytest.fail('import must not create the canonical login twice'))
     monkeypatch.setattr(ci.audit, 'record_account_event', lambda *a, **k: None)
     monkeypatch.setattr(ci, '_copy_homedir', (lambda *args: 'copied') if failure == 'primary_success' else fail)
     monkeypatch.setattr(ci, '_reassert_docroot_perms_step', lambda *args: 'permissions verified')
@@ -90,6 +93,9 @@ def test_worker_rolls_back_new_account_on_failure(isolated_db, tmp_path, monkeyp
         job = db.get(CpanelImportJob, job_id)
         if failure == 'primary_success':
             assert db.scalar(select(Account)) is not None
+            login = db.scalar(select(PanelUser))
+            assert login.role == 'customer' and not login.disabled
+            assert verify_password(ci.jobcredentials.reveal(job.initial_password), login.password_hash)
             assert job.status == 'completed'
             assert not any(item['status'] == 'failed' for item in job.results)
             assert any(item['item'] == 'domain:example.com' and item['status'] == 'ok' for item in job.results)

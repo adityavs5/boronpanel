@@ -29,6 +29,7 @@ export default function CreateAccount() {
 
   const usernameError = form.username && !/^[a-z][a-z0-9]{0,15}$/.test(form.username)
     ? 'Use 1–16 lowercase letters or digits, starting with a letter.' : undefined
+  const emailError = form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) ? 'Enter an email address such as owner@example.com.' : undefined
   const domainError = form.primary_domain && !/^(?=.{1,253}$)(?!-)[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(form.primary_domain)
     ? 'Enter a valid domain such as example.com.' : undefined
   const passwordError = form.password && !/^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}$/.test(form.password)
@@ -89,7 +90,7 @@ export default function CreateAccount() {
           <CardHeader><div><CardTitle className="flex items-center gap-2"><UserPlus className="h-5 w-5 text-accent" />Account identity</CardTitle><CardDescription>Login and contact details for the hosting customer.</CardDescription></div></CardHeader>
           <CardContent className="grid gap-5 md:grid-cols-2">
             <FormField label="Username" required hint="Lowercase letters and digits; maximum 16 characters." error={usernameError}><Input autoFocus required pattern="[a-z][a-z0-9]{0,15}" placeholder="acme1" value={form.username} onChange={e => update('username', e.target.value)} /></FormField>
-            <FormField label="Contact email" hint="Used for welcome and account notifications."><Input type="email" placeholder="owner@example.com" value={form.email} onChange={e => update('email', e.target.value)} /></FormField>
+            <FormField error={emailError} label="Contact email" hint="Used for welcome and account notifications."><Input type="email" placeholder="owner@example.com" value={form.email} onChange={e => update('email', e.target.value)} /></FormField>
             <FormField className="md:col-span-2" label="Initial password" hint="Leave blank to generate a strong password automatically." error={passwordError}><Input type="password" autoComplete="new-password" placeholder="Automatically generated if blank" value={form.password} onChange={e => update('password', e.target.value)} pattern={form.password ? '(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}' : undefined} /></FormField>
           </CardContent>
         </Card>
@@ -108,7 +109,7 @@ export default function CreateAccount() {
           {form.ip_selection === 'specific' && <FormField label="Server IP" required><Select required value={form.server_ip_id} onChange={e => update('server_ip_id', e.target.value)}><option value="">Choose an IP…</option>{availableIps.map(entry => <option key={entry.id} value={entry.id}>{entry.address} — {entry.allocation_mode}{entry.label ? ` · ${entry.label}` : ''}</option>)}</Select></FormField>}
         </CardContent>
       </Card>
-      <div className="flex items-center justify-end gap-3 border-t border-border pt-5"><Button type="button" variant="secondary" asChild><Link to="/accounts">Cancel</Link></Button><Button type="submit" loading={create.isPending} disabled={!!usernameError || !!domainError || !!passwordError}>Create hosting account</Button></div>
+      <div className="flex items-center justify-end gap-3 border-t border-border pt-5"><Button type="button" variant="secondary" asChild><Link to="/accounts">Cancel</Link></Button><Button type="submit" loading={create.isPending} disabled={!!usernameError || !!domainError || !!passwordError || !!emailError}>Create hosting account</Button></div>
     </form>
   </div>
 }

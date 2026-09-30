@@ -51,7 +51,7 @@ for (const role of ['admin', 'customer']) {
         await expect(page.locator('.usage-row').filter({ hasText: 'Subdomains' })).toContainText('3 / 10')
         await expect(page.locator('.usage-row').filter({ hasText: 'Email Accounts' })).toContainText('8 / 25')
         const toolCounts = await page.locator('.tool-grid').evaluateAll(grids => grids.map(grid => grid.querySelectorAll('.tool-link').length))
-        expect(toolCounts).toEqual([6, 6, 6, 6, 6, 6, 6])
+        expect(toolCounts).toEqual([7, 6, 6, 6, 5, 6, 6])
       }
       if (skin === 'evolution') {
         const iconSizes = await page.locator('.tool-icon').evaluateAll(items => items.map(item => {
@@ -60,7 +60,7 @@ for (const role of ['admin', 'customer']) {
           const inner = child?.getBoundingClientRect()
           return [outer.width, outer.height, inner?.width, inner?.height]
         }))
-        expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['48x48x44x44']))
+        expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['50x50x42x42', '50x50x46x46']))
         const gridRows = await page.locator('.tool-grid').evaluateAll(grids => grids.map(grid => {
           const left = grid.getBoundingClientRect().left
           const rows = new Map()
@@ -72,15 +72,18 @@ for (const role of ['admin', 'customer']) {
           }
           return [...rows.values()]
         }))
-        const fullRows = gridRows.flat().filter(row => row.length === 6)
+        const columns = role === 'customer' ? 7 : 6
+        const fullRows = gridRows.flat().filter(row => row.length === columns)
         expect(fullRows.length).toBeGreaterThan(0)
         expect(new Set(fullRows.map(row => row.join(','))).size).toBe(1)
-        expect(Math.max(...gridRows.flat().map(row => row.length))).toBe(6)
+        expect(Math.max(...gridRows.flat().map(row => row.length))).toBe(columns)
         if (role === 'customer') {
           const heightGap = await page.evaluate(() => {
             const tools = document.querySelector('.tools-column').getBoundingClientRect()
             const stats = document.querySelector('.dashboard-stats').getBoundingClientRect()
-            return Math.abs(tools.height - stats.height)
+            // Guard the reported blank area below the tool column; a shorter
+            // statistics column is allowed because its content differs.
+            return Math.max(0, stats.bottom - tools.bottom)
           })
           expect(heightGap).toBeLessThan(24)
         }

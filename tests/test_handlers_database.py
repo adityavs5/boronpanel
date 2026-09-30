@@ -278,3 +278,18 @@ def test_original_application_user_cannot_be_revoked_or_dropped(isolated_db, stu
         hdb.revoke_user({"username": "demo1", "database": "shop", "user": "shop"})
     with pytest.raises(ValidationError, match="removed when its database"):
         hdb.drop_user({"username": "demo1", "user": "shop"})
+
+
+def test_renamed_account_retains_owned_database_and_user_identifiers(isolated_db):
+    from shared.models import Account, DatabaseGrant, DatabaseUser
+    from shared.db import write_session
+    from daemon import handlers_database as handlers
+    with write_session() as db:
+        owner=Account(username='newname',status='active');other=Account(username='foreign',status='active')
+        db.add_all([owner,other]);db.flush()
+        db.add(DatabaseGrant(account_id=owner.id,db_name='oldname_site',db_user='oldname_site'))
+        db.add(DatabaseUser(account_id=owner.id,db_user='oldname_editor',host='localhost'))
+        db.add(DatabaseGrant(account_id=other.id,db_name='foreign_site',db_user='foreign_site'))
+    assert handlers._resolve_existing_db_name('newname','oldname_site')=='oldname_site'
+    assert handlers._resolve_existing_db_name('newname','oldname_editor')=='oldname_editor'
+    assert handlers._resolve_existing_db_name('newname','foreign_site')=='newname_foreign_site'

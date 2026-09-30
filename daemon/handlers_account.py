@@ -18,7 +18,8 @@ from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, ApiToken, Domain, PanelUser, Session
+from shared.models import Account, AccountNotificationPrefs, ApiToken, Domain, PanelUser, Session
+from shared.passwords import hash_password
 from shared.validation import (
     ValidationError,
     validate_domain,
@@ -50,7 +51,7 @@ LIMITS_HOOKS: list[Callable[[Account], None]] = []
 
 
 def _account_to_dict(account: Account) -> dict:
-    from daemon.resource_manager import available_cpu_cores
+    from daemon.resource_manager import available_cpu_cores, host_memory_gb
     return {
         "id": account.id,
         "username": account.username,
@@ -62,8 +63,10 @@ def _account_to_dict(account: Account) -> dict:
         "quota_soft_mb": account.quota_soft_mb,
         "quota_hard_mb": account.quota_hard_mb,
         "cpu_pct": account.cpu_pct,
-        "cpu_cores": account.cpu_pct / 100,
+        "cpu_cores": min(account.cpu_pct / 100, available_cpu_cores()),
+        "configured_cpu_cores": account.cpu_pct / 100,
         "host_cpu_cores": available_cpu_cores(),
+        "host_memory_gb": host_memory_gb(),
         "mem_mb": account.mem_mb,
         "io_mb": account.io_mb,
         "pids_max": account.pids_max,
@@ -87,11 +90,11 @@ def _validate_limits(cpu_pct: int, mem_mb: int, io_mb: int, pids_max: int) -> No
             f"cpu limit must be between 0.01 and {available_cpu_cores():g} cores on this server"
         )
     if not (64 <= mem_mb <= 65536):
-        raise ValidationError("mem_mb must be between 64 and 65536")
+        raise ValidationError("Memory must be between 0.0625 and 64 GB")
     if not (1 <= io_mb <= 10000):
-        raise ValidationError("io_mb must be between 1 and 10000")
+        raise ValidationError("Disk I/O throughput must be between 1 and 10000 MB/s")
     if not (10 <= pids_max <= 10000):
-        raise ValidationError("pids_max must be between 10 and 10000")
+        raise ValidationError("Maximum processes must be between 10 and 10000")
 
 
 def _rollback_new_linux_user(username: str) -> None:
@@ -103,6 +106,33 @@ def _rollback_new_linux_user(username: str) -> None:
         sysops.delete_linux_user(username, remove_home=False)
     except Exception:
         logger.exception("New identity %s requires administrator cleanup after provisioning failure", username)
+
+
+def ensure_customer_login(session, account, password: str) -> PanelUser:
+    """Provision the hosting login in the same root-owned transaction.
+
+    The initial password is a panel credential as well as the Linux login.
+    A colliding administrator or another account's login is never adopted.
+    Explicit reactivation/reset invalidates previous sessions and challenges.
+    """
+    from shared.models import LoginChallenge
+
+    user = session.scalar(select(PanelUser).where(PanelUser.username == account.username))
+    if user is not None and (user.role != "customer" or user.account_id != account.id):
+        raise ValidationError("The panel login name is already used by another account")
+    if user is None:
+        user = PanelUser(username=account.username, role="customer", account_id=account.id,
+                         password_hash=hash_password(password))
+        session.add(user)
+        session.flush()
+    else:
+        user.password_hash = hash_password(password)
+        for row in session.scalars(select(Session).where(Session.panel_user_id == user.id)).all():
+            row.revoked = True
+        for row in session.scalars(select(LoginChallenge).where(LoginChallenge.panel_user_id == user.id)).all():
+            session.delete(row)
+    user.disabled = False
+    return user
 
 
 @database_operations.serialized
@@ -142,6 +172,8 @@ def create_account(params: dict) -> dict:
         existing = session.scalar(select(Account).where(Account.username == username))
         if existing is not None:
             raise RuntimeError(f"account '{username}' already exists")
+        if session.scalar(select(PanelUser.id).where(PanelUser.username == username)) is not None:
+            raise ValidationError("The panel login name is already used; choose another username")
         if primary_domain is not None:
             from daemon import domain_ownership
             domain_ownership.require_available(session, primary_domain, None)
@@ -161,46 +193,51 @@ def create_account(params: dict) -> dict:
         _rollback_new_linux_user(username)
         raise
 
-    with write_session() as session:
-        account = Account(
-            username=username,
-            status="active",
-            uid=uid,
-            gid=gid,
-            primary_domain=primary_domain,
-            php_version=php_version,
-            quota_soft_mb=quota_soft_mb,
-            quota_hard_mb=quota_hard_mb,
-            cpu_pct=cpu_pct,
-            mem_mb=mem_mb,
-            io_mb=io_mb,
-            pids_max=pids_max,
-        )
-        session.add(account)
-        session.flush()
-        primary_domain_id = None
-        if primary_domain is not None:
-            primary = Domain(
-                account_id=account.id,
-                domain=primary_domain,
-                kind="primary",
-                docroot=f"{settings.home_base}/{username}/public_html",
+    try:
+        with write_session() as session:
+            account = Account(
+                username=username,
+                status="active",
+                uid=uid,
+                gid=gid,
+                primary_domain=primary_domain,
+                php_version=php_version,
+                quota_soft_mb=quota_soft_mb,
+                quota_hard_mb=quota_hard_mb,
+                cpu_pct=cpu_pct,
+                mem_mb=mem_mb,
+                io_mb=io_mb,
+                pids_max=pids_max,
             )
-            session.add(primary)
+            session.add(account)
             session.flush()
-            primary_domain_id = primary.id
-        if email:
-            # Same table the customer/admin "notification preferences" page
-            # edits later (daemon/notifications.py) -- setting it here at
-            # creation time both records the contact email AND makes the
-            # "account created" welcome email (CREATE_HOOKS below) able to
-            # actually reach someone, without a second, duplicate email
-            # column on Account itself.
-            prefs = notifications._get_prefs(session, account.id)
-            prefs.customer_email = email
-        result = _account_to_dict(account)
-        result["email"] = email
-        account_snapshot = account
+            ensure_customer_login(session, account, password)
+            primary_domain_id = None
+            if primary_domain is not None:
+                primary = Domain(
+                    account_id=account.id,
+                    domain=primary_domain,
+                    kind="primary",
+                    docroot=f"{settings.home_base}/{username}/public_html",
+                )
+                session.add(primary)
+                session.flush()
+                primary_domain_id = primary.id
+            if email:
+                # Same table the customer/admin "notification preferences" page
+                # edits later (daemon/notifications.py) -- setting it here at
+                # creation time both records the contact email AND makes the
+                # "account created" welcome email (CREATE_HOOKS below) able to
+                # actually reach someone, without a second, duplicate email
+                # column on Account itself.
+                prefs = notifications._get_prefs(session, account.id)
+                prefs.customer_email = email
+            result = _account_to_dict(account)
+            result["email"] = email
+            account_snapshot = account
+    except Exception:
+        _rollback_new_linux_user(username)
+        raise
 
     # A primary domain is part of account creation, not a display-only field:
     # its row is needed by ownership checks and by OLS's full vhost render.
@@ -336,6 +373,7 @@ def reactivate_account(params: dict) -> dict:
         panel_users = session.scalars(select(PanelUser).where(PanelUser.account_id == account.id)).all()
         for pu in panel_users:
             pu.disabled = False
+        ensure_customer_login(session, account, password)
 
         session.flush()
         result = _account_to_dict(account)
@@ -387,7 +425,10 @@ def get_account(params: dict) -> dict:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise RuntimeError(f"account '{username}' not found")
-        return _account_to_dict(account)
+        result = _account_to_dict(account)
+        prefs = session.scalar(select(AccountNotificationPrefs).where(AccountNotificationPrefs.account_id == account.id))
+        result['email'] = prefs.customer_email if prefs else None
+        return result
 
 
 def list_accounts(params: dict) -> dict:

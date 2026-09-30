@@ -5,6 +5,8 @@ import pytest
 from daemon import handlers_account as ha
 from daemon import handlers_domain as hd
 from daemon import ssl as fssl
+
+_local_authority = fssl._local_dns_is_publicly_authoritative
 from shared.db import write_session
 from shared.models import DnsZone
 
@@ -30,6 +32,7 @@ def stub_zone_creation(monkeypatch):
     DNS challenge.  Domain creation itself is not the behavior under test in
     this module.
     """
+    monkeypatch.setattr(fssl, "_local_dns_is_publicly_authoritative", lambda zone: True)
     monkeypatch.setattr(
         hd,
         "_create_managed_zone",
@@ -581,3 +584,44 @@ def test_phpmyadmin_certificate_status_is_treated_as_system_hostname(tmp_path, m
     monkeypatch.setattr(fssl.settings, 'pma_hostname', 'pma.example.com')
     monkeypatch.setattr(fssl, 'letsencrypt_cert_paths', lambda domain: (str(tmp_path / 'key'), str(tmp_path / 'cert')))
     assert fssl.certificate_status({'domain': 'pma.example.com'})['ssl_status'] == 'none'
+
+
+def test_ordinary_certificate_uses_http_for_undelegated_local_zone(isolated_db, stub_sysops, stub_filesystem, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    with write_session() as session:
+        session.add(DnsZone(account_id=1, zone="demo1.example"))
+    monkeypatch.setattr(fssl, "_local_dns_is_publicly_authoritative", lambda zone: False)
+    mode, args = fssl._challenge_plan("demo1.example")
+    assert mode == "http-01"
+    assert "dns-powerdns" not in args
+
+
+@pytest.mark.parametrize("actual, expected_result", [(["ns1.example.com"], True), (["ns1.example.com", "other.example.com"], False), ([], False)])
+def test_local_challenge_checks_public_delegation(monkeypatch, actual, expected_result):
+    import dns.resolver
+    from types import SimpleNamespace
+    monkeypatch.setattr(fssl.dnsprovider, "list_records", lambda zone: [{"name": zone, "type": "NS", "values": ["ns1.example.com.", "ns2.example.com."]}])
+    class Resolver:
+        def __init__(self, *, configure):
+            assert configure is False
+        def resolve(self, zone, kind, *, lifetime):
+            assert self.nameservers == ["1.1.1.1", "8.8.8.8"] and kind == "NS"
+            return [SimpleNamespace(target=name) for name in actual]
+    monkeypatch.setattr(dns.resolver, "Resolver", Resolver)
+    assert _local_authority("example.com") is expected_result
+
+
+def test_retained_canonical_mail_certificate_still_repairs_service_deployment(isolated_db, monkeypatch):
+    from scripts import ssl_deploy_hook
+    from daemon.procutil import ProcResult
+    monkeypatch.setattr(fssl.settings, 'letsencrypt_email', 'ops@example.com')
+    monkeypatch.setattr(fssl.settings, 'webmail_hostname', 'webmail.example.com')
+    monkeypatch.setattr(fssl.settings, 'mail_hostname', '')
+    monkeypatch.setattr(fssl, 'service_certificate_diagnostics', lambda params: {
+        'dns': {'ok': True}, 'http_challenge': {'ok': True}, 'sni': {'ok': True}})
+    monkeypatch.setattr(fssl, 'run', lambda args, **kw: ProcResult(args, 0, 'Certificate not yet due for renewal', ''))
+    applied = []
+    monkeypatch.setattr(ssl_deploy_hook, '_deploy_mail_service_certificate', applied.append)
+    assert fssl.issue_certificate({'domain': 'webmail.example.com'})['status'] == 'issued'
+    assert applied == ['webmail.example.com']

@@ -100,6 +100,9 @@ function MailboxesTab({ domain }) {
   const [toDelete, setToDelete] = useState(null)
   const [selected, setSelected] = useState(null)
   const [password, setPassword] = useState('')
+  const [quotaGb, setQuotaGb] = useState('1')
+  useEffect(() => { if (selected) setQuotaGb(String(selected.quota_mb / 1024)) }, [selected])
+  const quotaMut = useMutation({ mutationFn: () => patch(`/api/v1/mail/domains/${encodeURIComponent(domain)}/mailboxes/${encodeURIComponent(selected.local_part)}/quota`, { quota_mb: Math.round(Number(quotaGb) * 1024) }), onSuccess: result => { toast.success('Mailbox quota updated'); setSelected(current => ({ ...current, quota_mb: result.quota_mb })); qc.invalidateQueries({ queryKey: key }) }, onError: error => toast.error('Could not update quota', error.message) })
   const { launching, openWebmail } = useWebmailLaunch(username, domain)
   useEffect(() => { setSelected(null); setPassword('') }, [domain, username])
   const passwordMut = useMutation({
@@ -215,11 +218,12 @@ function MailboxesTab({ domain }) {
 
       <Dialog open={!!selected} onOpenChange={open => { if (!open && !passwordMut.isPending) { setSelected(null); setPassword('') } }}>
         <DialogContent size="sm"><DialogHeader><DialogTitle>Manage mailbox</DialogTitle></DialogHeader>
-          <form onSubmit={event => { event.preventDefault(); if (password.length >= 10 && !passwordMut.isPending) passwordMut.mutate() }}>
+          <form onSubmit={event => { event.preventDefault(); if (password.length >= 12 && !passwordMut.isPending) passwordMut.mutate() }}>
             <DialogBody className="space-y-4"><p className="break-all font-medium">{selected?.local_part}@{domain}</p>
               <p className="text-sm text-muted-foreground">Quota: {formatMB(selected?.quota_mb)} · {selected?.active ? 'Active' : 'Inactive'}</p>
-              <FormField label="New mailbox password" required hint="Update your email clients after changing this password."><Input type="password" autoComplete="new-password" minLength={10} required value={password} disabled={passwordMut.isPending} onChange={event => setPassword(event.target.value)}/></FormField>
-            </DialogBody><DialogFooter><Button type="button" variant="secondary" disabled={passwordMut.isPending} onClick={() => { setSelected(null); setPassword('') }}>Done</Button><Button type="submit" loading={passwordMut.isPending} disabled={password.length < 10}>Update password</Button></DialogFooter>
+              <FormField label="Mailbox quota (GB)" hint="This is the mailbox storage limit. Updating it does not delete mail."><div className="flex items-center gap-2"><Input type="number" min={1 / 1024} max="100" step={1 / 1024} value={quotaGb} onChange={event => setQuotaGb(event.target.value)} /><Button type="button" variant="secondary" loading={quotaMut.isPending} disabled={!quotaGb || Number(quotaGb) <= 0 || Number(quotaGb) > 100} onClick={() => quotaMut.mutate()}>Update quota</Button></div></FormField>
+              <FormField label="New mailbox password" required hint="Update your email clients after changing this password."><Input type="password" autoComplete="new-password" minLength={12} required value={password} disabled={passwordMut.isPending} onChange={event => setPassword(event.target.value)}/></FormField>
+            </DialogBody><DialogFooter><Button type="button" variant="secondary" disabled={passwordMut.isPending} onClick={() => { setSelected(null); setPassword('') }}>Done</Button><Button type="submit" loading={passwordMut.isPending} disabled={password.length < 12}>Update password</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>

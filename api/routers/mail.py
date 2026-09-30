@@ -36,6 +36,16 @@ class CreateMailboxBody(BaseModel):
     quota_mb: int = 1024
 
 
+class MailboxQuotaBody(BaseModel):
+    quota_mb: int
+
+
+@api_router.patch('/domains/{domain}/mailboxes/{local_part}/quota')
+def set_mailbox_quota(domain: str, local_part: str, body: MailboxQuotaBody, identity: Identity = Depends(get_identity)):
+    require_domain_access(identity, domain)
+    return call_daemon('mail.set_quota', identity, domain=domain, local_part=local_part, quota_mb=body.quota_mb)
+
+
 class ChangeMailboxPasswordBody(BaseModel):
     domain: str
     password: str

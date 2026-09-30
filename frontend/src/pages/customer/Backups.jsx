@@ -285,7 +285,7 @@ export default function Backups() {
 
       <SnapshotHistory username={username} />
       <BackupEmailPreferences username={username} />
-      <h2 className="mb-3 text-lg font-semibold">On-demand archive backups</h2>
+      <h2 className="mb-3 text-lg font-semibold">On-demand archive backups</h2><p className="mb-4 text-sm text-muted-foreground">Archives use your configured backup destination. If no archive schedule exists, Boron uses protected local storage and keeps the latest three archives of each type.</p>
       <DataTable
         columns={backupColumns}
         data={backups.data?.jobs}

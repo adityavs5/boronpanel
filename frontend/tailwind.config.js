@@ -15,9 +15,9 @@ export default {
           foreground: 'rgb(var(--accent-fg) / <alpha-value>)',
         },
         // Semantic status colors (goal spec).
-        danger: { DEFAULT: '#EF4444', foreground: '#FFFFFF' },
+        danger: { DEFAULT: '#B91C1C', foreground: '#FFFFFF' },
         warning: { DEFAULT: '#F59E0B', foreground: '#3A2A05' },
-        success: { DEFAULT: '#10B981', foreground: '#03291E' },
+        success: { DEFAULT: '#047857', foreground: '#03291E' },
         info: { DEFAULT: '#3B82F6', foreground: '#FFFFFF' },
         // Sidebar is always the darkest slate (#030712 = gray-950, Run A
         // feature 2 spec) in both themes -- deliberately darker than the

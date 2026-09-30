@@ -17,6 +17,7 @@ const selectClass = 'flex h-9 w-full rounded-btn border border-input bg-input-su
 export default function DnsCluster() {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
+  const [togglePeer, setTogglePeer] = useState(null)
   const [removePeer, setRemovePeer] = useState(null)
   const [generated, setGenerated] = useState(null)
   const [form, setForm] = useState(EMPTY)
@@ -76,7 +77,7 @@ export default function DnsCluster() {
         { key: 'direction', header: 'Direction', render: row => <div><span className="capitalize">{row.direction}</span><div className="text-xs text-muted-foreground">{row.zones?.length ? `${row.zones.length} owned zone(s)` : 'All local zones'}</div></div> },
         { key: 'status', header: 'Health', render: row => <StatusBadge status={!row.enabled ? 'disabled' : row.status} /> },
         { key: 'last_success_at', header: 'Last success', sortable: true, render: row => row.last_success_at ? new Date(row.last_success_at).toLocaleString() : 'Not synced yet' },
-        { key: 'actions', header: '', searchable: false, render: row => <div className="flex justify-end gap-2"><Button size="sm" variant="secondary" onClick={() => test.mutate(row.id)} loading={test.isPending && test.variables === row.id}><Zap className="h-3.5 w-3.5" />Test</Button><Button size="sm" variant="secondary" onClick={() => toggle.mutate(row)} loading={toggle.isPending && toggle.variables?.id === row.id}>{row.enabled ? 'Disable' : 'Enable'}</Button><Button size="icon-sm" variant="ghost" title="Remove peer" onClick={() => setRemovePeer(row)}><Trash2 className="h-4 w-4" /></Button></div> },
+        { key: 'actions', header: '', searchable: false, render: row => <div className="flex justify-end gap-2"><Button size="sm" variant="secondary" onClick={() => test.mutate(row.id)} loading={test.isPending && test.variables === row.id}><Zap className="h-3.5 w-3.5" />Test</Button><Button size="sm" variant="secondary" disabled={toggle.isPending} onClick={() => setTogglePeer(row)} loading={toggle.isPending && toggle.variables?.id === row.id}>{row.enabled ? 'Disable' : 'Enable'}</Button><Button size="icon-sm" variant="ghost" title="Remove peer" onClick={() => setRemovePeer(row)}><Trash2 className="h-4 w-4" /></Button></div> },
       ]} emptyTitle="No DNS peers" emptyDescription="Add a peer to keep its authoritative copy of every local zone synchronized." emptyIcon={Network} />
     </CardContent></Card>
 
@@ -102,6 +103,7 @@ export default function DnsCluster() {
 
     <Dialog open={!!generated} onOpenChange={() => {}}><DialogContent size="sm" showClose={false}><DialogHeader><DialogTitle>Save the Boron cluster key</DialogTitle><DialogDescription>This key is shown once. Add the same key when configuring the corresponding Boron peer on the other server.</DialogDescription></DialogHeader><DialogBody><div className="flex gap-2"><Input readOnly className="font-mono" value={generated || ''} /><Button size="icon" variant="secondary" title="Copy key" onClick={async () => { await navigator.clipboard.writeText(generated || ''); toast.success('Cluster key copied') }}><Copy className="h-4 w-4" /></Button></div></DialogBody><DialogFooter><Button onClick={() => setGenerated(null)}>I saved it</Button></DialogFooter></DialogContent></Dialog>
 
+    <ConfirmDialog open={!!togglePeer} onOpenChange={value => !value && setTogglePeer(null)} title={`${togglePeer?.enabled ? 'Disable' : 'Enable'} DNS peer?`} description={togglePeer?.enabled ? 'DNS deliveries to this peer will pause. Existing remote DNS zones remain in place.' : 'Queued Boron-owned zone updates can be sent to this peer again.'} confirmLabel={togglePeer?.enabled ? 'Disable peer' : 'Enable peer'} loading={toggle.isPending} onConfirm={() => toggle.mutate(togglePeer, {onSuccess: () => setTogglePeer(null)})} />
     <ConfirmDialog open={!!removePeer} onOpenChange={openValue => { if (!openValue) setRemovePeer(null) }} title="Remove DNS peer?" description="Queued deliveries for this peer will also be removed. Zones already copied to the remote server are left in place." confirmLabel="Remove peer" loading={remove.isPending} onConfirm={() => remove.mutate(removePeer.id)} />
   </div>
 }

@@ -187,6 +187,9 @@ def apply_policy(username: str, policy: dict, *, uid: int | None = None) -> None
         return f"{value // 1048576}M" if value % 1048576 == 0 else str(value)
 
     cpu = policy.get("cpu_cores")
+    if cpu is not None:
+        from daemon.resource_manager import available_cpu_cores
+        cpu = min(float(cpu), available_cpu_cores())
     high = policy.get("memory_high_mb")
     maximum = policy.get("memory_max_mb")
     nproc = policy.get("nproc")

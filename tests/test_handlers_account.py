@@ -642,3 +642,35 @@ def test_quota_failure_never_activates_account(isolated_db, stub_sysops, monkeyp
     assert ('delete_linux_user', 'demo1') in stub_sysops
 
     assert ('preserve_home', 'demo1') in stub_sysops
+
+
+def test_generated_credentials_authenticate_customer(isolated_db, stub_sysops):
+    from daemon import handlers_auth
+    result = ha.create_account({'username': 'qauser'})
+    login = handlers_auth.login_begin({'username': 'qauser', 'password': result['initial_password']})
+    assert login['valid'] and login['role'] == 'customer'
+    assert login['account_id'] == result['id']
+
+
+def test_account_creation_rejects_existing_admin_login(isolated_db, stub_sysops):
+    from shared.models import PanelUser
+    from shared.passwords import hash_password
+    with write_session() as db:
+        db.add(PanelUser(username='demo1', role='admin', password_hash=hash_password('StrongAdminPass1!')))
+    with pytest.raises(ValidationError, match='login'):
+        ha.create_account({'username': 'demo1'})
+    assert not any(item[0] == 'create_linux_user' for item in stub_sysops)
+
+
+@pytest.mark.parametrize("email", [None, "owner@example.com"])
+def test_get_account_returns_contact_email(isolated_db, email):
+    from shared.models import AccountNotificationPrefs
+    with write_session() as session:
+        account = Account(username="demo1", status="active")
+        session.add(account)
+        session.flush()
+        if email:
+            session.add(AccountNotificationPrefs(account_id=account.id, customer_email=email))
+    result = ha.get_account({"username": "demo1"})
+    assert result["email"] == email
+    assert result["username"] == "demo1"

@@ -79,7 +79,9 @@ def _webhook_to_dict(w: Webhook) -> dict:
 def create_webhook(params: dict) -> dict:
     url = validate_webhook_url(params["url"])
     events_list = validate_webhook_events(params["events"], WEBHOOK_EVENT_TYPES)
-    secret = params["secret"] if "secret" in params else secrets.token_hex(32)
+    secret = params.get("secret")
+    if secret is None or secret == "":
+        secret = secrets.token_hex(32)
     if not isinstance(secret, str) or not 1 <= len(secret) <= 128:
         raise ValidationError("Webhook signing secret must contain 1 to 128 characters")
     enabled = bool(params.get("enabled", True))

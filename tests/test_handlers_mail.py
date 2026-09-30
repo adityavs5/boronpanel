@@ -6,7 +6,7 @@ from shared.config import settings
 from shared.validation import ValidationError
 
 
-@pytest.fixture()
+@pytest.fixture(autouse=True)
 def stub_dkim(tmp_path, monkeypatch):
     """Real openssl calls (fast, offline, no root needed) into a throwaway
     dir, with the DNS-publish side skipped (no PowerDNS zone in these
@@ -17,6 +17,9 @@ def stub_dkim(tmp_path, monkeypatch):
     # Unit tests use a temporary tree which is not owned by the real
     # OpenDKIM service account (and may run inside a user namespace).
     monkeypatch.setattr(hm.dkim, "_opendkim_gid", lambda: None)
+    # Handler tests generate real disposable keys, but must never rewrite
+    # the host's OpenDKIM/Postfix configuration or restart customer mail.
+    monkeypatch.setattr(hm.dkim, "configure_signer", lambda: {'active': True})
 
 
 @pytest.fixture()
@@ -443,7 +446,18 @@ def test_mailbox_cleanup_failure_retains_cache_for_retry(isolated_db, stub_sysop
         assert session.scalar(select(MailUser)) is None
 
 
-def test_create_and_list_forward(isolated_db, stub_mail):
+
+@pytest.fixture()
+def forward_owner(isolated_db):
+    from shared.db import write_session
+    from shared.models import Account, Domain
+    with write_session() as db:
+        account = Account(username='demo1',status='active')
+        db.add(account);db.flush()
+        db.add(Domain(account_id=account.id,domain='demo1.example',docroot='/home/demo1/public_html',kind='primary'))
+
+
+def test_create_and_list_forward(forward_owner, stub_mail):
     result = hm.create_forward({"domain": "demo1.example", "local_part": "sales", "destination": "ext@gmail.com"})
     assert result["destination"] == "ext@gmail.com"
     forwards = hm.list_forwards({"domain": "demo1.example"})["forwards"]
@@ -455,7 +469,7 @@ def test_create_forward_rejects_invalid_destination(isolated_db, stub_mail):
         hm.create_forward({"domain": "demo1.example", "local_part": "sales", "destination": "not-an-email"})
 
 
-def test_delete_forward(isolated_db, stub_mail):
+def test_delete_forward(forward_owner, stub_mail):
     hm.create_forward({"domain": "demo1.example", "local_part": "sales", "destination": "ext@gmail.com"})
     result = hm.delete_forward({"domain": "demo1.example", "local_part": "sales", "destination": "ext@gmail.com"})
     assert result["status"] == "deleted"
@@ -465,7 +479,7 @@ def test_delete_forward(isolated_db, stub_mail):
 # --- Catch-all -------------------------------------------------------------
 
 
-def test_set_get_delete_catchall(isolated_db, stub_mail):
+def test_set_get_delete_catchall(forward_owner, stub_mail):
     assert hm.get_catchall({"domain": "demo1.example"})["catchall"] is None
     hm.set_catchall({"domain": "demo1.example", "destination": "catchall@gmail.com"})
     result = hm.get_catchall({"domain": "demo1.example"})["catchall"]
@@ -730,3 +744,24 @@ def test_mailbox_provisions_owned_hosting_domain_on_demand(isolated_db, stub_mai
 def test_auto_mail_provisioning_rejects_unowned_domain(isolated_db, stub_mail):
     with pytest.raises(RuntimeError,match='active hosting account'):
         hm.ensure_mail_domain('unknown.example')
+
+
+def test_mailbox_quota_edit_updates_cache_after_external_success(isolated_db, stub_sysops, stub_mail, monkeypatch):
+    from shared.db import write_session
+    from shared.models import MailUser
+    from sqlalchemy import select
+    ha.create_account({'username':'demo1'})
+    hm.create_mail_domain({'username':'demo1','domain':'demo1.example'})
+    hm.create_mailbox({'domain':'demo1.example','local_part':'john','password':'Secret123!Pass'})
+    calls=[]
+    monkeypatch.setattr(hm.mail,'set_mailbox_quota',lambda domain,local,quota:calls.append((domain,local,quota)))
+    hm.set_mailbox_quota({'domain':'demo1.example','local_part':'john','quota_mb':2048})
+    assert calls == [('demo1.example','john',2048)]
+    with write_session() as db:
+        assert db.scalar(select(MailUser).where(MailUser.local_part=='john')).quota_mb == 2048
+    def unavailable(*args):raise RuntimeError('mail database unavailable')
+    monkeypatch.setattr(hm.mail,'set_mailbox_quota',unavailable)
+    with pytest.raises(RuntimeError):
+        hm.set_mailbox_quota({'domain':'demo1.example','local_part':'john','quota_mb':4096})
+    with write_session() as db:
+        assert db.scalar(select(MailUser).where(MailUser.local_part=='john')).quota_mb == 2048

@@ -21,6 +21,8 @@ class CreateTokenBody(BaseModel):
     label: str
     role: str = "admin"
     account_id: int | None = None
+    scope: str = 'full'
+    expires_in_days: int = 30
 
 
 @api_router.get("")
@@ -31,7 +33,8 @@ def list_tokens(identity: Identity = Depends(get_identity)):
         return [
             {"id": r.id, "label": r.label, "role": r.role, "account_id": r.account_id,
              "revoked": r.revoked_at is not None,
-             "expires_at": (r.created_at + __import__("datetime").timedelta(seconds=API_TOKEN_MAX_AGE_SECONDS)).isoformat()}
+             "scope": r.scope,
+             "expires_at": (r.expires_at or (r.created_at + __import__("datetime").timedelta(seconds=API_TOKEN_MAX_AGE_SECONDS))).isoformat()}
             for r in rows
         ]
 

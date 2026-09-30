@@ -39,6 +39,10 @@ def inventory(params):
         activity = [{'id': 'install-'+str(j.id), 'label': 'Install WordPress: '+j.domain, 'status': j.status, 'message': j.progress_message, 'error': j.error} for j in recent_installs]
         activity += [{'id': 'manage-'+str(j.id), 'label': j.command_display, 'status': j.status, 'error': j.error} for j in recent_commands]
     installs, errors = [], []
+    from daemon import ssl
+    for choice in choices:
+        certificate = ssl._cert_file_details(choice['domain'])
+        choice['https_ready'] = bool(certificate and certificate['cert_status'] in ('valid', 'expiring'))
     for account_id, name in accounts:
         try:
             for item in wpcli.detect_installs({'username': name})['installs']:

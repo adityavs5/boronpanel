@@ -166,3 +166,10 @@ def tail_error_records(limit: int = 100, log_dir: str | None = None) -> list[dic
         if len(records) >= limit:
             break
     return records
+
+
+def record_operation_error(diagnostic: dict, user: str | None, ip: str | None, *, status: int = 502) -> None:
+    """Metadata comes from root's safe failure boundary, never vendor text."""
+    _ensure_configured()
+    record = {**build_record('RPC', '', status, 0, user, ip), **diagnostic}
+    logging.getLogger(_ERROR_LOGGER).info(json.dumps(record, separators=(',', ':')))

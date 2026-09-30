@@ -96,6 +96,15 @@ def test_create_node_app_creates_app_dir_and_log_file(account_with_domain):
     assert os.path.exists(log_path)
 
 
+def test_create_node_app_null_version_uses_configured_default(account_with_domain):
+    # The API model emits null when the optional version is omitted.
+    result = nodeapps.create_app({
+        "username": "demo1", "domain": "demo1.example", "name": "default-version",
+        "entry_point": "server.js", "node_version": None,
+    })
+    assert result["node_version"] == nodeapps.settings.default_node_version
+
+
 def test_create_node_app_writes_systemd_unit_and_env_file(account_with_domain):
     result = nodeapps.create_app({
         "username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "server.js",
@@ -135,13 +144,13 @@ def test_create_node_app_rejects_domain_not_owned_by_account(account_with_domain
 
 def test_create_node_app_rejects_duplicate_domain_binding(account_with_domain):
     nodeapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "app-one", "entry_point": "a.js"})
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValidationError, match="already has a NodeJS app"):
         nodeapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "app-two", "entry_point": "b.js"})
 
 
 def test_create_node_app_rejects_duplicate_name(account_with_domain):
     nodeapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "app-one", "entry_point": "a.js"})
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValidationError, match="already exists"):
         nodeapps.create_app({"username": "demo1", "domain": "second.example", "name": "app-one", "entry_point": "b.js"})
 
 

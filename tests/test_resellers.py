@@ -58,10 +58,10 @@ def make_owned_account(profile_id: int, username: str, hard_mb: int = 5120, doma
         return account.id
 
 
-def test_plan_validation_uses_field_names_and_account_minimums(isolated_db):
-    with pytest.raises(ValidationError, match="account_mem_mb must be between 64"):
+def test_plan_validation_uses_human_units_and_account_minimums(isolated_db):
+    with pytest.raises(ValidationError, match="Account memory limit must be between 0.0625 and 64 GB"):
         make_plan(account_mem_mb=32)
-    with pytest.raises(ValidationError, match="account_pids_max must be between 10"):
+    with pytest.raises(ValidationError, match="Account process limit must be between 10"):
         make_plan(account_pids_max=5)
 
 
@@ -76,7 +76,7 @@ def test_plan_list_is_json_serializable_and_exposes_host_capacity(isolated_db, m
 
 def test_plan_rejects_cpu_above_server_capacity(isolated_db, monkeypatch):
     monkeypatch.setattr(resellers.resource_manager, "available_cpu_cores", lambda: 2)
-    with pytest.raises(ValidationError, match="account_cpu_pct must be between 1 and 200"):
+    with pytest.raises(ValidationError, match="Account CPU allocation must be between 0.01 and 2 cores"):
         make_plan(account_cpu_pct=201, account_cpu_cores=2.01)
 
 
@@ -174,6 +174,7 @@ def test_create_account_uses_plan_defaults_and_records_ownership(isolated_db, mo
             )
             session.add(account)
             session.flush()
+            resellers.handlers_account.ensure_customer_login(session, account, params["password"])
             return {"id": account.id, "username": account.username, "status": account.status}
 
     monkeypatch.setattr(resellers.handlers_account, "create_account", fake_create)
@@ -200,14 +201,13 @@ def test_create_account_enforces_count_limit(isolated_db):
         resellers.create_account({"reseller_username": "reseller1", "username": "secondone"})
 
 
-def test_create_account_compensates_when_panel_login_fails(isolated_db, monkeypatch):
+def test_create_account_compensates_when_canonical_panel_login_is_missing(isolated_db, monkeypatch):
     plan = make_plan()
     make_profile(plan["id"])
     terminated = []
     monkeypatch.setattr(resellers.handlers_account, "create_account", lambda params: {"id": 77, "username": params["username"], "status": "active"})
-    monkeypatch.setattr(resellers.handlers_auth, "create_panel_user", lambda params: (_ for _ in ()).throw(RuntimeError("login write failed")))
     monkeypatch.setattr(resellers.handlers_account, "terminate_account", lambda params: terminated.append(params["username"]))
-    with pytest.raises(RuntimeError, match="login write failed"):
+    with pytest.raises(resellers.ResellerError, match="did not provision its customer login"):
         resellers.create_account({
             "reseller_username": "reseller1", "username": "rollbackme", "password": "StrongPass123!"
         })

@@ -26,7 +26,7 @@ const SCHEDULE_FIELDS = [
   ['dow', 'Day of week'],
 ]
 
-const EMPTY_FORM = { minute: '*', hour: '*', dom: '*', month: '*', dow: '*', raw: '', command: '', label: '' }
+const EMPTY_FORM = { minute: '0', hour: '3', dom: '*', month: '*', dow: '*', raw: '', command: '', label: '' }
 
 // Item 6: quick presets for the schedule builder. Fields mirror
 // daemon/cron.py's describe_schedule() so the "Runs at" preview below the

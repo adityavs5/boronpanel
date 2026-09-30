@@ -217,6 +217,15 @@ def delete_maintenance_for_domain(domain_name: str) -> None:
             session.delete(row)
 
 
+def terminate_account_maintenance(account: Account) -> None:
+    """Remove operational settings while retaining the account/audit history."""
+    with write_session() as session:
+        domains = session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all()
+        rows = session.scalars(select(MaintenanceMode).where(MaintenanceMode.domain.in_(domains))).all()
+        for row in rows:
+            session.delete(row)
+
+
 def list_active_maintenance(params: dict) -> dict:
     """Admin overview: every domain currently in maintenance (goal's
     explicit requirement), across every account."""
@@ -227,12 +236,14 @@ def list_active_maintenance(params: dict) -> dict:
         if domain_names:
             domain_rows = session.scalars(select(Domain).where(Domain.domain.in_(domain_names))).all()
             account_ids = {d.account_id for d in domain_rows}
-            accounts_by_id = {a.id: a.username for a in session.scalars(select(Account).where(Account.id.in_(account_ids))).all()}
-            accounts_by_domain = {d.domain: accounts_by_id.get(d.account_id) for d in domain_rows}
+            accounts_by_id = {a.id: a.username for a in session.scalars(select(Account).where(
+                Account.id.in_(account_ids), Account.status.in_(("active", "suspended")))).all()}
+            accounts_by_domain = {d.domain: accounts_by_id[d.account_id] for d in domain_rows if d.account_id in accounts_by_id}
         return {
             "domains": [
                 {**_to_dict(r), "username": accounts_by_domain.get(r.domain)}
                 for r in rows
+                if r.domain in accounts_by_domain
             ]
         }
 
@@ -251,6 +262,12 @@ def sweep_expired() -> dict:
         ).all()
         accounts_to_refresh: dict[str, Account] = {}
         for row in rows:
+            domain_row = session.scalar(select(Domain).where(Domain.domain == row.domain))
+            owner = session.get(Account, domain_row.account_id) if domain_row is not None else None
+            if owner is None or owner.status not in ('active', 'suspended'):
+                row.enabled = False
+                row.auto_disable_at = None
+                continue
             if row.auto_disable_at is None:
                 continue
             deadline = row.auto_disable_at

@@ -7,6 +7,7 @@ are enforced by daemon.rpc_authority using root-owned database state.
 from __future__ import annotations
 
 POLICY_BY_OPERATION: dict[str, str] = {
+    'mail.set_quota': 'account_and_domain',
     # Password and second-factor checks run entirely inside borond.
     'auth.login.begin': 'login_protocol',
     'auth.login.finish': 'login_protocol',
@@ -14,6 +15,10 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'apps.install.get': 'account_and_domain',
     'apps.install.trigger': 'account_and_domain',
     'apps.list': 'account_and_domain',
+    'dns.raw.get': 'account_and_domain',
+    'dns.raw.preview': 'account_and_domain',
+    'dns.raw.template': 'account_and_domain',
+    'dns.raw.apply': 'account_and_domain',
     'dns.delete_record': 'account_and_domain',
     'dns.list_records': 'account_and_domain',
     'dns.set_record': 'account_and_domain',
@@ -406,6 +411,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'admin_user.list': 'global_admin',
     'admin_user.create': 'global_admin',
     'admin_user.set_status': 'global_admin',
+    'admin_user.manage': 'global_admin',
     'apps.node.admin_list': 'global_admin',
     'apps.python.admin_list': 'global_admin',
     'panel.config.hostname': 'global_admin',

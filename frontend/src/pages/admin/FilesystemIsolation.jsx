@@ -16,11 +16,16 @@ export default function FilesystemIsolation() {
   const qc = useQueryClient()
   const [running, setRunning] = useState(null)
   const [rebuildTarget, setRebuildTarget] = useState(null)
+  const [testResults, setTestResults] = useState({})
   const query = useQuery({ queryKey: ['filesystem-isolation'], queryFn: () => get('/api/v1/admin/isolation') })
   const action = useMutation({
     mutationFn: ({ username, type }) => post(`/api/v1/admin/isolation/${username}/${type}`, {}),
     onMutate: value => setRunning(`${value.username}:${value.type}`),
-    onSuccess: (result, value) => { toast.success(value.type === 'rebuild' ? 'Namespace rebuilt' : result.passed ? 'Isolation self-test passed' : 'Isolation self-test found a problem'); if (value.type === 'rebuild') setRebuildTarget(null); qc.invalidateQueries({ queryKey: ['filesystem-isolation'] }) },
+    onSuccess: (result, value) => {
+      if (value.type === 'rebuild') { toast.success('Namespace rebuilt'); setRebuildTarget(null) }
+      else { setTestResults(previous => ({ ...previous, [value.username]: result })); if (result.passed) toast.success('Isolation self-test passed'); else if (result.status === 'incomplete') toast.info('Isolation test is incomplete', 'See the checks below. Idle PHP workers or a missing peer account can leave checks untested.'); else toast.error('Isolation self-test failed', 'See the failed checks below; runtime coverage is measured separately.') }
+      qc.invalidateQueries({ queryKey: ['filesystem-isolation'] })
+    },
     onError: e => toast.error('Isolation action failed', e.message), onSettled: () => setRunning(null),
   })
   if (query.isLoading) return <CardSkeleton />
@@ -46,6 +51,7 @@ export default function FilesystemIsolation() {
       <Capability label="Private process namespace" value={data.capabilities.pid_namespace} />
     </div>
     <Card><CardHeader><CardTitle>Account coverage</CardTitle><CardDescription>Web/PHP uses the OLS namespace. Node.js, Python, and Redis units use systemd hardening and the account cgroup. SSH coverage is shown separately.</CardDescription></CardHeader><CardContent><DataTable columns={columns} data={data.accounts} getRowKey={r => r.username} pageSize={25} emptyTitle="No hosting accounts" emptyDescription="Accounts appear here after creation." emptyIcon={Box} /></CardContent></Card>
+    {Object.entries(testResults).map(([username, result]) => <Card key={username} className="mt-4"><CardHeader><CardTitle>Self-test: {username}</CardTitle><CardDescription>This canary result is separate from the live workload observations above.</CardDescription></CardHeader><CardContent className="space-y-2"><Badge variant={result.status === 'passed' ? 'success' : result.status === 'incomplete' ? 'info' : 'danger'}>{result.status}</Badge><p>Account environment: {result.namespace_enabled ? 'Enabled' : 'Not enabled'}</p><p>Own home access: {result.own_home_readable == null ? 'Not tested — open a PHP page and retry' : result.own_home_readable ? 'Passed' : 'Failed'}</p><p>Other account visibility: {result.other_home_hidden == null ? (result.skipped?.includes('live_php_worker') ? 'Not tested — open a PHP page and retry' : 'Not tested — no peer account') : result.other_home_hidden ? 'Passed — hidden' : 'Failed — visible'}</p><p>Web/PHP process isolation: {result.process_isolation?.replaceAll('_', ' ')}</p>{result.skipped?.length > 0 && <p className="text-muted-foreground">Untested checks: {result.skipped.map(check => check.replaceAll('_', ' ')).join(', ')}</p>}</CardContent></Card>)}
     <ConfirmDialog
       open={!!rebuildTarget}
       onOpenChange={open => { if (!open && !action.isPending) setRebuildTarget(null) }}

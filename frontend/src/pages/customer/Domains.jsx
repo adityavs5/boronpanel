@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Globe, Plus, Trash2, Settings, MoreHorizontal, Copy, PauseCircle, PlayCircle, RefreshCw, Network, FolderTree } from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
+import { useAuth } from '@/store/auth'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { useDomainContext } from '@/hooks/useDomainContext'
 import { formatDate } from '@/lib/utils'
@@ -109,6 +110,7 @@ function ParkedDomainsCard({ username, domains }) {
               </FormField>
             </DialogBody>
             <DialogFooter>
+              {addMut.isPending && <p role="status" className="mr-auto text-sm text-muted-foreground">Adding parked domain…</p>}
               <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
               <Button type="submit" loading={addMut.isPending} disabled={!form.parked_domain.trim()}>Park domain</Button>
             </DialogFooter>
@@ -130,12 +132,15 @@ function ParkedDomainsCard({ username, domains }) {
 }
 
 export default function Domains({ subdomainsOnly = false }) {
+  const admin = useAuth(state => state.role === 'admin')
   const username = useAccountUsername()
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [createOpen, setCreateOpen] = useState(false)
   const [domain, setDomain] = useState('')
   const [kind,setKind]=useState(subdomainsOnly ? 'subdomain' : 'addon')
+  const validDomainName = value => value.length <= 253 && value.includes('.') && value.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))
+  const domainError = domain && (kind === 'subdomain' ? !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(domain.trim()) : !validDomainName(domain.trim())) ? 'Use letters, numbers and interior hyphens; enter a domain such as example.com.' : undefined
   const [docrootMode,setDocrootMode]=useState('default')
   const [customDocroot,setCustomDocroot]=useState('')
   const [toDelete, setToDelete] = useState(null)
@@ -243,7 +248,7 @@ export default function Domains({ subdomainsOnly = false }) {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
-              <DropdownMenuItem onSelect={() => navigate(`/domains/${r.domain}`)}>
+              <DropdownMenuItem onSelect={() => navigate(admin ? `/accounts/${username}/domains/${r.domain}` : `/domains/${r.domain}`)}>
                 <Settings className="h-4 w-4" /> Manage
               </DropdownMenuItem>
               <DropdownMenuItem disabled={suspensionMut.isPending} onSelect={() => {setToSuspend(r);setSuspensionReason(r.suspension_reason||'')}}>
@@ -291,7 +296,7 @@ export default function Domains({ subdomainsOnly = false }) {
         pageSize={15}
         initialSort={{ key: 'domain', dir: 'asc' }}
         getRowKey={(r) => r.id ?? r.domain}
-        onRowClick={(r) => navigate(`/domains/${r.domain}`)}
+        onRowClick={(r) => navigate(admin ? `/accounts/${username}/domains/${r.domain}` : `/domains/${r.domain}`)}
         emptyTitle={subdomainsOnly ? 'No subdomains yet' : 'No domains yet'}
         emptyDescription={subdomainsOnly ? 'Create a subdomain with its own site root and DNS address.' : 'Add a domain to start hosting another site.'}
         emptyIcon={Globe}
@@ -308,12 +313,13 @@ export default function Domains({ subdomainsOnly = false }) {
           <form
             onSubmit={(e) => {
               e.preventDefault()
+              if (domainError || !domain.trim() || (kind === 'subdomain' && !parent)) return
               createMut.mutate({ domain: kind==='subdomain'?`${domain.trim()}.${parent}`:domain.trim(), kind, parent_domain: kind === 'subdomain' ? parent : undefined, document_root_mode: kind === 'subdomain' ? docrootMode : 'default', document_root: kind === 'subdomain' && docrootMode === 'custom' ? customDocroot.trim() : undefined })
             }}
           >
             <DialogBody className="space-y-4">
               {!subdomainsOnly && <FormField label="Site type" htmlFor="domain-kind"><Select id="domain-kind" value={kind} onChange={e=>{setKind(e.target.value);setDomain('');setParent(parentDomains[0]?.domain||'')}}><option value="addon">Domain</option><option value="subdomain" disabled={!parentDomains.length}>Subdomain</option></Select></FormField>}
-              <FormField label={kind==='subdomain'?'Subdomain':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter the new name on the left. The selected parent domain remains visible beside it.':'Enter a complete domain name.'}>
+              <FormField error={domainError} label={kind==='subdomain'?'Subdomain':'Domain'} htmlFor="new-domain-name" required hint={kind==='subdomain'?'Enter the new name on the left. The selected parent domain remains visible beside it.':'Enter a complete domain name.'}>
                 {kind === 'subdomain' ? <div className="subdomain-address-composer">
                   <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="blog" required className="subdomain-label-input" autoComplete="off" spellCheck={false} />
                   <div className="subdomain-parent-control"><span aria-hidden="true">.</span><Select id="subdomain-parent" aria-label="Parent domain" value={parent} onChange={e=>setParent(e.target.value)}>
@@ -331,8 +337,9 @@ export default function Domains({ subdomainsOnly = false }) {
               {kind==='subdomain'?<div className="subdomain-dns-note"><FolderTree aria-hidden="true" /><p><strong>DNS is configured automatically.</strong><span>The address record is added through the parent zone’s active provider, including Cloudflare.</span></p></div>:<p className="text-sm text-muted-foreground">A DNS zone and website address records are added automatically.</p>}
             </DialogBody>
             <DialogFooter>
+              {createMut.isPending && <p role="status" className="mr-auto text-sm text-muted-foreground">Creating website and DNS records…</p>}
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
-              <Button type="submit" loading={createMut.isPending} disabled={!domain.trim() || (kind === 'subdomain' && !parent)}>{kind === 'subdomain' ? 'Add subdomain' : 'Add domain'}</Button>
+              <Button type="submit" loading={createMut.isPending} disabled={!!domainError || !domain.trim() || (kind === 'subdomain' && !parent)}>{kind === 'subdomain' ? 'Add subdomain' : 'Add domain'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>

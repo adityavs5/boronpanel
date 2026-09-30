@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import grp
 import logging
+import json
 import os
 import pwd
 import socket
@@ -21,6 +22,7 @@ from pathlib import Path
 from shared.config import settings
 from shared.db import init_db
 from shared.rpc import encode_response, read_frame
+from daemon import dns_editor
 from shared.validation import ValidationError
 
 from daemon import panel_config, panel_jobs, panel_tls, snapshot_config, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, db_governor, dbmonitor, dnscluster, dnssetup, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, htaccess, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, mail_dns, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, resource_manager, server_setup, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, stack_manager, staging, terminal, totp, updates, usage_alerts, waf, webhooks, webmail_sso, wordpress, wpcli
@@ -32,6 +34,7 @@ from daemon.rpc_policy import POLICY_BY_OPERATION
 logger = logging.getLogger("borond")
 
 OP_TABLE = {
+    'mail.set_quota': handlers_mail.set_mailbox_quota,
     "panel.config.status": panel_jobs.status,
     "panel.config.start": panel_jobs.start,
     "snapshot.restore.configuration": snapshot_restores.configuration_options,
@@ -107,6 +110,7 @@ OP_TABLE = {
     "admin_user.list": handlers_auth.list_administrators,
     "admin_user.create": handlers_auth.create_administrator,
     "admin_user.set_status": handlers_auth.set_administrator_status,
+    "admin_user.manage": handlers_auth.manage_administrator,
     "apps.node.admin_list": nodeapps.list_all_apps,
     "apps.python.admin_list": pythonapps.list_all_apps,
     "panel.config.hostname": lambda params: panel_config.apply_hostname(params["hostname"]),
@@ -165,6 +169,10 @@ OP_TABLE = {
     "system.refresh_main_config": lambda params: (ols.refresh_main_config(), {"status": "ok"})[1],
     "dns.create_zone": handlers_dns.create_zone,
     "dns.delete_zone": handlers_dns.delete_zone,
+    "dns.raw.get": dns_editor.get,
+    "dns.raw.preview": dns_editor.preview,
+    "dns.raw.template": dns_editor.template,
+    "dns.raw.apply": dns_editor.apply,
     "dns.list_records": handlers_dns.list_records,
     "dns.set_record": handlers_dns.set_record,
     "dns.delete_record": handlers_dns.delete_record,
@@ -800,6 +808,7 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_ftp.terminate_a
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_php_ini.terminate_account_php_ini(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: phpext.terminate_account_php_extensions(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_redirect.terminate_account_redirects(account))
+handlers_account.TERMINATE_HOOKS.append(handlers_maintenance.terminate_account_maintenance)
 handlers_account.TERMINATE_HOOKS.append(lambda account: fileauth.terminate_account_fileauth(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: gitrepo.terminate_account_git(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: sshkeys.terminate_account_sshkeys(account))
@@ -944,6 +953,8 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
         role = current.role if current else "anonymous"
         if op == "notes.add":
             handler_params["author"] = actor
+        elif op in ("admin_user.set_status", "admin_user.manage"):
+            handler_params["actor_username"] = actor
         elif op == "ipban.add":
             handler_params["actor"] = actor
             handler_params["actor_ip"] = ip
@@ -976,11 +987,16 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
         # A vendor/OS/DB exception can contain generated credentials that
         # were never present in params. Preserve the class for triage without
         # persisting or returning arbitrary exception text or traceback.
-        logger.error("handler for %s failed (%s)", op, type(exc).__name__)
-        audit.record(actor, role, op, params.get("username"), params, "failed", type(exc).__name__)
-        raise RuntimeError("internal operation failure") from None
+        from shared.failures import OperationFailure, describe_failure
+        diagnostic = describe_failure(op, exc)
+        logger.error("operation failure: %s", json.dumps(diagnostic))
+        audit.record(actor, role, op, params.get("username"), params, "failed",
+                     f"{diagnostic['error_type']} (reference: {diagnostic['reference']})")
+        raise OperationFailure(diagnostic) from None
     else:
-        audit.record(actor, role, op, params.get("username"), params, "ok")
+        from shared.token_policy import READ_ONLY_OPERATIONS
+        if op not in READ_ONLY_OPERATIONS:
+            audit.record(actor, role, op, params.get("username"), params, "ok")
         if op in LIFECYCLE_OPS and params.get("username"):
             audit.record_account_event(LIFECYCLE_OPS[op], params["username"], actor=actor, role=role, ip=ip)
         return result
@@ -1034,7 +1050,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     except (ValidationError, ValueError, LookupError) as exc:
         writer.write(encode_response(False, error_code="bad_request", error_message=str(exc)))
     except Exception as exc:  # noqa: BLE001
-        writer.write(encode_response(False, error_code="internal_error", error_message=str(exc)))
+        writer.write(encode_response(False, error_code="internal_error", error_message=str(exc),
+                                     diagnostic=getattr(exc, 'diagnostic', None)))
     finally:
         await writer.drain()
         writer.close()

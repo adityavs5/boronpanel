@@ -313,12 +313,15 @@ def _resource_summary(account: Account) -> dict:
         mail_domain_ids = list(session.scalars(select(MailDomain.id).where(MailDomain.account_id == account.id)).all())
         email_count = session.scalar(select(func.count()).select_from(MailUser).where(MailUser.mail_domain_id.in_(mail_domain_ids))) if mail_domain_ids else 0
     counters = _cgroup_counters(account.username)
+    from daemon.resource_manager import effective_for_account
+    with write_session() as session:
+        effective = effective_for_account(session, account)["values"]
     return {
         **counters,
-        "cpu_limit_cores": account.cpu_pct / 100,
-        "memory_limit_bytes": account.mem_mb * 1024 * 1024,
-        "io_limit_bytes_per_second": account.io_mb * 1024 * 1024,
-        "process_limit": account.pids_max,
+        "cpu_limit_cores": effective["cpu_cores"],
+        "memory_limit_bytes": effective["memory_max_mb"] * 1024 * 1024 if effective["memory_max_mb"] is not None else None,
+        "io_limit_bytes_per_second": effective["io_read_bps"],
+        "process_limit": effective["nproc"],
         "domain_count": domain_count,
         "subdomain_count": subdomain_count,
         "database_count": database_count,
@@ -457,7 +460,8 @@ def get_bandwidth_ranking(period: str) -> dict:
         rows = session.scalars(select(BandwidthDaily).where(BandwidthDaily.date >= cutoff)).all()
         account_ids = {r.account_id for r in rows}
         accounts_by_id = (
-            {a.id: a.username for a in session.scalars(select(Account).where(Account.id.in_(account_ids))).all()}
+            {a.id: a.username for a in session.scalars(select(Account).where(
+                Account.id.in_(account_ids), Account.status.in_(("active", "suspended")))).all()}
             if account_ids
             else {}
         )
@@ -470,6 +474,7 @@ def get_bandwidth_ranking(period: str) -> dict:
         (
             {"username": accounts_by_id.get(account_id, f"#{account_id}"), "bytes_served": total}
             for account_id, total in totals.items()
+            if account_id in accounts_by_id
         ),
         key=lambda entry: entry["bytes_served"],
         reverse=True,

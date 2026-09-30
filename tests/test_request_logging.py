@@ -181,3 +181,34 @@ def test_middleware_logs_a_real_request(log_dir, isolated_db):
     assert r.status_code == 200
     lines = _read_lines(logsetup.access_log_path(str(log_dir)))
     assert any(line["path"] == "/healthz" and line["status"] == 200 for line in lines)
+
+
+def test_unhandled_api_failure_has_safe_reference_and_diagnostics(log_dir, isolated_db):
+    import asyncio
+    from starlette.requests import Request
+    from api.main import _access_log
+    request=Request({'type':'http','method':'POST','path':'/api/v1/test-operation',
+                     'headers':[], 'scheme':'https','server':('testserver',443),'client':('203.0.113.5',1234)})
+    async def fail(_):
+        raise RuntimeError('secret password=never-include-this-token')
+    response=asyncio.run(_access_log(request,fail))
+    assert response.status_code==500
+    reference=response.headers['x-boron-error-reference']
+    assert len(reference)==16
+    assert reference.encode() in response.body
+    assert b'never-include' not in response.body
+    errors=_read_lines(logsetup.error_log_path(str(log_dir)))
+    diagnostic=next(row for row in errors if row.get('reference')==reference)
+    assert diagnostic['error_type']=='RuntimeError'
+    assert 'never-include' not in json.dumps(errors)
+
+
+def test_subprocess_diagnostics_preserve_exit_status_without_output():
+    from daemon.procutil import CommandFailure
+    from shared.failures import describe_failure
+    try:
+        raise CommandFailure('private database output',17)
+    except CommandFailure as exc:
+        diagnostic=describe_failure('database.test',exc)
+    assert diagnostic['returncode']==17
+    assert 'private' not in json.dumps(diagnostic)

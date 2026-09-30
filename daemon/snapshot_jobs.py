@@ -198,6 +198,7 @@ def create_destination(params):
         connection={'provider':'google_drive','oauth_connected':False}
     elif kind == 'local':
         connection={};path=params.get('path','')
+        storage.validate_local_destination(path)
     else:
         raise ValidationError('Choose local, SSH, SFTP, Amazon S3, Backblaze B2, S3-compatible, or Google Drive storage')
     capabilities={'incremental':kind!='drive','full':kind!='drive','compressed':True,'archive':True}
@@ -912,7 +913,10 @@ def sources(account, options):
     if 'files' in options['components']:
         for value in options['include_paths'] or ['.']:
             selected=home/value
-            if not selected.exists() or not selected.resolve().is_relative_to(home):raise ValidationError('Selected backup path is missing or outside the account home')
+            if not selected.resolve().is_relative_to(home):
+                raise ValidationError('Selected backup path is outside the account home')
+            if not selected.exists():
+                raise ValidationError(f'Selected backup path does not exist: {value}. Create it or choose the entire account home.')
             paths.append(str(selected))
     stage=private_directory('sources',f'account-{account.id}')
     # Reuse the staging path between snapshots, but never retain removed database dumps.
@@ -1105,13 +1109,34 @@ def retained_snapshot_ids(items,options,protected=()):
     return keep
 
 
+@contextmanager
+def _run_account_guard(account_id, finalize):
+    # Re-enable paused websites before permitting another account mutation.
+    with lock(f'account-{account_id}'):
+        try:
+            yield
+        finally:
+            finalize()
+
+
+def _finalize_run_sources(ident, account, quiesced):
+    try:
+        if quiesced:
+            from daemon import handlers_maintenance
+            handlers_maintenance.restore_quiesced_account(account, quiesced)
+    finally:
+        export=Path(settings.snapshot_private_dir)/'exports'/f'run-{ident}'
+        if export.exists() and not export.is_symlink():
+            shutil.rmtree(export, ignore_errors=True)
+
+
 def execute_run(ident):
     row=_row(SnapshotRun,ident)
     account_id=row.account_id
     account=None
     should_notify=False;quiesced=[]
     try:
-        with lock(f'account-{account_id}'),lock(f'repository-{row.destination_id}'):
+        with _run_account_guard(account_id, lambda: _finalize_run_sources(ident, account, quiesced)),lock(f'repository-{row.destination_id}'):
             # A second worker must not execute the same persisted run again.
             row=_row(SnapshotRun,ident)
             if row.status!='pending':return
@@ -1179,18 +1204,11 @@ def execute_run(ident):
             from daemon.snapshot_restores import apply_safety_retention
             apply_safety_retention(repo, account.id, row.destination_id, row.policy_id,
                                    row.options.get('pre_restore_retention',row.options['retention_count']))
-            _update(ident,status='completed',progress_message='Snapshot ready',completed_at=utcnow())
+        _update(ident,status='completed',progress_message='Snapshot ready',completed_at=utcnow())
     except Exception as exc:
         logger.exception('Snapshot run %s failed',ident)
         _update(ident,status='failed',error=str(exc)[-3000:],progress_message='Backup failed',completed_at=utcnow())
     finally:
-        if quiesced:
-            try:
-                from daemon import handlers_maintenance
-                handlers_maintenance.restore_quiesced_account(account,quiesced)
-            except Exception:logger.exception('Could not restore website availability after snapshot run %s',ident)
-        export=Path(settings.snapshot_private_dir)/'exports'/f'run-{ident}'
-        if export.exists() and not export.is_symlink():shutil.rmtree(export,ignore_errors=True)
         if should_notify and account is not None:_notify(_row(SnapshotRun,ident),account)
 
 

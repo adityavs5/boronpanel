@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Save, Pencil, Globe, Mail, KeyRound, AlertTriangle } from 'lucide-react'
@@ -18,7 +18,7 @@ export default function AccountIdentity({ username, account }) {
       <RenameCard username={username} account={account} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <PrimaryDomainCard username={username} account={account} />
-        <ContactEmailCard username={username} />
+        <ContactEmailCard username={username} account={account} />
       </div>
       <PasswordsCard username={username} />
     </div>
@@ -36,7 +36,7 @@ function RenameCard({ username, account }) {
       setConfirm(false)
       navigate(`/accounts/${res.new_username}`, { replace: true })
     },
-    onError: (e) => { toast.error('Rename failed (rolled back)', e.message); setConfirm(false) },
+    onError: (e) => { toast.error('Could not rename account', e.message); setConfirm(false) },
   })
   const canRename = ['active', 'suspended'].includes(account.status)
 
@@ -65,7 +65,7 @@ function RenameCard({ username, account }) {
         open={confirm}
         onOpenChange={setConfirm}
         title={`Rename ${username} → ${value.trim()}?`}
-        description="This changes the account username everywhere. Existing customer sessions and the old username stop working."
+        description="This changes the account username everywhere. Existing customer and SSH sessions close. Websites and scheduled tasks pause briefly, then resume with the new username. Accounts with Node.js/Python apps, FTP subaccounts or Redis require those dependencies to be removed first. Existing database names are retained."
         confirmLabel="Rename account"
         variant="warning"
         loading={mut.isPending}
@@ -103,11 +103,13 @@ function PrimaryDomainCard({ username, account }) {
   )
 }
 
-function ContactEmailCard({ username }) {
-  const [value, setValue] = useState('')
+function ContactEmailCard({ username, account }) {
+  const qc = useQueryClient()
+  const [value, setValue] = useState(account.email || '')
+  useEffect(() => { setValue(account.email || '') }, [account.email])
   const mut = useMutation({
     mutationFn: () => patch(`/api/v1/admin/accounts/${username}/identity`, { contact_email: value.trim() }),
-    onSuccess: () => toast.success('Contact email updated'),
+    onSuccess: () => { toast.success('Contact email updated'); qc.invalidateQueries({ queryKey: ['account', username] }); qc.invalidateQueries({ queryKey: ['accounts'] }) },
     onError: (e) => toast.error('Failed', e.message),
   })
   return (
@@ -127,7 +129,7 @@ function ContactEmailCard({ username }) {
 }
 
 const PW_KINDS = [
-  { value: 'account', label: 'Account (FTP/SSH)', fields: [] },
+  { value: 'account', label: 'Account (panel / FTP / SSH)', fields: [] },
   { value: 'panel', label: 'Panel login', fields: [] },
   { value: 'mailbox', label: 'Mailbox', fields: ['domain', 'local_part'] },
   { value: 'database', label: 'Database user', fields: ['name'] },

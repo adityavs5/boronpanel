@@ -11,6 +11,10 @@ import shutil
 import stat
 import sys
 
+# The script path is trusted panel code, never a customer's working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from shared.archive_links import standard_python_venv_link
+
 FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 PROTECTED = {'.php'}
 
@@ -27,7 +31,7 @@ def components(value):
 def valid_link(value, relative, home):
     target = value if value.startswith('/') else str(home / relative.parent / value)
     normalized = os.path.normpath(target)
-    if not Path(normalized).is_relative_to(home):
+    if not Path(normalized).is_relative_to(home) and not standard_python_venv_link(str(relative), value, home):
         raise ValueError(f'Symbolic link escapes the account home: {relative}')
 
 

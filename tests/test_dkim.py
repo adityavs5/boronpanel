@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -128,3 +129,18 @@ def test_setup_dns_signing_does_not_publish_when_signer_fails(dkim_tmp_dir, isol
     assert result["signing_active"] is False
     assert result["dns_published"] is False
     assert published == []
+
+
+def test_signer_can_traverse_key_parent_without_world_access(dkim_tmp_dir, monkeypatch):
+    ownership = []
+    monkeypatch.setattr(dkim, '_opendkim_gid', lambda: 456)
+    monkeypatch.setattr(dkim.pwd, 'getpwnam', lambda username: SimpleNamespace(pw_uid=123))
+    monkeypatch.setattr(dkim.os, 'chown', lambda path, uid, gid: ownership.append((Path(path), uid, gid)))
+    key = dkim.generate_keypair('mail.example')
+    base = Path(settings.dkim_base_dir)
+    assert (base, 0, 456) in ownership
+    assert (key.parent, 0, 456) in ownership
+    assert (key, 123, 456) in ownership
+    assert base.stat().st_mode & 0o777 == 0o750
+    assert key.parent.stat().st_mode & 0o777 == 0o750
+    assert key.stat().st_mode & 0o777 == 0o600

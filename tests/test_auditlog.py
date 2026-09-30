@@ -174,3 +174,16 @@ def test_csv_stream_pages_without_duplicates_and_preserves_quoting(isolated_db):
     assert len(rows) == len({row['id'] for row in rows}) == 501
     assert all(row['target'] == "'=1+1" and row['detail'] == 'line one,\nline two' for row in rows)
     assert response.headers['cache-control'] == 'no-store'
+
+
+def test_error_alias_and_historical_read_visibility(isolated_db):
+    _seed(isolated_db)
+    with write_session() as db:
+        db.add(AuditLog(actor='admin1',role='admin',op='bandwidth.ranking',target='',params={},result='ok',detail=''))
+        db.add(AuditLog(actor='admin1',role='admin',op='bandwidth.ranking',target='',params={},result='failed',detail='failed read'))
+    rows,total=auditlog._query_rows('', '', '', '', '', 1, 50)
+    assert total == 5
+    assert not any(row.op=='bandwidth.ranking' and row.result=='ok' for row in rows)
+    assert auditlog._query_rows('', '', '', '', '', 1, 50, include_reads=True)[1] == 6
+    errors,total=auditlog._query_rows('', '', 'error', '', '', 1, 50)
+    assert total==2 and all(row.result=='failed' for row in errors)

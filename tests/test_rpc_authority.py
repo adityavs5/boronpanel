@@ -420,3 +420,47 @@ def test_all_account_policies_reject_missing_foreign_and_mismatched_targets(isol
                        {'username': 'bob', 'domain': 'alice.example'}):
             with pytest.raises(AuthorizationError):
                 authorize(operation, target, principal)
+
+
+def test_read_only_token_cannot_mutate_even_when_calling_root_rpc(isolated_db, monkeypatch):
+    token = handlers_auth.create_api_token({"label": "monitor", "role": "admin", "scope": "read-only", "expires_in_days": 1})
+    proof = {"type": "token", "value": token["token"]}
+    monkeypatch.setitem(server.OP_TABLE, "account.list", lambda _: {"accounts": []})
+    assert asyncio.run(server.dispatch("account.list", {}, proof)) == {"accounts": []}
+    invoked = []
+    monkeypatch.setitem(server.OP_TABLE, "account.create", lambda _: invoked.append(True))
+    with pytest.raises(AuthorizationError):
+        asyncio.run(server.dispatch("account.create", {"username": "forbidden"}, proof))
+    assert invoked == []
+    with write_session() as db:
+        row = db.get(ApiToken, token["id"])
+        row.expires_at = utcnow() - dt.timedelta(seconds=1)
+    with pytest.raises(AuthenticationError):
+        asyncio.run(server.dispatch("account.list", {}, proof))
+
+
+def test_customer_token_requires_active_account_and_cannot_cross_scope(isolated_db, monkeypatch):
+    from shared.validation import ValidationError
+    _setup_users()
+    with pytest.raises(ValidationError, match="active hosting account"):
+        handlers_auth.create_api_token({"label": "bad", "role": "customer"})
+    with write_session() as db:
+        alice = db.scalar(select(Account).where(Account.username == "alice"))
+        account_id = alice.id
+    token = handlers_auth.create_api_token({"label": "alice", "role": "customer", "account_id": account_id, "scope": "read-only"})
+    proof = {"type": "token", "value": token["token"]}
+    monkeypatch.setitem(server.OP_TABLE, "account.get", lambda params: {"username": params["username"]})
+    assert asyncio.run(server.dispatch("account.get", {"username": "alice"}, proof))["username"] == "alice"
+    with pytest.raises(AuthorizationError):
+        asyncio.run(server.dispatch("account.get", {"username": "bob"}, proof))
+    with write_session() as db:
+        db.get(Account, account_id).status = "suspended"
+    with pytest.raises(AuthenticationError):
+        asyncio.run(server.dispatch("account.get", {"username": "alice"}, proof))
+
+
+def test_administrator_self_guard_uses_verified_actor_not_request_label(isolated_db):
+    admin_session, _ = _setup_users()
+    from shared.validation import ValidationError
+    with pytest.raises(ValidationError,match='own administrator'):
+        asyncio.run(server.dispatch('admin_user.set_status', {'username':'administrator','actor_username':'someoneelse','disabled':True}, _credential(admin_session)))
