@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
-import { Search, CornerDownLeft, Sun, Moon, KeyRound, LogOut } from 'lucide-react'
+import { Search, CornerDownLeft, Sun, Moon, KeyRound, LogOut, Network, ShieldCheck, Globe, Settings } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
@@ -23,6 +23,8 @@ function buildEntries(nav) {
 export function CommandPalette() {
   const open = useUI((s) => s.paletteOpen)
   const setOpen = useUI((s) => s.setPaletteOpen)
+  const setMobileNavOpen = useUI(s => s.setMobileNavOpen)
+  const openerRef = useRef(null)
   const theme = useUI((s) => s.theme)
   const toggleTheme = useUI((s) => s.toggleTheme)
   const role = useAuth((s) => s.role)
@@ -32,6 +34,20 @@ export function CommandPalette() {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
   const listRef = useRef(null)
+  useEffect(() => {
+    function shortcut(event) {
+      const editable = event.target instanceof Element && event.target.closest('input,textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"]')
+      if ((event.key.toLowerCase() === 'k' && (event.ctrlKey || event.metaKey)) || (event.key === '/' && !event.altKey && !event.metaKey && (!editable || event.ctrlKey))) {
+        if (event.key === '/' && event.shiftKey) return
+        event.preventDefault()
+        openerRef.current = event.target instanceof Element && event.target.closest('.inner-drawer') ? document.querySelector('.inner-menu-button') : document.activeElement
+        setMobileNavOpen(false)
+        setOpen(true)
+      }
+    }
+    window.addEventListener('keydown', shortcut)
+    return () => window.removeEventListener('keydown', shortcut)
+  }, [setOpen, setMobileNavOpen])
 
   const entries = useMemo(() => {
     const pages = buildEntries(role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav)
@@ -43,7 +59,13 @@ export function CommandPalette() {
       { type: 'action', section: 'Actions', label: 'Change password', icon: KeyRound, run: () => navigate('/change-password') },
       { type: 'action', section: 'Actions', label: 'Log out', icon: LogOut, run: async () => { await logout(); navigate('/login') } },
     ]
-    return [...pages, ...actions]
+    const settings = role === 'admin' ? [
+      { label:'Panel access ports', to:'/panel-settings?section=access', icon:Network, keywords:'admin customer port listener 2222' },
+      { label:'Panel hostname', to:'/panel-settings?section=hostname', icon:Globe, keywords:'panel url domain address' },
+      { label:'Panel SSL', to:'/panel-settings?section=hostname', icon:ShieldCheck, keywords:'panel certificate renew lets encrypt tls' },
+      { label:'Error telemetry', to:'/panel-settings?section=telemetry', icon:Settings, keywords:'sentry logging diagnostics reporting' },
+    ].map(item=>({...item,type:'page',section:'Settings'})) : []
+    return [...pages, ...settings, ...actions]
   }, [role, theme, toggleTheme, logout, navigate])
 
   const results = useMemo(() => {
@@ -91,13 +113,20 @@ export function CommandPalette() {
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-fade-in" />
         <DialogPrimitive.Content
           className="fixed left-1/2 top-[12vh] z-50 w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 overflow-hidden rounded-card border border-border bg-card shadow-dropdown focus:outline-none data-[state=open]:animate-scale-in"
+          onOpenAutoFocus={() => { if (!openerRef.current) openerRef.current = document.activeElement }}
+          onCloseAutoFocus={event => { if (openerRef.current) { event.preventDefault(); const target = openerRef.current.isConnected ? openerRef.current : document.querySelector('#panel-main'); target?.focus(); openerRef.current = null } }}
           onKeyDown={onKeyDown}
         >
           <DialogPrimitive.Title className="sr-only">Search the panel</DialogPrimitive.Title>
+          <DialogPrimitive.Description className="sr-only">Find tools and settings. Use arrow keys and Enter to open a result.</DialogPrimitive.Description>
           <div className="flex items-center gap-2.5 border-b border-border px-4">
             <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
             <input
-              autoFocus
+              role="combobox"
+              aria-label="Search tools and settings"
+              aria-expanded="true"
+              aria-controls="global-search-results"
+              aria-activedescendant={results[selected] ? `global-result-${selected}` : undefined}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Go to page or action…"
@@ -105,7 +134,7 @@ export function CommandPalette() {
             />
             <kbd className="rounded border border-border px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">esc</kbd>
           </div>
-          <div ref={listRef} className="max-h-[50vh] overflow-y-auto p-2">
+          <div id="global-search-results" role="listbox" aria-label="Matching tools and settings" ref={listRef} className="max-h-[50vh] overflow-y-auto p-2">
             {results.length === 0 && (
               <div className="px-3 py-8 text-center text-sm text-muted-foreground">
                 Nothing matches "{query}". Try a page name like "domains".
@@ -122,6 +151,10 @@ export function CommandPalette() {
                   )}
                   <button
                     type="button"
+                    role="option"
+                    tabIndex={-1}
+                    id={`global-result-${idx}`}
+                    aria-selected={idx === selected}
                     data-idx={idx}
                     onClick={() => run(entry)}
                     onMouseMove={() => setSelected(idx)}
@@ -134,7 +167,6 @@ export function CommandPalette() {
                   >
                     <Icon className={cn('h-4 w-4 shrink-0', idx === selected ? 'text-accent-600 dark:text-accent-300' : 'text-muted-foreground')} />
                     <span className="flex-1 truncate">{entry.label}</span>
-                    {entry.to && <span className="font-mono text-[11px] text-muted-foreground/70">{entry.to}</span>}
                     {idx === selected && <CornerDownLeft className="h-3.5 w-3.5 shrink-0 opacity-60" />}
                   </button>
                 </div>

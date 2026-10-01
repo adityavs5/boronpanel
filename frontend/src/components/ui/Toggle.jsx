@@ -1,7 +1,8 @@
 import { forwardRef } from 'react'
 import * as SwitchPrimitive from '@radix-ui/react-switch'
 import * as CheckboxPrimitive from '@radix-ui/react-checkbox'
-import { Check } from 'lucide-react'
+import * as RadioPrimitive from '@radix-ui/react-radio-group'
+import { Check, Minus } from 'lucide-react'
 import { cn } from '@/lib/cn'
 
 export const Switch = forwardRef(function Switch({ className, ...props }, ref) {
@@ -30,8 +31,12 @@ export const Checkbox = forwardRef(function Checkbox({ className, ...props }, re
       {...props}
     >
       <CheckboxPrimitive.Indicator className="flex items-center justify-center text-current">
-        <Check className="h-3 w-3" strokeWidth={3} />
+        {props.checked === 'indeterminate' ? <Minus className="h-3 w-3"/> : <Check className="h-3 w-3" strokeWidth={3}/>}
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
   )
 })
+
+// Shared accessible radio controls; native form values and keyboard behavior are supplied by Radix.
+export const RadioGroup = RadioPrimitive.Root
+export const Radio = forwardRef(function Radio({className,...props},ref){return <RadioPrimitive.Item ref={ref} className={cn('tool-radio',className)} {...props}><RadioPrimitive.Indicator className="tool-radio-dot"/></RadioPrimitive.Item>})

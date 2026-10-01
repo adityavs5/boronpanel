@@ -1,9 +1,13 @@
 import * as DM from '@radix-ui/react-dropdown-menu'
 import { cn } from '@/lib/cn'
+import { Check } from 'lucide-react'
 
 export const DropdownMenu = DM.Root
 export const DropdownMenuTrigger = DM.Trigger
 export const DropdownMenuGroup = DM.Group
+export function DropdownMenuCheckboxItem({ className, children, ...props }) {
+  return <DM.CheckboxItem className={cn('relative flex cursor-pointer select-none items-center gap-2 rounded-btn px-2.5 py-2 text-sm text-foreground outline-none focus:bg-muted', className)} {...props}><span className="inline-flex h-4 w-4 items-center justify-center" aria-hidden="true"><DM.ItemIndicator><Check className="h-4 w-4"/></DM.ItemIndicator></span>{children}</DM.CheckboxItem>
+}
 
 export function DropdownMenuContent({ className, align = 'end', sideOffset = 6, ...props }) {
   return (

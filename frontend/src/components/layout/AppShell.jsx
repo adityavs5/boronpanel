@@ -1,10 +1,13 @@
-import { Suspense, useEffect } from 'react'
-import { Outlet } from 'react-router-dom'
+import { Suspense, useEffect, useLayoutEffect } from 'react'
+import { Outlet, useLocation } from 'react-router-dom'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Topbar, PageNavigation } from './Topbar'
 import { MobileBottomNav } from './MobileBottomNav'
 import { ImpersonationBanner } from './ImpersonationBanner'
 import { useAuth } from '@/store/auth'
+import { Sidebar } from './Sidebar'
+import { MobileNavDrawer } from './MobileNavDrawer'
+import { CommandPalette } from './CommandPalette'
 
 // Shown while a code-split page chunk loads (usually <100ms on repeat visits).
 function PageFallback() {
@@ -23,32 +26,42 @@ function PageFallback() {
   )
 }
 
-// The authenticated app frame: iron sidebar (md+), topbar, scrollable content,
-// a mobile bottom nav below 768px, and the Ctrl/Cmd+K command palette.
+// Inner tools have role-aware navigation; dashboard bodies keep their existing layout.
+// Search is available throughout the authenticated app.
 export function AppShell() {
   const syncIdentity = useAuth((s) => s.syncIdentity)
+  const { pathname } = useLocation()
+  const inner = !['/overview', '/dashboard', '/reseller'].includes(pathname)
+  useLayoutEffect(() => {
+    document.documentElement.dataset.innerPage = String(inner)
+    return () => { delete document.documentElement.dataset.innerPage }
+  }, [inner])
 
   // Reconcile identity with the server session on mount so a hard refresh
   // restores the correct role and the impersonation banner (Phase 8 f1).
   useEffect(() => { syncIdentity() }, [syncIdentity])
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className={`flex h-full flex-col overflow-hidden ${inner ? 'inner-shell' : 'dashboard-shell'}`}>
       <ImpersonationBanner />
-      <Topbar />
+      <Topbar inner={inner} />
       <div className="flex min-h-0 flex-1 overflow-hidden">
+        {inner && <div className="persistent-navigation"><Sidebar /></div>}
         <div className="flex min-w-0 flex-1 flex-col">
           <PageNavigation />
-          <main className="flex-1 overflow-y-auto bg-background">
+          <main id="panel-main" className="min-w-0 flex-1 overflow-y-auto bg-background" tabIndex={-1}>
             <div className="panel-content">
               <Suspense fallback={<PageFallback />}>
                 <Outlet />
               </Suspense>
             </div>
           </main>
+          {inner && <div id="panel-save-region" />}
         </div>
         <MobileBottomNav />
       </div>
+      {inner && <MobileNavDrawer />}
+      <CommandPalette />
     </div>
   )
 }

@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog, FolderOpen, Layers, Ban } from 'lucide-react'
+import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog, FolderOpen, Layers, Ban, ChevronDown, Users } from 'lucide-react'
 import { get, post, put, patch, del, impersonate as apiImpersonate } from '@/lib/api'
-import { formatMB } from '@/lib/utils'
+import { formatMB, formatBytes } from '@/lib/utils'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { PHP_VERSIONS } from '@/config/constants'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -11,7 +11,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Input, FormField } from '@/components/ui/Input'
-import { Select } from '@/components/ui/Select'
+import { StyledSelect as Select } from '@/components/ui/StyledSelect'
+import { SettingRow } from '@/components/ui/SettingRow'
+import { DraftChanges, useDraftSection } from '@/components/ui/DraftChanges'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/DropdownMenu'
 import { Switch } from '@/components/ui/Toggle'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import { ConfirmDialog } from '@/components/ui/Dialog'
@@ -42,9 +45,11 @@ const ACCOUNT_TABS = [
   ['php-functions', 'PHP Functions'],
   ['processes', 'Processes'],
   ['notes', 'Notes'],
+  ['security', 'Security'],
+  ['advanced', 'Advanced'],
 ]
 
-function AdminActions({ username, account }) {
+function AdminActions({ username, account, danger = false }) {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [confirm, setConfirm] = useState(null) // 'terminate' | null
@@ -75,7 +80,7 @@ function AdminActions({ username, account }) {
 
   return (
     <div className="flex flex-wrap gap-2">
-      {account.status === 'active' && (
+      {!danger && account.status === 'active' && (
         <Button variant="secondary" size="sm" loading={impersonateMut.isPending} onClick={() => impersonateMut.mutate()}>
           <UserCog className="h-4 w-4" /> Login as user
         </Button>
@@ -84,7 +89,7 @@ function AdminActions({ username, account }) {
           authorizes this admin for the account, audits the access, and opens
           FileBrowser Quantum scoped to the account's home — in its own tab
           so the admin panel stays open. */}
-      {account.status === 'active' && (
+      {!danger && account.status === 'active' && (
         <Button
           variant="secondary"
           size="sm"
@@ -93,22 +98,22 @@ function AdminActions({ username, account }) {
           <FolderOpen className="h-4 w-4" /> File Manager
         </Button>
       )}
-      {account.status === 'active' && (
+      {danger && account.status === 'active' && (
         <Button variant="warning" size="sm" loading={suspendMut.isPending} onClick={() => setConfirm('suspend')}>
           <Pause className="h-4 w-4" /> Suspend
         </Button>
       )}
-      {account.status === 'suspended' && (
+      {danger && account.status === 'suspended' && (
         <Button variant="success" size="sm" loading={unsuspendMut.isPending} onClick={() => setConfirm('unsuspend')}>
           <Play className="h-4 w-4" /> Unsuspend
         </Button>
       )}
-      {['active', 'suspended', 'error'].includes(account.status) && (
+      {danger && ['active', 'suspended', 'error'].includes(account.status) && (
         <Button variant="danger" size="sm" onClick={() => setConfirm('terminate')}>
           <Trash2 className="h-4 w-4" /> Terminate
         </Button>
       )}
-      <ConfirmDialog open={confirm === 'suspend' || confirm === 'unsuspend'} onOpenChange={open => !open && setConfirm(null)} title={`${confirm === 'suspend' ? 'Suspend' : 'Unsuspend'} ${username}?`} description={confirm === 'suspend' ? 'Hosting and customer access will be paused. Account files are retained.' : 'Hosting and customer access will resume.'} confirmLabel={confirm === 'suspend' ? 'Suspend account' : 'Unsuspend account'} loading={suspendMut.isPending || unsuspendMut.isPending} onConfirm={() => { (confirm === 'suspend' ? suspendMut : unsuspendMut).mutate(undefined, { onSuccess: () => setConfirm(null) }) }} />
+      <ConfirmDialog open={confirm === 'suspend' || confirm === 'unsuspend'} onOpenChange={open => !open && setConfirm(null)} title={`${confirm === 'suspend' ? 'Suspend' : 'Unsuspend'} ${username}?`} description={confirm === 'suspend' ? 'Hosting and customer access will be paused. Account files are retained.' : 'Hosting and customer access will resume.'} confirmationText={username} confirmLabel={confirm === 'suspend' ? 'Suspend account' : 'Unsuspend account'} loading={suspendMut.isPending || unsuspendMut.isPending} onConfirm={() => { (confirm === 'suspend' ? suspendMut : unsuspendMut).mutate(undefined, { onSuccess: () => setConfirm(null) }) }} />
       <ConfirmDialog
         open={confirm === 'terminate'}
         onOpenChange={(o) => !o && setConfirm(null)}
@@ -126,6 +131,7 @@ function AdminActions({ username, account }) {
 function PhpAndLimits({ username, account }) {
   const qc = useQueryClient()
   const [phpVersion, setPhpVersion] = useState(account.php_version)
+  const [touchedLimits,setTouchedLimits] = useState({})
   const [limits, setLimits] = useState({
     cpu_cores: account.cpu_cores ?? account.cpu_pct / 100, memory_gb: account.mem_mb / 1024, io_mb: account.io_mb, pids_max: account.pids_max,
   })
@@ -135,18 +141,23 @@ function PhpAndLimits({ username, account }) {
   const phpMut = useMutation({
     mutationFn: () => patch(`/api/v1/accounts/${username}/php-version`, { php_version: phpVersion }),
     onSuccess: () => { toast.success('PHP version updated'); invalidate() },
-    onError: (e) => toast.error('Failed', e.message),
+    onError: (e) => toast.error('Could not change PHP version', e.message),
   })
   const limitsMut = useMutation({
     mutationFn: () => patch(`/api/v1/accounts/${username}/limits`, {
       cpu_pct: Math.round(Number(limits.cpu_cores) * 100), mem_mb: Math.round(Number(limits.memory_gb) * 1024), io_mb: Number(limits.io_mb), pids_max: Number(limits.pids_max),
     }),
     onSuccess: () => { toast.success('Limits updated'); invalidate() },
-    onError: (e) => toast.error('Failed', e.message),
+    onError: (e) => toast.error('Could not update resource limits', e.message),
   })
 
+  const originalLimits = {cpu_cores:account.cpu_cores ?? account.cpu_pct/100,memory_gb:account.mem_mb/1024,io_mb:account.io_mb,pids_max:account.pids_max}
+  const limitsValid = Number.isInteger(Number(limits.pids_max)) && Number(limits.cpu_cores)>=0.01 && Number(limits.cpu_cores)<=(account.host_cpu_cores??Infinity) && Number(limits.memory_gb)>=0.0625 && Number(limits.memory_gb)<=64 && Number(limits.io_mb)>=1 && Number(limits.pids_max)>=10
+  useDraftSection('account-php',{dirty:phpVersion!==account.php_version,busy:phpMut.isPending,label:'PHP version',onSave:()=>phpMut.mutateAsync(),onDiscard:()=>setPhpVersion(account.php_version)})
+  useDraftSection('account-limits',{dirty:Object.keys(originalLimits).some(key=>Number(limits[key])!==Number(originalLimits[key])),busy:limitsMut.isPending,disabled:!limitsValid,label:'Resource limits',onSave:()=>limitsMut.mutateAsync(),onDiscard:()=>setLimits(originalLimits)})
+
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+    <div className="account-php-limits grid grid-cols-1 gap-4 lg:grid-cols-2">
       <Card>
         <CardHeader><CardTitle>PHP version</CardTitle></CardHeader>
         <CardContent className="flex items-end gap-3">
@@ -155,22 +166,22 @@ function PhpAndLimits({ username, account }) {
               {PHP_VERSIONS.map((v) => <option key={v} value={v}>PHP {v}</option>)}
             </Select>
           </FormField>
-          <Button loading={phpMut.isPending} onClick={() => phpMut.mutate()}>Switch</Button>
+          <Button loading={phpMut.isPending} onClick={() => phpMut.mutate()}>Switch</Button>{phpMut.isPending&&<p role="status" className="setting-row-description">Changing PHP version…</p>}
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader><CardTitle>Resource limits</CardTitle></CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <FormField label="CPU cores" hint={`Maximum ${account.host_cpu_cores ?? 'server'} cores available.`}><Input type="number" min="0.01" max={account.host_cpu_cores} step="0.01" value={limits.cpu_cores} onChange={(e) => setLimits((l) => ({ ...l, cpu_cores: e.target.value }))} /></FormField>
-            <FormField label="Memory (GB)" hint={`Server RAM: ${account.host_memory_gb?.toFixed(1) ?? "…"} GB. Allocations can overcommit shared RAM.`}><Input type="number" min="0.0625" step="0.0625" value={limits.memory_gb} onChange={(e) => setLimits((l) => ({ ...l, memory_gb: e.target.value }))} /></FormField>
-            <FormField label="Disk IO (MB/s)"><Input type="number" min="1" value={limits.io_mb} onChange={(e) => setLimits((l) => ({ ...l, io_mb: e.target.value }))} /></FormField>
-            <FormField label="Max processes"><Input type="number" min="10" value={limits.pids_max} onChange={(e) => setLimits((l) => ({ ...l, pids_max: e.target.value }))} /></FormField>
+          <div className="account-limit-rows">
+            <SettingRow label="CPU cores" error={touchedLimits.cpu_cores&&!(Number(limits.cpu_cores)>=0.01&&Number(limits.cpu_cores)<=(account.host_cpu_cores??Infinity))?`Enter a core count from 0.01 to ${account.host_cpu_cores??'the server maximum'}.`:null} description={`Maximum ${account.host_cpu_cores ?? 'server'} cores available.`}><Input aria-label="CPU cores" type="number" min="0.01" max={account.host_cpu_cores} step="0.01" value={limits.cpu_cores} onBlur={()=>setTouchedLimits(t=>({...t,cpu_cores:true}))} onChange={e=>setLimits(l=>({...l,cpu_cores:e.target.value}))}/></SettingRow>
+            <SettingRow label="Memory (GB)" error={touchedLimits.memory_gb&&!(Number(limits.memory_gb)>=0.0625&&Number(limits.memory_gb)<=64)?'Memory must be between 0.0625 and 64 GB.':null} description={`Server RAM: ${account.host_memory_gb?.toFixed(1) ?? '…'} GB. Allocations can overcommit shared RAM.`}><Input aria-label="Memory (GB)" type="number" min="0.0625" step="0.0625" value={limits.memory_gb} onBlur={()=>setTouchedLimits(t=>({...t,memory_gb:true}))} onChange={e=>setLimits(l=>({...l,memory_gb:e.target.value}))}/></SettingRow>
+            <SettingRow label="Disk IO (MB/s)" error={touchedLimits.io_mb&&!(Number(limits.io_mb)>=1)?'Enter an IO limit of at least 1 MB/s.':null}><Input aria-label="Disk IO (MB/s)" type="number" min="1" value={limits.io_mb} onBlur={()=>setTouchedLimits(t=>({...t,io_mb:true}))} onChange={e=>setLimits(l=>({...l,io_mb:e.target.value}))}/></SettingRow>
+            <SettingRow label="Max processes" error={touchedLimits.pids_max&&!(Number.isInteger(Number(limits.pids_max))&&Number(limits.pids_max)>=10)?'Enter a whole process count of at least 10.':null}><Input aria-label="Max processes" type="number" min="10" value={limits.pids_max} onBlur={()=>setTouchedLimits(t=>({...t,pids_max:true}))} onChange={e=>setLimits(l=>({...l,pids_max:e.target.value}))}/></SettingRow>
           </div>
           {account.configured_cpu_cores > account.host_cpu_cores && <p className="text-sm text-info">The old allocation was {account.configured_cpu_cores} cores. Effective enforcement is capped at this server's {account.host_cpu_cores} cores; save to reconcile the stored limit.</p>}
           {Number(limits.memory_gb) > account.host_memory_gb && <p className="text-sm text-warning">This allocation exceeds total server RAM. Simultaneous usage by accounts can exhaust memory.</p>}
-          <Button loading={limitsMut.isPending} onClick={() => limitsMut.mutate()}><Save className="h-4 w-4" /> Update limits</Button>
+          <Button loading={limitsMut.isPending} disabled={!limitsValid} onClick={() => limitsMut.mutate()}><Save className="h-4 w-4" /> Update limits</Button>{limitsMut.isPending&&<p role="status" className="setting-row-description">Applying resource limits…</p>}
         </CardContent>
       </Card>
     </div>
@@ -190,12 +201,14 @@ function PlanCard({ username, account }) {
   const applyMut = useMutation({
     mutationFn: (id) => post(`/api/v1/admin/accounts/${username}/apply-plan/${id}`),
     onSuccess: () => {
-      toast.success('Plan applied', 'CPU/RAM/IO/pids, disk quota, usage limits and Redis were all updated.')
+      toast.success('Plan applied', 'CPU/RAM/IO/pids, disk quota, usage limits and Redis were all updated.');setPlanId('')
       qc.invalidateQueries({ queryKey: ['account', username] })
       qc.invalidateQueries({ queryKey: ['usage-limits', username] })
     },
     onError: (e) => toast.error('Could not apply plan', e.message),
   })
+
+  useDraftSection('account-plan',{dirty:!!planId,busy:applyMut.isPending,label:'Plan',onSave:()=>applyMut.mutateAsync(planId),onDiscard:()=>setPlanId('')})
 
   return (
     <Card>
@@ -211,7 +224,7 @@ function PlanCard({ username, account }) {
             {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </Select>
         </FormField>
-        <Button loading={applyMut.isPending} disabled={!planId} onClick={() => applyMut.mutate(planId)}>Apply</Button>
+        <Button loading={applyMut.isPending} disabled={!planId} onClick={() => applyMut.mutate(planId)}>Apply</Button>{applyMut.isPending&&<p role="status" className="setting-row-description">Applying plan settings…</p>}
       </CardContent>
     </Card>
   )
@@ -223,7 +236,7 @@ function NamespaceCard({ username }) {
   const mut = useMutation({
     mutationFn: (enabled) => patch(`/api/v1/accounts/${username}/namespace`, { enabled }),
     onSuccess: () => { toast.success('Namespace updated'); qc.invalidateQueries({ queryKey: ['namespace', username] }) },
-    onError: (e) => toast.error('Failed', e.message),
+    onError: (e) => toast.error('Could not update account isolation', e.message),
   })
   return (
     <Card>
@@ -233,7 +246,7 @@ function NamespaceCard({ username }) {
           <Shield className="h-4 w-4" />
           {data ? (data.enabled ? 'Isolated (private mount namespace)' : data.eligible ? 'Not isolated' : 'Not eligible') : 'Loading…'}
         </div>
-        <Switch checked={!!data?.enabled} onCheckedChange={(v) => mut.mutate(v)} disabled={!data} />
+        <Switch checked={!!data?.enabled} onCheckedChange={(v) => mut.mutate(v)} disabled={!data || mut.isPending} />{mut.isPending&&<span role="status" className="setting-row-description">Updating account isolation…</span>}
       </CardContent>
     </Card>
   )
@@ -248,18 +261,19 @@ const USAGE_LIMIT_FIELDS = [
 
 function UsageLimitsForm({ username, data }) {
   const qc = useQueryClient()
-  const [form, setForm] = useState({
+  const originalForm = {
     bandwidth_limit_gb: data.bandwidth_limit_mb == null ? '' : data.bandwidth_limit_mb / 1024,
     database_limit: data.database_limit ?? '',
     email_account_limit: data.email_account_limit ?? '',
     subdomain_limit: data.subdomain_limit ?? '',
     auto_suspend_at_100: !!data.auto_suspend_at_100,
-  })
+  }
+  const [form, setForm] = useState(originalForm)
 
   const mut = useMutation({
     mutationFn: (body) => patch(`/api/v1/accounts/${username}/usage-limits`, body),
     onSuccess: () => { toast.success('Usage limits updated'); qc.invalidateQueries({ queryKey: ['usage-limits', username] }) },
-    onError: (e) => toast.error('Failed', e.message),
+    onError: (e) => toast.error('Could not save usage limits', e.message),
   })
 
   const save = () => {
@@ -273,8 +287,10 @@ function UsageLimitsForm({ username, data }) {
     }
     if (form.auto_suspend_at_100 !== !!data.auto_suspend_at_100) body.auto_suspend_at_100 = form.auto_suspend_at_100
     if (Object.keys(body).length === 0) { toast.info('No changes to save'); return }
-    mut.mutate(body)
+    return mut.mutateAsync(body)
   }
+  const valid=USAGE_LIMIT_FIELDS.every(f=>form[f.key]===''||(Number.isFinite(Number(form[f.key]))&&Number(form[f.key])>=1&&(f.apiKey||Number.isInteger(Number(form[f.key])))))
+  useDraftSection('account-usage-limits',{dirty:Object.keys(originalForm).some(key=>String(form[key])!==String(originalForm[key])),busy:mut.isPending,disabled:!valid,label:'Usage limits',onSave:save,onDiscard:()=>setForm(originalForm)})
 
   return (
     <div className="space-y-4">
@@ -301,7 +317,7 @@ function UsageLimitsForm({ username, data }) {
           onCheckedChange={(v) => setForm((s) => ({ ...s, auto_suspend_at_100: v }))}
         />
       </div>
-      <Button loading={mut.isPending} onClick={save}><Save className="h-4 w-4" /> Save usage limits</Button>
+      <Button loading={mut.isPending} disabled={!valid} onClick={()=>save()?.catch(()=>{})}><Save className="h-4 w-4" /> Save usage limits</Button>{mut.isPending&&<p role="status" className="setting-row-description">Saving usage limits…</p>}
     </div>
   )
 }
@@ -315,7 +331,7 @@ function UsageLimitsCard() {
   })
 
   return (
-    <Card>
+    <Card className="account-usage-limits">
       <CardHeader>
         <CardTitle className="flex items-center gap-2"><Gauge className="h-4 w-4" /> Usage limits</CardTitle>
       </CardHeader>
@@ -382,6 +398,8 @@ function PhpFunctionsTab({ username }) {
     onError: (e) => toast.error('Could not clear override', e.message),
   })
 
+  useDraftSection('php-functions',{dirty:draft!==null,busy:saveMut.isPending,label:'PHP function override',onSave:()=>saveMut.mutateAsync(draft),onDiscard:()=>setDraft(null)})
+
   if (isLoading) return <CardSkeleton />
   if (error) return <ErrorState error={error} onRetry={refetch} />
 
@@ -441,7 +459,39 @@ function PhpFunctionsTab({ username }) {
   )
 }
 
-export default function AccountDetail() {
+function AccountSummary({username,account}) {
+  const {data:usage,error}=useQuery({queryKey:['usage',username],queryFn:()=>get(`/api/v1/accounts/${username}/usage`),refetchInterval:15000,retry:false})
+  const {data:plans}=useQuery({queryKey:['plans'],queryFn:()=>get('/api/v1/admin/plans'),retry:false})
+  const previous=useRef(null),[cores,setCores]=useState(null)
+  const counters=usage?.resources
+  useEffect(()=>{
+    const last=previous.current
+    if(counters?.sampled_at&&last?.username===username){
+      const seconds=(Date.parse(counters.sampled_at)-Date.parse(last.sampled_at))/1000
+      if(seconds>0&&counters.cpu_usage_usec!=null&&last.cpu_usage_usec!=null)setCores(Math.max(0,counters.cpu_usage_usec-last.cpu_usage_usec)/(seconds*1000000))
+    }
+    previous.current=counters?{...counters,username}:null
+  },[counters?.sampled_at,username])
+  const disk=usage?.current?.disk_total_bytes,diskLimit=account.quota_hard_mb*1048576
+  const bandwidth=usage?.bandwidth_month_to_date_bytes,bandwidthLimit=counters?.bandwidth_limit_bytes
+  const memory=counters?.memory_current_bytes,memoryLimit=counters?.memory_limit_bytes
+  const meters=[
+    {label:'Disk',value:disk==null?'—':formatBytes(disk),pct:diskLimit>0&&disk!=null?disk/diskLimit*100:null},
+    {label:'Bandwidth',value:bandwidth==null?'—':formatBytes(bandwidth),pct:bandwidthLimit&&bandwidth!=null?bandwidth/bandwidthLimit*100:null},
+    {label:'CPU',value:error?'—':cores==null?'Collecting…':`${cores.toFixed(2)} cores`,pct:cores!=null&&counters?.cpu_limit_cores?cores/counters.cpu_limit_cores*100:null},
+    {label:'Memory',value:memory==null?'—':formatBytes(memory),pct:memoryLimit&&memory!=null?memory/memoryLimit*100:null},
+    {label:'Inodes',value:usage?.current?.inode_count?.toLocaleString()??'—',pct:null},
+  ]
+  const plan=(plans?.plans||[]).find(row=>row.id===account.plan_id)
+  return <section className="account-summary" aria-label="Account summary">
+    <PageHeader title={username} description="Hosting account settings and resource usage." icon={Users}><AdminActions username={username} account={account}/></PageHeader>
+    <div className="account-facts"><StatusBadge status={account.status}/><span>Plan: <strong>{plan?.name||account.plan_name||(account.plan_id?'Loading…':'Custom')}</strong></span><span>Primary: <strong>{account.primary_domain||'None'}</strong></span><span>UID <strong>{account.uid}</strong></span><span>PHP <strong>{account.php_version}</strong></span></div>
+    <div className="account-usage">{meters.map(meter=><div className="account-meter" key={meter.label}><div><span>{meter.label}</span><strong>{meter.value}</strong></div>{meter.pct!=null&&<div className="account-meter-track" role="progressbar" aria-label={`${meter.label} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(100,meter.pct))}><span style={{width:`${Math.min(100,Math.max(0,meter.pct))}%`}}/></div>}</div>)}</div>
+    {error&&<p className="setting-row-description" role="status">Usage unavailable. Statistics will retry on the next refresh.</p>}
+  </section>
+}
+
+function AccountDetailContent() {
   const navigate = useNavigate()
   const { username } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -457,7 +507,7 @@ export default function AccountDetail() {
   useEffect(() => { if (account?.status === 'terminated') { toast.info('This account has been terminated'); navigate('/accounts', { replace: true }) } }, [account?.status, navigate])
 
   return (
-    <div>
+    <div className="reference-page">
       <Link to="/accounts" className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft className="h-4 w-4" /> All accounts
       </Link>
@@ -468,44 +518,28 @@ export default function AccountDetail() {
         <ErrorState error={error} onRetry={refetch} />
       ) : account ? (
         <>
-          <PageHeader title={username} description={`uid ${account.uid} · PHP ${account.php_version} · quota ${formatMB(account.quota_hard_mb)}`}>
-            <StatusBadge status={account.status} />
-          </PageHeader>
+          <AccountSummary username={username} account={account} />
 
-          <Tabs value={activeTab} onValueChange={(tab) => setSearchParams((prev) => {
+          <Tabs className="account-tabs" value={activeTab} onValueChange={(tab) => setSearchParams((prev) => {
             const next = new URLSearchParams(prev)
             if (tab === 'overview') next.delete('tab')
             else next.set('tab', tab)
             return next
           })}>
-            <Select
-              value={activeTab}
-              onChange={(event) => setSearchParams((prev) => {
-                const next = new URLSearchParams(prev)
-                if (event.target.value === 'overview') next.delete('tab')
-                else next.set('tab', event.target.value)
-                return next
-              })}
-              aria-label="Account section"
-              className="mb-4 sm:hidden"
-            >
-              {ACCOUNT_TABS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </Select>
-            <TabsList className="hidden sm:flex">
-              {ACCOUNT_TABS.map(([value, label]) => <TabsTrigger key={value} value={value}>{label}</TabsTrigger>)}
+            <TabsList className="account-primary-tabs">
+              {['overview','domains','email','databases','apps','backups','security','advanced'].map(value=><TabsTrigger key={value} value={value}>{ACCOUNT_TABS.find(([key])=>key===value)[1]}</TabsTrigger>)}
+              <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" aria-label="More account sections">More <ChevronDown className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent>{ACCOUNT_TABS.filter(([value])=>['identity','ssl','php-functions','processes','notes'].includes(value)).map(([value,label])=><DropdownMenuItem key={value} onSelect={()=>setSearchParams(prev=>{const next=new URLSearchParams(prev);next.set('tab',value);return next})}>{label}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu>
             </TabsList>
 
-            <TabsContent value="overview" className="space-y-6">
-              <Card>
-                <CardHeader><CardTitle>Account actions</CardTitle></CardHeader>
-                <CardContent><AdminActions username={username} account={account} /></CardContent>
-              </Card>
+            <TabsContent value="overview" className="account-overview">
               <PhpAndLimits username={username} account={account} />
               <PlanCard username={username} account={account} />
               <NamespaceCard username={username} />
               <UsageLimitsCard />
             </TabsContent>
 
+            <TabsContent value="security" className="space-y-4"><NamespaceCard username={username}/><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={()=>setSearchParams({tab:'ssl'})}>SSL</Button><Button variant="secondary" onClick={()=>setSearchParams({tab:'processes'})}>Processes</Button></div></TabsContent>
+            <TabsContent value="advanced" className="space-y-4"><AccountIdentity username={username} account={account}/><div className="flex flex-wrap gap-2">{[['php-functions','PHP Functions'],['notes','Notes']].map(([tab,label])=><Button variant="secondary" key={tab} onClick={()=>setSearchParams({tab})}>{label}</Button>)}</div></TabsContent>
             <TabsContent value="identity"><AccountIdentity username={username} account={account} /></TabsContent>
             <TabsContent value="domains"><Domains /></TabsContent>
             <TabsContent value="databases"><Databases /></TabsContent>
@@ -517,8 +551,11 @@ export default function AccountDetail() {
             <TabsContent value="processes"><Processes embedded /></TabsContent>
             <TabsContent value="notes"><AccountNotes username={username} /></TabsContent>
           </Tabs>
+          <section className="danger-zone" aria-label="Danger zone"><h2>Danger zone</h2><p>Pause hosting or permanently remove {username}. Saved backups should be reviewed before termination.</p><AdminActions username={username} account={account} danger/></section>
         </>
       ) : null}
     </div>
   )
 }
+
+export default function AccountDetail(){return <DraftChanges><AccountDetailContent/></DraftChanges>}

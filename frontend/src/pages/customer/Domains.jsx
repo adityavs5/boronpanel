@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Globe, Plus, Trash2, Settings, MoreHorizontal, Copy, PauseCircle, PlayCircle, RefreshCw, Network, FolderTree } from 'lucide-react'
@@ -14,7 +14,9 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Input, FormField } from '@/components/ui/Input'
-import { Select } from '@/components/ui/Select'
+import { StyledSelect as Select } from '@/components/ui/StyledSelect'
+import { Checkbox, RadioGroup, Radio } from '@/components/ui/Toggle'
+import { LongValue } from '@/components/ui/LongValue'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter,
   ConfirmDialog,
@@ -25,7 +27,6 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { toast } from '@/components/ui/Toast'
 
-const KIND_VARIANT = { primary: 'accent', addon: 'neutral', subdomain: 'info', parked: 'warning' }
 
 // Phase 8 feature 3: parked (alias) domains — serve the same docroot as a target.
 function ParkedDomainsCard({ username, domains }) {
@@ -56,15 +57,13 @@ function ParkedDomainsCard({ username, domains }) {
 
   const targetable = (domains || []).filter((d) => d.kind !== 'parked')
   const columns = [
-    { key: 'parked_domain', header: 'Parked domain', searchable: true, render: (r) => <span className="font-medium text-foreground">{r.parked_domain}</span> },
-    { key: 'target_domain', header: 'Serves', render: (r) => <span className="font-mono text-xs text-muted-foreground">{r.target_domain}</span> },
+    { key: 'parked_domain', header: 'Parked domain', sortable: true, searchable: true, render: (r) => <span className="font-medium text-foreground">{r.parked_domain}</span> },
+    { key: 'target_domain', header: 'Serves', sortable: true, render: (r) => <span className="font-mono text-xs text-muted-foreground">{r.target_domain}</span> },
     { key: 'effective_suspended', header: 'Website', render: (r) => <Badge title={r.suspension_reason||undefined} variant={r.effective_suspended?'warning':'success'}>{r.effective_suspended?'Suspended with target':'Active'}</Badge> },
     { key: 'ssl_status', header: 'SSL', render: (r) => <StatusBadge status={r.ssl_status || 'none'} /> },
     {
       key: 'actions', header: '', align: 'right', render: (r) => (
-        <Button variant="ghost" size="icon-sm" title="Remove" onClick={() => setToDelete(r)}>
-          <Trash2 className="h-4 w-4 text-danger" />
-        </Button>
+        <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.parked_domain}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent><DropdownMenuItem destructive onSelect={()=>setToDelete(r)}><Trash2 className="h-4 w-4"/>Remove</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
       ),
     },
   ]
@@ -82,6 +81,9 @@ function ParkedDomainsCard({ username, domains }) {
         <DataTable
           columns={columns}
           data={data?.parked_domains}
+          columnPicker
+          filterable
+          searchPlaceholder="Search parked domains…"
           loading={isLoading}
           error={error}
           onRetry={refetch}
@@ -137,6 +139,10 @@ export default function Domains({ subdomainsOnly = false }) {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const [createOpen, setCreateOpen] = useState(false)
+  const [selected, setSelected] = useState(new Set())
+  const [bulkAction, setBulkAction] = useState(null)
+  const [bulkReport, setBulkReport] = useState([])
+  const [bulkProgress, setBulkProgress] = useState('')
   const [domain, setDomain] = useState('')
   const [kind,setKind]=useState(subdomainsOnly ? 'subdomain' : 'addon')
   const validDomainName = value => value.length <= 253 && value.includes('.') && value.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))
@@ -196,7 +202,37 @@ export default function Domains({ subdomainsOnly = false }) {
     onError: e => toast.error('Could not reload .htaccess', e.message),
   })
 
+  const visibleDomains = subdomainsOnly ? (data?.domains || []).filter(item => item.kind === 'subdomain') : (data?.domains || [])
+  const selectedRows = visibleDomains.filter(row => selected.has(row.domain))
+  useEffect(() => setSelected(previous => new Set([...previous].filter(name => (data?.domains || []).some(row => row.domain === name)))), [data?.domains])
+  const bulkRows = selectedRows.filter(row => bulkAction === 'delete' ? row.kind !== 'primary' : bulkAction === 'suspend' ? !row.suspended : row.suspended)
+  const bulkMut = useMutation({
+    mutationFn: async () => {
+      const report = []
+      for (const [index, row] of bulkRows.entries()) {
+        setBulkProgress(`${bulkAction === 'delete' ? 'Removing' : bulkAction === 'suspend' ? 'Suspending' : 'Reactivating'} ${row.domain} (${index + 1}/${bulkRows.length})…`)
+        try {
+          if (bulkAction === 'delete') await del(`/api/v1/accounts/${username}/domains/${row.domain}`)
+          else await patch(`/api/v1/accounts/${username}/domains/${encodeURIComponent(row.domain)}/suspension`, { suspended: bulkAction === 'suspend', reason: bulkAction === 'suspend' ? '' : null })
+          report.push({ domain: row.domain, ok: true })
+          setSelected(previous => new Set([...previous].filter(name => name !== row.domain)))
+        } catch (error) { report.push({ domain: row.domain, ok: false, message: error.message }) }
+        setBulkReport([...report])
+      }
+      return report
+    },
+    onSuccess: report => {
+      qc.invalidateQueries({ queryKey: ['domains', username] })
+      setBulkAction(null); setBulkProgress('')
+      const failed = report.filter(row => !row.ok)
+      failed.length ? toast.error('Some domains could not be changed', `${failed.length} failed. See the per-domain results below.`) : toast.success('Domains updated', `${report.length} domains changed.`)
+    },
+    onError: error => toast.error('Could not update selected domains', error.message),
+  })
+
   const columns = [
+    { key: 'select', header: <Checkbox aria-label="Select all domains" checked={selectedRows.length === visibleDomains.length && visibleDomains.length > 0 ? true : selectedRows.length ? 'indeterminate' : false} onCheckedChange={checked => setSelected(checked ? new Set(visibleDomains.map(row => row.domain)) : new Set())} />, searchable: false,
+      render: row => <Checkbox aria-label={`Select ${row.domain}`} checked={selected.has(row.domain)} onClick={e => e.stopPropagation()} onCheckedChange={checked => setSelected(previous => { const next = new Set(previous); checked ? next.add(row.domain) : next.delete(row.domain); return next })} /> },
     {
       key: 'domain',
       header: 'Domain',
@@ -208,12 +244,14 @@ export default function Domains({ subdomainsOnly = false }) {
       key: 'kind',
       header: 'Kind',
       sortable: true,
-      render: (r) => <Badge variant={KIND_VARIANT[r.kind] || 'neutral'} className="capitalize">{r.kind}</Badge>,
+      cellClassName: 'domain-short-value',
+      render: (r) => <span className="capitalize">{r.kind}</span>,
     },
     {
       key: 'php_version',
       header: 'PHP',
       sortable: true,
+      cellClassName: 'domain-short-value',
       render: (r) => (r.php_version ? `PHP ${r.php_version}` : <span className="text-muted-foreground">Inherited</span>),
     },
     {
@@ -228,6 +266,7 @@ export default function Domains({ subdomainsOnly = false }) {
       sortable: true,
       render: (r) => <Badge title={r.suspension_reason || undefined} variant={r.suspended ? 'warning' : 'success'}>{r.suspended ? 'Suspended' : 'Active'}</Badge>,
     },
+    { key:'docroot', header:'Document root', sortable:true, render:row=><LongValue value={row.docroot} label={`${row.domain} document root`}/> },
     {
       key: 'created_at',
       header: 'Created',
@@ -240,7 +279,8 @@ export default function Domains({ subdomainsOnly = false }) {
       align: 'right',
       searchable: false,
       render: (r) => (
-        <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+          <Button variant="secondary" size="sm" onClick={() => navigate(admin ? `/accounts/${username}/domains/${r.domain}` : `/domains/${r.domain}`)}>Manage</Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.domain}`}>
@@ -273,12 +313,11 @@ export default function Domains({ subdomainsOnly = false }) {
     },
   ]
 
-  const visibleDomains = subdomainsOnly ? (data?.domains || []).filter((item) => item.kind === 'subdomain') : data?.domains
   const fullSubdomain = `${domain.trim() || 'subdomain'}.${parent || 'example.com'}`
   const parentDocroot = parentDomains.find((item) => item.domain === parent)?.docroot || `/home/${username}/public_html`
 
   return (
-    <div>
+    <div className="reference-page">
       <PageHeader title={subdomainsOnly ? 'Subdomains' : 'Domains'} description={subdomainsOnly ? 'Create subdomains under a domain you own and choose where their files live.' : 'Primary, addon, and parked domains on your account.'} icon={Globe}>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" /> {subdomainsOnly ? 'Add subdomain' : 'Add domain'}
@@ -286,12 +325,15 @@ export default function Domains({ subdomainsOnly = false }) {
       </PageHeader>
 
       <DataTable
+        className="domains-reference-table"
         columns={columns}
         data={visibleDomains}
         loading={isLoading}
         error={error}
         onRetry={refetch}
         filterable
+        columnPicker
+        selectionBar={selectedRows.length > 0 && <div className="table-bulk-bar" aria-label="Selected domain actions"><strong>{selectedRows.length} selected</strong><span>With selected:</span><Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => row.suspended)} onClick={() => setBulkAction('suspend')}>Suspend</Button><Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => !row.suspended)} onClick={() => setBulkAction('unsuspend')}>Unsuspend</Button><Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => row.kind === 'primary')} onClick={() => setBulkAction('delete')}>Delete</Button><Button variant="ghost" size="sm" disabled={bulkMut.isPending} onClick={() => setSelected(new Set())}>Clear selection</Button></div>}
         searchPlaceholder="Search domains…"
         pageSize={15}
         initialSort={{ key: 'domain', dir: 'asc' }}
@@ -303,6 +345,8 @@ export default function Domains({ subdomainsOnly = false }) {
         emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> {subdomainsOnly ? 'Add subdomain' : 'Add domain'}</Button>}
       />
 
+      {bulkReport.length > 0 && <section className="tool-section" aria-label="Bulk domain results"><div className="tool-section-heading"><h2>Domain changes</h2></div>{bulkReport.map(row => <div key={row.domain} className="settings-inline-action"><strong>{row.domain}</strong><span className={row.ok ? 'text-success' : 'text-danger'}>{row.ok ? 'Updated' : row.message}</span></div>)}</section>}
+      <ConfirmDialog open={!!bulkAction} onOpenChange={open => !open && !bulkMut.isPending && setBulkAction(null)} title={`${bulkAction === 'delete' ? 'Remove' : bulkAction === 'suspend' ? 'Suspend' : 'Unsuspend'} selected domains?`} description={<><p>{bulkRows.map(row => row.domain).join(', ')}</p><p>{bulkAction === 'delete' ? 'Primary domains are retained. Domain configuration is removed; files on disk are kept.' : 'Only these websites change status. Account files are retained.'}</p>{bulkProgress && <p role="status">{bulkProgress}</p>}</>} confirmationText={username} confirmLabel={bulkAction === 'delete' ? 'Remove domains' : bulkAction === 'suspend' ? 'Suspend domains' : 'Unsuspend domains'} loading={bulkMut.isPending} onConfirm={() => { setBulkReport([]); bulkMut.mutate() }} />
       {!subdomainsOnly && <ParkedDomainsCard username={username} domains={data?.domains} />}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -328,11 +372,11 @@ export default function Domains({ subdomainsOnly = false }) {
                 </div> : <Input id="new-domain-name" autoFocus value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" required />}
               </FormField>
               {kind==='subdomain'&&<div className="subdomain-address-preview"><Globe aria-hidden="true" /><span>Full address</span><strong>{fullSubdomain}</strong></div>}
-              {kind==='subdomain'&&<fieldset className="subdomain-root-options"><legend>Document root</legend>
-                <label className={docrootMode==='default'?'selected':''}><input type="radio" name="document-root-mode" value="default" checked={docrootMode==='default'} onChange={e=>setDocrootMode(e.target.value)}/><span><strong>Separate website folder</strong><small>Recommended for an independent website</small><code>/home/{username}/{fullSubdomain}/public_html</code></span></label>
-                <label className={docrootMode==='parent'?'selected':''}><input type="radio" name="document-root-mode" value="parent" checked={docrootMode==='parent'} onChange={e=>setDocrootMode(e.target.value)}/><span><strong>Use the parent website</strong><small>Serve the same files as {parent || 'the parent domain'}</small><code>{parentDocroot}</code></span></label>
-                <label className={docrootMode==='custom'?'selected':''}><input type="radio" name="document-root-mode" value="custom" checked={docrootMode==='custom'} onChange={e=>setDocrootMode(e.target.value)}/><span><strong>Choose a custom folder</strong><small>Use an account-relative document root</small></span></label>
-              </fieldset>}
+              {kind==='subdomain'&&<fieldset className="subdomain-root-options"><legend>Document root</legend><RadioGroup value={docrootMode} onValueChange={setDocrootMode} aria-label="Document root" className="subdomain-root-options">
+                <label className={docrootMode==='default'?'selected':''}><Radio aria-label="Separate website folder" value="default"/><span><strong>Separate website folder</strong><small>Recommended for an independent website</small><code>/home/{username}/{fullSubdomain}/public_html</code></span></label>
+                <label className={docrootMode==='parent'?'selected':''}><Radio aria-label="Use the parent website" value="parent"/><span><strong>Use the parent website</strong><small>Serve the same files as {parent || 'the parent domain'}</small><code>{parentDocroot}</code></span></label>
+                <label className={docrootMode==='custom'?'selected':''}><Radio aria-label="Choose a custom folder" value="custom"/><span><strong>Choose a custom folder</strong><small>Use an account-relative document root</small></span></label>
+              </RadioGroup></fieldset>}
               {kind==='subdomain'&&docrootMode==='custom'&&<FormField label="Account-relative folder" htmlFor="subdomain-custom-docroot" hint={`Stored inside /home/${username}.`} required><Input id="subdomain-custom-docroot" value={customDocroot} onChange={e=>setCustomDocroot(e.target.value)} placeholder="sites/blog/public_html" required /></FormField>}
               {kind==='subdomain'?<div className="subdomain-dns-note"><FolderTree aria-hidden="true" /><p><strong>DNS is configured automatically.</strong><span>The address record is added through the parent zone’s active provider, including Cloudflare.</span></p></div>:<p className="text-sm text-muted-foreground">A DNS zone and website address records are added automatically.</p>}
             </DialogBody>

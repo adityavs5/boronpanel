@@ -44,6 +44,16 @@ api.interceptors.response.use(
 // Turn an axios error into a plain {status, message, fields} object the UI can
 // render. FastAPI validation errors arrive as {detail: [...]}; app errors as
 // {detail: "message"} or {error: "message"}.
+export function humanErrorMessage(raw, status) {
+  const message = String(raw || 'Something went wrong. Please try again.')
+  const reference = message.match(/reference:\s*([a-f0-9]{16})/i)?.[1]
+  const finish = text => reference && !text.includes(reference) ? `${text} (reference: ${reference})` : text
+  if (/mem_mb must be between 64 and 65536/i.test(message)) return finish('Memory must be between 0.0625 and 64 GB.')
+  if (/bandwidth_limit_mb must be at least 1/i.test(message)) return finish('Enter a positive bandwidth limit in GB, or leave it blank for no limit.')
+  if (/internal operation failure|object of type|traceback|sqlalchemy|operationalerror|integrityerror|<html|<!doctype/i.test(message) || status >= 500) return finish('The server could not complete this operation. Retry once; if it fails again, ask the administrator to check the Error Log.')
+  return message.replace(/\bValue error,\s*/gi, '').replace(/\bInput should be /g, 'Enter ')
+}
+
 export function normalizeError(error) {
   const status = error.response?.status
   const data = error.response?.data
@@ -56,7 +66,7 @@ export function normalizeError(error) {
       fields = {}
       for (const d of data.detail) {
         const key = Array.isArray(d.loc) ? d.loc[d.loc.length - 1] : 'form'
-        fields[key] = d.msg
+        fields[key] = humanErrorMessage(d.msg)
       }
       message = data.detail.map((d) => d.msg).join('; ')
     } else {
@@ -68,6 +78,11 @@ export function normalizeError(error) {
     message = 'Cannot reach the server. Check your connection.'
   }
   const err = new Error(message)
+  const reference = error.response?.headers?.['x-boron-error-reference'] || message.match(/reference:\s*([a-f0-9]{16})/i)?.[1]
+  message = humanErrorMessage(message, status)
+  if (reference && /^[a-f0-9]{16}$/i.test(reference) && !message.includes(reference)) message += ` (reference: ${reference})`
+  err.message = message
+  err.reference = reference || null
   err.status = status
   err.fields = fields
   return err

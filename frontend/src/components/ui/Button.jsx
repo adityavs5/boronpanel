@@ -38,7 +38,9 @@ export const Button = forwardRef(function Button(
   return (
     <Comp
       ref={ref}
+      data-ui-button={variant || 'primary'}
       className={cn(buttonVariants({ variant, size, className }))}
+      aria-busy={loading || undefined}
       disabled={disabled || loading}
       type={!asChild ? (props.type || 'button') : undefined}
       title={title}

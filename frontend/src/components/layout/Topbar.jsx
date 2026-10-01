@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useLocation, Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Palette, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck, Globe2, Search } from 'lucide-react'
+import { Palette, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck, Globe2, Search, Menu } from 'lucide-react'
 import { ThemeSelector } from '@/components/themes/ThemeSelector'
 import { useBranding } from '@/hooks/useBranding'
 import { get } from '@/lib/api'
@@ -121,7 +121,7 @@ function DomainSwitcher() {
   </DropdownMenu>
 }
 
-export function Topbar() {
+export function Topbar({ inner = false }) {
   const theme = useUI((s) => s.theme)
   const toggleTheme = useUI((s) => s.toggleTheme)
   const { role, username, logout } = useAuth()
@@ -130,6 +130,8 @@ export function Topbar() {
   const isReseller = role === 'reseller'
   const home = isAdmin ? '/overview' : isReseller ? '/reseller' : '/dashboard'
   const { brandingReady, panelName, logoUrl } = useBranding()
+  const setPaletteOpen = useUI(s => s.setPaletteOpen)
+  const setMobileNavOpen = useUI(s => s.setMobileNavOpen)
 
   async function handleLogout() {
     await logout()
@@ -139,6 +141,7 @@ export function Topbar() {
   return (
     <header className="panel-topbar">
       <div className="flex items-center gap-3 min-w-0">
+        {inner && <button type="button" className="inner-menu-button" aria-label="Menu" onClick={() => setMobileNavOpen(true)}><Menu aria-hidden="true" /></button>}
         <Link to={home} className="panel-brand" aria-label={`${panelName} home`}>
           {!brandingReady
             ? <span className="brand-loading-placeholder" aria-hidden="true" />
@@ -149,6 +152,7 @@ export function Topbar() {
       </div>
 
       <div className="flex items-center gap-2">
+        <button type="button" className={`global-search-trigger ${inner ? '' : 'dashboard-global-search'}`} aria-label="Search the panel" aria-haspopup="dialog" onClick={() => setPaletteOpen(true)}><Search aria-hidden="true" /><span>Search tools and settings</span><kbd>Ctrl K</kbd></button>
         {isAdmin || isReseller
           ? <span className="access-level"><span>Access Level</span><strong>{isAdmin ? 'Admin' : 'Reseller'}</strong></span>
           : <DomainSwitcher />}

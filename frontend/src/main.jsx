@@ -14,6 +14,7 @@ import { BrandingBootstrap } from './components/layout/BrandingBootstrap'
 import './index.css'
 import './theme-features.css'
 import './themes.css'
+import './inner-pages.css'
 
 // Apply persisted theme before first paint.
 applyTheme(useUI.getState().theme, useUI.getState().skin)

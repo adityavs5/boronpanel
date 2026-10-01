@@ -34,7 +34,7 @@ function distance(a, b) {
 export function searchScore(item, query) {
   const q = normalize(query); if (!q) return 1
   const label = normalize(item.label)
-  const text = normalize(`${item.label} ${item.section || item.group || ''} ${item.to || ''} ${synonyms[item.to] || ''}`)
+  const text = normalize(`${item.label} ${item.section || item.group || ''} ${item.to || ''} ${item.keywords || ''} ${synonyms[item.to] || ''}`)
   const words = text.split(' ')
   const tokens = q.split(' ').filter((word) => !['the', 'a', 'to', 'my', 'how', 'do', 'i', 'settings', 'manage', 'can', 'you', 'add', 'create', 'set', 'up', 'change', 'view', 'show', 'me', 'edit', 'configure', 'for', 'an'].includes(word))
   if (!tokens.length) return text.includes(q) ? 1 : 0

@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronUp, ChevronsUpDown, Search, ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronUp, ChevronsUpDown, Search, ChevronLeft, ChevronRight, Columns3 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { Input } from './Input'
 import { TableSkeleton } from './Skeleton'
 import { EmptyState, ErrorState } from './States'
+import { Button } from './Button'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuCheckboxItem } from './DropdownMenu'
 
 // Low-level table primitives (for hand-built tables / detail views).
 export function Table({ className, ...props }) {
@@ -58,7 +60,11 @@ export function DataTable({
   emptyIcon,
   className,
   toolbar,
+  columnPicker = false,
+  selectionBar,
 }) {
+  const [hiddenColumns, setHiddenColumns] = useState(new Set())
+  const displayedColumns = columns.filter(col => !hiddenColumns.has(col.key))
   const [internalQuery, setInternalQuery] = useState('')
   const [internalSort, setInternalSort] = useState(initialSort)
   const [internalPage, setInternalPage] = useState(1)
@@ -145,7 +151,7 @@ export function DataTable({
 
   return (
     <div className={cn('panel-data-table rounded-card border border-border bg-card overflow-hidden', className)}>
-      {(filterable || toolbar) && (
+      {(filterable || toolbar || columnPicker) && (
         <div className="table-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
           {filterable ? (
             <div className="table-search relative w-full max-w-xs">
@@ -164,9 +170,10 @@ export function DataTable({
           ) : (
             <div />
           )}
-          {toolbar}
+          <div className="flex flex-wrap items-center gap-2">{toolbar}{columnPicker && <DropdownMenu><DropdownMenuTrigger asChild><Button variant="secondary" size="sm"><Columns3 className="h-4 w-4"/> Columns</Button></DropdownMenuTrigger><DropdownMenuContent>{columns.filter(col=>col.key!=='select'&&col.key!=='actions').map(col=><DropdownMenuCheckboxItem key={col.key} checked={!hiddenColumns.has(col.key)} disabled={col.key===columns.find(c=>c.key!=='select')?.key} onSelect={e=>e.preventDefault()} onCheckedChange={checked=>setHiddenColumns(prev=>{const next=new Set(prev);checked?next.delete(col.key):next.add(col.key);return next})}>{col.header}</DropdownMenuCheckboxItem>)}</DropdownMenuContent></DropdownMenu>}</div>
         </div>
       )}
+      {selectionBar}
 
       {loading ? (
         <TableSkeleton rows={pageSize || 6} cols={columns.length} />
@@ -193,7 +200,7 @@ export function DataTable({
                       {renderCell(selectColumn, row)}
                     </div>
                   )}
-                  {columns.filter((col) => col.key !== 'select').map((col) => {
+                  {displayedColumns.filter((col) => col.key !== 'select').map((col) => {
                   const hasLabel = typeof col.header === 'string' && col.header.trim()
                   return (
                     <div key={col.key} className={cn(hasLabel ? 'flex items-start justify-between gap-4' : 'flex justify-end', col.cellClassName)} onClick={!hasLabel ? (e) => e.stopPropagation() : undefined}>
@@ -210,13 +217,13 @@ export function DataTable({
             <Table>
               <THead>
                 <tr>
-              {columns.map((col) => {
+              {displayedColumns.map((col) => {
                 const active = sort?.key === col.key
                 const SortIcon = active ? (sort.dir === 'asc' ? ChevronUp : ChevronDown) : ChevronsUpDown
                 return (
                   <TH
                     key={col.key}
-                    className={cn(col.align === 'right' && 'text-right', col.headerClassName)}
+                    className={cn(col.align === 'right' && 'text-right', col.key === 'actions' && 'table-actions-cell', col.headerClassName)}
                     aria-sort={col.sortable && active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
                   >
                     {col.sortable ? (
@@ -240,8 +247,8 @@ export function DataTable({
               <TBody>
             {pageRows.map((row, i) => (
               <TR key={getRowKey(row, i)} clickable={!!onRowClick} onClick={onRowClick ? (event) => activateRow(event, row) : undefined} onKeyDown={onRowClick ? (event) => activateRow(event, row) : undefined}>
-                {columns.map((col) => (
-                  <TD key={col.key} className={cn(col.align === 'right' && 'text-right', col.cellClassName)}>
+                {displayedColumns.map((col) => (
+                  <TD key={col.key} className={cn(col.align === 'right' && 'text-right', col.key === 'actions' && 'table-actions-cell', col.cellClassName)}>
                     {renderCell(col, row)}
                   </TD>
                 ))}
