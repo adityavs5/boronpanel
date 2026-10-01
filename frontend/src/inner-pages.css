@@ -22,7 +22,7 @@ html.dark[data-skin=paper-lantern]{--tool-nav-bg:30 38 49;--tool-nav-fg:233 239 
 .inner-shell .panel-page-heading p{font-size:var(--tool-type-body);color:rgb(var(--tool-muted));margin-top:var(--tool-space-1)}
 .inner-shell .page-heading-icon{width:var(--tool-space-8);height:var(--tool-space-8);background:none;color:rgb(var(--tool-blue))}
 .inner-shell .page-heading-icon svg{width:var(--tool-type-title);height:var(--tool-type-title)}
-.inner-shell :is(input:not([type=checkbox]):not([type=radio]),select,textarea){font-size:var(--tool-type-body);min-height:var(--tool-control-height);border-radius:var(--tool-radius);background:rgb(var(--tool-surface));border-color:rgb(var(--tool-input));color:rgb(var(--tool-text));box-shadow:none}
+.inner-shell :is(input:not([type=checkbox]):not([type=radio]),select,textarea){font-size:var(--tool-type-body);min-height:var(--tool-control-height);border-radius:var(--tool-radius);background-color:rgb(var(--tool-surface));border-color:rgb(var(--tool-input));color:rgb(var(--tool-text));box-shadow:none}
 .inner-shell button{font-size:var(--tool-type-body);font-weight:500;box-shadow:none}
 .inner-shell :is(.panel-content button,.panel-content a,.page-navigation a){border-radius:var(--tool-radius)}
 .inner-shell :is(.text-muted-foreground,.page-navigation){color:rgb(var(--tool-muted))}

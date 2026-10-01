@@ -27,6 +27,9 @@
     --border: 229 231 235;    /* gray-200 */
     --input: 226 232 240;
     --ring: 31 190 214;       /* accent */
+    /* Chevron colours match the readable muted-text tokens in each mode.
+       External SVG backgrounds cannot inherit the select's currentColor. */
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23526479' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   }
 
   /* Run A feature 2: dark mode overhaul. Flat solid cards (bg-gray-800 on
@@ -46,6 +49,31 @@
     --border: 55 65 81;        /* gray-700 */
     --input: 75 85 99;         /* gray-600 */
     --ring: 31 190 214;
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b3c3d7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
+
+  /* One native-select arrow contract for all pages, themes and dialogs.
+     Reserve the arrow gutter even when a page uses a padding shorthand. */
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: rgb(var(--input-surface));
+    background-image: var(--select-chevron);
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 1rem 1rem;
+    padding-right: 2.25rem !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  select[multiple], select[size]:not([size="1"]) {
+    background-image: none;
+    padding-right: 0.75rem !important;
+  }
+  select:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
   }
 
   * {

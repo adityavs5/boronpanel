@@ -77,7 +77,7 @@
 .settings-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
 .settings-list>div{display:grid;grid-template-columns:155px minmax(0,1fr);gap:18px;padding:13px 0;border-bottom:1px solid rgb(var(--border))}
 .settings-list>div:last-child{border-bottom:0}.settings-list dt{font-size:13px;font-weight:600;color:rgb(var(--muted-fg));text-transform:uppercase;letter-spacing:.035em}.settings-list dd{font-size:15px;min-width:0;overflow-wrap:anywhere}
-.domain-picker{display:flex;align-items:center;gap:10px}.domain-picker>span{font-size:13px;font-weight:600;text-transform:uppercase;color:rgb(var(--muted-fg));letter-spacing:.04em}.domain-picker select{min-width:230px;background:rgb(var(--input-surface))}
+.domain-picker{display:flex;align-items:center;gap:10px}.domain-picker>span{font-size:13px;font-weight:600;text-transform:uppercase;color:rgb(var(--muted-fg));letter-spacing:.04em}.domain-picker select{min-width:230px;background-color:rgb(var(--input-surface))}
 .traditional-feature>.panel-card,.traditional-feature>.space-y-4>.panel-card{margin-top:0}
 
 
