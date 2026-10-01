@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Users, ShieldCheck, Play, ArrowUpCircle } from 'lucide-react'
+import { Plus, Users, ShieldCheck, Play, ArrowUpCircle, MoreHorizontal } from 'lucide-react'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
 import { useVersion } from '@/hooks/useVersion'
 import { get, patch, post } from '@/lib/api'
@@ -11,7 +11,8 @@ import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Input, Textarea, FormField } from '@/components/ui/Input'
-import { Select } from '@/components/ui/Select'
+import { StyledSelect as Select } from '@/components/ui/StyledSelect'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/DropdownMenu'
 import { Checkbox } from '@/components/ui/Toggle'
 import { ConfirmDialog } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
@@ -249,10 +250,11 @@ export default function Accounts() {
     { key: 'server_ip', header: 'Server IP', searchable: true, render: (r) => <span className="font-mono text-xs">{r.server_ip || '—'}</span> },
     { key: 'reseller', header: 'Reseller', searchable: true, searchValue: r => r.reseller?.username || 'admin', render: r => <Select aria-label={`Reseller for ${r.username}`} value={r.reseller?.id || ''} disabled={moveReseller.isPending} onChange={event => moveReseller.mutate({ username: r.username, resellerId: event.target.value ? Number(event.target.value) : null })}><option value="">Admin owned</option>{resellers.filter(item => item.status === 'active' || item.id === r.reseller?.id).map(item => <option key={item.id} value={item.id}>{item.username}</option>)}</Select> },
     { key: 'created_at', header: 'Created', sortable: true, render: (r) => (r.created_at ? formatDate(r.created_at) : '—') },
+    { key: 'actions', header: '', align: 'right', searchable: false, render: r => <div className="flex justify-end gap-1" onClick={event => event.stopPropagation()}><Button variant="secondary" size="sm" onClick={() => navigate(`/accounts/${r.username}`)}>Manage</Button><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.username}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent>{[['Domains','domains'],['Email','email'],['Backups','backups'],['Security','security'],['Advanced','advanced']].map(([label,tab])=><DropdownMenuItem key={tab} onSelect={()=>navigate(`/accounts/${r.username}?tab=${tab}`)}>{label}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div> },
   ]
 
   return (
-    <div>
+    <div className="reference-page accounts-list">
       <PageHeader
         title="Accounts"
         description={`Manage all hosting accounts on this server. Boron ${version}.`}
@@ -284,6 +286,8 @@ export default function Accounts() {
       {selected.size > 0 && <BulkActionBar selected={selected} clearSelection={clearSelection} />}
 
       <DataTable
+        columnPicker
+        className="accounts-reference-table"
         columns={columns}
         data={accounts}
         loading={isLoading}

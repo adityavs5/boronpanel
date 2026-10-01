@@ -35,9 +35,12 @@ export default function Redis() {
     queryKey: ['redis', username],
     queryFn: () => get(`/api/v1/accounts/${username}/redis`),
     enabled: !!username,
+    refetchInterval: query => query.state.data?.enabled ? 5000 : false,
   })
 
   const provisioned = !!status?.provisioned
+  const enabled = !!status?.enabled
+  const running = enabled && status?.active === 'active'
 
   useEffect(() => {
     if (status?.mem_mb != null) setMemValue(String(status.mem_mb))
@@ -47,7 +50,7 @@ export default function Redis() {
 
   const enableMut = useMutation({
     mutationFn: (body) => post(`/api/v1/accounts/${username}/redis`, body),
-    onSuccess: () => { toast.success('Redis enabled', 'Your Redis instance is being provisioned.'); invalidate() },
+    onSuccess: result => { qc.setQueryData(['redis', username], { ...result, provisioned: true }); toast.success('Redis enabled', 'The saved instance configuration is active.'); invalidate() },
     onError: (e) => toast.error('Could not enable Redis', e.message),
   })
 
@@ -65,7 +68,7 @@ export default function Redis() {
 
   const disableMut = useMutation({
     mutationFn: () => del(`/api/v1/accounts/${username}/redis`),
-    onSuccess: () => { toast.success('Redis disabled', 'The instance was stopped and removed.'); setDisableOpen(false); invalidate() },
+    onSuccess: result => { qc.setQueryData(['redis', username], result); toast.success('Redis disabled', 'The service is stopped. Saved configuration and files are retained.'); setDisableOpen(false); invalidate() },
     onError: (e) => { toast.error('Could not disable Redis', e.message); setDisableOpen(false) },
   })
 
@@ -95,9 +98,8 @@ export default function Redis() {
             <Button variant="secondary" onClick={() => setConnOpen(true)}>
               <Plug className="h-4 w-4" /> Connection info
             </Button>
-            <Button variant="danger" onClick={() => setDisableOpen(true)}>
-              <Power className="h-4 w-4" /> Disable
-            </Button>
+            {enabled ? <Button variant="danger" onClick={() => setDisableOpen(true)}><Power className="h-4 w-4" /> Disable</Button>
+              : <Button loading={enableMut.isPending} onClick={() => enableMut.mutate({ mem_mb: status.mem_mb })}><Zap className="h-4 w-4" /> Enable Redis</Button>}
           </>
         )}
       </PageHeader>
@@ -121,6 +123,7 @@ export default function Redis() {
         />
       ) : (
         <div className="space-y-6">
+          {!enabled && <p role="status" className="settings-notice">Redis is disabled. Its saved memory limit and files are retained. Enable Redis to resume service; applications must use the current socket path shown below.</p>}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <StatCard icon={Activity} label="Status" value={<StatusBadge status={status.active} />} />
             <StatCard icon={MemoryStick} label="Memory used" value={status.used_memory_human || 'unknown'} />
@@ -172,7 +175,7 @@ export default function Redis() {
                   <div className="text-sm font-medium text-foreground">Flush all keys</div>
                   <div className="text-sm text-muted-foreground">Permanently delete every key in this instance. This cannot be undone.</div>
                 </div>
-                <Button variant="warning" onClick={() => setFlushOpen(true)}>
+                <Button variant="warning" disabled={!running} onClick={() => setFlushOpen(true)}>
                   <Zap className="h-4 w-4" /> Flush
                 </Button>
               </div>
@@ -199,7 +202,7 @@ export default function Redis() {
         open={disableOpen}
         onOpenChange={setDisableOpen}
         title="Disable Redis?"
-        description="This stops the Redis instance and removes its data. You can re-enable it later, but the cached data will be gone."
+        description="This stops Redis and keeps its configuration and files. Cached keys held only in memory will be lost; saved files are retained. You can enable Redis again with the same memory limit."
         confirmLabel="Disable Redis"
         variant="danger"
         confirmationText={username}

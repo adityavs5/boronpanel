@@ -300,3 +300,62 @@ def test_rename_refuses_redis_socket_dependency_before_any_changes(isolated_db, 
     monkeypatch.setattr(identity_admin,'_pause_for_rename',lambda _:pytest.fail('Dependent Redis account was paused'))
     with pytest.raises(ValidationError,match='socket path'):
         identity_admin.rename_account({'username':'demo1','new_username':'newname'})
+
+
+def test_rename_allows_disabled_stopped_redis_and_preserves_metadata(isolated_db, monkeypatch):
+    from shared.models import RedisInstance
+    account_id = _make_account('oldname')
+    with write_session() as db:
+        row = RedisInstance(account_id=account_id, mem_mb=96, enabled=False)
+        db.add(row); db.flush(); instance_id = row.id
+    _patch_system(monkeypatch)
+    monkeypatch.setattr(identity_admin.appunits, 'status', lambda unit: {'active': 'inactive'})
+    identity_admin.rename_account({'username': 'oldname', 'new_username': 'newname'})
+    with write_session() as db:
+        row = db.get(RedisInstance, instance_id)
+        assert row.account_id == account_id and row.mem_mb == 96 and not row.enabled
+        assert db.get(Account, account_id).username == 'newname'
+
+
+def test_rename_refuses_running_redis_even_if_record_is_disabled(isolated_db, monkeypatch):
+    from shared.models import RedisInstance
+    account_id = _make_account('oldname')
+    with write_session() as db:
+        db.add(RedisInstance(account_id=account_id, mem_mb=64, enabled=False))
+    monkeypatch.setattr(identity_admin.appunits, 'status', lambda unit: {'active': 'active'})
+    monkeypatch.setattr(identity_admin, '_pause_for_rename', lambda _: pytest.fail('Running Redis account was paused'))
+    with pytest.raises(ValidationError, match='still running'):
+        identity_admin.rename_account({'username': 'oldname', 'new_username': 'newname'})
+
+
+def test_disabled_redis_rename_rewrites_unit_without_starting_and_removes_old_config(isolated_db, monkeypatch, tmp_path):
+    from daemon import appunits, cron, filebrowser_accounts, nsisolation, redisacct
+    from shared.models import RedisInstance
+    account_id = _make_account('oldname')
+    with write_session() as db:
+        row = RedisInstance(account_id=account_id, mem_mb=96, enabled=False)
+        db.add(row); db.flush(); instance_id = row.id
+    old_unit = appunits.unit_name('redis', 'oldname', instance_id)
+    old_conf = tmp_path / old_unit; old_conf.write_text('old path')
+    calls = []
+    monkeypatch.setattr(identity_admin.sysops, 'get_shell', lambda _: identity_admin.sysops.LOGIN_SHELL)
+    monkeypatch.setattr(identity_admin.sysops, 'set_shell', lambda *args: None)
+    monkeypatch.setattr(identity_admin.sysops, 'quiesce_user', lambda _: None)
+    monkeypatch.setattr(cron, '_read_raw', lambda _: [])
+    monkeypatch.setattr(cron, 'delete_all_jobs', lambda _: None)
+    monkeypatch.setattr(cron, '_write_raw', lambda *args: None)
+    monkeypatch.setattr(filebrowser_accounts, 'stop', lambda _: None)
+    monkeypatch.setattr(nsisolation, 'get_status', lambda _: {'enabled': False})
+    monkeypatch.setattr(identity_admin.ols, 'refresh_vhost', lambda _: None)
+    monkeypatch.setattr(appunits, 'stop', lambda _: None)
+    monkeypatch.setattr(appunits, 'remove_unit', lambda unit: calls.append(('remove', unit)))
+    monkeypatch.setattr(appunits, 'enable_start', lambda _: pytest.fail('Disabled Redis must not start'))
+    monkeypatch.setattr(redisacct, '_provision_filesystem', lambda username: calls.append(('filesystem', username)))
+    monkeypatch.setattr(redisacct, '_write_unit', lambda name, ident, memory: calls.append(('write', name, ident, memory)) or appunits.unit_name('redis', name, ident))
+    monkeypatch.setattr(redisacct, '_conf_path', lambda unit: tmp_path / unit)
+    resume = identity_admin._pause_for_rename(account_id)
+    with write_session() as db:
+        db.get(Account, account_id).username = 'newname'
+    resume()
+    assert ('write', 'newname', instance_id, 96) in calls
+    assert ('remove', old_unit) in calls and not old_conf.exists()

@@ -41,7 +41,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import account_mutation, cgroups, ols, sysops
+from daemon import account_mutation, appunits, cgroups, ols, sysops
 
 logger = logging.getLogger("borond.identity_admin")
 
@@ -239,7 +239,11 @@ def rename_account(params: dict) -> dict:
             )
         redis = session.scalar(select(RedisInstance).where(RedisInstance.account_id == account.id))
         if redis is not None:
-            raise ValidationError('Remove the account Redis instance before renaming. Applications may use its username-dependent socket path.')
+            if redis.enabled:
+                raise ValidationError('Disable the account Redis instance before renaming. Applications must use the new username-dependent socket path after renaming.')
+            unit = appunits.unit_name('redis', old, redis.id)
+            if appunits.status(unit)['active'] not in ('inactive', 'failed', 'unknown'):
+                raise ValidationError('Redis is still running or stopping. Wait until it is inactive before renaming.')
         limits = (account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max)
         status = account.status
         account_id = account.id
@@ -341,7 +345,9 @@ def _pause_for_rename(account_id: int):
             if enabled and status == "active":
                 appunits.enable_start(unit)
             if name != old:
-                appunits.remove_unit(appunits.unit_name("redis", old, instance_id))
+                old_unit = appunits.unit_name("redis", old, instance_id)
+                appunits.remove_unit(old_unit)
+                redisacct._conf_path(old_unit).unlink(missing_ok=True)
         ols.refresh_vhost(current)
 
     try:

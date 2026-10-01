@@ -9,7 +9,7 @@
  --tool-blue-solid:9 103 161;--tool-danger-solid:178 35 47;--tool-success-solid:24 108 59;--tool-warning-solid:132 78 5;--tool-on-solid:255 255 255;
  --tool-shadow:0 4px 12px rgb(17 35 53/.14);--tool-overlay:rgb(12 27 42/.55);
 }
-html[data-skin=paper-lantern]{--tool-radius:6px;--tool-control-height:40px;--tool-row-height:44px;--tool-nav-row:40px;--tool-nav-icon:20px;--tool-nav-width:248px;--tool-nav-bg:246 248 251;--tool-nav-fg:32 47 64;--tool-nav-muted:82 100 121;--tool-nav-hover:233 239 246;--tool-nav-active:221 236 248;--tool-nav-border:201 212 224}
+html[data-skin=paper-lantern]{--tool-radius:6px;--tool-type-body:16px;--tool-type-sm:14px;--tool-control-height:44px;--tool-row-height:44px;--tool-nav-row:44px;--tool-nav-icon:20px;--tool-nav-width:248px;--tool-nav-bg:246 248 251;--tool-nav-fg:32 47 64;--tool-nav-muted:82 100 121;--tool-nav-hover:233 239 246;--tool-nav-active:221 236 248;--tool-nav-border:201 212 224}
 html.dark{--tool-bg:24 30 39;--tool-surface:30 38 49;--tool-soft:37 47 60;--tool-text:233 239 247;--tool-muted:179 195 215;--tool-border:84 102 124;--tool-input:126 146 171;--tool-blue:137 200 248;--tool-blue-soft:31 57 79;--tool-success:126 223 164;--tool-warning:247 204 126;--tool-danger:255 157 163;--tool-info:137 200 248;--tool-nav-bg:15 34 55;--tool-nav-fg:230 237 246;--tool-nav-muted:185 205 224;--tool-nav-hover:32 66 99;--tool-nav-active:37 82 121;--tool-nav-border:57 84 111}
 html.dark[data-skin=paper-lantern]{--tool-nav-bg:30 38 49;--tool-nav-fg:233 239 247;--tool-nav-muted:179 195 215;--tool-nav-hover:42 55 72;--tool-nav-active:34 65 91;--tool-nav-border:84 102 124}
 .inner-shell{--nav-width:var(--tool-nav-width);font-size:var(--tool-type-body);color:rgb(var(--tool-text))}
@@ -92,6 +92,8 @@ html[data-skin=paper-lantern] .tool-section-heading{background:rgb(var(--tool-so
 .inner-shell .domains-reference-table table{min-width:960px}.inner-shell .domains-reference-table td{overflow-wrap:normal;white-space:nowrap}
 .inner-shell .reference-page .panel-data-table :is(th,td){padding-block:var(--tool-space-1)}
 .inner-shell .reference-page .panel-data-table [data-ui-button]{height:calc(var(--tool-row-height) - 2 * var(--tool-space-1) - 2px);min-height:calc(var(--tool-row-height) - 2 * var(--tool-space-1) - 2px)}
+.inner-shell .reference-page .panel-data-table .tool-select{height:calc(var(--tool-row-height) - 2 * var(--tool-space-1) - 2px);min-height:calc(var(--tool-row-height) - 2 * var(--tool-space-1) - 2px);padding-block:0;font-size:var(--tool-type-sm)}
+.inner-shell .accounts-reference-table table{min-width:1100px}.inner-shell .accounts-reference-table td{white-space:nowrap;overflow-wrap:normal}
 .inner-shell .panel-data-table .table-toolbar,.inner-shell .panel-data-table .table-pagination{padding:var(--tool-space-3);font-size:var(--tool-type-sm)}
 .table-bulk-bar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--tool-space-2);padding:var(--tool-space-3);border-bottom:1px solid rgb(var(--tool-border));background:rgb(var(--tool-blue-soft));font-size:var(--tool-type-sm)}
 .long-value{display:flex;align-items:center;gap:var(--tool-space-1);min-width:0;max-width:100%}.long-value-text{max-width:240px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.long-value[data-expanded=true] .long-value-text{white-space:normal;overflow-wrap:anywhere;max-width:100%}.long-value button{flex:none;display:grid;place-items:center;padding:var(--tool-space-1);border-radius:var(--tool-radius)}.long-value svg{width:var(--tool-type-body);height:var(--tool-type-body)}
@@ -167,3 +169,16 @@ html[data-inner-page=true] [role=dialog] :is([data-ui-button=secondary],[data-ui
 .inner-shell [role=switch]>span{background:rgb(var(--tool-on-solid))}
 .inner-shell [aria-label="Open account menu"]>div{background:rgb(var(--tool-blue-solid));color:rgb(var(--tool-on-solid))}
 .inner-shell .panel-topbar :focus-visible{outline-color:rgb(var(--chrome-fg))}
+/* Paper uses one comfortable tool column; Evo keeps compact side-by-side settings. */
+html[data-skin=paper-lantern] .inner-shell .settings-workspace{grid-template-columns:minmax(0,1fr)}
+html[data-skin=paper-lantern] .inner-shell .settings-subnav{position:static;flex-direction:row;flex-wrap:wrap;border-bottom:1px solid rgb(var(--tool-border));padding-bottom:var(--tool-space-2)}
+html[data-skin=paper-lantern] .inner-shell .settings-subnav button{border-left:0;border-bottom:3px solid transparent;padding:var(--tool-space-3) var(--tool-space-4)}
+html[data-skin=paper-lantern] .inner-shell .settings-subnav button[aria-selected=true]{border-bottom-color:rgb(var(--tool-blue))}
+html[data-skin=paper-lantern] .inner-shell .account-overview{display:flex;flex-direction:column;gap:var(--tool-space-6)}
+html[data-skin=paper-lantern] .inner-shell .account-overview>*{width:100%}
+html[data-skin=paper-lantern] .inner-shell .account-overview>.account-php-limits{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--tool-space-6)}
+html[data-skin=paper-lantern] .inner-shell .account-overview .account-php-limits>.panel-card{grid-column:auto;grid-row:auto;align-self:auto}
+.inner-shell .account-tabs [role=tab],.inner-shell .account-tabs [aria-label="More account sections"]{color:rgb(var(--tool-text))}
+.inner-shell .account-tabs [role=tab][aria-selected=true]{color:rgb(var(--tool-blue))}
+.inner-shell [role=checkbox],html[data-inner-page=true] [role=dialog] [role=checkbox]{display:inline-flex;align-items:center;justify-content:center;width:var(--tool-type-title);height:var(--tool-type-title);border-width:2px;border-radius:var(--tool-radius);background:rgb(var(--tool-surface))}
+.inner-shell [role=checkbox][data-state=checked],.inner-shell [role=checkbox][data-state=indeterminate],html[data-inner-page=true] [role=dialog] [role=checkbox][data-state=checked]{background:rgb(var(--tool-blue-solid));border-color:rgb(var(--tool-blue-solid));color:rgb(var(--tool-on-solid))}

@@ -241,8 +241,17 @@ def unmount_uid(uid: int) -> None:
     if this uid was never namespaced at all."""
     result = run([LSNSCTL_BIN, "--uid", str(uid), "unmount"], timeout=15)
     detail = "" if result.ok else (result.stderr.strip() or result.stdout.strip())
-    _audit_lsnsctl("unmount", uid, result.ok, detail)
-    if not result.ok:
+    # Request-driven Bubblewrap PHP need not leave a native cached mount;
+    # disable-uid can also have retired it already. The trusted CLI reports
+    # that one idempotent case as an error. Do not ignore busy/permission
+    # failures or additional error lines, which must still reserve the UID.
+    already_unmounted = bool(re.fullmatch(
+        r"(?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? \[ERROR\]\s*)?"
+        r"Error in running:\s*unmount,\s*errors:\s*User is not mounted", detail,
+    ))
+    ok = result.ok or already_unmounted
+    _audit_lsnsctl("unmount", uid, ok, detail)
+    if not ok:
         raise NamespaceError(f"lsnsctl unmount failed for uid {uid}: {detail}")
 
 
@@ -716,7 +725,22 @@ def _filesystem_home_checks(root: Path, username: str, uid: int, other: str | No
             hidden = True
         except OSError:
             hidden = False
+    # /proc/<pid>/root can disappear between enumerating a PHP worker and
+    # inspecting its home. Missing files inside a live root still fail;
+    # a vanished root means there is no longer a workload to inspect.
+    try:
+        root.stat()
+    except FileNotFoundError:
+        return None, None
+    except OSError:
+        return False, False if other else None
     return readable, hidden
+
+
+def _combine_observed_checks(values):
+    if any(value is False for value in values):
+        return False
+    return True if all(value is True for value in values) else None
 
 
 def self_test(params: dict) -> dict:
@@ -733,8 +757,8 @@ def self_test(params: dict) -> dict:
     if php:
         observations = [_filesystem_home_checks(Path(f'/proc/{pid}/root'), username, uid, other)
                         for pid, _comm, _path in php]
-        own_readable = all(own for own, _peer in observations)
-        other_hidden = all(peer for _own, peer in observations) if other else None
+        own_readable = _combine_observed_checks([own for own, _peer in observations])
+        other_hidden = _combine_observed_checks([peer for _own, peer in observations]) if other else None
     elif bubblewrap_configured:
         # An idle Bubblewrap account has no live root to inspect. Entering
         # the unrelated native fallback would produce false failures.
@@ -753,14 +777,22 @@ def self_test(params: dict) -> dict:
             ], timeout=20)
             other_hidden = result.ok
     process_isolation = "configured_no_live_worker" if bubblewrap_configured else "not_configured"
+    process_workers = []
     if php:
         try:
             host_pid_namespace = os.stat("/proc/1/ns/pid").st_ino
-            private = [
-                os.stat(f"/proc/{pid}/ns/pid").st_ino != host_pid_namespace
-                for pid, _comm, _path in php
-            ]
-            process_isolation = "verified" if all(private) else "failed"
+            for pid, _comm, _path in php:
+                try:
+                    private = os.stat(f"/proc/{pid}/ns/pid").st_ino != host_pid_namespace
+                    worker_status = 'verified' if private else 'failed'
+                except FileNotFoundError:
+                    private, worker_status = None, 'exited_during_check'
+                except OSError:
+                    private, worker_status = None, 'inspection_failed'
+                process_workers.append({'pid': pid, 'private_pid_namespace': private, 'status': worker_status})
+            states = {worker['status'] for worker in process_workers}
+            process_isolation = ('failed' if 'failed' in states else 'inspection_failed' if 'inspection_failed' in states
+                                 else 'verified' if states == {'verified'} else 'configured_no_live_worker')
         except OSError:
             process_isolation = "inspection_failed"
     skipped = []
@@ -770,6 +802,12 @@ def self_test(params: dict) -> dict:
         skipped.append("live_php_worker")
         if bubblewrap_configured:
             skipped.append("account_home_visibility")
+    elif any(worker['status'] == 'exited_during_check' for worker in process_workers):
+        skipped.append('php_worker_exited_during_check')
+    if php and own_readable is None:
+        skipped.append('account_home_visibility')
+    if php and other is not None and other_hidden is None:
+        skipped.append('peer_account_visibility')
     passed = bool(current["enabled"] and own_readable and other_hidden is True and process_isolation == "verified")
     failed = (not current["enabled"] or own_readable is False or other_hidden is False
               or process_isolation in ("failed", "inspection_failed", "not_configured"))
@@ -780,5 +818,6 @@ def self_test(params: dict) -> dict:
         "other_home_hidden": other_hidden,
         "skipped": skipped,
         "process_isolation": process_isolation,
+        "process_isolation_workers": process_workers,
         "process_isolation_scope": "web_php",
     }

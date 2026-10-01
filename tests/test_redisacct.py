@@ -15,11 +15,16 @@ from shared.validation import ValidationError
 @pytest.fixture()
 def fake_systemctl(monkeypatch):
     calls = []
+    states = {}
 
     def fake_run(args, timeout=30, **kwargs):
         calls.append(args)
+        if args[0] == 'systemctl' and args[1] in ('stop', 'disable'):
+            states[args[-1]] = 'inactive'
+        elif args[0] == 'systemctl' and args[1] in ('start', 'enable', 'restart'):
+            states[args[-1]] = 'active'
         if args[0] == "systemctl" and args[1] in ("is-active", "is-enabled"):
-            return ProcResult(args=args, returncode=0, stdout="active\n" if args[1] == "is-active" else "enabled\n", stderr="")
+            return ProcResult(args=args, returncode=0, stdout=states.get(args[-1], 'active') + '\n' if args[1] == "is-active" else "enabled\n", stderr="")
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(redisacct.appunits, "run", fake_run)
@@ -131,6 +136,38 @@ def test_disable_redis_stops_and_persists_disabled(account_with_home, fake_syste
     result = redisacct.disable_redis({"username": "demo1"})
     assert result["enabled"] is False
     assert any(c[:2] == ["systemctl", "disable"] for c in fake_systemctl)
+
+
+def test_disable_failed_stop_keeps_enabled_recovery_state(account_with_home, monkeypatch):
+    created = redisacct.enable_redis({'username': 'demo1'})
+    monkeypatch.setattr(redisacct.appunits, 'stop_disable', lambda name: None)
+    with pytest.raises(ValidationError, match='confirmed stopped'):
+        redisacct.disable_redis({'username': 'demo1'})
+    with write_session() as db:
+        assert db.get(RedisInstance, created['id']).enabled is True
+
+
+def test_disabled_redis_preserves_files_limit_and_reenables_same_instance(account_with_home):
+    created = redisacct.enable_redis({'username': 'demo1', 'mem_mb': 96})
+    marker = __import__('pathlib').Path(created['data_dir']) / 'retained.rdb'
+    marker.write_bytes(b'preserve this file')
+    stopped = redisacct.disable_redis({'username': 'demo1'})
+    assert stopped['provisioned'] and not stopped['enabled'] and stopped['active'] == 'inactive'
+    assert stopped['used_memory_bytes'] is None
+    with pytest.raises(ValidationError, match='Enable Redis'):
+        redisacct.flush({'username': 'demo1'})
+    resumed = redisacct.enable_redis({'username': 'demo1', 'mem_mb': stopped['mem_mb']})
+    assert resumed['id'] == created['id'] and resumed['mem_mb'] == 96
+    assert marker.read_bytes() == b'preserve this file'
+
+
+def test_redis_change_refuses_concurrent_account_rename_or_restore(account_with_home):
+    from daemon.snapshot_jobs import lock
+    with write_session() as db:
+        account_id = db.scalar(select(Account.id).where(Account.username == 'demo1'))
+    with lock(f'account-{account_id}', blocking=False):
+        with pytest.raises(ValidationError, match='settings change is in progress'):
+            redisacct.enable_redis({'username': 'demo1'})
 
 
 def test_flush_calls_redis_cli_flushall(account_with_home, fake_redis_cli):

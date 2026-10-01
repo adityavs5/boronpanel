@@ -37,7 +37,7 @@ from shared.db import write_session
 from shared.models import Account, RedisInstance
 from shared.validation import ValidationError, validate_username
 
-from daemon import appunits, cgroups, safeio
+from daemon import account_mutation, appunits, cgroups, safeio
 from daemon.procutil import run
 
 KIND = "redis"
@@ -177,6 +177,7 @@ def _write_unit(username: str, instance_id: int, mem_mb: int) -> str:
     return unit
 
 
+@account_mutation.locked
 def enable_redis(params: dict) -> dict:
     """Create-or-update-and-start -- idempotent, matching this project's
     established "enable" verb shape (namespace.enable, waf.set_enabled):
@@ -206,6 +207,7 @@ def enable_redis(params: dict) -> dict:
         return _row_to_dict(row, username)
 
 
+@account_mutation.locked
 def set_mem_limit(params: dict) -> dict:
     username = validate_username(params["username"])
     mem_mb = _validate_mem_mb(params["mem_mb"])
@@ -228,6 +230,7 @@ def set_mem_limit(params: dict) -> dict:
         return _row_to_dict(row, username)
 
 
+@account_mutation.locked
 def disable_redis(params: dict) -> dict:
     """Stops the service and marks it disabled (persists across reboot,
     same semantics as NodeApp/PythonApp's stop_app) -- does NOT delete the
@@ -240,12 +243,17 @@ def disable_redis(params: dict) -> dict:
         row = session.scalar(select(RedisInstance).where(RedisInstance.account_id == account.id))
         if row is None:
             raise RuntimeError(f"Redis is not enabled for account '{username}'")
-        row.enabled = False
         instance_id = row.id
-    appunits.stop_disable(appunits.unit_name(KIND, username, instance_id))
+    unit = appunits.unit_name(KIND, username, instance_id)
+    appunits.stop_disable(unit)
+    if appunits.status(unit)['active'] not in ('inactive', 'failed', 'unknown'):
+        raise ValidationError('Redis could not be confirmed stopped. Try Disable again or ask the administrator to check its service.')
+    with write_session() as session:
+        session.get(RedisInstance, instance_id).enabled = False
     return get_status({"username": username})
 
 
+@account_mutation.locked
 def flush(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:
@@ -253,6 +261,8 @@ def flush(params: dict) -> dict:
         row = session.scalar(select(RedisInstance).where(RedisInstance.account_id == account.id))
         if row is None:
             raise RuntimeError(f"Redis is not enabled for account '{username}'")
+        if not row.enabled:
+            raise ValidationError('Enable Redis before flushing its cache')
 
     owner = pwd.getpwnam(username)
     result = run([settings.redis_cli_bin, "-s", socket_path(username), "FLUSHALL"],
@@ -280,8 +290,8 @@ def get_status(params: dict) -> dict:
 
     owner = pwd.getpwnam(username)
     info = run([settings.redis_cli_bin, "-s", socket_path(username), "INFO", "memory"],
-               uid=owner.pw_uid, gid=owner.pw_gid, timeout=10)
-    if info.ok:
+               uid=owner.pw_uid, gid=owner.pw_gid, timeout=10) if result['enabled'] and result['active'] == 'active' else None
+    if info is not None and info.ok:
         result["used_memory_human"] = _parse_info_field(info.stdout, "used_memory_human")
         result["used_memory_bytes"] = _parse_info_field(info.stdout, "used_memory")
     else:

@@ -490,6 +490,32 @@ def test_render_httpd_config_scan_dir_env_only_when_extension_override():
     assert "PHP_INI_SCAN_DIR=/home/demo2" not in content
 
 
+def test_tenant_php_starts_on_request_for_every_effective_version():
+    """Reload must not eagerly launch tenant PHP without its vhost policy.
+
+    Cover both accounts and per-domain PHP versions without changing shared
+    infrastructure startup, UID bindings, or automatic request launches.
+    """
+    import re
+    processors = [
+        {"username": user, "php_app_name": f"{user}_php{version}",
+         "lsphp_path": f"/usr/local/lsws/lsphp{version}/bin/lsphp",
+         "home_dir": f"/home/{user}"}
+        for user, version in [("demo1", "83"), ("demo1", "82"), ("demo2", "81")]
+    ]
+    content = ols.render_httpd_config([], processors)
+    blocks = dict(re.findall(r"extProcessor\s+(\w+)\s*\{([^}]+)\}", content))
+    for processor in processors:
+        block = blocks[processor["php_app_name"]]
+        assert re.search(r"(?m)^\s*runOnStartUp\s+0\s*$", block)
+        assert re.search(r"(?m)^\s*autoStart\s+1\s*$", block)
+        assert re.search(rf"(?m)^\s*extUser\s+{processor['username']}\s*$", block)
+        assert processor["lsphp_path"] in block
+    for name in ("lsphp", "roundcube_php", "pma_php"):
+        if name in blocks:
+            assert "runOnStartUp" not in blocks[name]
+
+
 def test_render_vhost_conf_includes_extra_directives():
     """PhpIniDirective key/value rows (max_input_vars etc.) render as
     php_admin_value lines alongside the legacy six."""

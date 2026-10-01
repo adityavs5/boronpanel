@@ -303,6 +303,12 @@ extProcessor {{ acc.php_app_name }}{
        to this account's own private tmp dir instead of failing with an
        open_basedir violation. #}
     env                              TMPDIR={{ acc.home_dir }}/tmp
+    {# A server-scope startup has no vhost isolation policy. OLS defaults
+       omitted runOnStartUp to detached/eager mode (3), creating a native
+       mount-only PHP pool alongside the PID-isolated request pool. Start
+       tenant PHP on demand so the requesting vhost supplies its policy.
+       Keep autoStart enabled; shared infrastructure processors are unchanged. #}
+    runOnStartUp                    0
 {% if acc.get('php_scan_dir') %}
     {# Per-account extension selection (daemon/phpext.py): PHP_INI_SCAN_DIR
        *replaces* the compiled-in mods-available dir, so this account's own

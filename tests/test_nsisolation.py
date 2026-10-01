@@ -489,6 +489,66 @@ def test_live_worker_home_checks_inspect_metadata_without_reading_files(tmp_path
     assert nsisolation._filesystem_home_checks(root, 'acct1', os.getuid(), None) == (False, None)
 
 
+def test_home_check_distinguishes_missing_worker_root_from_missing_home(tmp_path):
+    import os
+    root = tmp_path / 'worker-root'
+    assert nsisolation._filesystem_home_checks(root, 'acct1', os.getuid(), 'other') == (None, None)
+    root.mkdir()
+    assert nsisolation._filesystem_home_checks(root, 'acct1', os.getuid(), 'other') == (False, True)
+
+
+@pytest.mark.parametrize('detail,accepted', [
+    ('2026-10-01 08:50:56.429 [ERROR] Error in running: unmount, errors:  User is not mounted', True),
+    ('Error in running: unmount, errors: User is not mounted', True),
+    ('Error in running: unmount, errors: Device or resource busy', False),
+    ('Error in running: unmount, errors: Permission denied', False),
+    ('Permission denied\nError in running: unmount, errors: User is not mounted', False),
+])
+def test_unmount_is_idempotent_only_for_absent_native_cache(monkeypatch, detail, accepted):
+    audit_calls = []
+    monkeypatch.setattr(nsisolation, 'run', lambda args, timeout: ProcResult(args=args, returncode=1, stdout='', stderr=detail))
+    monkeypatch.setattr(nsisolation, '_audit_lsnsctl', lambda *args: audit_calls.append(args))
+    if accepted:
+        nsisolation.unmount_uid(2000)
+    else:
+        with pytest.raises(nsisolation.NamespaceError):
+            nsisolation.unmount_uid(2000)
+    assert audit_calls == [('unmount', 2000, accepted, detail)]
+
+
+@pytest.mark.parametrize('exposed_peer', [False, True])
+def test_self_test_real_missing_root_and_live_root_keep_incomplete_or_failure(fake_lsnsctl, isolated_db, monkeypatch, tmp_path, exposed_peer):
+    import os
+    from types import SimpleNamespace
+    with write_session() as session:
+        make_account(session, username='acct1', uid=2000)
+        make_account(session, username='other', uid=2001)
+    live_root = tmp_path / 'live-root'
+    own = live_root / 'home' / 'acct1'
+    own.mkdir(parents=True); own.chmod(0o750)
+    if exposed_peer:
+        (live_root / 'home' / 'other').mkdir()
+    original_path = nsisolation.Path
+    monkeypatch.setattr(nsisolation, 'Path', lambda value: tmp_path / 'exited-root' if str(value) == '/proc/123/root' else live_root if str(value) == '/proc/124/root' else original_path(value))
+    monkeypatch.setattr(nsisolation, '_account_uid', lambda _: os.getuid())
+    monkeypatch.setattr(nsisolation, 'get_status', lambda _: {'enabled': True})
+    monkeypatch.setattr(nsisolation, '_account_process_rows', lambda _: [(123, 'lsphp', ''), (124, 'lsphp', '')])
+    monkeypatch.setattr(nsisolation, '_php_process_rows', lambda rows: rows)
+    monkeypatch.setattr(nsisolation, '_bubblewrap_server_configured', lambda: True)
+    original_stat = nsisolation.os.stat
+    def namespaces(path, *args, **kwargs):
+        if str(path) == '/proc/1/ns/pid': return SimpleNamespace(st_ino=1)
+        if str(path) == '/proc/123/ns/pid': raise FileNotFoundError
+        if str(path) == '/proc/124/ns/pid': return SimpleNamespace(st_ino=2)
+        return original_stat(path, *args, **kwargs)
+    monkeypatch.setattr(nsisolation.os, 'stat', namespaces)
+    result = nsisolation.self_test({'username': 'acct1'})
+    assert result['status'] == ('failed' if exposed_peer else 'incomplete')
+    assert result['own_home_readable'] is None
+    assert result['other_home_hidden'] is (False if exposed_peer else None)
+    assert not result['passed']
+
+
 def test_selftest_uses_live_php_root_instead_of_inactive_native_layer(fake_lsnsctl, isolated_db, monkeypatch):
     from types import SimpleNamespace
     with write_session() as session:
@@ -509,3 +569,31 @@ def test_selftest_uses_live_php_root_instead_of_inactive_native_layer(fake_lsnsc
     result = nsisolation.self_test({'username': 'acct1'})
     assert result['status'] == 'passed' and result['passed']
     assert result['own_home_readable'] and result['other_home_hidden']
+    assert result['process_isolation_workers'] == [{'pid': 123, 'private_pid_namespace': True, 'status': 'verified'}]
+
+
+@pytest.mark.parametrize('worker_namespace,expected_status', [(1, 'failed'), (None, 'incomplete')])
+def test_self_test_keeps_shared_namespace_failure_but_exited_worker_is_incomplete(fake_lsnsctl, isolated_db, monkeypatch, worker_namespace, expected_status):
+    from types import SimpleNamespace
+    with write_session() as session:
+        make_account(session, username='acct1', uid=2000)
+        make_account(session, username='other', uid=2001)
+    monkeypatch.setattr(nsisolation, 'get_status', lambda _: {'enabled': True})
+    monkeypatch.setattr(nsisolation, '_account_process_rows', lambda _: [(123, 'lsphp', '')])
+    monkeypatch.setattr(nsisolation, '_php_process_rows', lambda rows: rows)
+    monkeypatch.setattr(nsisolation, '_bubblewrap_server_configured', lambda: True)
+    monkeypatch.setattr(nsisolation, '_filesystem_home_checks', lambda *args: (True, True))
+    original = nsisolation.os.stat
+    def namespaces(path, *args, **kwargs):
+        if str(path) == '/proc/1/ns/pid': return SimpleNamespace(st_ino=1)
+        if str(path) == '/proc/123/ns/pid':
+            if worker_namespace is None: raise FileNotFoundError
+            return SimpleNamespace(st_ino=worker_namespace)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(nsisolation.os, 'stat', namespaces)
+    result = nsisolation.self_test({'username': 'acct1'})
+    assert result['status'] == expected_status and not result['passed']
+    if worker_namespace == 1:
+        assert result['process_isolation_workers'][0]['status'] == 'failed'
+    else:
+        assert 'php_worker_exited_during_check' in result['skipped']

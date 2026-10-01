@@ -15,6 +15,8 @@ import {
 } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
 import { EmptyState } from '@/components/ui/States'
+import { Checkbox } from '@/components/ui/Toggle'
+import { dnsOwnerPreview } from '@/lib/dns-owner'
 
 const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV', 'CAA']
 const linesToList = (text) => (text || '').split('\n').map((s) => s.trim()).filter(Boolean)
@@ -50,6 +52,7 @@ export default function Dns({ emailOnly = false }) {
   })
 
   const zone = (data?.zone || domain || '').replace(/\.$/, '')
+  const ownerPreview = dnsOwnerPreview(zone, dialog?.subdomain)
   const rows = (data?.records || []).map((r) => {
     const name = (r.name || '').replace(/\.$/, '')
     let subdomain = '@'
@@ -251,12 +254,12 @@ export default function Dns({ emailOnly = false }) {
             <DialogDescription>{isEdit ? 'Edit the full value list for this name and type. One value per line.' : 'New values are added to any existing records with the same name and type. Existing values are kept.'}</DialogDescription>
           </DialogHeader>
           {dialog && (
-            <form onSubmit={(e) => { e.preventDefault(); saveMut.mutate(dialog) }}>
+            <form onSubmit={(e) => { e.preventDefault(); if (ownerPreview.error || (!isEdit && ownerPreview.confirmRelative && !dialog.relativeConfirmed)) return; saveMut.mutate(dialog) }}>
               <DialogBody className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
-                  <FormField label="Name" hint="@ for the apex, or e.g. www">
-                    <Input value={dialog.subdomain} disabled={isEdit}
-                      onChange={(e) => setDialog((d) => ({ ...d, subdomain: e.target.value }))} placeholder="@" />
+                  <FormField label="Name" hint={`@, www, or a full hostname within ${zone}.`} error={ownerPreview.error}>
+                    <Input aria-label="DNS record name" value={dialog.subdomain} disabled={isEdit} invalid={!!ownerPreview.error}
+                      onChange={(e) => setDialog((d) => ({ ...d, subdomain: e.target.value, relativeConfirmed: false }))} placeholder="@" />
                   </FormField>
                   <FormField label="Type">
                     <Select value={dialog.type} disabled={isEdit}
@@ -265,6 +268,8 @@ export default function Dns({ emailOnly = false }) {
                     </Select>
                   </FormField>
                 </div>
+                {!ownerPreview.error && <p className="text-sm break-words" role="status">Resulting name: <strong>{ownerPreview.fqdn}</strong></p>}
+                {!isEdit && ownerPreview.confirmRelative && <div className="settings-notice"><p>This is not a full hostname within {zone}. DNS would append this zone to the name.</p><label className="flex items-start gap-2 mt-2"><Checkbox aria-label="Confirm relative DNS name" checked={!!dialog.relativeConfirmed} onCheckedChange={checked => setDialog(current => ({ ...current, relativeConfirmed: checked === true }))}/><span>Use {ownerPreview.fqdn} as a relative name in this zone.</span></label></div>}
                 <FormField label="TTL (seconds)">
                   <Input type="number" min="60" value={dialog.ttl}
                     onChange={(e) => setDialog((d) => ({ ...d, ttl: e.target.value }))} />
@@ -276,7 +281,7 @@ export default function Dns({ emailOnly = false }) {
               </DialogBody>
               <DialogFooter>
                 <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Cancel</Button>
-                <Button type="submit" loading={saveMut.isPending}>Save record</Button>
+                <Button type="submit" disabled={!!ownerPreview.error || (!isEdit && ownerPreview.confirmRelative && !dialog.relativeConfirmed)} loading={saveMut.isPending}>Save record</Button>
               </DialogFooter>
             </form>
           )}

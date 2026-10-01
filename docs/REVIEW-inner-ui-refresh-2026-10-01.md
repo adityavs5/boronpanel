@@ -1,6 +1,6 @@
 # Inner-page UI preview — 1 October 2026
 
-This is the shared shell and three reference-page batch, ready for design review on the current server. The installed backend and release version remain v3.1.2. No GitHub release is published for this preview.
+This is the shared shell and three reference-page batch, ready for design review on the current server. The release remains v3.1.2; no GitHub release is published. The [re-review follow-up](VERIFY-qa-re-review-2026-10-01.md) records Redis/rename fixes, stronger theme differences, the approved and verified live isolation fix, and current screenshots.
 
 ## Open the reference pages
 
@@ -46,4 +46,4 @@ After approval: Accounts list → Plans → Backup Manager → DNS → Email →
 
 ## Preview recovery
 
-Only static frontend assets were installed. The prior entry file and full distribution are preserved in `/root/boron-setup/ui-refresh-20261001/static-before-preview`; old hashed chunks remain in the active distribution so existing tabs continue to work. Rolling back the preview requires restoring the saved `index.html` atomically to `/opt/boron/static/dist/index.html`; no backend restart or data restoration is required. Session material stays outside the repository in protected files.
+The original shell preview installed only static frontend assets. The prior entry file and full distribution are preserved in `/root/boron-setup/ui-refresh-20261001/static-before-preview`; old hashed chunks remain in the active distribution so existing tabs continue to work. Rolling back that static preview requires restoring the saved `index.html` atomically to `/opt/boron/static/dist/index.html`; no backend restart or data restoration is required. The subsequent re-review also installed focused daemon/template fixes; their separate recovery requirements are recorded in the follow-up report. Session material stays outside the repository in protected files.
