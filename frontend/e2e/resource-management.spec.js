@@ -24,7 +24,7 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
       else if (p.endsWith('/7/stop')) active = 'inactive'
       else if (p.endsWith('/7/restart') && failRestart) {
         failRestart = false
-        await route.fulfill({ status: 500, json: { detail: 'Service could not restart' } })
+        await route.fulfill({ status: 500, headers: { 'X-Boron-Error-Reference': '0123456789abcdef' }, json: { detail: 'Service could not restart' } })
         return
       }
       else if (p.endsWith('/7/logs')) data = { log_lines: ['Application ready on port 3001'] }
@@ -48,7 +48,12 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
       await expect(dialog.getByRole('button', { name: 'Stop', exact: true })).toBeVisible()
       if (type === 'node') {
         await dialog.getByRole('button', { name: 'Restart', exact: true }).click()
-        await expect(page.getByText('Service could not restart', { exact: true })).toBeVisible()
+        // The active modal hides sibling regions from the accessibility tree;
+        // check the visible toast without matching its separate live announcer.
+        const notifications = page.getByLabel('Notifications (F8)', { exact: true })
+        await expect(notifications.getByText(/The server could not complete this operation/)).toBeVisible()
+        await expect(notifications.getByText(/reference: 0123456789abcdef/)).toBeVisible()
+        await expect(page.getByText('Service could not restart', { exact: true })).toHaveCount(0)
         await expect(dialog.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled()
       }
       await dialog.getByRole('button', { name: 'Stop', exact: true }).click()

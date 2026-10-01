@@ -48,7 +48,7 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
 
     await page.goto('/app/resource-manager')
     await expect(page.getByRole('heading', { name: 'Resource Manager' })).toBeVisible()
-    await page.getByRole('button', { name: 'Manage' }).click()
+    await page.getByRole('button', { name: 'Manage', exact: true }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByLabel('CPU cores')).toHaveValue('2')
     await expect(dialog.getByLabel('Read throughput (MB/s)')).toHaveValue('50')
