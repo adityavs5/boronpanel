@@ -1,5 +1,6 @@
 """Phase 8 feature 9: Composer UI (+ the shared cmdjobs runner)."""
 import types
+import multiprocessing
 
 import pytest
 
@@ -36,6 +37,39 @@ def test_validate_package_rejects_injection():
     for bad in ["evil; rm -rf /", "no-slash", "a/b && curl x", "../etc/passwd"]:
         with pytest.raises(ValidationError):
             composerui._validate_package(bad)
+
+
+@pytest.mark.parametrize("package", ["a/b", "my_vendor/pkg-name", "a.b/c_d:^1.0 || ~2.0", " vendor/name "])
+def test_validate_package_keeps_supported_names(package):
+    assert composerui._validate_package(package) == package.strip()
+
+
+def _validate_near_matches():
+    for value in ["a" * 2000 + "!/b", "a/" + "b" * 2000 + "!", "a-" * 900 + "!/b"]:
+        try:
+            composerui._validate_package(value)
+        except ValidationError:
+            continue
+        raise AssertionError("invalid package accepted")
+
+
+def test_validate_package_near_matches_have_independent_deadline():
+    # A GIL-holding regex cannot be stopped reliably by a Python thread.
+    process = multiprocessing.get_context("fork").Process(target=_validate_near_matches)
+    process.start()
+    try:
+        process.join(timeout=3)
+        assert not process.is_alive(), "package validation exceeded its process deadline"
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+        process.join()
+
+
+def test_validate_package_rejects_over_budget_input():
+    with pytest.raises(ValidationError, match="4096"):
+        composerui._validate_package("a" * 4097 + "/b")
 
 
 # --- run_composer (mocked deps) --------------------------------------------
@@ -156,3 +190,57 @@ def test_cmdjobs_worker_rechecks_account_status_before_running(isolated_db, tmp_
     assert job["status"] == "failed"
     assert "suspended" in job["error"]
     assert ran == []
+
+
+def test_cmdjobs_enforces_per_account_admission_limit(isolated_db, monkeypatch):
+    _account()
+    queued = []
+
+    class Queued:
+        def submit(self, fn, *args, **kwargs):
+            queued.append((fn, args, kwargs))
+
+    monkeypatch.setattr(cmdjobs, "_executor", Queued())
+    monkeypatch.setattr(cmdjobs.settings, "command_run_max_active_per_account", 2)
+    monkeypatch.setattr(cmdjobs.settings, "command_run_max_active_global", 12)
+    for _ in range(2):
+        cmdjobs.submit("demo1", "composer", "/home/demo1", ["true"], "true")
+    with pytest.raises(ValidationError, match="maximum number"):
+        cmdjobs.submit("demo1", "composer", "/home/demo1", ["true"], "true")
+    assert len(queued) == 2
+
+
+def test_cmdjobs_recovery_stops_running_units_and_releases_admission(isolated_db, monkeypatch):
+    account_id = _account()
+    with write_session() as db:
+        pending = CommandRun(account_id=account_id, kind="composer", target="/tmp", command_display="pending", status="pending")
+        running = CommandRun(account_id=account_id, kind="wpcli", target="/tmp", command_display="running", status="running")
+        completed = CommandRun(account_id=account_id, kind="wpcli", target="/tmp", command_display="done", status="completed")
+        db.add_all((pending, running, completed))
+        db.flush()
+        running_id = running.id
+    stopped = []
+    monkeypatch.setattr(cmdjobs, "_stop_account_unit", lambda unit: stopped.append(unit))
+
+    assert cmdjobs.recover_interrupted() == 2
+
+    assert stopped == [f"boron-account-5001-cmd-{running_id}.service"]
+    with write_session() as db:
+        statuses = {row.command_display: row.status for row in db.scalars(select(CommandRun)).all()}
+    assert statuses == {"pending": "failed", "running": "failed", "done": "completed"}
+
+
+def test_cmdjobs_executor_rejection_marks_durable_job_failed(isolated_db, monkeypatch):
+    _account()
+
+    class Rejecting:
+        def submit(self, *_args, **_kwargs):
+            raise RuntimeError("executor stopped")
+
+    monkeypatch.setattr(cmdjobs, "_executor", Rejecting())
+    with pytest.raises(RuntimeError, match="executor stopped"):
+        cmdjobs.submit("demo1", "composer", "/home/demo1", ["true"], "true")
+    with write_session() as db:
+        row = db.scalar(select(CommandRun))
+        assert row.status == "failed"
+        assert "could not be queued" in row.error

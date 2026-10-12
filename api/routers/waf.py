@@ -57,6 +57,11 @@ class UnblockBody(BaseModel):
     ip: str
 
 
+class DetectReviewBody(BaseModel):
+    action: str
+    confirm: bool = False
+
+
 @api_router.get("")
 def get_status(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -121,6 +126,18 @@ def unblock_incident_ip(body: UnblockBody, identity: Identity = Depends(get_iden
 def blocked_requests(domain: str | None = None, limit: int = 50, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("waf.blocked_requests", identity, domain=domain, limit=limit)
+
+
+@api_router.post("/detect-trial")
+def start_detect_trial(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("waf.detect_trial.start", identity)
+
+
+@api_router.post("/detect-trial/review")
+def finish_detect_trial(body: DetectReviewBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("waf.detect_trial.finish", identity, **body.model_dump())
 
 
 # --- server-rendered UI ------------------------------------------------------

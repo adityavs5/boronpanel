@@ -16,22 +16,37 @@ import pwd
 import socket
 import stat
 import time
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from shared.config import settings
 from shared.db import init_db
-from shared.rpc import encode_response, read_frame
+from shared.rpc import RpcProtocolError, encode_response, read_frame, validate_peer_protocol
 from daemon import dns_editor
 from shared.validation import ValidationError
+from shared.request_context import (
+    ensure_error_reference,
+    normalize_request_id,
+    request_context,
+)
 
-from daemon import panel_config, panel_jobs, panel_tls, snapshot_config, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, cpanel_import, custom_pages, disktree, db_governor, dbmonitor, dnscluster, dnssetup, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, htaccess, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, mail_dns, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, resource_manager, server_setup, servicemgr, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, stack_manager, staging, terminal, totp, updates, usage_alerts, waf, webhooks, webmail_sso, wordpress, wpcli
+from daemon import panel_config, panel_jobs, panel_tls, snapshot_config, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, appunits, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, control_tasks, cpanel_import, custom_pages, diagnostics, disktree, db_governor, dbmonitor, dnscluster, dnssetup, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, htaccess, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, mail_dns, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, php_lifecycle, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, resource_manager, resource_tuning, retention, server_setup, servicemgr, site_health, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, stack_manager, staging, support_bundle, tasks, terminal, totp, updates, usage_alerts, waf, webhooks, webmail_sso, wordpress, wpcli
 from daemon.logsetup import configure_logging
 from daemon.rpc_authority import AuthenticationError, AuthorizationError, authorize, resolve_principal
 from daemon import directadmin_remote
 from daemon.rpc_policy import POLICY_BY_OPERATION
 
 logger = logging.getLogger("borond")
+
+CUSTOMER_SCOPE_OPERATIONS = frozenset({
+    "backup.job.trigger",
+    "snapshot.run.list", "snapshot.run.browse",
+    "snapshot.download.queue", "snapshot.download.list", "snapshot.download.file",
+    "snapshot.restore.databases", "snapshot.restore.mailboxes",
+    "snapshot.restore.configuration", "snapshot.restore.mail_routing",
+    "snapshot.restore.trigger", "snapshot.restore.undo",
+})
 
 OP_TABLE = {
     'mail.set_quota': handlers_mail.set_mailbox_quota,
@@ -93,9 +108,12 @@ OP_TABLE = {
     "ipmanager.assign": ipmanager.assign_account,
     "ipmanager.assign_new": ipmanager.assign_for_new_account,
     "portable.import.trigger": portable_archive.trigger_import,
+    "portable.import.upload.reserve": portable_archive.reserve_upload,
+    "portable.import.upload.cleanup": portable_archive.cleanup_upload,
     "portable.import.get": portable_archive.get_job,
     "portable.import.list": portable_archive.list_jobs,
     "portable.export.prepare": portable_archive.prepare_download,
+    "portable.export.cleanup": portable_archive.cleanup_download,
     "reseller.plan.create": resellers.create_plan,
     "reseller.plan.update": resellers.update_plan,
     "reseller.plan.list": resellers.list_plans,
@@ -136,6 +154,25 @@ OP_TABLE = {
     "stack.start": stack_manager.start,
     "stack.job.get": stack_manager.get_job,
     "stack.job.cancel": stack_manager.cancel,
+    "stack.php_policy.get": php_lifecycle.get_policy,
+    "stack.php_policy.set": php_lifecycle.update_policy,
+    "stack.php_sessions.preview": php_lifecycle.session_migration_preview,
+    "stack.php_sessions.migrate": php_lifecycle.migrate_sessions,
+    "stack.tuning.preview": resource_tuning.preview,
+    "stack.tuning.apply": resource_tuning.apply,
+    "tasks.list": tasks.list_tasks,
+    "tasks.get": tasks.get_task,
+    "tasks.retry": tasks.retry_task,
+    "tasks.cancel": tasks.cancel_task,
+    "taskops.account.create": control_tasks.start_account_create,
+    "taskops.account.rename": control_tasks.start_account_rename,
+    "taskops.account.terminate": control_tasks.start_account_terminate,
+    "taskops.domain.add": control_tasks.start_domain_add,
+    "taskops.get": control_tasks.get_task,
+    "taskops.reveal": control_tasks.reveal_result,
+    "retention.get": retention.get_settings,
+    "retention.set": retention.set_settings,
+    "retention.prune": retention.prune,
     "usage.get": handlers_usage.get_account_usage,
     "bandwidth.get": handlers_usage.get_bandwidth,
     "bandwidth.ranking": handlers_usage.get_bandwidth_ranking,
@@ -184,6 +221,7 @@ OP_TABLE = {
     "dnscluster.sync_all": dnscluster.sync_all,
     "dnscluster.apply": dnscluster.apply_incoming,
     "dnscluster.ping": lambda params: {"ok": True},
+    "dnscluster.capabilities": dnscluster.capabilities,
     "dnssetup.get": dnssetup.get_settings,
     "dnssetup.mode.preview": dnssetup.preview_mode,
     "dnssetup.mode.set": dnssetup.set_mode,
@@ -288,6 +326,11 @@ OP_TABLE = {
     "auth.login.begin": handlers_auth.login_begin,
     "auth.login.finish": handlers_auth.login_finish,
     "auth.revoke_session": handlers_auth.revoke_session,
+    "sessions.list": handlers_auth.list_sessions,
+    "sessions.revoke": handlers_auth.revoke_managed_session,
+    "sessions.revoke_others": handlers_auth.revoke_other_sessions,
+    "security.policy.get": handlers_auth.security_policy_get,
+    "security.policy.set": handlers_auth.security_policy_set,
     # Security audit finding F2: login brute-force throttling
     "auth.check_login_lockout": handlers_auth.check_login_lockout,
     "auth.record_login_result": handlers_auth.record_login_result,
@@ -326,6 +369,7 @@ OP_TABLE = {
     "ftp.delete": handlers_ftp.delete_ftp_account,
     # Phase 3 feature 6: per-account PHP ini overrides
     "php_ini.get": handlers_php_ini.get_php_ini,
+    "php_ini.effective": handlers_php_ini.effective_domain_config,
     "php_ini.set": handlers_php_ini.set_php_ini,
     "php_ini.reset": handlers_php_ini.reset_php_ini,
     # Phase 8 follow-up: per-account PHP extension enable/disable
@@ -387,6 +431,13 @@ OP_TABLE = {
     "health.get": health.get_live,
     "health.history": health.get_history,
     "health.snapshot": health.take_snapshot,
+    "site_health.check": site_health.check,
+    "diagnostics.run": diagnostics.run_all,
+    "support_bundle.create": support_bundle.create,
+    "support_bundle.list": support_bundle.list_jobs,
+    "support_bundle.get": support_bundle.get_job,
+    "support_bundle.consume": support_bundle.consume,
+    "support_bundle.prune": support_bundle.prune_expired,
     # Phase 5 feature 2: service manager
     "services.list": servicemgr.list_services,
     "services.status": servicemgr.get_service,
@@ -458,6 +509,8 @@ OP_TABLE = {
     "waf.exception.delete": waf.delete_exception,
     "waf.incident.unblock": waf.unblock_ip,
     "waf.blocked_requests": waf.list_blocked_requests,
+    "waf.detect_trial.start": waf.start_detect_trial,
+    "waf.detect_trial.finish": waf.finish_detect_trial,
     # Phase 5 feature 8: MySQL slow query viewer
     "slowquery.status": slowquery.get_status,
     "slowquery.bootstrap": slowquery.bootstrap_slow_query_log,
@@ -616,6 +669,11 @@ OP_TABLE = {
     # 2FA confirmation before the RPC is ever sent -- ARCHITECTURE.md SS2's
     # trust model: authorization happens in boron-api).
     "update.check": updates.check,
+    "update.database_backups": updates.list_database_backups,
+    "update.database_restore": updates.restore_database_backup,
+    "update.preflight": updates.preflight,
+    "update.readiness": updates.finalizer_readiness,
+    "update.finalizer.ping": updates.finalizer_ping,
     "update.status": updates.get_status,
     "update.start": updates.start_update,
     "update.rollback": updates.start_rollback,
@@ -682,8 +740,11 @@ REPORTING_OPS = {
     # live system state -- same isolation reasoning as disktree/usage
     # above, just for the admin surface instead of the customer one.
     "health.get", "health.history",
+    "site_health.check",
+    "diagnostics.run", "support_bundle.consume",
     "ipmanager.list",
-    "portable.import.get", "portable.import.list", "portable.export.prepare",
+    "portable.import.get", "portable.import.list", "portable.import.upload.reserve", "portable.import.upload.cleanup",
+    "portable.export.prepare", "portable.export.cleanup",
     # Run A feature 5: history is dashboard-polled; check shells out 7x
     # systemctl -- same isolation reasoning as health/services below.
     "monitoring.history", "monitoring.check",
@@ -692,7 +753,7 @@ REPORTING_OPS = {
     # reasoning as cf.health. start/rollback return instantly (their work
     # runs on updates.py's own single-worker executor) so they stay off
     # the reporting pool.
-    "update.check", "update.status", "update.history", "update.log",
+    "update.check", "update.database_backups", "update.preflight", "update.readiness", "update.finalizer.ping", "update.status", "update.history", "update.log",
     "services.status", "services.list",
     "mailqueue.list",
     "firewall.list", "firewall.bypass.list",
@@ -805,6 +866,8 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: ipmanager.release_accoun
 handlers_account.CREATE_HOOKS.append(lambda account: nsisolation.enable_for_account(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: nsisolation.teardown_account(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_ftp.terminate_account_ftp(account))
+handlers_account.SUSPEND_HOOKS.append(lambda account: handlers_ftp.set_account_ftp_suspended(account, True))
+handlers_account.UNSUSPEND_HOOKS.append(lambda account: handlers_ftp.set_account_ftp_suspended(account, False))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_php_ini.terminate_account_php_ini(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: phpext.terminate_account_php_extensions(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_redirect.terminate_account_redirects(account))
@@ -897,6 +960,16 @@ LIFECYCLE_OPS = {
     "account.reactivate": "reactivated",
 }
 
+# The first operations with explicit root-action step timelines. Every other
+# mutating operation continues to receive its generic audit row.
+TRACED_ACTION_OPS = frozenset({
+    "account.rename", "account.set_primary_domain", "account.terminate",
+    "domain.add", "firewall.add", "firewall.delete", "namespace.rebuild",
+    "backup.job.trigger", "backup.restore.trigger", "ssl.issue",
+    "snapshot.policy.run", "snapshot.restore.trigger",
+    "ssl.issue_wildcard", "dns.set_record", "dns.delete_record",
+})
+
 
 def _redact_request_secrets(message: str, params: dict) -> str:
     """Do not copy password/token inputs into validation errors or audit rows."""
@@ -921,13 +994,25 @@ def _redact_request_secrets(message: str, params: dict) -> str:
 
 
 async def dispatch(op: str, params: dict, credential: object = None) -> dict:
+    action_started = time.monotonic()
     params.pop("_actor", None)
     params.pop("_role", None)
     ip = params.pop("_ip", None)
+    def elapsed_ms() -> int:
+        return max(0, int((time.monotonic() - action_started) * 1000))
+
     handler = OP_TABLE.get(op)
     if handler is None:
-        audit.record("unknown", "unknown", op, None, params, "failed", "unknown op")
-        raise LookupError(f"unknown op '{op}'")
+        exc = LookupError(f"unknown op '{op}'")
+        from shared.failures import describe_failure
+        diagnostic = describe_failure(op, exc)
+        ensure_error_reference(diagnostic["reference"])
+        logger.warning("operation rejected: %s", json.dumps(diagnostic, separators=(",", ":")))
+        audit.record("unknown", "unknown", op, None, params, "failed",
+                     f"LookupError (reference: {diagnostic['reference']})",
+                     source_ip=ip, duration_ms=elapsed_ms())
+        exc.diagnostic = diagnostic
+        raise exc
 
     # Reject invalid credentials before allocating a worker. Resolve again and
     # authorize inside the worker: queue wait must not preserve revoked access
@@ -937,10 +1022,24 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
         if op not in ("auth.login.begin", "auth.login.finish"):
             principal = resolve_principal(credential)
     except (AuthenticationError, AuthorizationError) as exc:
-        audit.record("unknown", "unknown", op, params.get("username"), params, "failed", type(exc).__name__)
+        from shared.failures import describe_failure
+        diagnostic = describe_failure(op, exc)
+        ensure_error_reference(diagnostic["reference"])
+        logger.warning("operation rejected: %s", json.dumps(diagnostic, separators=(",", ":")))
+        audit.record("unknown", "unknown", op, params.get("username"), params, "failed",
+                     f"{type(exc).__name__} (reference: {diagnostic['reference']})",
+                     source_ip=ip, duration_ms=elapsed_ms())
+        exc.diagnostic = diagnostic
         raise
     actor = principal.username if principal else "login"
     role = principal.role if principal else "anonymous"
+    trace, trace_token = audit.begin_action_trace(op, params, enabled=op in TRACED_ACTION_OPS)
+
+    def finish_trace() -> None:
+        nonlocal trace_token
+        if trace_token is not None:
+            audit.end_action_trace(trace_token)
+            trace_token = None
 
     loop = asyncio.get_running_loop()
     executor = REPORTING_EXECUTOR if op in REPORTING_OPS else None
@@ -949,6 +1048,8 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
         current = (None if op in ("auth.login.begin", "auth.login.finish")
                    else resolve_principal(credential))
         authorize(op, handler_params, current)
+        if current is not None and getattr(current, "auth_method", None) == "session":
+            handlers_auth.touch_session(current.session_hash, ip)
         actor = current.username if current else "login"
         role = current.role if current else "anonymous"
         if op == "notes.add":
@@ -963,42 +1064,96 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
             handler_params["actor_ip"] = ip
         elif op == "webmail.launch.create":
             handler_params["source_ip"] = ip
+        elif op.startswith("support_bundle.") and current is not None:
+            # Bind ownership to the credential resolved by the root helper;
+            # never trust an API-supplied user id or username.
+            handler_params["_authenticated_user_id"] = current.panel_user_id
+            handler_params["_authenticated_username"] = current.username
         elif op.startswith("dnscluster.") and current is not None and current.role == "cluster":
             handler_params["_peer_name"] = current.username
+        elif (op.startswith("tasks.") or op.startswith("taskops.")) and current is not None:
+            # The unified task read model derives its visibility exclusively
+            # from the root-resolved principal. Browser/API parameters cannot
+            # widen a customer to another account's history.
+            handler_params["_authenticated_role"] = current.role
+            handler_params["_authenticated_account_id"] = current.account_id
+            handler_params["_authenticated_username"] = current.username
+            handler_params["_source_ip"] = ip
+        elif op.startswith("sessions.") and current is not None:
+            handler_params["_current_session_hash"] = current.session_hash
+        if op in CUSTOMER_SCOPE_OPERATIONS:
+            # Visibility/retention policy is credential-derived. A caller may
+            # not omit or forge this transport hint to widen customer access.
+            handler_params["customer_scope"] = current is not None and current.role == "customer"
         return handler(handler_params)
 
     try:
-        result = await loop.run_in_executor(executor, authorized_handler, params)
+        context = contextvars.copy_context()
+        def contextual_handler(handler_params):
+            return context.run(authorized_handler, handler_params)
+        result = await loop.run_in_executor(executor, contextual_handler, params)
     except (AuthenticationError, AuthorizationError) as exc:
-        audit.record(actor, role, op, params.get("username"), params, "failed", type(exc).__name__)
+        from shared.failures import describe_failure
+        diagnostic = describe_failure(op, exc)
+        ensure_error_reference(diagnostic["reference"])
+        logger.warning("operation rejected: %s", json.dumps(diagnostic, separators=(",", ":")))
+        audit.record(actor, role, op, params.get("username"), params, "failed",
+                     f"{type(exc).__name__} (reference: {diagnostic['reference']})",
+                     source_ip=ip, duration_ms=elapsed_ms(), trace=trace)
+        finish_trace()
+        exc.diagnostic = diagnostic
         raise
     except ValidationError as exc:
+        from shared.failures import describe_failure
         detail = _redact_request_secrets(str(exc), params)
-        audit.record(actor, role, op, params.get("username"), params, "failed", detail)
+        diagnostic = describe_failure(op, exc)
+        ensure_error_reference(diagnostic["reference"])
+        logger.warning("operation rejected: %s", json.dumps(diagnostic, separators=(",", ":")))
+        audit.record(actor, role, op, params.get("username"), params, "failed",
+                     f"{detail} (reference: {diagnostic['reference']})",
+                     source_ip=ip, duration_ms=elapsed_ms(), trace=trace)
+        finish_trace()
         if detail != str(exc):
-            raise ValidationError(detail) from None
+            replacement = ValidationError(detail)
+            replacement.diagnostic = diagnostic
+            raise replacement from None
+        exc.diagnostic = diagnostic
         raise
-    except ValueError:
+    except ValueError as exc:
         # ValueError also comes from third-party parsers, whose message may
         # contain generated secrets that are absent from request params.
-        audit.record(actor, role, op, params.get("username"), params, "failed", "invalid request")
-        raise ValueError("invalid request") from None
+        from shared.failures import describe_failure
+        diagnostic = describe_failure(op, exc)
+        ensure_error_reference(diagnostic["reference"])
+        logger.warning("operation rejected: %s", json.dumps(diagnostic, separators=(",", ":")))
+        audit.record(actor, role, op, params.get("username"), params, "failed",
+                     f"invalid request (reference: {diagnostic['reference']})",
+                     source_ip=ip, duration_ms=elapsed_ms(), trace=trace)
+        finish_trace()
+        replacement = ValueError("invalid request")
+        replacement.diagnostic = diagnostic
+        raise replacement from None
     except Exception as exc:  # noqa: BLE001
         # A vendor/OS/DB exception can contain generated credentials that
         # were never present in params. Preserve the class for triage without
         # persisting or returning arbitrary exception text or traceback.
         from shared.failures import OperationFailure, describe_failure
         diagnostic = describe_failure(op, exc)
+        ensure_error_reference(diagnostic["reference"])
         logger.error("operation failure: %s", json.dumps(diagnostic))
         audit.record(actor, role, op, params.get("username"), params, "failed",
-                     f"{diagnostic['error_type']} (reference: {diagnostic['reference']})")
+                     f"{diagnostic['error_type']} (reference: {diagnostic['reference']})",
+                     source_ip=ip, duration_ms=elapsed_ms(), trace=trace)
+        finish_trace()
         raise OperationFailure(diagnostic) from None
     else:
         from shared.token_policy import READ_ONLY_OPERATIONS
         if op not in READ_ONLY_OPERATIONS:
-            audit.record(actor, role, op, params.get("username"), params, "ok")
+            audit.record(actor, role, op, params.get("username"), params, "ok",
+                         source_ip=ip, duration_ms=elapsed_ms(), trace=trace)
         if op in LIFECYCLE_OPS and params.get("username"):
             audit.record_account_event(LIFECYCLE_OPS[op], params["username"], actor=actor, role=role, ip=ip)
+        finish_trace()
         return result
 
 
@@ -1032,29 +1187,52 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         return
 
     if not isinstance(request, dict) or not isinstance(request.get("op"), str) or not isinstance(request.get("params", {}), dict):
-        writer.write(encode_response(False, error_code="bad_request", error_message="malformed RPC request"))
+        from shared.failures import describe_failure
+        exc = ValueError("malformed RPC request")
+        diagnostic = describe_failure("rpc.decode", exc)
+        writer.write(encode_response(False, error_code="bad_request", error_message="malformed RPC request",
+                                     diagnostic=diagnostic))
         await writer.drain()
         writer.close()
         return
     op = request.get("op", "")
     params = request.get("params", {})
     credential = request.get("credential")
+    request_id = normalize_request_id(request.get("request_id"))
 
     try:
-        result = await dispatch(op, dict(params), credential)
-        writer.write(encode_response(True, result=result))
-    except AuthenticationError as exc:
-        writer.write(encode_response(False, error_code="unauthenticated", error_message=str(exc)))
-    except AuthorizationError as exc:
-        writer.write(encode_response(False, error_code="forbidden", error_message=str(exc)))
-    except (ValidationError, ValueError, LookupError) as exc:
-        writer.write(encode_response(False, error_code="bad_request", error_message=str(exc)))
-    except Exception as exc:  # noqa: BLE001
-        writer.write(encode_response(False, error_code="internal_error", error_message=str(exc),
-                                     diagnostic=getattr(exc, 'diagnostic', None)))
-    finally:
+        validate_peer_protocol(request.get("protocol"), local_role="helper", peer_role="API")
+    except RpcProtocolError as exc:
+        writer.write(
+            encode_response(
+                False,
+                error_code="incompatible_protocol",
+                error_message=str(exc),
+            )
+        )
         await writer.drain()
         writer.close()
+        return
+
+    with request_context(request_id):
+        try:
+            result = await dispatch(op, dict(params), credential)
+            writer.write(encode_response(True, result=result))
+        except AuthenticationError as exc:
+            writer.write(encode_response(False, error_code="unauthenticated", error_message=str(exc),
+                                         diagnostic=getattr(exc, 'diagnostic', None)))
+        except AuthorizationError as exc:
+            writer.write(encode_response(False, error_code="forbidden", error_message=str(exc),
+                                         diagnostic=getattr(exc, 'diagnostic', None)))
+        except (ValidationError, ValueError, LookupError) as exc:
+            writer.write(encode_response(False, error_code="bad_request", error_message=str(exc),
+                                         diagnostic=getattr(exc, 'diagnostic', None)))
+        except Exception as exc:  # noqa: BLE001
+            writer.write(encode_response(False, error_code="internal_error", error_message=str(exc),
+                                         diagnostic=getattr(exc, 'diagnostic', None)))
+        finally:
+            await writer.drain()
+            writer.close()
 
 
 CGROUP_RECONCILE_INTERVAL_SECONDS = 30
@@ -1150,10 +1328,34 @@ async def _reconcile_acme_renewals() -> None:
 
 
 async def amain() -> None:
+    # Parse/configure migrations stay backward-compatible in memory here.
+    # Persisting a new schema marker during service startup would make an
+    # otherwise additive N-1 application rollback unable to parse the file.
+    # Fresh installs write the current schema; explicit config maintenance can
+    # call migrate_config_file after the rollback window has closed.
     init_db()
+    try:
+        recovered_updates = updates.recover_interrupted_jobs()
+        if recovered_updates:
+            logger.warning(
+                "Marked %d pre-swap update job(s) interrupted after daemon restart",
+                recovered_updates,
+            )
+    except Exception:
+        logger.exception("Update-job recovery failed at startup")
+    try:
+        handlers_auth.reconcile_login_attempt_keys()
+    except Exception:
+        logger.exception("Login lockout-state reconciliation failed at startup")
     imapsync.recover_interrupted()
     from daemon import jobcredentials
     jobcredentials.migrate()
+    try:
+        recovered_control_tasks = control_tasks.recover_pending()
+        if recovered_control_tasks["resumed"] or recovered_control_tasks["interrupted"]:
+            logger.warning("Control task recovery: %s", recovered_control_tasks)
+    except Exception:
+        logger.exception("Control task recovery failed at startup")
     try:
         await asyncio.get_running_loop().run_in_executor(None, firewall.recover_pending_changes)
     except Exception:
@@ -1183,6 +1385,20 @@ async def amain() -> None:
             logger.error("DB Governor startup reconciliation had %d error(s)", len(governor_result["errors"]))
     except Exception:
         logger.exception("DB Governor reconciliation failed at startup")
+    try:
+        recovered_commands = await asyncio.get_running_loop().run_in_executor(None, cmdjobs.recover_interrupted)
+        if recovered_commands:
+            logger.warning("Marked %d interrupted command job(s) failed", recovered_commands)
+    except Exception:
+        logger.exception("Command job recovery failed at startup")
+    try:
+        ftp_result = await asyncio.get_running_loop().run_in_executor(
+            None, handlers_ftp.reconcile_account_ftp_suspension
+        )
+        if ftp_result["errors"]:
+            logger.error("FTP suspension reconciliation had %d error(s)", len(ftp_result["errors"]))
+    except Exception:
+        logger.exception("FTP suspension reconciliation failed at startup")
     asyncio.create_task(_cgroup_reconcile_loop())
     asyncio.create_task(_domain_log_level_loop())
     asyncio.create_task(_resource_sample_loop())
@@ -1195,10 +1411,16 @@ async def amain() -> None:
         logger.exception("Managed fail2ban reconciliation failed at startup")
     try:
         await asyncio.get_running_loop().run_in_executor(None, nodeapps.bootstrap_all_node_apps)
+    except appunits.AppSocketMigrationError:
+        logger.critical("A NodeJS app could not migrate to private socket activation")
+        raise
     except Exception:
         logger.exception("NodeJS app bootstrap failed at startup")
     try:
         await asyncio.get_running_loop().run_in_executor(None, pythonapps.bootstrap_all_python_apps)
+    except appunits.AppSocketMigrationError:
+        logger.critical("A Python app could not migrate to private socket activation")
+        raise
     except Exception:
         logger.exception("Python app bootstrap failed at startup")
     try:
@@ -1221,6 +1443,9 @@ async def amain() -> None:
         logger.exception("DirectAdmin migration recovery failed at startup")
 
     try:
+        quarantine_result = malware.reconcile_quarantine_ownership()
+        if quarantine_result["repaired"] or quarantine_result["skipped"]:
+            logger.info("Malware quarantine ownership reconciliation: %s", quarantine_result)
         malware.recover_interrupted()
     except Exception:
         logger.exception("Malware scan recovery failed at startup")

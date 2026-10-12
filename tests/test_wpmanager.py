@@ -37,7 +37,10 @@ def test_login_checks_account_and_domain_ownership(sites):
 
 def test_login_token_not_embedded_and_single_use(sites,monkeypatch):
     captured={}
-    monkeypatch.setattr(manager.pwd,'getpwnam',lambda user:SimpleNamespace(pw_dir=str(sites/user)))
+    monkeypatch.setattr(manager.pwd,'getpwnam',lambda user:SimpleNamespace(
+        pw_dir=str(sites/user),pw_uid=1001,pw_gid=1001))
+    monkeypatch.setattr(manager.account_exec,'wrap',lambda *args,**kwargs:
+        (_ for _ in ()).throw(AssertionError('login writer must not enter the saturated web slice')))
     def fake_run(argv,**kwargs): captured.update(argv=argv,**kwargs);return SimpleNamespace(ok=True)
     monkeypatch.setattr(manager,'run',fake_run)
     result=manager.login({'username':'alice','domain':'alice.example'})
@@ -46,7 +49,9 @@ def test_login_token_not_embedded_and_single_use(sites,monkeypatch):
     assert result['token'] not in result['url']
     assert 'hash_equals' in payload['code'] and "'.used', 'x'" in payload['code']
     assert "@unlink(__FILE__ . '.used')" not in payload['code']
-    assert captured['argv'][:3]==['runuser','-u','alice']
+    assert captured['argv'][:2]==['/usr/bin/python3','-c']
+    assert captured['uid']==1001 and captured['gid']==1001
+    assert captured['cwd']==str(sites/'alice')
     assert result['expires_in']==90
 
 def test_clone_refuses_overwrite_before_database_allocation(sites,monkeypatch):
@@ -315,7 +320,7 @@ def test_remove_worker_database_change_leaves_files_intact(worker):
     assert (root/'wp-config.php').read_text()=='original config'
 
 
-def test_customer_cannot_scan_other_accounts():
+def test_customer_cannot_scan_other_accounts(isolated_db):
     customer=Identity(panel_user_id=1,username='alice',role='customer',account_id=1,auth_method='session')
     with pytest.raises(HTTPException):api.scan_installations(api.ScanBody(),customer)
     with pytest.raises(HTTPException):api.scan_installations(api.ScanBody(username='bob'),customer)
@@ -337,6 +342,8 @@ def test_hard_removal_commits_only_after_database_cleanup(sites, monkeypatch, da
         if database_failure: raise RuntimeError('database unavailable')
     monkeypatch.setattr(manager.wordpress.handlers_database.mariadb,'drop_database',drop_database)
     monkeypatch.setattr(manager.wordpress.handlers_database.mariadb,'drop_db_user',lambda name:events.append('user'))
+    monkeypatch.setattr(manager.wordpress.handlers_database.mariadb,'revoke_all',lambda *args:None)
+    monkeypatch.setattr(manager.wordpress.handlers_database.mariadb,'grant_all',lambda *args:None)
     monkeypatch.setattr(manager,'_removal_worker',lambda u,r,c:events.append(c['action']))
     def submit(*args,**kw):
         try: kw['on_success']()

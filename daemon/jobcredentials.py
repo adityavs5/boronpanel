@@ -3,7 +3,7 @@ from sqlalchemy import select
 
 from daemon import appcrypto
 from shared.db import write_session
-from shared.models import AppInstallJob, WordPressJob, CommandRun, CpanelImportJob, AccountArchiveImportJob
+from shared.models import AccountArchiveImportJob, AppInstallJob, CommandRun, ControlTask, CpanelImportJob, WordPressJob
 
 PREFIX = 'encrypted:v1:'
 
@@ -26,7 +26,9 @@ def migrate() -> int:
         session.connection().exec_driver_sql('BEGIN IMMEDIATE')
         for model, field in ((WordPressJob, "admin_password"), (AppInstallJob, "admin_password"),
                              (CommandRun, "revealed_secret"), (CpanelImportJob, "initial_password"),
-                             (AccountArchiveImportJob, "initial_password")):
+                             (AccountArchiveImportJob, "initial_password"),
+                             (ControlTask, "secret_params_enc"),
+                             (ControlTask, "one_time_secret_enc")):
             for row in session.scalars(select(model).where(getattr(model, field).is_not(None))):
                 if not getattr(row, field).startswith(PREFIX):
                     setattr(row, field, seal(getattr(row, field)))

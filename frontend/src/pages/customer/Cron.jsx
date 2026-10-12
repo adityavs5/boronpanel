@@ -17,6 +17,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/DropdownMenu'
 import { toast } from '@/components/ui/Toast'
+import { LongValue } from '@/components/ui/LongValue'
 
 const SCHEDULE_FIELDS = [
   ['minute', 'Minute'],
@@ -228,11 +229,7 @@ export default function Cron() {
       header: 'Command',
       searchable: true,
       cellClassName: 'max-w-[22rem]',
-      render: (r) => (
-        <span className="block truncate font-mono text-xs text-muted-foreground" title={r.command}>
-          {r.command}
-        </span>
-      ),
+      render: (r) => <LongValue value={r.command} label={`${r.label || 'cron job'} command`} />,
     },
     {
       key: 'actions',

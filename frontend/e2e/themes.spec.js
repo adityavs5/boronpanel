@@ -51,7 +51,7 @@ for (const role of ['admin', 'customer']) {
         await expect(page.locator('.usage-row').filter({ hasText: 'Subdomains' })).toContainText('3 / 10')
         await expect(page.locator('.usage-row').filter({ hasText: 'Email Accounts' })).toContainText('8 / 25')
         const toolCounts = await page.locator('.tool-grid').evaluateAll(grids => grids.map(grid => grid.querySelectorAll('.tool-link').length))
-        expect(toolCounts).toEqual([7, 6, 6, 6, 5, 6, 6])
+        expect(toolCounts).toEqual([7, 6, 6, 6, 5, 7, 6])
       }
       if (skin === 'evolution') {
         const iconSizes = await page.locator('.tool-icon').evaluateAll(items => items.map(item => {

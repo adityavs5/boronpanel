@@ -120,6 +120,27 @@ def get_status(params: dict) -> dict:
             select(Domain.domain).join(Account, Account.id == Domain.account_id)
             .where(Account.status != "terminated").order_by(Domain.domain)
         ).all()
+    now = utcnow()
+    review_due = settings_row.detect_review_due_at if settings_row else None
+    if review_due is not None and review_due.tzinfo is None:
+        review_due = review_due.replace(tzinfo=dt.timezone.utc)
+    recent = list_blocked_requests({"limit": 100})["events"] if settings_row and settings_row.detect_started_at else []
+    if settings_row and settings_row.detect_started_at:
+        started = settings_row.detect_started_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=dt.timezone.utc)
+        filtered = []
+        for event in recent:
+            try:
+                observed = dt.datetime.strptime(event.get("timestamp") or "", "%d/%b/%Y:%H:%M:%S %z")
+            except ValueError:
+                # Keep an unparseable event visible rather than silently
+                # claiming it happened inside or outside the trial window.
+                filtered.append(event)
+            else:
+                if observed >= started:
+                    filtered.append(event)
+        recent = filtered
     return {
         "available": is_available(),
         "enabled": mode != "disabled",
@@ -129,6 +150,14 @@ def get_status(params: dict) -> dict:
         "wp_login_limit": settings_row.wp_login_limit if settings_row else 10,
         "wp_xmlrpc_limit": settings_row.wp_xmlrpc_limit if settings_row else 5,
         "wp_rate_window_seconds": settings_row.wp_rate_window_seconds if settings_row else 60,
+        "detect_trial": {
+            "active": bool(settings_row and settings_row.detect_started_at and not settings_row.detect_reviewed_at),
+            "started_at": settings_row.detect_started_at.isoformat() if settings_row and settings_row.detect_started_at else None,
+            "review_due_at": settings_row.detect_review_due_at.isoformat() if settings_row and settings_row.detect_review_due_at else None,
+            "reviewed_at": settings_row.detect_reviewed_at.isoformat() if settings_row and settings_row.detect_reviewed_at else None,
+            "review_ready": bool(review_due and now >= review_due),
+            "false_positive_review": recent,
+        },
         "domain_overrides": [o.domain for o in overrides if _domain_mode(o) == "disabled"],
         "domain_policies": [{"domain": o.domain, "mode": _domain_mode(o)} for o in overrides],
         "custom_rules": rule_list,
@@ -226,12 +255,18 @@ def update_settings(params: dict) -> dict:
                 "wp_login_limit": row.wp_login_limit,
                 "wp_xmlrpc_limit": row.wp_xmlrpc_limit,
                 "wp_rate_window_seconds": row.wp_rate_window_seconds,
+                "detect_started_at": row.detect_started_at,
+                "detect_review_due_at": row.detect_review_due_at,
+                "detect_reviewed_at": row.detect_reviewed_at,
             }
         else:
             row = WafSettings(id=1)
             session.add(row)
         row.mode = mode
         row.enabled = mode != "disabled"
+        if mode != "detect" and not params.get("preserve_trial"):
+            row.detect_started_at = None
+            row.detect_review_due_at = None
         for key, value in values.items():
             setattr(row, key, value)
     def restore():
@@ -248,6 +283,63 @@ def update_settings(params: dict) -> dict:
                     setattr(row, key, value)
     _refresh_with_rollback(restore)
     return {"enabled": mode != "disabled", "mode": mode, **values}
+
+
+def start_detect_trial(params: dict | None = None) -> dict:
+    """Enable seven days of detection without ever enabling blocking."""
+    current = get_status({})
+    update_settings({
+        "mode": "detect",
+        "paranoia_level": current["paranoia_level"],
+        "anomaly_threshold": current["anomaly_threshold"],
+        "wp_login_limit": current["wp_login_limit"],
+        "wp_xmlrpc_limit": current["wp_xmlrpc_limit"],
+        "wp_rate_window_seconds": current["wp_rate_window_seconds"],
+        "preserve_trial": True,
+    })
+    now = utcnow()
+    with write_session() as session:
+        row = session.get(WafSettings, 1)
+        row.detect_started_at = now
+        row.detect_review_due_at = now + dt.timedelta(days=7)
+        row.detect_reviewed_at = None
+    return get_status({})
+
+
+def finish_detect_trial(params: dict) -> dict:
+    action = str(params.get("action") or "")
+    modes = {
+        "continue_detect": "detect",
+        "enable_protection": "protect",
+        "disable": "disabled",
+    }
+    if action not in modes:
+        raise ValidationError("action must be continue_detect, enable_protection, or disable")
+    if not bool(params.get("confirm")):
+        raise ValidationError("WAF detection review requires confirm=true")
+    with write_session() as session:
+        trial = session.get(WafSettings, 1)
+        if trial is None or trial.detect_started_at is None or trial.detect_reviewed_at is not None:
+            raise ValidationError("no active WAF detection review exists")
+        due = trial.detect_review_due_at
+        if due is not None and due.tzinfo is None:
+            due = due.replace(tzinfo=dt.timezone.utc)
+        if action == "enable_protection" and due is not None and utcnow() < due:
+            raise ValidationError(f"protection can be enabled after the detection review ends on {due.date().isoformat()}")
+    current = get_status({})
+    update_settings({
+        "mode": modes[action],
+        "paranoia_level": current["paranoia_level"],
+        "anomaly_threshold": current["anomaly_threshold"],
+        "wp_login_limit": current["wp_login_limit"],
+        "wp_xmlrpc_limit": current["wp_xmlrpc_limit"],
+        "wp_rate_window_seconds": current["wp_rate_window_seconds"],
+        "preserve_trial": True,
+    })
+    with write_session() as session:
+        row = session.get(WafSettings, 1)
+        row.detect_reviewed_at = utcnow()
+    return get_status({})
 
 
 def set_domain_override(params: dict) -> dict:
@@ -500,7 +592,7 @@ def _parse_audit_log(text: str) -> list[dict]:
 def list_blocked_requests(params: dict) -> dict:
     domain_filter = params.get("domain")
     limit = int(params.get("limit", 50) or 50)
-    result = run(["tail", "-n", "5000", WAF_AUDIT_LOG], timeout=15)
+    result = run(["tail", "-n", "5000", WAF_AUDIT_LOG], timeout=15, output_limit=8 * 1024 * 1024)
     events = _parse_audit_log(result.stdout)
     if domain_filter:
         events = [e for e in events if e["host"] == domain_filter]

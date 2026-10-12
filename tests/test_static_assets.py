@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from testsupport.sync_asgi import SyncASGIClient as TestClient
 from api.static_assets import PanelStaticFiles
 
 

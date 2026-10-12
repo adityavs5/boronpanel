@@ -7,7 +7,7 @@ import re
 import shutil
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from pathlib import Path
 
 from sqlalchemy import select
@@ -16,10 +16,11 @@ from daemon.procutil import run
 from shared.db import write_session
 from shared.models import StackJob, utcnow
 from shared.validation import ValidationError
+from daemon import php_lifecycle
 
 PHP_TARGETS = {"8.1", "8.2", "8.3", "8.4", "8.5"}
 COMPONENTS = {"openlitespeed", "php", "mariadb"}
-ACTIONS = {"install", "update"}
+ACTIONS = {"install", "update", "remove"}
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stack-maintenance")
 UPDATE_STATE_PATH = Path("/var/lib/boron/stack-update-state.json")
 UPDATE_INTERVAL_SECONDS = 24 * 60 * 60
@@ -70,6 +71,8 @@ def _installed_packages(pattern: str) -> list[str]:
 
 
 def _package_catalog(component: str, action: str, target: str) -> tuple[list[str], list[str]]:
+    if action == "remove" and component != "php":
+        raise ValidationError("Only PHP runtimes can be removed from Stack Manager")
     if component == "openlitespeed":
         if target != "latest-supported":
             raise ValidationError("Unsupported OpenLiteSpeed target")
@@ -78,7 +81,7 @@ def _package_catalog(component: str, action: str, target: str) -> tuple[list[str
         if target not in PHP_TARGETS:
             raise ValidationError("Unsupported PHP version")
         compact = target.replace(".", "")
-        if action == "update":
+        if action in {"update", "remove"}:
             candidates = _installed_packages(f"lsphp{compact}*")
         else:
             candidates = [f"lsphp{compact}{suffix}" for suffix in PHP_PACKAGE_SUFFIXES]
@@ -89,6 +92,8 @@ def _package_catalog(component: str, action: str, target: str) -> tuple[list[str
         candidates = [name for name in candidates if not name.endswith("-dbgsym")]
     else:
         raise ValidationError("Unsupported stack component")
+    if action == "remove":
+        return candidates, []
     policies = [_apt_policy(name) for name in candidates]
     packages = [row["package"] for row in policies if row["available"] and (action != "update" or row["update_available"])]
     skipped = [row["package"] for row in policies if not row["available"]]
@@ -127,7 +132,19 @@ def inventory(params: dict | None = None) -> dict:
         compact = target.replace(".", "")
         binary = f"/usr/local/lsws/lsphp{compact}/bin/lsphp"
         version = _version([binary, "-v"], r"PHP\s+([0-9.]+)")
-        php.append({"target": target, "installed": version is not None, "version": version})
+        opcache = _apt_policy(f"lsphp{compact}-opcache")
+        php.append({
+            "target": target,
+            "installed": version is not None,
+            **php_lifecycle.lifecycle(target),
+            "version": version,
+            "opcache": {
+                "package": opcache["package"],
+                "available": opcache["available"],
+                "installed": opcache["installed"] is not None,
+                "version": opcache["installed"],
+            },
+        })
     mariadb = _version(["/usr/bin/mariadb", "--version"], r"Distrib\s+([0-9.]+)")
     with write_session() as session:
         jobs = session.scalars(select(StackJob).order_by(StackJob.created_at.desc()).limit(50)).all()
@@ -150,6 +167,8 @@ def inventory(params: dict | None = None) -> dict:
             "parallel_jobs": 1,
             "mariadb": "Boron supports the Ubuntu 24.04 MariaDB 10.11 series. Cross-series database upgrades require a separate migration workflow.",
         },
+        "php_policy": php_lifecycle.get_policy({}),
+        "php_session_migration": php_lifecycle.session_migration_preview({}),
     }
 
 
@@ -223,9 +242,19 @@ def preview(params: dict) -> dict:
         blockers.append("No package updates are currently available for this component")
     if action == "install" and not packages:
         blockers.append("No installable packages are available for this target")
+    usage = {"accounts": [], "domains": [], "count": 0}
+    if component == "php" and action == "remove":
+        usage = php_lifecycle.version_usage(target)
+        if usage["count"]:
+            blockers.append(
+                f"PHP {target} is still assigned to {usage['count']} account or domain setting(s)"
+            )
+        if not packages:
+            blockers.append(f"PHP {target} is not installed")
     return {
         "component": component, "action": action, "target": target,
         "packages": packages, "skipped_unavailable_packages": skipped, "free_bytes": free, "blockers": blockers,
+        "usage": usage,
         "impact": "The affected service may restart briefly after package validation.",
         "rollback": "Configuration is backed up before package changes. Package downgrades are not automatic.",
     }
@@ -325,7 +354,7 @@ def _run_job(job_id: int) -> None:
             return
         if not packages:
             raise RuntimeError("No installable packages are available for this target")
-        command = ["apt-get", "install", "-y"]
+        command = ["apt-get", "remove", "-y"] if row.action == "remove" else ["apt-get", "install", "-y"]
         if row.action == "update":
             command.append("--only-upgrade")
         _set(job_id, phase="simulation", progress_pct=30, detail="Simulating the package transaction")
@@ -377,6 +406,10 @@ def _run_job(job_id: int) -> None:
             tables = run(["mariadb-check", "--all-databases", "--check-upgrade", "--silent"], timeout=900)
             if not tables.ok:
                 raise RuntimeError("MariaDB post-update table validation failed: " + (tables.stderr or tables.stdout)[-2500:])
+        elif row.action == "remove":
+            compact = row.target.replace(".", "")
+            if Path(f"/usr/local/lsws/lsphp{compact}/bin/lsphp").exists():
+                raise RuntimeError("PHP package removal completed but the runtime binary is still present")
         else:
             compact = row.target.replace(".", "")
             check = run([f"/usr/local/lsws/lsphp{compact}/bin/lsphp", "-v"], timeout=30)

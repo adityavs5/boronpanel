@@ -37,7 +37,9 @@ const MoreMenu = lazy(() => import('@/pages/customer/MoreMenu'))
 const Security = lazy(() => import('@/pages/customer/Security'))
 const Logs = lazy(() => import('@/pages/customer/Logs'))
 const DiskUsage = lazy(() => import('@/pages/customer/DiskUsage'))
+const SiteHealth = lazy(() => import('@/pages/customer/SiteHealth'))
 const MalwareScanner = lazy(() => import('@/pages/MalwareScanner'))
+const Tasks = lazy(() => import('@/pages/Tasks'))
 
 const Accounts = lazy(() => import('@/pages/admin/Accounts'))
 const CreateAccount = lazy(() => import('@/pages/admin/CreateAccount'))
@@ -47,6 +49,8 @@ const PlanEditor = lazy(() => import('@/pages/admin/PlanEditor'))
 const Branding = lazy(() => import('@/pages/admin/Branding'))
 const Templates = lazy(() => import('@/pages/admin/Templates'))
 const ServerHealth = lazy(() => import('@/pages/admin/ServerHealth'))
+const Diagnostics = lazy(() => import('@/pages/admin/Diagnostics'))
+const Retention = lazy(() => import('@/pages/admin/Retention'))
 const Services = lazy(() => import('@/pages/admin/Services'))
 const BandwidthRanking = lazy(() => import('@/pages/admin/BandwidthRanking'))
 const MailQueue = lazy(() => import('@/pages/admin/MailQueue'))
@@ -170,7 +174,9 @@ export const router = createBrowserRouter(
         { path: 'security', element: <Security /> },
         { path: 'logs', element: customer(<Logs />) },
         { path: 'disk-usage', element: customer(<DiskUsage />) },
+        { path: 'site-health', element: customer(<SiteHealth />) },
         { path: 'malware', element: <MalwareScanner /> },
+        { path: 'tasks', element: <ProtectedRoute><Tasks /></ProtectedRoute> },
 
         // Admin pages.
         { path: 'accounts', element: admin(<Accounts />) },
@@ -192,6 +198,8 @@ export const router = createBrowserRouter(
         { path: 'accounts/:username/redirects', element: admin(<DomainFeature feature="redirects" />) },
         { path: 'accounts/:username/domains/:domain', element: admin(<DomainDetail />) },
         { path: 'health', element: admin(<ServerHealth />) },
+        { path: 'diagnostics', element: admin(<Diagnostics />) },
+        { path: 'retention', element: admin(<Retention />) },
         { path: 'services', element: admin(<Services />) },
         { path: 'bandwidth', element: admin(<BandwidthRanking />) },
         { path: 'mail-queue', element: admin(<MailQueue />) },

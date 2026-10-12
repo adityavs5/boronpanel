@@ -29,7 +29,7 @@ from shared.db import write_session
 from shared.models import Account, Domain, DnsZone, SslExpiryNotice, WordPressSiteState
 from shared.validation import validate_domain, validate_username
 
-from daemon import cloudflare_accounts, dnsprovider, events, safeio
+from daemon import audit, cloudflare_accounts, dnsprovider, events, safeio
 from daemon.ols import letsencrypt_cert_paths
 from daemon.procutil import run
 
@@ -246,7 +246,8 @@ def issue_certificate(params: dict) -> dict:
         raise SslError("letsencrypt_email is not set in boron.toml")
 
     if _service_hostname(domain):
-        preflight = service_certificate_diagnostics({"domain": domain})
+        with audit.step("SSL: verify service hostname preflight"):
+            preflight = service_certificate_diagnostics({"domain": domain})
         if not preflight["dns"]["ok"]:
             raise SslError(
                 f"DNS for '{domain}' must point only to this server before issuance "
@@ -264,7 +265,13 @@ def issue_certificate(params: dict) -> dict:
         if www_used and session.scalar(select(Domain).where(Domain.domain == 'www.' + domain)) is not None:
             raise SslError('The www hostname belongs to a separate site; update the WordPress address before requesting its certificate')
     extra_names = ['--expand', '-d', 'www.' + domain] if www_used else []
-    mode, challenge_args = _challenge_plan(domain)
+    with audit.step("SSL: select ACME challenge"):
+        mode, challenge_args = _challenge_plan(domain)
+    audit.change(
+        "certificate_status",
+        "present" if Path(letsencrypt_cert_paths(domain)[1]).exists() else "missing",
+        "issued",
+    )
     # Phase 3 feature 8: the SSL dashboard's "renew" button targets a
     # domain that may already have a perfectly valid, non-expiring-soon
     # cert -- certbot's own default behavior is to silently skip
@@ -289,7 +296,8 @@ def issue_certificate(params: dict) -> dict:
         *force_args,
         *challenge_args,
     ]
-    result = run(args, timeout=180)
+    with audit.step("SSL: request certificate from ACME") as action:
+        result = action.capture(run(args, timeout=180))
     if not result.ok:
         raise SslError(f"certbot failed ({mode}): {result.stderr.strip() or result.stdout.strip()}")
 
@@ -298,11 +306,13 @@ def issue_certificate(params: dict) -> dict:
     canonical_mail = settings.mail_hostname or settings.webmail_hostname or settings.panel_hostname
     if domain == canonical_mail:
         from scripts.ssl_deploy_hook import _deploy_mail_service_certificate
-        _deploy_mail_service_certificate(domain)
+        with audit.step("SSL: deploy mail service certificate"):
+            _deploy_mail_service_certificate(domain)
 
     response = {"domain": domain, "challenge": mode, "status": "issued"}
     if _service_hostname(domain):
-        response["diagnostics"] = service_certificate_diagnostics({"domain": domain})
+        with audit.step("SSL: verify served certificate"):
+            response["diagnostics"] = service_certificate_diagnostics({"domain": domain})
         if not response["diagnostics"]["sni"]["ok"]:
             raise SslError("Certificate was issued but the service did not present it over HTTPS; review diagnostics")
     return response
@@ -343,6 +353,11 @@ def issue_wildcard_certificate(params: dict) -> dict:
             "supports wildcard names, and it needs the _acme-challenge TXT to be creatable through the "
             "zone's own DNS API. Configure public nameserver delegation to the local DNS server, or activate the authoritative Cloudflare zone in Boron first."
         )
+    audit.change(
+        "certificate_status",
+        "present" if Path(letsencrypt_cert_paths(domain)[1]).exists() else "missing",
+        "issued_wildcard",
+    )
 
     force_args = ["--force-renewal"] if params.get("force") else []
     args = [
@@ -357,7 +372,8 @@ def issue_wildcard_certificate(params: dict) -> dict:
         *force_args,
         *dns01,
     ]
-    result = run(args, timeout=180)
+    with audit.step("SSL: request wildcard certificate from ACME") as action:
+        result = action.capture(run(args, timeout=180))
     if not result.ok:
         raise SslError(f"certbot failed (wildcard dns-01): {result.stderr.strip() or result.stdout.strip()}")
 

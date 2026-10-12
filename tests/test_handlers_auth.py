@@ -302,3 +302,55 @@ def test_login_attempt_reservation_is_atomic_under_parallel_requests(isolated_db
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(reserve, range(workers)))
     assert sum(not result['locked'] for result in results) == hauth.LOCKOUT_THRESHOLD - initial
+
+
+def test_login_names_use_only_bounded_keyed_lockout_rows(isolated_db, monkeypatch):
+    from sqlalchemy import select
+    from shared.db import write_session
+    from shared.models import LoginAttempt
+
+    monkeypatch.setattr(hauth, "LOGIN_BUCKET_COUNT", 4)
+    for index in range(20):
+        hauth.login_begin({"username": f"invented-{index}", "password": "wrong"})
+    with write_session() as db:
+        rows = db.scalars(select(LoginAttempt)).all()
+        assert 1 <= len(rows) <= 4
+        assert all(row.username.startswith("$login-bucket-") for row in rows)
+
+
+def test_oversized_login_name_is_uniformly_invalid_without_state(isolated_db):
+    from sqlalchemy import select
+    from shared.db import write_session
+    from shared.models import LoginAttempt
+
+    assert hauth.login_begin({"username": "a" * 257, "password": "wrong"}) == {"valid": False}
+    with write_session() as db:
+        assert db.scalar(select(LoginAttempt)) is None
+
+
+def test_reconcile_login_attempt_keys_removes_legacy_and_rotated_rows(isolated_db):
+    from sqlalchemy import select
+    from shared.db import write_session
+    from shared.models import LoginAttempt
+
+    hauth.create_administrator({"username": "qaadmin", "password": "StrongPass123!"})
+    current = hauth._login_bucket("qaadmin", known_user=True)
+    with write_session() as session:
+        session.add_all([
+            LoginAttempt(username="invented-before-upgrade", failed_count=2),
+            LoginAttempt(username="$login-user-stale-secret$", failed_count=2),
+            LoginAttempt(username="$login-bucket-0001$", failed_count=2),
+            LoginAttempt(username=current, failed_count=2),
+        ])
+    assert hauth.reconcile_login_attempt_keys() == {"removed": 2}
+    with write_session() as session:
+        assert set(session.scalars(select(LoginAttempt.username)).all()) == {
+            "$login-bucket-0001$", current,
+        }
+
+
+def test_panel_user_creation_rejects_unusable_login_name(isolated_db):
+    with pytest.raises(ValidationError, match="valid panel login"):
+        hauth.create_panel_user({
+            "username": "a" * 65, "password": "SuperSecret123!", "role": "admin",
+        })

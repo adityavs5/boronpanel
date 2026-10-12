@@ -152,13 +152,14 @@ def _create_venv(username: str, name: str) -> None:
         raise RuntimeError(f"failed to install gunicorn/uvicorn: {result.stderr.strip()[:2000] or result.stdout.strip()[:2000]}")
 
 
-def _exec_start(venv_dir: str, app_type: str, entry_point: str, port: int) -> str:
+def _exec_start(venv_dir: str, app_type: str, entry_point: str, port: int, *, use_socket: bool = True) -> str:
     if app_type == "asgi":
-        return f"{venv_dir}/bin/uvicorn {entry_point} --host 127.0.0.1 --port {port}"
-    return f"{venv_dir}/bin/gunicorn --bind 127.0.0.1:{port} {entry_point}"
+        return f"{venv_dir}/bin/uvicorn {entry_point} --fd 3" if use_socket else f"{venv_dir}/bin/uvicorn {entry_point} --host 127.0.0.1 --port {port}"
+    return f"{venv_dir}/bin/gunicorn --bind fd://3 {entry_point}" if use_socket else f"{venv_dir}/bin/gunicorn --bind 127.0.0.1:{port} {entry_point}"
 
 
-def _write_unit(username: str, app_id: int, name: str, entry_point: str, app_type: str, port: int, env_vars: dict) -> str:
+def _write_unit(username: str, app_id: int, name: str, entry_point: str, app_type: str, port: int,
+                env_vars: dict, *, use_socket: bool = True) -> str:
     unit = appunits.unit_name(KIND, username, app_id)
     app_dir = _app_dir(username, name)
     venv_dir = _venv_dir(username, name)
@@ -180,7 +181,7 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, app_typ
         f"Group={username}\n"
         f"WorkingDirectory={app_dir}\n"
         f"EnvironmentFile={appunits.env_file_path(unit)}\n"
-        f"ExecStart={appunits.logged_exec(_exec_start(venv_dir, app_type, entry_point, port), log_path)}\n"
+        f"ExecStart={appunits.logged_exec(_exec_start(venv_dir, app_type, entry_point, port, use_socket=use_socket), log_path)}\n"
         f"Slice={cgroups.account_slice_name(username)}\n"
         "NoNewPrivileges=true\n"
         "PrivateTmp=true\n"
@@ -199,6 +200,8 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, app_typ
         "WantedBy=multi-user.target\n"
     )
     appunits.write_unit_file(unit, content)
+    if use_socket:
+        appunits.write_socket_unit(unit, KIND, app_id)
     appunits.daemon_reload()
     return unit
 
@@ -230,6 +233,7 @@ def create_app(params: dict) -> dict:
             port=port,
             env_vars=appcrypto.encrypt_env(env_vars),
             enabled=False,
+            backend_mode="socket",
         )
         session.add(row)
         session.flush()
@@ -250,7 +254,7 @@ def create_app(params: dict) -> dict:
             orphan = session.get(PythonApp, app_id)
             if orphan is not None:
                 session.delete(orphan)
-        appunits.remove_unit(appunits.unit_name(KIND, username, app_id))
+        appunits.remove_app_unit(appunits.unit_name(KIND, username, app_id))
         raise
 
     with write_session() as session:
@@ -271,12 +275,13 @@ def update_app(params: dict) -> dict:
         if "env_vars" in params:
             row.env_vars = appcrypto.encrypt_env(validate_env_vars(params["env_vars"] or {}))
         session.flush()
-        name, entry_point, app_type, port, enabled = row.name, row.entry_point, row.app_type, row.port, row.enabled
+        name, entry_point, app_type, port, enabled, backend_mode = row.name, row.entry_point, row.app_type, row.port, row.enabled, row.backend_mode
         env_vars = appcrypto.decrypt_env(row.env_vars) if row.env_vars else {}
 
-    unit = _write_unit(username, app_id, name, entry_point, app_type, port, env_vars)
+    use_socket = backend_mode == "socket"
+    unit = _write_unit(username, app_id, name, entry_point, app_type, port, env_vars, use_socket=use_socket)
     if enabled:
-        appunits.restart(unit)
+        (appunits.restart_app if use_socket else appunits.restart)(unit)
 
     with write_session() as session:
         row = session.get(PythonApp, app_id)
@@ -290,7 +295,7 @@ def delete_app(params: dict) -> dict:
     with write_session() as session:
         account, row = _get_row(session, username, app_id)
         domain_name, name = row.domain, row.name
-        appunits.remove_unit(appunits.unit_name(KIND, username, app_id))
+        appunits.remove_app_unit(appunits.unit_name(KIND, username, app_id))
         session.delete(row)
         account_snapshot = account
 
@@ -304,7 +309,8 @@ def start_app(params: dict) -> dict:
     with write_session() as session:
         _account, row = _get_row(session, username, app_id)
         row.enabled = True
-    appunits.enable_start(appunits.unit_name(KIND, username, app_id))
+        use_socket = row.backend_mode == "socket"
+    (appunits.enable_start_app if use_socket else appunits.enable_start)(appunits.unit_name(KIND, username, app_id))
     return get_app({"username": username, "id": app_id})
 
 
@@ -314,7 +320,8 @@ def stop_app(params: dict) -> dict:
     with write_session() as session:
         _account, row = _get_row(session, username, app_id)
         row.enabled = False
-    appunits.stop_disable(appunits.unit_name(KIND, username, app_id))
+        use_socket = row.backend_mode == "socket"
+    (appunits.stop_disable_app if use_socket else appunits.stop_disable)(appunits.unit_name(KIND, username, app_id))
     return get_app({"username": username, "id": app_id})
 
 
@@ -322,8 +329,9 @@ def restart_app(params: dict) -> dict:
     username = validate_username(params["username"])
     app_id = int(params["id"])
     with write_session() as session:
-        _account, _row = _get_row(session, username, app_id)
-    appunits.restart(appunits.unit_name(KIND, username, app_id))
+        _account, row = _get_row(session, username, app_id)
+        use_socket = row.backend_mode == "socket"
+    (appunits.restart_app if use_socket else appunits.restart)(appunits.unit_name(KIND, username, app_id))
     return get_app({"username": username, "id": app_id})
 
 
@@ -407,7 +415,7 @@ def terminate_account_python_apps(account: Account) -> None:
     with write_session() as session:
         rows = session.scalars(select(PythonApp).where(PythonApp.account_id == account.id)).all()
         for row in rows:
-            appunits.remove_unit(appunits.unit_name(KIND, account.username, row.id))
+            appunits.remove_app_unit(appunits.unit_name(KIND, account.username, row.id))
             session.delete(row)
 
 
@@ -421,24 +429,55 @@ def bootstrap_all_python_apps() -> None:
     with write_session() as session:
         rows = session.scalars(select(PythonApp)).all()
         snapshot = [
-            (r.id, r.account_id, r.name, r.entry_point, r.app_type, r.port, r.env_vars, r.enabled)
+            (r.id, r.account_id, r.name, r.entry_point, r.app_type, r.port, r.env_vars, r.enabled, r.backend_mode)
             for r in rows
         ]
         usernames = {a.id: a.username for a in session.scalars(select(Account)).all()}
 
-    for app_id, account_id, name, entry_point, app_type, port, env_vars_enc, enabled in snapshot:
+    for app_id, account_id, name, entry_point, app_type, port, env_vars_enc, enabled, backend_mode in snapshot:
         username = usernames.get(account_id)
         if username is None:
             continue
+        migration = backend_mode != "socket"
+        routed_socket = False
         try:
             env_vars = appcrypto.decrypt_env(env_vars_enc) if env_vars_enc else {}
-            unit = _write_unit(username, app_id, name, entry_point, app_type, port, env_vars)
+            unit = _write_unit(username, app_id, name, entry_point, app_type, port, env_vars, use_socket=True)
             _provision_filesystem(username, name)
+            if migration:
+                if enabled:
+                    appunits.enable_start(appunits.socket_unit_name(unit))
+                with write_session() as session:
+                    row = session.get(PythonApp, app_id)
+                    if row is not None:
+                        row.backend_mode = "socket"
+                with write_session() as session:
+                    account = session.get(Account, account_id)
+                    if account is not None:
+                        session.expunge(account)
+                        ols.refresh_vhost(account)
+                routed_socket = True
             if enabled:
-                appunits.enable_start_in_slice(unit, cgroups.account_slice_name(username))
-        except Exception:
+                appunits.enable_start_app(unit)
+                if not appunits.private_socket_ready(unit, KIND, app_id):
+                    raise RuntimeError("socket-backed Python service did not become ready")
+        except Exception as exc:
             import logging
 
             logging.getLogger("borond.pythonapps").exception(
                 "failed to bootstrap Python app %d for account '%s'", app_id, username
             )
+            if migration:
+                if routed_socket:
+                    appunits.stop_disable_app(appunits.unit_name(KIND, username, app_id))
+                else:
+                    with write_session() as session:
+                        row = session.get(PythonApp, app_id)
+                        if row is not None:
+                            row.backend_mode = "legacy"
+                    _write_unit(username, app_id, name, entry_point, app_type, port,
+                                appcrypto.decrypt_env(env_vars_enc) if env_vars_enc else {}, use_socket=False)
+                    appunits.remove_socket_unit(appunits.unit_name(KIND, username, app_id))
+                raise appunits.AppSocketMigrationError(
+                    f"Python app {app_id} could not migrate to its private socket"
+                ) from exc

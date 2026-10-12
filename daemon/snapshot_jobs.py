@@ -4,7 +4,7 @@ Customer reads always include the account username; storage paths and credential
 are resolved here, never accepted from customer requests.
 """
 from contextlib import contextmanager
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 import calendar
 import configparser
 import datetime as dt
@@ -27,8 +27,8 @@ from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from sqlalchemy import select
-from daemon import snapshot_storage as storage
+from sqlalchemy import select, text
+from daemon import audit, snapshot_storage as storage
 from daemon.appcrypto import decrypt_env, decrypt_secret, encrypt_env, encrypt_secret
 from daemon.procutil import run
 from daemon.database_operations import serialized_worker
@@ -41,6 +41,9 @@ logger = logging.getLogger('borond.snapshot_jobs')
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='snapshots')
 FREQUENCIES = {'manual': 0, 'hourly': 3600, 'daily': 86400, 'weekly': 604800, 'monthly': 2592000}
 ACTIVE = ('pending', 'running')
+DOWNLOAD_FREE_RESERVE = 2 * 1024 * 1024 * 1024
+DOWNLOAD_ACCOUNT_MIN_BUDGET = 2 * 1024 * 1024 * 1024
+DOWNLOAD_MIN_RESERVATION = 512 * 1024 * 1024
 
 
 def private_directory(*parts):
@@ -872,6 +875,11 @@ def scheduled_due(policy, now=None):
 
 
 def queue_policy(params):
+    with audit.step("backup: validate policy and queue snapshots"):
+        return _queue_policy(params)
+
+
+def _queue_policy(params):
     ids=[]
     with lock('queue'), write_session() as session:
         policy=session.get(SnapshotPolicy,storage._positive(params['id']))
@@ -895,6 +903,7 @@ def queue_policy(params):
                     options=options,status='pending',trigger='scheduled' if scheduled else 'manual')
                 session.add(row);session.flush();ids.append(row.id)
         if ids:policy.last_queued_at=utcnow()
+    audit.change("snapshot_runs", None, {"ids": ids, "status": "pending"})
     for ident in ids:_executor.submit(execute_run,ident)
     return {'run_ids':ids,'skipped_busy_accounts':skipped}
 
@@ -1271,7 +1280,7 @@ def browse(params):
 def _download_dict(row):
     return {'id':row.id,'run_id':row.run_id,'account_id':row.account_id,'status':row.status,
         'progress_message':row.progress_message,'filename':row.filename,'sha256':row.sha256,
-        'size_bytes':row.size_bytes,'error':row.error,'created_at':row.created_at.isoformat(),
+        'size_bytes':row.size_bytes if row.status=='ready' else None,'error':row.error,'created_at':row.created_at.isoformat(),
         'completed_at':row.completed_at.isoformat() if row.completed_at else None,
         'expires_at':row.expires_at.isoformat() if row.expires_at else None}
 
@@ -1300,11 +1309,34 @@ def queue_download(params):
     destination=_row(SnapshotDestination,run_row.destination_id)
     if params.get('customer_scope') and not destination.customer_visible:
         raise ValidationError('This recovery point is not available in the customer panel')
-    with write_session() as session:
+    portable=(run_row.summary or {}).get('portable_archive') or {}
+    estimate=int(((run_row.summary or {}).get('preflight') or {}).get('estimated_source_bytes') or
+                 (run_row.summary or {}).get('total_bytes_processed') or portable.get('size_bytes') or 0)
+    authoritative_size=storage.restore_size(
+        repository(destination), account.id, run_row.snapshot_id,
+        selected_paths=[portable['path']] if portable.get('path') else (),
+    )
+    estimate=max(estimate,authoritative_size)
+    projected=max(estimate*2+64*1024*1024,DOWNLOAD_MIN_RESERVATION)
+    with lock('queue'), write_session() as session:
+        session.execute(text('BEGIN IMMEDIATE'))
         existing=session.scalar(select(SnapshotDownload).where(SnapshotDownload.run_id==run_row.id,
-            SnapshotDownload.account_id==account.id,SnapshotDownload.status.in_(ACTIVE)).order_by(SnapshotDownload.id.desc()))
+            SnapshotDownload.account_id==account.id,SnapshotDownload.status.in_((*ACTIVE,'ready'))).order_by(SnapshotDownload.id.desc()))
         if existing:return _download_dict(existing)
-        row=SnapshotDownload(run_id=run_row.id,account_id=account.id)
+        if session.scalar(select(SnapshotDownload.id).where(
+                SnapshotDownload.account_id==account.id, SnapshotDownload.status.in_(ACTIVE))) is not None:
+            raise ValidationError('Another download is already being prepared for this account')
+        ready_bytes=sum(int(value or 0) for value in session.scalars(select(SnapshotDownload.size_bytes).where(
+            SnapshotDownload.account_id==account.id,SnapshotDownload.status=='ready')).all())
+        account_budget=max(DOWNLOAD_ACCOUNT_MIN_BUDGET,int(account.quota_hard_mb or 0)*1024*1024)
+        if ready_bytes+estimate>account_budget:
+            raise ValidationError('Existing prepared downloads use this account’s download allowance. Download or let them expire before preparing another.')
+        free=shutil.disk_usage(download_directory()).free
+        reserved=sum(int(value or 0) for value in session.scalars(select(SnapshotDownload.size_bytes).where(
+            SnapshotDownload.status.in_(ACTIVE))).all())
+        if free-reserved-projected<DOWNLOAD_FREE_RESERVE:
+            raise ValidationError('Not enough protected staging space is available to prepare this download')
+        row=SnapshotDownload(run_id=run_row.id,account_id=account.id,size_bytes=projected)
         session.add(row);session.flush();result=_download_dict(row);ident=row.id
     _executor.submit(execute_download,ident)
     return result
@@ -1328,12 +1360,15 @@ def list_downloads(params):
 def execute_download(ident):
     download=_row(SnapshotDownload,ident);work=download_directory(f'download-{ident}')
     try:
-        with lock(f'download-{ident}'),lock(f'repository-{_row(SnapshotRun,download.run_id).destination_id}'):
+        with lock(f'download-{ident}'),lock('download-staging'),lock(f'repository-{_row(SnapshotRun,download.run_id).destination_id}'):
             download=_row(SnapshotDownload,ident)
             if download.status!='pending':return
             run_row=_row(SnapshotRun,download.run_id);account=_row(Account,download.account_id)
             if run_row.status!='completed' or not run_row.snapshot_id:raise ValidationError('Recovery point is no longer available')
             destination=_row(SnapshotDestination,run_row.destination_id)
+            reservation=int(download.size_bytes or 0)
+            if reservation <= 0 or shutil.disk_usage(download_directory()).free-reservation<DOWNLOAD_FREE_RESERVE:
+                raise ValidationError('Not enough protected staging space is available to prepare this download')
             _update_download(ident,status='running',progress_message='Restoring encrypted recovery point')
             portable=(run_row.summary or {}).get('portable_archive') or {}
             restored=storage.restore_to(repository(destination),account.id,run_row.snapshot_id,str(work/'restored'),
@@ -1353,6 +1388,17 @@ def execute_download(ident):
                 for chunk in iter(lambda:handle.read(1024*1024),b''):digest.update(chunk)
             checksum=digest.hexdigest()
             if expected and not secrets.compare_digest(checksum,expected):raise ValidationError('Portable archive checksum verification failed')
+            target_size=target.stat().st_size
+            # Estimates can be absent or stale. Serialize the final admission
+            # against new queue requests and enforce the budget from the
+            # materialized archive before publishing it to boron-api.
+            with lock('queue'), write_session() as session:
+                session.execute(text('BEGIN IMMEDIATE'))
+                ready_bytes=sum(int(value or 0) for value in session.scalars(select(SnapshotDownload.size_bytes).where(
+                    SnapshotDownload.account_id==account.id,SnapshotDownload.status=='ready',SnapshotDownload.id!=ident)).all())
+                account_budget=max(DOWNLOAD_ACCOUNT_MIN_BUDGET,int(account.quota_hard_mb or 0)*1024*1024)
+                if ready_bytes+target_size>account_budget:
+                    raise ValidationError('Prepared downloads would exceed this account’s download allowance')
             try:
                 api_user=pwd.getpwnam('boron-api');os.chown(target,api_user.pw_uid,api_user.pw_gid)
                 os.chown(work,os.geteuid(),api_user.pw_gid);work.chmod(0o710)
@@ -1362,7 +1408,7 @@ def execute_download(ident):
             target.chmod(0o640)
             shutil.rmtree(work/'restored',ignore_errors=True)
             _update_download(ident,status='ready',progress_message='Download ready',filename=filename,
-                private_path=str(target),sha256=checksum,size_bytes=target.stat().st_size,
+                private_path=str(target),sha256=checksum,size_bytes=target_size,
                 completed_at=utcnow(),expires_at=utcnow()+dt.timedelta(hours=24))
             from daemon import backup_notifications
             backup_notifications.dispatch('backup.download_ready',account,run_row.options.get('notification_channels',[]),
@@ -1372,7 +1418,8 @@ def execute_download(ident):
                 digest_frequency=run_row.options.get('digest_frequency','immediate'))
     except Exception as exc:
         logger.exception('Snapshot download %s failed',ident);shutil.rmtree(work,ignore_errors=True)
-        _update_download(ident,status='failed',progress_message='Download preparation failed',error=str(exc)[-3000:],completed_at=utcnow())
+        _update_download(ident,status='failed',progress_message='Download preparation failed',error=str(exc)[-3000:],
+            size_bytes=None,completed_at=utcnow())
 
 
 def _update_download(ident,**values):

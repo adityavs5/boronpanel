@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import * as ToastPrimitive from '@radix-ui/react-toast'
-import { CheckCircle2, AlertCircle, Info, X, AlertTriangle } from 'lucide-react'
+import { CheckCircle2, AlertCircle, Info, X, AlertTriangle, Copy } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useAuth } from '@/store/auth'
 
@@ -77,7 +77,20 @@ export function Toaster() {
                   {t.description}
                 </ToastPrimitive.Description>
               )}
-              {reference && admin && <a className="mt-1 block text-sm text-accent underline" href={`/app/error-log?reference=${reference}`}>View error details</a>}
+              {reference && (
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
+                  <code className="text-muted-foreground">{reference}</code>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 text-accent underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                    onClick={() => navigator.clipboard?.writeText(reference)}
+                    aria-label="Copy error reference"
+                  >
+                    <Copy className="h-3.5 w-3.5" /> Copy
+                  </button>
+                  {admin && <a className="text-accent underline" href={`/app/error-log?reference=${reference}`}>View error details</a>}
+                </div>
+              )}
             </div>
             <ToastPrimitive.Close aria-label="Dismiss notification" className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground">
               <X className="h-4 w-4" />

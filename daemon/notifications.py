@@ -1,7 +1,7 @@
 """Transactional email notifications (Phase 7b feature 3).
 
 Sends via this server's own local Postfix relay (already the account's
-MTA, ARCHITECTURE.md SS1) through stdlib `smtplib` -- no new third-party
+MTA, ARCHITECTURE.md SS1) through Boron's identity-aware local submission
 mail library, matching this project's existing "stdlib/real system tool
 over a new dependency" posture (RESEARCH.md's own WP-CLI/predis
 precedent). A send requires BOTH the admin's global per-event-type switch
@@ -26,9 +26,11 @@ from shared.models import (
     BrandingSettings,
     NOTIFICATION_EVENT_TYPES,
     NotificationSettings,
+    MonitoringSettings,
     WelcomeEmailTemplate,
 )
 from shared.validation import ValidationError, validate_email_address, validate_username
+from daemon import mail_submission
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z_]+)\s*\}\}")
 
@@ -73,6 +75,14 @@ def _subjects(panel_name: str, welcome_subject: str | None = None) -> dict:
         "usage.limit.reached": "Resource usage alert",
         "login.new": "New login to your hosting panel",
         "dns.zone_activated": "Your domain is now active on Cloudflare",
+        "task.failed": "Panel task failed",
+        "host.disk": "Server disk space is low",
+        "host.inodes": "Server inode space is low",
+        "host.memory": "Server memory pressure is high",
+        "host.load": "Server load is high",
+        "host.login_burst": "Failed login burst detected",
+        "host.service_down": "Server service is DOWN",
+        "host.service_recovered": "Server service recovered",
     }
 
 
@@ -118,6 +128,14 @@ def _render_body(event_type: str, username: str, context: dict, welcome_body: st
             f"The DNS zone '{context.get('zone')}' is now active on Cloudflare. "
             "Its records are served from Cloudflare's network; manage them from the DNS section as before."
         )
+    if event_type == "task.failed":
+        reference = context.get("reference") or "unavailable"
+        return (
+            f"A panel task for account '{username}' failed. "
+            f"Task {context.get('task_id')} ({context.get('kind')}); reference {reference}."
+        )
+    if event_type.startswith("host."):
+        return str(context.get("message") or "A server health alert changed state.")[:2000]
     return f"Event: {event_type}"
 
 
@@ -140,13 +158,20 @@ def _get_prefs(session, account_id: int) -> AccountNotificationPrefs:
 
 
 def _send_email(sender: str, recipient: str, subject: str, body: str) -> None:
+    sender = validate_email_address(sender)
+    recipient = validate_email_address(recipient)
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = recipient
     msg.set_content(body)
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT) as smtp:
-        smtp.send_message(msg)
+    if (SMTP_HOST, SMTP_PORT) != ("localhost", 25):
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT) as smtp:
+            smtp.send_message(msg)
+        return
+    raw = msg.as_bytes()
+    signed = mail_submission.sign_if_configured(raw, sender.rsplit("@", 1)[1].lower())
+    mail_submission.submit_via_postfix(signed, sender, [recipient])
 
 
 def send_backup_summary(recipient: str, subject: str, body: str) -> bool:
@@ -159,7 +184,7 @@ def send_backup_summary(recipient: str, subject: str, body: str) -> bool:
         sender = settings_row.sender_address
     try:
         _send_email(sender, recipient, subject, body)
-    except (OSError, smtplib.SMTPException):
+    except (OSError, smtplib.SMTPException, mail_submission.MailSubmissionError):
         logger.exception("failed to send backup summary to '%s'", recipient)
         return False
     return True
@@ -191,7 +216,29 @@ def maybe_send(event_type: str, account, **context) -> bool:
     -- callers don't need the result today, but tests do, to distinguish
     "correctly skipped" from "silently broken"."""
     if account is None:
-        return False
+        with write_session() as session:
+            settings_row = _get_settings(session)
+            monitor = session.get(MonitoringSettings, 1)
+            if (
+                not settings_row.sender_address
+                or not settings_row.events.get(event_type, True)
+                or monitor is None
+                or not monitor.admin_email
+            ):
+                return False
+            sender = settings_row.sender_address
+            recipient = monitor.admin_email
+            panel_name = _panel_name(session)
+        subject = str(context.get("subject_override") or _subjects(panel_name).get(
+            event_type, f"{panel_name} notification: {event_type}"
+        ))[:200]
+        body = _render_body(event_type, "server", context, panel_name=panel_name) + f"\n\n— {panel_name}"
+        try:
+            _send_email(sender, recipient, subject, body)
+        except (OSError, smtplib.SMTPException, mail_submission.MailSubmissionError):
+            logger.exception("failed to send '%s' administrator notification", event_type)
+            return False
+        return True
     account_id = account.id
     username = account.username
 
@@ -218,7 +265,7 @@ def maybe_send(event_type: str, account, **context) -> bool:
     body = _render_body(event_type, username, context, welcome_body, panel_name) + f"\n\n— {panel_name}"
     try:
         _send_email(sender, recipient, subject, body)
-    except (OSError, smtplib.SMTPException):
+    except (OSError, smtplib.SMTPException, mail_submission.MailSubmissionError):
         logger.exception("failed to send '%s' notification email for account '%s'", event_type, username)
         return False
     return True

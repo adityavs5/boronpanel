@@ -8,6 +8,8 @@ from starlette.requests import Request
 from shared.db import read_session
 from shared.models import Account, PanelUser
 from shared.passwords import verify_password
+from shared.config import settings
+from shared.install_profiles import capabilities_for_profile, validate_profile
 
 from api.rpc import call_daemon, call_daemon_anonymous
 from api.security import (
@@ -47,7 +49,11 @@ def login_form():
 @router.post("/login")
 def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
     _reject_cross_origin_form(request)
-    result = call_daemon_anonymous("auth.login.begin", username=username, password=password)
+    result = call_daemon_anonymous(
+        "auth.login.begin", username=username, password=password,
+        source_ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+    )
     if result.get("locked"):
         retry_minutes = result.get("retry_after_seconds", 0) // 60 + 1
         return JSONResponse(
@@ -55,6 +61,11 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
             status_code=429,
         )
     if not result.get("valid") and not result.get("needs_2fa"):
+        if result.get("two_factor_setup_required"):
+            return JSONResponse(
+                {"detail": "administrator 2FA is required; ask a root operator to reset the policy or enroll during the grace period"},
+                status_code=403,
+            )
         return JSONResponse({"detail": "invalid username or password"}, status_code=401)
     from api.security import enforce_listener_role
     login_identity = Identity(result.get("panel_user_id", -1), username, result["role"],
@@ -82,8 +93,14 @@ def whoami(identity: Identity = Depends(get_identity)):
     """Current-session identity for the SPA. For customers, `username` is the
     hosting-account username (what the account-scoped API paths use), not the
     panel login name; admins have no bound account."""
+    try:
+        profile = validate_profile(settings.install_profile)
+    except ValueError:
+        profile = "full"
+    capabilities = list(settings.enabled_components or capabilities_for_profile(profile))
+    common = {"install_profile": profile, "capabilities": capabilities}
     if identity.role in ("admin", "reseller"):
-        return {"role": identity.role, "username": identity.username, "account_username": None, "impersonating": False}
+        return {"role": identity.role, "username": identity.username, "account_username": None, "impersonating": False, **common}
     account_username = _customer_account_username(identity.account_id)
     # Phase 8 feature 1: surface impersonation so the SPA can show a persistent
     # "Return to admin" banner even across a hard refresh (the flag is derived
@@ -94,13 +111,18 @@ def whoami(identity: Identity = Depends(get_identity)):
         "account_username": account_username,
         "impersonating": identity.is_impersonating,
         "impersonator": identity.impersonator,
+        **common,
     }
 
 
 @router.post("/login/2fa")
 def login_2fa_submit(request: Request, pending_token: str = Form(...), code: str = Form(...)):
     _reject_cross_origin_form(request)
-    result = call_daemon_anonymous("auth.login.finish", pending_token=pending_token, code=code)
+    result = call_daemon_anonymous(
+        "auth.login.finish", pending_token=pending_token, code=code,
+        source_ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+    )
     if result.get("locked"):
         retry_minutes = result.get("retry_after_seconds", 0) // 60 + 1
         return JSONResponse(

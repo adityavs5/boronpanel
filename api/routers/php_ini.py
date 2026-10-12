@@ -38,6 +38,12 @@ def get_php_ini(username: str, identity: Identity = Depends(get_identity)):
     return call_daemon("php_ini.get", identity, username=username)
 
 
+@api_router.get("/effective/{domain}")
+def effective_php_config(username: str, domain: str, identity: Identity = Depends(get_identity)):
+    require_account_access(identity, username)
+    return call_daemon("php_ini.effective", identity, username=username, domain=domain)
+
+
 @api_router.patch("")
 def set_php_ini(username: str, body: SetPhpIniBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)

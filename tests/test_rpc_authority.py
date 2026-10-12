@@ -5,12 +5,13 @@ import datetime as dt
 import pytest
 from sqlalchemy import select
 
-from daemon import handlers_auth, server
+from daemon import handlers_auth, jobcredentials, server
 from daemon.rpc_authority import AuthenticationError, AuthorizationError
 from daemon.rpc_policy import POLICY_BY_OPERATION
 from shared.db import write_session
-from shared.models import (Account, ApiToken, BackupDestination, BackupJob, PanelUser,
-                           ResellerAccount, ResellerPlan, ResellerProfile, RestoreJob, Session, utcnow)
+from shared.models import (Account, ApiToken, BackupDestination, BackupJob, ControlTask,
+                           PanelUser, ResellerAccount, ResellerPlan, ResellerProfile,
+                           RestoreJob, Session, utcnow)
 from shared.session_ids import session_digest
 
 
@@ -106,6 +107,90 @@ def test_customer_account_scope_checked_in_root_db(isolated_db, monkeypatch):
         asyncio.run(server.dispatch("account.get", {"username": "bob", "_role": "admin"},
                                     _credential(customer_session)))
     assert seen == ["alice"]
+
+
+def test_customer_backup_scope_is_derived_by_root_dispatch(isolated_db, monkeypatch):
+    admin_session, customer_session = _setup_users()
+    seen = []
+    monkeypatch.setitem(server.OP_TABLE, "backup.job.trigger", lambda params: seen.append(params) or {"ok": True})
+
+    asyncio.run(server.dispatch(
+        "backup.job.trigger", {"username": "alice", "customer_scope": False},
+        _credential(customer_session),
+    ))
+    asyncio.run(server.dispatch(
+        "backup.job.trigger", {"username": "alice", "customer_scope": True},
+        _credential(admin_session),
+    ))
+
+    assert seen[0]["customer_scope"] is True
+    assert seen[1]["customer_scope"] is False
+
+
+def test_unified_tasks_scope_is_derived_by_root_dispatch(isolated_db):
+    admin_session, customer_session = _setup_users()
+    with write_session() as db:
+        alice = db.scalar(select(Account).where(Account.username == "alice"))
+        bob = db.scalar(select(Account).where(Account.username == "bob"))
+        destination = BackupDestination(name="task-history", kind="local", local_path="/tmp/tasks")
+        db.add(destination)
+        db.flush()
+        alice_job = BackupJob(account_id=alice.id, kind="full", destination_id=destination.id)
+        bob_job = BackupJob(account_id=bob.id, kind="full", destination_id=destination.id)
+        db.add_all([alice_job, bob_job])
+        db.flush()
+        bob_id = bob.id
+        alice_job_id = alice_job.id
+        bob_job_id = bob_job.id
+
+    customer_result = asyncio.run(server.dispatch(
+        "tasks.list",
+        {"_authenticated_account_id": bob_id, "limit": 100},
+        _credential(customer_session),
+    ))
+    assert [row["id"] for row in customer_result["tasks"]] == [alice_job_id]
+    with pytest.raises(AuthorizationError, match="task ownership"):
+        asyncio.run(server.dispatch(
+            "tasks.get", {"kind": "backup", "task_id": bob_job_id},
+            _credential(customer_session),
+        ))
+    admin_detail = asyncio.run(server.dispatch(
+        "tasks.get", {"kind": "backup", "task_id": bob_job_id},
+        _credential(admin_session),
+    ))
+    assert admin_detail["id"] == bob_job_id
+
+
+def test_control_task_secret_reveal_requires_direct_admin_session(isolated_db):
+    admin_session, customer_session = _setup_users()
+    one_time_secret = "".join(("One-time", "-password-42!"))
+    with write_session() as db:
+        task = ControlTask(
+            operation="account.create",
+            username="newaccount",
+            status="completed",
+            progress_pct=100,
+            result={"id": 99, "username": "newaccount"},
+            one_time_secret_enc=jobcredentials.seal(one_time_secret),
+            initiated_by="administrator",
+            initiated_role="admin",
+        )
+        db.add(task)
+        db.flush()
+        task_id = task.id
+
+    with pytest.raises(AuthorizationError, match="current administrator session"):
+        asyncio.run(server.dispatch(
+            "taskops.reveal", {"task_id": task_id}, _credential(customer_session)
+        ))
+    first = asyncio.run(server.dispatch(
+        "taskops.reveal", {"task_id": task_id}, _credential(admin_session)
+    ))
+    second = asyncio.run(server.dispatch(
+        "taskops.reveal", {"task_id": task_id}, _credential(admin_session)
+    ))
+    assert first["initial_password"] == one_time_secret
+    assert "initial_password" not in second
 
 
 def test_reseller_scope_tracks_current_owner_and_profile_status(isolated_db, monkeypatch):

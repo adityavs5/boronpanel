@@ -16,6 +16,58 @@ from shared.db import write_session  # noqa: E402
 from shared.models import Account, ApiToken, PanelUser, Session  # noqa: E402
 
 
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+@pytest.mark.parametrize("headers", [
+    {"origin": "https://tenant.example"}, {"origin": "null"},
+    {"origin": "https://panel.example:2222.evil.test"},
+    {"origin": "http://panel.example:2222"},
+    {"referer": "https://tenant.example/form"},
+])
+def test_cookie_mutations_reject_foreign_origins(method, headers):
+    from starlette.requests import Request
+    from fastapi import HTTPException
+    request = Request({"type": "http", "method": method, "scheme": "https",
+                       "server": ("panel.example", 2222), "path": "/api/v1/accounts/demo1/suspend",
+                       "headers": [(b"host", b"panel.example:2222"),
+                                   *[(key.encode(), value.encode()) for key, value in headers.items()]]})
+    with pytest.raises(HTTPException) as error:
+        sec.require_cookie_write_origin(request)
+    assert error.value.status_code == 403
+
+
+@pytest.mark.parametrize("method,headers", [
+    ("GET", {"origin": "https://tenant.example"}),
+    ("POST", {}), ("POST", {"origin": "https://panel.example:2222"}),
+    ("POST", {"referer": "https://panel.example:2222/app/accounts?tab=limits"}),
+])
+def test_cookie_origin_preserves_same_origin_reads_and_headerless_clients(method, headers):
+    from starlette.requests import Request
+    request = Request({"type": "http", "method": method, "scheme": "https",
+                       "server": ("panel.example", 2222), "path": "/api/v1/accounts",
+                       "headers": [(b"host", b"panel.example:2222"),
+                                   *[(key.encode(), value.encode()) for key, value in headers.items()]]})
+    sec.require_cookie_write_origin(request)
+
+
+def test_cookie_guard_preserves_bearer_precedence(monkeypatch):
+    from starlette.requests import Request
+    from fastapi import HTTPException
+    token = sec.Identity(-1, "automation", "admin", None, "token")
+    monkeypatch.setattr(sec, "_identity_from_bearer_token", lambda raw: token if raw == "valid" else None)
+    monkeypatch.setattr(sec, "_identity_from_session_cookie", lambda raw: sec.Identity(1, "admin", "admin", None, "session"))
+    monkeypatch.setattr(sec, "enforce_listener_role", lambda *_: None)
+    request = Request({"type": "http", "method": "POST", "scheme": "https",
+                       "server": ("panel.example", 2222), "path": "/api/v1/accounts",
+                       "headers": [(b"host", b"panel.example:2222"), (b"origin", b"https://tenant.example")]})
+    assert sec.get_identity(request, authorization="Bearer valid", fh_session="cookie") is token
+    with pytest.raises(HTTPException) as invalid:
+        sec.get_identity(request, authorization="Bearer invalid", fh_session="cookie")
+    assert invalid.value.status_code == 401
+    with pytest.raises(HTTPException) as foreign:
+        sec.get_identity(request, authorization=None, fh_session="cookie")
+    assert foreign.value.status_code == 403
+
+
 def _make_admin(isolated_db):
     return hauth.create_panel_user({"username": "admin1", "password": "AdminPass123!", "role": "admin"})
 

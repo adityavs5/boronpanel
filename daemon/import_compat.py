@@ -98,6 +98,20 @@ def preflight_dumps(dumps, adapt=False):
     # Complete every check before changing any dump or creating the account.
     for dump in dumps:
         try:
+            if dump.stat().st_size > 256 * 1024 * 1024:
+                if adapt:
+                    raise ValidationError(
+                        'compatibility rewriting is limited to 256 MiB per dump; '
+                        'export a compatible logical dump or disable adjustments'
+                    )
+                with dump.open('rb') as source:
+                    header_text = source.read(65536).decode('utf-8', errors='replace')
+                header = re.search(r'^--\s*Server version\s+([^\r\n]+)', header_text, re.M)
+                if header:
+                    version = re.sub(r'[^a-zA-Z0-9._ +()/-]', '', header[1])[:120]
+                    report.append(f'{dump.name}: source server version {version}')
+                report.append(f'{dump.name}: large dump will be streamed; detailed compatibility scan skipped')
+                continue
             sql = dump.read_text(encoding='utf-8')
             header = re.search(r'^--\s*Server version\s+([^\r\n]+)', sql[:65536], re.M)
             if header:

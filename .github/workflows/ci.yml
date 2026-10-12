@@ -1,0 +1,227 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, secrets, and frontend build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: scripts/ci_lint.sh
+
+      - name: Scan source files for secrets
+        run: scripts/ci_secret_scan.sh
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  backend:
+    name: Backend tests (${{ matrix.display }}/8)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {shard: 0, display: 1}
+          - {shard: 1, display: 2}
+          - {shard: 2, display: 3}
+          - {shard: 3, display: 4}
+          - {shard: 4, display: 5}
+          - {shard: 5, display: 6}
+          - {shard: 6, display: 7}
+          - {shard: 7, display: 8}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
+
+      - name: Prepare short test workspace
+        run: |
+          sudo install -d -o root -g root -m 0755 /srv/bt
+          sudo install -d -o "$USER" -g "$(id -gn)" -m 0755 "/srv/bt/c${{ matrix.display }}"
+
+      - name: Run deterministic test shard with coverage
+        env:
+          BORON_TEST_SHARD: ${{ matrix.shard }}
+          BORON_TEST_SHARDS: '8'
+          BORON_TEST_TIMEOUT: 30m
+          BORON_TEST_ITEM_TIMEOUT: '180'
+          BORON_TEST_TMPDIR: /srv/bt/c${{ matrix.display }}
+          BORON_TEST_TMP_MAX_GB: '8'
+          BORON_TEST_MIN_FREE_GB: '5'
+          BORON_TEST_KEEP_RUNS: '3'
+          BORON_TEST_REPORT_DIR: ${{ github.workspace }}/test-artifacts/backend-${{ matrix.display }}
+          PYTHON: python
+        run: scripts/ci_backend.sh
+
+      - name: Upload coverage part
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-${{ matrix.display }}
+          include-hidden-files: true
+          if-no-files-found: error
+          path: .coverage.*
+
+      - name: Upload skip report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-skips-${{ matrix.display }}
+          if-no-files-found: error
+          path: test-artifacts/backend-${{ matrix.display }}/skip-report.*
+
+  coverage:
+    name: Combined backend coverage
+    needs: backend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install coverage tooling
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+
+      - name: Download coverage parts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: backend-coverage-*
+          path: coverage-parts
+          merge-multiple: true
+
+      - name: Download skip reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: backend-skips-*
+          path: skip-parts
+
+      - name: Combine and report coverage
+        run: |
+          python -m coverage combine coverage-parts
+          python -m coverage report
+          python -m coverage xml -o coverage.xml
+          python -m coverage json -o coverage.json
+          python scripts/coverage_bottom.py coverage.json
+
+      - name: Combine skip reports
+        run: python scripts/aggregate_skip_reports.py skip-parts test-artifacts/backend-all
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-report
+          path: |
+            coverage.xml
+            coverage.json
+
+      - name: Upload combined skip report
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-skips-all
+          path: test-artifacts/backend-all/skip-report.*
+
+  smoke:
+    name: Seeded browser smoke
+    needs: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
+
+      - name: Install frontend dependencies and build
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Seed and run live Playwright smoke
+        run: |
+          admin_password="$(openssl rand -base64 30)"
+          customer_password="$(openssl rand -base64 30)"
+          echo "::add-mask::$admin_password"
+          echo "::add-mask::$customer_password"
+          BORON_CI_ADMIN_PASSWORD="$admin_password" \
+          BORON_CI_CUSTOMER_PASSWORD="$customer_password" \
+          scripts/ci_e2e.sh
+
+      - name: Upload browser failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-evidence
+          if-no-files-found: ignore
+          path: |
+            frontend/playwright-report-ci
+            frontend/test-results

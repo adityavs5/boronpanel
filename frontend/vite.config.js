@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 import fs from 'fs'
 
+const devProxyTarget = process.env.BORON_DEV_PROXY_TARGET || 'https://127.0.0.1:9443'
+
 // The panel version's single source of truth is version.py at the repo root
 // (see that file's docstring). Read it at build time so the bundle -- built
 // from the same tree scripts/release.sh tarballs -- always carries the
@@ -63,10 +65,10 @@ export default defineConfig({
     // this dev server.
     port: 5173,
     proxy: {
-      '/api': { target: 'https://127.0.0.1:9443', changeOrigin: true, secure: false },
-      '/login': { target: 'https://127.0.0.1:9443', changeOrigin: true, secure: false },
-      '/logout': { target: 'https://127.0.0.1:9443', changeOrigin: true, secure: false },
-      '/change-password': { target: 'https://127.0.0.1:9443', changeOrigin: true, secure: false },
+      '/api': { target: devProxyTarget, changeOrigin: true, secure: false },
+      '/login': { target: devProxyTarget, changeOrigin: true, secure: false },
+      '/logout': { target: devProxyTarget, changeOrigin: true, secure: false },
+      '/change-password': { target: devProxyTarget, changeOrigin: true, secure: false },
     },
   },
 })

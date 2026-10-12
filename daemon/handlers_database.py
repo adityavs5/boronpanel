@@ -16,6 +16,51 @@ from shared.validation import ValidationError, validate_db_identifier, validate_
 from daemon.database_operations import serialized
 from daemon import db_governor, mariadb, resource_limits
 
+SAFETY_MIN_FREE_BYTES = 512 * 1024 * 1024
+SAFETY_RETAIN_FAILED = 1
+
+
+def _safety_directory(kind: str, account_id: int) -> Path:
+    from daemon.snapshot_jobs import private_directory
+    root = private_directory(kind)
+    prefix = f"account-{account_id}-"
+    existing = sorted(
+        (path for path in root.iterdir() if path.is_dir() and not path.is_symlink() and path.name.startswith(prefix)),
+        key=lambda path: path.stat().st_mtime_ns, reverse=True,
+    )
+    for stale in existing[SAFETY_RETAIN_FAILED:]:
+        shutil.rmtree(stale, ignore_errors=True)
+    return private_directory(kind, prefix + uuid.uuid4().hex)
+
+
+def _require_safety_capacity(work: Path, db_name: str, *, extra_bytes: int = 0) -> None:
+    size = int(mariadb.database_statistics([db_name])[db_name].get("size_bytes") or 0)
+    if shutil.disk_usage(work).free < size + max(0, int(extra_bytes)) + SAFETY_MIN_FREE_BYTES:
+        shutil.rmtree(work, ignore_errors=True)
+        raise ValidationError("Not enough protected free space is available for a database safety copy")
+
+
+def _copy_import_source(source: Path, work: Path) -> Path:
+    target = work / "uploaded.sql"
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    total = 0
+    try:
+        while chunk := os.read(source_fd, 1024 * 1024):
+            total += len(chunk)
+            if total > 2 * 1024 * 1024 * 1024:
+                raise ValidationError("SQL import exceeds the 2 GiB limit")
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(target_fd, view):]
+        os.fsync(target_fd)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(target_fd); os.close(source_fd)
+    return target
+
 
 def _grant_dict(grant: DatabaseGrant) -> dict:
     return {
@@ -54,6 +99,50 @@ def _ensure_user_rows(session, account_id: int) -> None:
         ))
         if link is None:
             session.add(DatabaseUserGrant(database_grant_id=grant.id, database_user_id=user.id))
+
+
+def _database_assignments(session, account_id: int, grant_id: int) -> list[dict]:
+    """Snapshot every native grant needed for a compensating transaction."""
+    _ensure_user_rows(session, account_id)
+    session.flush()
+    rows = session.execute(
+        select(
+            DatabaseUser.db_user,
+            DatabaseUser.host,
+            DatabaseUserGrant.privileges,
+            DatabaseUserGrant.privilege_list,
+        )
+        .join(DatabaseUserGrant, DatabaseUserGrant.database_user_id == DatabaseUser.id)
+        .where(DatabaseUserGrant.database_grant_id == grant_id)
+        .order_by(DatabaseUser.id)
+    ).all()
+    return [
+        {
+            "user": user,
+            "host": host,
+            "preset": preset or "all",
+            "custom": [item for item in (values or "").split(",") if item],
+        }
+        for user, host, preset, values in rows
+    ]
+
+
+def _grant_assignment(db_name: str, assignment: dict) -> None:
+    mariadb.grant_database_privileges(
+        db_name,
+        assignment["user"],
+        assignment["host"],
+        preset=assignment["preset"],
+        custom=assignment["custom"],
+    )
+
+
+def _raise_with_cleanup(operation: str, error: Exception, failures: list[str]) -> None:
+    if failures:
+        raise RuntimeError(
+            f"{operation} failed ({error}); recovery also failed: " + "; ".join(failures)
+        ) from error
+    raise error
 
 
 def _user_dict(session, user: DatabaseUser) -> dict:
@@ -131,6 +220,7 @@ def create_database(params: dict) -> dict:
 
     if mariadb.database_exists(db_name):
         raise RuntimeError(f"database '{db_name}' already exists in MariaDB")
+    mariadb.require_ungranted_database_name(db_name)
     if mariadb.user_exists(db_user):
         raise RuntimeError(f"database user '{db_user}' already exists in MariaDB; create the database with another name")
 
@@ -455,17 +545,24 @@ def import_database(params: dict) -> dict:
     _account_id, _grant_id, name = _owned_database(username, params["name"])
     source = _verified_import(params["path"])
     from daemon.snapshot_databases import dump_database, restore_database
-    from daemon.snapshot_jobs import private_directory
-    safety = private_directory("database-import-safety", uuid.uuid4().hex)
+    safety = _safety_directory("database-import-safety", _account_id)
+    _require_safety_capacity(safety, name, extra_bytes=source.stat().st_size)
+    private_source = _copy_import_source(source, safety)
     saved = safety / f"{name}.sql"
-    dump_database(name, saved, safety)
     try:
-        result = restore_database(name, source, safety, replace_tables=True)
+        dump_database(name, saved, safety)
+    except Exception:
+        shutil.rmtree(safety, ignore_errors=True)
+        raise
+    try:
+        result = restore_database(name, private_source, safety, replace_tables=True)
     except Exception:
         # The pre-import copy remains root-private for manual or automated
         # recovery; never delete the only known-good state on failure.
+        private_source.unlink(missing_ok=True)
         raise
-    return {**result, "status": "imported", "safety_copy": True}
+    shutil.rmtree(safety, ignore_errors=True)
+    return {**result, "status": "imported", "safety_copy": False}
 
 
 @serialized
@@ -478,16 +575,13 @@ def rename_database(params: dict) -> dict:
     with write_session() as session:
         if session.scalar(select(DatabaseGrant.id).where(DatabaseGrant.db_name == new_name)):
             raise ValidationError(f"database '{new_name}' already exists")
-        assignments = session.execute(
-            select(DatabaseUser.db_user, DatabaseUser.host, DatabaseUserGrant.privileges, DatabaseUserGrant.privilege_list)
-            .join(DatabaseUserGrant, DatabaseUserGrant.database_user_id == DatabaseUser.id)
-            .where(DatabaseUserGrant.database_grant_id == grant_id)
-        ).all()
+        assignments = _database_assignments(session, account_id, grant_id)
     if mariadb.database_exists(new_name):
         raise ValidationError(f"database '{new_name}' already exists in MariaDB")
+    mariadb.require_ungranted_database_name(new_name)
     from daemon.snapshot_databases import dump_database, restore_database
-    from daemon.snapshot_jobs import private_directory
-    work = private_directory("database-rename-safety", uuid.uuid4().hex)
+    work = _safety_directory("database-rename-safety", account_id)
+    _require_safety_capacity(work, old_name)
     saved = work / f"{old_name}.sql"
     dump_database(old_name, saved, work)
     before = mariadb.database_statistics([old_name])[old_name]
@@ -498,25 +592,46 @@ def rename_database(params: dict) -> dict:
         after = mariadb.database_statistics([new_name])[new_name]
         if before["table_count"] != after["table_count"]:
             raise RuntimeError("Database rename validation found a different table count")
-        for user, host, preset, values in assignments:
-            custom = [item for item in (values or "").split(",") if item]
-            mariadb.grant_database_privileges(new_name, user, host, preset=preset, custom=custom)
+        for assignment in assignments:
+            _grant_assignment(new_name, assignment)
         with write_session() as session:
             row = session.get(DatabaseGrant, grant_id)
             if row is None or row.account_id != account_id or row.db_name != old_name:
                 raise RuntimeError("Database registration changed during rename")
             row.db_name = new_name
         switched = True
+        revoked = []
+        for assignment in assignments:
+            mariadb.revoke_all(old_name, assignment["user"], assignment["host"])
+            revoked.append(assignment)
         mariadb.drop_database(old_name)
-    except Exception:
+    except Exception as operation_error:
+        failures = []
+        for assignment in locals().get("revoked", []):
+            try:
+                _grant_assignment(old_name, assignment)
+            except Exception as exc:
+                failures.append(f"restore old grant for {assignment['user']}@{assignment['host']}: {exc}")
         if switched:
-            with write_session() as session:
-                row = session.get(DatabaseGrant, grant_id)
-                if row is not None and row.db_name == new_name:
-                    row.db_name = old_name
-        mariadb.drop_database(new_name)
-        raise
-    return {"old_name": old_name, "db_name": new_name, "status": "renamed", "safety_copy": True,
+            try:
+                with write_session() as session:
+                    row = session.get(DatabaseGrant, grant_id)
+                    if row is not None and row.db_name == new_name:
+                        row.db_name = old_name
+            except Exception as exc:
+                failures.append(f"restore database registration: {exc}")
+        for assignment in assignments:
+            try:
+                mariadb.revoke_all(new_name, assignment["user"], assignment["host"])
+            except Exception as exc:
+                failures.append(f"remove new grant for {assignment['user']}@{assignment['host']}: {exc}")
+        try:
+            mariadb.drop_database(new_name)
+        except Exception as exc:
+            failures.append(f"remove replacement database: {exc}")
+        _raise_with_cleanup("Database rename", operation_error, failures)
+    shutil.rmtree(work, ignore_errors=True)
+    return {"old_name": old_name, "db_name": new_name, "status": "renamed", "safety_copy": False,
             "warning": "Update application configuration files that still reference the previous database name."}
 
 
@@ -536,9 +651,46 @@ def drop_database(params: dict) -> dict:
             raise RuntimeError(f"database '{db_name}' not found for account '{username}'")
         db_user = grant.db_user
         grant_id = grant.id
+        assignments = _database_assignments(session, account.id, grant_id)
+        original_user = session.scalar(select(DatabaseUser).where(
+            DatabaseUser.account_id == account.id,
+            DatabaseUser.db_user == db_user,
+            DatabaseUser.host == "localhost",
+        ))
+        original_user_id = original_user.id if original_user is not None else None
+        has_other_assignments = bool(original_user_id and session.scalar(
+            select(DatabaseUserGrant.id).where(
+                DatabaseUserGrant.database_user_id == original_user_id,
+                DatabaseUserGrant.database_grant_id != grant_id,
+            )
+        ))
 
-    mariadb.drop_database(db_name)
-    mariadb.drop_db_user(db_user)
+    revoked = []
+    try:
+        for assignment in assignments:
+            mariadb.revoke_all(db_name, assignment["user"], assignment["host"])
+            revoked.append(assignment)
+        mariadb.drop_database(db_name)
+    except Exception as operation_error:
+        failures = []
+        for assignment in revoked:
+            try:
+                _grant_assignment(db_name, assignment)
+            except Exception as exc:
+                failures.append(f"restore grant for {assignment['user']}@{assignment['host']}: {exc}")
+        _raise_with_cleanup("Database deletion", operation_error, failures)
+    user_drop_error = None
+    user_dropped = False
+    if not has_other_assignments:
+        try:
+            mariadb.drop_db_user(db_user)
+            user_dropped = True
+        except Exception as exc:
+            # The database and every database-scoped privilege are already
+            # gone.  Keep the now-unassigned login registered so an operator
+            # can inspect or remove it instead of reporting that the database
+            # deletion failed after its irreversible step completed.
+            user_drop_error = str(exc)
     with write_session() as session:
         grant = session.get(DatabaseGrant, grant_id)
         if grant is not None:
@@ -551,9 +703,14 @@ def drop_database(params: dict) -> dict:
             session.flush()
             for user_id in linked_user_ids:
                 user = session.get(DatabaseUser, user_id)
-                if user is not None and user.db_user == db_user:
+                if user is not None and user.db_user == db_user and user_dropped:
                     session.delete(user)
-    return {"db_name": db_name, "status": "dropped"}
+    result = {"db_name": db_name, "status": "dropped"}
+    if user_drop_error:
+        result["warning"] = (
+            f"Database deleted, but its unassigned login could not be removed: {user_drop_error}"
+        )
+    return result
 
 
 @serialized

@@ -4,6 +4,7 @@ import os
 import pwd as real_pwd
 
 import pytest
+from testsupport.host_requirements import chown_or_skip
 from sqlalchemy import select
 
 from daemon import handlers_account as ha
@@ -127,6 +128,9 @@ def test_rewrite_staging_wp_config_missing_file_raises(tmp_path):
 def test_copy_files_reasserts_docroot_permissions(isolated_db, tmp_path, monkeypatch):
     from shared.config import settings
 
+    probe = tmp_path / "uid-map-probe"
+    probe.touch()
+    chown_or_skip(probe, 5001, 5001)
     monkeypatch.setattr(settings, "home_base", str(tmp_path))
     fake_pw = real_pwd.struct_passwd(("demo1", "x", 5001, 5001, "", str(tmp_path), "/usr/sbin/nologin"))
     monkeypatch.setattr(real_pwd, "getpwnam", lambda name: fake_pw)

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, Network, Plus, RefreshCw, Trash2, Zap } from 'lucide-react'
+import { Copy, MoreHorizontal, Network, Plus, RefreshCw, Trash2, Zap } from 'lucide-react'
 import { del, get, patch, post } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
@@ -10,6 +10,7 @@ import { Input, FormField } from '@/components/ui/Input'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, ConfirmDialog } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/DropdownMenu'
 
 const EMPTY = { name: '', peer_type: 'directadmin', endpoint: '', username: 'admin', credential: '', verify_tls: true, direction: 'push', zones_text: '' }
 const selectClass = 'flex h-9 w-full rounded-btn border border-input bg-input-surface px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:border-accent focus-visible:ring-[3px] focus-visible:ring-ring/25'
@@ -65,10 +66,7 @@ export default function DnsCluster() {
       : 'Leave the key empty to generate a shared Boron cluster key, then configure that same key on the other node.'
 
   return <div>
-    <PageHeader title="DNS Cluster" description="Replicate complete PowerDNS zones to Boron, DirectAdmin, or cPanel/WHM while keeping your current authoritative nameservers." icon={Network}>
-      <Button variant="secondary" onClick={() => sync.mutate()} loading={sync.isPending} disabled={!peers.length}><RefreshCw className="h-4 w-4" />Sync all zones</Button>
-      <Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />Add peer</Button>
-    </PageHeader>
+    <PageHeader title="DNS Cluster" description="Replicate complete PowerDNS zones to Boron, DirectAdmin, or cPanel/WHM while keeping your current authoritative nameservers." icon={Network} primaryAction={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />Add peer</Button>} moreActions={[{label:sync.isPending?'Syncing all zones…':'Sync all zones',icon:<RefreshCw className="h-4 w-4"/>,disabled:sync.isPending||!peers.length,onSelect:()=>sync.mutate()}]} />
 
     <Card className="mb-5"><CardHeader><div><CardTitle>Authoritative peers</CardTitle><CardDescription>Credentials are encrypted at rest and never displayed again. Failed deliveries retry automatically with backoff.</CardDescription></div></CardHeader><CardContent>
       <DataTable data={peers} loading={query.isLoading} error={query.error} onRetry={query.refetch} filterable searchPlaceholder="Search DNS peers…" columns={[
@@ -77,7 +75,7 @@ export default function DnsCluster() {
         { key: 'direction', header: 'Direction', render: row => <div><span className="capitalize">{row.direction}</span><div className="text-xs text-muted-foreground">{row.zones?.length ? `${row.zones.length} owned zone(s)` : 'All local zones'}</div></div> },
         { key: 'status', header: 'Health', render: row => <StatusBadge status={!row.enabled ? 'disabled' : row.status} /> },
         { key: 'last_success_at', header: 'Last success', sortable: true, render: row => row.last_success_at ? new Date(row.last_success_at).toLocaleString() : 'Not synced yet' },
-        { key: 'actions', header: '', searchable: false, render: row => <div className="flex justify-end gap-2"><Button size="sm" variant="secondary" onClick={() => test.mutate(row.id)} loading={test.isPending && test.variables === row.id}><Zap className="h-3.5 w-3.5" />Test</Button><Button size="sm" variant="secondary" disabled={toggle.isPending} onClick={() => setTogglePeer(row)} loading={toggle.isPending && toggle.variables?.id === row.id}>{row.enabled ? 'Disable' : 'Enable'}</Button><Button size="icon-sm" variant="ghost" title="Remove peer" onClick={() => setRemovePeer(row)}><Trash2 className="h-4 w-4" /></Button></div> },
+        { key: 'actions', header: '', searchable: false, render: row => <div className="flex justify-end gap-1"><Button size="sm" variant="secondary" onClick={() => test.mutate(row.id)} loading={test.isPending && test.variables === row.id}><Zap className="h-3.5 w-3.5" />Test</Button><DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-sm" variant="ghost" aria-label={`Actions for ${row.name}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem disabled={toggle.isPending} onSelect={() => setTogglePeer(row)}>{row.enabled ? 'Disable' : 'Enable'}</DropdownMenuItem><DropdownMenuSeparator/><DropdownMenuItem className="text-danger" onSelect={() => setRemovePeer(row)}><Trash2 className="h-4 w-4"/>Remove peer</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div> },
       ]} emptyTitle="No DNS peers" emptyDescription="Add a peer to keep its authoritative copy of every local zone synchronized." emptyIcon={Network} />
     </CardContent></Card>
 

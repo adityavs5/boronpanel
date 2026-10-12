@@ -19,7 +19,8 @@ from shared.db import write_session
 from shared.models import Account, Plan, ResourcePolicy
 from shared.validation import ValidationError, validate_resource_limit, validate_username
 
-from daemon import handlers_account, redisacct, resource_manager, sysops, usage_alerts
+from daemon import handlers_account, inode_quotas, redisacct, resource_manager, sysops, usage_alerts
+from daemon.database_operations import serialized
 
 logger = logging.getLogger("borond.plans")
 
@@ -61,6 +62,8 @@ def _plan_to_dict(plan: Plan, policy: ResourcePolicy | None = None) -> dict:
         "pids_max": plan.pids_max,
         "quota_soft_mb": plan.quota_soft_mb,
         "quota_hard_mb": plan.quota_hard_mb,
+        "inode_soft_limit": plan.inode_soft_limit,
+        "inode_hard_limit": plan.inode_hard_limit,
         "bandwidth_limit_mb": plan.bandwidth_limit_mb,
         "database_limit": plan.database_limit,
         "email_account_limit": plan.email_account_limit,
@@ -102,6 +105,10 @@ def create_plan(params: dict) -> dict:
     quota_soft_mb, quota_hard_mb = _validate_quota(
         params.get("quota_soft_mb", 5120), params.get("quota_hard_mb", 6144)
     )
+    inode_soft_limit, inode_hard_limit = inode_quotas.validate_limits(
+        params.get("inode_soft_limit", inode_quotas.DEFAULT_SOFT),
+        params.get("inode_hard_limit", inode_quotas.DEFAULT_HARD),
+    )
     limit_kwargs = {f: validate_resource_limit(params.get(f), f) for f in _LIMIT_FIELDS}
     redis_enabled = bool(params.get("redis_enabled", False))
 
@@ -111,6 +118,7 @@ def create_plan(params: dict) -> dict:
         plan = Plan(
             name=name, cpu_pct=cpu_pct, mem_mb=mem_mb, io_mb=io_mb, pids_max=pids_max,
             quota_soft_mb=quota_soft_mb, quota_hard_mb=quota_hard_mb,
+            inode_soft_limit=inode_soft_limit, inode_hard_limit=inode_hard_limit,
             redis_enabled=redis_enabled, **limit_kwargs,
         )
         session.add(plan)
@@ -167,6 +175,11 @@ def update_plan(params: dict) -> dict:
             params.get("quota_soft_mb", plan.quota_soft_mb), params.get("quota_hard_mb", plan.quota_hard_mb)
         )
         plan.quota_soft_mb, plan.quota_hard_mb = quota_soft_mb, quota_hard_mb
+        inode_soft_limit, inode_hard_limit = inode_quotas.validate_limits(
+            params.get("inode_soft_limit", plan.inode_soft_limit),
+            params.get("inode_hard_limit", plan.inode_hard_limit),
+        )
+        plan.inode_soft_limit, plan.inode_hard_limit = inode_soft_limit, inode_hard_limit
 
         for field in _LIMIT_FIELDS:
             if field in params:
@@ -217,6 +230,7 @@ def delete_plan(params: dict) -> dict:
     return {"status": "deleted", "id": plan_id}
 
 
+@serialized
 def apply_plan(params: dict) -> dict:
     """Atomically apply a plan's values to one account: validate account +
     plan exist first, then commit every DB-row write (Account's own
@@ -247,6 +261,9 @@ def apply_plan(params: dict) -> dict:
         account.pids_max = plan_values["pids_max"]
         account.quota_soft_mb = plan_values["quota_soft_mb"]
         account.quota_hard_mb = plan_values["quota_hard_mb"]
+        inode_quotas.schedule(
+            account, plan_values["inode_soft_limit"], plan_values["inode_hard_limit"]
+        )
         account.plan_id = plan_values["id"]
         session.flush()
         account_snapshot = account

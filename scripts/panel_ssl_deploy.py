@@ -15,6 +15,7 @@ import time
 import tomllib
 import tempfile
 from cryptography import x509
+from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization
 
 
@@ -29,7 +30,14 @@ def validate_pair(hostname,certificate,key):
         raise ValueError('Invalid panel hostname')
     cert=x509.load_pem_x509_certificate(certificate)
     private=serialization.load_pem_private_key(key,password=None)
-    names=cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
+    try:
+        names=cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
+    except x509.ExtensionNotFound:
+        # Releases through v3.1.3 generated the bootstrap panel certificate
+        # with only a Common Name.  Accept that exact legacy identity during
+        # reconciliation so an upgrade can copy the already-served pair to
+        # FTPS; every newly generated certificate carries a SAN below.
+        names=[attribute.value for attribute in cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)]
     if hostname not in names:raise ValueError('Certificate does not cover the panel hostname')
     now=dt.datetime.now(dt.timezone.utc)
     if not cert.not_valid_before_utc<=now<cert.not_valid_after_utc:raise ValueError('Certificate is not currently valid')

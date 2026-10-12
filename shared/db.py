@@ -65,7 +65,12 @@ def init_db() -> None:
     with _write_engine.begin() as connection:
         connection.exec_driver_sql("BEGIN IMMEDIATE")
         Base.metadata.create_all(connection)
-    _apply_additive_migrations(_write_engine)
+    # Ordered revisions own every schema transition.  New tables are still
+    # materialized from metadata first so an additive revision can safely
+    # target both a fresh database and any historical installation.
+    from shared.migrations import apply_schema_migrations
+
+    apply_schema_migrations(_write_engine)
     _migrate_session_identifiers(_write_engine)
     _WriteSession = sessionmaker(bind=_write_engine, future=True, expire_on_commit=False)
     _grant_api_group_read()
@@ -81,6 +86,31 @@ def init_db() -> None:
 # helper stays tiny and strictly additive -- it only ever ADDs a declared
 # missing column, never drops/renames/retypes anything.
 _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
+    "audit_log": {
+        "request_id": "VARCHAR(64)",
+        "source_ip": "VARCHAR(45)",
+        "duration_ms": "INTEGER",
+        "changes": "JSON",
+    },
+    "backup_jobs": {"request_id": "VARCHAR(64)"},
+    "wordpress_jobs": {"request_id": "VARCHAR(64)"},
+    "malware_scan_jobs": {"request_id": "VARCHAR(64)"},
+    "restore_jobs": {"request_id": "VARCHAR(64)"},
+    "app_install_jobs": {"request_id": "VARCHAR(64)"},
+    "namespace_migration_jobs": {"request_id": "VARCHAR(64)"},
+    "bulk_action_jobs": {"request_id": "VARCHAR(64)"},
+    "command_runs": {"request_id": "VARCHAR(64)"},
+    "imap_migration_jobs": {"request_id": "VARCHAR(64)"},
+    "update_jobs": {"request_id": "VARCHAR(64)"},
+    "snapshot_downloads": {"request_id": "VARCHAR(64)"},
+    "snapshot_restores": {"request_id": "VARCHAR(64)"},
+    "panel_config_jobs": {"request_id": "VARCHAR(64)"},
+    "account_archive_import_jobs": {"request_id": "VARCHAR(64)"},
+    "stack_jobs": {"request_id": "VARCHAR(64)"},
+    "dns_cluster_outbox": {"request_id": "VARCHAR(64)"},
+    "webhook_deliveries": {"request_id": "VARCHAR(64)"},
+    "backup_notification_deliveries": {"request_id": "VARCHAR(64)"},
+    "backup_notification_digests": {"request_id": "VARCHAR(64)"},
     'api_tokens': {'scope': "VARCHAR(16) NOT NULL DEFAULT 'full'", 'expires_at': 'DATETIME'},
     "totp_credentials": {"last_used_step": "INTEGER"},
     "impersonation_sessions": {"admin_session_enc": "VARCHAR(512)"},
@@ -90,6 +120,9 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "direction": "VARCHAR(16) NOT NULL DEFAULT 'push'",
         "zones": "JSON NOT NULL DEFAULT '[]'",
         "conflict_policy": "VARCHAR(24) NOT NULL DEFAULT 'reject_stale'",
+        "protocol_version": "VARCHAR(16)",
+        "capabilities": "JSON NOT NULL DEFAULT '[]'",
+        "last_capability_check_at": "DATETIME",
     },
     # Run A feature 1 (plan templates): both tables predate the Plan model.
     "accounts": {"plan_id": "INTEGER"},
@@ -113,10 +146,11 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "last_speed_bps": "INTEGER",
     },
     "snapshot_runs": {
+        "request_id": "VARCHAR(64)",
         "cancel_requested": "BOOLEAN NOT NULL DEFAULT 0",
         "pinned": "BOOLEAN NOT NULL DEFAULT 0",
     },
-    "snapshot_destination_operations": {"options": "JSON NOT NULL DEFAULT '{}'"},
+    "snapshot_destination_operations": {"request_id": "VARCHAR(64)", "options": "JSON NOT NULL DEFAULT '{}'"},
     "database_user_grants": {"privilege_list": "VARCHAR(512)"},
     "dkim_keys": {
         "signing_active": "BOOLEAN NOT NULL DEFAULT 0",
@@ -145,8 +179,35 @@ _ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     },
     # Unified external-account importer. Existing rows are cPanel jobs.
     "cpanel_import_jobs": {
+        "request_id": "VARCHAR(64)",
         "panel": "VARCHAR(16) NOT NULL DEFAULT 'cpanel'",
         "initial_password": "VARCHAR(128)",
+    },
+    "node_apps": {"backend_mode": "VARCHAR(16) NOT NULL DEFAULT 'legacy'"},
+    "python_apps": {"backend_mode": "VARCHAR(16) NOT NULL DEFAULT 'legacy'"},
+    "pma_tokens": {"credential_enc": "VARCHAR(512)"},
+}
+
+_ADDITIVE_INDEXES = {
+    table: f"ix_{table}_request_id" for table in (
+        "audit_log", "backup_jobs", "wordpress_jobs", "malware_scan_jobs",
+        "restore_jobs", "app_install_jobs", "namespace_migration_jobs",
+        "cpanel_import_jobs", "bulk_action_jobs", "command_runs",
+        "imap_migration_jobs", "update_jobs", "snapshot_runs",
+        "snapshot_downloads", "snapshot_restores",
+        "snapshot_destination_operations", "panel_config_jobs",
+        "account_archive_import_jobs", "stack_jobs",
+        "dns_cluster_outbox", "webhook_deliveries",
+        "backup_notification_deliveries", "backup_notification_digests",
+    )
+}
+
+_ADDITIVE_EXTRA_INDEXES = {
+    "audit_log": {
+        "ix_audit_log_created_at": (
+            {"created_at"},
+            "CREATE INDEX IF NOT EXISTS ix_audit_log_created_at ON audit_log(created_at)",
+        ),
     },
 }
 
@@ -187,19 +248,15 @@ def _migrate_session_identifiers(engine) -> None:
 
 
 def _apply_additive_migrations(engine) -> None:
-    from sqlalchemy import inspect, text
+    """Compatibility shim for older internal callers and tests.
 
-    inspector = inspect(engine)
-    existing_tables = set(inspector.get_table_names())
-    with engine.begin() as conn:
-        for table, columns in _ADDITIVE_COLUMNS.items():
-            if table not in existing_tables:
-                continue  # create_all just made it with every column already
-            present = {col["name"] for col in inspector.get_columns(table)}
-            for name, coltype in columns.items():
-                if name not in present:
-                    conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {name} {coltype}'))
-    _migrate_wordpress_installs_uniqueness(engine)
+    Startup no longer calls this unversioned sweep.  Keeping the symbol for
+    one release avoids breaking extensions that imported it while routing the
+    work through the ordered ledger.
+    """
+    from shared.migrations import apply_schema_migrations
+
+    apply_schema_migrations(engine)
 
 
 def _migrate_wordpress_installs_uniqueness(engine) -> None:

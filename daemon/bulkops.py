@@ -10,7 +10,7 @@ doing them one at a time.
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from sqlalchemy import select
 

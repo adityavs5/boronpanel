@@ -78,7 +78,7 @@ export function normalizeError(error) {
     message = 'Cannot reach the server. Check your connection.'
   }
   const err = new Error(message)
-  const reference = error.response?.headers?.['x-boron-error-reference'] || message.match(/reference:\s*([a-f0-9]{16})/i)?.[1]
+  const reference = error.response?.headers?.['x-boron-error-reference'] || data?.reference || message.match(/reference:\s*([a-f0-9]{16})/i)?.[1]
   message = humanErrorMessage(message, status)
   if (reference && /^[a-f0-9]{16}$/i.test(reference) && !message.includes(reference)) message += ` (reference: ${reference})`
   err.message = message
@@ -86,6 +86,15 @@ export function normalizeError(error) {
   err.status = status
   err.fields = fields
   return err
+}
+
+function responseError(response, fallback) {
+  const reference = response.data?.reference || response.headers?.['x-boron-error-reference'] || null
+  let message = humanErrorMessage(response.data?.detail || fallback, response.status)
+  if (reference && /^[a-f0-9]{16}$/i.test(reference) && !message.includes(reference)) {
+    message += ` (reference: ${reference})`
+  }
+  return Object.assign(new Error(message), { status: response.status, reference })
 }
 
 // --- thin verb helpers ----------------------------------------------------
@@ -112,14 +121,14 @@ export async function login(username, password) {
   })
 
   if (res.status === 429 || res.status === 401) {
-    throw Object.assign(new Error(res.data?.detail || 'Invalid username or password.'), { status: res.status })
+    throw responseError(res, 'Invalid username or password.')
   }
   if (res.data && res.data.needs_2fa) {
     return { needs2fa: true, pendingToken: res.data.pending_token }
   }
   // Success: cookie is set (via the 303 the browser followed). Resolve identity.
   const me = await whoami()
-  return { role: me.role, username: me.username }
+  return { role: me.role, username: me.username, installProfile: me.install_profile, capabilities: me.capabilities }
 }
 
 export async function loginVerify2fa(pendingToken, code) {
@@ -129,10 +138,10 @@ export async function loginVerify2fa(pendingToken, code) {
     validateStatus: () => true,
   })
   if (res.status >= 400) {
-    throw Object.assign(new Error(res.data?.detail || 'Invalid or expired code.'), { status: res.status })
+    throw responseError(res, 'Invalid or expired code.')
   }
   const me = await whoami()
-  return { role: me.role, username: me.username }
+  return { role: me.role, username: me.username, installProfile: me.install_profile, capabilities: me.capabilities }
 }
 
 export async function logout() {
@@ -164,7 +173,7 @@ export async function changePassword(current_password, new_password, confirm_pas
     validateStatus: () => true,
   })
   if (res.status >= 400) {
-    throw Object.assign(new Error(res.data?.detail || 'Could not change password.'), { status: res.status })
+    throw responseError(res, 'Could not change password.')
   }
   return res.data
 }

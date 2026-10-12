@@ -78,6 +78,52 @@ def test_remove_domain_spam_settings_rejects_traversal(fake_virtual_config_base)
         sf.remove_domain_spam_settings("../peer")
 
 
+def _seed_mailbox():
+    from shared.db import write_session
+    from shared.models import Account, MailDomain, MailUser
+
+    with write_session() as db:
+        account = Account(username="demo1", status="active")
+        db.add(account)
+        db.flush()
+        domain = MailDomain(account_id=account.id, domain="demo1.example")
+        db.add(domain)
+        db.flush()
+        db.add(MailUser(mail_domain_id=domain.id, local_part="john", domain=domain.domain))
+        return account.id
+
+
+def test_spam_rule_requires_a_provisioned_mailbox(isolated_db, monkeypatch):
+    _seed_mailbox()
+    monkeypatch.setattr(sf, "_refresh_global_sieve", lambda: None)
+    with pytest.raises(sf.SpamFilterError, match="does not exist"):
+        sf.add_entry({
+            "domain": "demo1.example", "local_part": "invented",
+            "kind": "blacklist", "pattern": "sender.example",
+        })
+
+
+def test_spam_rule_account_capacity_is_aggregate(isolated_db, monkeypatch):
+    _seed_mailbox()
+    monkeypatch.setattr(sf, "_refresh_global_sieve", lambda: None)
+    monkeypatch.setattr(sf, "MAX_SPAM_FILTER_ENTRIES_PER_ACCOUNT", 1)
+    sf.add_entry({
+        "domain": "demo1.example", "local_part": "john",
+        "kind": "blacklist", "pattern": "first.example",
+    })
+    with pytest.raises(sf.SpamFilterError, match="account already has"):
+        sf.add_entry({
+            "domain": "demo1.example", "local_part": "john",
+            "kind": "blacklist", "pattern": "second.example",
+        })
+    # Existing entries remain idempotent even when the capacity is full.
+    result = sf.add_entry({
+        "domain": "demo1.example", "local_part": "john",
+        "kind": "blacklist", "pattern": "first.example",
+    })
+    assert result["pattern"] == "first.example"
+
+
 @pytest.mark.parametrize("states, expected, count", [
     (["reloading", "active"], True, 2),
     (["failed"], False, 1),

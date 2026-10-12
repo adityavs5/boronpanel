@@ -1942,8 +1942,8 @@ function StatsChartCard({ title, data, dataKey, color, formatY }) {
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--border))" vertical={false} />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'rgb(var(--muted-fg))' }} tickLine={false} axisLine={false} minTickGap={40} />
-              <YAxis tick={{ fontSize: 11, fill: 'rgb(var(--muted-fg))' }} tickLine={false} axisLine={false} width={48} tickFormatter={formatY} />
+              <XAxis dataKey="label" tick={{ fontSize: 12, fill: 'rgb(var(--muted-fg))' }} tickLine={false} axisLine={false} minTickGap={40} />
+              <YAxis tick={{ fontSize: 12, fill: 'rgb(var(--muted-fg))' }} tickLine={false} axisLine={false} width={48} tickFormatter={formatY} />
               <RTooltip
                 contentStyle={{ background: 'rgb(var(--card))', border: '1px solid rgb(var(--border))', borderRadius: 8, fontSize: 12 }}
                 labelStyle={{ color: 'rgb(var(--muted-fg))' }}

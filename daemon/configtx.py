@@ -19,9 +19,56 @@ import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from typing import Callable
 
 logger = logging.getLogger("borond.configtx")
+
+MAX_BACKUP_FILES = 32
+MAX_BACKUP_BYTES = 64 * 1024 * 1024
+_TX_LOCK = RLock()
+
+
+def _backup_name(prefix: str) -> str:
+    """Return a collision-resistant, naturally sortable backup name."""
+    return f"{prefix}.{time.time_ns()}"
+
+
+def _prune_backups(directory: Path, *, preserve: set[Path] | None = None) -> None:
+    """Bound completed config history without risking an active rollback.
+
+    Only regular, non-symlink files in the subsystem's private backup
+    directory are considered.  Newest files are retained within both the
+    count and byte budgets; the current transaction's rollback copies are
+    always preserved until that transaction has completed.
+    """
+    preserve = {path.resolve() for path in (preserve or set())}
+    try:
+        candidates = []
+        for path in directory.iterdir():
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+                continue
+            candidates.append((info.st_mtime_ns, path, info.st_size))
+    except FileNotFoundError:
+        return
+    candidates.sort(reverse=True)
+    kept_files = 0
+    kept_bytes = 0
+    for _mtime, path, size in candidates:
+        resolved = path.resolve()
+        if resolved in preserve:
+            kept_files += 1
+            kept_bytes += size
+            continue
+        if kept_files < MAX_BACKUP_FILES and kept_bytes + size <= MAX_BACKUP_BYTES:
+            kept_files += 1
+            kept_bytes += size
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            logger.warning("could not prune old config backup %s", path, exc_info=True)
 
 
 def _inherit_metadata(temporary: Path, target: Path) -> None:
@@ -77,8 +124,14 @@ class ConfigWriter:
         self.subsystem = subsystem
 
     def apply(self, new_content: str) -> ConfigTxResult:
+        with _TX_LOCK:
+            return self._apply(new_content)
+
+    def _apply(self, new_content: str) -> ConfigTxResult:
         steps: list[tuple[str, StepResult]] = []
         self.target_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.target_path.exists() and self.target_path.read_text() == new_content:
+            return ConfigTxResult(applied=True, rolled_back=False, steps=[("unchanged", StepResult(True))])
         tmp_path = self.target_path.with_suffix(self.target_path.suffix + f".tmp.{os.getpid()}")
         tmp_path.write_text(new_content)
         _inherit_metadata(tmp_path, self.target_path)
@@ -97,7 +150,7 @@ class ConfigWriter:
         backup_path = None
         if self.target_path.exists():
             self.backup_dir.mkdir(parents=True, exist_ok=True)
-            backup_path = self.backup_dir / f"{self.target_path.name}.{int(time.time())}"
+            backup_path = self.backup_dir / _backup_name(self.target_path.name)
             shutil.copy2(self.target_path, backup_path)
         steps.append(("backup", StepResult(True, str(backup_path) if backup_path else "no prior file")))
 
@@ -117,6 +170,7 @@ class ConfigWriter:
         steps.append(("verify", verify_result))
 
         if reload_result.ok and verify_result.ok:
+            _prune_backups(self.backup_dir)
             return ConfigTxResult(applied=True, rolled_back=False, steps=steps)
 
         # 6. rollback
@@ -131,6 +185,7 @@ class ConfigWriter:
             steps.append(("rollback_remove", StepResult(True)))
 
         logger.error("configtx rollback for %s: %s", self.subsystem, steps)
+        _prune_backups(self.backup_dir)
         return ConfigTxResult(applied=True, rolled_back=True, steps=steps) if rollback_ok else ConfigTxResult(
             applied=True, rolled_back=True, steps=steps
         )
@@ -174,7 +229,14 @@ class ConfigWriterMulti:
         self.subsystem = subsystem
 
     def apply(self, contents: dict[str, str]) -> ConfigTxResult:
+        with _TX_LOCK:
+            return self._apply(contents)
+
+    def _apply(self, contents: dict[str, str]) -> ConfigTxResult:
         steps: list[tuple[str, StepResult]] = []
+        if all(target.exists() and target.read_text() == contents[name]
+               for name, target in self.targets.items()):
+            return ConfigTxResult(applied=True, rolled_back=False, steps=[("unchanged", StepResult(True))])
         tmp_paths: dict[str, Path] = {}
         for name, target_path in self.targets.items():
             target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,7 +259,7 @@ class ConfigWriterMulti:
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         for name, target_path in self.targets.items():
             if target_path.exists():
-                backup_path = self.backup_dir / f"{name}-{target_path.name}.{int(time.time())}"
+                backup_path = self.backup_dir / _backup_name(f"{name}-{target_path.name}")
                 shutil.copy2(target_path, backup_path)
                 backups[name] = backup_path
         steps.append(("backup", StepResult(True, ", ".join(str(p) for p in backups.values()) or "no prior files")))
@@ -216,6 +278,7 @@ class ConfigWriterMulti:
         steps.append(("verify", verify_result))
 
         if reload_result.ok and verify_result.ok:
+            _prune_backups(self.backup_dir)
             return ConfigTxResult(applied=True, rolled_back=False, steps=steps)
 
         for name, target_path in self.targets.items():
@@ -227,4 +290,5 @@ class ConfigWriterMulti:
         steps.append(("rollback_reload", rb_reload))
 
         logger.error("configtx (multi) rollback for %s: %s", self.subsystem, steps)
+        _prune_backups(self.backup_dir)
         return ConfigTxResult(applied=True, rolled_back=True, steps=steps)

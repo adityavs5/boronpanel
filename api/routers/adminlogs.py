@@ -1,9 +1,8 @@
-"""Run A feature 7: admin view of the API's own recent 5xx errors.
+"""Administrator search for the API's correlated HTTP errors.
 
-Reads `api-error.log` (written by this same boron-api process, so no
-daemon RPC is needed -- the file is ours) and returns the last N records,
-newest first. Admin-only: it exposes internal paths/timings/usernames of
-failed requests, which is operator information, not customer information.
+Reads the API-owned SQLite search index beside ``api-error.log`` and returns
+bounded newest-first results. Admin-only: it exposes internal paths, timings
+and usernames of failed requests, which is operator information.
 
 Distinct from api/routers/logs_router.py, which serves a *hosting
 account's* own OLS/PHP logs under /accounts/{username}/logs -- this is the
@@ -20,9 +19,26 @@ api_router = APIRouter(prefix="/api/v1/admin/logs", tags=["admin-logs"])
 
 
 @api_router.get("/errors")
-def get_error_log(limit: int = 100, identity: Identity = Depends(get_identity)):
+def get_error_log(
+    limit: int = 100,
+    reference: str = "",
+    request_id: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    status: int | None = None,
+    identity: Identity = Depends(get_identity),
+):
     require_admin(identity)
     # Clamp: the goal asks for "last 100"; allow a smaller page but never an
     # unbounded read that could try to parse a huge backlog into one response.
     limit = max(1, min(limit, 100))
-    return {"errors": logsetup.tail_error_records(limit=limit)}
+    return {
+        "errors": logsetup.search_error_records(
+            limit=limit,
+            reference=reference,
+            request_id=request_id,
+            date_from=date_from,
+            date_to=date_to,
+            status=status,
+        )
+    }

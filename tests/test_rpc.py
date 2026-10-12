@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -6,11 +7,18 @@ from api import rpc as api_rpc
 from api.security import Identity
 
 from shared.rpc import (
+    RPC_PROTOCOL_CAPABILITIES,
+    RPC_PROTOCOL_VERSION,
+    RpcClient,
+    RpcError,
+    RpcProtocolError,
     RpcRequest,
     decode_frame_header,
     encode_response,
     read_frame,
+    validate_peer_protocol,
 )
+from shared.request_context import request_context
 
 
 async def _frame_from_bytes(raw: bytes) -> dict:
@@ -33,12 +41,22 @@ def test_request_round_trip_via_streamreader():
     assert frame["params"] == {"username": "demo"}
     assert frame["credential"] == {"type": "session", "value": "opaque-session"}
     assert frame["request_id"] == req.request_id
+    assert frame["protocol"]["version"]
+    assert "json-frame-v1" in frame["protocol"]["capabilities"]
+
+
+def test_request_inherits_correlation_context():
+    with request_context("upstream-123"):
+        req = RpcRequest(op="health")
+    assert req.request_id == "upstream-123"
 
 
 def test_response_round_trip_ok():
     raw = encode_response(True, result={"status": "active"})
     frame = asyncio.run(_frame_from_bytes(raw))
-    assert frame == {"ok": True, "result": {"status": "active"}}
+    assert frame["ok"] is True
+    assert frame["result"] == {"status": "active"}
+    assert "json-frame-v1" in frame["protocol"]["capabilities"]
 
 
 def test_response_round_trip_error():
@@ -118,3 +136,70 @@ def test_python_provisioning_has_deadline_above_both_bounded_commands(monkeypatc
     identity = Identity(1, 'admin', 'admin', None, 'session', rpc_credential='opaque-session')
     assert api_rpc.call_daemon('apps.python.create', identity, username='alpha') == {'created': True}
     assert called == [('apps.python.create', {'type': 'session', 'value': 'opaque-session'})]
+
+
+def test_protocol_allows_one_minor_and_rejects_larger_mismatch():
+    major, minor = map(int, RPC_PROTOCOL_VERSION.split('.'))
+    compatible = {
+        'version': f'{major}.{minor + 1}',
+        'capabilities': list(RPC_PROTOCOL_CAPABILITIES),
+    }
+    assert validate_peer_protocol(
+        compatible, local_role='API', peer_role='helper'
+    )['version'] == compatible['version']
+
+    incompatible = dict(compatible, version=f'{major}.{minor + 2}')
+    with pytest.raises(RpcProtocolError, match='restart the helper'):
+        validate_peer_protocol(incompatible, local_role='API', peer_role='helper')
+
+
+def test_rpc_client_reports_legacy_helper_as_actionable_mismatch(monkeypatch):
+    payload = json.dumps({'ok': True, 'result': {'status': 'ok'}}).encode()
+    frame = len(payload).to_bytes(4, 'big') + payload
+
+    class FakeSocket:
+        def __init__(self):
+            self.data = bytearray(frame)
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, _data):
+            pass
+
+        def recv(self, size):
+            chunk = bytes(self.data[:size])
+            del self.data[:size]
+            return chunk
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr('shared.rpc.socket.socket', lambda *_args, **_kwargs: FakeSocket())
+    with pytest.raises(RpcError) as raised:
+        RpcClient('/unused').call('health')
+    assert raised.value.code == 'incompatible_protocol'
+    assert 'restart both panel services' in raised.value.message
+
+
+def test_api_surfaces_protocol_mismatch_as_service_unavailable(monkeypatch):
+    from fastapi import HTTPException
+
+    class Client:
+        def call(self, *_args, **_kwargs):
+            raise RpcError(
+                'incompatible_protocol',
+                'API v3.2 and helper v3.0 are mixed; restart the helper',
+            )
+
+    monkeypatch.setattr(api_rpc, '_client', Client())
+    identity = Identity(
+        1, 'admin', 'admin', None, 'session', rpc_credential='opaque-session'
+    )
+    with pytest.raises(HTTPException) as raised:
+        api_rpc.call_daemon('account.list', identity)
+    assert raised.value.status_code == 503
+    assert 'restart the helper' in raised.value.detail

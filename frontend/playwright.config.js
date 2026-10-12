@@ -1,6 +1,8 @@
 import { defineConfig } from '@playwright/test'
 export default defineConfig({
   testDir: './e2e',
+  // The real-login smoke test owns a separate ephemeral API configuration.
+  testIgnore: 'ci-live-smoke.spec.js',
   timeout: 45_000,
   expect: { timeout: 12_000 },
   fullyParallel: false,

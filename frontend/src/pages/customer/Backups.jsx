@@ -2,7 +2,7 @@ import { SnapshotHistory } from '@/components/backups/SnapshotHistory'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Archive, Plus, RotateCcw, History, FolderOpen, Download, Mail } from 'lucide-react'
+import { Archive, Plus, RotateCcw, History, FolderOpen, Download, Mail, MoreHorizontal } from 'lucide-react'
 import { get, patch, post } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatBytes, formatDate } from '@/lib/utils'
@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
 import { useAuth } from '@/store/auth'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu'
 
 const BACKUP_KINDS = [
   { value: 'full', label: 'Full account (files + databases + mail + DNS + config)' },
@@ -216,7 +217,6 @@ export default function Backups() {
       setCreateOpen(false)
       setForm({ kind: 'full', item_ref: '', mail_domain: '' })
     },
-    onError: (e) => toast.error('Could not start backup', e.message),
   })
 
   const restoreMut = useMutation({
@@ -227,7 +227,6 @@ export default function Backups() {
       qc.invalidateQueries({ queryKey: ['backup-restores', username] })
       setToRestore(null)
     },
-    onError: (e) => toast.error('Could not start restore', e.message),
   })
 
   const needsItemRef = !['full', 'databases'].includes(form.kind)
@@ -252,16 +251,11 @@ export default function Backups() {
       align: 'right',
       render: (r) =>
         r.status === 'completed' ? (
-          <div className="flex justify-end gap-2">
-            {isAdmin && r.kind === 'full' && <Button variant="ghost" size="sm" onClick={() => window.open(`/api/v1/admin/account-archives/${r.id}/download`, '_blank', 'noopener')}>
-              <Download className="h-4 w-4" /> Portable archive
-            </Button>}
-            <Button variant="ghost" size="sm" onClick={() => setToBrowse(r)}>
-              <FolderOpen className="h-4 w-4" /> Browse
-            </Button>
+          <div className="flex justify-end gap-1">
             <Button variant="outline" size="sm" onClick={() => setToRestore(r)}>
               <RotateCcw className="h-4 w-4" /> Restore
             </Button>
+            <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for backup ${r.id}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => setToBrowse(r)}><FolderOpen className="h-4 w-4"/>Browse</DropdownMenuItem>{isAdmin && r.kind === 'full' && <DropdownMenuItem onSelect={() => window.open(`/api/v1/admin/account-archives/${r.id}/download`, '_blank', 'noopener')}><Download className="h-4 w-4"/>Portable archive</DropdownMenuItem>}</DropdownMenuContent></DropdownMenu>
           </div>
         ) : null,
     },
@@ -277,11 +271,9 @@ export default function Backups() {
 
   return (
     <div>
-      <PageHeader title="Backups" description="Create backup points of your account and restore them when you need to." icon={Archive}>
-        <Button onClick={() => setCreateOpen(true)}>
+      <PageHeader title="Backups" description="Create backup points of your account and restore them when you need to." icon={Archive} primaryAction={<Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" /> Create backup
-        </Button>
-      </PageHeader>
+        </Button>} />
 
       <SnapshotHistory username={username} />
       <BackupEmailPreferences username={username} />
@@ -324,8 +316,13 @@ export default function Backups() {
       </div>
 
       {/* Create backup */}
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent size="sm">
+      <Dialog open={createOpen} onOpenChange={open => { if (!createMut.isPending) setCreateOpen(open) }}>
+        <DialogContent
+          size="sm"
+          showClose={!createMut.isPending}
+          onEscapeKeyDown={event => { if (createMut.isPending) event.preventDefault() }}
+          onPointerDownOutside={event => { if (createMut.isPending) event.preventDefault() }}
+        >
           <DialogHeader>
             <DialogTitle>Create backup</DialogTitle>
             <DialogDescription>A backup runs in the background and appears in the list when complete.</DialogDescription>
@@ -408,7 +405,11 @@ export default function Backups() {
               )}
             </DialogBody>
             <DialogFooter>
-              <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
+              <div className="mr-auto min-w-0 text-sm">
+                {createMut.isPending && <p role="status" className="text-muted-foreground">Starting the backup… this can take up to 30 seconds. Do not close this page.</p>}
+                {!createMut.isPending && createMut.error && <p role="alert" className="text-danger">{createMut.error.message}</p>}
+              </div>
+              <Button type="button" variant="secondary" disabled={createMut.isPending} onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button
                 type="submit"
                 loading={createMut.isPending}
@@ -436,6 +437,8 @@ export default function Backups() {
         description="This overwrites the current data with the contents of this backup point. This cannot be undone."
         confirmLabel="Restore"
         loading={restoreMut.isPending}
+        loadingDescription="Starting the restore… this can take up to 30 seconds. Do not close this page."
+        error={restoreMut.error}
         onConfirm={() => toRestore && restoreMut.mutate(toRestore)}
       />
     </div>

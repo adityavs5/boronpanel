@@ -9,7 +9,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from daemon import cloudflare_accounts, dnscluster, dnsprovider, dnssetup, geoip, panel_config, panel_tls, stack_manager, ssl as ssl_ops
+from daemon import cloudflare_accounts, dnscluster, dnsprovider, dnssetup, geoip, notifications, panel_config, panel_tls, resource_tuning, snapshot_jobs, stack_manager, ssl as ssl_ops
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from daemon.procutil import run
 from shared.config import settings
@@ -26,7 +26,21 @@ STEPS = {
     6: "TLS certificates",
     7: "MaxMind GeoLite2",
     8: "Hosting software stack",
-    9: "Review and finish",
+    9: "Choose PHP versions",
+    10: "MariaDB and server tuning",
+    11: "Notification sender",
+    12: "Backup destination",
+    13: "Review and finish",
+}
+DEPENDENCIES = {
+    # The numbered wizard is deliberately sequential.  Some checks are
+    # technically independent, but allowing a later numbered step to finish
+    # first recreates the confusing "step 7 completed while steps 3 and 4 are
+    # missing" state this dependency model is intended to prevent.  Optional
+    # steps still complete explicitly with a persisted skipped warning.
+    2: (1,), 3: (2,), 4: (3,), 5: (4,), 6: (5,),
+    7: (6,), 8: (7,), 9: (8,), 10: (9,), 11: (10,), 12: (11,),
+    13: tuple(range(1, 13)),
 }
 _SECRET_MARKERS = ("token", "credential", "password", "secret", "license_key", "recovery_key")
 
@@ -43,17 +57,37 @@ def _public(value):
     return value
 
 
+def _is_legacy_completed(row: ServerSetupState, results: dict | None = None) -> bool:
+    """Recognise a wizard completed before steps 10-13 were introduced.
+
+    The persisted completion bit remains authoritative.  Requiring an owner
+    to rerun newly appended checks would turn a completed setup into a blocked
+    one during an upgrade, which is specifically what the compatibility rule
+    forbids.
+    """
+    values = results if results is not None else dict(row.step_results or {})
+    return bool(
+        row.completed
+        and all(values.get(str(number), {}).get("state") == "completed" for number in range(1, 10))
+        and not any(str(number) in values for number in range(10, 13))
+    )
+
+
 def _state_dict(row: ServerSetupState) -> dict:
     results = dict(row.step_results or {})
-    next_step = next((number for number in range(1, 9)
-                      if results.get(str(number), {}).get("state") != "completed"), 9)
+    # A completed legacy nine-step wizard remains complete after the appended
+    # checks are introduced. Operators may still open and run the new steps.
+    legacy_complete = _is_legacy_completed(row, results)
+    next_step = 13 if legacy_complete else next((number for number in range(1, 13)
+                      if results.get(str(number), {}).get("state") != "completed"), 13)
     return {
         "current_step": next_step, "completed": row.completed,
         "completed_steps": sum(item.get("state") == "completed" for item in results.values()),
         "contact_email": row.contact_email, "maxmind_skipped": row.maxmind_skipped,
         "draft": dict(row.draft or {}), "step_results": dict(row.step_results or {}),
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-        "steps": [{"number": number, "title": title} for number, title in STEPS.items()],
+        "legacy_completed": legacy_complete,
+        "steps": [{"number": number, "title": title, "dependencies": list(DEPENDENCIES.get(number, ()))} for number, title in STEPS.items()],
     }
 
 
@@ -81,6 +115,9 @@ def status(_params: dict | None = None) -> dict:
         "panel_certificate": panel_tls.certificate_status(),
     }
     result["dns"] = dnssetup.get_settings({})
+    result["stack"] = stack_manager.inventory({})["components"]
+    result["notifications"] = notifications.get_settings({})
+    result["backup_destinations"] = snapshot_jobs.destinations({})["destinations"]
     return result
 
 
@@ -100,9 +137,9 @@ def _record(step: int, state: str, result: dict, *, draft: dict | None = None,
         if maxmind_skipped is not None:
             row.maxmind_skipped = maxmind_skipped
         if state == "completed":
-            row.current_step = next((number for number in range(1, 9)
-                if results.get(str(number), {}).get('state') != 'completed'), 9)
-        if step == 9 and state == "completed":
+            row.current_step = next((number for number in range(1, 13)
+                if results.get(str(number), {}).get('state') != 'completed'), 13)
+        if step == 13 and state == "completed":
             row.completed = True
 
 
@@ -310,33 +347,113 @@ def _step8(_params: dict) -> tuple[dict, dict]:
     }, {"stack_reviewed": True}
 
 
-def _step9(_params: dict) -> tuple[dict, dict]:
+def _step9(params: dict) -> tuple[dict, dict]:
+    selected = params.get("versions") or []
+    if not isinstance(selected, list) or not selected:
+        raise ValidationError("Choose at least one supported PHP version")
+    selected = sorted({str(value) for value in selected})
+    unsupported = sorted(set(selected) - stack_manager.PHP_TARGETS)
+    if unsupported:
+        raise ValidationError("Unsupported PHP version: " + ", ".join(unsupported))
+    default = str(params.get("default") or "")
+    if default not in selected:
+        raise ValidationError("The default PHP version must be one of the selected versions")
+    inventory = stack_manager.inventory({})["components"]["php"]
+    installed = {row["target"] for row in inventory["targets"] if row["installed"]}
+    missing = sorted(set(selected) - installed)
+    if missing:
+        return {
+            "state": "waiting_for_packages", "selected": selected, "default": default,
+            "missing": missing,
+            "message": "Install the missing versions in Stack Manager, then retry this step.",
+        }, {"selected_php_versions": selected, "default_php_version": default}
+    panel_config.apply_setup_values({"php_versions": selected, "default_php_version": default})
+    return {
+        "selected": selected, "default": default, "installed": sorted(installed),
+        "eol": {"8.1": "Security support ended; keep only for existing sites."} if "8.1" in selected else {},
+    }, {"selected_php_versions": selected, "default_php_version": default}
+
+
+def _step10(params: dict) -> tuple[dict, dict]:
+    if not params.get("confirm"):
+        return {"state": "preview", **resource_tuning.preview(params)}, {}
+    result = resource_tuning.apply(params)
+    return result, {"resource_tuning": result["recommendation"]}
+
+
+def _step11(params: dict) -> tuple[dict, dict]:
+    if params.get("skip"):
+        return {
+            "skipped": True,
+            "warning": "Server and task alerts remain disabled until a notification sender and recipient are configured.",
+        }, {"notification_sender_skipped": True}
+    sender = validate_email_address(params.get("sender_address"))
+    result = notifications.set_settings({"sender_address": sender})
+    return result, {"notification_sender_configured": True}
+
+
+def _step12(params: dict) -> tuple[dict, dict]:
+    if params.get("skip"):
+        return {
+            "skipped": True,
+            "warning": "No backup destination was verified. Backups are not protected off-server.",
+        }, {"backup_destination_skipped": True}
+    try:
+        destination_id = int(params.get("destination_id"))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Choose a backup destination to verify") from exc
+    result = snapshot_jobs.initialize_destination({"id": destination_id})
+    return {"destination": result, "tested": True}, {"backup_destination_id": destination_id}
+
+
+def _step13(_params: dict) -> tuple[dict, dict]:
     with write_session() as db:
         row = _get_or_create(db)
         results = dict(row.step_results or {})
-        required = [1, 2, 3, 4, 5, 6, 7, 8]
+        if _is_legacy_completed(row, results):
+            return {
+                "status": "completed", "completed_at": _now(),
+                "legacy_completion_preserved": True,
+            }, {}
+        required = list(range(1, 13))
         missing = [number for number in required if results.get(str(number), {}).get("state") != "completed"]
     if missing:
         raise ValidationError("Complete setup steps: " + ", ".join(str(number) for number in missing))
     return {"status": "completed", "completed_at": _now()}, {}
 
 
-_HANDLERS = {1: _step1, 2: _step2, 3: _step3, 4: _step4, 5: _step5, 6: _step6, 7: _step7, 8: _step8, 9: _step9}
+_HANDLERS = {1: _step1, 2: _step2, 3: _step3, 4: _step4, 5: _step5, 6: _step6, 7: _step7, 8: _step8, 9: _step9, 10: _step10, 11: _step11, 12: _step12, 13: _step13}
+
+
+def _require_dependencies(step: int) -> None:
+    required = DEPENDENCIES.get(step, ())
+    if not required:
+        return
+    with write_session() as db:
+        row = _get_or_create(db)
+        results = dict(row.step_results or {})
+        if step == 13 and _is_legacy_completed(row, results):
+            return
+    missing = [number for number in required if results.get(str(number), {}).get("state") != "completed"]
+    if missing:
+        names = ", ".join(f"step {number} ({STEPS[number]})" for number in missing)
+        raise ValidationError("Complete " + names + " before continuing")
 
 
 def run_step(params: dict) -> dict:
     try:
         step = int(params.get("step"))
     except (TypeError, ValueError) as exc:
-        raise ValidationError("Setup step must be an integer from 1 to 9") from exc
+        raise ValidationError(f"Setup step must be an integer from 1 to {max(STEPS)}") from exc
     if step not in _HANDLERS:
-        raise ValidationError("Setup step must be from 1 to 9")
+        raise ValidationError(f"Setup step must be from 1 to {max(STEPS)}")
+    _require_dependencies(step)
     try:
         result, draft = _HANDLERS[step](params)
         result_state = result.get("state")
         if result_state == "preview":
             return {"step": step, **result, "wizard": status({})}
-        record_state = "completed" if result_state not in {"preview", "waiting_for_external_dns"} else result_state
+        record_state = "completed" if not result_state or result_state in {"completed", "applied"} else result_state
         _record(
             step, record_state, result, draft=draft,
             contact_email=draft.get("contact_email"),
@@ -351,7 +468,7 @@ def run_step(params: dict) -> dict:
 def reset_section(params: dict) -> dict:
     step = int(params.get("step", 0))
     if step not in STEPS:
-        raise ValidationError("Setup step must be from 1 to 9")
+        raise ValidationError(f"Setup step must be from 1 to {max(STEPS)}")
     with write_session() as db:
         row = _get_or_create(db)
         results = dict(row.step_results or {})

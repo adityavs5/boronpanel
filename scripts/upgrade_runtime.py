@@ -2,14 +2,17 @@
 """Idempotent host integration for self-updates that add system services."""
 from __future__ import annotations
 
+import argparse
 import re
 import base64
+import difflib
+import hashlib
 import json
 import os
 import shutil
+import tempfile
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -26,27 +29,135 @@ DOVECOT_QUOTA_CONFIG = Path('/etc/dovecot/conf.d/91-boron-quota.conf')
 SSL_DIR = Path("/etc/boron/ssl")
 DOVECOT_BORON_CONFIG = Path("/etc/dovecot/conf.d/90-boron.conf")
 POSTFIX_MAIN_CONFIG = Path('/etc/postfix/main.cf')
+POSTFIX_MASTER_CONFIG = Path('/etc/postfix/master.cf')
+POSTFIX_SENDER_LOGIN = Path('/etc/postfix/boron/mysql-sender-login.cf')
 MSMTP_CONFIG = Path("/etc/boron/msmtprc")
 APPARMOR_BWRAP_PROFILE = Path("/etc/apparmor.d/boron-bwrap")
 OLS_CONFIG = Path("/usr/local/lsws/conf/httpd_config.conf")
 OLS_VHOST_ROOT = Path("/usr/local/lsws/conf/vhosts")
+OLS_NAMESPACE_POLICY = Path("/usr/local/lsws/lsns/conf/boron-nsconf.conf")
 OLS_WAF_RUNTIME = Path("/etc/modsecurity/boron-runtime.conf")
 RUNTIME_BACKUP = Path("/var/lib/boron/update-runtime-backup.json")
 FIREWALL_RECOVER_COMMAND = Path("/usr/local/sbin/boron-firewall-recover")
 OLS_LIFECYCLE_CONFIG = Path("/etc/systemd/system/lshttpd.service.d/boron-lifecycle.conf")
+MAIL_SUBMIT_SOCKET_UNIT = Path("/etc/systemd/system/boron-mail-submit.socket")
+MAIL_SUBMIT_SERVICE_UNIT = Path("/etc/systemd/system/boron-mail-submit@.service")
+SYSTEMD_UNIT_DIR = Path("/etc/systemd/system")
+DEFAULT_APP_ENV_DIR = Path("/etc/boron/app-env")
+
+DATA_PLANE_UNITS = {
+    "lshttpd.service", "mariadb.service", "postfix.service", "dovecot.service",
+    "pdns.service", "redis-server.service", "fail2ban.service",
+}
+_ALLOWED_DATA_PLANE_RELOADS: set[str] = set()
+_SENSITIVE_PATH_PARTS = ("secret", "private", ".key", "password", "token", "credential")
+_REDACTION_PATTERNS = (
+    re.compile(r"(?i)(password|secret|token|api[_-]?key|private[_-]?key)\s*([=:])\s*[^\s#]+"),
+    re.compile(r"(?i)(authorization\s*:)\s*[^\s]+"),
+)
+
+
+def _runtime_report_path() -> Path:
+    return RUNTIME_BACKUP.with_name("update-runtime-changes.json")
+
+
+def _canonical_unit(value: str) -> str:
+    value = value.strip()
+    aliases = {"lshttpd": "lshttpd.service", "mariadb": "mariadb.service",
+               "postfix": "postfix.service", "dovecot": "dovecot.service",
+               "pdns": "pdns.service", "redis-server": "redis-server.service",
+               "fail2ban": "fail2ban.service"}
+    return aliases.get(value, value if value.endswith((".service", ".socket")) else f"{value}.service")
+
+
+def load_release_policy(path: str | None) -> dict:
+    """Load the signed release document copied inside the verified archive.
+
+    The daemon verifies the detached signature before extraction.  This
+    process repeats structural checks because it is the last boundary before
+    data-plane reloads.
+    """
+    if not path:
+        # The v3.1.x finalizer predates the explicit --release-metadata
+        # argument.  Its new_dir is nevertheless a publisher-signed archive,
+        # so use the policy embedded in that same verified tree.  This keeps
+        # N-1 upgrades fail-closed to the release's declared unit allow-list
+        # instead of either blocking every required reload or authorizing an
+        # unconstrained fallback.
+        embedded = ROOT / "release-metadata.json"
+        if not embedded.is_file():
+            return {"data_plane_reloads": [], "runtime_rewrites": []}
+        path = str(embedded)
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise RuntimeError("release metadata must be an object")
+    reloads = document.get("data_plane_reloads", [])
+    rewrites = document.get("runtime_rewrites", [])
+    if not isinstance(reloads, list) or not all(isinstance(item, str) for item in reloads):
+        raise RuntimeError("release metadata data_plane_reloads is invalid")
+    if not isinstance(rewrites, list) or not all(isinstance(item, str) for item in rewrites):
+        raise RuntimeError("release metadata runtime_rewrites is invalid")
+    declared = {_canonical_unit(item) for item in reloads}
+    unknown = declared - DATA_PLANE_UNITS
+    if unknown:
+        raise RuntimeError("release metadata declares unsupported data-plane units: " + ", ".join(sorted(unknown)))
+    return {"data_plane_reloads": sorted(declared), "runtime_rewrites": list(dict.fromkeys(rewrites))}
 
 
 def command(args: list[str], timeout: int = 900) -> None:
+    if len(args) >= 3 and Path(args[0]).name == "systemctl" and args[1] in {"reload", "restart", "try-restart"}:
+        unit = _canonical_unit(args[2])
+        if unit in DATA_PLANE_UNITS and unit not in _ALLOWED_DATA_PLANE_RELOADS:
+            raise RuntimeError(
+                f"release metadata does not authorize {args[1]} of data-plane service {unit}"
+            )
     subprocess.run(args, check=True, timeout=timeout, env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
 
 
 def _runtime_paths() -> list[Path]:
-    paths = [MSMTP_CONFIG, APPARMOR_BWRAP_PROFILE, OLS_CONFIG, OLS_WAF_RUNTIME, FIREWALL_RECOVER_COMMAND, OLS_LIFECYCLE_CONFIG,
+    paths = [MSMTP_CONFIG, APPARMOR_BWRAP_PROFILE, OLS_CONFIG, OLS_NAMESPACE_POLICY, OLS_WAF_RUNTIME, FIREWALL_RECOVER_COMMAND, OLS_LIFECYCLE_CONFIG,
              DOVECOT_BORON_CONFIG, POSTFIX_MAIN_CONFIG, SSL_DIR / 'mail.crt', SSL_DIR / 'mail.key',
+             POSTFIX_MASTER_CONFIG, POSTFIX_SENDER_LOGIN,
+             MAIL_SUBMIT_SOCKET_UNIT, MAIL_SUBMIT_SERVICE_UNIT,
              DOVECOT_SQL_CONFIG, DOVECOT_SSO_SQL_CONFIG, DOVECOT_SSO_PASSDB_CONFIG, DOVECOT_QUOTA_CONFIG]
     if OLS_VHOST_ROOT.exists():
         paths.extend(sorted(OLS_VHOST_ROOT.glob("*/vhconf.conf")))
+    for pattern in ("boron-node-*.service", "boron-node-*.socket",
+                    "boron-python-*.service", "boron-python-*.socket"):
+        paths.extend(sorted(SYSTEMD_UNIT_DIR.glob(pattern)))
+    if DEFAULT_APP_ENV_DIR.exists():
+        paths.extend(sorted(DEFAULT_APP_ENV_DIR.glob("boron-node-*.service.env")))
+        paths.extend(sorted(DEFAULT_APP_ENV_DIR.glob("boron-python-*.service.env")))
     return paths
+
+
+def _app_runtime_records() -> list[dict]:
+    """Capture application database mode and pre-update service state."""
+    from sqlalchemy import select
+    from shared.config import settings
+    from shared.db import read_session
+    from shared.models import Account, NodeApp, PythonApp
+
+    records = []
+    with read_session() as session:
+        accounts = {row.id: row.username for row in session.scalars(select(Account)).all()}
+        groups = (("node", NodeApp, session.scalars(select(NodeApp)).all()),
+                  ("python", PythonApp, session.scalars(select(PythonApp)).all()))
+        for kind, _model, rows in groups:
+            for row in rows:
+                username = accounts.get(row.account_id)
+                if username is None:
+                    continue
+                service = f"boron-{kind}-{username}-{row.id}.service"
+                state = subprocess.run(["systemctl", "is-active", service], capture_output=True,
+                                       text=True, check=False, timeout=10)
+                records.append({
+                    "kind": kind, "id": row.id, "backend_mode": row.backend_mode,
+                    "service": service, "socket": service[:-8] + ".socket",
+                    "env": str(Path(settings.app_env_dir) / f"{service}.env"),
+                    "enabled": bool(row.enabled), "active": state.stdout.strip() == "active",
+                })
+    return records
 
 
 def create_runtime_backup() -> None:
@@ -55,8 +166,12 @@ def create_runtime_backup() -> None:
         raise RuntimeError(
             f"unresolved runtime migration backup exists at {RUNTIME_BACKUP}; run upgrade_runtime.py --rollback"
         )
+    applications = _app_runtime_records()
+    paths = list(_runtime_paths())
+    for app in applications:
+        paths.extend((SYSTEMD_UNIT_DIR / app["service"], SYSTEMD_UNIT_DIR / app["socket"], Path(app["env"])))
     records = []
-    for path in _runtime_paths():
+    for path in dict.fromkeys(paths):
         exists = path.is_file()
         stat = path.stat() if exists else None
         records.append({
@@ -68,8 +183,10 @@ def create_runtime_backup() -> None:
             "data": base64.b64encode(path.read_bytes()).decode("ascii") if exists else "",
         })
     RUNTIME_BACKUP.parent.mkdir(parents=True, exist_ok=True)
+    _runtime_report_path().unlink(missing_ok=True)
     _write_private_atomic(RUNTIME_BACKUP,
-                          json.dumps({"version": 1, "records": records}, separators=(",", ":")).encode(),
+                          json.dumps({"version": 2, "records": records, "applications": applications},
+                                     separators=(",", ":")).encode(),
                           0o600, os.getuid(), os.getgid())
 
 
@@ -93,9 +210,14 @@ def restore_runtime_backup() -> None:
     if not RUNTIME_BACKUP.exists():
         return
     manifest = json.loads(RUNTIME_BACKUP.read_text())
-    if manifest.get("version") != 1 or not isinstance(manifest.get("records"), list):
+    if manifest.get("version") not in (1, 2) or not isinstance(manifest.get("records"), list):
         raise RuntimeError("runtime migration backup has an unsupported format")
     records = manifest["records"]
+    applications = manifest.get("applications", []) if manifest.get("version") == 2 else []
+    if not isinstance(applications, list):
+        raise RuntimeError("runtime migration backup has invalid application state")
+    for app in applications:
+        subprocess.run(["systemctl", "stop", str(app["socket"])], check=False, timeout=30)
     apparmor_record = next((row for row in records if row["path"] == str(APPARMOR_BWRAP_PROFILE)), None)
     if apparmor_record and not apparmor_record["exists"] and APPARMOR_BWRAP_PROFILE.exists():
         command(["apparmor_parser", "-R", str(APPARMOR_BWRAP_PROFILE)], timeout=30)
@@ -109,8 +231,34 @@ def restore_runtime_backup() -> None:
                               int(row["mode"]), int(row["uid"]), int(row["gid"]))
     if apparmor_record and apparmor_record["exists"]:
         command(["apparmor_parser", "-r", str(APPARMOR_BWRAP_PROFILE)], timeout=30)
-    if any(row["path"] == str(OLS_LIFECYCLE_CONFIG) for row in records):
+    if applications:
+        from shared.db import write_session
+        from shared.models import NodeApp, PythonApp
+        models = {"node": NodeApp, "python": PythonApp}
+        with write_session() as session:
+            for app in applications:
+                model = models.get(app.get("kind"))
+                row = session.get(model, int(app["id"])) if model else None
+                if row is not None:
+                    row.backend_mode = app["backend_mode"]
+    if applications or any(row["path"] in {str(OLS_LIFECYCLE_CONFIG), str(MAIL_SUBMIT_SOCKET_UNIT), str(MAIL_SUBMIT_SERVICE_UNIT)} for row in records):
         command(["systemctl", "daemon-reload"], timeout=30)
+        socket_record = next((row for row in records if row["path"] == str(MAIL_SUBMIT_SOCKET_UNIT)), None)
+        if socket_record and not socket_record["exists"]:
+            subprocess.run(["systemctl", "disable", "--now", "boron-mail-submit.socket"], check=False, timeout=30)
+        elif socket_record:
+            command(["systemctl", "restart", "boron-mail-submit.socket"], timeout=30)
+        for app in applications:
+            subprocess.run(["systemctl", "disable", "--now", str(app["socket"])], check=False, timeout=30)
+            service = str(app["service"])
+            if app.get("enabled"):
+                command(["systemctl", "enable", service], timeout=30)
+                if app.get("active"):
+                    command(["systemctl", "restart", service], timeout=60)
+                else:
+                    subprocess.run(["systemctl", "stop", service], check=False, timeout=30)
+            else:
+                subprocess.run(["systemctl", "disable", "--now", service], check=False, timeout=30)
     if any(row["path"] == str(OLS_CONFIG) and row["exists"] for row in records):
         command(["/usr/local/lsws/bin/openlitespeed", "-t"], timeout=30)
         command(["systemctl", "reload", "lshttpd"], timeout=60)
@@ -121,10 +269,93 @@ def restore_runtime_backup() -> None:
         command(['postfix', 'check'], timeout=30)
         command(['systemctl', 'reload', 'postfix'], timeout=60)
     RUNTIME_BACKUP.unlink()
+    _runtime_report_path().unlink(missing_ok=True)
+
+
+def _redact_line(value: str) -> str:
+    value = value.replace("\x00", "")[:1000]
+    for pattern in _REDACTION_PATTERNS:
+        value = pattern.sub(lambda match: f"{match.group(1)}{match.group(2) if match.lastindex and match.lastindex > 1 else ''}[REDACTED]", value)
+    return value
+
+
+def _safe_diff(path: Path, before: bytes, after: bytes) -> str | None:
+    if any(part in path.name.lower() or part in str(path.parent).lower()
+           for part in _SENSITIVE_PATH_PARTS):
+        return None
+    try:
+        before_text = before.decode("utf-8")
+        after_text = after.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    diff = difflib.unified_diff(
+        [_redact_line(line) + "\n" for line in before_text.splitlines()],
+        [_redact_line(line) + "\n" for line in after_text.splitlines()],
+        fromfile="before", tofile="after", n=2,
+    )
+    return "".join(diff)[:4096]
+
+
+def write_runtime_report() -> list[dict]:
+    """Compare the private rollback manifest with current host files.
+
+    The report intentionally stores hashes for every file and a bounded diff
+    only for non-sensitive UTF-8 configuration.  Private keys and secret-like
+    paths can never contribute content.
+    """
+    if not RUNTIME_BACKUP.exists():
+        return []
+    manifest = json.loads(RUNTIME_BACKUP.read_text(encoding="utf-8"))
+    changes = []
+    for row in manifest.get("records", []):
+        path = Path(str(row.get("path", "")))
+        if not path.is_absolute():
+            continue
+        before = base64.b64decode(row.get("data", ""), validate=True) if row.get("exists") else b""
+        try:
+            after = path.read_bytes() if path.is_file() and not path.is_symlink() else b""
+        except OSError:
+            after = b""
+        before_exists = bool(row.get("exists"))
+        after_exists = bool(after) or (path.is_file() and not path.is_symlink())
+        if before_exists == after_exists and before == after:
+            continue
+        item = {
+            "path": str(path),
+            "result": "changed",
+            "before_exists": before_exists,
+            "after_exists": after_exists,
+            "before_sha256": hashlib.sha256(before).hexdigest() if before_exists else None,
+            "after_sha256": hashlib.sha256(after).hexdigest() if after_exists else None,
+        }
+        difference = _safe_diff(path, before, after)
+        if difference:
+            item["diff"] = difference
+        changes.append(item)
+        if len(changes) >= 250:
+            break
+    payload = json.dumps(changes, separators=(",", ":"), ensure_ascii=True).encode()
+    if len(payload) > 256 * 1024:
+        raise RuntimeError("runtime change report exceeds its safety limit")
+    report_path = _runtime_report_path()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_private_atomic(report_path, payload, 0o600, os.getuid(), os.getgid())
+    return changes
+
+
+def read_runtime_report() -> list[dict]:
+    report_path = _runtime_report_path()
+    if not report_path.exists():
+        return []
+    document = json.loads(report_path.read_text(encoding="utf-8"))
+    if not isinstance(document, list):
+        raise RuntimeError("runtime change report is invalid")
+    return document
 
 
 def commit_runtime_backup() -> None:
     RUNTIME_BACKUP.unlink(missing_ok=True)
+    _runtime_report_path().unlink(missing_ok=True)
 
 
 def configure_firewall_recovery() -> None:
@@ -156,6 +387,20 @@ def configure_ols_lifecycle() -> None:
     finally:
         temporary.unlink(missing_ok=True)
     command(["systemctl", "daemon-reload"], timeout=30)
+
+
+def configure_ols_namespace_policy() -> None:
+    """Install the namespace policy outside OLS's WebAdmin-owned conf tree."""
+    source = ROOT / "deploy" / "ols-nsconf.conf"
+    OLS_NAMESPACE_POLICY.parent.mkdir(parents=True, exist_ok=True)
+    temporary = OLS_NAMESPACE_POLICY.with_name(".boron-nsconf.upgrade")
+    try:
+        temporary.write_bytes(source.read_bytes())
+        temporary.chmod(0o644)
+        os.chown(temporary, 0, 0)
+        temporary.replace(OLS_NAMESPACE_POLICY)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _write_dovecot_config(path, content, mode):
@@ -229,10 +474,20 @@ plugin {
 
 
 def _atomic_copy(source: Path, target: Path, mode: int) -> None:
-    temporary = target.with_name(f".{target.name}.boron-upgrade")
-    shutil.copyfile(source, temporary)
-    temporary.chmod(mode)
-    os.replace(temporary, target)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.boron-upgrade.", dir=target.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, mode)
+        with source.open("rb") as source_handle, os.fdopen(fd, "wb") as target_handle:
+            fd = -1
+            shutil.copyfileobj(source_handle, target_handle)
+            target_handle.flush()
+            os.fsync(target_handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        temporary.unlink(missing_ok=True)
 
 
 def configure_mail_tls() -> None:
@@ -308,7 +563,7 @@ def configure_account_resource_parent() -> None:
 
 
 def configure_bubblewrap_mail() -> None:
-    """Install the sandbox-safe localhost mail submission configuration."""
+    """Install the sandbox-safe identity-bound mail submission configuration."""
     from shared.config import settings
 
     hostname = settings.panel_hostname or "localhost"
@@ -320,6 +575,7 @@ def configure_bubblewrap_mail() -> None:
         "account default\n"
         "host 127.0.0.1\n"
         "port 25\n"
+        "socket /run/boron-mail-submit.sock\n"
         "auto_from on\n"
         f"maildomain {hostname}\n"
     )
@@ -328,6 +584,18 @@ def configure_bubblewrap_mail() -> None:
     temporary.write_text(content)
     temporary.chmod(0o644)
     temporary.replace(MSMTP_CONFIG)
+
+    for source, target in (
+        (ROOT / "deploy" / "boron-mail-submit.socket", MAIL_SUBMIT_SOCKET_UNIT),
+        (ROOT / "deploy" / "boron-mail-submit@.service", MAIL_SUBMIT_SERVICE_UNIT),
+    ):
+        temporary = target.with_name(f".{target.name}.boron-upgrade")
+        temporary.write_bytes(source.read_bytes())
+        temporary.chmod(0o644)
+        temporary.replace(target)
+    command(["systemctl", "daemon-reload"], timeout=30)
+    command(["systemctl", "enable", "boron-mail-submit.socket"], timeout=30)
+    command(["systemctl", "restart", "boron-mail-submit.socket"], timeout=30)
 
 
 def configure_bubblewrap_apparmor() -> None:
@@ -342,16 +610,30 @@ def configure_bubblewrap_apparmor() -> None:
     command(["apparmor_parser", "-r", str(APPARMOR_BWRAP_PROFILE)], timeout=30)
 
 
+def _arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--rollback", action="store_true")
+    action.add_argument("--commit", action="store_true")
+    action.add_argument("--report", action="store_true")
+    parser.add_argument("--release-metadata")
+    return parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+
 def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if argv == ["--rollback"]:
+    args = _arguments(argv)
+    policy = load_release_policy(args.release_metadata)
+    _ALLOWED_DATA_PLANE_RELOADS.clear()
+    _ALLOWED_DATA_PLANE_RELOADS.update(policy["data_plane_reloads"])
+    if args.rollback:
         restore_runtime_backup()
         return 0
-    if argv == ["--commit"]:
+    if args.commit:
         commit_runtime_backup()
         return 0
-    if argv:
-        raise RuntimeError("usage: upgrade_runtime.py [--rollback|--commit]")
+    if args.report:
+        print(json.dumps(read_runtime_report(), separators=(",", ":")))
+        return 0
     missing_packages = []
     if shutil.which("opendkim") is None or shutil.which("opendkim-testkey") is None:
         missing_packages.extend(["opendkim", "opendkim-tools"])
@@ -370,10 +652,11 @@ def main(argv: list[str] | None = None) -> int:
     from shared.db import init_db
     from daemon import dkim, ols, webmail_sso
 
+    init_db()
     create_runtime_backup()
     configure_firewall_recovery()
     configure_ols_lifecycle()
-    init_db()
+    configure_ols_namespace_policy()
     webmail_sso.ensure_schema()
     configure_dovecot()
     configure_mail_tls()
@@ -393,6 +676,7 @@ def main(argv: list[str] | None = None) -> int:
         command(["systemctl", "reload", "dovecot"], timeout=60)
     command(["postfix", "check"], timeout=30)
     command(["systemctl", "reload", "postfix"], timeout=60)
+    write_runtime_report()
     return 0
 
 

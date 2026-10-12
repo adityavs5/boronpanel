@@ -15,6 +15,13 @@ class MonitoringSettingsBody(BaseModel):
     enabled: bool | None = None
     admin_email: str | None = None
     cooldown_minutes: int | None = None
+    channels: list[str] | None = None
+    disk_free_pct: int | None = None
+    inode_free_pct: int | None = None
+    memory_used_pct: int | None = None
+    load_per_cpu: float | None = None
+    failed_login_threshold: int | None = None
+    failed_login_window_minutes: int | None = None
 
 
 @api_router.get("/settings")

@@ -31,8 +31,12 @@ for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark
    await page.goto(reference==='account'?'/app/accounts/alpha':reference==='settings'?'/app/panel-settings':'/app/domains')
    await expect(page.locator('main h1').first()).toBeVisible()
    await page.keyboard.press('Tab')
-   await page.getByRole('button',{name:'Collapse sidebar',exact:true}).focus()
-   for(const sample of await contrast(page,'[aria-label="Collapse sidebar"]','focus'))expect(sample.ratio,`${reference} ${sample.label}: focus`).toBeGreaterThanOrEqual(3)
+   const navigationButton = skin === 'evolution'
+    ? page.getByRole('button',{name:'Menu',exact:true})
+    : page.getByRole('button',{name:'Collapse sidebar',exact:true})
+   const navigationSelector = skin === 'evolution' ? '[aria-label="Menu"]' : '[aria-label="Collapse sidebar"]'
+   await navigationButton.focus()
+   for(const sample of await contrast(page,navigationSelector,'focus'))expect(sample.ratio,`${reference} ${sample.label}: focus`).toBeGreaterThanOrEqual(3)
    for(const sample of await contrast(page,'main [data-ui-button]:not(:disabled)'))expect(sample.ratio,`${reference} ${sample.label}: text`).toBeGreaterThanOrEqual(4.5)
    for(const sample of await contrast(page,'main input[placeholder]','placeholder'))expect(sample.ratio,`${reference} ${sample.label}: placeholder`).toBeGreaterThanOrEqual(4.5)
    for(const sample of await contrast(page,'main input:not([type=checkbox]):not([type=radio]):not([type=hidden])','border'))expect(sample.ratio,`${reference} ${sample.label}: input boundary`).toBeGreaterThanOrEqual(3)

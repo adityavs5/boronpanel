@@ -9,7 +9,7 @@ import threading
 import uuid
 
 from sqlalchemy import select
-from daemon import snapshot_jobs as jobs, snapshot_storage as storage
+from daemon import audit, snapshot_jobs as jobs, snapshot_storage as storage
 from daemon.procutil import run
 from shared.config import settings
 from shared.db import write_session
@@ -295,6 +295,11 @@ def routing_options(params):
 
 
 def trigger(params):
+    with audit.step("restore: validate recovery point and queue restore"):
+        return _trigger(params)
+
+
+def _trigger(params):
     safety=jobs._row(SnapshotRestore,params['_safety']) if params.get('_safety') else None
     account,source=_owned_run(params['username'],params['run_id'],allow_expired=safety is not None)
     _require_customer_visible(source,params.get('customer_scope',False))
@@ -407,6 +412,7 @@ def trigger(params):
         if safety and kind in ('mail','config','mail_routing'):selection['source_restore_id']=safety.id
         row=SnapshotRestore(run_id=source.id,account_id=account.id,selection=selection,status='pending')
         session.add(row);session.flush();result=_serialize(row)
+        audit.change("snapshot_restore", None, {"id": row.id, "kind": kind, "status": "pending"})
     jobs._executor.submit(execute,row.id)
     return result
 
@@ -463,6 +469,7 @@ def _trigger_full(params,account,source):
         row=SnapshotRestore(run_id=source.id,account_id=account.id,
             selection={'kind':'full','steps':steps,'missing_components':missing},status='pending')
         session.add(row);session.flush();result=_serialize(row);ident=row.id
+        audit.change("snapshot_restore", None, {"id": ident, "kind": "full", "status": "pending"})
     jobs._executor.submit(execute,ident)
     return result
 
@@ -611,6 +618,16 @@ def _restore_databases(ident,account,row,repo,snapshot_id,work,update=None):
         state,reason=_database_state(account,name,metadata)
         if state=='unavailable':raise ValidationError(reason)
         states[name]=state
+    new_registrations = sum(state == 'recreate' for state in states.values())
+    if new_registrations:
+        from daemon import resource_limits
+        with write_session() as session:
+            current = session.get(Account, account.id)
+            if current is None or current.username != account.username or current.status != 'active':
+                raise ValidationError('Restore account is no longer active')
+            resource_limits.require_capacity(
+                session, account.id, 'database', additions=new_registrations
+            )
     base=Path(settings.snapshot_private_dir)
     source=base/('database-safety' if row.selection.get('source_snapshot_id') else 'sources')/f'account-{account.id}'/'databases'
     paths=[source/f'{name}.sql' for name in names]

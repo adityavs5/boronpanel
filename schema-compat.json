@@ -1,0 +1,6 @@
+{
+  "schema_version": 5,
+  "minimum_supported_schema": 0,
+  "maximum_supported_schema": 5,
+  "rollback_policy": "additive revisions may be ignored by older releases; breaking revisions require expand-contract"
+}

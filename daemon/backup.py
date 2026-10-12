@@ -29,7 +29,7 @@ import secrets
 import shutil
 import tarfile
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -54,7 +54,8 @@ from shared.models import (
 )
 from shared.validation import ValidationError, validate_domain, validate_username, validate_mailbox_local_part
 
-from daemon import cron, dnsprovider, events, mariadb, rclone
+from daemon import audit, cron, dnsprovider, events, mariadb, rclone
+from daemon.archive_limits import ArchiveMetadataTooLarge, open_guarded_tar
 from daemon.procutil import run
 
 logger = logging.getLogger("borond.backup")
@@ -78,7 +79,7 @@ class BackupError(Exception):
 def _safe_extract_tar(archive_path: str | Path, destination: str | Path) -> None:
     """Extract a backup component with traversal and expansion limits."""
     try:
-        with tarfile.open(archive_path) as archive:
+        with open_guarded_tar(archive_path) as archive:
             total = 0
             count = 0
             file_names: set[str] = set()
@@ -99,7 +100,7 @@ def _safe_extract_tar(archive_path: str | Path, destination: str | Path) -> None
                             f"archive component expands beyond the {settings.cpanel_import_max_extracted_bytes} byte limit"
                         )
             archive.extractall(destination, filter="data")
-    except tarfile.TarError as exc:
+    except (tarfile.TarError, ArchiveMetadataTooLarge) as exc:
         raise BackupError(f"unsafe or unreadable archive component: {exc}") from exc
 
 
@@ -283,8 +284,9 @@ def _job_to_dict(j: BackupJob) -> dict:
 
 def trigger_backup(params: dict) -> dict:
     from daemon.snapshot_jobs import lock
-    with lock('queue'):
-        return _trigger_backup_locked(params)
+    with audit.step("backup: validate and queue job"):
+        with lock('queue'):
+            return _trigger_backup_locked(params)
 
 
 def _authorize_item(session, account, kind, item_ref):
@@ -321,7 +323,7 @@ def _trigger_backup_locked(params: dict) -> dict:
     item_ref = params.get("item_ref")
     if kind not in ("full", "databases") and not item_ref:
         raise ValidationError(f"item_ref is required for kind '{kind}'")
-    trigger_source = params.get("trigger", "manual")
+    trigger_source = "customer" if params.get("customer_scope") else params.get("trigger", "manual")
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
@@ -364,8 +366,8 @@ def _trigger_backup_locked(params: dict) -> dict:
             )
 
         destination_id = params.get("destination_id")
+        schedule = get_effective_schedule(session, account.id)
         if destination_id is None:
-            schedule = get_effective_schedule(session, account.id)
             if schedule is None:
                 # Central snapshot destinations are a different model. Do not
                 # reuse their IDs or silently create a recurring schedule.
@@ -390,8 +392,20 @@ def _trigger_backup_locked(params: dict) -> dict:
                 destination_id = schedule.destination_id
         else:
             destination_id = int(destination_id)
-        if session.get(BackupDestination, destination_id) is None:
+            if params.get("customer_scope") and (schedule is None or destination_id != schedule.destination_id):
+                raise BackupError("Choose the backup destination configured for this account")
+        selected_destination = session.get(BackupDestination, destination_id)
+        if selected_destination is None:
             raise BackupError(f"destination {destination_id} not found")
+        if selected_destination.kind == "local":
+            local_path = Path(selected_destination.local_path)
+            if not local_path.is_absolute() or local_path.is_symlink():
+                raise ValidationError("The local backup destination needs administrator permission repair")
+            local_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if local_path.stat().st_uid != os.geteuid():
+                raise ValidationError("The local backup destination needs administrator permission repair")
+            if shutil.disk_usage(local_path).free < 512 * 1024 * 1024:
+                raise ValidationError("Less than 512 MB is free on backup storage. Free space before starting a backup.")
 
         job = BackupJob(
             account_id=account.id,
@@ -406,6 +420,10 @@ def _trigger_backup_locked(params: dict) -> dict:
         session.flush()
         job_id = job.id
         result = _job_to_dict(job)
+        audit.change("backup_job", None, {
+            "id": job_id, "kind": kind, "destination_id": destination_id,
+            "status": "pending",
+        })
 
     _executor.submit(_run_backup_job, job_id)
     return result
@@ -494,15 +512,14 @@ def _as_aware_utc(value):
 
 
 def _dump_database(db_name: str, output_path: Path) -> None:
-    cnf_path = _write_mysql_defaults_file()
+    from daemon.snapshot_databases import dump_database
+    plain = output_path.with_suffix(output_path.suffix + ".sql")
     try:
-        result = run(["mysqldump", f"--defaults-extra-file={cnf_path}", db_name], timeout=1800)
-        if not result.ok:
-            raise BackupError(f"mysqldump failed for '{db_name}': {result.stderr.strip()}")
-        with gzip.open(output_path, "wt") as gz:
-            gz.write(result.stdout)
+        dump_database(db_name, plain, output_path.parent)
+        with plain.open("rb") as source, gzip.open(output_path, "xb") as target:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
     finally:
-        os.unlink(cnf_path)
+        plain.unlink(missing_ok=True)
 
 
 def _write_mysql_defaults_file(user: str | None = None, password: str | None = None) -> str:
@@ -582,7 +599,7 @@ def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
     _update_job(job_id, progress_message="backing up databases (2/3)")
     if manifest["databases"]:
         db_dir = staging_dir / "databases"
-        db_dir.mkdir()
+        db_dir.mkdir(mode=0o700)
         for db in manifest["databases"]:
             _dump_database(db["db_name"], db_dir / f"{db['db_name']}.sql.gz")
 
@@ -651,7 +668,8 @@ def _build_databases_backup(account_id: int, staging_dir: Path, job_id: int) -> 
     if not names:
         raise BackupError("this account has no databases to back up")
     content = staging_dir / "databases"
-    content.mkdir(parents=True, exist_ok=True)
+    content.mkdir(parents=True, exist_ok=True, mode=0o700)
+    content.chmod(0o700)
     for index, name in enumerate(names, start=1):
         _update_job(job_id, progress_message=f"dumping database {index} of {len(names)}: {name}")
         _dump_database(name, content / f"{name}.sql.gz")
@@ -678,6 +696,35 @@ def _build_mailbox_backup(item_ref: str, staging_dir: Path, job_id: int) -> Path
     if not result.ok:
         raise BackupError(f"tar of mailbox '{item_ref}' failed: {result.stderr.strip()}")
     return artifact
+
+
+def _private_staging_directory(job_id: int) -> Path:
+    """Create the legacy archive worker's credential-safe scratch directory.
+
+    Database exports write a short-lived MariaDB option file beside the dump.
+    The snapshot exporter has always used a 0700 service-owned directory for
+    that purpose, but the legacy/on-demand archive path inherited the daemon's
+    ordinary umask and therefore created ``job-*`` as 0755 on a fresh install.
+    Keep the same ownership and symlink boundary on both backup engines.
+    """
+    base = Path(settings.backup_staging_dir)
+    if not base.is_absolute() or ".." in base.parts or base == Path("/"):
+        raise ValidationError("Invalid backup staging directory")
+    for path in [*reversed(base.parents), base]:
+        if path.is_symlink():
+            raise ValidationError("Backup staging directory cannot use symbolic links")
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if base.stat().st_uid != os.geteuid():
+        raise ValidationError("Backup staging directory has an unexpected owner")
+    base.chmod(0o700)
+    target = base / f"job-{int(job_id)}"
+    if target.is_symlink():
+        raise ValidationError("Backup staging directory cannot use symbolic links")
+    target.mkdir(exist_ok=True, mode=0o700)
+    if not target.is_dir() or target.stat().st_uid != os.geteuid():
+        raise ValidationError("Backup staging directory has an unexpected owner")
+    target.chmod(0o700)
+    return target
 
 
 def _run_backup_job(job_id: int) -> None:
@@ -718,7 +765,7 @@ def _run_backup_job(job_id: int) -> None:
             if current is None or current.username != username or current.status != 'active':
                 raise BackupError('Backup account changed while waiting to start')
             _authorize_item(session, current, kind, item_ref)
-        staging_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = _private_staging_directory(job_id)
         timestamp = utcnow().strftime("%Y%m%d-%H%M%S")
 
         if kind == "full":
@@ -800,6 +847,8 @@ def _enforce_retention_locked(job_id: int) -> None:
         destination = session.get(BackupDestination, destination_id)
         if schedule is not None:
             retention_count = schedule.retention_count
+        elif job.trigger == "customer":
+            retention_count = 3
         elif (destination.kind == "local" and destination.local_path ==
               str(Path(settings.backup_dir) / "account-archives")):
             # Bound the new self-service storage; existing unscheduled
@@ -941,8 +990,9 @@ def _restore_to_dict(r: RestoreJob) -> dict:
 
 def trigger_restore(params: dict) -> dict:
     from daemon.snapshot_jobs import lock
-    with lock('queue'):
-        return _trigger_restore_locked(params)
+    with audit.step("restore: validate and queue job"):
+        with lock('queue'):
+            return _trigger_restore_locked(params)
 
 
 def _trigger_restore_locked(params: dict) -> dict:
@@ -998,6 +1048,10 @@ def _trigger_restore_locked(params: dict) -> dict:
         session.flush()
         restore_job_id = restore_job.id
         result = _restore_to_dict(restore_job)
+        audit.change("restore_job", None, {
+            "id": restore_job_id, "backup_job_id": backup_job_id,
+            "kind": effective_kind, "status": "pending",
+        })
 
     _executor.submit(_run_restore_job, restore_job_id)
     return result

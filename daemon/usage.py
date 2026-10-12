@@ -376,6 +376,10 @@ def get_usage(account: Account, force_refresh: bool = False) -> dict:
         "resources": _resource_summary(account),
         "quota_soft_mb": account.quota_soft_mb,
         "quota_hard_mb": account.quota_hard_mb,
+        "inode_soft_limit": account.inode_soft_limit,
+        "inode_hard_limit": account.inode_hard_limit,
+        "inode_limit": account.inode_hard_limit or None,
+        "inode_enforce_at": account.inode_enforce_at.isoformat() if account.inode_enforce_at else None,
         "history": [_snapshot_to_dict(s) for s in history],
         "bandwidth_daily": [{"date": b.date, "bytes_served": b.bytes_served} for b in bandwidth_rows],
         "bandwidth_month_to_date_bytes": sum(

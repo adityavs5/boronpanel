@@ -16,7 +16,7 @@ def test_disk_probe_cannot_follow_swapped_parent_into_private_directory(monkeypa
         owner = pwd.getpwnam('auditweb')
     except KeyError:
         pytest.skip('disposable lab account auditweb is required')
-    with tempfile.TemporaryDirectory(prefix='boron-disk-probe-', dir='/tmp') as temp:
+    with tempfile.TemporaryDirectory(prefix='boron-disk-probe-') as temp:
         base = Path(temp)
         base.chmod(0o755)
         own = base / 'own'

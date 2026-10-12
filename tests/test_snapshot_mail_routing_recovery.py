@@ -3,6 +3,7 @@ import json
 import os
 
 import pytest
+from testsupport.host_requirements import chown_or_skip
 
 from daemon import snapshot_jobs as jobs, snapshot_storage as storage, snapshot_mail_routing as routing
 from daemon import snapshot_mail_routing_recovery as recovery, snapshot_mail_metadata
@@ -20,10 +21,10 @@ def prepared(routing_account, mail_database, tmp_path, monkeypatch):
     account, foreign = routing_account
     root = tmp_path / 'vmail'; home = root / 'alpha.example.test' / 'inbox'
     home.mkdir(parents=True)
-    os.chown(home.parent, 150, 150); os.chown(home, 150, 150)
+    chown_or_skip(home.parent, 150, 150); chown_or_skip(home, 150, 150)
     original = b'# custom previous script\r\nkeep;\r\n'
     path = home / '.dovecot.sieve'; path.write_bytes(original)
-    os.chown(path, 150, 150); path.chmod(0o600)
+    chown_or_skip(path, 150, 150); path.chmod(0o600)
     monkeypatch.setattr(settings, 'mail_base', str(root))
     current = routing.capture(account)
     desired = deepcopy(current)

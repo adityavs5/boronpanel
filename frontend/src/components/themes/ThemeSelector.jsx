@@ -12,7 +12,7 @@ export function ThemeSelector({ compact = false }) {
         <button type="button" className="skin-selector" aria-label="Choose theme">
           <Palette size={17} aria-hidden="true" />
           {!compact && <span className="skin-selector-name">{SKINS.find((s) => s.id === skin)?.name}</span>}
-          <ChevronDown size={13} aria-hidden="true" />
+          {!compact && <ChevronDown size={13} aria-hidden="true" />}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-60">

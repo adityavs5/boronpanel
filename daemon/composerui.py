@@ -23,8 +23,9 @@ from sqlalchemy import select
 # vendor/package optionally with a :version-constraint. Constraint charset is
 # composer's own (^ ~ > < = ! | , . * space digits/letters for stability flags).
 _PACKAGE_RE = re.compile(
-    r"\A[a-z0-9]([_.-]?[a-z0-9]+)*/[a-z0-9]([_.-]?[a-z0-9]+)*(:[A-Za-z0-9.\^~><=!|,* +-]{1,64})?\Z"
+    r"\A[a-z0-9]+(?:[_.-][a-z0-9]+)*/[a-z0-9]+(?:[_.-][a-z0-9]+)*(?::[A-Za-z0-9.\^~><=!|,* +-]{1,64})?\Z"
 )
+MAX_PACKAGE_SPEC_LENGTH = 4096
 
 COMMANDS = {
     "install": ["install", "--no-interaction", "--no-progress"],
@@ -58,7 +59,9 @@ def _resolve_app_dir(username: str, app_dir: str) -> str:
 
 
 def _validate_package(pkg) -> str:
-    if not isinstance(pkg, str) or not _PACKAGE_RE.match(pkg.strip()):
+    if not isinstance(pkg, str) or len(pkg) > MAX_PACKAGE_SPEC_LENGTH:
+        raise ValidationError("package specification must be at most 4096 characters")
+    if not _PACKAGE_RE.fullmatch(pkg.strip()):
         raise ValidationError("package must look like 'vendor/name' or 'vendor/name:^1.2'")
     return pkg.strip()
 

@@ -33,7 +33,8 @@ def stub_mariadb(monkeypatch):
         pass
 
     monkeypatch.setattr(hdb.mariadb, "database_exists", lambda name: False)
-    monkeypatch.setattr(hdb.mariadb, "user_exists", lambda name, host="localhost": False)
+    monkeypatch.setattr(hdb.mariadb, "require_ungranted_database_name", lambda name: None)
+    monkeypatch.setattr(hdb.mariadb, "user_exists", lambda name, host="localhost": name in users)
     monkeypatch.setattr(hdb.mariadb, "create_database", create_database)
     monkeypatch.setattr(hdb.mariadb, "drop_database", drop_database)
     monkeypatch.setattr(hdb.mariadb, "create_db_user", create_db_user)
@@ -148,6 +149,28 @@ def test_two_tokens_for_different_databases_get_different_ephemeral_users(accoun
     assert len(users) == 2  # each token got its own distinct, scoped ephemeral user
 
 
+def test_reissuing_same_database_reuses_governed_principal_and_resource_window(
+    account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    applied = []
+    monkeypatch.setattr(pma.db_governor, "apply_new_user", lambda *args: applied.append(args))
+
+    pma.create_token({"username": "demo1", "name": "shop"})
+    first = json.loads(next((tmp_path / "pma-tokens").glob("*.json")).read_text())
+    pma.create_token({"username": "demo1", "name": "shop"})
+    files = list((tmp_path / "pma-tokens").glob("*.json"))
+    second = json.loads(files[0].read_text())
+
+    assert len(files) == 1
+    assert first["db_user"] == second["db_user"]
+    assert first["db_password"] == second["db_password"]
+    assert len(applied) == 1
+    with write_session() as session:
+        assert len(session.scalars(select(PmaToken)).all()) == 1
+
+
 def test_cleanup_expired_tokens_drops_user_and_file(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
     import datetime as dt
 
@@ -240,6 +263,25 @@ def test_token_storage_failure_removes_temporary_login(account_with_db,stub_mari
         pma.create_token({'username':'demo1','name':'shop'})
     assert set(stub_mariadb)==before
     assert not list((tmp_path/'tokens').glob('*.json'))
+
+
+def test_governor_failure_never_publishes_temporary_login(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "tokens"))
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    before = set(stub_mariadb)
+    monkeypatch.setattr(
+        pma.db_governor,
+        "apply_new_user",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("governor unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="governor unavailable"):
+        pma.create_token({"username": "demo1", "name": "shop"})
+
+    assert set(stub_mariadb) == before
+    assert not list((tmp_path / "tokens").glob("*.json"))
+    with write_session() as session:
+        assert session.scalar(select(PmaToken)) is None
 
 
 def test_token_dir_refuses_symlink_without_chowning_target(tmp_path, monkeypatch):

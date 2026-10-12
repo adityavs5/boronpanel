@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
-from daemon import account_mutation, database_operations, domain_ownership
+from daemon import account_mutation, audit, database_operations, domain_ownership
 
 from sqlalchemy import select
 
@@ -81,6 +81,7 @@ def add_domain(params: dict) -> dict:
     kind = params.get("kind", "addon")
     if kind not in ("primary", "addon", "subdomain"):
         raise ValueError("kind must be primary, addon, or subdomain")
+    audit.change("domain", None, domain_name)
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
@@ -154,6 +155,8 @@ def add_domain(params: dict) -> dict:
         session.flush()
         domain_dict = _domain_to_dict(domain)
         account_snapshot = account
+        audit.change("domain_kind", None, kind)
+        audit.change("document_root", None, docroot)
 
     # provision_vhost needs this Domain row in the DB to render the regenerated
     # httpd_config.conf (it queries all domains for the account), so the row
@@ -170,46 +173,54 @@ def add_domain(params: dict) -> dict:
         # leave the already-committed Domain row orphaned.
         parent_zone = _find_parent_zone(domain_name)
         dns_label = _subdomain_label(domain_name, parent_zone) if parent_zone else None
-        ensure_docroot(username, docroot, domain_name)
+        with audit.step("domain: create document root"):
+            ensure_docroot(username, docroot, domain_name)
         # Accounts created without a primary domain do not yet have the OLS
         # log directory. Provision it before the first later-added vhost is
         # validated; this is idempotent for ordinary existing accounts.
-        sysops.ensure_web_logs(username)
+        with audit.step("domain: create web log paths"):
+            sysops.ensure_web_logs(username)
         from daemon import ipmanager
 
         site_ip = ipmanager.address_for_account(account_snapshot.id)
         if parent_zone and site_ip:
             record_type = "AAAA" if ":" in site_ip else "A"
-            dnsprovider.upsert_record(parent_zone, dns_label, record_type, [site_ip])
+            with audit.step("domain: publish DNS address record"):
+                dnsprovider.upsert_record(parent_zone, dns_label, record_type, [site_ip])
             dns_record_created = True
         elif parent_zone is None and kind != "subdomain":
             # A separately hosted primary/addon domain is an authoritative
             # zone by default, as it is in DirectAdmin/cPanel. Creating it
             # through handlers_dns also seeds apex/www records and queues the
             # final zone payload when DNS cluster mode is active.
-            _create_managed_zone(username, domain_name)
+            with audit.step("domain: create managed DNS zone"):
+                _create_managed_zone(username, domain_name)
             parent_zone = domain_name
             dns_label = "@"
             dns_zone_created = True
-        ols.provision_vhost(account_snapshot)
+        with audit.step("domain: provision OpenLiteSpeed vhost"):
+            ols.provision_vhost(account_snapshot)
     except Exception:
         if dns_zone_created:
             try:
-                _delete_managed_zone(domain_name)
+                with audit.step("domain: roll back managed DNS zone"):
+                    _delete_managed_zone(domain_name)
             except dnsprovider.DnsError:
                 pass  # best-effort; the Domain-row compensation below remains authoritative
         elif dns_record_created:
             try:
-                dnsprovider.delete_record(parent_zone, dns_label, record_type)
+                with audit.step("domain: roll back DNS address record"):
+                    dnsprovider.delete_record(parent_zone, dns_label, record_type)
             except dnsprovider.DnsError:
                 pass  # best-effort; the DB-row compensation below is authoritative
-        with write_session() as session:
-            orphan = session.scalar(select(Domain).where(Domain.domain == domain_name))
-            if orphan is not None:
-                session.delete(orphan)
-            if is_primary:
-                account = session.scalar(select(Account).where(Account.username == username))
-                account.primary_domain = previous_primary_domain
+        with audit.step("domain: roll back panel metadata"):
+            with write_session() as session:
+                orphan = session.scalar(select(Domain).where(Domain.domain == domain_name))
+                if orphan is not None:
+                    session.delete(orphan)
+                if is_primary:
+                    account = session.scalar(select(Account).where(Account.username == username))
+                    account.primary_domain = previous_primary_domain
         raise
 
     domain_dict["dns_record_created"] = dns_record_created

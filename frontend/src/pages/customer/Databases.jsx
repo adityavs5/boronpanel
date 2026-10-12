@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Database, Trash2, MoreHorizontal, KeyRound, ExternalLink, Copy, Stethoscope } from 'lucide-react'
+import { Database, Trash2, MoreHorizontal, KeyRound, ExternalLink, Copy, Plus, Stethoscope } from 'lucide-react'
 import { api, get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatDate, formatBytes, copyToClipboard } from '@/lib/utils'
@@ -19,6 +19,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/DropdownMenu'
 import { toast } from '@/components/ui/Toast'
+import { Checkbox } from '@/components/ui/Toggle'
 
 export default function Databases() {
   const username = useAccountUsername()
@@ -37,6 +38,9 @@ export default function Databases() {
   const [renameName, setRenameName] = useState('')
   const [creds, setCreds] = useState(null) // { title, db_name, db_user, password }
   const [accessDatabase, setAccessDatabase] = useState('')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [selectedDatabases, setSelectedDatabases] = useState(new Set())
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['databases', username],
@@ -62,6 +66,7 @@ export default function Databases() {
         setCreds({ title: 'Database created', db_name: res.db_name, db_user: res.db_user, password: res.password })
       }
       setForm({ name: '', password: '' })
+      setCreateOpen(false)
     },
     onError: (e) => toast.error('Could not create database', e.message),
   })
@@ -132,6 +137,17 @@ export default function Databases() {
     },
     onError: (e) => toast.error('Could not drop database', e.message),
   })
+  const bulkDeleteMut = useMutation({
+    mutationFn: async () => {
+      const names = [...selectedDatabases]
+      const results = await Promise.allSettled(names.map(name => del(`/api/v1/accounts/${username}/databases/${name}`)))
+      const failures = results.flatMap((result, index) => result.status === 'rejected' ? [`${names[index]}: ${result.reason?.message || 'Could not delete'}`] : [])
+      if (failures.length) throw new Error(`${names.length - failures.length} deleted; ${failures.length} failed. ${failures.join(' ')}`)
+      return names.length
+    },
+    onSuccess: count => { toast.success(`${count} database${count === 1 ? '' : 's'} deleted`); setSelectedDatabases(new Set()); setBulkDeleteOpen(false); refreshDatabaseState() },
+    onError: error => toast.error('Could not delete selected databases', error.message),
+  })
 
   const pmaMut = useMutation({
     mutationFn: ({ row }) => post(`/api/v1/accounts/${username}/databases/${row.db_name}/pma-token`, {}),
@@ -181,6 +197,7 @@ export default function Databases() {
   }
 
   const columns = [
+    { key: 'select', header: '', searchable: false, render: r => <Checkbox aria-label={`Select ${r.db_name}`} checked={selectedDatabases.has(r.db_name)} onCheckedChange={checked => setSelectedDatabases(current => { const next = new Set(current); checked ? next.add(r.db_name) : next.delete(r.db_name); return next })}/> },
     {
       key: 'db_name',
       header: 'Database',
@@ -235,7 +252,7 @@ export default function Databases() {
 
   return (
     <div>
-      <PageHeader title="Databases" description="Create and manage MySQL databases, users and application credentials." icon={Database} />
+      <PageHeader title="Databases" description="Create and manage MySQL databases, users and application credentials." icon={Database} primaryAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4"/>Create database</Button>} />
       <Tabs defaultValue="databases">
         <TabsList aria-label="Database management sections">
           <TabsTrigger value="databases">Databases</TabsTrigger>
@@ -243,20 +260,6 @@ export default function Databases() {
           <TabsTrigger value="access">Access &amp; privileges</TabsTrigger>
         </TabsList>
         <TabsContent value="databases" className="space-y-6">
-      <section className="database-create-section" aria-labelledby="database-create-title">
-        <h2 id="database-create-title">Create New Database</h2>
-        <p className="mb-4 text-sm text-muted-foreground">A database and its matching user are created together. Save the credentials shown after creation.</p>
-        <form onSubmit={event => { event.preventDefault(); createMut.mutate({ name: form.name.trim(), password: form.password || undefined }) }}>
-          <FormField label="New database" htmlFor="database-name" required hint="Enter a short suffix, such as shop. Your account prefix is added automatically.">
-            <div className="database-name-input"><span aria-hidden="true">{username}_</span><Input id="database-name" value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))} placeholder="shop" required aria-describedby="database-prefix" /></div>
-          </FormField>
-          <span id="database-prefix" className="sr-only">Database name will start with {username} underscore.</span>
-          <FormField label="Database password" htmlFor="database-password" hint="Leave blank to generate a strong password.">
-            <Input id="database-password" type="password" value={form.password} onChange={event => setForm(current => ({ ...current, password: event.target.value }))} autoComplete="new-password" placeholder="Generate automatically" />
-          </FormField>
-          <Button type="submit" loading={createMut.isPending} disabled={!form.name.trim()}>Create database</Button>
-        </form>
-      </section>
       <h2 className="interior-section-title">Current Databases</h2>
 
       <DataTable
@@ -266,6 +269,8 @@ export default function Databases() {
         error={error}
         onRetry={refetch}
         filterable
+        columnPicker
+        selectionBar={selectedDatabases.size > 0 && <div className="table-bulk-bar" aria-label="Selected database actions"><strong>{selectedDatabases.size} selected</strong><span>With selected:</span>{selectedDatabases.size < (data?.databases || []).length && <Button size="sm" variant="ghost" onClick={() => setSelectedDatabases(new Set((data?.databases || []).map(row => row.db_name)))}>Select all {(data?.databases || []).length}</Button>}<Button size="sm" variant="secondary" onClick={() => setBulkDeleteOpen(true)}>Delete</Button><Button size="sm" variant="ghost" onClick={() => setSelectedDatabases(new Set())}>Clear</Button></div>}
         searchPlaceholder="Search databases…"
         pageSize={15}
         initialSort={{ key: 'db_name', dir: 'asc' }}
@@ -332,6 +337,9 @@ export default function Databases() {
           </section>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={createOpen} onOpenChange={open => !createMut.isPending && setCreateOpen(open)}><DialogContent size="sm"><DialogHeader><DialogTitle>Create New Database</DialogTitle><DialogDescription>A database and its matching user are created together. Save the credentials shown after creation.</DialogDescription></DialogHeader><form onSubmit={event => { event.preventDefault(); createMut.mutate({ name: form.name.trim(), password: form.password || undefined }) }}><DialogBody className="space-y-4"><FormField label="New database" htmlFor="database-name" required hint="Enter a short suffix, such as shop. Your account prefix is added automatically."><div className="database-name-input"><span aria-hidden="true">{username}_</span><Input id="database-name" value={form.name} onChange={event => setForm(current => ({ ...current, name: event.target.value }))} placeholder="shop" required aria-describedby="database-prefix" /></div></FormField><span id="database-prefix" className="sr-only">Database name will start with {username} underscore.</span><FormField label="Database password" htmlFor="database-password" hint="Leave blank to generate a strong password."><Input id="database-password" type="password" value={form.password} onChange={event => setForm(current => ({ ...current, password: event.target.value }))} autoComplete="new-password" placeholder="Generate automatically" /></FormField></DialogBody><DialogFooter><Button type="button" variant="secondary" disabled={createMut.isPending} onClick={() => setCreateOpen(false)}>Cancel</Button><Button type="submit" loading={createMut.isPending} disabled={!form.name.trim()}>Create database</Button></DialogFooter></form></DialogContent></Dialog>
+      <ConfirmDialog open={bulkDeleteOpen} onOpenChange={open => !open && !bulkDeleteMut.isPending && setBulkDeleteOpen(false)} title={`Delete ${selectedDatabases.size} selected database${selectedDatabases.size === 1 ? '' : 's'}?`} description={[...selectedDatabases].join(', ')} confirmLabel="Delete databases" variant="danger" loading={bulkDeleteMut.isPending} error={bulkDeleteMut.error} onConfirm={() => bulkDeleteMut.mutate()} />
 
       {/* Credentials reveal (after create / reset) */}
       <Dialog open={!!creds} onOpenChange={(v) => { if (!v) setCreds(null) }}>

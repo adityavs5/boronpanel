@@ -40,6 +40,7 @@ description of it" -- and in several of the exact functions reused here).
 from __future__ import annotations
 
 from daemon.database_operations import serialized_worker
+from daemon.archive_limits import ArchiveMetadataTooLarge, open_guarded_tar
 import logging
 import json
 import gzip
@@ -51,7 +52,7 @@ import subprocess
 import tarfile
 import tempfile
 from urllib.parse import urlparse
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -72,6 +73,14 @@ from shared.validation import (
     validate_mailbox_local_part,
     validate_username,
 )
+
+
+def _read_text_limited(path: Path, limit: int, label: str) -> str:
+    info = path.stat()
+    if info.st_size > limit:
+        raise CpanelImportError(f"{label} exceeds the {limit // (1024 * 1024)} MiB parsing limit")
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        return handle.read(limit + 1)
 
 from daemon import audit, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_ftp, handlers_mail, jobcredentials, mariadb, ols, safeio, webhooks
 from daemon.procutil import run
@@ -315,7 +324,7 @@ def _extract_archive(archive_path: Path, extract_dir: Path, *, directadmin: bool
             _extract_archive(unpacked, extract_dir, directadmin=directadmin)
         return
     try:
-        with tarfile.open(archive_path) as tf:
+        with open_guarded_tar(archive_path) as tf:
             # Security-audit-2 (Medium): bound the *decompressed* size before
             # extracting. The upload/download path only caps the compressed
             # bytes, so a tar.gz decompression bomb could otherwise fill the
@@ -364,7 +373,7 @@ def _extract_archive(archive_path: Path, extract_dir: Path, *, directadmin: bool
             # itself, extracted as root before anything is chowned away
             # from root).
             tf.extractall(extract_dir, members=members, filter="data")
-    except tarfile.TarError as exc:
+    except (tarfile.TarError, ArchiveMetadataTooLarge) as exc:
         raise CpanelImportError(f"'{archive_path}' is not a readable tar/tar.gz archive: {exc}") from exc
 
 
@@ -395,7 +404,7 @@ def _load_yaml_lenient(path: Path) -> dict:
     it might ever see produced strict YAML -- falls back to simple
     KEY=value / KEY: value line parsing if yaml.safe_load chokes, rather
     than aborting the whole import over one malformed metadata file."""
-    text = path.read_text(errors="replace")
+    text = _read_text_limited(path, 4 * 1024 * 1024, "metadata file")
     try:
         data = yaml.safe_load(text)
         if isinstance(data, dict):
@@ -600,6 +609,8 @@ def _db_suffix_from_dump(dump_path: Path, old_username: str | None) -> str:
 
 
 _DUMP_DB_CONTEXT_RE = re.compile(r"^\s*(?:CREATE\s+DATABASE|USE|DROP\s+DATABASE)\b[^;]*;", re.IGNORECASE)
+_DUMP_CONTEXT_PREFIX_RE = re.compile(r"^\s*(?:CREATE\s+DATABASE|USE|DROP\s+DATABASE)\b", re.IGNORECASE)
+_SQL_STREAM_CHUNK = 64 * 1024
 
 
 def _strip_dump_database_context(sql_text: str) -> str:
@@ -655,19 +666,65 @@ def _write_import_mysql_defaults_file(db_user: str, password: str) -> str:
 
 def _import_mysql_dump(db_name: str, dump_path: Path, db_user: str, password: str) -> None:
     cnf_path = _write_import_mysql_defaults_file(db_user, password)
+    fd, cleaned_path = tempfile.mkstemp(prefix="boron-db-import-clean-", suffix=".sql")
     try:
-        sql_text = _strip_dump_database_context(dump_path.read_text(errors="replace"))
+        os.fchmod(fd, 0o600)
+        with dump_path.open("r", encoding="utf-8", errors="replace") as source, os.fdopen(fd, "w") as cleaned:
+            fd = -1
+            _stream_clean_mysql_dump(source, cleaned)
         # Untrusted dumps may contain MariaDB client commands such as \! (run
         # a shell command). In batch mode --binary-mode disables client
         # commands other than charset/delimiter; the scoped DB credential
         # and disabled LOCAL INFILE constrain server-side SQL as well.
-        result = run(["mysql", f"--defaults-file={cnf_path}", "--binary-mode", "--local-infile=0", db_name], input_text=sql_text, timeout=1800)
+        result = run(
+            ["mysql", f"--defaults-file={cnf_path}", "--binary-mode", "--local-infile=0", db_name],
+            input_path=cleaned_path, discard_stdout=True, output_limit=1024 * 1024, timeout=1800,
+        )
         if not result.ok:
             # mysql can quote SQL input in its error output, including data
             # that must not be retained in a cross-role job report.
             raise CpanelImportError(f"mysql import failed for '{db_name}'")
     finally:
+        if fd >= 0:
+            os.close(fd)
+        os.unlink(cleaned_path)
         os.unlink(cnf_path)
+
+
+def _stream_clean_mysql_dump(source, cleaned) -> None:
+    """Remove leading database selectors without materializing SQL lines.
+
+    SQL permits a multi-gigabyte INSERT on one line. TextIO iteration uses an
+    unbounded readline internally. Keep only a small beginning-of-line prefix
+    while deciding whether it is a context directive, then pass the remainder
+    through in fixed-size fragments. A context directive longer than 64 KiB
+    cannot contain a valid MariaDB identifier and is left for the scoped SQL
+    principal to reject.
+    """
+    prefix = ""
+    passthrough = False
+    while True:
+        fragment = source.readline(_SQL_STREAM_CHUNK)
+        if not fragment:
+            if prefix:
+                cleaned.write(prefix)
+            return
+        ended = fragment.endswith("\n")
+        if passthrough:
+            cleaned.write(fragment)
+        else:
+            prefix += fragment
+            while match := _DUMP_DB_CONTEXT_RE.match(prefix):
+                prefix = prefix[match.end():]
+            incomplete_directive = bool(_DUMP_CONTEXT_PREFIX_RE.match(prefix)) and ";" not in prefix
+            if incomplete_directive and not ended and len(prefix) < _SQL_STREAM_CHUNK:
+                continue
+            cleaned.write(prefix)
+            prefix = ""
+            passthrough = not ended
+        if ended:
+            prefix = ""
+            passthrough = False
 
 
 # --- WordPress wp-config rewrite (best effort) ---------------------------------
@@ -934,7 +991,7 @@ def _parse_ftp_accounts(root: Path, domains: list[str]) -> list[tuple[str, str]]
         passwd_file = etc_dir / domain / "passwd"
         if not passwd_file.is_file():
             continue
-        for line in passwd_file.read_text(errors="replace").splitlines():
+        for line in _read_text_limited(passwd_file, 8 * 1024 * 1024, "FTP metadata").splitlines():
             m = _FTP_PASSWD_LINE_RE.match(line)
             if m:
                 found.append((m.group(1), domain))
@@ -962,7 +1019,7 @@ def _parse_cron(root: Path, old_username: str | None) -> list[tuple[str, str]]:
     for path in candidates:
         if not path.is_file():
             continue
-        for line in path.read_text(errors="replace").splitlines():
+        for line in _read_text_limited(path, 8 * 1024 * 1024, "cron metadata").splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -993,7 +1050,7 @@ def _directadmin_kv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.is_file():
         return values
-    for raw in path.read_text(errors="replace").splitlines():
+    for raw in _read_text_limited(path, 4 * 1024 * 1024, "DirectAdmin metadata").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -1030,7 +1087,9 @@ def _normalize_directadmin_archive(extract_dir: Path, destination: Path, runtime
     listed_domains: list[str] = []
     domains_list = source / "backup" / "domains.list"
     if domains_list.is_file():
-        listed_domains.extend(line.strip() for line in domains_list.read_text(errors="replace").splitlines())
+        listed_domains.extend(line.strip() for line in _read_text_limited(
+            domains_list, 4 * 1024 * 1024, "DirectAdmin domain list"
+        ).splitlines())
     domains_dir = source / "domains"
     if domains_dir.is_dir():
         listed_domains.extend(path.name for path in domains_dir.iterdir() if path.is_dir())
@@ -1395,9 +1454,11 @@ def _run_import_job(job_id: int, params: dict) -> None:
                 normalized = work_dir / "normalized"
                 normalized.mkdir()
                 runtime_path = work_dir / 'directadmin-runtime.json'
-                runtime = json.loads(runtime_path.read_text()) if runtime_path.is_file() else None
+                runtime = json.loads(_read_text_limited(runtime_path, 4 * 1024 * 1024, "runtime metadata")) if runtime_path.is_file() else None
                 root = _normalize_directadmin_archive(extract_dir, normalized, runtime)
-                da_manifest = json.loads((root / 'directadmin-manifest.json').read_text())
+                da_manifest = json.loads(_read_text_limited(
+                    root / 'directadmin-manifest.json', 4 * 1024 * 1024, "DirectAdmin manifest"
+                ))
                 if da_manifest['apps'] and any(app.get('source_username') != username for app in da_manifest['apps']):
                     da_manifest['blockers'].append('Keep the original username for application migrations; source absolute paths cannot be safely rewritten automatically')
                 from daemon.directadmin_fidelity import map_application_databases

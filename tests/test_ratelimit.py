@@ -216,7 +216,7 @@ def test_middleware_returns_429_with_retry_after(isolated_db):
     import warnings
 
     warnings.filterwarnings("ignore")
-    from fastapi.testclient import TestClient
+    from testsupport.sync_asgi import SyncASGIClient as TestClient
 
     import api.main as main
 

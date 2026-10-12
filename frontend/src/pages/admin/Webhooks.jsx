@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Webhook, Plus, Trash2, Send, ScrollText } from 'lucide-react'
+import { Webhook, MoreHorizontal, Plus, Trash2, Send, ScrollText } from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatDate } from '@/lib/utils'
@@ -16,6 +16,8 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter, ConfirmDialog,
 } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
+import { LongValue } from '@/components/ui/LongValue'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/DropdownMenu'
 
 const EMPTY_FORM = { url: '', secret: '', events: [] }
 
@@ -88,11 +90,7 @@ export default function Webhooks() {
       header: 'Endpoint URL',
       sortable: true,
       searchable: true,
-      render: (r) => (
-        <span className="block max-w-[280px] truncate font-medium text-foreground" title={r.url}>
-          {r.url}
-        </span>
-      ),
+      render: (r) => <LongValue value={r.url} label="webhook URL" />,
     },
     {
       key: 'events',
@@ -134,7 +132,7 @@ export default function Webhooks() {
       header: '',
       align: 'right',
       render: (r) => (
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center justify-end gap-1">
           <Button
             variant="secondary"
             size="sm"
@@ -143,12 +141,7 @@ export default function Webhooks() {
           >
             <Send className="h-4 w-4" /> Test
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setDeliveriesFor(r)}>
-            <ScrollText className="h-4 w-4" /> Deliveries
-          </Button>
-          <Button variant="danger" size="sm" onClick={() => setDeleteTarget(r)}>
-            <Trash2 className="h-4 w-4" /> Delete
-          </Button>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.url}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => setDeliveriesFor(r)}><ScrollText className="h-4 w-4"/>Deliveries</DropdownMenuItem><DropdownMenuSeparator/><DropdownMenuItem className="text-danger" onSelect={() => setDeleteTarget(r)}><Trash2 className="h-4 w-4"/>Delete</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
         </div>
       ),
     },
@@ -175,7 +168,7 @@ export default function Webhooks() {
       searchable: true,
       render: (d) =>
         d.error ? (
-          <span className="block max-w-[220px] truncate text-danger" title={d.error}>{d.error}</span>
+          <LongValue value={d.error} label="webhook delivery error" />
         ) : (
           <span className="text-muted-foreground">—</span>
         ),
@@ -189,11 +182,10 @@ export default function Webhooks() {
         title="Webhooks"
         description="POST a signed JSON payload to an external URL on account lifecycle events. Deliveries retry with backoff and every attempt is logged."
         icon={Webhook}
-      >
-        <Button onClick={() => setCreateOpen(true)}>
+        primaryAction={<Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" /> Add webhook
-        </Button>
-      </PageHeader>
+        </Button>}
+      />
 
       <DataTable
         columns={columns}

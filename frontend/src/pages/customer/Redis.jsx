@@ -92,17 +92,7 @@ export default function Redis() {
 
   return (
     <div>
-      <PageHeader title="Redis" description="Per-account in-memory data store for caching and sessions." icon={Server}>
-        {provisioned && (
-          <>
-            <Button variant="secondary" onClick={() => setConnOpen(true)}>
-              <Plug className="h-4 w-4" /> Connection info
-            </Button>
-            {enabled ? <Button variant="danger" onClick={() => setDisableOpen(true)}><Power className="h-4 w-4" /> Disable</Button>
-              : <Button loading={enableMut.isPending} onClick={() => enableMut.mutate({ mem_mb: status.mem_mb })}><Zap className="h-4 w-4" /> Enable Redis</Button>}
-          </>
-        )}
-      </PageHeader>
+      <PageHeader title="Redis" description="Per-account in-memory data store for caching and sessions." icon={Server} primaryAction={provisioned ? (enabled ? <Button variant="danger" onClick={() => setDisableOpen(true)}><Power className="h-4 w-4" /> Disable</Button> : <Button loading={enableMut.isPending} onClick={() => enableMut.mutate({ mem_mb: status.mem_mb })}><Zap className="h-4 w-4" /> Enable Redis</Button>) : null} moreActions={provisioned ? [{label:'Connection info',icon:<Plug className="h-4 w-4"/>,onSelect:()=>setConnOpen(true)}] : []} />
 
       {isLoading ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

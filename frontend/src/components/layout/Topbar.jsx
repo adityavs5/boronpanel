@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useLocation, Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Palette, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck, Globe2, Search, Menu } from 'lucide-react'
+import { Palette, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck, Globe2, Search, Menu, ArrowLeft } from 'lucide-react'
 import { ThemeSelector } from '@/components/themes/ThemeSelector'
 import { useBranding } from '@/hooks/useBranding'
 import { get } from '@/lib/api'
@@ -123,11 +123,12 @@ function DomainSwitcher() {
 
 export function Topbar({ inner = false }) {
   const theme = useUI((s) => s.theme)
+  const mobileNavOpen = useUI((s) => s.mobileNavOpen)
   const toggleTheme = useUI((s) => s.toggleTheme)
-  const { role, username, logout } = useAuth()
+  const { role, username, logout, identitySynced } = useAuth()
   const navigate = useNavigate()
-  const isAdmin = role === 'admin'
-  const isReseller = role === 'reseller'
+  const isAdmin = identitySynced && role === 'admin'
+  const isReseller = identitySynced && role === 'reseller'
   const home = isAdmin ? '/overview' : isReseller ? '/reseller' : '/dashboard'
   const { brandingReady, panelName, logoUrl } = useBranding()
   const setPaletteOpen = useUI(s => s.setPaletteOpen)
@@ -141,7 +142,7 @@ export function Topbar({ inner = false }) {
   return (
     <header className="panel-topbar">
       <div className="flex items-center gap-3 min-w-0">
-        {inner && <button type="button" className="inner-menu-button" aria-label="Menu" onClick={() => setMobileNavOpen(true)}><Menu aria-hidden="true" /></button>}
+        {inner && <button type="button" className="inner-menu-button" aria-label="Menu" aria-expanded={mobileNavOpen} aria-controls="panel-navigation-drawer" onClick={() => setMobileNavOpen(true)}><Menu aria-hidden="true" /><span>Menu</span></button>}
         <Link to={home} className="panel-brand" aria-label={`${panelName} home`}>
           {!brandingReady
             ? <span className="brand-loading-placeholder" aria-hidden="true" />
@@ -152,11 +153,9 @@ export function Topbar({ inner = false }) {
       </div>
 
       <div className="flex items-center gap-2">
-        <button type="button" className={`global-search-trigger ${inner ? '' : 'dashboard-global-search'}`} aria-label="Search the panel" aria-haspopup="dialog" onClick={() => setPaletteOpen(true)}><Search aria-hidden="true" /><span>Search tools and settings</span><kbd>Ctrl K</kbd></button>
-        {isAdmin || isReseller
-          ? <span className="access-level"><span>Access Level</span><strong>{isAdmin ? 'Admin' : 'Reseller'}</strong></span>
-          : <DomainSwitcher />}
-        <ThemeSelector />
+        <button type="button" className={`global-search-trigger ${inner ? '' : 'dashboard-global-search'}`} aria-label="Search the panel" aria-haspopup="dialog" onClick={() => setPaletteOpen(true)}><Search aria-hidden="true" /><span>Search</span><kbd>Ctrl K</kbd></button>
+        {identitySynced && !isAdmin && !isReseller && <DomainSwitcher />}
+        <ThemeSelector compact />
 
 
         <button
@@ -181,7 +180,7 @@ export function Topbar({ inner = false }) {
           <DropdownMenuContent>
             <DropdownMenuLabel>
               <div className="font-medium text-foreground">{username || 'Account'}</div>
-              <div className="text-xs capitalize">{role}</div>
+              <div className="text-xs capitalize">Access level: {role}</div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => navigate('/change-password')}>
@@ -210,10 +209,13 @@ export function Topbar({ inner = false }) {
 
 export function PageNavigation() {
   const role = useAuth((s) => s.role)
-  const isAdmin = role === 'admin'
+  const identitySynced = useAuth((s) => s.identitySynced)
+  const skin = useUI((s) => s.skin)
+  const { pathname } = useLocation()
+  const isAdmin = identitySynced && role === 'admin'
+  const accountDetail = isAdmin && pathname !== '/accounts/new' && /^\/accounts\/[^/]+\/?$/.test(pathname)
   return <div className="page-navigation">
-    <Link to={isAdmin ? '/overview' : role === 'reseller' ? '/reseller' : '/dashboard'} className="home-link"><Home size={15} /> Home</Link>
-    <Breadcrumb />
-    <div className="ml-auto">{isAdmin && <AccountSwitcher />}</div>
+    {accountDetail ? <Link to="/accounts" className="home-link"><ArrowLeft size={15} /> Accounts</Link> : <><Link to={isAdmin ? '/overview' : role === 'reseller' ? '/reseller' : '/dashboard'} className="home-link"><Home size={15} /> Home</Link><Breadcrumb /></>}
+    <div className="ml-auto">{isAdmin && skin === 'paper-lantern' && !accountDetail && <AccountSwitcher />}</div>
   </div>
 }

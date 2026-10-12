@@ -14,7 +14,15 @@ from shared.models import (
 from shared.validation import ValidationError
 
 
-def require_capacity(session, account_id: int, resource: str) -> None:
+def require_capacity(session, account_id: int, resource: str, *, additions: int = 1) -> None:
+    """Require room for the complete pending mutation, not just one item.
+
+    Bulk restore callers must pass the number of resources they are about to
+    recreate while holding the account mutation lock.  Keeping the default at
+    one preserves the existing create-one call sites.
+    """
+    if type(additions) is not int or additions < 1:
+        raise ValueError("additions must be a positive integer")
     limits = session.scalar(select(AccountResourceLimits).where(AccountResourceLimits.account_id == account_id))
     if limits is None:
         return
@@ -44,5 +52,8 @@ def require_capacity(session, account_id: int, resource: str) -> None:
     else:
         count = (session.scalar(select(func.count()).select_from(NodeApp).where(NodeApp.account_id == account_id))
                  + session.scalar(select(func.count()).select_from(PythonApp).where(PythonApp.account_id == account_id)))
-    if count >= limit:
-        raise ValidationError(f"{resource} limit reached for this account ({count}/{limit})")
+    if count + additions > limit:
+        raise ValidationError(
+            f"{resource} limit reached for this account "
+            f"({count} existing + {additions} requested, limit {limit})"
+        )

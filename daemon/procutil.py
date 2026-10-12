@@ -8,6 +8,7 @@ function in this module that accepts a single command string.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 import selectors
@@ -76,6 +77,46 @@ def _stop_account_unit(unit):
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         except (OSError, subprocess.TimeoutExpired):
             logger.warning('Could not finish transient account unit cleanup: %s', unit)
+
+
+def _account_failure_detail(unit: str, returncode: int) -> str:
+    """Recover a launch denial lost by systemd-run --quiet --pipe.
+
+    Exit 200 alone is not proof of CHDIR: a program may return it too. Only
+    accept the executor's journal entry for this random, validated unit. Never
+    expose journal text, command arguments, paths or tenant-written messages.
+    Diagnostics are bounded and cannot turn a failed command into a success.
+    """
+    if returncode == 200:
+        try:
+            journal = _bounded_run(
+                ['/usr/bin/journalctl', '--no-pager', '-n', '8', '-o', 'json',
+                 '--output-fields=MESSAGE,UNIT,_SYSTEMD_UNIT,_EXE,CODE_FUNC',
+                 f'UNIT={unit}', f'_SYSTEMD_UNIT={unit}',
+                 'CODE_FUNC=exec_invoke'],
+                input_text=None, source=None, discard_stdout=False, timeout=2,
+                cwd=None, privileges={}, limit=65536, env=None,
+            )
+            if journal.returncode == 0:
+                for line in journal.stdout.splitlines():
+                    entry = json.loads(line)
+                    if not isinstance(entry, dict) or any(entry.get(k) != v for k, v in {
+                        'UNIT': unit, '_SYSTEMD_UNIT': unit,
+                        'CODE_FUNC': 'exec_invoke',
+                    }.items()):
+                        continue
+                    # Journald may miss /proc metadata when the executor exits
+                    # before it reads _EXE. Unit attribution is still trusted.
+                    if entry.get('_EXE') not in (None, '/usr/lib/systemd/systemd-executor'):
+                        continue
+                    for reason in ('Permission denied', 'No such file or directory', 'Not a directory'):
+                        expected = f'{unit}: Changing to the requested working directory failed: {reason}'
+                        if entry.get('MESSAGE') == expected:
+                            return f'Account command could not enter its working directory: {reason} (systemd CHDIR; exit 200).'
+        except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError):
+            # A missing/rotated journal must preserve the original failure.
+            pass
+    return f'Account command failed without diagnostic output (exit status {returncode}).'
 
 
 def _bounded_run(args, *, input_text, source, discard_stdout, timeout, cwd, privileges, limit, env):
@@ -204,6 +245,9 @@ def run(
                 **privilege_args,
             )
     result = ProcResult(args=args, returncode=proc.returncode, stdout=proc.stdout or "", stderr=proc.stderr or "")
+    if account_unit and not result.ok and not (result.stderr.strip() or result.stdout.strip()):
+        result.stderr = _account_failure_detail(account_unit, result.returncode)
+        logger.warning('Account unit %s: %s', account_unit, result.stderr)
     if check:
         result.raise_if_failed()
     return result

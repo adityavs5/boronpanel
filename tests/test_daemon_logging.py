@@ -17,16 +17,21 @@ the module boundary to actually be side-effect-free, not just usually so)."""
 import logging
 import os
 import stat
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from daemon.logsetup import configure_logging
+from shared.request_context import request_context
 
 
 @pytest.fixture(autouse=True)
 def _reset_proc_logger(monkeypatch):
     monkeypatch.setattr('daemon.logsetup.pwd.getpwnam', lambda _: SimpleNamespace(pw_uid=os.geteuid(), pw_gid=os.getegid()))
+    root_logger = logging.getLogger()
+    original_root_handlers = list(root_logger.handlers)
+    original_root_level = root_logger.level
     proc_logger = logging.getLogger("borond.proc")
     original_handlers = list(proc_logger.handlers)
     original_propagate = proc_logger.propagate
@@ -34,6 +39,14 @@ def _reset_proc_logger(monkeypatch):
     os.umask(original_umask)
     yield
     os.umask(original_umask)
+    for handler in root_logger.handlers:
+        if handler not in original_root_handlers:
+            handler.close()
+    root_logger.handlers = original_root_handlers
+    root_logger.setLevel(original_root_level)
+    for handler in proc_logger.handlers:
+        if handler not in original_handlers:
+            handler.close()
     proc_logger.handlers = original_handlers
     proc_logger.propagate = original_propagate
 
@@ -62,7 +75,42 @@ def test_proc_logger_message_reaches_file_not_root_handlers(tmp_path):
 
     log_file = tmp_path / "daemon.log"
     assert log_file.exists()
-    assert "exec: doveadm pw" in log_file.read_text()
+    row = json.loads(log_file.read_text().splitlines()[-1])
+    assert "exec: doveadm pw" in row["message"]
+    assert row["logger"] == "borond.proc"
+
+
+def test_daemon_log_reopens_after_atomic_rotation(tmp_path):
+    configure_logging(str(tmp_path))
+    logger = logging.getLogger("borond.rotation")
+    logger.info("before")
+    current = tmp_path / "daemon.log"
+    rotated = tmp_path / "daemon.log.1"
+    current.rename(rotated)
+    current.touch(mode=0o640)
+    logger.info("after")
+    assert "before" in rotated.read_text()
+    assert "after" in current.read_text()
+
+
+def test_daemon_json_formatter_redacts_common_secret_shapes(tmp_path):
+    configure_logging(str(tmp_path))
+    logging.getLogger("borond.redaction").error(
+        "password=should-not-survive Authorization: Bearer abc.def.ghi token=also-private"
+    )
+    text = (tmp_path / "daemon.log").read_text()
+    assert "should-not-survive" not in text
+    assert "abc.def.ghi" not in text
+    assert "also-private" not in text
+    assert "REDACTED" in text
+
+
+def test_subprocess_log_line_carries_request_id(tmp_path):
+    configure_logging(str(tmp_path))
+    with request_context("subprocess-request-1"):
+        logging.getLogger("borond.proc").info("exec: /usr/bin/true")
+    row = json.loads((tmp_path / "daemon.log").read_text().splitlines()[-1])
+    assert row["request_id"] == "subprocess-request-1"
 
 
 def test_configure_logging_is_idempotent_no_duplicate_handlers(tmp_path):

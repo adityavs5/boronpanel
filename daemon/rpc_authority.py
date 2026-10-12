@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, ApiToken, DnsClusterPeer, Domain, ImpersonationSession, MailDomain, PanelUser, ResellerAccount, ResellerProfile, RestoreJob, Session, TotpCredential
+from shared.models import Account, ApiToken, DnsClusterPeer, Domain, ImpersonationSession, MailDomain, PanelUser, ResellerAccount, ResellerProfile, RestoreJob, Session, TotpCredential, UpdateJob
 from shared.session_ids import session_digest
 from shared.passwords import verify_password
 from shared.validation import ValidationError, validate_domain
@@ -48,10 +48,20 @@ def resolve_principal(credential: object) -> Principal:
     if not isinstance(credential, dict) or set(credential) != {"type", "value"}:
         raise AuthenticationError("panel credential required")
     kind, raw = credential.get("type"), credential.get("value")
-    if kind not in ("session", "token", "cluster") or not isinstance(raw, str) or not raw or len(raw) > 4096:
+    if kind not in ("session", "token", "cluster", "update-finalizer") or not isinstance(raw, str) or not raw or len(raw) > 4096:
         raise AuthenticationError("invalid panel credential")
     now = dt.datetime.now(dt.timezone.utc)
     with write_session() as db:
+        if kind == "update-finalizer":
+            digest = hashlib.sha256(raw.encode()).hexdigest()
+            job = db.scalar(select(UpdateJob).where(
+                UpdateJob.finalizer_token_hash == digest,
+                UpdateJob.status == "finalizing",
+            ))
+            if job is None or _utc(job.started_at) + dt.timedelta(hours=2) <= now:
+                raise AuthenticationError("invalid or expired update finalizer credential")
+            return Principal("update-finalizer", f"update-finalizer-{job.id}", None, None,
+                             "update-finalizer")
         if kind == "cluster":
             digest = hashlib.sha256(raw.encode()).hexdigest()
             peer = db.scalar(select(DnsClusterPeer).where(
@@ -170,8 +180,51 @@ def authorize(op: str, params: dict, principal: Principal | None) -> None:
         if principal is None or principal.role != "cluster" or principal.auth_method != "cluster":
             raise AuthorizationError("DNS cluster credential required")
         return
+    if disposition == "update_finalizer":
+        if (principal is None or principal.role != "update-finalizer"
+                or principal.auth_method != "update-finalizer"):
+            raise AuthorizationError("update finalizer credential required")
+        return
     if principal is None:
         raise AuthenticationError("panel credential required")
+    if disposition == "task_list_scope":
+        if principal.role not in ("admin", "customer"):
+            raise AuthorizationError("task history requires an administrator or hosting customer")
+        if principal.role == "customer" and principal.account_id is None:
+            raise AuthorizationError("customer account required")
+        return
+    if disposition == "task_item_owner":
+        if principal.role == "admin":
+            return
+        if principal.role != "customer" or principal.account_id is None:
+            raise AuthorizationError("task ownership required")
+        from daemon.tasks import owner_account_id
+
+        owner = owner_account_id(params.get("kind"), params.get("task_id"))
+        if owner != principal.account_id:
+            raise AuthorizationError("task ownership required")
+        return
+    if disposition in {"control_task_owner", "control_task_reveal"}:
+        from shared.models import ControlTask
+
+        try:
+            task_id = int(params.get("task_id"))
+        except (TypeError, ValueError):
+            raise AuthorizationError("control task unavailable") from None
+        with write_session() as db:
+            task = db.get(ControlTask, task_id)
+            if task is None:
+                raise AuthorizationError("control task unavailable")
+            if disposition == "control_task_reveal":
+                if (principal.role != "admin" or principal.auth_method != "session"
+                        or principal.impersonating or task.operation != "account.create"):
+                    raise AuthorizationError("current administrator session required")
+                return
+            if principal.role == "admin":
+                return
+            if principal.role != "customer" or task.account_id != principal.account_id:
+                raise AuthorizationError("control task ownership required")
+        return
     if disposition in ("global_admin", "admin_account_username"):
         if principal.role != "admin":
             raise AuthorizationError("administrator credential required")

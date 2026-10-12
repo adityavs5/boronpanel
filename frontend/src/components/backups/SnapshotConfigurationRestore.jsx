@@ -51,6 +51,7 @@ export function SnapshotConfigurationRestore({ username, run }) {
         <FormField label="Confirm account username" hint={`Type ${username} to replace its ${label}.`}>
           <Input value={confirmation} onChange={event => setConfirmation(event.target.value)} autoComplete="off" />
         </FormField>
+        {restore.isPending && <p role="status" className="text-sm text-muted-foreground">Starting the {label} restore… this can take up to 30 seconds. Do not close this page.</p>}
         {restore.error && <p role="alert" className="text-sm text-danger">{restore.error.message}</p>}
         <Button type="submit" loading={restore.isPending} disabled={confirmation !== username || catalog.isFetching || !!catalog.error || (dns && !validZones)}>Restore {label} now</Button>
       </>}

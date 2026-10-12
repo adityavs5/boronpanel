@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+from testsupport.host_requirements import chown_or_skip
 
 from daemon import snapshot_mail_journal as journal, snapshot_mail_restore as restore
 from daemon import snapshot_mail_guard as guard, snapshot_mail_service as supervisor, snapshot_storage as storage
@@ -97,7 +98,7 @@ def test_displaced_mail_is_encrypted_and_guards_remain(isolated_db, saved, repo,
     monkeypatch.setattr(mail, 'list_mailboxes', lambda domain: [{'local_part': 'one'}, {'local_part': 'two'}])
     for entry in payload['entries']:
         live = Path(settings.mail_base) / entry['domain'] / entry['local_part'] / 'Maildir'
-        os.chown(live, 150, 150)
+        chown_or_skip(live, 150, 150)
         live.chmod(0o700)
     original_release = guard.release_batch
     def partial_release(entries, restore_id):

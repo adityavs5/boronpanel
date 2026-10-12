@@ -53,7 +53,7 @@ import os
 import re
 import shutil
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from pathlib import Path
 
 from sqlalchemy import select
@@ -204,7 +204,7 @@ def list_source_folders(source_host: str, source_port: int, source_email: str, s
         args += _source_tls_args(source_host, source_port)
         args += ["--nossl2", "--tls2"] if source_port == 143 else ["--ssl2", "--notls2"]
         args += ["--sslargs2", "SSL_verify_mode=1", "--sslargs2", f"SSL_verifycn_name={source_host}", "--sslargs2", f"SSL_hostname={source_host}"]
-        result = run(args, timeout=LIST_FOLDERS_TIMEOUT_SECONDS, redact=[source_password])
+        result = run(args, timeout=LIST_FOLDERS_TIMEOUT_SECONDS, redact=[source_password], output_limit=4 * 1024 * 1024)
     if not result.ok:
         raise ImapSyncError("could not list folders on source server; check TLS certificate and login credentials")
     return _parse_host1_folders(result.stdout)
@@ -444,7 +444,7 @@ def _run_job(job_id: int, source_password: str, dest_password: str, use_ssl: boo
             args += _source_tls_args(source_host, source_port)
             args += ["--ssl2"]
 
-            result = run(args, timeout=FOLDER_TIMEOUT_SECONDS, redact=[source_password, dest_password])
+            result = run(args, timeout=FOLDER_TIMEOUT_SECONDS, redact=[source_password, dest_password], output_limit=8 * 1024 * 1024)
             if result.ok:
                 copied = _parse_folder_result(result.stdout)
                 messages_done += copied

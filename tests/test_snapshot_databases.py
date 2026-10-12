@@ -16,19 +16,23 @@ from shared.config import settings
 @pytest.fixture(scope='module')
 def sql_server():
     if not shutil.which('mariadbd') or not shutil.which('mariadb-install-db'):pytest.skip('MariaDB required')
-    with tempfile.TemporaryDirectory(prefix='boron-db-restore-',dir='/tmp') as temporary:
+    with tempfile.TemporaryDirectory(prefix='boron-db-restore-') as temporary:
         root=Path(temporary)
-        datadir=root/'data';socket=root/'mysql.sock'
+        datadir=root/'data';socket=root/'mysql.sock';tmpdir=root/'tmp';tmpdir.mkdir()
         initialized=subprocess.run(['/usr/bin/mariadb-install-db','--no-defaults',f'--datadir={datadir}',
-            '--auth-root-authentication-method=normal','--skip-test-db'],capture_output=True,text=True,timeout=120)
+            f'--tmpdir={tmpdir}','--auth-root-authentication-method=normal','--skip-test-db'],capture_output=True,text=True,timeout=120)
         assert initialized.returncode==0,initialized.stderr
         process=subprocess.Popen(['/usr/sbin/mariadbd','--no-defaults',f'--datadir={datadir}',f'--socket={socket}',
-            f'--pid-file={root}/pid','--skip-networking',f'--log-error={root}/server.log',
+            f'--pid-file={root}/pid','--skip-networking',f'--log-error={root}/server.log',f'--tmpdir={tmpdir}',
             '--innodb-buffer-pool-size=32M','--innodb-log-file-size=16M','--aria-pagecache-buffer-size=8M',
             *(['--user=root'] if os.geteuid()==0 else [])],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         try:
             for _ in range(200):
-                if process.poll() is not None:pytest.fail((root/'server.log').read_text())
+                if process.poll() is not None:
+                    server_log = (root/'server.log').read_text()
+                    if 'Bind on unix socket: Operation not permitted' in server_log:
+                        pytest.skip('runner does not permit a disposable MariaDB Unix socket')
+                    pytest.fail(server_log)
                 try:
                     connection=pymysql.connect(unix_socket=str(socket),user='root',autocommit=True)
                     connection.close();break

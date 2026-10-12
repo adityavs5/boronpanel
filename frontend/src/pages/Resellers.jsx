@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, Pencil, Pause, Play, Plus, Store, Trash2, Users } from 'lucide-react'
+import { Copy, MoreHorizontal, Pencil, Pause, Play, Plus, Store, Trash2, Users } from 'lucide-react'
 import { del, get, patch, post, put } from '@/lib/api'
 import { useAuth } from '@/store/auth'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -13,6 +13,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, ConfirmDialog } from '@/components/ui/Dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { toast } from '@/components/ui/Toast'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu'
 
 const blankPlan = { name: '', max_accounts: 10, max_total_disk_gb: 100, account_quota_soft_gb: 4, account_quota_hard_gb: 5, account_cpu_cores: 0.5, account_cpu_weight: 100, account_mem_gb: 1, account_memory_high_gb: .875, account_io_mb: 50, account_io_write_mb: 50, account_io_read_iops: 500, account_io_write_iops: 250, account_pids_max: 100, account_entry_processes: 20, php_version: '8.3' }
 
@@ -61,7 +62,7 @@ function AdminResellers() {
   const planRows = plans.data?.plans || []
   const openNewPlan = () => { setEditingPlan(null); setPlan(resellerPlanForm()); setPlanOpen(true) }
   const openEditPlan = row => { setEditingPlan(row); setPlan(resellerPlanForm(row)); setPlanOpen(true) }
-  return <div><PageHeader title="Reseller Management" description="Create reseller plans, issue reseller logins, and control how many hosting accounts and how much disk each reseller may allocate." icon={Store}><Button variant="secondary" onClick={openNewPlan}><Plus className="h-4 w-4" />New plan</Button><Button disabled={!planRows.length} onClick={() => setResellerOpen(true)}><Plus className="h-4 w-4" />New reseller</Button></PageHeader>
+  return <div><PageHeader title="Reseller Management" description="Create reseller plans, issue reseller logins, and control how many hosting accounts and how much disk each reseller may allocate." icon={Store} primaryAction={<Button disabled={!planRows.length} onClick={() => setResellerOpen(true)}><Plus className="h-4 w-4" />New reseller</Button>} moreActions={[{label:'New plan',icon:<Plus className="h-4 w-4"/>,onSelect:openNewPlan}]} />
     <Tabs defaultValue="resellers"><TabsList><TabsTrigger value="resellers">Resellers</TabsTrigger><TabsTrigger value="plans">Plans</TabsTrigger></TabsList>
       <TabsContent value="resellers"><DataTable data={resellers.data?.resellers} loading={resellers.isLoading} error={resellers.error} onRetry={resellers.refetch} filterable emptyTitle="No resellers" emptyDescription="Create a reseller plan, then issue a reseller login." columns={[
         { key: 'username', header: 'Login', sortable: true, searchable: true, render: row => <span className="font-semibold">{row.username}</span> },
@@ -75,7 +76,7 @@ function AdminResellers() {
         { key: 'name', header: 'Plan', sortable: true, render: row => <span className="font-semibold">{row.name}</span> },
         { key: 'max_accounts', header: 'Accounts' }, { key: 'max_total_disk_mb', header: 'Total disk', render: row => `${Math.round(row.max_total_disk_mb / 1024)} GB` },
         { key: 'account_quota_hard_mb', header: 'Per account', render: row => `${Math.round(row.account_quota_hard_mb / 1024)} GB` }, { key: 'php_version', header: 'PHP', render: row => `PHP ${row.php_version}` }, { key: 'reseller_count', header: 'Assigned' },
-        { key: 'actions', header: '', render: row => <div className="flex justify-end gap-2"><Button size="sm" variant="secondary" onClick={() => openEditPlan(row)}><Pencil className="h-4 w-4" />Edit</Button><Button size="sm" variant="danger" disabled={row.reseller_count > 0} title={row.reseller_count > 0 ? 'Reassign resellers before deleting this plan' : undefined} onClick={() => setDeletingPlan(row)}><Trash2 className="h-4 w-4" />Delete</Button></div> },
+        { key: 'actions', header: '', render: row => <div className="flex justify-end gap-1"><Button size="sm" variant="secondary" onClick={() => openEditPlan(row)}><Pencil className="h-4 w-4" />Edit</Button><DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-sm" variant="ghost" aria-label={`Actions for ${row.name}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem className="text-danger" disabled={row.reseller_count > 0} title={row.reseller_count > 0 ? 'Reassign resellers before deleting this plan' : undefined} onSelect={() => setDeletingPlan(row)}><Trash2 className="h-4 w-4"/>Delete</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div> },
       ]} /></TabsContent>
     </Tabs>
 

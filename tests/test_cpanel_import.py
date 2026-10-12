@@ -212,9 +212,9 @@ def test_import_mysql_dump_strips_context_before_invoking_mysql(tmp_path, monkey
 
     captured = {}
 
-    def fake_run(args, input_text=None, timeout=None):
+    def fake_run(args, input_text=None, input_path=None, timeout=None, **_kwargs):
         captured["args"] = args
-        captured["input_text"] = input_text
+        captured["input_text"] = Path(input_path).read_text() if input_path else input_text
         from daemon.procutil import ProcResult
 
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
@@ -230,6 +230,21 @@ def test_import_mysql_dump_strips_context_before_invoking_mysql(tmp_path, monkey
     assert "USE `olduser_shop`" not in captured["input_text"]
 
 
+def test_mysql_dump_cleaner_never_requests_an_unbounded_line():
+    import io
+
+    class BoundedSource(io.StringIO):
+        def readline(self, size=-1):
+            assert 0 < size <= ci._SQL_STREAM_CHUNK
+            return super().readline(size)
+
+    payload = "INSERT INTO t VALUES ('" + "x" * (ci._SQL_STREAM_CHUNK * 3) + "');\n"
+    source = BoundedSource("USE `olduser_shop`; " + payload)
+    cleaned = io.StringIO()
+    ci._stream_clean_mysql_dump(source, cleaned)
+    assert cleaned.getvalue() == " " + payload
+
+
 def test_import_mysql_dump_never_runs_as_panel_admin(monkeypatch, tmp_path):
     from daemon.procutil import ProcResult
 
@@ -237,11 +252,11 @@ def test_import_mysql_dump_never_runs_as_panel_admin(monkeypatch, tmp_path):
     dump_path.write_text("SELECT 1; USE other_database; INSERT INTO t VALUES (1);\n")
     observed = {}
 
-    def fake_run(args, input_text=None, timeout=None):
+    def fake_run(args, input_text=None, input_path=None, timeout=None, **_kwargs):
         cnf_path = args[1].split("=", 1)[1]
         observed["config"] = Path(cnf_path).read_text()
         observed["mode"] = Path(cnf_path).stat().st_mode & 0o777
-        observed["sql"] = input_text
+        observed["sql"] = Path(input_path).read_text() if input_path else input_text
         return ProcResult(args=args, returncode=1, stdout="", stderr="secret from dump")
 
     monkeypatch.setattr(ci, "run", fake_run)

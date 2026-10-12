@@ -384,6 +384,7 @@ def test_domain_delete_cleans_rules_and_prefs(isolated_db, stub_sysops, stub_mai
     monkeypatch.setattr(hm.spamfilter, "_refresh_global_sieve", lambda: None)
     ha.create_account({"username": "demo1"})
     hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    hm.create_mailbox({"domain": "demo1.example", "local_part": "orphan", "password": "Secret123!Pass"})
     hm.spamfilter.apply_domain_spam_settings("demo1.example", enabled=False, threshold=None)
     hm.spamfilter.add_entry({"domain": "demo1.example", "local_part": "orphan", "kind": "whitelist", "pattern": "vip.com"})
     with write_session() as session:

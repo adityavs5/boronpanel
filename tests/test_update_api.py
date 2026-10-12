@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore")
 pytest.importorskip("fastapi")
 pytestmark = pytest.mark.usefixtures("isolated_db")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from testsupport.sync_asgi import SyncASGIClient as TestClient
 
 import api.main as main  # noqa: E402
 import api.routers.update as update_router  # noqa: E402
@@ -44,6 +44,9 @@ def daemon_stub(monkeypatch):
     answers = {
         "update.status": {"configured": True, "update_available": False},
         "update.check": {"configured": True, "update_available": False},
+        "update.preflight": {"can_start": True, "checks": []},
+        "update.database_backups": {"backups": [], "restore_status": None},
+        "update.database_restore": {"started": True},
         "update.start": {"id": 1, "status": "pending", "kind": "update"},
         "update.rollback": {"id": 2, "status": "pending", "kind": "rollback"},
         "update.log": {"job": None, "log": []},
@@ -62,6 +65,11 @@ def test_all_admin_update_endpoints_reject_customers(as_identity, daemon_stub):
     client = as_identity(CUSTOMER)
     assert client.get("/api/v1/admin/update/status").status_code == 403
     assert client.post("/api/v1/admin/update/check").status_code == 403
+    assert client.get("/api/v1/admin/update/preflight").status_code == 403
+    assert client.get("/api/v1/admin/update/database-backups").status_code == 403
+    assert client.post("/api/v1/admin/update/database-restore", json={
+        "backup_id": "pre-update-3.2.0-20261005-120000", "confirm": True,
+    }).status_code == 403
     assert client.post("/api/v1/admin/update/start", json={"confirm": True}).status_code == 403
     assert client.post("/api/v1/admin/update/rollback", json={"confirm": True}).status_code == 403
     assert client.get("/api/v1/admin/update/log").status_code == 403
@@ -113,6 +121,7 @@ def test_start_forwards_second_factor_to_root(as_identity, daemon_stub):
     assert daemon_stub["calls"] == [("update.start", {
         "initiated_by": "adminuser", "to_version": None,
         "confirm": True, "totp_code": "123456",
+        "acknowledge_data_plane": False, "override_active_tasks": False,
     })]
 
 
@@ -131,3 +140,26 @@ def test_log_passes_job_id(as_identity, daemon_stub):
     r = client.get("/api/v1/admin/update/log?job_id=7")
     assert r.status_code == 200
     assert dict(daemon_stub["calls"])["update.log"]["job_id"] == 7
+
+
+def test_preflight_and_database_restore_forward_safety_proof(as_identity, daemon_stub):
+    client = as_identity(ADMIN)
+    preflight = client.get("/api/v1/admin/update/preflight?override_active_tasks=true")
+    assert preflight.status_code == 200
+    backups = client.get("/api/v1/admin/update/database-backups")
+    assert backups.status_code == 200
+    restore = client.post("/api/v1/admin/update/database-restore", json={
+        "backup_id": "pre-update-3.2.0-20261005-120000",
+        "confirm": True,
+        "totp_code": "654321",
+    })
+    assert restore.status_code == 200
+    assert daemon_stub["calls"] == [
+        ("update.preflight", {"override_active_tasks": True}),
+        ("update.database_backups", {}),
+        ("update.database_restore", {
+            "backup_id": "pre-update-3.2.0-20261005-120000",
+            "confirm": True,
+            "totp_code": "654321",
+        }),
+    ]

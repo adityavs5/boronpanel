@@ -25,6 +25,17 @@ from shared.validation import (
 )
 
 
+@pytest.mark.parametrize("separator", ["\n", "\r", "\r\n", "\x00"])
+def test_password_rejects_credential_record_delimiters(separator):
+    with pytest.raises(ValidationError, match="line breaks or null"):
+        validate_password_strength("TenantPass123!" + separator + "root:OtherPass456!")
+
+
+def test_password_keeps_single_line_spaces_colon_and_unicode():
+    password = " Tenant:Pass123!ü "
+    assert validate_password_strength(password) == password
+
+
 @pytest.mark.parametrize("good", ["a", "ab12", "x" * 16, "customer1"])
 def test_valid_usernames(good):
     assert validate_username(good) == good

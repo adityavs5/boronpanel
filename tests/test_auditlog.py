@@ -6,8 +6,10 @@ from fastapi import HTTPException
 
 from api import security as sec
 from api.routers import auditlog
+from daemon import audit as daemon_audit
 from shared.db import write_session
 from shared.models import AuditLog
+from shared.request_context import request_context
 
 
 def _seed(isolated_db):
@@ -27,6 +29,24 @@ def test_query_rows_no_filters_returns_all(isolated_db):
     rows, total = auditlog._query_rows("", "", "", "", "", 1, 50)
     assert total == 4
     assert len(rows) == 4
+
+
+def test_daemon_audit_caps_untrusted_target(isolated_db):
+    daemon_audit.record("anonymous", "anonymous", "auth.login.begin", "x" * 500, {}, "ok")
+    with write_session() as session:
+        row = session.query(AuditLog).one()
+        assert row.target == "x" * 128
+
+
+def test_daemon_audit_captures_request_id(isolated_db):
+    with request_context("request-audit-1"):
+        daemon_audit.record("admin", "admin", "account.test", "demo", {}, "failed", "reference: 0123456789abcdef")
+    with write_session() as session:
+        row = session.query(AuditLog).one()
+        assert row.request_id == "request-audit-1"
+    payload = auditlog._row_dict(row)
+    assert payload["request_id"] == "request-audit-1"
+    assert payload["reference"] == "0123456789abcdef"
 
 
 def test_query_rows_filters_by_actor(isolated_db):

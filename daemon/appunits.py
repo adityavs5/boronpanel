@@ -19,6 +19,8 @@ cgroup first.
 from __future__ import annotations
 
 import os
+import pwd
+import socket
 import stat
 from pathlib import Path
 
@@ -29,6 +31,14 @@ from daemon.procutil import run
 from daemon import safeio
 
 UNITS_DIR = Path("/etc/systemd/system")
+# Keep public proxy endpoints outside /run/boron: that directory is 0750 and
+# deliberately reserved for the boron-api RPC boundary, so OLS's `nobody`
+# worker cannot traverse it. Socket inodes here remain 0600 and owned by OLS.
+APP_SOCKET_ROOT = Path("/run/boron-apps")
+
+
+class AppSocketMigrationError(RuntimeError):
+    """A legacy shared-port application could not be moved safely."""
 
 
 def logged_exec(command: str, log_path: str) -> str:
@@ -40,6 +50,107 @@ def logged_exec(command: str, log_path: str) -> str:
 
 def unit_name(kind: str, username: str, app_id: int) -> str:
     return f"boron-{kind}-{username}-{app_id}.service"
+
+
+def socket_unit_name(service_name: str) -> str:
+    if not service_name.endswith(".service"):
+        raise ValueError("application service name required")
+    return service_name[:-8] + ".socket"
+
+
+def socket_path(kind: str, app_id: int) -> Path:
+    if kind not in {"node", "python"} or isinstance(app_id, bool) or int(app_id) <= 0:
+        raise ValueError("valid application kind and id required")
+    return APP_SOCKET_ROOT / f"{kind}-{int(app_id)}.sock"
+
+
+def write_socket_unit(service_name: str, kind: str, app_id: int) -> str:
+    """Create the root-owned OLS endpoint for one application.
+
+    The socket inode is owned by OLS's unprivileged worker and lives in a
+    root-owned directory. Tenant processes receive only the already-open fd;
+    they can neither bind nor replace another application's endpoint.
+    """
+    socket_name = socket_unit_name(service_name)
+    content = (
+        "[Unit]\n"
+        f"Description=Boron private proxy socket for {service_name}\n"
+        "\n"
+        "[Socket]\n"
+        f"ListenStream={socket_path(kind, app_id)}\n"
+        "SocketUser=nobody\n"
+        "SocketGroup=nogroup\n"
+        "SocketMode=0600\n"
+        "DirectoryMode=0755\n"
+        "RemoveOnStop=yes\n"
+        "Accept=no\n"
+        f"Service={service_name}\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=sockets.target\n"
+    )
+    write_unit_file(socket_name, content)
+    return socket_name
+
+
+def enable_start_app(service_name: str) -> None:
+    socket_name = socket_unit_name(service_name)
+    enable_start(socket_name)
+    # A legacy TCP process may already be active while its unit file has just
+    # been replaced. Merely enabling it would leave that old process running
+    # without fd 3 while OLS is switched to the new socket. Restart active
+    # services so the private descriptor is actually inherited; start cleanly
+    # when the service was disabled.
+    run(["systemctl", "enable", service_name], timeout=30, check=True)
+    active = run(["systemctl", "is-active", service_name], timeout=10)
+    (restart if active.stdout.strip() == "active" else start)(service_name)
+
+
+def stop_disable_app(service_name: str) -> None:
+    stop_disable(service_name)
+    stop_disable(socket_unit_name(service_name))
+
+
+def restart_app(service_name: str) -> None:
+    start(socket_unit_name(service_name))
+    restart(service_name)
+
+
+def private_socket_ready(service_name: str, kind: str, app_id: int) -> bool:
+    """Verify the protected endpoint and its consumer both reached ready."""
+    for name in (socket_unit_name(service_name), service_name):
+        state = run(["systemctl", "is-active", name], timeout=10)
+        if state.stdout.strip() != "active":
+            return False
+    try:
+        info = socket_path(kind, app_id).lstat()
+        nobody = pwd.getpwnam("nobody")
+        return (stat.S_ISSOCK(info.st_mode) and info.st_uid == nobody.pw_uid
+                and stat.S_IMODE(info.st_mode) == 0o600)
+    except (FileNotFoundError, KeyError, OSError):
+        return False
+
+
+def remove_socket_unit(service_name: str) -> None:
+    name = socket_unit_name(service_name)
+    stop_disable(name)
+    remove_unit_file(name)
+    daemon_reload()
+
+
+def remove_app_unit(service_name: str) -> None:
+    """Idempotently remove a service and its private activation socket."""
+    socket_name = socket_unit_name(service_name)
+    for name in (service_name, socket_name):
+        stopped = run(["systemctl", "stop", name], timeout=30)
+        if not stopped.ok and unit_path(name).exists():
+            state = run(["systemctl", "is-active", name], timeout=10)
+            if state.stdout.strip() not in ("inactive", "failed", "unknown"):
+                raise RuntimeError("Application service could not be stopped safely")
+        run(["systemctl", "disable", name], timeout=30)
+        remove_unit_file(name)
+    remove_env_file(service_name)
+    daemon_reload()
 
 
 def unit_path(name: str) -> Path:

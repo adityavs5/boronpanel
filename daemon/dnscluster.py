@@ -7,8 +7,10 @@ import json
 import logging
 import secrets
 import threading
+import contextvars
 import time
 import uuid
+import zlib
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -25,6 +27,7 @@ from shared.models import (
     DnsZone,
 )
 from shared.validation import ValidationError, validate_domain
+from version import BORON_VERSION
 
 logger = logging.getLogger("borond.dnscluster")
 PEER_TYPES = {"boron", "directadmin", "cpanel"}
@@ -32,6 +35,18 @@ DIRECTIONS = {"push", "receive", "bidirectional"}
 RECORD_TYPES = {"A", "AAAA", "CAA", "CNAME", "MX", "NS", "PTR", "SOA", "SRV", "TXT"}
 _transport: httpx.BaseTransport | None = None
 _worker_started = False
+MAX_PEER_RESPONSE_BYTES = 8 * 1024 * 1024
+PEER_RESPONSE_DEADLINE_SECONDS = 90
+PEER_DELIVERY_DEADLINE_SECONDS = 15 * 60
+MAX_CPANEL_MUTATIONS = 2_000
+MAX_ZONE_RECORD_VALUES = 20_000
+DNS_CLUSTER_PROTOCOL_VERSION = "2.0"
+DNS_CLUSTER_CAPABILITIES = frozenset({
+    "full-zone-upsert-v2",
+    "zone-delete-v1",
+    "idempotency-receipts-v1",
+    "serial-conflict-rejection-v1",
+})
 
 
 def _now() -> dt.datetime:
@@ -53,6 +68,9 @@ def _peer_dict(peer: DnsClusterPeer) -> dict:
         "verify_tls": peer.verify_tls, "enabled": peer.enabled,
         "direction": peer.direction, "zones": list(peer.zones or []),
         "conflict_policy": peer.conflict_policy,
+        "protocol_version": peer.protocol_version,
+        "capabilities": list(peer.capabilities or []),
+        "last_capability_check_at": _iso(peer.last_capability_check_at),
         "status": peer.status, "last_success_at": _iso(peer.last_success_at),
         "last_error": peer.last_error, "created_at": _iso(peer.created_at),
     }
@@ -201,6 +219,8 @@ def _canonical_payload(zone: str) -> dict:
             "ttl": int(rrset.get("ttl") or 3600),
             "values": [str(r["content"]) for r in rrset.get("records", []) if not r.get("disabled")],
         })
+    if len(rrsets) > 10_000 or sum(len(row["values"]) for row in rrsets) > MAX_ZONE_RECORD_VALUES:
+        raise ValidationError("DNS zone is too large for safe cluster replication")
     serial = 0
     for rrset in rrsets:
         if rrset["type"] == "SOA" and rrset["values"]:
@@ -274,8 +294,82 @@ def _zone_text(payload: dict) -> str:
 
 
 def _client(peer: DnsClusterPeer) -> httpx.Client:
-    return httpx.Client(timeout=httpx.Timeout(30, read=60), verify=peer.verify_tls,
-                        follow_redirects=False, trust_env=False, transport=_transport)
+    return httpx.Client(timeout=httpx.Timeout(30, read=15), verify=peer.verify_tls,
+                        follow_redirects=False, trust_env=False, transport=_transport,
+                        headers={"Accept-Encoding": "gzip, deflate"})
+
+
+def _bounded_request(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    max_bytes: int = MAX_PEER_RESPONSE_BYTES,
+    deadline: float | None = None,
+    **kwargs,
+) -> httpx.Response:
+    """Read a peer response with decoded-byte and total-duration ceilings."""
+    started = time.monotonic()
+    deadline = min(deadline, started + PEER_RESPONSE_DEADLINE_SECONDS) if deadline is not None else started + PEER_RESPONSE_DEADLINE_SECONDS
+    remaining_time = deadline - started
+    if remaining_time <= 0:
+        raise RuntimeError("DNS peer operation exceeded its deadline")
+    kwargs.setdefault(
+        "timeout",
+        httpx.Timeout(min(30, remaining_time), read=min(15, remaining_time)),
+    )
+    body = bytearray()
+    raw_size = 0
+    with client.stream(method, url, **kwargs) as streamed:
+        streamed.raise_for_status()
+        buffered = streamed.is_stream_consumed
+        # httpx has already decoded an eagerly-buffered response body.
+        encoding = "identity" if buffered else streamed.headers.get("content-encoding", "identity").strip().lower()
+        if encoding in ("", "identity"):
+            decoder = None
+        elif encoding == "gzip":
+            decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        elif encoding == "deflate":
+            decoder = zlib.decompressobj()
+        else:
+            raise RuntimeError("DNS peer used an unsupported response encoding")
+        # MockTransport and a few in-process adapters may hand httpx an
+        # already-buffered response.  Real peer responses remain streamed;
+        # the buffered compatibility path is still subject to the same byte
+        # ceiling before it is returned to any parser.
+        chunks = (streamed.content,) if buffered else streamed.iter_raw()
+        for chunk in chunks:
+            if time.monotonic() > deadline:
+                raise RuntimeError("DNS peer response exceeded the operation deadline")
+            raw_size += len(chunk)
+            if raw_size > max_bytes:
+                raise RuntimeError("DNS peer response exceeded the allowed size")
+            pending = chunk
+            while pending:
+                remaining = max_bytes - len(body)
+                decoded = pending if decoder is None else decoder.decompress(pending, remaining + 1)
+                if len(decoded) > remaining:
+                    raise RuntimeError("DNS peer response exceeded the allowed size")
+                body.extend(decoded)
+                if decoder is None:
+                    break
+                pending = decoder.unconsumed_tail
+        if decoder is not None:
+            remaining = max_bytes - len(body)
+            tail = decoder.flush(remaining + 1)
+            if len(tail) > remaining:
+                raise RuntimeError("DNS peer response exceeded the allowed size")
+            body.extend(tail)
+        headers = {
+            key: value for key, value in streamed.headers.items()
+            if key.lower() not in {"content-encoding", "content-length", "transfer-encoding"}
+        }
+        return httpx.Response(
+            streamed.status_code,
+            headers=headers,
+            content=bytes(body),
+            request=streamed.request,
+        )
 
 
 def _metadata_ok(data: dict, *, allow_absent: bool = False) -> None:
@@ -288,11 +382,13 @@ def _metadata_ok(data: dict, *, allow_absent: bool = False) -> None:
 
 
 def _cpanel_call(client: httpx.Client, peer: DnsClusterPeer, command: str, params: dict | None = None,
-                 *, allow_absent: bool = False) -> dict:
+                 *, allow_absent: bool = False, deadline: float | None = None) -> dict:
     headers = {"Authorization": f"whm {peer.username}:{appcrypto.decrypt_secret(peer.credential_enc)}"}
-    response = client.request("POST", f"{peer.endpoint}/json-api/{command}",
-                              params={"api.version": 1}, data=params or {}, headers=headers)
-    response.raise_for_status()
+    response = _bounded_request(
+        client, "POST", f"{peer.endpoint}/json-api/{command}",
+        params={"api.version": 1}, data=params or {}, headers=headers,
+        deadline=deadline,
+    )
     data = response.json()
     _metadata_ok(data, allow_absent=allow_absent)
     return data
@@ -319,19 +415,19 @@ def _cpanel_record_params(zone: str, rr: dict, value: str) -> dict:
 
 
 def _send_cpanel(peer: DnsClusterPeer, action: str, payload: dict | None, zone: str,
-                 *, boron_managed_remote: bool = False) -> str:
+                 *, boron_managed_remote: bool = False, deadline: float | None = None) -> str:
     with _client(peer) as client:
         if action == "delete":
             if not boron_managed_remote:
                 return 'skipped-existing'
-            _cpanel_call(client, peer, "killdns", {"domain": zone}, allow_absent=True)
+            _cpanel_call(client, peer, "killdns", {"domain": zone}, allow_absent=True, deadline=deadline)
             return 'sent-owned'
         assert payload is not None
         apex = next((v for r in payload["rrsets"] if r["type"] == "A" and r["name"].rstrip(".") == zone
                      for v in r["values"]), "127.0.0.1")
         dump = None
         if boron_managed_remote:
-            dump = _cpanel_call(client, peer, 'dumpzone', {'domain': zone}, allow_absent=True)
+            dump = _cpanel_call(client, peer, 'dumpzone', {'domain': zone}, allow_absent=True, deadline=deadline)
             if int((dump.get('metadata') or {}).get('result', 0)) != 1:
                 # An observed deletion invalidates prior ownership. Recreate
                 # atomically without overwriting a zone added in the meantime.
@@ -345,7 +441,7 @@ def _send_cpanel(peer: DnsClusterPeer, action: str, payload: dict | None, zone: 
         if not boron_managed_remote:
             # Creation itself must refuse a collision, including one appearing
             # between a remote existence query and this request.
-            _cpanel_call(client, peer, "adddns", {"domain": zone, "ip": apex, "allowoverwrite": 0})
+            _cpanel_call(client, peer, "adddns", {"domain": zone, "ip": apex, "allowoverwrite": 0}, deadline=deadline)
             # Retain provenance if later record replacement fails and retries.
             with write_session() as db:
                 state = db.scalar(select(DnsClusterZoneState).where(
@@ -355,27 +451,33 @@ def _send_cpanel(peer: DnsClusterPeer, action: str, payload: dict | None, zone: 
                     db.add(state)
                 state.direction = 'sent-owned'
         if dump is None:
-            dump = _cpanel_call(client, peer, "dumpzone", {"domain": zone})
+            dump = _cpanel_call(client, peer, "dumpzone", {"domain": zone}, deadline=deadline)
         rows = (dump.get("data") or {}).get("zone") or []
+        if not isinstance(rows, list) or len(rows) > 10_000:
+            raise RuntimeError("cPanel returned too many DNS records")
         removable = [(r, r.get("Line", r.get("line"))) for r in rows
                      if str(r.get("type", "")).upper() != "SOA" and r.get("Line", r.get("line"))]
+        additions = sum(len(rr["values"]) for rr in payload["rrsets"] if rr["type"] != "SOA")
+        if len(removable) + additions > MAX_CPANEL_MUTATIONS:
+            raise RuntimeError("DNS zone needs too many cPanel API mutations for one safe delivery")
         for row, line in sorted(removable, key=lambda item: int(item[1]), reverse=True):
-            _cpanel_call(client, peer, "removezonerecord", {"zone": zone, "line": int(line)})
+            _cpanel_call(client, peer, "removezonerecord", {"zone": zone, "line": int(line)}, deadline=deadline)
         for rr in payload["rrsets"]:
             if rr["type"] == "SOA":
                 continue
             for value in rr["values"]:
-                _cpanel_call(client, peer, "addzonerecord", _cpanel_record_params(zone, rr, value))
+                _cpanel_call(client, peer, "addzonerecord", _cpanel_record_params(zone, rr, value), deadline=deadline)
     return 'sent-owned'
 
 
-def _directadmin_zone_exists(client: httpx.Client, peer: DnsClusterPeer, auth: tuple[str, str], zone: str) -> bool:
-    response = client.get(
-        f"{peer.endpoint}/CMD_API_DNS_ADMIN",
+def _directadmin_zone_exists(client: httpx.Client, peer: DnsClusterPeer, auth: tuple[str, str], zone: str,
+                             *, deadline: float | None = None) -> bool:
+    response = _bounded_request(
+        client, "GET", f"{peer.endpoint}/CMD_API_DNS_ADMIN",
         auth=auth,
         params={"action": "exists", "domain": zone},
+        deadline=deadline,
     )
-    response.raise_for_status()
     result = parse_qs(response.text, keep_blank_values=True)
     if result.get("error", ["0"])[0] == "1":
         raise RuntimeError("DirectAdmin rejected the DNS zone existence check")
@@ -392,6 +494,7 @@ def _send_directadmin(
     zone: str,
     *,
     boron_managed_remote: bool = False,
+    deadline: float | None = None,
 ) -> str:
     auth = (peer.username or "admin", appcrypto.decrypt_secret(peer.credential_enc))
     with _client(peer) as client:
@@ -400,21 +503,26 @@ def _send_directadmin(
             # predates our ownership. Never delete it during local cleanup.
             if not boron_managed_remote:
                 return "skipped-existing"
-            response = client.post(f"{peer.endpoint}/CMD_API_DNS_ADMIN", auth=auth,
-                                   data={"action": "delete", "select0": zone})
+            response = _bounded_request(
+                client, "POST", f"{peer.endpoint}/CMD_API_DNS_ADMIN", auth=auth,
+                data={"action": "delete", "select0": zone},
+                deadline=deadline,
+            )
         else:
             # DirectAdmin rawsave creates an absent zone but overwrites an
             # existing one. On the first delivery, ask DirectAdmin's official
             # action=exists endpoint and preserve any pre-existing zone. A
             # successful first rawsave records direction=sent, which permits
             # later Boron changes to update only that Boron-created copy.
-            if not boron_managed_remote and _directadmin_zone_exists(client, peer, auth, zone):
+            if not boron_managed_remote and _directadmin_zone_exists(client, peer, auth, zone, deadline=deadline):
                 return "skipped-existing"
-            response = client.post(f"{peer.endpoint}/CMD_API_DNS_ADMIN", auth=auth,
-                                   params={"action": "rawsave", "domain": zone},
-                                   content=_zone_text(payload or {}),
-                                   headers={"Content-Type": "text/plain"})
-        response.raise_for_status()
+            response = _bounded_request(
+                client, "POST", f"{peer.endpoint}/CMD_API_DNS_ADMIN", auth=auth,
+                params={"action": "rawsave", "domain": zone},
+                content=_zone_text(payload or {}),
+                headers={"Content-Type": "text/plain"},
+                deadline=deadline,
+            )
         if ("error=1" in response.text or response.text.lstrip().startswith("error=1")) and not (
             action == "delete" and any(marker in response.text.lower() for marker in ("does+not+exist", "not+found", "cannot+find"))
         ):
@@ -424,12 +532,74 @@ def _send_directadmin(
     return "sent-owned"
 
 
-def _send_boron(peer: DnsClusterPeer, action: str, payload: dict | None, zone: str, event_id: str) -> None:
+def capabilities(_params: dict | None = None) -> dict:
+    return {
+        "panel_version": BORON_VERSION,
+        "protocol_version": DNS_CLUSTER_PROTOCOL_VERSION,
+        "capabilities": sorted(DNS_CLUSTER_CAPABILITIES),
+    }
+
+
+def _check_boron_capabilities(
+    client: httpx.Client,
+    peer: DnsClusterPeer,
+    *,
+    deadline: float | None = None,
+) -> dict:
+    response = _bounded_request(
+        client,
+        "GET",
+        f"{peer.endpoint}/api/v1/dns-cluster/capabilities",
+        max_bytes=64 * 1024,
+        headers={"Authorization": f"Bearer {appcrypto.decrypt_secret(peer.credential_enc)}"},
+        deadline=deadline,
+    )
+    try:
+        data = response.json()
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError("Boron DNS peer returned an invalid capability document") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("Boron DNS peer returned an invalid capability document")
+    raw_protocol = str(data.get("protocol_version") or "")
+    try:
+        major_text, minor_text = raw_protocol.split(".", 1)
+        major, minor = int(major_text), int(minor_text)
+        local_major, local_minor = map(int, DNS_CLUSTER_PROTOCOL_VERSION.split("."))
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("Boron DNS peer did not declare a valid protocol version") from exc
+    if major != local_major or abs(minor - local_minor) > 1:
+        raise RuntimeError(
+            f"Boron DNS protocol {raw_protocol} is incompatible with "
+            f"{DNS_CLUSTER_PROTOCOL_VERSION}; update the peer before syncing"
+        )
+    remote_capabilities = data.get("capabilities")
+    if not isinstance(remote_capabilities, list) or any(
+        not isinstance(item, str) for item in remote_capabilities
+    ):
+        raise RuntimeError("Boron DNS peer returned an invalid capability list")
+    missing = sorted(DNS_CLUSTER_CAPABILITIES - set(remote_capabilities))
+    if missing:
+        raise RuntimeError(
+            "Boron DNS peer lacks required capabilities: " + ", ".join(missing)
+        )
+    return {
+        "panel_version": str(data.get("panel_version") or "unknown")[:32],
+        "protocol_version": raw_protocol,
+        "capabilities": sorted(set(remote_capabilities)),
+    }
+
+
+def _send_boron(peer: DnsClusterPeer, action: str, payload: dict | None, zone: str, event_id: str,
+                *, deadline: float | None = None) -> None:
     with _client(peer) as client:
-        response = client.post(f"{peer.endpoint}/api/v1/dns-cluster/apply",
-                               headers={"Authorization": f"Bearer {appcrypto.decrypt_secret(peer.credential_enc)}"},
-                               json={"event_id": event_id, "action": action, "zone": zone, "payload": payload})
-        response.raise_for_status()
+        _check_boron_capabilities(client, peer, deadline=deadline)
+        _bounded_request(
+            client, "POST", f"{peer.endpoint}/api/v1/dns-cluster/apply",
+            max_bytes=64 * 1024,
+            headers={"Authorization": f"Bearer {appcrypto.decrypt_secret(peer.credential_enc)}"},
+            json={"event_id": event_id, "action": action, "zone": zone, "payload": payload},
+            deadline=deadline,
+        )
 
 
 def _send(
@@ -440,15 +610,16 @@ def _send(
     event_id: str,
     *,
     boron_managed_remote: bool = False,
+    deadline: float | None = None,
 ) -> str:
     if peer.peer_type == "boron":
-        _send_boron(peer, action, payload, zone, event_id)
+        _send_boron(peer, action, payload, zone, event_id, deadline=deadline)
         return "sent"
     if peer.peer_type == "directadmin":
         return _send_directadmin(
-            peer, action, payload, zone, boron_managed_remote=boron_managed_remote
+            peer, action, payload, zone, boron_managed_remote=boron_managed_remote, deadline=deadline
         )
-    return _send_cpanel(peer, action, payload, zone, boron_managed_remote=boron_managed_remote)
+    return _send_cpanel(peer, action, payload, zone, boron_managed_remote=boron_managed_remote, deadline=deadline)
 
 
 def process_one() -> bool:
@@ -491,6 +662,7 @@ def process_one() -> bool:
             job.zone,
             job.event_id,
             boron_managed_remote=boron_managed_remote,
+            deadline=time.monotonic() + PEER_DELIVERY_DEADLINE_SECONDS,
         )
         with write_session() as db:
             current = db.get(DnsClusterOutbox, job_id)
@@ -627,19 +799,33 @@ def test_peer(params: dict) -> dict:
     try:
         with _client(peer) as client:
             if peer.peer_type == "boron":
-                response = client.get(f"{peer.endpoint}/api/v1/dns-cluster/ping",
-                                      headers={"Authorization": f"Bearer {appcrypto.decrypt_secret(peer.credential_enc)}"})
-                response.raise_for_status()
+                capability_state = _check_boron_capabilities(client, peer)
+                _bounded_request(
+                    client, "GET", f"{peer.endpoint}/api/v1/dns-cluster/ping",
+                    max_bytes=64 * 1024,
+                    headers={"Authorization": f"Bearer {appcrypto.decrypt_secret(peer.credential_enc)}"},
+                )
             elif peer.peer_type == "directadmin":
-                response = client.get(f"{peer.endpoint}/CMD_API_LOGIN_TEST", auth=(peer.username or "admin", appcrypto.decrypt_secret(peer.credential_enc)))
-                response.raise_for_status()
+                response = _bounded_request(
+                    client, "GET", f"{peer.endpoint}/CMD_API_LOGIN_TEST",
+                    max_bytes=64 * 1024,
+                    auth=(peer.username or "admin", appcrypto.decrypt_secret(peer.credential_enc)),
+                )
                 if "error=1" in response.text: raise RuntimeError("DirectAdmin rejected the login key")
             else:
                 _cpanel_call(client, peer, "version")
         with write_session() as db:
             row = db.get(DnsClusterPeer, peer.id)
             row.status, row.last_success_at, row.last_error = "healthy", _now(), None
-        return {"ok": True}
+            if peer.peer_type == "boron":
+                row.protocol_version = capability_state["protocol_version"]
+                row.capabilities = capability_state["capabilities"]
+                row.last_capability_check_at = _now()
+        return {
+            "ok": True,
+            "protocol_version": capability_state["protocol_version"] if peer.peer_type == "boron" else None,
+            "capabilities": capability_state["capabilities"] if peer.peer_type == "boron" else [],
+        }
     except Exception as exc:
         with write_session() as db:
             row = db.get(DnsClusterPeer, peer.id)
@@ -662,4 +848,5 @@ def recover_and_start_worker() -> None:
             except Exception:
                 logger.exception("DNS cluster worker failed")
                 time.sleep(5)
-    threading.Thread(target=run, name="dns-cluster", daemon=True).start()
+    context = contextvars.copy_context()
+    threading.Thread(target=context.run, args=(run,), name="dns-cluster", daemon=True).start()

@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from testsupport.host_requirements import chown_or_skip
 from sqlalchemy import select
 
 from tests.test_snapshot_storage import repo, ssh_environment
@@ -92,7 +93,7 @@ def test_ssh_job_filters_incremental_restore_and_notifications(environment, ssh_
     (home/'site/cache.tmp').write_text('excluded cache')
     (home/'outside.txt').write_text('outside include filter')
     for path in [home, *home.rglob('*')]:
-        os.chown(path, 2000, 2000)
+        chown_or_skip(path, 2000, 2000)
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == 'alpha'))
         session.add(NotificationSettings(id=1, sender_address='panel@example.test',

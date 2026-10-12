@@ -153,7 +153,9 @@ def _resolve_identity(request: Request) -> Identity | None:
             request.headers.get("authorization"),
             request.cookies.get(COOKIE_NAME),
         )
-    except HTTPException:
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
         return None
 
 

@@ -5,15 +5,8 @@
 # The goal's spec: daily rotation, 30 days retained, compressed, with the
 # 5xx error stream kept as its own separate file.
 #
-# `copytruncate` is deliberate: boron-api holds these files open for the
-# life of the process (Python logging.FileHandler), so the usual
-# rename-then-create scheme would leave the daemon writing into the renamed
-# (already-rotated) file. copytruncate copies the current contents to the
-# rotated name and truncates the original in place, so the open fd keeps
-# working with no signal/reopen cooperation from the app. The tradeoff is a
-# small race window (lines written between the copy and the truncate can be
-# lost); for an access log that's an acceptable trade against making the app
-# handle SIGHUP just for logrotate.
+# API and daemon use WatchedFileHandler, so rename/create rotation is safe and
+# avoids copytruncate's line-loss race.
 /var/log/boron/api-access.log
 /var/log/boron/api-error.log {
     daily
@@ -22,7 +15,45 @@
     delaycompress
     missingok
     notifempty
-    copytruncate
     su root boron-api
     create 0640 boron-api boron-api
+}
+
+/var/log/boron/daemon.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    su root boron-api
+    create 0640 root boron-api
+}
+
+/var/log/boron/updates.log
+/var/log/boron/account-events.log
+/var/log/boron/audit-retention.log
+/var/log/boron/support-bundle-retention.log
+/var/log/boron/backup-scheduler.log
+/var/log/boron/certbot-renew.log
+/var/log/boron/cloudflare-ranges.log
+/var/log/boron/cloudflare-zone-check.log
+/var/log/boron/geoip-refresh.log
+/var/log/boron/health-snapshot.log
+/var/log/boron/maintenance-autodisable.log
+/var/log/boron/monitoring-check.log
+/var/log/boron/pma-token-cleanup.log
+/var/log/boron/sitestats-snapshot.log
+/var/log/boron/ssl-expiry-check.log
+/var/log/boron/update-check.log
+/var/log/boron/usage-alert-check.log
+/var/log/boron/usage-snapshot.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    su root root
+    create 0640 root root
 }

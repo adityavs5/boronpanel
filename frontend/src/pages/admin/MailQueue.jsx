@@ -144,15 +144,11 @@ export default function MailQueue() {
         title="Mail queue"
         description={`${count} message${count === 1 ? '' : 's'} currently queued. ${dataUpdatedAt ? `Updated ${new Date(dataUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.` : 'Refreshing automatically.'}`}
         icon={Inbox}
-      >
-        <Button variant="secondary" loading={isFetching} onClick={() => refetch()}><RefreshCw className="h-4 w-4" /> Refresh</Button>
-        <Button variant="secondary" loading={flushAllMut.isPending} disabled={count === 0} onClick={() => flushAllMut.mutate()}>
+        primaryAction={<Button variant="secondary" loading={flushAllMut.isPending} disabled={count === 0} onClick={() => flushAllMut.mutate()}>
           <Send className="h-4 w-4" /> Flush all
-        </Button>
-        <Button variant="danger" disabled={count === 0} onClick={() => setDeleteAllOpen(true)}>
-          <Trash2 className="h-4 w-4" /> Delete all
-        </Button>
-      </PageHeader>
+        </Button>}
+        moreActions={[{label:isFetching?'Refreshing…':'Refresh',icon:<RefreshCw className="h-4 w-4"/>,disabled:isFetching,onSelect:()=>refetch()},{label:'Delete all',icon:<Trash2 className="h-4 w-4"/>,disabled:count===0,destructive:true,onSelect:()=>setDeleteAllOpen(true)}]}
+      />
 
       <DataTable
         columns={columns}

@@ -59,10 +59,7 @@ export default function IpManagement() {
   if (state.isLoading) return <div className="grid gap-4 lg:grid-cols-2"><CardSkeleton /><CardSkeleton /></div>
   if (state.isError) return <ErrorState error={state.error} onRetry={state.refetch} />
   return <div className="space-y-6">
-    <PageHeader title="IP Management" description="Allocate host IPs to accounts as shared or dedicated addresses." icon={Network}>
-      {!!state.data.detected?.length && <Button variant="outline" onClick={() => { setImportAddress(state.data.detected[0].address); setImportOpen(true) }}><RefreshCw className="h-4 w-4" /> Add detected IP</Button>}
-      <Button onClick={() => setAssignOpen(true)} disabled={!activeIps.length}><UserRoundCog className="h-4 w-4" /> Assign account</Button>
-    </PageHeader>
+    <PageHeader title="IP Management" description="Allocate host IPs to accounts as shared or dedicated addresses." icon={Network} primaryAction={<Button onClick={() => setAssignOpen(true)} disabled={!activeIps.length}><UserRoundCog className="h-4 w-4" /> Assign account</Button>} moreActions={state.data.detected?.length ? [{label:'Add detected IP',icon:<RefreshCw className="h-4 w-4"/>,onSelect:()=>{setImportAddress(state.data.detected[0].address);setImportOpen(true)}}] : []} />
 
     <Card><CardHeader><CardTitle>New-account allocation</CardTitle><CardDescription>Choose how an address is selected when an administrator creates a hosting account. A per-account selection in the creation wizard overrides this policy.</CardDescription></CardHeader><CardContent className="grid items-end gap-4 md:grid-cols-[1fr_1fr_auto]">
       <FormField label="Policy"><Select value={policy?.allocation_policy || 'primary'} onChange={(event) => setPolicy((value) => ({ ...value, allocation_policy: event.target.value }))}><option value="primary">Primary server IP</option><option value="random_shared">Random active shared IP</option><option value="specific">Always use one shared IP</option></Select></FormField>

@@ -98,6 +98,29 @@ def test_create_python_app_happy_path(account_with_domain, stub_ols, fake_venv):
     assert any(a[-2:] == ["gunicorn", "uvicorn"] for a in fake_venv)
 
 
+def test_legacy_bootstrap_failure_keeps_socket_route_and_aborts_migration(
+    account_with_domain, stub_ols, monkeypatch
+):
+    result = pythonapps.create_app({"username":"demo1", "domain":"demo1.example",
+                                    "name":"secure-migrate", "entry_point":"app:app"})
+    with write_session() as session:
+        row = session.get(PythonApp, result["id"])
+        row.backend_mode = "legacy"
+        row.enabled = True
+    stopped = []
+    monkeypatch.setattr(pythonapps.appunits, "enable_start_app",
+                        lambda _unit: (_ for _ in ()).throw(RuntimeError("start failed")))
+    monkeypatch.setattr(pythonapps.appunits, "stop_disable_app", lambda unit: stopped.append(unit))
+
+    with pytest.raises(pythonapps.appunits.AppSocketMigrationError):
+        pythonapps.bootstrap_all_python_apps()
+
+    with write_session() as session:
+        assert session.get(PythonApp, result["id"]).backend_mode == "socket"
+    assert stopped == [result["unit"]]
+    assert stub_ols.count("demo1") >= 2
+
+
 def test_create_python_app_compensates_db_row_on_ols_failure(account_with_domain, monkeypatch):
     """Same real bug/fix as nodeapps.py's identical test -- see its
     docstring."""
@@ -140,7 +163,7 @@ def test_unit_execstart_uses_gunicorn_for_wsgi(account_with_domain):
         "username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "app:app", "app_type": "wsgi",
     })
     content = pythonapps.appunits.unit_path(result["unit"]).read_text()
-    assert "gunicorn --bind 127.0.0.1" in content
+    assert "gunicorn --bind fd://3" in content
     assert "app:app" in content
 
 
@@ -149,7 +172,7 @@ def test_unit_execstart_uses_uvicorn_for_asgi(account_with_domain):
         "username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "app:app", "app_type": "asgi",
     })
     content = pythonapps.appunits.unit_path(result["unit"]).read_text()
-    assert "uvicorn app:app --host 127.0.0.1" in content
+    assert "uvicorn app:app --fd 3" in content
 
 
 def test_env_vars_encrypted_at_rest(account_with_domain):
@@ -249,7 +272,7 @@ def test_failed_teardown_retains_recovery_metadata(account_with_domain, monkeypa
     created = pythonapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "app:app"})
     def fail(name):
         raise RuntimeError("stop failed")
-    monkeypatch.setattr(pythonapps.appunits, "remove_unit", fail)
+    monkeypatch.setattr(pythonapps.appunits, "remove_app_unit", fail)
     with pytest.raises(RuntimeError, match="stop failed"):
         if terminate:
             with write_session() as session:

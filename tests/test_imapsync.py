@@ -96,7 +96,7 @@ def test_migration_rejects_plaintext_source(mailbox):
 def test_source_connection_pins_validated_ip_and_verifies_hostname(monkeypatch, port, transport):
     calls = []
 
-    def fake_run(args, timeout=None, redact=None):
+    def fake_run(args, timeout=None, redact=None, **_kwargs):
         calls.append(args)
         return ProcResult(args=args, returncode=0,
                           stdout="Host1: folders list (...)\n[INBOX]\nHost2: folders list (...)\n", stderr="")
@@ -293,7 +293,7 @@ def test_list_source_folders_parses_output(monkeypatch):
         "1 OK List completed\n\n[INBOX]\n"
     )
     captured = {}
-    def fake_run(args, timeout=None, redact=None):
+    def fake_run(args, timeout=None, redact=None, **_kwargs):
         captured["args"] = args
         return ProcResult(args=args, returncode=0, stdout=fake_stdout, stderr="")
     monkeypatch.setattr(im, "run", fake_run)
@@ -310,7 +310,7 @@ def test_list_source_folders_parses_output(monkeypatch):
 
 
 def test_list_source_folders_raises_on_failure(monkeypatch):
-    monkeypatch.setattr(im, "run", lambda args, timeout=None, redact=None: ProcResult(args=args, returncode=1, stdout="", stderr="Login failed"))
+    monkeypatch.setattr(im, "run", lambda args, timeout=None, redact=None, **_kwargs: ProcResult(args=args, returncode=1, stdout="", stderr="Login failed"))
     with pytest.raises(im.ImapSyncError, match="check TLS certificate and login credentials"):
         im.list_source_folders("imap.example.net", 993, "old@example.net", "wrongpw")
 
@@ -385,7 +385,7 @@ def test_run_job_never_logs_or_stores_passwords(mailbox, monkeypatch, tmp_path, 
 
     captured_args = []
 
-    def fake_run(args, timeout=None, redact=None):
+    def fake_run(args, timeout=None, redact=None, **_kwargs):
         captured_args.append(args)
         if "--justfolders" in args:
             return ProcResult(

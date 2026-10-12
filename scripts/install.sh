@@ -6,7 +6,7 @@
 # idempotent translation of the hand-tested runbook in README.md -- every step
 # here corresponds to a numbered section there, and each is safe to re-run.
 #
-#   sudo bash scripts/install.sh                 # full install (interactive)
+#   sudo bash scripts/install.sh --profile full  # full install (interactive)
 #   sudo bash scripts/install.sh --dry-run       # print the plan, change nothing
 #   sudo bash scripts/install.sh --uninstall     # remove Boron (keeps user data)
 #
@@ -32,12 +32,13 @@ readonly INSTALL_LOG="/var/log/boron-install.log"
 readonly VENV="${DEST}/.venv"
 readonly MIN_RAM_MB=1024
 readonly MIN_DISK_GB=10
+readonly APT_LOCK_WAIT_SECONDS=300
 # Ports the stack binds and expects to own on a fresh box. A conflict here
 # means something else is already installed -- surfaced in pre-flight, not
 # discovered halfway through.
 # Public TCP listeners plus the panel's internal PowerDNS API/database
 # listeners. Passive FTP is a range and is configured separately below.
-readonly REQUIRED_PORTS=(2222 8081 80 443 21 25 110 143 587 993 995 3306 53)
+REQUIRED_PORTS=()
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
@@ -52,6 +53,10 @@ readonly BORON_VERSION
 
 DRY_RUN=false
 UNINSTALL=false
+FORCE=false
+INSTALL_PROFILE="${FH_INSTALL_PROFILE:-full}"
+PROFILE_EXPLICIT=false
+[[ -n "${FH_INSTALL_PROFILE:-}" ]] && PROFILE_EXPLICIT=true
 NONINTERACTIVE="${FH_NONINTERACTIVE:-false}"
 
 PANEL_DOMAIN="${FH_PANEL_DOMAIN:-}"
@@ -73,6 +78,7 @@ MAXMIND_LICENSE_KEY="${FH_MAXMIND_LICENSE_KEY:-}"
 STEP_OK=0
 STEP_FAIL=0
 STEP_SKIP=0
+EXISTING_INSTALL=false
 
 # --- output helpers ----------------------------------------------------------
 
@@ -208,14 +214,10 @@ check_os() {
     fi
     if [[ "$id" == "ubuntu" && "$ver" == "24.04" ]]; then
         ok "Ubuntu 24.04 detected"
-    elif [[ "$id" == "ubuntu" ]]; then
-        warn "Ubuntu ${ver:-unknown} (this installer targets 24.04; continuing)"
+    elif $FORCE; then
+        warn "unsupported OS ${id:-unknown} ${ver:-unknown}; continuing because --force was supplied"
     else
-        if $DRY_RUN; then
-            warn "non-Ubuntu OS (${id:-unknown}) -- real install requires Ubuntu 24.04"
-        else
-            die "unsupported OS '${id:-unknown}' (Ubuntu 24.04 required)"
-        fi
+        die "unsupported OS ${id:-unknown} ${ver:-unknown}; Ubuntu 24.04 is required (use --force only after reviewing compatibility)"
     fi
 }
 
@@ -247,18 +249,80 @@ check_disk() {
 }
 
 check_ports() {
-    local conflicts=() port
+    local conflicts=() port listener pid exe package owner
+    local existing_install=false
+    [[ -f "${CONF_DIR}/boron.toml" && -d "${DEST}" ]] && existing_install=true
     for port in "${REQUIRED_PORTS[@]}"; do
-        if ss -Hltn "sport = :${port}" 2>/dev/null | grep -q .; then
-            # 3306/25/etc. may already be up if this is a re-run over a partial
-            # install -- that's expected and not fatal on a re-run.
-            conflicts+=("$port")
+        listener="$(ss -Hltnp "sport = :${port}" 2>/dev/null | head -1 || true)"
+        if [[ -n "$listener" ]]; then
+            pid="$(sed -nE 's/.*pid=([0-9]+).*/\1/p' <<<"$listener")"
+            exe="${pid:+$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)}"
+            package="${exe:+$(dpkg-query -S "$exe" 2>/dev/null | head -1 | cut -d: -f1 || true)}"
+            owner="${exe:-unknown process}${package:+ (package ${package})}"
+            conflicts+=("${port}: ${owner}")
         fi
     done
     if [[ "${#conflicts[@]}" -eq 0 ]]; then
         ok "no port conflicts on ${REQUIRED_PORTS[*]}"
     else
-        warn "ports already in use: ${conflicts[*]} (expected on re-run; a conflict on a truly fresh box means another service owns them)"
+        printf '  %s Existing listeners:\n' "${C_YELLOW}[warn]${C_RESET}"
+        printf '    - %s\n' "${conflicts[@]}"
+        if $existing_install; then
+            ok "existing Boron installation detected; occupied stack ports are expected on an idempotent rerun"
+        elif $FORCE; then
+            warn "continuing despite port conflicts because --force was supplied"
+        else
+            die "required ports are already owned; stop or remove the listed software, or use --force to adopt it explicitly"
+        fi
+    fi
+}
+
+profile_has() {
+    case "${INSTALL_PROFILE}:$1" in
+        minimal:web|minimal:php|minimal:ssl) return 0 ;;
+        standard:web|standard:database|standard:php|standard:ssl|standard:dns|standard:mail|standard:ftp|standard:fail2ban) return 0 ;;
+        full:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+configure_profile() {
+    case "$INSTALL_PROFILE" in
+        minimal) REQUIRED_PORTS=(2222 80 443 3306) ;;
+        standard|full) REQUIRED_PORTS=(2222 8081 80 443 21 25 110 143 587 993 995 3306 53) ;;
+        *) die "invalid profile '${INSTALL_PROFILE}'; choose minimal, standard, or full" ;;
+    esac
+}
+
+load_existing_profile() {
+    [[ -f "${CONF_DIR}/boron.toml" ]] || return 0
+    local stored
+    stored="$(sed -nE 's/^[[:space:]]*install_profile[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "${CONF_DIR}/boron.toml" | head -1)"
+    stored="${stored:-full}"
+    case "$stored" in minimal|standard|full) ;; *) die "existing install has invalid profile '${stored}' in ${CONF_DIR}/boron.toml" ;; esac
+    if $PROFILE_EXPLICIT && [[ "$INSTALL_PROFILE" != "$stored" ]]; then
+        die "existing install uses profile '${stored}', not '${INSTALL_PROFILE}'; change installed components from Server Setup instead of rerunning the installer with another profile"
+    fi
+    INSTALL_PROFILE="$stored"
+    EXISTING_INSTALL=true
+}
+
+detect_existing_stack() {
+    local found=() package path
+    [[ -f "${CONF_DIR}/boron.toml" ]] && { EXISTING_INSTALL=true; ok "existing Boron configuration detected"; return 0; }
+    for package in nginx apache2 lighttpd postfix exim4 bind9 pdns-server mysql-server mariadb-server; do
+        dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' && found+=("package ${package}")
+    done
+    for path in /etc/nginx/nginx.conf /etc/apache2/apache2.conf /etc/exim4/update-exim4.conf.conf /etc/bind/named.conf; do
+        [[ -e "$path" ]] && found+=("configuration ${path}")
+    done
+    if [[ ${#found[@]} -eq 0 ]]; then
+        ok "no conflicting web, mail, DNS, or database installation detected"
+    else
+        printf '  %s Existing hosting software:\n' "${C_YELLOW}[warn]${C_RESET}"
+        printf '    - %s\n' "${found[@]}"
+        $FORCE || die "existing hosting software was detected; remove it or rerun with --force after reviewing how it will be adopted"
+        warn "continuing with detected software because --force was supplied"
     fi
 }
 
@@ -268,6 +332,7 @@ preflight() {
     check_os
     check_ram
     check_disk
+    detect_existing_stack
     check_ports
 }
 
@@ -276,15 +341,16 @@ preflight() {
 readonly BASE_PKGS=(
     python3 python3-venv python3-pip python3-dev build-essential libssl-dev
     curl wget jq sqlite3 ufw acl quota quotatool git ca-certificates
-    rsync zstd openssl cron logrotate apache2-utils geoipupdate apparmor bubblewrap msmtp
-    nodejs npm composer sudo php-cli php-mysql
+    rsync zstd openssl cron logrotate apache2-utils apparmor bubblewrap sudo php-cli php-mysql
 )
-readonly STACK_PKGS=(
-    mariadb-server postfix dovecot-core dovecot-imapd dovecot-lmtpd
+readonly CORE_STACK_PKGS=(certbot)
+readonly DATABASE_STACK_PKGS=(mariadb-server)
+readonly STANDARD_STACK_PKGS=(
+    postfix dovecot-core dovecot-imapd dovecot-lmtpd
     dovecot-mysql dovecot-sieve postfix-mysql pdns-server pdns-backend-sqlite3
-    pure-ftpd certbot rclone restic spamassassin fail2ban redis-server clamav clamav-freshclam
-    opendkim opendkim-tools
+    pure-ftpd spamassassin opendkim opendkim-tools msmtp fail2ban
 )
+readonly FULL_STACK_PKGS=(rclone restic redis-server clamav clamav-freshclam geoipupdate nodejs npm composer)
 readonly ROUNDCUBE_PKGS=(
     lsphp83-imap
 )
@@ -306,7 +372,7 @@ readonly IMAPSYNC_VERSION="2.229"
 readonly IMAPSYNC_URL="https://github.com/imapsync/imapsync/archive/refs/tags/imapsync-2.229.tar.gz"
 readonly IMAPSYNC_SHA256="2199899732d5563e88fa5cc75d332dba69ae3e416a84e0edbb45ca3832e0a127"
 readonly OLS_PKGS=(
-    openlitespeed ols-modsecurity modsecurity-crs
+    openlitespeed
     lsphp81 lsphp81-common lsphp81-curl lsphp81-mysql lsphp81-opcache lsphp81-intl lsphp81-redis lsphp81-sqlite3 lsphp81-imagick
     lsphp82 lsphp82-common lsphp82-curl lsphp82-mysql lsphp82-opcache lsphp82-intl lsphp82-redis lsphp82-sqlite3 lsphp82-imagick
     lsphp83 lsphp83-common lsphp83-curl lsphp83-mysql lsphp83-opcache lsphp83-intl lsphp83-redis lsphp83-sqlite3 lsphp83-imagick
@@ -317,6 +383,7 @@ readonly OLS_PKGS=(
     # LiteSpeed publishes a compatible module; 8.1-8.4 keep their modules.
     lsphp85 lsphp85-common lsphp85-curl lsphp85-mysql lsphp85-intl lsphp85-redis lsphp85-sqlite3 lsphp85-imagick
 )
+readonly OLS_WAF_PKGS=(ols-modsecurity modsecurity-crs)
 readonly NODE_RUNTIME_VERSIONS=(18.20.8 20.19.6 22.16.0)
 
 # apt-get's output is normally redirected to INSTALL_LOG so a failed install
@@ -327,6 +394,14 @@ readonly NODE_RUNTIME_VERSIONS=(18.20.8 20.19.6 22.16.0)
 apt_run() {
     local description="$1"
     shift
+    # Ubuntu's apt-daily timer can legitimately start between two installer
+    # package stages.  Let apt wait for its own locks instead of killing the
+    # background job or failing an otherwise safe, idempotent install.  This
+    # is bounded so a genuinely stuck package manager still produces the
+    # captured, actionable failure below.
+    if [[ "${1##*/}" == "apt-get" ]]; then
+        set -- "$@" -o "DPkg::Lock::Timeout=${APT_LOCK_WAIT_SECONDS}"
+    fi
     if $DRY_RUN; then
         printf '  %s' "${C_YELLOW}[dry]${C_RESET}"
         printf ' %q' "$@"
@@ -370,7 +445,11 @@ install_base_packages() {
     if ! apt_run "base package installation" apt-get install -y "${BASE_PKGS[@]}"; then
         die "base package installation aborted; see ${INSTALL_LOG}"
     fi
-    ok "base packages installed (python, node, composer, tooling)"
+    ok "base packages installed (Python and system tooling)"
+}
+
+install_wordpress_tools() {
+    info "Installing WordPress tooling"
     # Pin and verify the release before making it executable.
     local wp_version=2.12.0
     local wp_sha256=ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c
@@ -378,6 +457,10 @@ install_base_packages() {
         skip "verified wp-cli already installed"
     else
         local wp_download
+        if $DRY_RUN; then
+            printf '  %s download and verify WP-CLI %s, then install /usr/local/bin/wp-cli.phar\n' "${C_YELLOW}[dry]${C_RESET}" "$wp_version"
+            return 0
+        fi
         wp_download=$(mktemp)
         curl -fsSL --retry 3 -o "$wp_download" "https://github.com/wp-cli/wp-cli/releases/download/v${wp_version}/wp-cli-${wp_version}.phar" || { rm -f "$wp_download"; die "WP-CLI download failed"; }
         [[ "$(sha256sum "$wp_download" | cut -d ' ' -f1)" == "$wp_sha256" ]] || { rm -f "$wp_download"; die "WP-CLI checksum mismatch"; }
@@ -385,7 +468,6 @@ install_base_packages() {
         rm -f "$wp_download"
         ok "verified wp-cli installed"
     fi
-
 }
 
 # OpenLiteSpeed's namespace directive is enabled in the Boron-generated
@@ -409,8 +491,8 @@ setup_ols_namespace() {
 
     # Bubblewrapped PHP cannot use the native namespace hostexec escape for
     # Postfix's sendmail binary. Give it a narrow sendmail-compatible client
-    # which submits over loopback (the Bubblewrap profile shares networking)
-    # without exposing Postfix configuration, queues, or privileged sockets.
+    # which submits through an identity-bound Unix socket without exposing
+    # Postfix configuration, queues, or privileged service sockets.
     write_file /etc/boron/msmtprc 0644 <<EOF
 defaults
 auth off
@@ -420,38 +502,16 @@ syslog off
 account default
 host 127.0.0.1
 port 25
+socket /run/boron-mail-submit.sock
 auto_from on
 maildomain ${PANEL_DOMAIN:-localhost}
 EOF
 
-    write_file /usr/local/lsws/conf/nsconf.conf 0644 <<'EOF'
-$HOMEDIR/tmp /tmp,tmp
-/usr,ro-bind
-/lib,ro-bind
-/lib64,ro-bind-try
-/bin,ro-bind
-/sbin,ro-bind
-/var,dir
-/proc,proc
-../tmp var/tmp,symlink
-/dev,dev
-/etc/localtime,ro-bind-try
-/etc/ld.so.cache,ro-bind-try
-/etc/resolv.conf,ro-bind-try
-/etc/ssl,ro-bind-try
-/etc/pki,ro-bind-try
-$HOMEDIR,bind-try
-/run/mysqld/mysqld.sock,bind-try
-/run/user/$UID,bind-try
-/var/lib/php/sessions,bind-try
-/usr/local/lsws/tmp/lshttpd,bind-try
-/etc/roundcube,ro-bind-try
-/etc/phpmyadmin,ro-bind-try
-/var/lib/phpmyadmin,bind-try
-/var/lib/boron-pma-tokens,bind-try
-$PASSWD,nobody,mysql
-$GROUP,nogroup,mysql
-EOF
+    # OpenLiteSpeed recursively assigns its editable conf/ tree to WebAdmin
+    # at every start. lscgid correctly rejects a namespace policy from that
+    # tree, so keep Boron's policy in the separate root-owned lsns tree.
+    run install -o root -g root -m 0644 "$REPO_ROOT/deploy/ols-nsconf.conf" \
+        /usr/local/lsws/lsns/conf/boron-nsconf.conf
 
     if $DRY_RUN || [[ ! -e /usr/local/lsws/lsns/conf/lsns.conf ]]; then
         write_file /usr/local/lsws/lsns/conf/lsns.conf 0644 <<'EOF'
@@ -506,7 +566,9 @@ EOF
         fi
         ok "LiteSpeed signed apt repo added"
     fi
-    if ! apt_run "OpenLiteSpeed and lsphp package installation" apt-get install -y "${OLS_PKGS[@]}"; then
+    local packages=("${OLS_PKGS[@]}")
+    profile_has waf && packages+=("${OLS_WAF_PKGS[@]}")
+    if ! apt_run "OpenLiteSpeed and lsphp package installation" apt-get install -y "${packages[@]}"; then
         die "OpenLiteSpeed and lsphp installation aborted; see ${INSTALL_LOG}"
     fi
     # Must precede the first lshttpd start: httpd_config.conf contains the
@@ -530,11 +592,17 @@ EOF
 }
 
 install_stack_packages() {
-    info "Installing the hosting stack (mail/DNS/FTP/SSL/security)"
-    # Postfix must not launch its interactive config screen.
-    run_sh "echo 'postfix postfix/main_mailer_type select Internet Site' | debconf-set-selections"
-    run_sh "echo \"postfix postfix/mailname string \$(hostname -f)\" | debconf-set-selections"
-    if ! apt_run "hosting stack package installation" apt-get install -y "${STACK_PKGS[@]}"; then
+    info "Installing the ${INSTALL_PROFILE} hosting stack"
+    local packages=("${CORE_STACK_PKGS[@]}")
+    profile_has database && packages+=("${DATABASE_STACK_PKGS[@]}")
+    if profile_has mail; then
+        packages+=("${STANDARD_STACK_PKGS[@]}")
+        # Postfix must not launch its interactive config screen.
+        run_sh "echo 'postfix postfix/main_mailer_type select Internet Site' | debconf-set-selections"
+        run_sh "echo \"postfix postfix/mailname string \$(hostname -f)\" | debconf-set-selections"
+    fi
+    profile_has backups && packages+=("${FULL_STACK_PKGS[@]}")
+    if ! apt_run "hosting stack package installation" apt-get install -y "${packages[@]}"; then
         die "hosting stack installation aborted; see ${INSTALL_LOG}"
     fi
     # The bind backend is pulled in as a pdns dependency but unused here.
@@ -544,17 +612,15 @@ install_stack_packages() {
     ok "hosting stack installed"
 }
 
-install_node_runtimes() {
-    info "Installing Boron Node.js runtimes (18, 20, 22)"
-    local version major
-    for version in "${NODE_RUNTIME_VERSIONS[@]}"; do
-        major="${version%%.*}"
-        if [[ -x "/opt/boron-nodejs/${major}/bin/node" ]] && \
-            [[ "$("/opt/boron-nodejs/${major}/bin/node" --version 2>/dev/null || true)" == "v${version}" ]]; then
-            skip "Node.js ${version} already installed"
-            continue
-        fi
-        run_sh "set -euo pipefail
+install_node_runtime() {
+    local version="$1" major
+    major="${version%%.*}"
+    if [[ -x "/opt/boron-nodejs/${major}/bin/node" ]] && \
+        [[ "$("/opt/boron-nodejs/${major}/bin/node" --version 2>/dev/null || true)" == "v${version}" ]]; then
+        skip "Node.js ${version} already installed"
+        return 0
+    fi
+    run_sh "set -euo pipefail
 node_version='v${version}'
 node_archive=\"node-\${node_version}-linux-x64.tar.xz\"
 node_tmp=\$(mktemp -d)
@@ -566,7 +632,26 @@ curl -fsSLo \"\$node_tmp/\$node_archive\" \"https://nodejs.org/dist/\${node_vers
 printf '%s  %s\\n' \"\$expected\" \"\$node_tmp/\$node_archive\" | sha256sum -c -
 install -d -m 0755 '/opt/boron-nodejs/${major}'
 tar -xJf \"\$node_tmp/\$node_archive\" -C '/opt/boron-nodejs/${major}' --strip-components=1"
-        ok "Node.js ${version} installed at /opt/boron-nodejs/${major}"
+    ok "Node.js ${version} installed at /opt/boron-nodejs/${major}"
+}
+
+install_frontend_build_runtime() {
+    info "Installing frontend build runtime (Node.js 20)"
+    local version
+    for version in "${NODE_RUNTIME_VERSIONS[@]}"; do
+        if [[ "${version%%.*}" == "20" ]]; then
+            install_node_runtime "$version"
+            return 0
+        fi
+    done
+    die "NODE_RUNTIME_VERSIONS does not define the required Node.js 20 build runtime"
+}
+
+install_node_runtimes() {
+    info "Installing Boron Node.js runtimes (18, 20, 22)"
+    local version
+    for version in "${NODE_RUNTIME_VERSIONS[@]}"; do
+        install_node_runtime "$version"
     done
 }
 
@@ -743,7 +828,13 @@ setup_config() {
         WEBMAIL_DOMAIN="webmail.${PANEL_DOMAIN}"
     fi
 
-    write_file "${CONF_DIR}/boron.toml" 640 "root:boron-api" <<EOF
+    if [[ -f "${CONF_DIR}/boron.toml" ]]; then
+        skip "existing boron.toml retained (profile and host settings are changed from Server Setup)"
+    else
+        write_file "${CONF_DIR}/boron.toml" 640 "root:boron-api" <<EOF
+config_schema_version = 1
+install_profile = "${INSTALL_PROFILE}"
+enabled_components = [$(case "$INSTALL_PROFILE" in minimal) printf '"php", "ssl", "web"';; standard) printf '"database", "dns", "fail2ban", "ftp", "mail", "php", "ssl", "web"';; full) printf '"apps", "backups", "database", "dns", "fail2ban", "ftp", "geoip", "mail", "malware", "php", "redis", "ssl", "waf", "web", "wordpress"';; esac)]
 server_public_ip = "${SERVER_IP}"
 letsencrypt_email = "${LE_EMAIL}"
 panel_hostname = "${PANEL_DOMAIN}"
@@ -752,7 +843,8 @@ webmail_url = "${WEBMAIL_DOMAIN:+https://${WEBMAIL_DOMAIN}}"
 mail_hostname = "${WEBMAIL_DOMAIN}"
 webmail_docroot = "/var/www/roundcube/public_html"
 EOF
-    ok "boron.toml written"
+        ok "boron.toml written"
+    fi
 
     # SESSION_SECRET: the one secret the API needs; its own 0640 root:api file.
     if [[ -f "${CONF_DIR}/api-secrets.env" ]] && grep -q '^SESSION_SECRET=' "${CONF_DIR}/api-secrets.env"; then
@@ -763,6 +855,16 @@ EOF
         run_sh "printf 'SESSION_SECRET=%s\n' \"\$(openssl rand -hex 32)\" >> '${CONF_DIR}/api-secrets.env'"
         ok "SESSION_SECRET generated"
     fi
+}
+
+apply_initial_resource_tuning() {
+    if $EXISTING_INSTALL; then
+        skip "resource tuning retained on existing server; review a diff from Server Setup before applying"
+        return 0
+    fi
+    info "Applying resource-aware defaults for this fresh server"
+    run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from daemon.resource_tuning import apply; result=apply({'confirm': True}); print('RAM/CPU tuning:', result['recommendation'])\""
+    ok "RAM/CPU-aware MariaDB, OpenLiteSpeed, PHP, and Redis defaults applied"
 }
 
 setup_mariadb() {
@@ -932,7 +1034,7 @@ setup_ssl_bootstrap() {
     if [[ -f "${CONF_DIR}/ssl/api/panel.crt" ]]; then
         skip "panel TLS cert exists"
     else
-        run_sh "openssl req -x509 -nodes -newkey rsa:2048 -keyout '${CONF_DIR}/ssl/api/panel.key' -out '${CONF_DIR}/ssl/api/panel.crt' -days 3650 -subj '/CN=${PANEL_DOMAIN:-boron-panel}'"
+        run_sh "openssl req -x509 -nodes -newkey rsa:2048 -keyout '${CONF_DIR}/ssl/api/panel.key' -out '${CONF_DIR}/ssl/api/panel.crt' -days 3650 -subj '/CN=${PANEL_DOMAIN:-boron-panel}' -addext 'subjectAltName=DNS:${PANEL_DOMAIN:-boron-panel}'"
         run_sh "chown boron-api:boron-api '${CONF_DIR}/ssl/api/panel.key' '${CONF_DIR}/ssl/api/panel.crt'"
         run chmod 600 "${CONF_DIR}/ssl/api/panel.key"
         ok "panel cert generated"
@@ -982,6 +1084,13 @@ hosts = 127.0.0.1
 dbname = boron_mail
 query = SELECT CONCAT(d.domain, '/', u.local_part, '/') FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%s' AND u.active=1 AND d.active=1
 EOF
+    cat >/etc/postfix/boron/mysql-sender-login.cf <<EOF
+user = boron_mailro
+password = ${mailro_pass}
+hosts = 127.0.0.1
+dbname = boron_mail
+query = SELECT CONCAT(u.local_part, '@', d.domain) FROM mail_user u JOIN mail_domain d ON d.id=u.domain_id WHERE CONCAT(u.local_part, '@', d.domain)='%s' AND u.active=1 AND d.active=1
+EOF
     cat >/etc/postfix/boron/mysql-virtual-forwards.cf <<EOF
 user = boron_mailro
 password = ${mailro_pass}
@@ -1009,13 +1118,20 @@ EOF
     postconf -e "smtpd_tls_auth_only = yes"
     postconf -e "milter_default_action = accept"
     postconf -e "milter_protocol = 6"
-    postconf -e "smtpd_milters = unix:opendkim/opendkim.sock"
-    postconf -e "non_smtpd_milters = unix:opendkim/opendkim.sock"
+    postconf -e "smtpd_milters ="
+    postconf -e "non_smtpd_milters ="
+    postconf -e "boron-sign_destination_recipient_limit = 1"
     postconf -Me 'submission/inet=submission inet n - y - - smtpd'
     postconf -P 'submission/inet/syslog_name=postfix/submission'
     postconf -P 'submission/inet/smtpd_tls_security_level=encrypt'
     postconf -P 'submission/inet/smtpd_sasl_auth_enable=yes'
     postconf -P 'submission/inet/smtpd_client_restrictions=permit_sasl_authenticated,reject'
+    postconf -P 'submission/inet/smtpd_sender_login_maps=mysql:/etc/postfix/boron/mysql-sender-login.cf'
+    postconf -P 'submission/inet/smtpd_sender_restrictions=reject_authenticated_sender_login_mismatch'
+    postconf -P 'submission/inet/content_filter=boron-sign:'
+    postconf -P 'submission/inet/smtpd_relay_restrictions=permit_sasl_authenticated,reject'
+    postconf -P 'smtp/inet/smtpd_sasl_auth_enable=no'
+    postconf -Me "boron-sign/unix=boron-sign unix - n n - 4 pipe flags=Rq user=opendkim argv=/opt/boron/.venv/bin/python /opt/boron/scripts/mail_sign_filter.py --sender \${sender} --recipient \${recipient}"
 
     cat >/etc/dovecot/dovecot-sql.conf.ext <<EOF
 driver = mysql
@@ -1085,7 +1201,7 @@ setup_webmail() {
         return 0
     fi
 
-    local db_pass des_key schema_file archive extract_dir
+    local db_pass des_key schema_file archive extract_dir config_tmp
     if [[ ! -f /var/www/roundcube/.boron-version ]] || [[ "$(< /var/www/roundcube/.boron-version)" != "$ROUNDCUBE_VERSION" ]]; then
         archive="$(mktemp)"
         extract_dir="$(mktemp -d)"
@@ -1119,7 +1235,10 @@ SQL
     fi
 
     des_key="$(openssl rand -base64 24 | tr -d '\n')"
-    cat >/var/www/roundcube/config/config.inc.php <<EOF
+    # mktemp creates the inode 0600 before any credential bytes are written.
+    # Publish it atomically after the complete file is in place.
+    config_tmp="$(mktemp /var/www/roundcube/config/.config.inc.php.XXXXXX)"
+    cat >"$config_tmp" <<EOF
 <?php
 \$config = [];
 \$config['db_dsnw'] = 'mysql://roundcube:${db_pass}@127.0.0.1/roundcube';
@@ -1144,10 +1263,16 @@ EOF
     install -d -m 0755 /var/www/roundcube/plugins/boron_sso
     install -m 0644 "${DEST}/integrations/roundcube/boron_sso/boron_sso.php" /var/www/roundcube/plugins/boron_sso/boron_sso.php
     install -m 0644 "${DEST}/integrations/roundcube/boron_sso/package.xml" /var/www/roundcube/plugins/boron_sso/package.xml
-    chown -R root:root /var/www/roundcube
-    find /var/www/roundcube -type d -exec chmod 0755 {} +
-    find /var/www/roundcube -type f -exec chmod 0644 {} +
+    chown root:root /var/www/roundcube
+    find /var/www/roundcube -type d -exec chown root:root {} + -exec chmod 0755 {} +
+    find /var/www/roundcube -type f \
+        ! -path '/var/www/roundcube/config/config.inc.php' \
+        ! -name '.config.inc.php.*' \
+        -exec chown root:root {} + -exec chmod 0644 {} +
     find /var/www/roundcube/bin -type f -name '*.sh' -exec chmod 0755 {} +
+    chown root:www-data "$config_tmp"
+    chmod 0640 "$config_tmp"
+    mv -f "$config_tmp" /var/www/roundcube/config/config.inc.php
     chown root:www-data /var/www/roundcube/config/config.inc.php
     chmod 0640 /var/www/roundcube/config/config.inc.php
     chown www-data:www-data /var/www/roundcube/public_html
@@ -1166,8 +1291,13 @@ install_systemd_units() {
     run install -m 644 "${DEST}/deploy/boron-provisiond.service" /etc/systemd/system/
     run install -m 644 "${DEST}/deploy/boron-api.service" /etc/systemd/system/
     run install -m 644 "${DEST}/deploy/boron-filebrowser@.service" /etc/systemd/system/
+    if profile_has mail; then
+        run install -m 644 "${DEST}/deploy/boron-mail-submit.socket" /etc/systemd/system/
+        run install -m 644 "${DEST}/deploy/boron-mail-submit@.service" /etc/systemd/system/
+    fi
     run systemctl daemon-reload
     run systemctl enable boron-provisiond
+    profile_has mail && run systemctl enable --now boron-mail-submit.socket
     ok "systemd units installed + provisiond enabled"
 }
 
@@ -1178,7 +1308,7 @@ install_cron_and_logrotate() {
     # Run A feature 5: service health monitoring, every 5 min.
     run install -m 644 "${DEST}/deploy/boron-monitoring.cron" /etc/cron.d/boron-monitoring
     # Cloudflare edge-range + zone-activation polls.
-    run install -m 644 "${DEST}/deploy/boron-cloudflare.cron" /etc/cron.d/boron-cloudflare
+    profile_has dns && run install -m 644 "${DEST}/deploy/boron-cloudflare.cron" /etc/cron.d/boron-cloudflare
     # Panel update system: daily release check + admin email + old-version pruning.
     run install -m 644 "${DEST}/deploy/boron-update.cron" /etc/cron.d/boron-update
     # Core infrastructure crons (health, usage, backups, ssl expiry, pma
@@ -1222,7 +1352,7 @@ start_services() {
     # The package starts freshclam during installation but leaves its unit
     # disabled on Ubuntu 24.04. Without explicit enablement the malware
     # scanner keeps using installation-day signatures after the first reboot.
-    run systemctl enable --now clamav-freshclam
+    profile_has malware && run systemctl enable --now clamav-freshclam
     ok "provisiond + api + FileBrowser + ClamAV updates started; OLS baseline applied"
 }
 
@@ -1239,6 +1369,10 @@ create_admin() {
         printf '  %s prompt for admin username/password, create panel admin\n' "${C_YELLOW}[dry]${C_RESET}"
         return 0
     fi
+    if $EXISTING_INSTALL; then
+        skip "existing administrator state retained"
+        return 0
+    fi
     # Initial admin creation is a root-only local command. The API service
     # socket cannot mint an administrator without a panel credential.
     if [[ -n "$ADMIN_PASSWORD" ]]; then
@@ -1246,38 +1380,88 @@ create_admin() {
                 "${DEST}/scripts/create_admin.py" --username "$ADMIN_USER" --password-stdin; then
             ok "admin '${ADMIN_USER}' created"
         else
-            warn "admin creation returned non-zero -- create it manually as root"
+            die "initial administrator creation failed; the installer cannot complete without a working login"
         fi
     elif "${VENV}/bin/python" "${DEST}/scripts/create_admin.py" --username "$ADMIN_USER"; then
         ok "admin '${ADMIN_USER}' created"
     else
-        warn "admin creation returned non-zero (may already exist) -- create manually as root: '${VENV}/bin/python' '${DEST}/scripts/create_admin.py' --username '${ADMIN_USER}'"
+        die "initial administrator creation failed; the installer cannot complete without a working login"
     fi
 }
 
 # --- 8. firewall + fail2ban --------------------------------------------------
 
+effective_ssh_ports() {
+    # Ask sshd for its fully expanded configuration so Include files and
+    # multiple Port directives are honoured.  Also retain the port of the
+    # connection running the installer: it is the one management path we
+    # know is live even if sshd -T cannot parse a temporarily broken config.
+    local output="" key="" port="" rest="" ssh_connection="${SSH_CONNECTION:-}"
+    local -A ssh_port_map=()
+    if command -v sshd >/dev/null 2>&1; then
+        output="$(sshd -T 2>/dev/null || true)"
+        while read -r key port rest; do
+            if [[ "$key" == "port" && "$port" =~ ^[0-9]+$ ]] \
+                    && ((port >= 1 && port <= 65535)); then
+                ssh_port_map["$port"]=1
+            fi
+        done <<<"$output"
+    fi
+    port="${ssh_connection##* }"
+    if [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)); then
+        ssh_port_map["$port"]=1
+    fi
+    # Ubuntu's default listener is 22.  Opening this harmless fallback is
+    # safer than completing an unattended install with no recoverable SSH
+    # rule when neither a live connection nor a valid sshd config is visible.
+    ((${#ssh_port_map[@]} > 0)) || ssh_port_map[22]=1
+    printf '%s\n' "${!ssh_port_map[@]}" | sort -n
+}
+
+allow_ssh_firewall_rules() {
+    local ssh_port
+    while read -r ssh_port; do
+        [[ -n "$ssh_port" ]] || continue
+        # `ufw allow` is idempotent: existing policy is retained and a
+        # duplicate rule is not added.  Never reset UFW during a rerun.
+        run ufw allow "${ssh_port}/tcp"
+    done < <(effective_ssh_ports)
+}
+
 setup_firewall() {
     info "Configuring UFW + fail2ban"
-    run ufw --force reset
+    if $EXISTING_INSTALL; then
+        allow_ssh_firewall_rules
+        skip "existing UFW rules retained; effective SSH listener access reconciled"
+        profile_has fail2ban && run systemctl enable --now fail2ban
+        return 0
+    fi
     run ufw default deny incoming
     run ufw default allow outgoing
     # Always allow SSH before UFW is enabled so a remote installation cannot
     # lock its operator out. Keep this explicit instead of relying on a
     # provider-specific default policy.
-    run ufw allow 22/tcp
+    allow_ssh_firewall_rules
     local p
-    for p in 21 25 53 80 110 143 443 587 993 995 2222 7080; do
+    local ports=(80 443 2222 7080)
+    profile_has mail && ports+=(25 110 143 587 993 995)
+    profile_has dns && ports+=(53)
+    profile_has ftp && ports+=(21)
+    for p in "${ports[@]}"; do
         run ufw allow "${p}/tcp"
     done
-    run ufw allow 53/udp
+    profile_has dns && run ufw allow 53/udp
     # Must exactly match Pure-FTPd's PassivePortRange below.
-    run ufw allow 30000:30100/tcp
+    profile_has ftp && run ufw allow 30000:30100/tcp
     run ufw --force enable
     ok "UFW enabled (SSH/web/mail/DNS/FTP/panel allowed)"
 
-    run systemctl enable --now fail2ban
-    ok "fail2ban service enabled; Boron jails are configured after daemon startup"
+    if profile_has fail2ban; then
+        run systemctl enable --now fail2ban
+        ok "fail2ban service enabled; Boron jails are configured after daemon startup"
+    else
+        skip "fail2ban is not part of the ${INSTALL_PROFILE} profile"
+    fi
 }
 
 # --- 8.5 Pure-FTPd (TLS required, chroot + PureDB auth + passive port range) -
@@ -1462,6 +1646,41 @@ prompt_inputs() {
     fi
 }
 
+validate_admin_bootstrap_input() {
+    $DRY_RUN && return 0
+    $EXISTING_INSTALL && return 0
+    if [[ -z "$ADMIN_PASSWORD" ]]; then
+        if [[ "$NONINTERACTIVE" == "true" || "$NONINTERACTIVE" == "1" ]]; then
+            die "FH_ADMIN_PASSWORD is required for a non-interactive fresh install"
+        fi
+        # Interactive installs read and validate the credential in the
+        # root-only create_admin helper near the end of the run.
+        return 0
+    fi
+
+    # Use the same validator as every panel password operation.  It is
+    # stdlib-only and available from the source tree before packages are
+    # changed.  The credential travels through one process environment and
+    # is never placed in argv, output, or the installer log.
+    if ! BORON_BOOTSTRAP_PASSWORD="$ADMIN_PASSWORD" PYTHONPATH="$REPO_ROOT" \
+            python3 - <<'PY'
+import os
+import sys
+
+from shared.validation import ValidationError, validate_password_strength
+
+try:
+    validate_password_strength(os.environ["BORON_BOOTSTRAP_PASSWORD"])
+except ValidationError as exc:
+    print(f"Invalid administrator password: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+    then
+        die "administrator password validation failed before installation"
+    fi
+    ok "initial administrator credential validated"
+}
+
 # --- uninstall ---------------------------------------------------------------
 
 uninstall() {
@@ -1502,13 +1721,15 @@ Boron Panel installer
 
 Usage: sudo bash scripts/install.sh [OPTIONS]
 
+  --profile NAME  Install minimal, standard, or full (default: full).
+  --force         Continue on unsupported OS or detected software/port conflicts.
   --dry-run      Print every step without changing anything.
   --uninstall    Remove Boron services, code and config (keeps user data).
   -h, --help     Show this help.
 
 Non-interactive install via env vars:
   FH_PANEL_DOMAIN, FH_LE_EMAIL, FH_ADMIN_USER, FH_ADMIN_PASSWORD,
-  FH_SERVER_IP, FH_WEBMAIL_DOMAIN, FH_NONINTERACTIVE=1,
+  FH_SERVER_IP, FH_WEBMAIL_DOMAIN, FH_NONINTERACTIVE=1, FH_INSTALL_PROFILE,
   FH_MAXMIND_LICENSE_KEY (optional,
   see README.md "GeoLite2 setup")
 EOF
@@ -1519,6 +1740,8 @@ parse_args() {
         case "$1" in
             --dry-run)   DRY_RUN=true ;;
             --uninstall) UNINSTALL=true ;;
+            --force)     FORCE=true ;;
+            --profile)   shift; [[ $# -gt 0 ]] || die "--profile requires a value"; INSTALL_PROFILE="$1"; PROFILE_EXPLICIT=true ;;
             -h|--help)   usage; exit 0 ;;
             *)           die "unknown option: $1 (try --help)" ;;
         esac
@@ -1528,6 +1751,11 @@ parse_args() {
 
 main() {
     parse_args "$@"
+    # Validate the requested value before comparing it with a stored profile,
+    # so an invalid CLI argument receives the canonical profile error.
+    configure_profile
+    load_existing_profile
+    configure_profile
 
     # NB: this line previously used ${DRY_RUN:+...}, which expands whenever
     # DRY_RUN is non-empty -- and it's always the non-empty string
@@ -1543,33 +1771,40 @@ main() {
 
     preflight
     prompt_inputs
+    validate_admin_bootstrap_input
 
     apt_update
     install_base_packages
     run bash "${REPO_ROOT}/scripts/install_time_sync.sh"
     install_openlitespeed
     install_stack_packages
+    profile_has wordpress && install_wordpress_tools
     setup_quota
     setup_system_users
-    install_node_runtimes
+    # Every profile builds the React bundle during deploy.  Application
+    # runtimes remain a full-profile capability, but Node 20 is therefore an
+    # unconditional installer build dependency.
+    install_frontend_build_runtime
+    profile_has apps && install_node_runtimes
     deploy_app
     install_filebrowser
-    install_imapsync
+    profile_has mail && install_imapsync
     setup_config
-    setup_mariadb
-    setup_powerdns
+    profile_has database && setup_mariadb
+    profile_has dns && setup_powerdns
     setup_ssl_bootstrap
-    setup_mail_services
+    profile_has mail && setup_mail_services
     install_systemd_units
     install_cron_and_logrotate
     setup_firewall
-    setup_pureftpd
+    profile_has ftp && setup_pureftpd
     setup_php_hardening
     start_services
-    setup_webmail
-    bootstrap_security_services
+    apply_initial_resource_tuning
+    profile_has mail && setup_webmail
+    profile_has fail2ban && bootstrap_security_services
     create_admin
-    setup_geoip
+    profile_has geoip && setup_geoip
     seed_server_setup_wizard
 
     summary

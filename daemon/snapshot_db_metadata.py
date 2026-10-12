@@ -8,7 +8,7 @@ import json
 import os
 import re
 
-from daemon import mariadb
+from daemon import db_governor, mariadb
 from daemon.snapshot_databases import _database_name
 from shared.db import write_session
 from shared.models import Account, DatabaseGrant, DatabaseUser, DatabaseUserGrant
@@ -170,6 +170,12 @@ def recreate_missing(username, entry):
     """
     entry = validate_entry(username, entry)
     name, user = entry['name'], entry['user']
+    mariadb.require_ungranted_database_name(name)
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise ValidationError('Database recovery account no longer exists')
+        account_id = account.id
     connection = mariadb._connect()
     created_database = created_user = False
     try:
@@ -184,6 +190,7 @@ def recreate_missing(username, entry):
             created_database = True
             cursor.execute(f"CREATE USER '{user}'@'localhost' IDENTIFIED BY PASSWORD %s", (entry['password_hash'],))
             created_user = True
+        db_governor.apply_new_user(account_id, user, 'localhost')
         mariadb.grant_exact_database(name, user)
     except Exception:
         # Compensate only resources created by this call, never pre-existing data.
@@ -245,61 +252,73 @@ def restore_access(username, database_names, metadata):
     users_by_key = {(item['user'], item['host']): item for item in getattr(metadata, 'users', [])}
     grants = [item for item in getattr(metadata, 'grants', []) if item['database'] in selected]
     needed = {(item['user'], item['host']) for item in grants}
-    with write_session() as session:
-        account = session.scalar(select(Account).where(Account.username == username))
-        if account is None:
-            raise ValidationError('Database recovery account no longer exists')
-        databases = {}
-        for database in selected:
-            row = session.scalar(select(DatabaseGrant).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == database))
-            if row is None:
-                raise ValidationError('Database registration is missing after reconstruction: ' + database)
-            databases[database] = row
-        existing_rows = {(row.db_user, row.host): row for row in session.scalars(select(DatabaseUser).where(DatabaseUser.account_id == account.id)).all()}
+    created_native = []
+    try:
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == username))
+            if account is None:
+                raise ValidationError('Database recovery account no longer exists')
+            databases = {}
+            for database in selected:
+                row = session.scalar(select(DatabaseGrant).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == database))
+                if row is None:
+                    raise ValidationError('Database registration is missing after reconstruction: ' + database)
+                databases[database] = row
+            existing_rows = {(row.db_user, row.host): row for row in session.scalars(select(DatabaseUser).where(DatabaseUser.account_id == account.id)).all()}
         # Upgraded installations can still have the original one-login-per-
         # database registration without a DatabaseUser compatibility row.  A
         # matching DatabaseGrant is authoritative ownership evidence; expose
         # only that exact localhost login through the new model before applying
         # the saved grants.  Unrelated live MariaDB users remain conflicts.
-        for database in databases.values():
-            key = (database.db_user, 'localhost')
-            if key not in needed or key in existing_rows:
-                continue
-            other = session.scalar(select(DatabaseUser).where(
-                DatabaseUser.db_user == key[0], DatabaseUser.host == key[1],
-                DatabaseUser.account_id != account.id,
-            ))
-            if other:
-                raise ValidationError('A restored database login belongs to another account')
-            row = DatabaseUser(account_id=account.id, db_user=key[0], host=key[1])
-            session.add(row)
-            session.flush()
-            existing_rows[key] = row
-        for key in needed:
-            saved = users_by_key[key]
-            other = session.scalar(select(DatabaseUser).where(DatabaseUser.db_user == key[0], DatabaseUser.host == key[1], DatabaseUser.account_id != account.id))
-            if other:
-                raise ValidationError('A restored database login belongs to another account')
-            if key not in existing_rows:
-                if mariadb.user_exists(*key):
-                    raise ValidationError('An unregistered database login conflicts with recovery metadata: ' + key[0] + '@' + key[1])
-                mariadb.create_db_user_from_hash(saved['user'], saved['password_hash'], saved['host'])
-                row = DatabaseUser(account_id=account.id, db_user=saved['user'], host=saved['host'])
-                session.add(row); session.flush(); existing_rows[key] = row
-            elif not mariadb.user_exists(*key):
-                mariadb.create_db_user_from_hash(saved['user'], saved['password_hash'], saved['host'])
-        for saved in grants:
-            database = databases[saved['database']]
-            user = existing_rows[(saved['user'], saved['host'])]
-            mariadb.grant_database_privileges(database.db_name, user.db_user, user.host,
-                preset=saved['preset'], custom=saved['privileges'])
-            link = session.scalar(select(DatabaseUserGrant).where(DatabaseUserGrant.database_grant_id == database.id,
-                DatabaseUserGrant.database_user_id == user.id))
-            if link is None:
-                link = DatabaseUserGrant(database_grant_id=database.id, database_user_id=user.id)
-                session.add(link)
-            link.privileges = saved['preset']
-            link.privilege_list = ','.join(saved['privileges']) if saved['preset'] == 'custom' else None
+            for database in databases.values():
+                key = (database.db_user, 'localhost')
+                if key not in needed or key in existing_rows:
+                    continue
+                other = session.scalar(select(DatabaseUser).where(
+                    DatabaseUser.db_user == key[0], DatabaseUser.host == key[1],
+                    DatabaseUser.account_id != account.id,
+                ))
+                if other:
+                    raise ValidationError('A restored database login belongs to another account')
+                row = DatabaseUser(account_id=account.id, db_user=key[0], host=key[1])
+                session.add(row)
+                session.flush()
+                existing_rows[key] = row
+            for key in needed:
+                saved = users_by_key[key]
+                other = session.scalar(select(DatabaseUser).where(DatabaseUser.db_user == key[0], DatabaseUser.host == key[1], DatabaseUser.account_id != account.id))
+                if other:
+                    raise ValidationError('A restored database login belongs to another account')
+                if key not in existing_rows:
+                    if mariadb.user_exists(*key):
+                        raise ValidationError('An unregistered database login conflicts with recovery metadata: ' + key[0] + '@' + key[1])
+                    mariadb.create_db_user_from_hash(saved['user'], saved['password_hash'], saved['host'])
+                    created_native.append(key)
+                    row = DatabaseUser(account_id=account.id, db_user=saved['user'], host=saved['host'])
+                    session.add(row); session.flush(); existing_rows[key] = row
+                elif not mariadb.user_exists(*key):
+                    mariadb.create_db_user_from_hash(saved['user'], saved['password_hash'], saved['host'])
+                    created_native.append(key)
+                db_governor.apply_new_user_in_session(session, account.id, key[0], key[1])
+            for saved in grants:
+                database = databases[saved['database']]
+                user = existing_rows[(saved['user'], saved['host'])]
+                mariadb.grant_database_privileges(database.db_name, user.db_user, user.host,
+                    preset=saved['preset'], custom=saved['privileges'])
+                link = session.scalar(select(DatabaseUserGrant).where(DatabaseUserGrant.database_grant_id == database.id,
+                    DatabaseUserGrant.database_user_id == user.id))
+                if link is None:
+                    link = DatabaseUserGrant(database_grant_id=database.id, database_user_id=user.id)
+                    session.add(link)
+                link.privileges = saved['preset']
+                link.privilege_list = ','.join(saved['privileges']) if saved['preset'] == 'custom' else None
+    except Exception:
+        for user, host in reversed(created_native):
+            try:
+                mariadb.drop_db_user(user, host)
+            except Exception:
+                pass
+        raise
     return {'users': len(needed), 'grants': len(grants)}
 
 
@@ -329,10 +348,17 @@ def repair_missing(username, entry):
     create/create-user/grant sequence retryable without adopting another login.
     """
     entry = validate_entry(username, entry)
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise ValidationError('Database recovery account no longer exists')
+        account_id = account.id
     state = resource_state(username, entry)
     if state['login'] and not state['login_matches']:
         raise ValidationError('Surviving database login differs from the recovery metadata')
     name, user = entry['name'], entry['user']
+    if not state['database']:
+        mariadb.require_ungranted_database_name(name)
     connection = mariadb._connect()
     created_database = created_user = False
     try:
@@ -343,6 +369,8 @@ def repair_missing(username, entry):
             if not state['login']:
                 cursor.execute(f"CREATE USER '{user}'@'localhost' IDENTIFIED BY PASSWORD %s", (entry['password_hash'],))
                 created_user = True
+        if created_user:
+            db_governor.apply_new_user(account_id, user, 'localhost')
         mariadb.grant_exact_database(name, user)
     except Exception:
         if created_user:

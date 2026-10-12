@@ -8,7 +8,7 @@ import tomllib
 from sqlalchemy import select
 from daemon import panel_config
 from daemon.configtx import ConfigWriter, StepResult
-from shared.config import CONFIG_PATH, Settings, settings
+from shared.config import CONFIG_PATH, settings, settings_from_mapping
 from shared.db import write_session
 from shared.models import PanelConfigJob, utcnow
 from shared.panel_ports import listener_ports
@@ -100,7 +100,7 @@ def execute(job_id):
 def _recover_running(job):
     """Inspect actual listeners after daemon interruption, then restore if needed."""
     target = Path(CONFIG_PATH)
-    config = Settings(**tomllib.loads(target.read_text()))
+    config = settings_from_mapping(tomllib.loads(target.read_text()), source=str(target))
     actual = config.api_bind_port, config.api_customer_port if config.api_customer_port is not None else config.api_bind_port
     requested = job.admin_port, job.customer_port
     certificate = '/etc/boron/ssl/api/panel.crt'
@@ -113,11 +113,11 @@ def _recover_running(job):
         _finish(job.id, error='Interrupted before saving configuration; no listener change was started.')
         return
     previous = original.read_text()
-    old = Settings(**tomllib.loads(previous))
+    old = settings_from_mapping(tomllib.loads(previous), source=str(original))
     old_ports = old.api_bind_port, old.api_customer_port if old.api_customer_port is not None else old.api_bind_port
     metadata = target.stat()
     def validate(path):
-        Settings(**tomllib.loads(path.read_text()))
+        settings_from_mapping(tomllib.loads(path.read_text()), source=str(path))
         os.chmod(path, metadata.st_mode & 0o777)
         os.chown(path, metadata.st_uid, metadata.st_gid)
         return StepResult(True)

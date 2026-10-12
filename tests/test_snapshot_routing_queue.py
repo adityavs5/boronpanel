@@ -2,6 +2,7 @@ from copy import deepcopy
 import os
 
 import pytest
+from testsupport.host_requirements import chown_or_skip
 
 from daemon import snapshot_restores as restores, snapshot_jobs as jobs, snapshot_routing_worker as worker
 from daemon import snapshot_mail_routing_journal as journal, snapshot_mail_routing_recovery as recovery
@@ -22,9 +23,9 @@ def queue(saved_routing, tmp_path, monkeypatch):
     with write_session() as session:
         session.get(Account, account.id).uid = 2000; session.get(Account, account.id).gid = 2000
     home = tmp_path / 'vmail' / 'alpha.example.test' / 'inbox'; home.mkdir(parents=True)
-    os.chown(home.parent, 150, 150); os.chown(home, 150, 150)
+    chown_or_skip(home.parent, 150, 150); chown_or_skip(home, 150, 150)
     script = home / '.dovecot.sieve'; script.write_bytes(b'# custom before restore\nkeep;\n')
-    os.chown(script, 150, 150); script.chmod(0o600)
+    chown_or_skip(script, 150, 150); script.chmod(0o600)
     monkeypatch.setattr(settings, 'mail_base', str(home.parent.parent))
     monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(tmp_path / 'guards'))
     monkeypatch.setattr(guard_config, 'verify', lambda: None)

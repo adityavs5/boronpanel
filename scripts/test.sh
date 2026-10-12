@@ -34,7 +34,8 @@ mode="${1:-}"
 shift
 
 cd "$REPO_ROOT"
-common=(-q --tb=short)
+common=(-q -rs --tb=short)
+workspace=("$PY" "$REPO_ROOT/scripts/test_workspace.py")
 update_tests=(
     tests/test_update_version.py
     tests/test_update_api.py
@@ -76,19 +77,19 @@ quick_tests=(
 case "$mode" in
     targeted)
         (($# > 0)) || { usage; exit 2; }
-        exec "$PY" -m pytest "${common[@]}" "$@"
+        exec "${workspace[@]}" -- "$PY" -m pytest "${common[@]}" "$@"
         ;;
     failed)
-        exec "$PY" -m pytest "${common[@]}" --lf "$@"
+        exec "${workspace[@]}" -- "$PY" -m pytest "${common[@]}" --lf "$@"
         ;;
     update)
-        exec "$PY" -m pytest "${common[@]}" "${update_tests[@]}" "$@"
+        exec "${workspace[@]}" -- "$PY" -m pytest "${common[@]}" "${update_tests[@]}" "$@"
         ;;
     quick)
-        exec "$PY" -m pytest "${common[@]}" "${quick_tests[@]}" "$@"
+        exec "${workspace[@]}" -- "$PY" -m pytest "${common[@]}" "${quick_tests[@]}" "$@"
         ;;
     full)
-        exec "$PY" -m pytest "${common[@]}" "$@"
+        exec "${workspace[@]}" --require-separate -- "$PY" -m pytest "${common[@]}" "$@"
         ;;
     -h|--help|help)
         usage

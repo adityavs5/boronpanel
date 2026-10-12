@@ -9,16 +9,17 @@ in one place instead of being rewritten per phase.
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from typing import Callable
 
-from daemon import account_mutation, database_operations
+from daemon import account_mutation, audit, database_operations
 
 from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, AccountNotificationPrefs, ApiToken, Domain, PanelUser, Session
+from shared.models import Account, AccountNotificationPrefs, ApiToken, Domain, PanelUser, Session, utcnow
 from shared.passwords import hash_password
 from shared.validation import (
     ValidationError,
@@ -52,6 +53,7 @@ LIMITS_HOOKS: list[Callable[[Account], None]] = []
 
 def _account_to_dict(account: Account) -> dict:
     from daemon.resource_manager import available_cpu_cores, host_memory_gb
+    from daemon.inode_quotas import enforcement_state
     return {
         "id": account.id,
         "username": account.username,
@@ -62,6 +64,12 @@ def _account_to_dict(account: Account) -> dict:
         "php_version": account.php_version,
         "quota_soft_mb": account.quota_soft_mb,
         "quota_hard_mb": account.quota_hard_mb,
+        "inode_soft_limit": account.inode_soft_limit,
+        "inode_hard_limit": account.inode_hard_limit,
+        "inode_limit": account.inode_hard_limit or None,
+        "inode_enforce_at": account.inode_enforce_at.isoformat() if account.inode_enforce_at else None,
+        "inode_enforcement_state": enforcement_state(account),
+        "php_private_sessions": account.php_private_sessions,
         "cpu_pct": account.cpu_pct,
         "cpu_cores": min(account.cpu_pct / 100, available_cpu_cores()),
         "configured_cpu_cores": account.cpu_pct / 100,
@@ -208,6 +216,10 @@ def create_account(params: dict) -> dict:
                 mem_mb=mem_mb,
                 io_mb=io_mb,
                 pids_max=pids_max,
+                php_private_sessions=True,
+                inode_soft_limit=450_000,
+                inode_hard_limit=500_000,
+                inode_enforce_at=utcnow() + dt.timedelta(days=7),
             )
             session.add(account)
             session.flush()
@@ -359,6 +371,7 @@ def reactivate_account(params: dict) -> dict:
         account.mem_mb = mem_mb
         account.io_mb = io_mb
         account.pids_max = pids_max
+        # Reactivated accounts keep their historical session and inode policy.
         account.terminated_at = None
         account.suspended_at = None
         account.last_error = None
@@ -456,8 +469,17 @@ def suspend_account(params: dict) -> dict:
         require_accounts_available(session, {account.id})
 
         sysops.lock_user(username)
-        for hook in SUSPEND_HOOKS:
-            hook(account)
+        try:
+            for hook in SUSPEND_HOOKS:
+                hook(account)
+        except Exception:
+            for hook in UNSUSPEND_HOOKS:
+                try:
+                    hook(account)
+                except Exception:
+                    pass
+            sysops.unlock_user(username)
+            raise
 
         from shared.models import utcnow
 
@@ -480,8 +502,18 @@ def unsuspend_account(params: dict) -> dict:
             raise RuntimeError(f"cannot unsuspend account in status '{account.status}'")
 
         sysops.unlock_user(username)
-        for hook in UNSUSPEND_HOOKS:
-            hook(account)
+        try:
+            for hook in UNSUSPEND_HOOKS:
+                hook(account)
+        except Exception:
+            # SQLite will retain "suspended"; restore external enforcement too.
+            sysops.lock_user(username)
+            for hook in SUSPEND_HOOKS:
+                try:
+                    hook(account)
+                except Exception:
+                    pass
+            raise
 
         account.status = "active"
         account.suspended_at = None
@@ -519,6 +551,8 @@ def _terminate_account(params: dict) -> dict:
                 account.last_error = None
                 session.flush()
             return _account_to_dict(account)
+        original_status = account.status
+        audit.change("status", original_status, "terminated")
         for model in (BackupJob, RestoreJob, SnapshotRun, SnapshotRestore):
             if session.scalar(select(model.id).where(model.account_id == account.id,
                                                      model.status.in_(jobs.ACTIVE))):
@@ -532,7 +566,9 @@ def _terminate_account(params: dict) -> dict:
     errors: list[str] = []
     for hook in TERMINATE_HOOKS:
         try:
-            hook(account)  # account is detached but read-only fields (username/id) are safe to use
+            hook_name = f"terminate: {hook.__module__}.{hook.__qualname__}"
+            with audit.step(hook_name):
+                hook(account)  # account is detached but read-only fields (username/id) are safe to use
         except Exception as exc:  # noqa: BLE001 - one hook failing must not block the rest
             logger.exception("terminate hook %s failed for %s", hook, username)
             errors.append(f"{hook.__module__}.{hook.__qualname__}: {exc}")
@@ -542,53 +578,57 @@ def _terminate_account(params: dict) -> dict:
     # allow a later Unix UID/name reuse to transfer access to another owner.
     if not errors:
         try:
-            sysops.remove_quota(username)
-            sysops.delete_linux_user(username)
+            with audit.step("terminate: remove account quota"):
+                sysops.remove_quota(username)
+            with audit.step("terminate: remove Linux account"):
+                sysops.delete_linux_user(username)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"linux user teardown: {exc}")
 
-    with write_session() as session:
-        account = session.scalar(select(Account).where(Account.username == username))
-        from shared.models import utcnow
+    with audit.step("terminate: revoke panel access and finalize status"):
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == username))
+            from shared.models import utcnow
 
-        if errors:
-            account.status = "error"
-            account.last_error = "; ".join(errors)
-        else:
-            account.status = "terminated"
-            account.terminated_at = utcnow()
-            account.last_error = None
+            if errors:
+                account.status = "error"
+                account.last_error = "; ".join(errors)
+            else:
+                account.status = "terminated"
+                account.terminated_at = utcnow()
+                account.last_error = None
+            audit.change("status", original_status, account.status)
 
-        # Security audit finding F3: every *system* resource above is torn
-        # down by TERMINATE_HOOKS, but nothing ever touched this account's
-        # panel login(s) -- a terminated customer kept a fully valid
-        # session/token indefinitely, and if the username were ever
-        # reactivated or repurposed for a different customer, the old
-        # credentials would silently regain real access (require_account_access
-        # only checks account.username, not who the credentials originally
-        # belonged to). Disable every PanelUser row scoped to this account,
-        # revoke their active sessions, and revoke their API tokens --
-        # applied even on a partial/"error" termination, since a resource
-        # that failed to tear down is exactly when access should be locked
-        # down hardest, not left open.
-        panel_users = session.scalars(select(PanelUser).where(PanelUser.account_id == account.id)).all()
-        panel_user_ids = [pu.id for pu in panel_users]
-        for pu in panel_users:
-            pu.disabled = True
-        if panel_user_ids:
-            active_sessions = session.scalars(
-                select(Session).where(Session.panel_user_id.in_(panel_user_ids), Session.revoked == False)  # noqa: E712
+            # Security audit finding F3: every *system* resource above is torn
+            # down by TERMINATE_HOOKS, but nothing ever touched this account's
+            # panel login(s) -- a terminated customer kept a fully valid
+            # session/token indefinitely, and if the username were ever
+            # reactivated or repurposed for a different customer, the old
+            # credentials would silently regain real access (require_account_access
+            # only checks account.username, not who the credentials originally
+            # belonged to). Disable every PanelUser row scoped to this account,
+            # revoke their active sessions, and revoke their API tokens --
+            # applied even on a partial/"error" termination, since a resource
+            # that failed to tear down is exactly when access should be locked
+            # down hardest, not left open.
+            panel_users = session.scalars(select(PanelUser).where(PanelUser.account_id == account.id)).all()
+            panel_user_ids = [pu.id for pu in panel_users]
+            for pu in panel_users:
+                pu.disabled = True
+            if panel_user_ids:
+                active_sessions = session.scalars(
+                    select(Session).where(Session.panel_user_id.in_(panel_user_ids), Session.revoked == False)  # noqa: E712
+                ).all()
+                for row in active_sessions:
+                    row.revoked = True
+            tokens = session.scalars(
+                select(ApiToken).where(ApiToken.account_id == account.id, ApiToken.revoked_at.is_(None))
             ).all()
-            for row in active_sessions:
-                row.revoked = True
-        tokens = session.scalars(
-            select(ApiToken).where(ApiToken.account_id == account.id, ApiToken.revoked_at.is_(None))
-        ).all()
-        for token in tokens:
-            token.revoked_at = utcnow()
+            for token in tokens:
+                token.revoked_at = utcnow()
 
-        session.flush()
-        return _account_to_dict(account)
+            session.flush()
+            return _account_to_dict(account)
 
 
 @account_mutation.locked

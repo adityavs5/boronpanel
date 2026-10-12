@@ -14,6 +14,7 @@ import {
   ConfirmDialog,
 } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
+import { LongValue } from '@/components/ui/LongValue'
 
 export default function SshKeys() {
   const username = useAccountUsername()
@@ -79,11 +80,7 @@ export default function SshKeys() {
       key: 'fingerprint',
       header: 'Fingerprint',
       searchable: true,
-      render: (r) => (
-        <span className="block max-w-xs truncate font-mono text-sm text-muted-foreground" title={r.fingerprint}>
-          {r.fingerprint}
-        </span>
-      ),
+      render: (r) => <LongValue value={r.fingerprint} label="SSH key fingerprint" />,
     },
     {
       key: 'actions',

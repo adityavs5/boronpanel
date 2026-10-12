@@ -17,6 +17,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/DropdownMenu'
 import { toast } from '@/components/ui/Toast'
+import { LongValue } from '@/components/ui/LongValue'
 
 export default function Ftp() {
   const username = useAccountUsername()
@@ -100,7 +101,7 @@ export default function Ftp() {
       searchable: true,
       render: (r) =>
         r.path
-          ? <span className="font-mono text-sm text-muted-foreground">{r.path}</span>
+          ? <LongValue value={r.path} label={`${r.ftp_login} path`} />
           : <span className="text-muted-foreground">home directory</span>,
     },
     {

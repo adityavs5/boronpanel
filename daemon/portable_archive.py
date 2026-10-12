@@ -9,7 +9,7 @@ import shutil
 import tarfile
 import tempfile
 import stat
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 
 from sqlalchemy import select
@@ -20,12 +20,85 @@ from shared.models import Account, AccountArchiveImportJob, BackupDestination, B
 from shared.validation import ValidationError, validate_username
 
 from daemon import backup, jobcredentials
+from daemon.archive_limits import ArchiveMetadataTooLarge, open_guarded_tar
 
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="account-archive")
 
 
 class PortableArchiveError(Exception):
     pass
+
+
+def _export_base() -> Path:
+    """Shared daemon/API handoff outside each service's PrivateTmp."""
+    root = Path(settings.snapshot_download_dir)
+    base = root / "portable-exports"
+    if not base.is_absolute() or ".." in base.parts or base == Path("/"):
+        raise PortableArchiveError("Invalid portable export directory")
+    for path in [*reversed(base.parents), base]:
+        if path.is_symlink():
+            raise PortableArchiveError("Portable export directory cannot use symbolic links")
+    root.mkdir(parents=True, exist_ok=True, mode=0o710)
+    if root.stat().st_uid != os.geteuid():
+        raise PortableArchiveError("Portable export directory has an unexpected owner")
+    api_user = pwd.getpwnam("boron-api")
+    os.chown(root, os.geteuid(), api_user.pw_gid)
+    root.chmod(0o710)
+    base.mkdir(exist_ok=True, mode=0o710)
+    if base.stat().st_uid != os.geteuid():
+        raise PortableArchiveError("Portable export directory has an unexpected owner")
+    os.chown(base, os.geteuid(), api_user.pw_gid)
+    base.chmod(0o710)
+    return base
+
+
+def _upload_base() -> Path:
+    """PrivateTmp-independent upload handoff prepared by the root daemon."""
+    root = Path(settings.cpanel_import_staging_dir)
+    base = root / "uploads"
+    if not base.is_absolute() or ".." in base.parts or base == Path("/"):
+        raise PortableArchiveError("Invalid portable import upload directory")
+    for path in [*reversed(base.parents), base]:
+        if path.is_symlink():
+            raise PortableArchiveError("Portable import upload directory cannot use symbolic links")
+    root.mkdir(parents=True, exist_ok=True, mode=0o710)
+    if root.stat().st_uid != os.geteuid():
+        raise PortableArchiveError("Portable import upload directory has an unexpected owner")
+    api_user = pwd.getpwnam("boron-api")
+    os.chown(root, os.geteuid(), api_user.pw_gid)
+    root.chmod(0o710)
+    base.mkdir(exist_ok=True, mode=0o710)
+    if base.stat().st_uid != os.geteuid():
+        raise PortableArchiveError("Portable import upload directory has an unexpected owner")
+    os.chown(base, os.geteuid(), api_user.pw_gid)
+    base.chmod(0o710)
+    return base
+
+
+def reserve_upload(_params: dict | None = None) -> dict:
+    base = _upload_base()
+    fd, name = tempfile.mkstemp(prefix="boron-archive-import-", suffix=".boron.tar", dir=base)
+    try:
+        api_user = pwd.getpwnam("boron-api")
+        os.fchmod(fd, 0o600)
+        os.fchown(fd, api_user.pw_uid, api_user.pw_gid)
+    finally:
+        os.close(fd)
+    path = Path(name)
+    return {"path": str(path), "upload_id": path.name}
+
+
+def cleanup_upload(params: dict) -> dict:
+    import re
+    upload_id = str(params.get("upload_id") or "")
+    if not re.fullmatch(r"boron-archive-import-[A-Za-z0-9_-]{6,80}\.boron\.tar", upload_id):
+        raise ValidationError("Invalid portable import upload identifier")
+    base = _upload_base()
+    target = base / upload_id
+    if target.is_symlink() or target.parent != base:
+        raise ValidationError("Invalid portable import upload identifier")
+    target.unlink(missing_ok=True)
+    return {"removed": not target.exists()}
 
 
 def _job_dict(job: AccountArchiveImportJob, password: str | None = None) -> dict:
@@ -59,7 +132,25 @@ def trigger_import(params: dict) -> dict:
     if not source_ref:
         raise ValidationError("An uploaded Boron archive is required")
     source_path = Path(source_ref)
-    if source_path.parent != Path("/tmp") or not source_path.name.startswith("boron-archive-import-") or source_path.is_symlink() or not source_path.is_file():
+    expected_parent = Path(settings.cpanel_import_staging_dir) / "uploads"
+    if source_path.parent != expected_parent:
+        valid_source = False
+    else:
+        try:
+            info = source_path.lstat()
+            api_user = pwd.getpwnam("boron-api")
+            valid_source = (
+                source_path.parent == _upload_base()
+                and source_path.name.startswith("boron-archive-import-")
+                and source_path.name.endswith(".boron.tar")
+                and stat.S_ISREG(info.st_mode)
+                and not source_path.is_symlink()
+                and info.st_uid == api_user.pw_uid
+                and not info.st_mode & 0o077
+            )
+        except (FileNotFoundError, KeyError):
+            valid_source = False
+    if not valid_source:
         raise ValidationError("The archive upload staging path is invalid")
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
@@ -123,7 +214,7 @@ def _hash_file(path: Path) -> str:
 def _validate_inner_tar(path: Path) -> int:
     total = 0
     try:
-        with tarfile.open(path) as archive:
+        with open_guarded_tar(path) as archive:
             count = 0
             file_names: set[str] = set()
             for member in archive:
@@ -144,7 +235,7 @@ def _validate_inner_tar(path: Path) -> int:
                 # extractall(filter='data') will enforce during restoration.
                 tarfile.data_filter(member, path.parent)
         return total
-    except (tarfile.TarError, tarfile.FilterError) as exc:
+    except (tarfile.TarError, tarfile.FilterError, ArchiveMetadataTooLarge) as exc:
         raise PortableArchiveError(f"Nested component {path.name} is not a safe tar archive: {exc}") from exc
 
 
@@ -154,7 +245,10 @@ def validate_archive(archive_path: Path, extract_dir: Path, expected_username: s
     _extract_archive(archive_path, extract_dir)
     root = _archive_root(extract_dir)
     try:
-        manifest = json.loads((root / "manifest.json").read_text())
+        manifest_path = root / "manifest.json"
+        if manifest_path.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError("manifest too large")
+        manifest = json.loads(manifest_path.read_text())
     except (OSError, ValueError) as exc:
         raise PortableArchiveError("manifest.json is missing or invalid") from exc
     if manifest.get("format") != backup.PORTABLE_ARCHIVE_FORMAT:
@@ -296,16 +390,37 @@ def prepare_download(params: dict) -> dict:
         artifact_path = job.artifact_path
         destination_kind = destination.kind
         username = session.get(Account, job.account_id).username
-    temp_dir = tempfile.mkdtemp(prefix="boron-export-")
+    temp_dir = tempfile.mkdtemp(prefix="export-", dir=_export_base())
     try:
         local_path = backup._fetch_artifact_locally(artifact_path, destination_kind, temp_dir)
         export_path = Path(temp_dir) / f"{username}.boron.tar"
         if Path(local_path) != export_path:
             shutil.copy2(local_path, export_path)
         api_user = pwd.getpwnam("boron-api")
+        # API and daemon use separate systemd PrivateTmp namespaces. Publish
+        # into an explicit shared handoff with group traversal but no listing.
+        # Cleanup stays privileged and accepts only this random child name.
+        os.chown(temp_dir, os.geteuid(), api_user.pw_gid)
+        os.chmod(temp_dir, 0o710)
         os.chown(export_path, api_user.pw_uid, api_user.pw_gid)
-        os.chmod(export_path, 0o600)
-        return {"path": str(export_path), "filename": export_path.name, "cleanup_dir": temp_dir}
+        os.chmod(export_path, 0o640)
+        return {
+            "path": str(export_path), "filename": export_path.name,
+            "cleanup_dir": temp_dir, "cleanup_id": Path(temp_dir).name,
+        }
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
+
+
+def cleanup_download(params: dict) -> dict:
+    import re
+    cleanup_id = str(params.get("cleanup_id") or "")
+    if not re.fullmatch(r"export-[A-Za-z0-9_-]{6,80}", cleanup_id):
+        raise ValidationError("Invalid portable export cleanup identifier")
+    base = _export_base()
+    target = base / cleanup_id
+    if target.is_symlink() or target.parent != base:
+        raise ValidationError("Invalid portable export cleanup identifier")
+    shutil.rmtree(target, ignore_errors=True)
+    return {"removed": not target.exists()}

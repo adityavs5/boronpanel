@@ -5,6 +5,7 @@ must only validate its private journal and exchange already prepared directories
 No customer command or service name may reach this internal entry point.
 """
 import re
+import time
 from pathlib import Path
 
 from daemon.procutil import run
@@ -93,10 +94,35 @@ def retire_switch(operation_id, *, service='dovecot.service'):
             raise ValidationError('Mailbox switch is still running; cannot retire it')
         if state['state'] == 'missing':
             return {'retired': True}
-        result = run(['/usr/bin/systemctl', 'reset-failed', switch_unit(service)], timeout=10)
-        if not result.ok:
+        if not _retire_terminal_unit(switch_unit(service)):
             raise ValidationError('Could not retire the completed mailbox switch')
         return {'retired': True}
+
+
+def _retire_terminal_unit(unit, timeout=5.0):
+    """Retire and wait for a transient unit before its stable name is reused."""
+    deadline = time.monotonic() + timeout
+    # reset-failed is harmless for a successful terminal unit and releases a
+    # failed one after its journal has been inspected. stop nudges successful
+    # inactive transient units into garbage collection on systemd versions
+    # where --wait returns just before the unit file disappears.
+    run(['/usr/bin/systemctl', 'reset-failed', unit], timeout=10)
+    run(['/usr/bin/systemctl', 'stop', unit], timeout=10)
+    # A manager reload is non-disruptive to running services and forces the
+    # transient-unit garbage-collection pass. Without it, systemd can leave a
+    # successful inactive transient name in a race state for tens of seconds:
+    # show reports it loaded, while a second systemd-run cannot open its now
+    # removed fragment. Waiting alone is therefore neither fast nor reliable.
+    reload_result = run(['/usr/bin/systemctl', 'daemon-reload'], timeout=30)
+    if not reload_result.ok:
+        return False
+    while time.monotonic() < deadline:
+        state = run(['/usr/bin/systemctl', 'show', unit, '--property=LoadState'], timeout=10)
+        fields = dict(line.split('=', 1) for line in state.stdout.splitlines() if '=' in line)
+        if fields.get('LoadState') == 'not-found':
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def _supervised_command(command, operation_id, *, service='dovecot.service'):
@@ -135,4 +161,6 @@ def _supervised_command(command, operation_id, *, service='dovecot.service'):
         raise ValidationError('Mail service did not resume; retain restore guards and inspect recovery')
     if not result.ok:
         raise ValidationError('Mail switch failed; inspect its journal before retrying')
+    if not _retire_terminal_unit(unit):
+        raise ValidationError('Mail switch completed but its supervisor could not be retired')
     return {'unit': unit, 'operation_id': operation_id, 'mail_service': 'running'}

@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { toast } from '@/components/ui/Toast'
+import { waitForControlTask } from '@/lib/control-tasks'
 
 const INITIAL = {
   username: '', primary_domain: '', plan_id: '', email: '', password: '',
@@ -20,6 +21,7 @@ export default function CreateAccount() {
   const qc = useQueryClient()
   const [form, setForm] = useState(INITIAL)
   const [created, setCreated] = useState(null)
+  const [taskProgress, setTaskProgress] = useState(null)
   const update = (key, value) => setForm(current => ({ ...current, [key]: value }))
 
   const plansQuery = useQuery({ queryKey: ['plans'], queryFn: () => get('/api/v1/admin/plans') })
@@ -36,22 +38,25 @@ export default function CreateAccount() {
     ? 'Use 12+ characters with upper, lower, number, and symbol.' : undefined
 
   const create = useMutation({
-    mutationFn: () => post('/api/v1/accounts', {
-      username: form.username,
-      primary_domain: form.primary_domain || undefined,
-      plan_id: form.plan_id ? Number(form.plan_id) : undefined,
-      email: form.email.trim() || undefined,
-      password: form.password || undefined,
-      ip_selection: form.ip_selection,
-      server_ip_id: form.ip_selection === 'specific' ? Number(form.server_ip_id) : undefined,
-    }),
+    mutationFn: async () => {
+      setTaskProgress(null)
+      const task = await post('/api/v1/task-operations/account-create', {
+        username: form.username,
+        primary_domain: form.primary_domain || undefined,
+        plan_id: form.plan_id ? Number(form.plan_id) : undefined,
+        email: form.email.trim() || undefined,
+        password: form.password || undefined,
+        ip_selection: form.ip_selection,
+        server_ip_id: form.ip_selection === 'specific' ? Number(form.server_ip_id) : undefined,
+      })
+      return waitForControlTask(task, { onProgress: setTaskProgress, reveal: true })
+    },
     onSuccess: account => {
       setCreated(account)
       qc.invalidateQueries({ queryKey: ['accounts'] })
-      if (account.plan_apply_error || account.ip_assignment_error) toast.warning('Account created with an item to review')
+      if (account.warnings?.length || account.plan_apply_error || account.ip_assignment_error) toast.warning('Account created with an item to review')
       else toast.success('Hosting account created')
     },
-    onError: error => toast.error('Could not create account', error.message),
   })
 
   const copy = async (label, value) => {
@@ -62,10 +67,11 @@ export default function CreateAccount() {
   if (created) return <div>
     <PageHeader title="Account created" description="Save the one-time credentials before leaving this page." icon={CheckCircle2} />
     <div className="mx-auto max-w-3xl space-y-5">
-      {(created.plan_apply_error || created.ip_assignment_error) && <Card className="border-warning/50"><CardContent className="space-y-2 pt-5 text-sm">
+      {(created.warnings?.length || created.plan_apply_error || created.ip_assignment_error) && <Card className="border-warning/50"><CardContent className="space-y-2 pt-5 text-sm">
         <div className="font-semibold text-foreground">The account is active, but one setting needs attention.</div>
         {created.plan_apply_error && <p className="text-muted-foreground">Plan: {created.plan_apply_error}</p>}
         {created.ip_assignment_error && <p className="text-muted-foreground">IP assignment: {created.ip_assignment_error}</p>}
+        {created.warnings?.map((warning) => <p key={warning} className="text-muted-foreground">{warning}</p>)}
       </CardContent></Card>}
       <Card>
         <CardHeader><div><CardTitle>Initial panel login</CardTitle><CardDescription>The initial password is shown only once. Store it in a password manager now.</CardDescription></div></CardHeader>
@@ -109,7 +115,14 @@ export default function CreateAccount() {
           {form.ip_selection === 'specific' && <FormField label="Server IP" required><Select required value={form.server_ip_id} onChange={e => update('server_ip_id', e.target.value)}><option value="">Choose an IP…</option>{availableIps.map(entry => <option key={entry.id} value={entry.id}>{entry.address} — {entry.allocation_mode}{entry.label ? ` · ${entry.label}` : ''}</option>)}</Select></FormField>}
         </CardContent>
       </Card>
-      <div className="flex items-center justify-end gap-3 border-t border-border pt-5"><Button type="button" variant="secondary" asChild><Link to="/accounts">Cancel</Link></Button><Button type="submit" loading={create.isPending} disabled={!!usernameError || !!domainError || !!passwordError || !!emailError}>Create hosting account</Button></div>
+      <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border pt-5">
+        <div className="mr-auto min-w-0 text-sm">
+          {create.isPending && <p role="status" className="text-muted-foreground">{taskProgress?.progress_message || `Creating ${form.username || 'hosting account'}… this can take up to 30 seconds. Do not close this page.`}</p>}
+          {!create.isPending && create.error && <p role="alert" className="text-danger">{create.error.message}</p>}
+        </div>
+        {create.isPending ? <Button type="button" variant="secondary" disabled>Cancel</Button> : <Button type="button" variant="secondary" asChild><Link to="/accounts">Cancel</Link></Button>}
+        <Button type="submit" loading={create.isPending} disabled={!!usernameError || !!domainError || !!passwordError || !!emailError}>Create hosting account</Button>
+      </div>
     </form>
   </div>
 }

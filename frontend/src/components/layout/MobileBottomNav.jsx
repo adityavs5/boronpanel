@@ -35,7 +35,7 @@ export function MobileBottomNav() {
           to={item.to}
           className={({ isActive }) =>
             cn(
-              'flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-[11px] font-medium transition-colors',
+              'flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-xs font-medium transition-colors',
               isActive ? 'text-accent-600' : 'text-muted-foreground',
             )
           }

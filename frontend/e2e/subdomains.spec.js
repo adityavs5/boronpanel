@@ -10,9 +10,10 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
    const p=new URL(route.request().url()).pathname;let data={}
    if(p.endsWith('/whoami'))data={role:'customer',username:'alpha'}
    else if(p.endsWith('/onboarding'))data={completed:true}
+   else if(p.endsWith('/task-operations/accounts/alpha/domains')){request=route.request().postDataJSON();data={id:17,status:'pending',progress_message:'Adding domain'}}
+   else if(p.endsWith('/task-operations/17'))data={id:17,status:'completed',result:{...request,docroot:'/home/alpha/blog.example.com/public_html',dns_record_created:true}}
    else if(p.endsWith('/domains')){
-    if(route.request().method()==='POST'){request=route.request().postDataJSON();data={...request,docroot:'/home/alpha/blog.example.com/public_html',dns_record_created:true}}
-    else data={domains:[{domain:'example.com',kind:'primary',docroot:'/home/alpha/public_html'}]}
+    data={domains:[{domain:'example.com',kind:'primary',docroot:'/home/alpha/public_html'}]}
    }
    else if(p.endsWith('/parked-domains'))data={parked_domains:[]}
    await route.fulfill({json:data})

@@ -41,7 +41,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import account_mutation, appunits, cgroups, ols, sysops
+from daemon import account_mutation, appunits, audit, cgroups, ols, sysops
 
 logger = logging.getLogger("borond.identity_admin")
 
@@ -123,62 +123,67 @@ def set_primary_domain(params: dict) -> dict:
     username = validate_username(params["username"])
     new_domain = validate_domain(params["domain"])
 
-    with write_session() as session:
-        account = _account_or_raise(session, username)
-        if account.status not in ("active", "suspended"):
-            raise RuntimeError(f"cannot change primary domain for an account in status '{account.status}'")
-        from daemon import domain_ownership
-        domain_ownership.require_available(session, new_domain, account.id)
-        clash = session.scalar(select(Domain).where(Domain.domain == new_domain))
-        if clash is not None and clash.account_id != account.id:
-            raise RuntimeError(f"domain '{new_domain}' is already in use")
-        primary = session.scalar(
-            select(Domain).where(Domain.account_id == account.id, Domain.kind == "primary")
-        )
-        old_domain = primary.domain if primary is not None else None
-        previous_primary = account.primary_domain
-        account_id = account.id
-        previous_rows = {row.id: (row.domain, row.kind, row.docroot) for row in (primary, clash) if row is not None}
-        promoting = clash is not None
-        created_id = None
-        docroot = f"{settings.home_base}/{username}/public_html"
-        if promoting:
-            # Promotion is a metadata change, not a request to move files.
-            # Preserve both websites' document roots and the former primary.
-            if clash.kind == "subdomain":
-                raise ValidationError("Choose an existing main domain, not a subdomain, as the primary domain")
-            if primary is not None and primary.id != clash.id:
-                primary.kind = "addon"
-            clash.kind = "primary"
-        elif primary is None:
-            from daemon import handlers_domain
+    with audit.step("primary domain: update account metadata"):
+        with write_session() as session:
+            account = _account_or_raise(session, username)
+            if account.status not in ("active", "suspended"):
+                raise RuntimeError(f"cannot change primary domain for an account in status '{account.status}'")
+            from daemon import domain_ownership
+            domain_ownership.require_available(session, new_domain, account.id)
+            clash = session.scalar(select(Domain).where(Domain.domain == new_domain))
+            if clash is not None and clash.account_id != account.id:
+                raise RuntimeError(f"domain '{new_domain}' is already in use")
+            primary = session.scalar(
+                select(Domain).where(Domain.account_id == account.id, Domain.kind == "primary")
+            )
+            old_domain = primary.domain if primary is not None else None
+            audit.change("primary_domain", old_domain, new_domain)
+            previous_primary = account.primary_domain
+            account_id = account.id
+            previous_rows = {row.id: (row.domain, row.kind, row.docroot) for row in (primary, clash) if row is not None}
+            promoting = clash is not None
+            created_id = None
+            docroot = f"{settings.home_base}/{username}/public_html"
+            if promoting:
+                # Promotion is a metadata change, not a request to move files.
+                # Preserve both websites' document roots and the former primary.
+                if clash.kind == "subdomain":
+                    raise ValidationError("Choose an existing main domain, not a subdomain, as the primary domain")
+                if primary is not None and primary.id != clash.id:
+                    primary.kind = "addon"
+                clash.kind = "primary"
+            elif primary is None:
+                from daemon import handlers_domain
 
-            handlers_domain.ensure_docroot(username, docroot)
-            primary = Domain(account_id=account.id, domain=new_domain, kind="primary", docroot=docroot)
-            session.add(primary)
-            session.flush()
-            created_id = primary.id
-        else:
-            primary.domain = new_domain
-        account.primary_domain = new_domain
-        account_snapshot = account
+                handlers_domain.ensure_docroot(username, docroot)
+                primary = Domain(account_id=account.id, domain=new_domain, kind="primary", docroot=docroot)
+                session.add(primary)
+                session.flush()
+                created_id = primary.id
+            else:
+                primary.domain = new_domain
+            account.primary_domain = new_domain
+            account_snapshot = account
 
     try:
-        ols.refresh_vhost(account_snapshot)
+        with audit.step("primary domain: refresh OpenLiteSpeed"):
+            ols.refresh_vhost(account_snapshot)
     except Exception:
-        with write_session() as session:
-            session.get(Account, account_id).primary_domain = previous_primary
-            if created_id is not None:
-                session.delete(session.get(Domain, created_id))
-            for row_id, (domain, kind, root) in previous_rows.items():
-                row = session.get(Domain, row_id)
-                row.domain, row.kind, row.docroot = domain, kind, root
+        with audit.step("primary domain: roll back metadata"):
+            with write_session() as session:
+                session.get(Account, account_id).primary_domain = previous_primary
+                if created_id is not None:
+                    session.delete(session.get(Domain, created_id))
+                for row_id, (domain, kind, root) in previous_rows.items():
+                    row = session.get(Domain, row_id)
+                    row.domain, row.kind, row.docroot = domain, kind, root
         raise
     # Remove the old primary domain's now-stale vhost directory (keyed by the
     # old domain name; refresh_vhost already regenerated httpd_config without
     # it, but the per-domain vhconf dir must be swept too).
     if old_domain and old_domain != new_domain and not promoting:
-        _remove_vhost_dir(old_domain)
+        with audit.step("primary domain: remove stale vhost directory"):
+            _remove_vhost_dir(old_domain)
     return {"username": username, "primary_domain": new_domain, "previous": old_domain}
 
 
@@ -212,6 +217,7 @@ def rename_account(params: dict) -> dict:
     new = validate_username(params["new_username"])
     if old == new:
         raise ValidationError("new username is the same as the current one")
+    audit.change("username", old, new)
 
     old_home = f"{settings.home_base}/{old}"
     new_home = f"{settings.home_base}/{new}"
@@ -251,25 +257,32 @@ def rename_account(params: dict) -> dict:
     if sysops.user_exists(new):
         raise ValidationError(f"a Linux user named '{new}' already exists outside this panel")
 
-    undo: list = []
-    resume = _pause_for_rename(account_id)
+    undo: list[tuple[str, object]] = []
+    with audit.step("rename: pause account workloads"):
+        resume = _pause_for_rename(account_id)
     try:
-        sysops.rename_login(old, new)
-        undo.append(lambda: sysops.rename_login(new, old))
+        with audit.step("rename: rename Linux login"):
+            sysops.rename_login(old, new)
+        undo.append(("rename: restore Linux login", lambda: sysops.rename_login(new, old)))
 
-        sysops.rename_group(old, new)
-        undo.append(lambda: sysops.rename_group(new, old))
+        with audit.step("rename: rename Linux group"):
+            sysops.rename_group(old, new)
+        undo.append(("rename: restore Linux group", lambda: sysops.rename_group(new, old)))
 
-        sysops.move_home(new, new_home)
-        undo.append(lambda: sysops.move_home(new, old_home))
+        with audit.step("rename: move home directory"):
+            sysops.move_home(new, new_home)
+        undo.append(("rename: restore home directory", lambda: sysops.move_home(new, old_home)))
 
-        _rewrite_db_username(old, new, old_home, new_home)
-        undo.append(lambda: _rewrite_db_username(new, old, new_home, old_home))
+        with audit.step("rename: update panel records"):
+            _rewrite_db_username(old, new, old_home, new_home)
+        undo.append(("rename: restore panel records", lambda: _rewrite_db_username(new, old, new_home, old_home)))
 
         # The native slice is keyed by UID, which rename preserves. Removing
         # it would stop the account and erase its aggregate limits.
-        cgroups.apply_limits(new, *limits)
-        _refresh_git_paths(account_id, new)
+        with audit.step("rename: apply account resource limits"):
+            cgroups.apply_limits(new, *limits)
+        with audit.step("rename: refresh Git deployment paths"):
+            _refresh_git_paths(account_id, new)
 
         # OLS is the last mutating step and is intentionally NOT on the undo
         # stack: ConfigWriterMulti self-rolls-back its own config files on a
@@ -278,18 +291,21 @@ def rename_account(params: dict) -> dict:
         with write_session() as session:
             account = _account_or_raise(session, new)
             snapshot = account
-        ols.refresh_vhost(snapshot)
+        with audit.step("rename: refresh OpenLiteSpeed"):
+            ols.refresh_vhost(snapshot)
         # Retire the old account's now-stale LSAPI workers (uid unchanged, so
         # they'd otherwise keep serving on the old socket path).
         try:
-            sysops.recycle_php_workers(new)
+            with audit.step("rename: recycle PHP workers"):
+                sysops.recycle_php_workers(new)
         except Exception:
             logger.warning("failed to recycle php workers after rename %s -> %s", old, new)
     except Exception as exc:
         logger.exception("rename %s -> %s failed; rolling back", old, new)
-        for comp in reversed(undo):
+        for rollback_name, comp in reversed(undo):
             try:
-                comp()
+                with audit.step(rollback_name):
+                    comp()
             except Exception:
                 logger.exception("rollback step failed during rename %s -> %s", old, new)
         # Reconcile OLS with whatever state we restored to.
@@ -301,12 +317,14 @@ def rename_account(params: dict) -> dict:
                 else:
                     restored = None
             if restored is not None:
-                ols.refresh_vhost(restored)
+                with audit.step("rename: reconcile OpenLiteSpeed after rollback"):
+                    ols.refresh_vhost(restored)
         except Exception:
             logger.exception("OLS reconcile after failed rename %s -> %s also failed", old, new)
         raise RuntimeError("Rename failed; completed changes were rolled back") from exc
     finally:
-        resume()
+        with audit.step("rename: resume account workloads"):
+            resume()
 
     return {"old_username": old, "new_username": new, "status": status}
 

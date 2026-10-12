@@ -19,7 +19,7 @@ import tomllib
 
 from daemon.configtx import ConfigWriter, StepResult
 from daemon.procutil import run
-from shared.config import CONFIG_PATH, Settings, settings
+from shared.config import CONFIG_PATH, settings, settings_from_mapping
 from shared.validation import ValidationError
 from shared.validation import validate_domain
 
@@ -45,7 +45,7 @@ def render_ports(content, admin_port, customer_port):
             updated = f'{key} = {value}\n' + updated
     if tomllib.loads(updated) != expected:
         raise ValidationError('Panel configuration is not flat TOML; port settings cannot be safely edited')
-    Settings(**expected)  # Reject unknown configuration keys before restarting.
+    settings_from_mapping(expected)  # Validate known keys; preserve future keys.
     return updated
 
 
@@ -59,13 +59,14 @@ def render_hostname(content: str, hostname: str) -> str:
         updated = f'panel_hostname = "{hostname}"\n' + updated
     if tomllib.loads(updated) != expected:
         raise ValidationError('Panel configuration is not flat TOML; hostname cannot be safely edited')
-    Settings(**expected)
+    settings_from_mapping(expected)
     return updated
 
 
 _SERVER_SETUP_KEYS = {
     "server_public_ip", "letsencrypt_email", "panel_hostname",
     "webmail_hostname", "webmail_url", "mail_hostname", "pma_hostname",
+    "default_php_version", "php_versions", "install_profile", "enabled_components",
 }
 
 
@@ -86,7 +87,7 @@ def render_setup_values(content: str, updates: dict[str, str]) -> str:
             updated = f'{key} = {encoded}\n' + updated
     if tomllib.loads(updated) != expected:
         raise ValidationError("Panel configuration is not flat TOML; server setup values cannot be safely edited")
-    Settings(**expected)
+    settings_from_mapping(expected)
     return updated
 
 
@@ -119,14 +120,14 @@ def apply_setup_values(updates: dict[str, str], *, config_path=CONFIG_PATH, relo
     metadata = target.stat()
 
     def validate(path):
-        Settings(**tomllib.loads(path.read_text()))
+        settings_from_mapping(tomllib.loads(path.read_text()), source=str(path))
         os.chmod(path, metadata.st_mode & 0o777)
         os.chown(path, metadata.st_uid, metadata.st_gid)
         return StepResult(True)
 
     def reload():
         try:
-            fresh = Settings(**tomllib.loads(target.read_text()))
+            fresh = settings_from_mapping(tomllib.loads(target.read_text()), source=str(target))
             for key in clean:
                 setattr(settings, key, getattr(fresh, key))
             if reload_services:
@@ -159,21 +160,23 @@ def apply_hostname(hostname: str, *, config_path=CONFIG_PATH) -> dict:
     if not target.is_file() or target.is_symlink():
         raise ValidationError('Panel configuration must be an existing regular file')
     original = target.read_text()
-    current = Settings(**tomllib.loads(original)).panel_hostname
+    current = settings_from_mapping(tomllib.loads(original), source=str(target)).panel_hostname
     if hostname == current:
         return {'status': 'unchanged', 'hostname': hostname}
     updated = render_hostname(original, hostname)
     metadata = target.stat()
 
     def validate(path):
-        Settings(**tomllib.loads(path.read_text()))
+        settings_from_mapping(tomllib.loads(path.read_text()), source=str(path))
         os.chmod(path, metadata.st_mode & 0o777)
         os.chown(path, metadata.st_uid, metadata.st_gid)
         return StepResult(True)
 
     def reload_route():
         try:
-            settings.panel_hostname = Settings(**tomllib.loads(target.read_text())).panel_hostname
+            settings.panel_hostname = settings_from_mapping(
+                tomllib.loads(target.read_text()), source=str(target)
+            ).panel_hostname
             panel_tls.bootstrap_challenge()
             return StepResult(True)
         except Exception as exc:
@@ -271,7 +274,7 @@ no old rules are removed. Returned diagnostics contain no configuration content.
         if not target.is_file() or target.is_symlink():
             raise ValidationError('Panel configuration must be an existing regular file')
         original = target.read_text()
-        config = Settings(**tomllib.loads(original))
+        config = settings_from_mapping(tomllib.loads(original), source=str(target))
         old_ports = validate_ports(config.api_bind_port, config.api_customer_port if config.api_customer_port is not None else config.api_bind_port)
         if old_ports == new_ports:
             return {'status': 'unchanged', 'admin_port': admin_port, 'customer_port': customer_port}

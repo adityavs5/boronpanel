@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Layers, Plus, Pencil, Trash2 } from 'lucide-react'
+import { Layers, MoreHorizontal, Plus, Pencil, Trash2 } from 'lucide-react'
 import { get, del } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu'
 
 export const PLAN_PRESETS = {
   starter: { label: 'Starter', description: 'Small brochure sites and light email use.', values: { name: 'Starter', cpu_cores: .25, mem_mb: 512, io_mb: 25, pids_max: 50, quota_soft_mb: 2048, quota_hard_mb: 3072, bandwidth_limit_mb: 25600, database_limit: 2, email_account_limit: 5, subdomain_limit: 5, ftp_account_limit: 2, app_limit: 1, redis_enabled: false } },
@@ -28,7 +29,7 @@ export default function Plans() {
     { key: 'quota_hard_mb', header: 'Disk', render: row => `${Math.round(row.quota_hard_mb / 1024)} GB` },
     { key: 'bandwidth_limit_mb', header: 'Bandwidth', render: row => row.bandwidth_limit_mb ? `${Math.round(row.bandwidth_limit_mb / 1024)} GB/mo` : 'Unlimited' },
     { key: 'email_account_limit', header: 'Email', render: row => row.email_account_limit ?? 'Unlimited' },
-    { key: 'actions', header: '', align: 'right', render: row => <div className="flex justify-end gap-2"><Button asChild size="sm" variant="secondary"><Link to={`/plans/${row.id}/edit`}><Pencil className="h-4 w-4" /> Edit</Link></Button><Button size="icon-sm" variant="ghost" aria-label={`Delete ${row.name}`} onClick={() => setToDelete(row)}><Trash2 className="h-4 w-4 text-danger" /></Button></div> },
+    { key: 'actions', header: '', align: 'right', render: row => <div className="flex justify-end gap-1"><Button asChild size="sm" variant="secondary"><Link to={`/plans/${row.id}/edit`}><Pencil className="h-4 w-4" /> Edit</Link></Button><DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-sm" variant="ghost" aria-label={`Actions for ${row.name}`}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem className="text-danger" onSelect={() => setToDelete(row)}><Trash2 className="h-4 w-4"/>Delete</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div> },
   ]
   return <div><PageHeader title="Hosting Plans" description="Create clear resource and feature packages for hosting accounts." icon={Layers}><Button asChild><Link to="/plans/new"><Plus className="h-4 w-4" /> New plan</Link></Button></PageHeader><DataTable columns={columns} data={query.data?.plans} loading={query.isLoading} error={query.error} onRetry={query.refetch} filterable searchPlaceholder="Search plans…" emptyTitle="No plans yet" emptyDescription="Create a package from a ready-to-use template." emptyIcon={Layers} emptyAction={<Button asChild><Link to="/plans/new"><Plus className="h-4 w-4" /> New plan</Link></Button>} /><ConfirmDialog open={!!toDelete} onOpenChange={open => !open && setToDelete(null)} title={`Delete ${toDelete?.name || 'plan'}?`} description="Accounts keep their current limits, but the plan will no longer be available." confirmLabel="Delete plan" variant="danger" loading={remove.isPending} onConfirm={() => remove.mutate(toDelete)} /></div>
 }

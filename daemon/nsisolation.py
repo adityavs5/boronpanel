@@ -21,17 +21,19 @@ namespace without introducing a second persisted policy.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
+import pwd
 import stat
 from pathlib import Path
 import re
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
 from sqlalchemy import select
 
 from shared.db import write_session
-from shared.models import Account, NamespaceMigrationJob, NodeApp, PythonApp, RedisInstance, utcnow
+from shared.models import Account, Domain, IsolationTestResult, NamespaceMigrationJob, NodeApp, PythonApp, RedisInstance, utcnow
 from shared.validation import validate_username
 
 from daemon import appunits, audit, cgroups
@@ -664,6 +666,7 @@ def isolation_overview(params: dict | None = None) -> dict:
                 "username": account.username, "uid": account.uid, "status": account.status,
                 "web": web, "terminal": terminal, "services": service_status,
                 "file_manager": file_manager, "ssh_sftp": ssh, "resource": resource,
+                "last_test": _saved_test(session, account, namespace_enabled),
             })
 
     mount_verified = bool(namespace_observations) and all(item["separate_mount_namespace"] for item in namespace_observations)
@@ -698,11 +701,16 @@ def isolation_overview(params: dict | None = None) -> dict:
 def rebuild_namespace(params: dict) -> dict:
     username = validate_username(params["username"])
     uid = _account_uid(username)
-    unmount_uid(uid)
+    before = get_status(username)
+    with audit.step("isolation: retire cached namespace"):
+        unmount_uid(uid)
     # Rebuild is also a policy activation. Use the same vhost refresh and
     # rollback path as the normal enable operation so it cannot report an
     # enabled gate while leaving PHP on the non-Bubblewrap vhost policy.
-    return enable_namespace({"username": username})
+    with audit.step("isolation: rebuild account policy"):
+        result = enable_namespace({"username": username})
+    audit.change("namespace_enabled", before.get("enabled"), result.get("enabled"))
+    return result
 
 
 def _filesystem_home_checks(root: Path, username: str, uid: int, other: str | None):
@@ -743,11 +751,58 @@ def _combine_observed_checks(values):
     return True if all(value is True for value in values) else None
 
 
+def _test_fingerprint(account: Account, namespace_enabled: bool) -> str:
+    files = [OLS_CONFIG_PATH]
+    try:
+        from daemon import ols
+        with write_session() as session:
+            domains = session.scalars(select(Domain).where(Domain.account_id == account.id)).all()
+        files.extend(Path(ols._vhost_conf_path(ols._vhost_name(row.domain))) for row in domains)
+    except Exception:
+        files = [OLS_CONFIG_PATH]
+    file_state = []
+    for path in files:
+        try:
+            info = path.stat()
+            file_state.append((str(path), info.st_mtime_ns, info.st_size))
+        except OSError:
+            file_state.append((str(path), None, None))
+    payload = {
+        "account_id": account.id,
+        "uid": account.uid,
+        "status": account.status,
+        "namespace_enabled": namespace_enabled,
+        "php_private_sessions": account.php_private_sessions,
+        "resources": [account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max],
+        "files": file_state,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _saved_test(session, account: Account, namespace_enabled: bool) -> dict | None:
+    row = session.scalar(select(IsolationTestResult).where(IsolationTestResult.account_id == account.id))
+    if row is None:
+        return None
+    return {
+        "status": row.status,
+        "checks": row.checks or [],
+        "tested_at": row.tested_at.isoformat() if row.tested_at else None,
+        "stale": row.config_fingerprint != _test_fingerprint(account, namespace_enabled),
+    }
+
+
+def _check(name: str, status: str, explanation: str) -> dict:
+    return {"name": name, "status": status, "explanation": explanation}
+
+
 def self_test(params: dict) -> dict:
     """Run a metadata-only isolation canary without returning user files."""
     username = validate_username(params["username"])
     uid = _account_uid(username)
     with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise NamespaceError(f"account '{username}' not found")
         other = session.scalar(select(Account.username).where(
             Account.username != username, Account.status == "active"
         ).order_by(Account.id))
@@ -778,6 +833,8 @@ def self_test(params: dict) -> dict:
             other_hidden = result.ok
     process_isolation = "configured_no_live_worker" if bubblewrap_configured else "not_configured"
     process_workers = []
+    mount_values = []
+    tmp_values = []
     if php:
         try:
             host_pid_namespace = os.stat("/proc/1/ns/pid").st_ino
@@ -789,6 +846,19 @@ def self_test(params: dict) -> dict:
                     private, worker_status = None, 'exited_during_check'
                 except OSError:
                     private, worker_status = None, 'inspection_failed'
+                try:
+                    host_mount_namespace = os.stat("/proc/1/ns/mnt").st_ino
+                    mount_private = os.stat(f"/proc/{pid}/ns/mnt").st_ino != host_mount_namespace
+                    mountinfo = Path(f"/proc/{pid}/mountinfo").read_text()
+                    try:
+                        host_tmp = os.stat("/tmp")
+                    except OSError:
+                        host_tmp = None
+                    tmp_private = _private_tmp_observed(pid, mountinfo, host_tmp)
+                except OSError:
+                    mount_private = tmp_private = None
+                mount_values.append(mount_private)
+                tmp_values.append(tmp_private)
                 process_workers.append({'pid': pid, 'private_pid_namespace': private, 'status': worker_status})
             states = {worker['status'] for worker in process_workers}
             process_isolation = ('failed' if 'failed' in states else 'inspection_failed' if 'inspection_failed' in states
@@ -808,10 +878,76 @@ def self_test(params: dict) -> dict:
         skipped.append('account_home_visibility')
     if php and other is not None and other_hidden is None:
         skipped.append('peer_account_visibility')
-    passed = bool(current["enabled"] and own_readable and other_hidden is True and process_isolation == "verified")
+    mount_private = _combine_observed_checks(mount_values) if mount_values else None
+    tmp_private = _combine_observed_checks(tmp_values) if tmp_values else None
+    resource_status = "not_verifiable"
+    resource_explanation = "The account Linux identity was not available for cgroup verification."
+    try:
+        if pwd.getpwuid(uid).pw_name == username:
+            resource_root = cgroups._cgroup_path(username, uid)
+            resource_status = "passed" if resource_root.exists() else "failed"
+            resource_explanation = (
+                "The canonical account cgroup is active." if resource_root.exists() else
+                "The canonical account cgroup is missing; rebuild the account resource policy."
+            )
+    except (KeyError, OSError, cgroups.CgroupError):
+        pass
+    file_manager = params.get("file_manager_check") if isinstance(params.get("file_manager_check"), dict) else {}
+    fm_status = str(file_manager.get("status") or "not_verifiable")
+    if fm_status not in {"passed", "failed", "not_verifiable"}:
+        fm_status = "not_verifiable"
+    fm_explanation = str(file_manager.get("explanation") or "File Manager proxy was not tested")[:300]
+    checks = [
+        _check(
+            "Private filesystem",
+            "failed" if not current["enabled"] or own_readable is False or other_hidden is False else
+            "passed" if own_readable is True and (other_hidden is True or other is None) and mount_private is True else
+            "not_verifiable",
+            "The live PHP worker can read its own home and cannot see another account's home."
+            if own_readable is True and (other_hidden is True or other is None) and mount_private is True else
+            "The account isolation gate is disabled or a live worker exposed an unexpected filesystem view."
+            if not current["enabled"] or own_readable is False or other_hidden is False else
+            "Configured; awaiting a live PHP worker to inspect its filesystem.",
+        ),
+        _check(
+            "Private temp",
+            "failed" if tmp_private is False else "passed" if tmp_private is True else "not_verifiable",
+            "The live PHP worker uses a private temporary filesystem." if tmp_private is True else
+            "A live PHP worker shares the host temporary filesystem." if tmp_private is False else
+            "Configured; awaiting a live PHP worker to inspect its temporary filesystem.",
+        ),
+        _check(
+            "Process namespace",
+            "passed" if process_isolation == "verified" else
+            "failed" if process_isolation in {"failed", "inspection_failed", "not_configured"} else
+            "not_verifiable",
+            "Live PHP workers use a private PID namespace." if process_isolation == "verified" else
+            "A live PHP worker did not pass PID namespace verification." if process_isolation in {"failed", "inspection_failed"} else
+            "Configured; awaiting a live PHP worker to inspect process visibility." if bubblewrap_configured else
+            "Private PHP process namespaces are not configured.",
+        ),
+        _check(
+            "Account environment",
+            "passed" if current["enabled"] and own_readable is not False else "failed",
+            "The account UID is eligible and its isolation gate is enabled." if current["enabled"] else
+            "The account UID is outside the enabled isolation policy.",
+        ),
+        _check(
+            "Resource budget",
+            resource_status,
+            resource_explanation,
+        ),
+        _check("File Manager path", fm_status, fm_explanation),
+    ]
     failed = (not current["enabled"] or own_readable is False or other_hidden is False
-              or process_isolation in ("failed", "inspection_failed", "not_configured"))
-    return {
+              or process_isolation in ("failed", "inspection_failed", "not_configured")
+              or mount_private is False or tmp_private is False
+              or resource_status == "failed" or fm_status == "failed")
+    passed = bool(
+        not failed and current["enabled"] and own_readable
+        and other_hidden is True and process_isolation == "verified"
+    )
+    result = {
         "username": username, "passed": passed,
         "status": "failed" if failed else "passed" if passed else "incomplete",
         "namespace_enabled": current["enabled"], "own_home_readable": own_readable,
@@ -820,4 +956,20 @@ def self_test(params: dict) -> dict:
         "process_isolation": process_isolation,
         "process_isolation_workers": process_workers,
         "process_isolation_scope": "web_php",
+        "checks": checks,
+        "tested_at": utcnow().isoformat(),
     }
+    with write_session() as session:
+        live_account = session.scalar(select(Account).where(Account.username == username))
+        row = session.scalar(select(IsolationTestResult).where(
+            IsolationTestResult.account_id == live_account.id
+        ))
+        if row is None:
+            row = IsolationTestResult(account_id=live_account.id)
+            session.add(row)
+        row.status = result["status"]
+        row.checks = checks
+        row.result = result
+        row.config_fingerprint = _test_fingerprint(live_account, current["enabled"])
+        row.tested_at = utcnow()
+    return result

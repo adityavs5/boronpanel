@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/v1/admin/server-setup", tags=["panel configurati
 
 class StepBody(BaseModel):
     model_config = ConfigDict(extra="allow")
-    step: int = Field(ge=1, le=8)
+    step: int = Field(ge=1, le=13)
 
 
 class PreviewRecordsBody(BaseModel):

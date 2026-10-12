@@ -3,6 +3,7 @@ import { Menu, ArrowRight, ExternalLink } from 'lucide-react'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { useAuth } from '@/store/auth'
 import { customerNav, adminNav } from '@/config/nav'
+import { filterNavigation } from '@/config/capabilities'
 
 const CUSTOMER_PRIMARY = new Set(['/dashboard', '/domains', '/email', '/databases'])
 const ADMIN_PRIMARY = new Set(['/accounts', '/health', '/services'])
@@ -27,7 +28,8 @@ function groupedItems(nav, excluded) {
 
 export default function MoreMenu() {
   const isAdmin = useAuth((s) => s.role === 'admin')
-  const groups = groupedItems(isAdmin ? adminNav : customerNav, isAdmin ? ADMIN_PRIMARY : CUSTOMER_PRIMARY)
+  const capabilities = useAuth((s) => s.capabilities)
+  const groups = groupedItems(filterNavigation(isAdmin ? adminNav : customerNav, capabilities), isAdmin ? ADMIN_PRIMARY : CUSTOMER_PRIMARY)
 
   return (
     <div>

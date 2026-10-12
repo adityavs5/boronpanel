@@ -17,7 +17,7 @@ import logging
 logger = logging.getLogger("borond.events")
 
 
-def emit(event_type: str, account, **context) -> None:
+def emit(event_type: str, account, **context) -> dict[str, object]:
     """`account` is an Account ORM row (attached or detached -- every
     caller's session-scoped snapshot works fine here, since only
     already-loaded columns like .id/.username are read) or None for an
@@ -25,14 +25,33 @@ def emit(event_type: str, account, **context) -> None:
     and logged independently here -- notification delivery failing must
     never block webhook delivery, and neither may ever propagate back to
     block the real provisioning action that triggered this event."""
-    from daemon import notifications, webhooks
+    from daemon import backup_notifications, notifications, webhooks
 
-    try:
-        notifications.maybe_send(event_type, account, **context)
-    except Exception:
-        logger.exception("notification dispatch failed for event '%s'", event_type)
+    # Host monitoring can be configured per channel.  All pre-existing
+    # callers omit this private routing hint and retain the historical fanout
+    # to every configured provider.
+    selected = context.pop("_channels", None)
+    channels = set(selected or ("email", "webhook", "telegram"))
+    results: dict[str, object] = {}
 
-    try:
-        webhooks.maybe_trigger(event_type, account, **context)
-    except Exception:
-        logger.exception("webhook dispatch failed for event '%s'", event_type)
+    if "email" in channels:
+        try:
+            results["email"] = notifications.maybe_send(event_type, account, **context)
+        except Exception:
+            results["email"] = False
+            logger.exception("notification dispatch failed for event '%s'", event_type)
+
+    if "webhook" in channels:
+        try:
+            results["webhook"] = webhooks.maybe_trigger(event_type, account, **context)
+        except Exception:
+            results["webhook"] = []
+            logger.exception("webhook dispatch failed for event '%s'", event_type)
+
+    if "telegram" in channels:
+        try:
+            results["telegram"] = backup_notifications.send_telegram(event_type, account, **context)
+        except Exception:
+            results["telegram"] = False
+            logger.exception("Telegram dispatch failed for event '%s'", event_type)
+    return results

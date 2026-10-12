@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import warnings
 
-from fastapi.testclient import TestClient
+from testsupport.sync_asgi import SyncASGIClient as TestClient
 
 import api.main as main
 from api.security import Identity, get_identity

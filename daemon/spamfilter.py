@@ -39,10 +39,10 @@ import tempfile
 import time
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from shared.db import write_session
-from shared.models import MailDomain, SpamFilterEntry, SpamGlobalSettings
+from shared.models import MailDomain, MailUser, SpamFilterEntry, SpamGlobalSettings
 from shared.validation import (
     ValidationError,
     validate_domain,
@@ -57,6 +57,9 @@ from daemon.configtx import ConfigWriter, StepResult
 from daemon.procutil import run
 
 logger = logging.getLogger("borond.spamfilter")
+
+MAX_SPAM_FILTER_ENTRIES_PER_ACCOUNT = 5_000
+MAX_SPAM_FILTER_ENTRIES_GLOBAL = 50_000
 
 VIRTUAL_CONFIG_BASE = "/etc/boron/spamassassin"
 SPAMD_DEFAULTS_PATH = "/etc/default/spamd"
@@ -573,6 +576,46 @@ def _refresh_global_sieve() -> None:
     _install_global_sieve_script()
 
 
+def _mailbox_owner(session, domain: str, local_part: str) -> MailDomain:
+    mail_domain = session.scalar(select(MailDomain).where(MailDomain.domain == domain))
+    mailbox = None if mail_domain is None else session.scalar(select(MailUser.id).where(
+        MailUser.mail_domain_id == mail_domain.id,
+        MailUser.domain == domain,
+        MailUser.local_part == local_part,
+    ))
+    if mailbox is None:
+        raise SpamFilterError(f"mailbox '{local_part}@{domain}' does not exist")
+    return mail_domain
+
+
+def _remaining_rule_capacity(session, mail_domain: MailDomain) -> int:
+    account_domains = select(MailDomain.domain).where(MailDomain.account_id == mail_domain.account_id)
+    account_count = session.scalar(
+        select(func.count()).select_from(SpamFilterEntry).where(SpamFilterEntry.domain.in_(account_domains))
+    ) or 0
+    global_count = session.scalar(select(func.count()).select_from(SpamFilterEntry)) or 0
+    return min(
+        MAX_SPAM_FILTER_ENTRIES_PER_ACCOUNT - account_count,
+        MAX_SPAM_FILTER_ENTRIES_GLOBAL - global_count,
+    )
+
+
+def _require_rule_capacity(session, mail_domain: MailDomain) -> None:
+    remaining = _remaining_rule_capacity(session, mail_domain)
+    if remaining <= 0:
+        account_domains = select(MailDomain.domain).where(MailDomain.account_id == mail_domain.account_id)
+        account_count = session.scalar(
+            select(func.count()).select_from(SpamFilterEntry).where(SpamFilterEntry.domain.in_(account_domains))
+        ) or 0
+        if account_count >= MAX_SPAM_FILTER_ENTRIES_PER_ACCOUNT:
+            raise SpamFilterError(
+                f"account already has the maximum of {MAX_SPAM_FILTER_ENTRIES_PER_ACCOUNT} spam filter entries"
+            )
+        raise SpamFilterError(
+            "The server spam-filter rule capacity has been reached"
+        )
+
+
 def list_entries(params: dict) -> dict:
     domain = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
@@ -596,6 +639,7 @@ def add_entry(params: dict) -> dict:
 
     added_id = None
     with write_session() as session:
+        mail_domain = _mailbox_owner(session, domain, local_part)
         count = len(session.scalars(
             select(SpamFilterEntry.id).where(SpamFilterEntry.domain == domain, SpamFilterEntry.local_part == local_part)
         ).all())
@@ -612,6 +656,7 @@ def add_entry(params: dict) -> dict:
         if existing is not None:
             result = _entry_to_dict(existing)
         else:
+            _require_rule_capacity(session, mail_domain)
             row = SpamFilterEntry(domain=domain, local_part=local_part, kind=kind, pattern=pattern)
             session.add(row)
             session.flush()
@@ -681,6 +726,8 @@ def import_entries(params: dict) -> dict:
     added: list[dict] = []
     errors: list[dict] = []
     with write_session() as session:
+        mail_domain = _mailbox_owner(session, domain, local_part)
+        remaining_capacity = _remaining_rule_capacity(session, mail_domain)
         existing_count = len(session.scalars(
             select(SpamFilterEntry.id).where(SpamFilterEntry.domain == domain, SpamFilterEntry.local_part == local_part)
         ).all())
@@ -703,6 +750,9 @@ def import_entries(params: dict) -> dict:
             )
             if existing is not None:
                 continue  # already present -- not an error, just a no-op
+            if len(added) >= remaining_capacity:
+                errors.append({"line": line, "error": "spam filter rule capacity reached"})
+                continue
             row = SpamFilterEntry(domain=domain, local_part=local_part, kind=kind, pattern=pattern)
             session.add(row)
             session.flush()

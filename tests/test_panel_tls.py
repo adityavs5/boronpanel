@@ -10,14 +10,16 @@ from daemon import ols
 from shared.config import settings
 
 
-def pair(host='panel.example',expired=False):
+def pair(host='panel.example',expired=False,with_san=True):
     key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
     name=x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME,host)])
     now=dt.datetime.now(dt.timezone.utc)
-    cert=(x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+    builder=(x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
         .serial_number(x509.random_serial_number()).not_valid_before(now-dt.timedelta(days=2))
-        .not_valid_after(now+dt.timedelta(days=-1 if expired else 30))
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]),critical=False).sign(key,hashes.SHA256()))
+        .not_valid_after(now+dt.timedelta(days=-1 if expired else 30)))
+    if with_san:
+        builder=builder.add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]),critical=False)
+    cert=builder.sign(key,hashes.SHA256())
     return cert.public_bytes(serialization.Encoding.PEM),key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption())
 
 
@@ -27,6 +29,13 @@ def test_certificate_hostname_validity_and_key_pair():
     with pytest.raises(ValueError,match='cover'):hook.validate_pair('wrong.example',cert,key)
     with pytest.raises(ValueError,match='match'):hook.validate_pair('panel.example',cert,pair()[1])
     with pytest.raises(ValueError,match='valid'):hook.validate_pair('panel.example',*pair(expired=True))
+
+
+def test_legacy_common_name_only_bootstrap_certificate_is_upgradeable():
+    cert,key=pair(with_san=False)
+    hook.validate_pair('panel.example',cert,key)
+    with pytest.raises(ValueError,match='cover'):
+        hook.validate_pair('wrong.example',cert,key)
 
 
 @pytest.mark.parametrize('failed_listener',['panel','ftp'])

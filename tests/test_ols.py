@@ -1,4 +1,5 @@
 import datetime as dt
+import stat
 
 import pytest
 from pathlib import Path
@@ -748,7 +749,7 @@ def test_waf_template_context_reflects_db_state(isolated_db):
         ctx = ols.waf_template_context(session)
 
     assert ctx["waf_enabled"] is True
-    assert ctx["waf_domain_overrides"] == [{"domain": "off.example.com"}]
+    assert [row["domain"] for row in ctx["waf_domain_overrides"]] == ["off.example.com"]
     assert len(ctx["waf_custom_rules"]) == 1
     assert ctx["waf_custom_rules"][0]["domain"] == "shop.example.com"
 
@@ -894,6 +895,18 @@ def test_render_httpd_config_includes_web_extprocessor_for_app_proxy_domain():
     content = ols.render_httpd_config(domain_vhosts, [])
     assert "extProcessor proxy_demo1_example{" in content
     assert "address                         127.0.0.1:30000" in content
+
+
+def test_render_httpd_config_uses_private_socket_for_new_app_backend():
+    domain_vhosts = [{
+        "vhost_name": "demo1_example", "domain": "demo1.example",
+        "account_home": "/home/demo1",
+        "app_proxy": {"handler_name": "proxy_demo1_example", "port": 30000,
+                      "socket_path": "/run/boron-apps/node-7.sock"},
+    }]
+    content = ols.render_httpd_config(domain_vhosts, [])
+    assert "address                         UDS://run/boron-apps/node-7.sock" in content
+    assert "127.0.0.1:30000" not in content
     # "proxy", not "web" -- confirmed empirically against this server's
     # real openlitespeed binary during live E2E verification: "type web"
     # fails `openlitespeed -t` with "Unknown external processor <type>:
@@ -1069,7 +1082,9 @@ def test_pma_bootstrap_includes_token_mount_in_config_transaction(tmp_path, monk
     from types import SimpleNamespace
     conf = tmp_path / 'conf'
     conf.mkdir()
-    (conf / 'nsconf.conf').write_text('/usr,ro-bind\n/var,dir\n')
+    namespace = tmp_path / 'lsns/conf'
+    namespace.mkdir(parents=True)
+    (namespace / 'boron-nsconf.conf').write_text('/usr,ro-bind\n/var,dir\n')
     monkeypatch.setattr(ols, 'OLS_SERVER_BASE', str(tmp_path))
     monkeypatch.setattr(ols.settings, 'pma_hostname', 'pma.example.test')
     monkeypatch.setattr(ols.settings, 'pma_token_dir', '/var/lib/boron-pma-tokens')
@@ -1086,11 +1101,59 @@ def test_pma_bootstrap_includes_token_mount_in_config_transaction(tmp_path, monk
             return SimpleNamespace(ok=True)
     monkeypatch.setattr(ols, 'ConfigWriterMulti', Writer)
     ols.bootstrap_pma()
-    assert captured['targets']['namespace'] == str(conf / 'nsconf.conf')
+    assert captured['targets']['namespace'] == str(namespace / 'boron-nsconf.conf')
     assert captured['contents']['namespace'] == '/usr,ro-bind\n/var,dir\n/var/lib/boron-pma-tokens,bind-try\n'
-    (conf / 'nsconf.conf').write_text(captured['contents']['namespace'])
+    (namespace / 'boron-nsconf.conf').write_text(captured['contents']['namespace'])
     ols.bootstrap_pma()
     assert captured['contents']['namespace'].count('/var/lib/boron-pma-tokens,bind-try') == 1
+
+
+def test_reload_secures_namespace_policy_before_validation(tmp_path, monkeypatch):
+    conf = tmp_path / 'lsns/conf'
+    conf.mkdir(parents=True)
+    policy = conf / 'boron-nsconf.conf'
+    policy.write_text('/usr,ro-bind\n')
+    policy.chmod(0o640)
+    calls = []
+
+    monkeypatch.setattr(ols, 'OLS_SERVER_BASE', str(tmp_path))
+    monkeypatch.setattr(ols, 'run', lambda command, timeout: (
+        calls.append(command) or ols.StepResult(True)
+    ))
+
+    result = ols._reload()
+
+    assert result.ok
+    assert calls == [
+        [str(tmp_path / 'bin/openlitespeed'), '-t'],
+        ['systemctl', 'reload', 'lshttpd'],
+    ]
+    metadata = policy.stat()
+    assert metadata.st_uid == 0
+    assert metadata.st_gid == 0
+    assert stat.S_IMODE(metadata.st_mode) == 0o644
+
+
+def test_parent_waf_wildcard_excludes_child_www_listener_alias(isolated_db):
+    import re
+    from shared.db import write_session
+    from shared.models import Domain, WildcardDomain
+
+    with write_session() as session:
+        parent = Account(username="parent", status="active")
+        child = Account(username="child", status="active")
+        session.add_all([parent, child])
+        session.flush()
+        session.add(Domain(account_id=parent.id, domain="example.test", kind="primary",
+                           docroot="/home/parent/public_html"))
+        session.add(Domain(account_id=child.id, domain="child.example.test", kind="primary",
+                           docroot="/home/child/public_html"))
+        session.add(WildcardDomain(domain="example.test", enabled=True))
+    with write_session() as session:
+        patterns = ols._waf_host_patterns(session)
+
+    assert re.fullmatch(patterns["child.example.test"], "www.child.example.test")
+    assert not re.fullmatch(patterns["example.test"], "www.child.example.test")
 
 
 @pytest.mark.parametrize('host,expected', [('shop.example.com', True), ('SHOP.EXAMPLE.COM', True),

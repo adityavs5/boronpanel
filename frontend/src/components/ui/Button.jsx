@@ -39,6 +39,7 @@ export const Button = forwardRef(function Button(
     <Comp
       ref={ref}
       data-ui-button={variant || 'primary'}
+      data-ui-size={size || 'md'}
       className={cn(buttonVariants({ variant, size, className }))}
       aria-busy={loading || undefined}
       disabled={disabled || loading}

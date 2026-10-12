@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+from shared.request_context import correlation_id_for_new_work
+
 from sqlalchemy import (
     JSON,
     DateTime,
@@ -42,6 +44,17 @@ class Account(Base):
     php_version: Mapped[str] = mapped_column(String(8), default="8.3")
     quota_soft_mb: Mapped[int] = mapped_column(Integer, default=5120)
     quota_hard_mb: Mapped[int] = mapped_column(Integer, default=6144)
+    # Inode quotas are rolled out separately from block quotas.  Zero keeps
+    # upgraded accounts unlimited until an administrator assigns a plan or
+    # explicitly starts the warning period.  New accounts receive the
+    # defaults in handlers_account.create_account.
+    inode_soft_limit: Mapped[int] = mapped_column(Integer, default=0)
+    inode_hard_limit: Mapped[int] = mapped_column(Integer, default=0)
+    inode_enforce_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Existing accounts retain the shared/private-tmp behaviour until an
+    # administrator explicitly runs the session migration.  New accounts
+    # opt in at creation and render a private ~/tmp/sessions save path.
+    php_private_sessions: Mapped[bool] = mapped_column(default=False)
     # Phase 2 feature 6: cgroups v2 resource limits, one systemd slice per
     # account (daemon/cgroups.py). Defaults match the goal's stated
     # defaults exactly: CPU 25% of one core, 512MB RAM (no swap), 50MB/s
@@ -146,6 +159,11 @@ class DnsClusterPeer(Base):
     direction: Mapped[str] = mapped_column(String(16), default="push")  # push | receive | bidirectional
     zones: Mapped[list] = mapped_column(JSON, default=list)  # empty = every locally managed zone
     conflict_policy: Mapped[str] = mapped_column(String(24), default="reject_stale")
+    protocol_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    capabilities: Mapped[list] = mapped_column(JSON, default=list)
+    last_capability_check_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(20), default="pending")
     last_success_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
@@ -160,6 +178,7 @@ class DnsClusterOutbox(Base):
     __table_args__ = (UniqueConstraint("peer_id", "zone", name="uq_dns_cluster_peer_zone"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     peer_id: Mapped[int] = mapped_column(ForeignKey("dns_cluster_peers.id"), index=True)
     zone: Mapped[str] = mapped_column(String(253), index=True)
     action: Mapped[str] = mapped_column(String(16))  # upsert | delete
@@ -473,6 +492,17 @@ class LoginAttempt(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class LoginFailureEvent(Base):
+    """Bounded, pseudonymous input for host-level failed-login alerts."""
+
+    __tablename__ = "login_failure_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bucket: Mapped[str] = mapped_column(String(80), index=True)
+    source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    occurred_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 class LoginChallenge(Base):
     """Root-issued, short-lived proof that a password step succeeded."""
 
@@ -497,6 +527,9 @@ class Session(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
     revoked: Mapped[bool] = mapped_column(default=False)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    last_seen_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class ApiToken(Base):
@@ -524,7 +557,29 @@ class AuditLog(Base):
     params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     result: Mapped[str] = mapped_column(String(16))  # ok | failed
     detail: Mapped[str | None] = mapped_column(String(4000), nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
+    source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    changes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class ActionStep(Base):
+    """Bounded, redacted execution steps attached to one audit action."""
+
+    __tablename__ = "action_steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    audit_id: Mapped[int] = mapped_column(
+        ForeignKey("audit_log.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(160))
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    duration_ms: Mapped[int] = mapped_column(Integer)
+    result: Mapped[str] = mapped_column(String(16))  # ok | failed
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stdout_tail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stderr_tail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AccountEvent(Base):
@@ -578,6 +633,23 @@ class BandwidthDaily(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     date: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD
     bytes_served: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class UsageMonthlyAggregate(Base):
+    """One bounded monthly roll-up per account before raw samples expire."""
+
+    __tablename__ = "usage_monthly_aggregates"
+    __table_args__ = (UniqueConstraint("account_id", "month", name="uq_usage_monthly_account"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    month: Mapped[str] = mapped_column(String(7), index=True)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    disk_peak_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    inode_peak: Mapped[int] = mapped_column(Integer, default=0)
+    process_peak: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class Redirect(Base):
@@ -709,6 +781,7 @@ class PmaToken(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     db_name: Mapped[str] = mapped_column(String(64))
     ephemeral_db_user: Mapped[str] = mapped_column(String(64))
+    credential_enc: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
 
@@ -761,6 +834,7 @@ class BackupJob(Base):
     __tablename__ = "backup_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     kind: Mapped[str] = mapped_column(String(16))  # full | file | database | mailbox
     item_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -817,6 +891,7 @@ class WordPressJob(Base):
     __tablename__ = "wordpress_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     domain: Mapped[str] = mapped_column(String(253), index=True)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
@@ -840,6 +915,7 @@ class MalwareScanJob(Base):
     __tablename__ = "malware_scan_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     domain: Mapped[str | None] = mapped_column(String(253), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(24), default="pending")
@@ -890,6 +966,7 @@ class RestoreJob(Base):
     __tablename__ = "restore_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     backup_job_id: Mapped[int] = mapped_column(ForeignKey("backup_jobs.id"), index=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     kind: Mapped[str] = mapped_column(String(16))  # full | file | database | mailbox
@@ -976,6 +1053,9 @@ class WafSettings(Base):
     wp_login_limit: Mapped[int] = mapped_column(Integer, default=10)
     wp_xmlrpc_limit: Mapped[int] = mapped_column(Integer, default=5)
     wp_rate_window_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    detect_started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detect_review_due_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detect_reviewed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
@@ -1228,6 +1308,7 @@ class AppInstallJob(Base):
     __tablename__ = "app_install_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     domain: Mapped[str] = mapped_column(String(253))
     app_id: Mapped[str] = mapped_column(String(32))
@@ -1255,6 +1336,7 @@ class NamespaceMigrationJob(Base):
     __tablename__ = "namespace_migration_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
     total: Mapped[int] = mapped_column(Integer, default=0)
     completed_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -1282,6 +1364,7 @@ class CpanelImportJob(Base):
     __tablename__ = "cpanel_import_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     username: Mapped[str] = mapped_column(String(16), index=True)
     panel: Mapped[str] = mapped_column(String(16), default="cpanel")  # cpanel | directadmin
     source: Mapped[str] = mapped_column(String(32))  # upload | url | directadmin_remote
@@ -1332,6 +1415,10 @@ class NodeApp(Base):
     node_version: Mapped[str] = mapped_column(String(8))
     env_vars: Mapped[str] = mapped_column(String(8000), default="")
     enabled: Mapped[bool] = mapped_column(default=True)
+    # New apps use a root-owned systemd activation socket. Existing rows are
+    # migrated transactionally at daemon startup; "legacy" keeps their TCP
+    # route live until that migration has proved the socket-backed process.
+    backend_mode: Mapped[str] = mapped_column(String(16), default="socket")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -1360,6 +1447,7 @@ class PythonApp(Base):
     port: Mapped[int] = mapped_column(Integer, unique=True, index=True)
     env_vars: Mapped[str] = mapped_column(String(8000), default="")
     enabled: Mapped[bool] = mapped_column(default=True)
+    backend_mode: Mapped[str] = mapped_column(String(16), default="socket")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -1432,6 +1520,14 @@ NOTIFICATION_EVENT_TYPES = (
     "usage.limit.reached",
     "login.new",
     "dns.zone_activated",
+    "task.failed",
+    "host.disk",
+    "host.inodes",
+    "host.memory",
+    "host.load",
+    "host.login_burst",
+    "host.service_down",
+    "host.service_recovered",
 )
 
 
@@ -1488,6 +1584,14 @@ WEBHOOK_EVENT_TYPES = (
     "ssl.expiring",
     "usage.limit.reached",
     "dns.zone_activated",
+    "task.failed",
+    "host.disk",
+    "host.inodes",
+    "host.memory",
+    "host.load",
+    "host.login_burst",
+    "host.service_down",
+    "host.service_recovered",
 )
 
 
@@ -1522,6 +1626,7 @@ class WebhookDelivery(Base):
     __tablename__ = "webhook_deliveries"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     webhook_id: Mapped[int] = mapped_column(ForeignKey("webhooks.id"), index=True)
     event: Mapped[str] = mapped_column(String(64))
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -1765,6 +1870,7 @@ class BulkActionJob(Base):
     __tablename__ = "bulk_action_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     action: Mapped[str] = mapped_column(String(24))  # suspend|unsuspend|update_limits|notify
     action_params: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|completed|failed
@@ -1790,6 +1896,7 @@ class CommandRun(Base):
     __tablename__ = "command_runs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     kind: Mapped[str] = mapped_column(String(16))  # wpcli | composer
     target: Mapped[str] = mapped_column(String(1024))
@@ -1856,6 +1963,8 @@ class Plan(Base):
     pids_max: Mapped[int] = mapped_column(Integer)
     quota_soft_mb: Mapped[int] = mapped_column(Integer)
     quota_hard_mb: Mapped[int] = mapped_column(Integer)
+    inode_soft_limit: Mapped[int] = mapped_column(Integer, default=450_000)
+    inode_hard_limit: Mapped[int] = mapped_column(Integer, default=500_000)
     bandwidth_limit_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     database_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     email_account_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -1881,6 +1990,13 @@ class MonitoringSettings(Base):
     enabled: Mapped[bool] = mapped_column(default=True)
     admin_email: Mapped[str | None] = mapped_column(String(253), nullable=True)
     cooldown_minutes: Mapped[int] = mapped_column(Integer, default=30)
+    channels: Mapped[list] = mapped_column(JSON, default=lambda: ["email"])
+    disk_free_pct: Mapped[int] = mapped_column(Integer, default=10)
+    inode_free_pct: Mapped[int] = mapped_column(Integer, default=10)
+    memory_used_pct: Mapped[int] = mapped_column(Integer, default=95)
+    load_per_cpu: Mapped[float] = mapped_column(Float, default=2.0)
+    failed_login_threshold: Mapped[int] = mapped_column(Integer, default=20)
+    failed_login_window_minutes: Mapped[int] = mapped_column(Integer, default=10)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
@@ -1913,6 +2029,36 @@ class MonitoringAlertState(Base):
     is_down: Mapped[bool] = mapped_column(default=False)
     down_since: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_alert_sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RetentionSettings(Base):
+    """Server-wide history retention with an explicit investigation hold."""
+
+    __tablename__ = "retention_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    audit_days: Mapped[int] = mapped_column(Integer, default=400)
+    action_step_days: Mapped[int] = mapped_column(Integer, default=90)
+    task_output_days: Mapped[int] = mapped_column(Integer, default=90)
+    usage_raw_days: Mapped[int] = mapped_column(Integer, default=90)
+    usage_monthly_days: Mapped[int] = mapped_column(Integer, default=395)
+    bandwidth_days: Mapped[int] = mapped_column(Integer, default=400)
+    daemon_log_days: Mapped[int] = mapped_column(Integer, default=30)
+    support_bundle_days: Mapped[int] = mapped_column(Integer, default=7)
+    investigation_hold: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class SecurityPolicySettings(Base):
+    """Login policies which need durable enable time and grace semantics."""
+
+    __tablename__ = "security_policy_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    require_admin_2fa: Mapped[bool] = mapped_column(default=False)
+    admin_2fa_grace_days: Mapped[int] = mapped_column(Integer, default=7)
+    admin_2fa_enabled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class OnboardingState(Base):
@@ -1974,6 +2120,8 @@ class UpdateState(Base):
     changelog_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     tarball_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     checksum_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    release_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    release_asset_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     last_notified_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
@@ -2095,6 +2243,7 @@ class ImapMigrationJob(Base):
     __tablename__ = "imap_migration_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     mailbox: Mapped[str] = mapped_column(String(253), index=True)  # local@domain, the BORON destination mailbox
     source_host: Mapped[str] = mapped_column(String(253))
@@ -2164,6 +2313,7 @@ class UpdateJob(Base):
     __tablename__ = "update_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     kind: Mapped[str] = mapped_column(String(16), default="update")  # update | rollback
     status: Mapped[str] = mapped_column(String(16), default="pending")
     from_version: Mapped[str] = mapped_column(String(32))
@@ -2171,12 +2321,50 @@ class UpdateJob(Base):
     initiated_by: Mapped[str] = mapped_column(String(64))
     progress_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
     steps: Mapped[list] = mapped_column(JSON, default=list)  # [{step, status, detail, at}]
+    release_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    preflight_report: Mapped[dict] = mapped_column(JSON, default=dict)
+    advisories: Mapped[list] = mapped_column(JSON, default=list)
+    runtime_changes: Mapped[list] = mapped_column(JSON, default=list)
+    acknowledged_data_plane: Mapped[list] = mapped_column(JSON, default=list)
+    override_active_tasks: Mapped[bool] = mapped_column(default=False)
+    automatic_rollback_attempted: Mapped[bool] = mapped_column(default=False)
+    backup_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    finalizer_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     rolled_back: Mapped[bool] = mapped_column(default=False)
     old_dir: Mapped[str | None] = mapped_column(String(255), nullable=True)
     new_dir: Mapped[str | None] = mapped_column(String(255), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SupportBundleJob(Base):
+    """One bounded, redacted administrator diagnostic export.
+
+    The archive path is root-only and never returned through list/status
+    responses. Downloads are one-time and restricted to the administrator
+    session that created the row.
+    """
+
+    __tablename__ = "support_bundle_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True, default=correlation_id_for_new_work
+    )
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("panel_users.id"), index=True)
+    created_by_username: Mapped[str] = mapped_column(String(64))
+    include_names: Mapped[bool] = mapped_column(default=False)
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    progress_message: Mapped[str] = mapped_column(String(256), default="Queued")
+    file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    manifest: Mapped[list] = mapped_column(JSON, default=list)
+    error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ready_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class WordPressSiteState(Base):
@@ -2226,6 +2414,7 @@ class SnapshotPolicy(Base):
 class SnapshotRun(Base):
     __tablename__ = 'snapshot_runs'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     policy_id: Mapped[int] = mapped_column(ForeignKey('snapshot_policies.id'), index=True)
     destination_id: Mapped[int] = mapped_column(ForeignKey('snapshot_destinations.id'))
     account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'), index=True)
@@ -2247,6 +2436,7 @@ class SnapshotDownload(Base):
     """A private, expiring archive prepared asynchronously from a recovery point."""
     __tablename__ = 'snapshot_downloads'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     run_id: Mapped[int] = mapped_column(ForeignKey('snapshot_runs.id'), index=True)
     account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'), index=True)
     status: Mapped[str] = mapped_column(String(16), default='pending', index=True)
@@ -2264,6 +2454,7 @@ class SnapshotDownload(Base):
 class SnapshotRestore(Base):
     __tablename__ = 'snapshot_restores'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     run_id: Mapped[int] = mapped_column(ForeignKey('snapshot_runs.id'), index=True)
     account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'), index=True)
     selection: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -2290,6 +2481,7 @@ class SnapshotDestinationOperation(Base):
     """Durable result/progress for destination maintenance actions."""
     __tablename__ = 'snapshot_destination_operations'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     destination_id: Mapped[int] = mapped_column(ForeignKey('snapshot_destinations.id'), index=True)
     action: Mapped[str] = mapped_column(String(24))
     options: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -2327,6 +2519,7 @@ class BackupTelegramSettings(Base):
 class BackupNotificationDelivery(Base):
     __tablename__ = 'backup_notification_deliveries'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     channel: Mapped[str] = mapped_column(String(16))
     event: Mapped[str] = mapped_column(String(64))
     run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
@@ -2340,6 +2533,7 @@ class BackupNotificationDigest(Base):
     """Durable daily/weekly backup summaries waiting for their delivery window."""
     __tablename__ = 'backup_notification_digests'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     policy_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     channel: Mapped[str] = mapped_column(String(16))
     recipient: Mapped[str | None] = mapped_column(String(253), nullable=True)
@@ -2355,6 +2549,7 @@ class BackupNotificationDigest(Base):
 class PanelConfigJob(Base):
     __tablename__ = 'panel_config_jobs'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     status: Mapped[str] = mapped_column(String(16), default='pending', index=True)
     admin_port: Mapped[int] = mapped_column(Integer)
     customer_port: Mapped[int] = mapped_column(Integer)
@@ -2417,6 +2612,7 @@ class AccountArchiveImportJob(Base):
     __tablename__ = "account_archive_import_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     username: Mapped[str] = mapped_column(String(16), index=True)
     source_ref: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
@@ -2611,6 +2807,7 @@ class StackJob(Base):
     __tablename__ = "stack_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True, default=correlation_id_for_new_work)
     component: Mapped[str] = mapped_column(String(24), index=True)
     action: Mapped[str] = mapped_column(String(24))
     target: Mapped[str] = mapped_column(String(64))
@@ -2621,5 +2818,67 @@ class StackJob(Base):
     error: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PhpLifecycleSettings(Base):
+    """Singleton PHP-selection policy.
+
+    Installed EOL runtimes remain usable for existing sites.  Once the
+    configured date is reached they are omitted only from the choices for a
+    newly-created site; existing assignments remain visible and editable.
+    """
+
+    __tablename__ = "php_lifecycle_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    hide_eol_for_new_domains_after: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class IsolationTestResult(Base):
+    """Last durable isolation self-test for one hosting account."""
+
+    __tablename__ = "isolation_test_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(24))
+    checks: Mapped[list] = mapped_column(JSON, default=list)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    config_fingerprint: Mapped[str] = mapped_column(String(64))
+    tested_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ControlTask(Base):
+    """Durable progress for formerly blocking control-plane operations.
+
+    Safe parameters/results remain queryable. Inputs and one-time output
+    credentials use the daemon's authenticated encryption and are never part
+    of the unified task history response.
+    """
+
+    __tablename__ = "control_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True, default=correlation_id_for_new_work
+    )
+    operation: Mapped[str] = mapped_column(String(48), index=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    progress_pct: Mapped[int] = mapped_column(Integer, default=0)
+    progress_message: Mapped[str] = mapped_column(String(256), default="Queued")
+    safe_params: Mapped[dict] = mapped_column(JSON, default=dict)
+    secret_params_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    one_time_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_reference: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    initiated_by: Mapped[str] = mapped_column(String(64))
+    initiated_role: Mapped[str] = mapped_column(String(16))
+    source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

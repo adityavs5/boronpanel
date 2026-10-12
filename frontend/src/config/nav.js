@@ -5,7 +5,8 @@ import {
   Webhook, BellRing, LockKeyhole, DownloadCloud, Cpu, HardDrive, TerminalSquare, Wrench,
   History, FileCode2, Cloud, Layers, Palette, AlertOctagon, BookOpen, ArrowUpCircle,
   DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban, ShieldBan, FileText, Store,
-  ExternalLink, Zap, Shield, GaugeCircle, Route, ServerCog,
+  ExternalLink, Zap, Shield, GaugeCircle, Route, ServerCog, Stethoscope,
+  ArchiveRestore,
 } from 'lucide-react'
 import { WordPressIcon, RedisIcon, NodeIcon, PythonIcon, GitIcon } from '@/components/icons/BrandIcons'
 
@@ -14,6 +15,7 @@ import { WordPressIcon, RedisIcon, NodeIcon, PythonIcon, GitIcon } from '@/compo
 export const customerNav = [
   { section: 'Overview' },
   { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard },
+  { label: 'Tasks', to: '/tasks', icon: ListChecks },
   { section: 'Websites' },
   { label: 'Domains', to: '/domains', icon: Globe },
   { label: 'Subdomains', to: '/subdomains', icon: Network },
@@ -46,6 +48,7 @@ export const customerNav = [
   { label: 'SSH Keys', to: '/ssh', icon: KeyRound },
   { label: 'Terminal', to: '/terminal', icon: TerminalSquare },
   { label: 'Disk Usage', to: '/disk-usage', icon: HardDrive },
+  { label: 'Why is my site down?', to: '/site-health', icon: Activity },
   { label: 'Logs', to: '/logs', icon: ScrollText },
   { label: 'Dev Tools', to: '/devtools', icon: Wrench },
   { label: 'Change Password', to: '/change-password', icon: KeyRound },
@@ -69,6 +72,9 @@ export const adminNav = [
   { label: 'Resellers', to: '/resellers', icon: Store },
   { label: 'Administrators', to: '/administrators', icon: ShieldCheck },
   { label: 'Server Health', to: '/health', icon: Activity },
+  { label: 'Diagnostics', to: '/diagnostics', icon: Stethoscope },
+  { label: 'Data Retention', to: '/retention', icon: ArchiveRestore },
+  { label: 'Tasks', to: '/tasks', icon: ListChecks },
   { label: 'Resource Manager', to: '/resource-manager', icon: Cpu },
   { label: 'Filesystem Isolation', to: '/filesystem-isolation', icon: Boxes },
   { label: 'Security Center', to: '/security-center', icon: ShieldCheck },

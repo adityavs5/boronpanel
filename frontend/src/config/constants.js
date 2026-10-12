@@ -30,6 +30,14 @@ export const NOTIFICATION_EVENTS = [
   { key: 'usage.limit.reached', label: 'Resource usage alert' },
   { key: 'login.new', label: 'New panel login' },
   { key: 'dns.zone_activated', label: 'DNS zone activated' },
+  { key: 'task.failed', label: 'Critical task failed' },
+  { key: 'host.disk', label: 'Host disk space low' },
+  { key: 'host.inodes', label: 'Host inode space low' },
+  { key: 'host.memory', label: 'Host memory pressure' },
+  { key: 'host.load', label: 'Host load pressure' },
+  { key: 'host.login_burst', label: 'Failed-login burst' },
+  { key: 'host.service_down', label: 'Host service down' },
+  { key: 'host.service_recovered', label: 'Host service recovered' },
 ]
 
 export const WEBHOOK_EVENTS = [
@@ -47,4 +55,12 @@ export const WEBHOOK_EVENTS = [
   'ssl.expiring',
   'usage.limit.reached',
   'dns.zone_activated',
+  'task.failed',
+  'host.disk',
+  'host.inodes',
+  'host.memory',
+  'host.load',
+  'host.login_burst',
+  'host.service_down',
+  'host.service_recovered',
 ]

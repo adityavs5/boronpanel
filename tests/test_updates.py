@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import os
+import sqlite3
 import tarfile
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from shared.config import settings
+from shared.migrations import CURRENT_SCHEMA_VERSION
 from shared.models import UpdateJob, UpdateState
 from shared.validation import ValidationError
 from shared.release_signature import signed_message, verify_signature
@@ -65,6 +67,19 @@ def _make_tarball_bytes(version="1.0.1", members_extra=None) -> bytes:
         f"{prefix}/requirements.txt": "httpx\n",
         f"{prefix}/daemon/server.py": "# stub\n",
         f"{prefix}/api/main.py": "# stub\n",
+        f"{prefix}/release-metadata.json": json.dumps({
+            "format": 1,
+            "minimum_source_version": "0.0.0",
+            "maximum_source_version": None,
+            "data_plane_reloads": [],
+            "control_plane_restarts": ["boron-provisiond.service", "boron-api.service"],
+            "runtime_rewrites": [],
+        }),
+        f"{prefix}/schema-compat.json": json.dumps({
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "minimum_supported_schema": 0,
+            "maximum_supported_schema": CURRENT_SCHEMA_VERSION,
+        }),
     }
     if members_extra:
         files.update(members_extra)
@@ -153,6 +168,68 @@ def _get_job(job_id: int) -> dict:
         return updates._job_to_dict(session.get(UpdateJob, job_id))
 
 
+def test_startup_recovery_fails_only_abandoned_pre_swap_jobs(update_env):
+    pending = _make_job(status="pending")
+    running = _make_job(status="running")
+    finalizing = _make_job(status="finalizing")
+    completed = _make_job(status="completed")
+
+    assert updates.recover_interrupted_jobs() == 2
+
+    for job_id in (pending, running):
+        job = _get_job(job_id)
+        assert job["status"] == "failed"
+        assert job["progress_message"] == "failed (interrupted before swap)"
+        assert "active panel release was left unchanged" in job["error"]
+        assert "reference:" in job["error"]
+        assert job["completed_at"] is not None
+        assert job["steps"][-1]["step"] == "recovery"
+        assert job["steps"][-1]["status"] == "failed"
+
+    assert _get_job(finalizing)["status"] == "finalizing"
+    assert _get_job(completed)["status"] == "completed"
+
+
+def test_startup_recovery_is_idempotent(update_env):
+    job_id = _make_job(status="running")
+    assert updates.recover_interrupted_jobs() == 1
+    first = _get_job(job_id)
+    assert updates.recover_interrupted_jobs() == 0
+    assert _get_job(job_id) == first
+
+
+def test_preflight_refuses_a_stopped_required_service(update_env, monkeypatch):
+    monkeypatch.setattr(updates.diagnostics, "run_all", lambda _params: {"checks": [
+        {
+            "id": "database", "status": "pass", "critical": True,
+            "explanation": "SQLite integrity is valid",
+        },
+        {
+            "id": "root_helper", "status": "pass", "critical": True,
+            "explanation": "Root helper responded",
+        },
+        {
+            "id": "ports", "status": "pass", "critical": True,
+            "explanation": "Panel listener is active",
+        },
+        {
+            "id": "service_mariadb", "status": "fail", "critical": False,
+            "explanation": "mariadb.service is loaded but its state is inactive.",
+        },
+    ]})
+
+    report = updates.preflight({
+        "release_metadata": updates._legacy_release_metadata(),
+        "release_asset_bytes": 0,
+    })
+
+    assert report["can_start"] is False
+    failure = next(row for row in report["critical_failures"]
+                   if row["id"] == "diagnostic_service_mariadb")
+    assert failure["status"] == "fail"
+    assert "inactive" in failure["detail"]
+
+
 # --- version comparison -------------------------------------------------------------
 
 
@@ -237,6 +314,20 @@ def test_check_refuses_assets_outside_github_releases(isolated_db, monkeypatch):
     out = updates.check({"force": True})
     assert "refusing release asset URL" in (out["error"] or "")
     assert out["latest_version"] is None
+
+
+@pytest.mark.parametrize("field", ["draft", "prerelease"])
+def test_update_discovery_refuses_unpromoted_releases(isolated_db, monkeypatch, field):
+    def handler(request):
+        data = _release_json("99.0.0")
+        data[field] = True
+        return httpx.Response(200, json=data)
+
+    monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
+    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
+    out = updates.check({"force": True})
+    assert out["latest_version"] is None
+    assert "not eligible" in (out["error"] or "")
 
 
 # --- download safety ------------------------------------------------------------------
@@ -547,6 +638,32 @@ def test_rollback_candidate_none_without_history(update_env):
         updates.start_rollback({"initiated_by": "admin"})
 
 
+def test_legacy_backup_step_supplies_rollback_config_snapshot(update_env):
+    from shared.db import write_session
+
+    backup = Path(settings.update_backup_dir) / "pre-update-1.0.1-fixture"
+    backup.mkdir(parents=True)
+    job_id = _make_job(status="completed")
+    with write_session() as session:
+        job = session.get(UpdateJob, job_id)
+        job.backup_path = None
+        job.steps = [{"step": "backup", "status": "ok", "detail": str(backup)}]
+    with write_session() as session:
+        assert updates._recorded_backup_path(session.get(UpdateJob, job_id)) == backup
+
+
+def test_legacy_backup_step_refuses_path_outside_backup_root(update_env):
+    from shared.db import write_session
+
+    job_id = _make_job(status="completed")
+    with write_session() as session:
+        job = session.get(UpdateJob, job_id)
+        job.backup_path = None
+        job.steps = [{"step": "backup", "status": "ok", "detail": "/etc/boron"}]
+    with write_session() as session:
+        assert updates._recorded_backup_path(session.get(UpdateJob, job_id)) is None
+
+
 def test_rollback_candidate_found_and_job_queued(update_env, monkeypatch):
     root, live = update_env["root"], update_env["live"]
     new_dir = root / "boron-1.0.1"
@@ -576,6 +693,37 @@ def test_rollback_candidate_gone_when_old_dir_pruned(update_env):
               old_dir=str(root / "boron-0.9.0"),  # doesn't exist
               new_dir=str(new_dir))
     assert updates.rollback_candidate() is None
+
+
+def test_rollback_is_refused_when_database_has_newer_breaking_revision(update_env):
+    root, live = update_env["root"], update_env["live"]
+    new_dir = root / "boron-1.0.1"
+    new_dir.mkdir()
+    live.unlink()
+    live.symlink_to(new_dir)
+    _make_job(
+        status="completed",
+        to_version="1.0.1",
+        old_dir=str(update_env["live_target"]),
+        new_dir=str(new_dir),
+    )
+    with sqlite3.connect(settings.db_path) as connection:
+        future_revision = CURRENT_SCHEMA_VERSION + 1
+        connection.execute(
+            "INSERT INTO schema_migrations"
+            "(revision, name, compatibility, checksum, app_version, applied_at) "
+            "VALUES (?, 'contract', 'breaking', 'x', '4.0.0', '2099-01-01')",
+            (future_revision,),
+        )
+        connection.execute(
+            "UPDATE control_plane_metadata SET value=? WHERE key='schema_version'",
+            (str(future_revision),),
+        )
+
+    candidate = updates.rollback_candidate()
+    assert candidate["schema_compatibility"]["compatible"] is False
+    with pytest.raises(ValidationError, match="cannot safely use the current database"):
+        updates.start_rollback({"initiated_by": "admin"})
 
 
 # --- history / status / log --------------------------------------------------------------
@@ -689,6 +837,11 @@ def test_full_update_job_pipeline(update_env, monkeypatch):
     # newer than the version under test.
     monkeypatch.setattr(updates, "BORON_VERSION", "1.0.0")
     _mock_github(monkeypatch, version="1.0.1")
+    monkeypatch.setattr(updates.diagnostics, "run_all", lambda _params: {"checks": [
+        {"id": "database", "status": "pass", "critical": True, "explanation": "ok"},
+        {"id": "root_helper", "status": "pass", "critical": True, "explanation": "ok"},
+        {"id": "ports", "status": "pass", "critical": True, "explanation": "ok"},
+    ]})
 
     ran = []
 
@@ -711,7 +864,7 @@ def test_full_update_job_pipeline(update_env, monkeypatch):
     updates._executor.submit(lambda: None).result()  # drain the single worker
 
     job = _get_job(job_id)
-    assert job["status"] == "finalizing", job
+    assert job["status"] == "finalizing", json.dumps(job, default=str, indent=2)
     steps = {s["step"]: s["status"] for s in job["steps"]}
     assert steps["preflight"] == "ok"
     assert steps["backup"] == "ok"
@@ -734,6 +887,9 @@ def test_full_update_job_pipeline(update_env, monkeypatch):
     # The handoff argv: systemd-run + the finalizer with matching dirs.
     handoff = ran[-1]
     assert handoff[0] == "systemd-run"
+    assert "--property=Restart=on-abnormal" in handoff
+    assert "--property=RestartSec=1s" in handoff
+    assert "--property=StartLimitBurst=3" in handoff
     assert "--mode" in handoff and handoff[handoff.index("--mode") + 1] == "update"
     assert handoff[handoff.index("--new-dir") + 1] == str(update_env["root"] / "boron-1.0.1")
     assert handoff[handoff.index("--old-dir") + 1] == str(update_env["live_target"])
@@ -913,7 +1069,7 @@ def test_mail_guard_update_gates_version_switch(update_env, tmp_path, monkeypatc
     job_id = _make_job(status="pending", to_version="99.0.1")
     commands = []
     handoffs = []
-    for name in ('_preflight', '_build_venv', '_run_migrations'):
+    for name in ('_preflight', '_validate_staged_release_metadata', '_build_venv', '_run_migrations'):
         monkeypatch.setattr(updates, name, lambda *args: None)
     monkeypatch.setattr(updates, '_backup', lambda *args: str(tmp_path / 'backup'))
     monkeypatch.setattr(updates, '_download_and_verify', lambda *args: 'archive')

@@ -12,9 +12,11 @@ Every release `vX.Y.Z` carries:
 
 | Asset | What it is |
 |---|---|
-| `boron-X.Y.Z.tar.gz` | The deployable tree: `api/`, `daemon/`, `shared/`, `scripts/`, `deploy/`, `templates/`, `static/` (with the **freshly built** SPA bundle in `static/dist`), `tests/` (used by the updater's pre-flight), `docs/`, `version.py`, `requirements.txt`, `pytest.ini`, `README.md` — all under a single `boron-X.Y.Z/` top-level directory. |
+| `boron-X.Y.Z.tar.gz` | The deployable tree: `api/`, `daemon/`, `shared/`, `scripts/`, `deploy/`, `templates/`, `static/` (with the **freshly built** SPA bundle in `static/dist`), `frontend/` source, `tests/` (used by the updater's pre-flight), `docs/`, `version.py`, `requirements.txt`, `pytest.ini`, `README.md` — all under a single `boron-X.Y.Z/` top-level directory. |
 | `boron-X.Y.Z.sha256` | `sha256sum` output for the tarball. The update daemon aborts on any mismatch. |
 | `boron-X.Y.Z.tar.gz.sig` | Mandatory detached Ed25519 signature over the release version and archive SHA256 digest. |
+| `boron-X.Y.Z.metadata.json` | Signed compatibility, service-reload and runtime-rewrite declarations. |
+| `boron-X.Y.Z.metadata.json.sig` | Mandatory detached signature for the metadata document. |
 
 What is **never** in the tarball, by construction: the tarball is built
 from `git archive HEAD` (tracked files only), so `secrets.env`,
@@ -22,8 +24,8 @@ from `git archive HEAD` (tracked files only), so `secrets.env`,
 leak into it — none of those are tracked. `scripts/release.sh` additionally
 refuses to package if anything secret/database/log-shaped is found in the
 staged tree, and `tests/test_release.py` pins the same invariants. The
-`frontend/` source tree is dropped from the tarball (only the built bundle
-ships); everything else tracked in git is included.
+`frontend/` source tree is retained because fresh installation rebuilds the
+SPA; ignored dependencies and build caches remain excluded.
 
 ## Prerequisites (release machine, not production)
 
@@ -66,7 +68,8 @@ A real run, in order:
    version in from `version.py` at build time).
 5. **Stage** — `git archive HEAD` into a temp dir under a
    `boron-X.Y.Z/` prefix, overlaying the bumped `version.py` and the
-   freshly built `static/dist`; drops `frontend/`; refuses to continue if
+   freshly built `static/dist`; retains the installable `frontend/` source;
+   refuses to continue if
    anything secret-shaped is present.
 6. **Artifacts** — deterministic-ish tarball (sorted members, root
    ownership) into `dist/` (gitignored; override with `--output-dir`),

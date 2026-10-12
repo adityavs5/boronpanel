@@ -35,6 +35,8 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
           php: { installed: [{ target: '8.3', installed: true, version: '8.3.25' }], targets: [{ target: '8.3', installed: true, version: '8.3.25' }, { target: '8.4', installed: false, version: null }] },
           mariadb: { installed: true, version: '10.11.13', targets: ['10.11'] },
         }, jobs: [], policy: { mariadb: 'Boron supports the Ubuntu 24.04 MariaDB 10.11 series.' },
+        php_policy: { hide_eol_for_new_domains_after: null },
+        php_session_migration: { affected_count: 0, warning: 'Existing PHP sessions would end.' },
       }
       else if (path === '/api/v1/admin/stack/preview') data = { component: 'php', action: 'install', target: '8.4', packages: ['lsphp84'], free_bytes: 9999999999, blockers: [], impact: 'The PHP runtime will be added.', rollback: 'Configuration is backed up first.' }
       await route.fulfill({ json: data })

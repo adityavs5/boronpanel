@@ -11,7 +11,7 @@ import pytest
 
 warnings.filterwarnings("ignore")
 
-from fastapi.testclient import TestClient
+from testsupport.sync_asgi import SyncASGIClient as TestClient
 
 import api.main as main
 from api.routers import filebrowser as fbr

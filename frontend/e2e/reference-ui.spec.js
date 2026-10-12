@@ -31,6 +31,7 @@ for (const skin of ['evolution', 'paper-lantern']) for (const mode of ['light', 
       await route.fulfill({ json: data })
     })
     await page.goto('/app/databases')
+    await page.getByRole('button', { name: 'Create database', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Create New Database', exact: true })).toBeVisible()
     await page.getByRole('textbox', { name: 'New database', exact: false }).fill('shop')
     await page.getByRole('button', { name: 'Create database', exact: true }).click()

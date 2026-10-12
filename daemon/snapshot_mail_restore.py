@@ -55,6 +55,27 @@ def selected_mailboxes(account, metadata, addresses):
                  metadata=metadata[domain]['mailboxes'][local]) for domain, local in sorted(selected)]
 
 
+def _require_restore_capacity(account, selected):
+    """Reject ordinary quota errors before guards or live state are touched."""
+    from daemon import resource_limits
+    from shared.models import MailUser
+    domains = {entry['domain'] for entry in selected}
+    with write_session() as session:
+        current = session.get(Account, account.id)
+        if current is None or current.username != account.username or current.status != 'active':
+            raise ValidationError('Restore account is no longer active')
+        owners = {row.domain: row.id for row in session.scalars(select(MailDomain).where(
+            MailDomain.domain.in_(domains), MailDomain.account_id == account.id)).all()}
+        if set(owners) != domains:
+            raise ValidationError('Mail domain ownership changed during provisioning')
+        registered = {(row.domain, row.local_part) for row in session.scalars(select(MailUser).where(
+            MailUser.domain.in_(domains))).all()}
+        additions = sum((entry['domain'], entry['local_part']) not in registered for entry in selected)
+        if additions:
+            resource_limits.require_capacity(session, account.id, 'mailbox', additions=additions)
+    return additions
+
+
 def prepare(account, repo, snapshot_id, addresses):
     """Decrypt and rebuild selected mail in exclusive private staging.
 
@@ -267,6 +288,10 @@ def provision_mailboxes(account, prepared, acquired, restore_id):
         raise ValidationError('Mailbox guard selection does not match preparation')
     with guard.owned_guards(acquired['entries'], restore_id):
         pass
+    # Recheck under the serialized worker lock immediately before creation;
+    # the earlier preflight in run_restore exists for a clean user-facing
+    # rejection before guards are acquired.
+    _require_restore_capacity(account, selected)
     receipt = _path(Path(prepared['work']) / 'provisioning.json')
     record = dict(format=1, account_id=account.id, restore_id=restore_id, status='planned',
                   mailboxes=[dict(domain=entry['domain'], local_part=entry['local_part'], action=entry['action'])
@@ -539,6 +564,14 @@ def run_restore(account, repo, snapshot_id, addresses, restore_id, checkpoint, *
     work = prepared['work']
     # Persist the work reference before guards or live storage can be changed.
     checkpoint('prepared', {'work': work})
+    metadata = {}
+    for entry in prepared['entries']:
+        metadata.setdefault(entry['domain'], {'mailboxes': {}})['mailboxes'][entry['local_part']] = entry['metadata']
+    selected = selected_mailboxes(
+        account, metadata,
+        [entry['local_part'] + '@' + entry['domain'] for entry in prepared['entries']],
+    )
+    _require_restore_capacity(account, selected)
     acquired = acquire_guards(account, prepared, restore_id)
     checkpoint('guarded', {'work': work})
     provision_mailboxes(account, prepared, acquired, restore_id)

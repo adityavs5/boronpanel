@@ -34,9 +34,17 @@ class StartUpdateBody(BaseModel):
     confirm: bool = False
     totp_code: str | None = None
     to_version: str | None = None
+    acknowledge_data_plane: bool = False
+    override_active_tasks: bool = False
 
 
 class RollbackBody(BaseModel):
+    confirm: bool = False
+    totp_code: str | None = None
+
+
+class RestoreDatabaseBody(BaseModel):
+    backup_id: str
     confirm: bool = False
     totp_code: str | None = None
 
@@ -65,6 +73,16 @@ def update_check_now(identity: Identity = Depends(get_identity)):
     return call_daemon("update.check", identity, force=True)
 
 
+@admin_api_router.get("/preflight")
+def update_preflight(override_active_tasks: bool = False,
+                     identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon(
+        "update.preflight", identity,
+        override_active_tasks=override_active_tasks,
+    )
+
+
 @admin_api_router.post("/start")
 def update_start(body: StartUpdateBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -73,6 +91,8 @@ def update_start(body: StartUpdateBody, identity: Identity = Depends(get_identit
         "update.start", identity,
         initiated_by=identity.username, to_version=body.to_version,
         confirm=body.confirm, totp_code=body.totp_code,
+        acknowledge_data_plane=body.acknowledge_data_plane,
+        override_active_tasks=body.override_active_tasks,
     )
 
 
@@ -82,6 +102,23 @@ def update_rollback(body: RollbackBody, identity: Identity = Depends(get_identit
     _require_confirmed_admin_action(identity, body.confirm)
     return call_daemon("update.rollback", identity, initiated_by=identity.username,
                        confirm=body.confirm, totp_code=body.totp_code)
+
+
+@admin_api_router.get("/database-backups")
+def database_backups(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("update.database_backups", identity)
+
+
+@admin_api_router.post("/database-restore")
+def database_restore(body: RestoreDatabaseBody,
+                     identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    _require_confirmed_admin_action(identity, body.confirm)
+    return call_daemon(
+        "update.database_restore", identity,
+        backup_id=body.backup_id, confirm=True, totp_code=body.totp_code,
+    )
 
 
 @admin_api_router.get("/log")

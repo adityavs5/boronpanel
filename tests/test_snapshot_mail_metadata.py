@@ -5,6 +5,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+from testsupport.host_requirements import chown_or_skip
 from sqlalchemy import select
 from daemon import mail, snapshot_mail_metadata as metadata, snapshot_jobs as jobs, snapshot_storage as storage
 from shared.config import settings
@@ -246,7 +247,7 @@ def test_encrypted_mail_job_contains_messages_and_private_recovery_metadata(mail
         'LoadState': 'loaded', 'ActiveState': 'active', 'SubState': 'running', 'ControlPID': '0'})
     for directory in (message.parents[3], message.parents[2], message.parents[1],
                       *[message.parents[1] / name for name in ('cur', 'new', 'tmp')]):
-        os.chown(directory, 150, 150)
+        chown_or_skip(directory, 150, 150)
         directory.chmod(0o700)
     message.write_bytes(b'mail received after recovery point')
     checkpoints = []

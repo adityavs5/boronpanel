@@ -44,7 +44,7 @@ from shared.db import write_session
 from shared.models import Account, DatabaseGrant, Domain, PmaToken, utcnow
 from shared.validation import validate_username, validate_domain, ValidationError
 
-from daemon import mariadb
+from daemon import appcrypto, database_operations, db_governor, mariadb
 from daemon.handlers_database import _resolve_existing_db_name
 
 logger = logging.getLogger("borond.pma")
@@ -52,6 +52,7 @@ logger = logging.getLogger("borond.pma")
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 _env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)
 _TOKEN_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+PMA_RESOURCE_WINDOW_SECONDS = 60 * 60
 
 
 class PmaError(Exception):
@@ -140,6 +141,7 @@ def _write_token_file(token_file: Path, payload: dict) -> None:
         os.close(dir_fd)
 
 
+@database_operations.serialized
 def create_token(params: dict) -> dict:
     username = validate_username(params["username"])
     db_name = _resolve_existing_db_name(username, params["name"])
@@ -155,13 +157,73 @@ def create_token(params: dict) -> dict:
         if grant is None:
             raise PmaError(f"database '{db_name}' not found for account '{username}'")
         account_id = account.id
+        existing_rows = session.scalars(
+            select(PmaToken).where(
+                PmaToken.account_id == account_id,
+                PmaToken.db_name == db_name,
+            ).order_by(PmaToken.id.desc())
+        ).all()
+        now = utcnow()
+        existing = next((row for row in existing_rows
+                         if (row.expires_at.replace(tzinfo=dt.timezone.utc)
+                             if row.expires_at.tzinfo is None else row.expires_at) > now
+                         and row.credential_enc), None)
+        existing_data = None if existing is None else {
+            "id": existing.id,
+            "token_hash": existing.token_hash,
+            "user": existing.ephemeral_db_user,
+            "password": appcrypto.decrypt_secret(existing.credential_enc or ""),
+        }
+        stale_data = [
+            (row.id, row.token_hash, row.ephemeral_db_user)
+            for row in existing_rows if existing is None or row.id != existing.id
+        ]
 
-    ephemeral_user = f"boronphpmyadminlogin_{secrets.token_hex(6)}"
-    ephemeral_password = mariadb.generate_password()
-    mariadb.create_db_user(ephemeral_user, ephemeral_password)
+    for stale_id, stale_hash, stale_user in stale_data:
+        if not existing_data or stale_user != existing_data["user"]:
+            mariadb.drop_db_user(stale_user)
+        try:
+            _token_file_for_hash(stale_hash).unlink(missing_ok=True)
+        except PmaError:
+            logger.warning("invalid phpMyAdmin token hash in stale row %s", stale_id)
+        with write_session() as session:
+            stale = session.get(PmaToken, stale_id)
+            if stale is not None:
+                session.delete(stale)
+
+    stable_suffix = hashlib.sha256(f"{account_id}:{db_name}".encode()).hexdigest()[:16]
+    ephemeral_user = f"boronpma_{account_id:x}_{stable_suffix}"
+    reuse = bool(
+        existing_data
+        and existing_data["user"] == ephemeral_user
+        and existing_data["password"]
+        and mariadb.user_exists(ephemeral_user)
+    )
+    ephemeral_password = existing_data["password"] if reuse else mariadb.generate_password()
+    created_user = False
+    if not reuse:
+        # Retire a legacy/random or incomplete principal before publishing the
+        # stable per-account/database principal. Reissuing a one-click token
+        # during the same MariaDB resource window then reuses its counters.
+        if existing_data:
+            mariadb.drop_db_user(existing_data["user"])
+            _token_file_for_hash(existing_data["token_hash"]).unlink(missing_ok=True)
+            with write_session() as session:
+                stale = session.get(PmaToken, existing_data["id"])
+                if stale is not None:
+                    session.delete(stale)
+        if mariadb.user_exists(ephemeral_user):
+            mariadb.drop_db_user(ephemeral_user)
+        mariadb.create_db_user(ephemeral_user, ephemeral_password)
+        created_user = True
     token_file = None
     try:
-        mariadb.grant_exact_database(db_name, ephemeral_user)
+        if created_user:
+            mariadb.grant_exact_database(db_name, ephemeral_user)
+            # Apply native limits once per stable resource window. Recreating
+            # or re-limiting a random user on every click refreshes the
+            # account's hourly query/update/connection allowance.
+            db_governor.apply_new_user(account_id, ephemeral_user, "localhost")
 
         token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(token.encode()).hexdigest()
@@ -179,19 +241,27 @@ def create_token(params: dict) -> dict:
         )
 
         with write_session() as session:
-            session.add(
-                PmaToken(
+            row = session.get(PmaToken, existing_data["id"]) if reuse else None
+            if row is None:
+                row = PmaToken(
                     token_hash=token_hash,
                     account_id=account_id,
                     db_name=db_name,
                     ephemeral_db_user=ephemeral_user,
-                    expires_at=utcnow() + dt.timedelta(seconds=settings.pma_token_ttl_seconds),
+                    credential_enc=appcrypto.encrypt_secret(ephemeral_password),
+                    expires_at=utcnow() + dt.timedelta(seconds=PMA_RESOURCE_WINDOW_SECONDS),
                 )
-            )
+                session.add(row)
+            else:
+                row.token_hash = token_hash
+                row.expires_at = utcnow() + dt.timedelta(seconds=PMA_RESOURCE_WINDOW_SECONDS)
+        if reuse and existing_data["token_hash"] != token_hash:
+            _token_file_for_hash(existing_data["token_hash"]).unlink(missing_ok=True)
     except Exception:
         if token_file is not None:
             token_file.unlink(missing_ok=True)
-        mariadb.drop_db_user(ephemeral_user)
+        if created_user:
+            mariadb.drop_db_user(ephemeral_user)
         raise
 
     if not pma_hostname:
@@ -207,6 +277,7 @@ def create_token(params: dict) -> dict:
     }
 
 
+@database_operations.serialized_worker
 def cleanup_expired_tokens() -> int:
     """Called periodically (scripts/pma_token_cleanup.py, system cron,
     mirroring usage_snapshot.py/backup_scheduler.py's established

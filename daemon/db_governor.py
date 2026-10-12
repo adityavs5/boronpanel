@@ -14,10 +14,10 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from daemon import mariadb
+from daemon import database_operations, mariadb
 from shared.db import write_session
 from shared.models import (
-    Account, DatabaseUser, DbGovernorEvent, DbGovernorPolicy, FeatureControl,
+    Account, DatabaseUser, DbGovernorEvent, DbGovernorPolicy, FeatureControl, PmaToken,
     utcnow,
 )
 from shared.validation import ValidationError, validate_username
@@ -56,11 +56,18 @@ def _policy_dict(row: DbGovernorPolicy | None) -> dict:
 
 
 def _owned_users(session, account_id: int) -> list[tuple[str, str]]:
-    return list(session.execute(
+    users = set(session.execute(
         select(DatabaseUser.db_user, DatabaseUser.host)
         .where(DatabaseUser.account_id == account_id)
         .order_by(DatabaseUser.db_user)
     ).all())
+    # Retained token rows represent still-live SQL principals even after the
+    # launch token expires: cleanup keeps the row whenever native revocation
+    # fails. They must therefore remain governed until the user is dropped.
+    users.update((name, "localhost") for name in session.scalars(
+        select(PmaToken.ephemeral_db_user).where(PmaToken.account_id == account_id)
+    ).all())
+    return sorted(users)
 
 
 def _safe_limit(value, name: str, *, maximum: int = 1_000_000) -> int | None:
@@ -70,6 +77,17 @@ def _safe_limit(value, name: str, *, maximum: int = 1_000_000) -> int | None:
     if number < 1 or number > maximum:
         raise ValidationError(f"{name} must be between 1 and {maximum}, or Unlimited")
     return number
+
+
+def _statement_time_is_unsupported(exc: Exception) -> bool:
+    """Recognize only MariaDB's explicit syntax/unsupported-feature errors.
+
+    Clearing an optional limit is harmless on a build that never implements
+    the clause. Permission, connection, and server failures must propagate so
+    callers can roll back instead of committing contradictory durable state.
+    """
+    code = exc.args[0] if getattr(exc, "args", ()) else None
+    return code in {1064, 1235}
 
 
 def _apply_user(user: str, host: str, policy: DbGovernorPolicy | None) -> None:
@@ -102,8 +120,9 @@ def _apply_user(user: str, host: str, policy: DbGovernorPolicy | None) -> None:
         elif policy is None or policy.max_statement_time is None:
             try:
                 cur.execute(f"ALTER USER {account} WITH MAX_STATEMENT_TIME 0")
-            except Exception:
-                pass
+            except Exception as exc:
+                if not _statement_time_is_unsupported(exc):
+                    raise
     finally:
         conn.close()
 
@@ -118,6 +137,25 @@ def _snapshot_policy(policy: DbGovernorPolicy | None) -> SimpleNamespace | None:
         max_connections_per_hour=policy.max_connections_per_hour,
         max_statement_time=policy.max_statement_time,
     )
+
+
+def _restore_native_users(
+    touched: list[tuple[str, str]],
+    prior_policy: SimpleNamespace | None,
+    original: Exception,
+    operation: str,
+) -> None:
+    rollback_errors = []
+    for user, host in reversed(touched):
+        try:
+            _apply_user(user, host, prior_policy)
+        except Exception as rollback_exc:
+            rollback_errors.append(f"{user}@{host}: {rollback_exc}")
+    if rollback_errors:
+        raise RuntimeError(
+            f"DB Governor {operation} failed ({original}); restoring prior limits also failed for "
+            + "; ".join(rollback_errors)
+        ) from original
 
 
 def _effective_enforced_policy(session, account_id: int) -> SimpleNamespace | None:
@@ -141,14 +179,20 @@ def _effective_enforced_policy(session, account_id: int) -> SimpleNamespace | No
 def apply_new_user(account_id: int, user: str, host: str) -> dict:
     """Apply the effective account policy before a new login is exposed."""
     with write_session() as session:
-        if session.get(Account, account_id) is None:
-            raise ValidationError("Account not found")
-        policy = _effective_enforced_policy(session, account_id)
+        return apply_new_user_in_session(session, account_id, user, host)
+
+
+def apply_new_user_in_session(session, account_id: int, user: str, host: str) -> dict:
+    """Session-aware variant for restore transactions holding SQLite state."""
+    if session.get(Account, account_id) is None:
+        raise ValidationError("Account not found")
+    policy = _effective_enforced_policy(session, account_id)
     if policy is not None:
         _apply_user(user, host, policy)
     return {"applied": policy is not None}
 
 
+@database_operations.serialized
 def reconcile_account(account_id: int) -> dict:
     with write_session() as session:
         account = session.get(Account, account_id)
@@ -165,7 +209,10 @@ def reconcile_account(account_id: int) -> dict:
 def reconcile_all(params: dict | None = None) -> dict:
     """Re-establish native limits after daemon or MariaDB restarts."""
     with write_session() as session:
-        account_ids = sorted(set(session.scalars(select(DatabaseUser.account_id)).all()))
+        account_ids = sorted(
+            set(session.scalars(select(DatabaseUser.account_id)).all())
+            | set(session.scalars(select(PmaToken.account_id)).all())
+        )
     errors = []
     reconciled = 0
     for account_id in account_ids:
@@ -281,6 +328,7 @@ def overview(params: dict | None = None) -> dict:
         }
 
 
+@database_operations.serialized
 def set_global_mode(params: dict) -> dict:
     mode = str(params.get("mode", "monitor"))
     if mode not in {"paused", "monitor", "enforce"}:
@@ -302,8 +350,8 @@ def set_global_mode(params: dict) -> dict:
     applied = []
     try:
         for _account_id, user, host, policy, previous in operations:
-            _apply_user(user, host, policy)
             applied.append((user, host, previous))
+            _apply_user(user, host, policy)
     except Exception as exc:
         rollback_errors = []
         for user, host, previous in reversed(applied):
@@ -317,23 +365,54 @@ def set_global_mode(params: dict) -> dict:
                 + "; ".join(rollback_errors)
             ) from exc
         raise
-    with write_session() as session:
-        control = _control(session)
-        control.db_governor_mode = mode
-        for account_id, user, _host, policy, _previous in operations:
-            session.add(DbGovernorEvent(
-                account_id=account_id, database_user=user, event_type="global_mode",
-                action="limits_applied" if policy else "limits_removed",
-                detail=f"DB Governor global mode changed to {mode}",
-            ))
+    try:
+        with write_session() as session:
+            control = _control(session)
+            control.db_governor_mode = mode
+            for account_id, user, _host, policy, _previous in operations:
+                session.add(DbGovernorEvent(
+                    account_id=account_id, database_user=user, event_type="global_mode",
+                    action="limits_applied" if policy else "limits_removed",
+                    detail=f"DB Governor global mode changed to {mode}",
+                ))
+    except Exception as exc:
+        rollback_errors = []
+        for user, host, previous in reversed(applied):
+            try:
+                _apply_user(user, host, previous)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"{user}@{host}: {rollback_exc}")
+        if rollback_errors:
+            raise RuntimeError(
+                f"DB Governor state commit failed ({exc}); restoring prior limits also failed for "
+                + "; ".join(rollback_errors)
+            ) from exc
+        raise
     return overview()
 
 
+@database_operations.serialized
 def save_policy(params: dict) -> dict:
     username = validate_username(params["username"])
     mode = str(params.get("mode", "monitor"))
     if mode not in {"monitor", "enforce"}:
         raise ValidationError("Policy mode must be monitor or enforce")
+    value = params.get("max_statement_time")
+    target = SimpleNamespace(
+        mode=mode,
+        max_user_connections=_safe_limit(params.get("max_user_connections"), "Max user connections", maximum=10000),
+        max_queries_per_hour=_safe_limit(params.get("max_queries_per_hour"), "Queries per hour"),
+        max_updates_per_hour=_safe_limit(params.get("max_updates_per_hour"), "Updates per hour"),
+        max_connections_per_hour=_safe_limit(params.get("max_connections_per_hour"), "Connections per hour"),
+        max_statement_time=None if value in (None, "") else float(value),
+        warning_threshold_pct=int(params.get("warning_threshold_pct", 80)),
+        cooldown_seconds=int(params.get("cooldown_seconds", 300)),
+    )
+    if target.max_statement_time is not None and not 0.1 <= target.max_statement_time <= 3600:
+        raise ValidationError("Max statement time must be between 0.1 and 3600 seconds")
+    if not 1 <= target.warning_threshold_pct <= 100 or not 30 <= target.cooldown_seconds <= 86400:
+        raise ValidationError("Warning threshold or cooldown is outside the supported range")
+
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
@@ -344,57 +423,46 @@ def save_policy(params: dict) -> dict:
         row = session.scalar(select(DbGovernorPolicy).where(
             DbGovernorPolicy.scope_type == "account", DbGovernorPolicy.scope_id == account.id
         ))
-        previous_mode = row.mode if row is not None else None
-        if row is None:
-            row = DbGovernorPolicy(scope_type="account", scope_id=account.id)
-            session.add(row)
-        row.mode = mode
-        row.max_user_connections = _safe_limit(params.get("max_user_connections"), "Max user connections", maximum=10000)
-        row.max_queries_per_hour = _safe_limit(params.get("max_queries_per_hour"), "Queries per hour")
-        row.max_updates_per_hour = _safe_limit(params.get("max_updates_per_hour"), "Updates per hour")
-        row.max_connections_per_hour = _safe_limit(params.get("max_connections_per_hour"), "Connections per hour")
-        value = params.get("max_statement_time")
-        row.max_statement_time = None if value in (None, "") else float(value)
-        if row.max_statement_time is not None and not 0.1 <= row.max_statement_time <= 3600:
-            raise ValidationError("Max statement time must be between 0.1 and 3600 seconds")
-        row.warning_threshold_pct = int(params.get("warning_threshold_pct", 80))
-        row.cooldown_seconds = int(params.get("cooldown_seconds", 300))
-        if not 1 <= row.warning_threshold_pct <= 100 or not 30 <= row.cooldown_seconds <= 86400:
-            raise ValidationError("Warning threshold or cooldown is outside the supported range")
-        session.flush()
         control = _control(session)
-        should_apply = control.db_governor_mode == "enforce" and mode == "enforce"
         account_id = account.id
-        policy_id = row.id
-        applied_policy = SimpleNamespace(
-            max_user_connections=row.max_user_connections,
-            max_queries_per_hour=row.max_queries_per_hour,
-            max_updates_per_hour=row.max_updates_per_hour,
-            max_connections_per_hour=row.max_connections_per_hour,
-            max_statement_time=row.max_statement_time,
-        )
-    if should_apply:
-        for user, host in users:
-            _apply_user(user, host, applied_policy)
-        action = "limits_applied"
-    else:
-        # A switch from enforce to monitor must remove limits immediately;
-        # otherwise the UI would say monitor while MariaDB still rejects work.
-        if previous_mode == "enforce":
+        prior_native = (_snapshot_policy(row) if control.db_governor_mode == "enforce"
+                        and row is not None and row.mode == "enforce" else None)
+        target_native = target if control.db_governor_mode == "enforce" and mode == "enforce" else None
+
+    touched = []
+    if target_native is not None or prior_native is not None:
+        try:
             for user, host in users:
-                _apply_user(user, host, None)
-        action = "monitor_only"
-    with write_session() as session:
-        policy = session.get(DbGovernorPolicy, policy_id)
-        session.add(DbGovernorEvent(
-            account_id=account_id, database_user=", ".join(user for user, _ in users),
-            event_type="policy_saved", action=action,
-            detail="Native limits applied" if should_apply else "No MariaDB limits changed",
-        ))
-        result = _policy_dict(policy)
-    return {"username": username, "policy": result, "applied": should_apply}
+                touched.append((user, host))
+                _apply_user(user, host, target_native)
+        except Exception as exc:
+            _restore_native_users(touched, prior_native, exc, "policy update")
+            raise
+    try:
+        with write_session() as session:
+            policy = session.scalar(select(DbGovernorPolicy).where(
+                DbGovernorPolicy.scope_type == "account", DbGovernorPolicy.scope_id == account_id
+            ))
+            if policy is None:
+                policy = DbGovernorPolicy(scope_type="account", scope_id=account_id)
+                session.add(policy)
+            for field in ("mode", "max_user_connections", "max_queries_per_hour", "max_updates_per_hour",
+                          "max_connections_per_hour", "max_statement_time", "warning_threshold_pct", "cooldown_seconds"):
+                setattr(policy, field, getattr(target, field))
+            session.flush()
+            result = _policy_dict(policy)
+            session.add(DbGovernorEvent(
+                account_id=account_id, database_user=", ".join(user for user, _ in users),
+                event_type="policy_saved", action="limits_applied" if target_native else "monitor_only",
+                detail="Native limits applied" if target_native else "No native limits active",
+            ))
+    except Exception as exc:
+        _restore_native_users(touched, prior_native, exc, "policy persistence")
+        raise
+    return {"username": username, "policy": result, "applied": target_native is not None}
 
 
+@database_operations.serialized
 def reset_policy(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:
@@ -405,15 +473,29 @@ def reset_policy(params: dict) -> dict:
         row = session.scalar(select(DbGovernorPolicy).where(
             DbGovernorPolicy.scope_type == "account", DbGovernorPolicy.scope_id == account.id
         ))
-        if row is not None:
-            session.delete(row)
-    for user, host in users:
-        _apply_user(user, host, None)
-    with write_session() as session:
-        session.add(DbGovernorEvent(
-            account_id=account.id, database_user=", ".join(user for user, _ in users),
-            event_type="policy_reset", action="limits_removed", detail="Account limits reset to Unlimited",
-        ))
+        control = _control(session)
+        account_id = account.id
+        prior_native = (_snapshot_policy(row) if control.db_governor_mode == "enforce"
+                        and row is not None and row.mode == "enforce" else None)
+    touched = []
+    try:
+        if prior_native is not None:
+            for user, host in users:
+                touched.append((user, host))
+                _apply_user(user, host, None)
+        with write_session() as session:
+            row = session.scalar(select(DbGovernorPolicy).where(
+                DbGovernorPolicy.scope_type == "account", DbGovernorPolicy.scope_id == account_id
+            ))
+            if row is not None:
+                session.delete(row)
+            session.add(DbGovernorEvent(
+                account_id=account_id, database_user=", ".join(user for user, _ in users),
+                event_type="policy_reset", action="limits_removed", detail="Account limits reset to Unlimited",
+            ))
+    except Exception as exc:
+        _restore_native_users(touched, prior_native, exc, "policy reset")
+        raise
     return {"username": username, "reset": True}
 
 

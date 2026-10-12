@@ -22,6 +22,8 @@ class PlanBody(BaseModel):
     pids_max: int = 50
     quota_soft_mb: int = 5120
     quota_hard_mb: int = 6144
+    inode_soft_limit: int = 450_000
+    inode_hard_limit: int = 500_000
     bandwidth_limit_mb: int | None = None
     database_limit: int | None = None
     email_account_limit: int | None = None
@@ -49,6 +51,8 @@ class PlanUpdateBody(BaseModel):
     pids_max: int | None = None
     quota_soft_mb: int | None = None
     quota_hard_mb: int | None = None
+    inode_soft_limit: int | None = None
+    inode_hard_limit: int | None = None
     bandwidth_limit_mb: int | None = None
     database_limit: int | None = None
     email_account_limit: int | None = None

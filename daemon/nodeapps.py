@@ -134,7 +134,8 @@ def _provision_filesystem(username: str, name: str) -> None:
     safeio.secure_ensure_file_beneath(home, "logs/node", os.path.basename(_log_path(username, name)), pw.pw_uid, pw.pw_gid, 0o640)
 
 
-def _write_unit(username: str, app_id: int, name: str, entry_point: str, port: int, node_version: str, env_vars: dict) -> str:
+def _write_unit(username: str, app_id: int, name: str, entry_point: str, port: int, node_version: str,
+                env_vars: dict, *, use_socket: bool = True) -> str:
     unit = appunits.unit_name(KIND, username, app_id)
     app_dir = _app_dir(username, name)
     log_path = _log_path(username, name)
@@ -142,6 +143,9 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, port: i
     env = dict(env_vars)
     env["PORT"] = str(port)
     env.setdefault("NODE_ENV", "production")
+    if use_socket:
+        preload = "--require=/opt/boron/scripts/node_socket_activation.cjs"
+        env["NODE_OPTIONS"] = f"{env.get('NODE_OPTIONS', '').strip()} {preload}".strip()
     appunits.write_env_file(unit, env)
 
     content = (
@@ -174,6 +178,8 @@ def _write_unit(username: str, app_id: int, name: str, entry_point: str, port: i
         "WantedBy=multi-user.target\n"
     )
     appunits.write_unit_file(unit, content)
+    if use_socket:
+        appunits.write_socket_unit(unit, KIND, app_id)
     appunits.daemon_reload()
     return unit
 
@@ -210,6 +216,7 @@ def create_app(params: dict) -> dict:
             # that both flips this and actually enables+starts the unit,
             # so "enabled" always matches "was ever actually started."
             enabled=False,
+            backend_mode="socket",
         )
         session.add(row)
         session.flush()
@@ -238,7 +245,7 @@ def create_app(params: dict) -> dict:
             orphan = session.get(NodeApp, app_id)
             if orphan is not None:
                 session.delete(orphan)
-        appunits.remove_unit(appunits.unit_name(KIND, username, app_id))
+        appunits.remove_app_unit(appunits.unit_name(KIND, username, app_id))
         raise
 
     with write_session() as session:
@@ -259,15 +266,16 @@ def update_app(params: dict) -> dict:
         if "env_vars" in params:
             row.env_vars = appcrypto.encrypt_env(validate_env_vars(params["env_vars"] or {}))
         session.flush()
-        name, entry_point, node_version, port, enabled = row.name, row.entry_point, row.node_version, row.port, row.enabled
+        name, entry_point, node_version, port, enabled, backend_mode = row.name, row.entry_point, row.node_version, row.port, row.enabled, row.backend_mode
         env_vars = appcrypto.decrypt_env(row.env_vars) if row.env_vars else {}
 
-    unit = _write_unit(username, app_id, name, entry_point, port, node_version, env_vars)
+    use_socket = backend_mode == "socket"
+    unit = _write_unit(username, app_id, name, entry_point, port, node_version, env_vars, use_socket=use_socket)
     if enabled:
         # Only restarts a currently-enabled app -- a customer who
         # deliberately stopped their app shouldn't have an unrelated env
         # var edit silently start it back up.
-        appunits.restart(unit)
+        (appunits.restart_app if use_socket else appunits.restart)(unit)
 
     with write_session() as session:
         row = session.get(NodeApp, app_id)
@@ -281,7 +289,7 @@ def delete_app(params: dict) -> dict:
     with write_session() as session:
         account, row = _get_row(session, username, app_id)
         domain_name, name = row.domain, row.name
-        appunits.remove_unit(appunits.unit_name(KIND, username, app_id))
+        appunits.remove_app_unit(appunits.unit_name(KIND, username, app_id))
         session.delete(row)
         account_snapshot = account
 
@@ -298,7 +306,8 @@ def start_app(params: dict) -> dict:
     with write_session() as session:
         _account, row = _get_row(session, username, app_id)
         row.enabled = True
-    appunits.enable_start(appunits.unit_name(KIND, username, app_id))
+        use_socket = row.backend_mode == "socket"
+    (appunits.enable_start_app if use_socket else appunits.enable_start)(appunits.unit_name(KIND, username, app_id))
     return get_app({"username": username, "id": app_id})
 
 
@@ -308,7 +317,8 @@ def stop_app(params: dict) -> dict:
     with write_session() as session:
         _account, row = _get_row(session, username, app_id)
         row.enabled = False
-    appunits.stop_disable(appunits.unit_name(KIND, username, app_id))
+        use_socket = row.backend_mode == "socket"
+    (appunits.stop_disable_app if use_socket else appunits.stop_disable)(appunits.unit_name(KIND, username, app_id))
     return get_app({"username": username, "id": app_id})
 
 
@@ -316,8 +326,9 @@ def restart_app(params: dict) -> dict:
     username = validate_username(params["username"])
     app_id = int(params["id"])
     with write_session() as session:
-        _account, _row = _get_row(session, username, app_id)
-    appunits.restart(appunits.unit_name(KIND, username, app_id))
+        _account, row = _get_row(session, username, app_id)
+        use_socket = row.backend_mode == "socket"
+    (appunits.restart_app if use_socket else appunits.restart)(appunits.unit_name(KIND, username, app_id))
     return get_app({"username": username, "id": app_id})
 
 
@@ -404,7 +415,7 @@ def terminate_account_node_apps(account: Account) -> None:
     with write_session() as session:
         rows = session.scalars(select(NodeApp).where(NodeApp.account_id == account.id)).all()
         for row in rows:
-            appunits.remove_unit(appunits.unit_name(KIND, account.username, row.id))
+            appunits.remove_app_unit(appunits.unit_name(KIND, account.username, row.id))
             session.delete(row)
 
 
@@ -417,24 +428,63 @@ def bootstrap_all_node_apps() -> None:
     with write_session() as session:
         rows = session.scalars(select(NodeApp)).all()
         snapshot = [
-            (r.id, r.account_id, r.name, r.entry_point, r.port, r.node_version, r.env_vars, r.enabled)
+            (r.id, r.account_id, r.name, r.entry_point, r.port, r.node_version, r.env_vars, r.enabled, r.backend_mode)
             for r in rows
         ]
         usernames = {a.id: a.username for a in session.scalars(select(Account)).all()}
 
-    for app_id, account_id, name, entry_point, port, node_version, env_vars_enc, enabled in snapshot:
+    for app_id, account_id, name, entry_point, port, node_version, env_vars_enc, enabled, backend_mode in snapshot:
         username = usernames.get(account_id)
         if username is None:
             continue
+        migration = backend_mode != "socket"
+        routed_socket = False
         try:
             env_vars = appcrypto.decrypt_env(env_vars_enc) if env_vars_enc else {}
-            unit = _write_unit(username, app_id, name, entry_point, port, node_version, env_vars)
+            unit = _write_unit(username, app_id, name, entry_point, port, node_version, env_vars, use_socket=True)
             _provision_filesystem(username, name)
+            if migration:
+                if enabled:
+                    # Bring up the protected listener before changing OLS.
+                    # Requests arriving during the service restart can queue
+                    # on the root-owned socket instead of seeing a gap.
+                    appunits.enable_start(appunits.socket_unit_name(unit))
+                with write_session() as session:
+                    row = session.get(NodeApp, app_id)
+                    if row is not None:
+                        row.backend_mode = "socket"
+                with write_session() as session:
+                    account = session.get(Account, account_id)
+                    if account is not None:
+                        session.expunge(account)
+                        ols.refresh_vhost(account)
+                routed_socket = True
             if enabled:
-                appunits.enable_start_in_slice(unit, cgroups.account_slice_name(username))
-        except Exception:
+                appunits.enable_start_app(unit)
+                if not appunits.private_socket_ready(unit, KIND, app_id):
+                    raise RuntimeError("socket-backed NodeJS service did not become ready")
+        except Exception as exc:
             import logging
 
             logging.getLogger("borond.nodeapps").exception(
                 "failed to bootstrap NodeJS app %d for account '%s'", app_id, username
             )
+            if migration:
+                if routed_socket:
+                    # OLS already points to the protected socket. Leave the
+                    # affected app unavailable and abort the release startup;
+                    # never republish an unowned loopback port.
+                    appunits.stop_disable_app(appunits.unit_name(KIND, username, app_id))
+                else:
+                    # OLS never switched, so preserve the still-running legacy
+                    # app while making the release fail and roll back.
+                    with write_session() as session:
+                        row = session.get(NodeApp, app_id)
+                        if row is not None:
+                            row.backend_mode = "legacy"
+                    _write_unit(username, app_id, name, entry_point, port, node_version,
+                                appcrypto.decrypt_env(env_vars_enc) if env_vars_enc else {}, use_socket=False)
+                    appunits.remove_socket_unit(appunits.unit_name(KIND, username, app_id))
+                raise appunits.AppSocketMigrationError(
+                    f"NodeJS app {app_id} could not migrate to its private socket"
+                ) from exc

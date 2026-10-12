@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Pause, Play, Trash2, Save, Shield, Gauge, UserCog, FolderOpen, Layers, Ban, ChevronDown, Users } from 'lucide-react'
+import { AlertTriangle, Pause, Play, Trash2, Save, UserCog, FolderOpen, Ban, ChevronDown } from 'lucide-react'
 import { get, post, put, patch, del, impersonate as apiImpersonate } from '@/lib/api'
-import { formatMB, formatBytes } from '@/lib/utils'
+import { formatBytes, formatDate } from '@/lib/utils'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { PHP_VERSIONS } from '@/config/constants'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -12,16 +12,17 @@ import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Input, FormField } from '@/components/ui/Input'
 import { StyledSelect as Select } from '@/components/ui/StyledSelect'
-import { SettingRow } from '@/components/ui/SettingRow'
 import { DraftChanges, useDraftSection } from '@/components/ui/DraftChanges'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/DropdownMenu'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/DropdownMenu'
 import { Switch } from '@/components/ui/Toggle'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import { ConfirmDialog } from '@/components/ui/Dialog'
+import { Tooltip } from '@/components/ui/Tooltip'
 import { toast } from '@/components/ui/Toast'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { CenteredSpinner } from '@/components/ui/Spinner'
 import { ErrorState } from '@/components/ui/States'
+import { waitForControlTask } from '@/lib/control-tasks'
 
 import Domains from '@/pages/customer/Domains'
 import Databases from '@/pages/customer/Databases'
@@ -35,40 +36,45 @@ import Processes from '@/pages/customer/Processes'
 
 const ACCOUNT_TABS = [
   ['overview', 'Overview'],
-  ['identity', 'Identity'],
   ['domains', 'Domains'],
-  ['databases', 'Databases'],
   ['email', 'Email'],
-  ['ssl', 'SSL'],
+  ['databases', 'Databases'],
   ['backups', 'Backups'],
-  ['apps', 'Apps'],
-  ['php-functions', 'PHP Functions'],
-  ['processes', 'Processes'],
-  ['notes', 'Notes'],
   ['security', 'Security'],
-  ['advanced', 'Advanced'],
+  ['settings', 'Settings'],
 ]
+
+const LEGACY_TAB_PARENT = {
+  identity: 'settings', advanced: 'settings', apps: 'settings', 'php-functions': 'settings', notes: 'settings', 'usage-limits': 'settings',
+  ssl: 'security', processes: 'security',
+}
 
 function AdminActions({ username, account, danger = false }) {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const [confirm, setConfirm] = useState(null) // 'terminate' | null
+  const [terminateProgress, setTerminateProgress] = useState(null)
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['account', username] })
     qc.invalidateQueries({ queryKey: ['accounts'] })
   }
-  const act = (action) =>
-    useMutation({
-      mutationFn: () => post(`/api/v1/accounts/${username}/${action}`),
-      onSuccess: () => { toast.success(`Account ${action}ed`); invalidate() },
-      onError: (e) => toast.error(`Could not ${action}`, e.message),
-    })
-  const suspendMut = act('suspend')
-  const unsuspendMut = act('unsuspend')
+  const suspendMut = useMutation({
+    mutationFn: () => post(`/api/v1/accounts/${username}/suspend`),
+    onSuccess: () => { toast.success('Account suspended'); invalidate() },
+    onError: (e) => toast.error('Could not suspend', e.message),
+  })
+  const unsuspendMut = useMutation({
+    mutationFn: () => post(`/api/v1/accounts/${username}/unsuspend`),
+    onSuccess: () => { toast.success('Account unsuspended'); invalidate() },
+    onError: (e) => toast.error('Could not unsuspend', e.message),
+  })
   const terminateMut = useMutation({
-    mutationFn: () => post(`/api/v1/accounts/${username}/terminate`),
+    mutationFn: async () => {
+      setTerminateProgress(null)
+      const task = await post(`/api/v1/task-operations/accounts/${username}/terminate`, {})
+      return waitForControlTask(task, { onProgress: setTerminateProgress })
+    },
     onSuccess: () => { toast.success('Account terminated'); invalidate(); setConfirm(null); navigate('/accounts', { replace: true }) },
-    onError: (e) => { toast.error('Could not terminate', e.message); setConfirm(null) },
   })
   // Phase 8 feature 1: "Login as user" -> mint+redeem an impersonation token,
   // then hard-navigate to the customer view as that account.
@@ -79,40 +85,25 @@ function AdminActions({ username, account, danger = false }) {
   })
 
   return (
-    <div className="flex flex-wrap gap-2">
-      {!danger && account.status === 'active' && (
-        <Button variant="secondary" size="sm" loading={impersonateMut.isPending} onClick={() => impersonateMut.mutate()}>
+    <div className="account-actions">
+      {!danger && <>
+        <Button loading={impersonateMut.isPending} disabled={account.status !== 'active'} title={account.status === 'active' ? undefined : 'Unsuspend this account before logging in as the user.'} onClick={() => impersonateMut.mutate()}>
           <UserCog className="h-4 w-4" /> Login as user
         </Button>
-      )}
-      {/* File manager v2: opens the launch endpoint in a new tab, which
-          authorizes this admin for the account, audits the access, and opens
-          FileBrowser Quantum scoped to the account's home — in its own tab
-          so the admin panel stays open. */}
-      {!danger && account.status === 'active' && (
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => window.open(`/api/v1/accounts/${username}/files/launch`, '_blank', 'noopener')}
-        >
-          <FolderOpen className="h-4 w-4" /> File Manager
-        </Button>
-      )}
-      {danger && account.status === 'active' && (
-        <Button variant="warning" size="sm" loading={suspendMut.isPending} onClick={() => setConfirm('suspend')}>
-          <Pause className="h-4 w-4" /> Suspend
-        </Button>
-      )}
-      {danger && account.status === 'suspended' && (
-        <Button variant="success" size="sm" loading={unsuspendMut.isPending} onClick={() => setConfirm('unsuspend')}>
-          <Play className="h-4 w-4" /> Unsuspend
-        </Button>
-      )}
-      {danger && ['active', 'suspended', 'error'].includes(account.status) && (
-        <Button variant="danger" size="sm" onClick={() => setConfirm('terminate')}>
-          <Trash2 className="h-4 w-4" /> Terminate
-        </Button>
-      )}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild><Button variant="secondary">More <ChevronDown className="h-4 w-4" /></Button></DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuItem disabled={account.status !== 'active'} onSelect={() => window.open(`/api/v1/accounts/${username}/files/launch`, '_blank', 'noopener')}><FolderOpen className="h-4 w-4" /> File Manager</DropdownMenuItem>
+            {account.status === 'active' && <DropdownMenuItem onSelect={() => setConfirm('suspend')}><Pause className="h-4 w-4" /> Suspend</DropdownMenuItem>}
+            {account.status === 'suspended' && <DropdownMenuItem onSelect={() => setConfirm('unsuspend')}><Play className="h-4 w-4" /> Unsuspend</DropdownMenuItem>}
+            <DropdownMenuSeparator />
+            {['active', 'suspended', 'error'].includes(account.status) && <DropdownMenuItem destructive onSelect={() => setConfirm('terminate')}><Trash2 className="h-4 w-4" /> Terminate</DropdownMenuItem>}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </>}
+      {danger && account.status === 'active' && <Button variant="secondary" loading={suspendMut.isPending} onClick={() => setConfirm('suspend')}><Pause className="h-4 w-4" /> Suspend</Button>}
+      {danger && account.status === 'suspended' && <Button variant="secondary" loading={unsuspendMut.isPending} onClick={() => setConfirm('unsuspend')}><Play className="h-4 w-4" /> Unsuspend</Button>}
+      {danger && ['active', 'suspended', 'error'].includes(account.status) && <Button variant="danger" onClick={() => setConfirm('terminate')}><Trash2 className="h-4 w-4" /> Terminate</Button>}
       <ConfirmDialog open={confirm === 'suspend' || confirm === 'unsuspend'} onOpenChange={open => !open && setConfirm(null)} title={`${confirm === 'suspend' ? 'Suspend' : 'Unsuspend'} ${username}?`} description={confirm === 'suspend' ? 'Hosting and customer access will be paused. Account files are retained.' : 'Hosting and customer access will resume.'} confirmationText={username} confirmLabel={confirm === 'suspend' ? 'Suspend account' : 'Unsuspend account'} loading={suspendMut.isPending || unsuspendMut.isPending} onConfirm={() => { (confirm === 'suspend' ? suspendMut : unsuspendMut).mutate(undefined, { onSuccess: () => setConfirm(null) }) }} />
       <ConfirmDialog
         open={confirm === 'terminate'}
@@ -122,13 +113,24 @@ function AdminActions({ username, account, danger = false }) {
         confirmLabel="Terminate account"
         confirmationText={username}
         loading={terminateMut.isPending}
+        loadingDescription={terminateProgress?.progress_message || `Terminating ${username}… this can take up to 30 seconds. Do not close this page.`}
+        error={terminateMut.error}
         onConfirm={() => terminateMut.mutate()}
       />
     </div>
   )
 }
 
-function PhpAndLimits({ username, account }) {
+function SettingsSection({ title, description, danger = false, children }) {
+  return <section className={danger ? 'account-settings-section account-danger-section' : 'account-settings-section'}><div className="account-settings-section-heading"><h2>{title}</h2><p>{description}</p></div>{children}</section>
+}
+
+function DisabledReasonButton({ reason, children, ...props }) {
+  const button = <Button {...props}>{children}</Button>
+  return reason ? <Tooltip content={reason}><span className="inline-flex">{button}</span></Tooltip> : button
+}
+
+function PhpAndLimits({ username, account, part = 'both' }) {
   const qc = useQueryClient()
   const [phpVersion, setPhpVersion] = useState(account.php_version)
   const [touchedLimits,setTouchedLimits] = useState({})
@@ -152,39 +154,36 @@ function PhpAndLimits({ username, account }) {
   })
 
   const originalLimits = {cpu_cores:account.cpu_cores ?? account.cpu_pct/100,memory_gb:account.mem_mb/1024,io_mb:account.io_mb,pids_max:account.pids_max}
+  const limitsDirty = Object.keys(originalLimits).some(key=>Number(limits[key])!==Number(originalLimits[key]))
+  const phpDirty = phpVersion !== account.php_version
   const limitsValid = Number.isInteger(Number(limits.pids_max)) && Number(limits.cpu_cores)>=0.01 && Number(limits.cpu_cores)<=(account.host_cpu_cores??Infinity) && Number(limits.memory_gb)>=0.0625 && Number(limits.memory_gb)<=64 && Number(limits.io_mb)>=1 && Number(limits.pids_max)>=10
-  useDraftSection('account-php',{dirty:phpVersion!==account.php_version,busy:phpMut.isPending,label:'PHP version',onSave:()=>phpMut.mutateAsync(),onDiscard:()=>setPhpVersion(account.php_version)})
-  useDraftSection('account-limits',{dirty:Object.keys(originalLimits).some(key=>Number(limits[key])!==Number(originalLimits[key])),busy:limitsMut.isPending,disabled:!limitsValid,label:'Resource limits',onSave:()=>limitsMut.mutateAsync(),onDiscard:()=>setLimits(originalLimits)})
 
   return (
-    <div className="account-php-limits grid grid-cols-1 gap-4 lg:grid-cols-2">
-      <Card>
-        <CardHeader><CardTitle>PHP version</CardTitle></CardHeader>
-        <CardContent className="flex items-end gap-3">
-          <FormField label="Version" className="flex-1">
+    <>
+      {part !== 'limits' && <SettingsSection title="PHP version" description="Choose the PHP runtime used by this account's websites.">
+        <div className="account-setting-fields">
+          <FormField label="Version">
             <Select value={phpVersion} onChange={(e) => setPhpVersion(e.target.value)}>
               {PHP_VERSIONS.map((v) => <option key={v} value={v}>PHP {v}</option>)}
             </Select>
           </FormField>
-          <Button loading={phpMut.isPending} onClick={() => phpMut.mutate()}>Switch</Button>{phpMut.isPending&&<p role="status" className="setting-row-description">Changing PHP version…</p>}
-        </CardContent>
-      </Card>
+          <DisabledReasonButton reason={!phpDirty ? 'Choose a different PHP version to enable Save.' : null} loading={phpMut.isPending} disabled={!phpDirty} onClick={() => phpMut.mutate()}>Save</DisabledReasonButton>
+          {phpMut.isPending&&<p role="status" className="setting-row-description">Changing PHP version…</p>}
+        </div>
+      </SettingsSection>}
 
-      <Card>
-        <CardHeader><CardTitle>Resource limits</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          <div className="account-limit-rows">
-            <SettingRow label="CPU cores" error={touchedLimits.cpu_cores&&!(Number(limits.cpu_cores)>=0.01&&Number(limits.cpu_cores)<=(account.host_cpu_cores??Infinity))?`Enter a core count from 0.01 to ${account.host_cpu_cores??'the server maximum'}.`:null} description={`Maximum ${account.host_cpu_cores ?? 'server'} cores available.`}><Input aria-label="CPU cores" type="number" min="0.01" max={account.host_cpu_cores} step="0.01" value={limits.cpu_cores} onBlur={()=>setTouchedLimits(t=>({...t,cpu_cores:true}))} onChange={e=>setLimits(l=>({...l,cpu_cores:e.target.value}))}/></SettingRow>
-            <SettingRow label="Memory (GB)" error={touchedLimits.memory_gb&&!(Number(limits.memory_gb)>=0.0625&&Number(limits.memory_gb)<=64)?'Memory must be between 0.0625 and 64 GB.':null} description={`Server RAM: ${account.host_memory_gb?.toFixed(1) ?? '…'} GB. Allocations can overcommit shared RAM.`}><Input aria-label="Memory (GB)" type="number" min="0.0625" step="0.0625" value={limits.memory_gb} onBlur={()=>setTouchedLimits(t=>({...t,memory_gb:true}))} onChange={e=>setLimits(l=>({...l,memory_gb:e.target.value}))}/></SettingRow>
-            <SettingRow label="Disk IO (MB/s)" error={touchedLimits.io_mb&&!(Number(limits.io_mb)>=1)?'Enter an IO limit of at least 1 MB/s.':null}><Input aria-label="Disk IO (MB/s)" type="number" min="1" value={limits.io_mb} onBlur={()=>setTouchedLimits(t=>({...t,io_mb:true}))} onChange={e=>setLimits(l=>({...l,io_mb:e.target.value}))}/></SettingRow>
-            <SettingRow label="Max processes" error={touchedLimits.pids_max&&!(Number.isInteger(Number(limits.pids_max))&&Number(limits.pids_max)>=10)?'Enter a whole process count of at least 10.':null}><Input aria-label="Max processes" type="number" min="10" value={limits.pids_max} onBlur={()=>setTouchedLimits(t=>({...t,pids_max:true}))} onChange={e=>setLimits(l=>({...l,pids_max:e.target.value}))}/></SettingRow>
-          </div>
-          {account.configured_cpu_cores > account.host_cpu_cores && <p className="text-sm text-info">The old allocation was {account.configured_cpu_cores} cores. Effective enforcement is capped at this server's {account.host_cpu_cores} cores; save to reconcile the stored limit.</p>}
+      {part !== 'php' && <SettingsSection title="Resource limits" description="Limit compute resources for this account without changing its files or websites.">
+        <div className="account-setting-fields">
+          <FormField label="CPU cores" error={touchedLimits.cpu_cores&&!(Number(limits.cpu_cores)>=0.01&&Number(limits.cpu_cores)<=(account.host_cpu_cores??Infinity))?`Enter a core count from 0.01 to ${account.host_cpu_cores??'the server maximum'}.`:null} hint={<>{`Maximum ${account.host_cpu_cores ?? 'server'} cores available.`}{account.configured_cpu_cores > account.host_cpu_cores && <span className="account-field-warning"><AlertTriangle aria-hidden="true" />Stored as {account.configured_cpu_cores} cores; effective use is capped at {account.host_cpu_cores}. Save to reconcile it.</span>}</>}><Input aria-label="CPU cores" type="number" min="0.01" max={account.host_cpu_cores} step="0.01" value={limits.cpu_cores} onBlur={()=>setTouchedLimits(t=>({...t,cpu_cores:true}))} onChange={e=>setLimits(l=>({...l,cpu_cores:e.target.value}))}/></FormField>
+          <FormField label="Memory (GB)" error={touchedLimits.memory_gb&&!(Number(limits.memory_gb)>=0.0625&&Number(limits.memory_gb)<=64)?'Memory must be between 0.0625 and 64 GB.':null} hint={`Server RAM: ${account.host_memory_gb?.toFixed(1) ?? 'n/a'} GB. Allocations can overcommit shared RAM.`}><Input aria-label="Memory (GB)" type="number" min="0.0625" step="0.0625" value={limits.memory_gb} onBlur={()=>setTouchedLimits(t=>({...t,memory_gb:true}))} onChange={e=>setLimits(l=>({...l,memory_gb:e.target.value}))}/></FormField>
+          <FormField label="Disk IO (MB/s)" error={touchedLimits.io_mb&&!(Number(limits.io_mb)>=1)?'Enter an IO limit of at least 1 MB/s.':null}><Input aria-label="Disk IO (MB/s)" type="number" min="1" value={limits.io_mb} onBlur={()=>setTouchedLimits(t=>({...t,io_mb:true}))} onChange={e=>setLimits(l=>({...l,io_mb:e.target.value}))}/></FormField>
+          <FormField label="Max processes" error={touchedLimits.pids_max&&!(Number.isInteger(Number(limits.pids_max))&&Number(limits.pids_max)>=10)?'Enter a whole process count of at least 10.':null}><Input aria-label="Max processes" type="number" min="10" value={limits.pids_max} onBlur={()=>setTouchedLimits(t=>({...t,pids_max:true}))} onChange={e=>setLimits(l=>({...l,pids_max:e.target.value}))}/></FormField>
           {Number(limits.memory_gb) > account.host_memory_gb && <p className="text-sm text-warning">This allocation exceeds total server RAM. Simultaneous usage by accounts can exhaust memory.</p>}
-          <Button loading={limitsMut.isPending} disabled={!limitsValid} onClick={() => limitsMut.mutate()}><Save className="h-4 w-4" /> Update limits</Button>{limitsMut.isPending&&<p role="status" className="setting-row-description">Applying resource limits…</p>}
-        </CardContent>
-      </Card>
-    </div>
+          <DisabledReasonButton reason={!limitsValid ? 'Correct the invalid values before updating limits.' : !limitsDirty ? 'Change a resource value to enable Update limits.' : null} loading={limitsMut.isPending} disabled={!limitsValid || !limitsDirty} onClick={() => limitsMut.mutate()}>Update limits</DisabledReasonButton>
+          {limitsMut.isPending&&<p role="status" className="setting-row-description">Applying resource limits…</p>}
+        </div>
+      </SettingsSection>}
+    </>
   )
 }
 
@@ -208,25 +207,19 @@ function PlanCard({ username, account }) {
     onError: (e) => toast.error('Could not apply plan', e.message),
   })
 
-  useDraftSection('account-plan',{dirty:!!planId,busy:applyMut.isPending,label:'Plan',onSave:()=>applyMut.mutateAsync(planId),onDiscard:()=>setPlanId('')})
-
   return (
-    <Card>
-      <CardHeader><CardTitle className="flex items-center gap-2"><Layers className="h-4 w-4" /> Plan</CardTitle></CardHeader>
-      <CardContent className="flex items-end gap-3">
-        <div className="flex-1 text-sm">
-          <div className="text-muted-foreground">Current plan</div>
-          <div className="font-medium text-foreground">{currentPlan ? currentPlan.name : 'Custom (no plan applied)'}</div>
-        </div>
-        <FormField label="Apply plan" className="flex-1">
+    <SettingsSection title="Plan" description={`Current plan: ${currentPlan ? currentPlan.name : 'Custom plan'}. Applying a plan updates this account's configured limits.`}>
+      <div className="account-setting-fields">
+        <FormField label="Plan">
           <Select value={planId} onChange={(e) => setPlanId(e.target.value)}>
             <option value="">Select a plan…</option>
             {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </Select>
         </FormField>
-        <Button loading={applyMut.isPending} disabled={!planId} onClick={() => applyMut.mutate(planId)}>Apply</Button>{applyMut.isPending&&<p role="status" className="setting-row-description">Applying plan settings…</p>}
-      </CardContent>
-    </Card>
+        <DisabledReasonButton reason={!planId ? 'Choose a plan to enable Apply.' : null} loading={applyMut.isPending} disabled={!planId} onClick={() => applyMut.mutate(planId)}>Apply</DisabledReasonButton>
+        {applyMut.isPending&&<p role="status" className="setting-row-description">Applying plan settings…</p>}
+      </div>
+    </SettingsSection>
   )
 }
 
@@ -238,18 +231,7 @@ function NamespaceCard({ username }) {
     onSuccess: () => { toast.success('Namespace updated'); qc.invalidateQueries({ queryKey: ['namespace', username] }) },
     onError: (e) => toast.error('Could not update account isolation', e.message),
   })
-  return (
-    <Card>
-      <CardHeader><CardTitle>Namespace isolation</CardTitle></CardHeader>
-      <CardContent className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Shield className="h-4 w-4" />
-          {data ? (data.enabled ? 'Isolated (private mount namespace)' : data.eligible ? 'Not isolated' : 'Not eligible') : 'Loading…'}
-        </div>
-        <Switch checked={!!data?.enabled} onCheckedChange={(v) => mut.mutate(v)} disabled={!data || mut.isPending} />{mut.isPending&&<span role="status" className="setting-row-description">Updating account isolation…</span>}
-      </CardContent>
-    </Card>
-  )
+  return <SettingsSection title="Isolation" description="Keep web and PHP file visibility inside this account's mount namespace."><div className="account-isolation-control"><div><strong>Namespace isolation</strong><span>{data ? (data.enabled ? 'Active' : data.eligible ? 'Not active' : 'Not eligible') : 'n/a'}</span></div><Switch aria-label="Namespace isolation" checked={!!data?.enabled} onCheckedChange={(v) => mut.mutate(v)} disabled={!data || !data.eligible || mut.isPending} /></div>{mut.isPending&&<span role="status" className="setting-row-description">Updating account isolation…</span>}</SettingsSection>
 }
 
 const USAGE_LIMIT_FIELDS = [
@@ -290,8 +272,6 @@ function UsageLimitsForm({ username, data }) {
     return mut.mutateAsync(body)
   }
   const valid=USAGE_LIMIT_FIELDS.every(f=>form[f.key]===''||(Number.isFinite(Number(form[f.key]))&&Number(form[f.key])>=1&&(f.apiKey||Number.isInteger(Number(form[f.key])))))
-  useDraftSection('account-usage-limits',{dirty:Object.keys(originalForm).some(key=>String(form[key])!==String(originalForm[key])),busy:mut.isPending,disabled:!valid,label:'Usage limits',onSave:save,onDiscard:()=>setForm(originalForm)})
-
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -330,12 +310,7 @@ function UsageLimitsCard() {
     enabled: !!username,
   })
 
-  return (
-    <Card className="account-usage-limits">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2"><Gauge className="h-4 w-4" /> Usage limits</CardTitle>
-      </CardHeader>
-      <CardContent>
+  return <details className="account-usage-limits"><summary>Additional usage limits</summary><p className="account-usage-limits-intro">Bandwidth, database, mailbox and subdomain limits.</p><div className="account-usage-limits-content">
         {isLoading ? (
           <CenteredSpinner label="Loading usage limits…" />
         ) : error ? (
@@ -343,9 +318,7 @@ function UsageLimitsCard() {
         ) : data ? (
           <UsageLimitsForm key={data.updated_at || 'new'} username={username} data={data} />
         ) : null}
-      </CardContent>
-    </Card>
-  )
+      </div></details>
 }
 
 // QA round 2, item 9: admin-only PHP disable_functions overrides, per-account
@@ -460,44 +433,78 @@ function PhpFunctionsTab({ username }) {
 }
 
 function AccountSummary({username,account}) {
-  const {data:usage,error}=useQuery({queryKey:['usage',username],queryFn:()=>get(`/api/v1/accounts/${username}/usage`),refetchInterval:15000,retry:false})
   const {data:plans}=useQuery({queryKey:['plans'],queryFn:()=>get('/api/v1/admin/plans'),retry:false})
-  const previous=useRef(null),[cores,setCores]=useState(null)
-  const counters=usage?.resources
-  useEffect(()=>{
-    const last=previous.current
-    if(counters?.sampled_at&&last?.username===username){
-      const seconds=(Date.parse(counters.sampled_at)-Date.parse(last.sampled_at))/1000
-      if(seconds>0&&counters.cpu_usage_usec!=null&&last.cpu_usage_usec!=null)setCores(Math.max(0,counters.cpu_usage_usec-last.cpu_usage_usec)/(seconds*1000000))
-    }
-    previous.current=counters?{...counters,username}:null
-  },[counters?.sampled_at,username])
-  const disk=usage?.current?.disk_total_bytes,diskLimit=account.quota_hard_mb*1048576
-  const bandwidth=usage?.bandwidth_month_to_date_bytes,bandwidthLimit=counters?.bandwidth_limit_bytes
-  const memory=counters?.memory_current_bytes,memoryLimit=counters?.memory_limit_bytes
-  const meters=[
-    {label:'Disk',value:disk==null?'—':formatBytes(disk),pct:diskLimit>0&&disk!=null?disk/diskLimit*100:null},
-    {label:'Bandwidth',value:bandwidth==null?'—':formatBytes(bandwidth),pct:bandwidthLimit&&bandwidth!=null?bandwidth/bandwidthLimit*100:null},
-    {label:'CPU',value:error?'—':cores==null?'Collecting…':`${cores.toFixed(2)} cores`,pct:cores!=null&&counters?.cpu_limit_cores?cores/counters.cpu_limit_cores*100:null},
-    {label:'Memory',value:memory==null?'—':formatBytes(memory),pct:memoryLimit&&memory!=null?memory/memoryLimit*100:null},
-    {label:'Inodes',value:usage?.current?.inode_count?.toLocaleString()??'—',pct:null},
-  ]
   const plan=(plans?.plans||[]).find(row=>row.id===account.plan_id)
+  const summary = `${plan?.name||account.plan_name||'Custom plan'} · ${account.primary_domain||'No primary domain'} · UID ${account.uid??'n/a'} · PHP ${account.php_version||'n/a'}`
   return <section className="account-summary" aria-label="Account summary">
-    <PageHeader title={username} description="Hosting account settings and resource usage." icon={Users}><AdminActions username={username} account={account}/></PageHeader>
-    <div className="account-facts"><StatusBadge status={account.status}/><span>Plan: <strong>{plan?.name||account.plan_name||(account.plan_id?'Loading…':'Custom')}</strong></span><span>Primary: <strong>{account.primary_domain||'None'}</strong></span><span>UID <strong>{account.uid}</strong></span><span>PHP <strong>{account.php_version}</strong></span></div>
-    <div className="account-usage">{meters.map(meter=><div className="account-meter" key={meter.label}><div><span>{meter.label}</span><strong>{meter.value}</strong></div>{meter.pct!=null&&<div className="account-meter-track" role="progressbar" aria-label={`${meter.label} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(Math.min(100,meter.pct))}><span style={{width:`${Math.min(100,Math.max(0,meter.pct))}%`}}/></div>}</div>)}</div>
-    {error&&<p className="setting-row-description" role="status">Usage unavailable. Statistics will retry on the next refresh.</p>}
+    <PageHeader title={username} titleMeta={<StatusBadge status={account.status}/>} description={summary}><AdminActions username={username} account={account}/></PageHeader>
   </section>
+}
+
+function UsageRow({ label, value, percent }) {
+  const safePercent = percent == null ? null : Math.min(100, Math.max(0, percent))
+  return <div className="account-usage-row"><span className="account-usage-label">{label}</span><strong>{value}</strong>{safePercent != null && <div className="account-usage-track" role="progressbar" aria-label={`${label} usage`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safePercent)}><span style={{width:`${safePercent}%`}} /></div>}</div>
+}
+
+function AccountOverview({ username, account }) {
+  const {data:usage}=useQuery({queryKey:['usage',username],queryFn:()=>get(`/api/v1/accounts/${username}/usage`),refetchInterval:15000,retry:false})
+  const {data:plans}=useQuery({queryKey:['plans'],queryFn:()=>get('/api/v1/admin/plans'),retry:false})
+  const {data:namespace}=useQuery({queryKey:['namespace',username],queryFn:()=>get(`/api/v1/accounts/${username}/namespace`),retry:false})
+  const counters=usage?.resources
+  const disk=usage?.current?.disk_total_bytes
+  const diskLimit=account.quota_hard_mb ? account.quota_hard_mb*1048576 : null
+  const bandwidth=usage?.bandwidth_month_to_date_bytes
+  const bandwidthLimit=counters?.bandwidth_limit_bytes
+  const memory=counters?.memory_current_bytes
+  const memoryLimit=counters?.memory_limit_bytes
+  const inodes=usage?.current?.inode_count
+  const inodeLimit=account.inode_limit??usage?.inode_limit??null
+  const plan=(plans?.plans||[]).find(row=>row.id===account.plan_id)
+  const rows=[
+    {label:'Disk',value:disk==null?'n/a':`${formatBytes(disk)} of ${diskLimit?formatBytes(diskLimit):'unlimited'}`,percent:diskLimit&&disk!=null?disk/diskLimit*100:null},
+    {label:'Bandwidth',value:bandwidth==null?'n/a':`${formatBytes(bandwidth)} of ${bandwidthLimit?formatBytes(bandwidthLimit):'unlimited'}`,percent:bandwidthLimit&&bandwidth!=null?bandwidth/bandwidthLimit*100:null},
+    {label:'Memory',value:memory==null?'n/a':`${formatBytes(memory)} of ${memoryLimit?formatBytes(memoryLimit):'unlimited'}`,percent:memoryLimit&&memory!=null?memory/memoryLimit*100:null},
+    {label:'CPU',value:'n/a',percent:null},
+    {label:'Inodes',value:inodes==null?'n/a':`${inodes.toLocaleString()} of ${inodeLimit?Number(inodeLimit).toLocaleString():'unlimited'}`,percent:inodeLimit&&inodes!=null?inodes/inodeLimit*100:null},
+  ]
+  const facts=[
+    ['Plan',plan?.name||account.plan_name||'Custom plan'],
+    ['Primary domain',account.primary_domain||'n/a'],
+    ['PHP version',account.php_version?`PHP ${account.php_version}`:'n/a'],
+    ['Created',account.created_at?formatDate(account.created_at):'n/a'],
+    ['Namespace isolation',namespace?namespace.enabled?'Active':'Not active':'n/a'],
+  ]
+  return <div className="account-overview">
+    <section className="account-overview-card"><h2>Usage</h2><div className="account-usage-list">{rows.map(row=><UsageRow key={row.label} {...row}/>)}</div></section>
+    <section className="account-overview-card"><h2>Account</h2><dl className="account-fact-list">{facts.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section>
+  </div>
+}
+
+function AccountSettings({ username, account, setSearchParams }) {
+  return <div className="account-settings">
+    <PhpAndLimits username={username} account={account} part="php"/>
+    <PlanCard username={username} account={account}/>
+    <PhpAndLimits username={username} account={account} part="limits"/>
+    <NamespaceCard username={username}/>
+    <SettingsSection title="Applications and advanced settings" description="Open a focused tool when you need to change application or account-level configuration.">
+      <div className="account-settings-links">
+        {[['apps','Applications'],['identity','Account identity'],['usage-limits','Advanced account limits'],['php-functions','PHP functions'],['notes','Notes']].map(([tab,label])=><Button variant="link" key={tab} onClick={()=>setSearchParams({tab})}>{label}</Button>)}
+      </div>
+    </SettingsSection>
+    <SettingsSection danger title="Danger zone" description={`Pause hosting or permanently remove ${username}. Review available backups before termination.`}><AdminActions username={username} account={account} danger/></SettingsSection>
+  </div>
+}
+
+function SecurityLanding({ setSearchParams }) {
+  return <div className="account-tool-choices"><h2>Security tools</h2><p>Open one security task at a time.</p><div>{[['ssl','SSL certificates'],['php-functions','PHP functions'],['processes','Processes']].map(([tab,label])=><Button variant="secondary" key={tab} onClick={()=>setSearchParams({tab})}>{label}</Button>)}</div></div>
 }
 
 function AccountDetailContent() {
   const navigate = useNavigate()
   const { username } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const validTabs = new Set(ACCOUNT_TABS.map(([value]) => value))
   const requestedTab = searchParams.get('tab')
-  const activeTab = validTabs.has(requestedTab) ? requestedTab : 'overview'
+  const activeTab = ACCOUNT_TABS.some(([value])=>value===requestedTab) ? requestedTab : LEGACY_TAB_PARENT[requestedTab] || 'overview'
   const { data: account, isLoading, error, refetch } = useQuery({
     queryKey: ['account', username],
     queryFn: () => get(`/api/v1/accounts/${username}`),
@@ -508,10 +515,6 @@ function AccountDetailContent() {
 
   return (
     <div className="reference-page">
-      <Link to="/accounts" className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="h-4 w-4" /> All accounts
-      </Link>
-
       {isLoading ? (
         <CardSkeleton />
       ) : error ? (
@@ -527,31 +530,17 @@ function AccountDetailContent() {
             return next
           })}>
             <TabsList className="account-primary-tabs">
-              {['overview','domains','email','databases','apps','backups','security','advanced'].map(value=><TabsTrigger key={value} value={value}>{ACCOUNT_TABS.find(([key])=>key===value)[1]}</TabsTrigger>)}
-              <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" aria-label="More account sections">More <ChevronDown className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent>{ACCOUNT_TABS.filter(([value])=>['identity','ssl','php-functions','processes','notes'].includes(value)).map(([value,label])=><DropdownMenuItem key={value} onSelect={()=>setSearchParams(prev=>{const next=new URLSearchParams(prev);next.set('tab',value);return next})}>{label}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu>
+              {ACCOUNT_TABS.map(([value,label])=><TabsTrigger key={value} value={value}>{label}</TabsTrigger>)}
             </TabsList>
 
-            <TabsContent value="overview" className="account-overview">
-              <PhpAndLimits username={username} account={account} />
-              <PlanCard username={username} account={account} />
-              <NamespaceCard username={username} />
-              <UsageLimitsCard />
-            </TabsContent>
-
-            <TabsContent value="security" className="space-y-4"><NamespaceCard username={username}/><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={()=>setSearchParams({tab:'ssl'})}>SSL</Button><Button variant="secondary" onClick={()=>setSearchParams({tab:'processes'})}>Processes</Button></div></TabsContent>
-            <TabsContent value="advanced" className="space-y-4"><AccountIdentity username={username} account={account}/><div className="flex flex-wrap gap-2">{[['php-functions','PHP Functions'],['notes','Notes']].map(([tab,label])=><Button variant="secondary" key={tab} onClick={()=>setSearchParams({tab})}>{label}</Button>)}</div></TabsContent>
-            <TabsContent value="identity"><AccountIdentity username={username} account={account} /></TabsContent>
-            <TabsContent value="domains"><Domains /></TabsContent>
-            <TabsContent value="databases"><Databases /></TabsContent>
-            <TabsContent value="email"><Email /></TabsContent>
-            <TabsContent value="ssl"><Ssl /></TabsContent>
-            <TabsContent value="backups"><Backups /></TabsContent>
-            <TabsContent value="apps"><Apps /></TabsContent>
-            <TabsContent value="php-functions"><PhpFunctionsTab username={username} /></TabsContent>
-            <TabsContent value="processes"><Processes embedded /></TabsContent>
-            <TabsContent value="notes"><AccountNotes username={username} /></TabsContent>
+            <TabsContent value="overview"><AccountOverview username={username} account={account}/></TabsContent>
+            <TabsContent value="domains" className="account-detail-tab"><Domains /></TabsContent>
+            <TabsContent value="databases" className="account-detail-tab"><Databases /></TabsContent>
+            <TabsContent value="email" className="account-detail-tab"><Email /></TabsContent>
+            <TabsContent value="backups" className="account-detail-tab"><Backups /></TabsContent>
+            <TabsContent value="security" className="account-detail-tab">{requestedTab==='ssl'?<><h2 className="sr-only">SSL/TLS</h2><Ssl/></>:requestedTab==='processes'?<Processes embedded/>:<SecurityLanding setSearchParams={setSearchParams}/>}</TabsContent>
+            <TabsContent value="settings" className="account-detail-tab">{requestedTab==='apps'?<Apps/>:requestedTab==='identity'||requestedTab==='advanced'?<AccountIdentity username={username} account={account}/>:requestedTab==='usage-limits'?<UsageLimitsCard/>:requestedTab==='php-functions'?<PhpFunctionsTab username={username}/>:requestedTab==='notes'?<AccountNotes username={username}/>:<AccountSettings username={username} account={account} setSearchParams={setSearchParams}/>}</TabsContent>
           </Tabs>
-          <section className="danger-zone" aria-label="Danger zone"><h2>Danger zone</h2><p>Pause hosting or permanently remove {username}. Saved backups should be reviewed before termination.</p><AdminActions username={username} account={account} danger/></section>
         </>
       ) : null}
     </div>

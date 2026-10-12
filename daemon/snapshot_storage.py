@@ -326,6 +326,35 @@ def owned_snapshot(repository, account_id, snapshot_id):
     return item
 
 
+def restore_size(repository, account_id, snapshot_id, *, selected_paths=()):
+    """Return restic's authenticated restore-size estimate for admission."""
+    snapshot = owned_snapshot(repository, account_id, snapshot_id)
+    if selected_paths:
+        if len(selected_paths) > 1000:
+            raise ValidationError('Select at most 1000 paths to restore')
+        selected = [_absolute(value) for value in selected_paths]
+        _require_snapshot_paths(selected, snapshot.get('paths', []))
+        nodes = entries_many(repository, account_id, snapshot_id, [str(path.parent) for path in selected])
+        by_path = {node.get('path'): node for node in nodes}
+        sizes = []
+        for path in selected:
+            node = by_path.get(str(path))
+            if node is None or node.get('type') == 'dir':
+                break
+            sizes.append(int(node.get('size') or 0))
+        else:
+            return sum(sizes)
+    rows = _execute(repository, ['stats', snapshot_id, '--mode', 'restore-size'], timeout=300)
+    summary = next((row for row in reversed(rows)
+                    if isinstance(row, dict) and 'total_size' in row), None)
+    if summary is None or isinstance(summary.get('total_size'), bool):
+        raise SnapshotStorageError('Backup storage did not return a restore size')
+    size = int(summary['total_size'])
+    if size < 0:
+        raise SnapshotStorageError('Backup storage returned an invalid restore size')
+    return size
+
+
 def entries(repository, account_id, snapshot_id, directory='/'):
     return entries_many(repository, account_id, snapshot_id, [directory])
 
@@ -339,15 +368,24 @@ def entries_many(repository, account_id, snapshot_id, directories):
     return [r for r in rows if isinstance(r,dict) and r.get('struct_type')=='node']
 
 
+def _require_snapshot_paths(selected, snapshot_paths):
+    """Validate selected paths without the common exact-match quadratic case."""
+    roots = tuple(Path(root) for root in snapshot_paths)
+    exact_roots = set(roots)
+    for path in selected:
+        if path in exact_roots:
+            continue
+        if not any(path.is_relative_to(root) for root in roots):
+            raise ValidationError('Restore path is outside this snapshot')
+
+
 def restore_to(repository, account_id, snapshot_id, directory, *, selected_paths=()):
     snapshot = owned_snapshot(repository,account_id,snapshot_id)
     includes = []
     if len(selected_paths)>1000:
         raise ValidationError('Select at most 1000 paths to restore')
     selected_values = [_absolute(value) for value in selected_paths]
-    for selected in selected_values:
-        if not any(selected == Path(root) or selected.is_relative_to(Path(root)) for root in snapshot.get('paths',[])):
-            raise ValidationError('Restore path is outside this snapshot')
+    _require_snapshot_paths(selected_values, snapshot.get('paths', []))
     found = {node.get('path') for node in entries_many(repository, account_id, snapshot_id,
              [str(selected.parent) for selected in selected_values])} if selected_values else set()
     for selected in selected_values:

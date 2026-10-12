@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Save, Pencil, Globe, Mail, KeyRound, AlertTriangle } from 'lucide-react'
-import { patch } from '@/lib/api'
+import { patch, post } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { ConfirmDialog } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
+import { waitForControlTask } from '@/lib/control-tasks'
 
 // Phase 8 feature 2: admin-only editor for an account's identity and any of
 // its passwords, without entering the customer panel.
@@ -29,14 +30,18 @@ function RenameCard({ username, account }) {
   const navigate = useNavigate()
   const [value, setValue] = useState('')
   const [confirm, setConfirm] = useState(false)
+  const [taskProgress, setTaskProgress] = useState(null)
   const mut = useMutation({
-    mutationFn: () => patch(`/api/v1/admin/accounts/${username}/identity`, { new_username: value.trim() }),
+    mutationFn: async () => {
+      setTaskProgress(null)
+      const task = await post(`/api/v1/task-operations/accounts/${username}/rename`, { new_username: value.trim() })
+      return waitForControlTask(task, { onProgress: setTaskProgress })
+    },
     onSuccess: (res) => {
-      toast.success('Account renamed', `${res.old_username} → ${res.new_username}`)
+      toast.success(`Renamed ${res.old_username} to ${res.new_username}`)
       setConfirm(false)
       navigate(`/accounts/${res.new_username}`, { replace: true })
     },
-    onError: (e) => { toast.error('Could not rename account', e.message); setConfirm(false) },
   })
   const canRename = ['active', 'suspended'].includes(account.status)
 
@@ -53,7 +58,7 @@ function RenameCard({ username, account }) {
           <FormField label="New username" className="flex-1" hint="1–16 lowercase letters/digits, starting with a letter.">
             <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder="newname" disabled={!canRename} />
           </FormField>
-          <Button variant="warning" disabled={!canRename || !value.trim()} onClick={() => setConfirm(true)}>Rename</Button>
+          <Button variant="warning" disabled={!canRename || !value.trim()} onClick={() => { mut.reset(); setConfirm(true) }}>Rename</Button>
         </div>
         <p className="flex items-start gap-2 text-xs text-muted-foreground">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
@@ -69,6 +74,8 @@ function RenameCard({ username, account }) {
         confirmLabel="Rename account"
         variant="warning"
         loading={mut.isPending}
+        loadingDescription={taskProgress?.progress_message || `Renaming ${username} to ${value.trim()}… this can take up to 30 seconds. Do not close this page.`}
+        error={mut.error}
         onConfirm={() => mut.mutate()}
       />
     </Card>

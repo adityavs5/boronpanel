@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from fastapi import Cookie, Header, HTTPException
 from starlette.requests import Request
@@ -182,12 +183,45 @@ def get_identity(
     if fh_session:
         identity = _identity_from_session_cookie(fh_session)
         if identity is not None:
+            require_cookie_write_origin(request)
             enforce_listener_role(identity,request)
             identity.ip = client_ip
             request.state.identity = identity
             return identity
 
     raise HTTPException(status_code=401, detail="authentication required")
+
+
+def require_cookie_write_origin(request: Request) -> None:
+    """A sibling hosting origin must not exercise panel cookie authority.
+
+    Header-less non-browser clients remain supported. Bearer authentication
+    does not call this guard, since browsers do not attach bearer authority
+    to a hostile form. WebSockets and the file proxy retain their own guards.
+    """
+    # ASGI servers always provide ``method`` for HTTP requests.  Treat a
+    # malformed/custom scope without it as an unsafe method instead of
+    # raising KeyError (or accidentally granting the safe-method bypass).
+    method = str(request.scope.get("method") or "").upper()
+    if method in ("GET", "HEAD", "OPTIONS"):
+        return
+    expected = (request.url.scheme, request.url.netloc)
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    value = origin if origin is not None else referer
+    if value is None:
+        return
+    try:
+        parsed = urlsplit(value)
+        valid = (
+            (parsed.scheme, parsed.netloc) == expected
+            and parsed.username is None and parsed.password is None
+            and (origin is None or (parsed.path in ("", "/") and not parsed.query and not parsed.fragment))
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise HTTPException(status_code=403, detail="cross-origin panel operation rejected")
 
 
 def require_admin(identity: Identity) -> None:

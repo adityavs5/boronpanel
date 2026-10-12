@@ -37,6 +37,10 @@ def configured(isolated_db, mail_spy):
 def _stub_status(monkeypatch, down: set[str] = frozenset()):
     from daemon import clock_health
     monkeypatch.setattr(clock_health,"get_status",lambda refresh=False:{"status":"critical" if "clock" in down else "healthy"})
+    # These tests exercise service transition semantics.  Host-pressure
+    # probes have dedicated coverage in test_p8_retention_alerts_sessions and
+    # must not make this suite depend on the runner's real disk/load state.
+    monkeypatch.setattr(monitoring, "_host_metrics", lambda *_args: {})
     def fake_run(argv, timeout=10):
         unit = argv[-1]
         service = next((k for k, u in monitoring.MONITORED_SERVICES.items() if u == unit), None)

@@ -7,13 +7,17 @@ ever affected and no system-wide php.ini file is touched.
 """
 from __future__ import annotations
 
+import datetime as dt
+import re
+from pathlib import Path
+
 from daemon import account_mutation
 
 from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, PhpIniDirective, PhpIniOverride, utcnow
+from shared.models import Account, Domain, PhpIniDirective, PhpIniOverride, utcnow
 from shared.validation import (
     ValidationError,
     _php_size_to_mb,
@@ -24,7 +28,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import ols, phpdirectives, sysops
+from daemon import ols, php_lifecycle, phpdirectives, sysops
 
 # Re-exported name: the DEFAULTS dict moved to daemon/phpdirectives.py (ols.py
 # needs it too and importing this module from there would be circular), but
@@ -95,15 +99,66 @@ def get_php_ini(params: dict) -> dict:
         row = session.scalar(select(PhpIniOverride).where(PhpIniOverride.account_id == account.id))
         extras = _extras_for_account(session, account.id)
         legacy = _row_to_dict(row) if row else None
+        versions = list(settings.php_versions)
+        states = {item["version"]: item for item in php_lifecycle.get_policy({})["versions"]}
         return {
             "username": username,
-            "php_versions": list(settings.php_versions),
+            "php_versions": versions,
+            "new_domain_php_versions": php_lifecycle.versions_for_new_domain(versions),
+            "php_lifecycle": [states.get(version, php_lifecycle.lifecycle(version)) for version in versions],
+            "current_php_lifecycle": states.get(account.php_version, php_lifecycle.lifecycle(account.php_version)),
             "limit_presets": LIMIT_PRESETS,
             "php_ini": legacy,
             "defaults": DEFAULTS,
             "extras": extras,
             "directives": _directive_descriptors(legacy, extras),
         }
+
+
+_PHP_ADMIN_VALUE = re.compile(
+    r'^\s*php_admin_value\s+(?P<name>[A-Za-z0-9_.]+)\s+"(?P<value>[^"]*)"\s*$',
+    re.MULTILINE,
+)
+
+
+def effective_domain_config(params: dict) -> dict:
+    """Read the values OpenLiteSpeed will actually apply for one domain."""
+    from shared.validation import validate_domain
+
+    username = validate_username(params["username"])
+    domain_name = validate_domain(params["domain"])
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        if account is None:
+            raise RuntimeError(f"account '{username}' not found")
+        domain = session.scalar(select(Domain).where(
+            Domain.account_id == account.id, Domain.domain == domain_name,
+        ))
+        if domain is None:
+            raise ValidationError(f"domain '{domain_name}' does not belong to account '{username}'")
+        effective_version = domain.php_version or account.php_version
+    config_path = Path(ols._vhost_conf_path(ols._vhost_name(domain_name)))
+    try:
+        rendered = config_path.read_text()
+    except FileNotFoundError:
+        raise ValidationError(
+            f"OpenLiteSpeed configuration for '{domain_name}' has not been rendered yet"
+        ) from None
+    values = {match.group("name"): match.group("value") for match in _PHP_ADMIN_VALUE.finditer(rendered)}
+    wanted = (
+        "open_basedir", "disable_functions", "upload_tmp_dir",
+        "upload_max_filesize", "session.save_path", "error_log",
+    )
+    return {
+        "username": username,
+        "domain": domain_name,
+        "php_version": effective_version,
+        "source": "rendered_vhost",
+        "values": {name: values.get(name) for name in wanted},
+        "rendered_at": dt.datetime.fromtimestamp(
+            config_path.stat().st_mtime, dt.timezone.utc
+        ).isoformat(),
+    }
 
 
 @account_mutation.locked

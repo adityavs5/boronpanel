@@ -11,7 +11,7 @@ SecRule REQUEST_URI "@beginsWith /.well-known/acme-challenge/" "id:9001002,phase
 {% for override in waf_domain_policies %}
 {% set override_mode = override.mode | default('disabled', true) %}
 {% if override_mode in ['disabled', 'detect', 'protect'] %}
-SecRule REQUEST_HEADERS:Host "@rx ^{{ override.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9010000 + loop.index }},phase:1,t:none,t:lowercase,pass,nolog,ctl:ruleEngine={{ {'disabled':'Off','detect':'DetectionOnly','protect':'On'}[override_mode] }}"
+SecRule REQUEST_HEADERS:Host "@rx {{ override.host_pattern | default('^' ~ (override.domain | replace('.', '[.]')) ~ '[.]?(?::[0-9]{1,5})?$') }}" "id:{{ 9010000 + loop.index }},phase:1,t:none,t:lowercase,pass,nolog,ctl:ruleEngine={{ {'disabled':'Off','detect':'DetectionOnly','protect':'On'}[override_mode] }}"
 {% endif %}
 {% endfor %}
 
@@ -19,21 +19,20 @@ SecRule REQUEST_HEADERS:Host "@rx ^{{ override.domain | replace('.', '[.]') }}[.
 # hosted Host value; optional URI/argument conditions narrow it further.
 {% for exception in waf_exceptions %}
 {% set removal = 'ctl:ruleRemoveById=' ~ exception.rule_id if exception.rule_id else 'ctl:ruleRemoveByTag=' ~ exception.category %}
+SecRule REQUEST_HEADERS:Host "@rx {{ exception.host_pattern | default('^' ~ (exception.domain | replace('.', '[.]')) ~ '[.]?(?::[0-9]{1,5})?$') }}" "id:{{ 9020000 + exception.id }},phase:1,t:none,t:lowercase,pass,nolog,chain"
+SecRule TIME_EPOCH "@lt {{ exception.expires_epoch }}" "t:none{% if exception.uri_prefix or exception.parameter %},chain{% else %},{{ removal }}{% endif %}"
 {% if exception.uri_prefix or exception.parameter %}
-SecRule REQUEST_HEADERS:Host "@rx ^{{ exception.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9020000 + exception.id }},phase:1,t:none,t:lowercase,pass,nolog,chain"
 {% if exception.uri_prefix %}
 SecRule REQUEST_URI "@beginsWith {{ exception.uri_prefix }}" "t:none{% if exception.parameter %},chain{% else %},{{ removal }}{% endif %}"
 {% endif %}
 {% if exception.parameter %}
 SecRule &ARGS:{{ exception.parameter }} "@gt 0" "t:none,{{ removal }}"
 {% endif %}
-{% else %}
-SecRule REQUEST_HEADERS:Host "@rx ^{{ exception.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9020000 + exception.id }},phase:1,t:none,t:lowercase,pass,nolog,{{ removal }}"
 {% endif %}
 {% endfor %}
 
 {% for rule in waf_custom_rules %}
-SecRule REQUEST_HEADERS:Host "@rx ^{{ rule.domain | replace('.', '[.]') }}[.]?(?::[0-9]{1,5})?$" "id:{{ 9100000 + loop.index }},phase:2,t:none,t:lowercase,deny,status:403,msg:'boron-custom-rule-{{ rule.id }}',chain"
+SecRule REQUEST_HEADERS:Host "@rx {{ rule.host_pattern | default('^' ~ (rule.domain | replace('.', '[.]')) ~ '[.]?(?::[0-9]{1,5})?$') }}" "id:{{ 9100000 + loop.index }},phase:2,t:none,t:lowercase,deny,status:403,msg:'boron-custom-rule-{{ rule.id }}',chain"
 SecRule {{ rule.target }} "@rx {{ rule.pattern }}" "t:none"
 {% endfor %}
 

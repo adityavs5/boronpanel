@@ -27,7 +27,8 @@ class TriggerBackupBody(BaseModel):
 @api_router.post("")
 def trigger_backup(username: str, body: TriggerBackupBody, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    return call_daemon("backup.job.trigger", identity, username=username, **body.model_dump())
+    return call_daemon("backup.job.trigger", identity, username=username,
+                       customer_scope=identity.role == "customer", **body.model_dump())
 
 
 @api_router.get("")

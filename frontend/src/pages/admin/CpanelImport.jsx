@@ -115,10 +115,7 @@ export default function AccountImports() {
   ]
 
   return <div>
-    <PageHeader title="Account migrations" description="Move complete accounts from cPanel, DirectAdmin, or another Boron server. Each item is verified and reported while the import runs." icon={DownloadCloud}>
-      <Button variant="secondary" onClick={() => setRemoteOpen(value => !value)}>From DirectAdmin server</Button>
-      <Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />New migration</Button>
-    </PageHeader>
+    <PageHeader title="Account migrations" description="Move complete accounts from cPanel, DirectAdmin, or another Boron server. Each item is verified and reported while the import runs." icon={DownloadCloud} primaryAction={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />New migration</Button>} moreActions={[{label:'From DirectAdmin server',onSelect:()=>setRemoteOpen(value=>!value)}]} />
     {remoteOpen && <DirectAdminMigration onClose={() => setRemoteOpen(false)} onQueued={job => openDetails({ ...job, panel: 'directadmin', rowKey: `external-${job.id}` })} />}
     <DataTable columns={columns} data={rows} loading={external.isLoading || native.isLoading} error={external.error || native.error} onRetry={() => { external.refetch(); native.refetch() }} filterable searchPlaceholder="Search migrations…" pageSize={15} initialSort={{ key: 'started_at', dir: 'desc' }} getRowKey={row => row.rowKey} onRowClick={openDetails} emptyTitle="No account migrations" emptyDescription="Upload a full account archive to migrate it to this server." emptyIcon={FileArchive} emptyAction={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />New migration</Button>} />
 

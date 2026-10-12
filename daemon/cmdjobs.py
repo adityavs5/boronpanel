@@ -11,16 +11,17 @@ from __future__ import annotations
 
 import logging
 import pwd
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, CommandRun, utcnow
+from shared.validation import ValidationError
 
 from daemon import account_exec, jobcredentials
-from daemon.procutil import run
+from daemon.procutil import _stop_account_unit, run
 
 logger = logging.getLogger("borond.cmdjobs")
 
@@ -67,6 +68,27 @@ def submit(
     here -- callers pass the bare tool argv; this wraps it)."""
     account = _account(username)
     with write_session() as session:
+        # Serialize admission before counting. ThreadPoolExecutor's internal
+        # queue is intentionally unbounded, so the durable job table is the
+        # authoritative finite admission gate for pending + running work.
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        active = ("pending", "running")
+        account_active = session.scalar(
+            select(func.count()).select_from(CommandRun).where(
+                CommandRun.account_id == account.id,
+                CommandRun.status.in_(active),
+            )
+        ) or 0
+        if account_active >= settings.command_run_max_active_per_account:
+            raise ValidationError(
+                "This account already has the maximum number of queued or running commands. "
+                "Wait for one to finish before starting another."
+            )
+        global_active = session.scalar(
+            select(func.count()).select_from(CommandRun).where(CommandRun.status.in_(active))
+        ) or 0
+        if global_active >= settings.command_run_max_active_global:
+            raise ValidationError("The command queue is currently full. Wait for a running command to finish and retry.")
         job = CommandRun(
             account_id=account.id, kind=kind, target=target,
             command_display=command_display[:1024], status="pending",
@@ -76,10 +98,19 @@ def submit(
         session.flush()
         job_id = job.id
 
-    _executor.submit(
-        _run_job, job_id, username, argv, target, redact or [],
-        timeout or settings.command_run_timeout_seconds, input_text, on_failure, on_success
-    )
+    try:
+        _executor.submit(
+            _run_job, job_id, username, argv, target, redact or [],
+            timeout or settings.command_run_timeout_seconds, input_text, on_failure, on_success
+        )
+    except Exception:
+        with write_session() as session:
+            failed = session.get(CommandRun, job_id)
+            if failed is not None:
+                failed.status = "failed"
+                failed.error = "The command could not be queued. Retry the operation."
+                failed.completed_at = utcnow()
+        raise
     return _job_dict(_get(job_id), reveal=False)
 
 
@@ -203,3 +234,35 @@ def list_runs(params: dict, kind: str) -> dict:
             .limit(50)
         ).all()
         return {"runs": [_job_dict(r, reveal=False) for r in rows]}
+
+
+def recover_interrupted() -> int:
+    """Release stateless CLI jobs whose executor vanished on restart.
+
+    Operation callbacks cannot survive a daemon restart.  Do not replay or
+    guess them; terminate a confirmed worker and surface an explicit failed
+    job so the account is not permanently wedged behind a stale active row.
+    """
+    recovered = 0
+    with write_session() as session:
+        rows = session.execute(
+            select(CommandRun, Account)
+            .join(Account, CommandRun.account_id == Account.id)
+            .where(
+                CommandRun.status.in_(("pending", "running")),
+                CommandRun.kind.in_(("composer", "wpcli", "wpmanager")),
+            )
+        ).all()
+        for row, account in rows:
+            if row.status == "running" and account.uid is not None:
+                _stop_account_unit(f"boron-account-{account.uid}-cmd-{row.id}.service")
+            row.status = "failed"
+            row.error = (
+                "The command was interrupted by a panel service restart. "
+                "Review the site state before running the operation again."
+                if row.kind == "wpmanager" else
+                "The command was interrupted by a panel service restart. Run it again."
+            )
+            row.completed_at = utcnow()
+            recovered += 1
+    return recovered

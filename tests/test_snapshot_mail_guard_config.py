@@ -1,4 +1,5 @@
 import pytest
+from testsupport.host_requirements import chown_or_skip
 
 from daemon import snapshot_mail_guard_config as config
 from shared.config import settings
@@ -42,7 +43,7 @@ def test_compiled_directory_must_match_runtime_settings(configured, tmp_path, mo
     other = tmp_path / 'other'
     other.mkdir(mode=0o710)
     other.chmod(0o710)
-    os.chown(other, 0, grp.getgrnam('dovecot').gr_gid)
+    chown_or_skip(other, 0, grp.getgrnam('dovecot').gr_gid)
     monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(other))
     with pytest.raises(ValidationError, match='different storage'):
         config.verify(binary=binary, config=path)

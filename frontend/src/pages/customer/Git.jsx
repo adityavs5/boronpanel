@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { CenteredSpinner } from '@/components/ui/Spinner'
 import { toast } from '@/components/ui/Toast'
+import { LongValue } from '@/components/ui/LongValue'
 
 function cloneUrl(username, name) {
   if (!username || !name) return ''
@@ -93,22 +94,7 @@ export default function Git() {
       header: 'Clone / push URL',
       searchable: true,
       sortValue: (r) => r.name,
-      render: (r) => {
-        const url = cloneUrl(username, r.name)
-        return (
-          <div className="flex items-center gap-2">
-            <code className="truncate font-mono text-xs text-muted-foreground" title={url}>{url}</code>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`Copy clone URL for ${r.name}`}
-              onClick={() => copyValue(url, 'Clone URL')}
-            >
-              <Copy className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        )
-      },
+      render: (r) => <LongValue value={cloneUrl(username, r.name)} label={`clone URL for ${r.name}`} />,
     },
     {
       key: 'deploy_target',
@@ -117,7 +103,7 @@ export default function Git() {
       searchable: true,
       render: (r) =>
         r.deploy_target
-          ? <span className="font-mono text-sm text-muted-foreground">{r.deploy_target}</span>
+          ? <LongValue value={r.deploy_target} label={`${r.name} deploy target`} />
           : <span className="text-muted-foreground">not configured</span>,
     },
     {

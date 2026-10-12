@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, Plus, ShieldCheck } from 'lucide-react'
+import { Copy, MoreHorizontal, Plus, ShieldCheck } from 'lucide-react'
 import { get, patch, post } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
@@ -10,6 +10,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, ConfirmDialog } from '@/components/ui/Dialog'
 import { useAuth } from '@/store/auth'
 import { toast } from '@/components/ui/Toast'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/DropdownMenu'
 
 export default function Administrators() {
   const qc = useQueryClient()
@@ -41,7 +42,7 @@ export default function Administrators() {
       { key: 'created_at', header: 'Created', sortable: true, render: row => row.created_at ? new Date(row.created_at).toLocaleString() : '—' },
       { key: 'disabled', header: 'Status', render: row => <StatusBadge status={row.disabled ? 'disabled' : 'active'} /> },
       { key: 'two_factor_enabled', header: 'Two-factor authentication', render: row => row.two_factor_enabled ? 'Enabled' : 'Off' },
-      { key: 'actions', header: '', searchable: false, render: row => <div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" disabled={row.username === actorUsername} loading={status.isPending && status.variables?.id === row.id} onClick={() => setAction({row,kind:'status'})}>{row.disabled ? 'Enable' : 'Disable'}</Button>{row.username !== actorUsername && <><Button size="sm" variant="secondary" onClick={() => { setNewPassword(''); setAction({row,kind:'password'}) }}>Reset password</Button><Button size="sm" variant="secondary" disabled={!row.two_factor_enabled} onClick={() => setAction({row,kind:'reset_2fa'})}>Reset 2FA</Button><Button size="sm" variant="ghost" className="text-danger" onClick={() => setAction({row,kind:'delete'})}>Remove</Button></>}</div> },
+      { key: 'actions', header: '', searchable: false, render: row => <div className="flex justify-end gap-1"><Button size="sm" variant="secondary" disabled={row.username === actorUsername} loading={status.isPending && status.variables?.id === row.id} onClick={() => setAction({row,kind:'status'})}>{row.disabled ? 'Enable' : 'Disable'}</Button>{row.username !== actorUsername && <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-sm" variant="ghost" aria-label={`Actions for ${row.username}`}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { setNewPassword(''); setAction({row,kind:'password'}) }}>Reset password</DropdownMenuItem><DropdownMenuItem disabled={!row.two_factor_enabled} onSelect={() => setAction({row,kind:'reset_2fa'})}>Reset 2FA</DropdownMenuItem><DropdownMenuSeparator/><DropdownMenuItem className="text-danger" onSelect={() => setAction({row,kind:'delete'})}>Remove</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</div> },
     ]} emptyTitle="No administrators" emptyDescription="Create an operator login for each person who administers this server." emptyIcon={ShieldCheck} />
 
     <ConfirmDialog open={!!action && action.kind !== 'password'} onOpenChange={value => !value && setAction(null)} title={`${action?.kind === 'delete' ? 'Remove' : action?.kind === 'reset_2fa' ? 'Reset 2FA for' : action?.row.disabled ? 'Enable' : 'Disable'} ${action?.row.username || 'administrator'}?`} description={action?.kind === 'delete' ? 'Removes this operator login. Your own login and the last enabled administrator cannot be removed. Administrators with impersonation history can be disabled instead.' : action?.kind === 'reset_2fa' ? 'Removes the authenticator and recovery codes and revokes existing sessions. The administrator must set up 2FA again.' : 'Disabled administrators cannot sign in. Disabling revokes existing sessions.'} confirmLabel="Confirm" loading={manage.isPending || status.isPending} onConfirm={() => action.kind === 'status' ? status.mutate(action.row, {onSuccess: () => setAction(null)}) : manage.mutate()} />

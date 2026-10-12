@@ -16,7 +16,7 @@ import stat
 import subprocess
 
 from shared.config import settings
-from shared.validation import ValidationError, generate_strong_password, validate_username
+from shared.validation import ValidationError, generate_strong_password, validate_password_text, validate_username
 
 from daemon.procutil import run
 from daemon.safeio import secure_mkdirs
@@ -84,6 +84,7 @@ def create_linux_user(username: str) -> tuple[int, int]:
 
     pw = pwd.getpwnam(username)
     ensure_tmp_dir(username)
+    ensure_php_session_dir(username)
     # The default file-backup scope must exist even before a first domain.
     # Keep it private; domain provisioning adds the web-server ACL later.
     secure_mkdirs(home_dir, "public_html", pw.pw_uid, pw.pw_gid, 0o750)
@@ -107,6 +108,15 @@ def ensure_tmp_dir(username: str) -> str:
     return secure_mkdirs(home, "tmp", pw.pw_uid, pw.pw_gid, 0o750)
 
 
+def ensure_php_session_dir(username: str) -> str:
+    """Create the account-only PHP session directory, idempotently."""
+    _assert_safe_username(username)
+    pw = pwd.getpwnam(username)
+    home = f"{settings.home_base}/{username}"
+    ensure_tmp_dir(username)
+    return secure_mkdirs(home, "tmp/sessions", pw.pw_uid, pw.pw_gid, 0o700)
+
+
 def ensure_web_logs(username: str) -> str:
     """Keep tenant logs private while allowing OLS to create/rotate them.
 
@@ -127,6 +137,7 @@ def ensure_web_logs(username: str) -> str:
 
 def set_initial_password(username: str, password: str) -> None:
     _assert_safe_username(username)
+    validate_password_text(password)
     run(["chpasswd"], input_text=f"{username}:{password}\n", check=True)
 
 
@@ -262,8 +273,18 @@ def _remove_orphaned_home(username: str) -> None:
     run(["find", expected, "-xdev", "-depth", "-delete"], timeout=600, check=True)
 
 
-def set_quota(username: str, soft_mb: int, hard_mb: int, mount: str = "/") -> None:
+def set_quota(
+    username: str,
+    soft_mb: int,
+    hard_mb: int,
+    mount: str = "/",
+    *,
+    inode_soft: int = 0,
+    inode_hard: int = 0,
+) -> None:
     _assert_safe_username(username)
+    if inode_soft < 0 or inode_hard < 0 or (inode_hard and inode_soft > inode_hard):
+        raise ValidationError("inode quota must be zero or a soft limit no greater than the hard limit")
     soft_blocks = soft_mb * 1024
     hard_blocks = hard_mb * 1024
     run(
@@ -271,7 +292,7 @@ def set_quota(username: str, soft_mb: int, hard_mb: int, mount: str = "/") -> No
             "setquota",
             "-u", username,
             str(soft_blocks), str(hard_blocks),
-            "0", "0",
+            str(inode_soft), str(inode_hard),
             mount,
         ],
         check=True,

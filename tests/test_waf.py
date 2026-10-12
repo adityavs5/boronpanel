@@ -101,14 +101,14 @@ def test_parse_audit_log_second_transaction_different_host():
 
 
 def test_list_blocked_requests_filters_by_domain(monkeypatch):
-    monkeypatch.setattr(waf, "run", lambda args, timeout=15: ProcResult(args=args, returncode=0, stdout=REAL_AUDIT_LOG_SAMPLE, stderr=""))
+    monkeypatch.setattr(waf, "run", lambda args, timeout=15, **_kwargs: ProcResult(args=args, returncode=0, stdout=REAL_AUDIT_LOG_SAMPLE, stderr=""))
     result = waf.list_blocked_requests({"domain": "another.example.com"})
     assert len(result["events"]) == 1
     assert result["events"][0]["host"] == "another.example.com"
 
 
 def test_list_blocked_requests_newest_first(monkeypatch):
-    monkeypatch.setattr(waf, "run", lambda args, timeout=15: ProcResult(args=args, returncode=0, stdout=REAL_AUDIT_LOG_SAMPLE, stderr=""))
+    monkeypatch.setattr(waf, "run", lambda args, timeout=15, **_kwargs: ProcResult(args=args, returncode=0, stdout=REAL_AUDIT_LOG_SAMPLE, stderr=""))
     result = waf.list_blocked_requests({})
     assert len(result["events"]) == 2
     assert result["events"][0]["host"] == "another.example.com"  # last in log, first in output

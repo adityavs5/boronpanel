@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import hmac
+import ipaddress
 import re
 import secrets
 import string
@@ -15,7 +17,8 @@ import string
 from sqlalchemy import delete, func, select, text
 
 from shared.db import write_session
-from shared.models import Account, ApiToken, ImpersonationSession, LoginAttempt, LoginChallenge, PanelUser, Session, TotpCredential, TotpRecoveryCode, utcnow
+from shared.config import settings
+from shared.models import Account, ApiToken, ImpersonationSession, LoginAttempt, LoginChallenge, LoginFailureEvent, PanelUser, SecurityPolicySettings, Session, TotpCredential, TotpRecoveryCode, utcnow
 from shared.passwords import hash_password, verify_password
 from shared.validation import ValidationError, generate_strong_password, validate_password_strength, validate_username
 from shared.session_ids import session_digest
@@ -38,6 +41,42 @@ TOKEN_PREFIX_LEN = 8
 # guessing.
 LOCKOUT_THRESHOLD = 5
 LOCKOUT_DURATION_SECONDS = 15 * 60
+MAX_LOGIN_USERNAME_LENGTH = 256
+LOGIN_BUCKET_COUNT = 1024
+
+
+def _panel_username(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', value):
+        raise ValidationError('Enter a valid panel login name')
+    return value
+
+
+def _login_bucket(username: str, *, known_user: bool = False) -> str:
+    digest = hmac.new(
+        settings.session_secret.encode("utf-8"), username.encode("utf-8"), hashlib.sha256
+    ).digest()
+    if known_user:
+        # Known identities get collision-resistant keys, so traffic for
+        # invented names can never lock out an unrelated real administrator.
+        # The number of these rows is bounded by PanelUser itself.
+        return f"$login-user-{digest.hex()[:48]}$"
+    return f"$login-bucket-{int.from_bytes(digest[:4], 'big') % LOGIN_BUCKET_COUNT:04x}$"
+
+
+def reconcile_login_attempt_keys() -> dict:
+    """Remove legacy/unreachable lockout rows after upgrades or key rotation."""
+    anonymous = {f"$login-bucket-{index:04x}$" for index in range(LOGIN_BUCKET_COUNT)}
+    with write_session() as db:
+        known = {
+            _login_bucket(username, known_user=True)
+            for username in db.scalars(select(PanelUser.username)).all()
+        }
+        allowed = anonymous | known
+        rows = db.scalars(select(LoginAttempt)).all()
+        stale = [row for row in rows if row.username not in allowed]
+        for row in stale:
+            db.delete(row)
+    return {"removed": len(stale)}
 
 
 def _panel_user_dict(user: PanelUser) -> dict:
@@ -52,7 +91,7 @@ def _panel_user_dict(user: PanelUser) -> dict:
 
 
 def create_panel_user(params: dict) -> dict:
-    username = params["username"]
+    username = _panel_username(params["username"])
     password = params["password"]
     role = params.get("role", "customer")
     account_id = params.get("account_id")
@@ -103,9 +142,10 @@ def create_administrator(params: dict) -> dict:
 def _administrator_username(value):
     # Administrator logins are panel identities, not Linux accounts. Existing
     # bootstrap names such as admin/administrator are valid here.
-    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', value):
-        raise ValidationError('Enter a valid administrator login name')
-    return value
+    try:
+        return _panel_username(value)
+    except ValidationError:
+        raise ValidationError('Enter a valid administrator login name') from None
 
 
 def set_administrator_status(params: dict) -> dict:
@@ -124,6 +164,18 @@ def set_administrator_status(params: dict) -> dict:
             )) or 0
             if enabled_count <= 1:
                 raise ValidationError("at least one administrator must remain enabled")
+            policy = session.get(SecurityPolicySettings, 1)
+            credential = session.scalar(select(TotpCredential.id).where(
+                TotpCredential.panel_user_id == user.id, TotpCredential.enabled.is_(True),
+            ))
+            if policy and policy.require_admin_2fa and credential is not None:
+                protected = session.scalar(select(func.count()).select_from(PanelUser).join(
+                    TotpCredential, TotpCredential.panel_user_id == PanelUser.id,
+                ).where(
+                    PanelUser.role == "admin", PanelUser.disabled.is_(False), TotpCredential.enabled.is_(True),
+                )) or 0
+                if protected <= 1:
+                    raise ValidationError("Keep at least one active administrator with 2FA while the administrator 2FA policy is required")
         user.disabled = disabled
         if disabled:
             for row in session.scalars(select(Session).where(
@@ -181,6 +233,18 @@ def manage_administrator(params: dict) -> dict:
             row.revoked = True
         db.execute(delete(LoginChallenge).where(LoginChallenge.panel_user_id == user.id))
         if action in ('reset_2fa', 'delete'):
+            policy = db.get(SecurityPolicySettings, 1)
+            credential = db.scalar(select(TotpCredential).where(
+                TotpCredential.panel_user_id == user.id, TotpCredential.enabled.is_(True),
+            ))
+            if policy and policy.require_admin_2fa and credential is not None:
+                protected = db.scalar(select(func.count()).select_from(PanelUser).join(
+                    TotpCredential, TotpCredential.panel_user_id == PanelUser.id,
+                ).where(
+                    PanelUser.role == 'admin', PanelUser.disabled.is_(False), TotpCredential.enabled.is_(True),
+                )) or 0
+                if protected <= 1:
+                    raise ValidationError('Keep 2FA enabled on at least one active administrator while the administrator 2FA policy is required')
             db.execute(delete(TotpRecoveryCode).where(TotpRecoveryCode.panel_user_id == user.id))
             db.execute(delete(TotpCredential).where(TotpCredential.panel_user_id == user.id))
         if action == 'password':
@@ -253,6 +317,78 @@ def record_login_result(params: dict) -> dict:
     return {"status": "ok"}
 
 
+def _source_ip(value: object) -> str | None:
+    try:
+        return str(ipaddress.ip_address(str(value))) if value else None
+    except ValueError:
+        return None
+
+
+def _user_agent(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    safe = "".join(character for character in value if character.isprintable()).strip()
+    return safe[:256] or None
+
+
+def _record_login_failure(bucket: str, source_ip: object) -> None:
+    with write_session() as db:
+        db.add(LoginFailureEvent(bucket=bucket, source_ip=_source_ip(source_ip)))
+
+
+def _security_policy(db) -> SecurityPolicySettings:
+    row = db.get(SecurityPolicySettings, 1)
+    if row is None:
+        row = SecurityPolicySettings(id=1)
+        db.add(row)
+        db.flush()
+    return row
+
+
+def security_policy_get(_params: dict | None = None) -> dict:
+    with write_session() as db:
+        row = _security_policy(db)
+        enabled_admins = db.scalar(select(func.count()).select_from(PanelUser).join(
+            TotpCredential, TotpCredential.panel_user_id == PanelUser.id,
+        ).where(
+            PanelUser.role == "admin", PanelUser.disabled.is_(False), TotpCredential.enabled.is_(True),
+        )) or 0
+        return {
+            "require_admin_2fa": bool(row.require_admin_2fa),
+            "admin_2fa_grace_days": row.admin_2fa_grace_days,
+            "admin_2fa_enabled_at": row.admin_2fa_enabled_at.isoformat() if row.admin_2fa_enabled_at else None,
+            "administrators_with_2fa": int(enabled_admins),
+        }
+
+
+def security_policy_set(params: dict) -> dict:
+    with write_session() as db:
+        row = _security_policy(db)
+        grace = row.admin_2fa_grace_days
+        if "admin_2fa_grace_days" in params:
+            try:
+                grace = int(params["admin_2fa_grace_days"])
+            except (TypeError, ValueError):
+                raise ValidationError("2FA grace period must be a whole number of days") from None
+            if not 0 <= grace <= 30:
+                raise ValidationError("2FA grace period must be between 0 and 30 days")
+        required = bool(params.get("require_admin_2fa", row.require_admin_2fa))
+        if required and not row.require_admin_2fa:
+            protected = db.scalar(select(func.count()).select_from(PanelUser).join(
+                TotpCredential, TotpCredential.panel_user_id == PanelUser.id,
+            ).where(
+                PanelUser.role == "admin", PanelUser.disabled.is_(False), TotpCredential.enabled.is_(True),
+            )) or 0
+            if protected < 1:
+                raise ValidationError("Enable 2FA for at least one active administrator before requiring it")
+            row.admin_2fa_enabled_at = utcnow()
+        if not required:
+            row.admin_2fa_enabled_at = None
+        row.require_admin_2fa = required
+        row.admin_2fa_grace_days = grace
+    return security_policy_get()
+
+
 def create_session(params: dict) -> dict:
     panel_user_id = params["panel_user_id"]
     session_id = secrets.token_urlsafe(32)
@@ -261,7 +397,11 @@ def create_session(params: dict) -> dict:
         user = db.get(PanelUser, panel_user_id)
         if user is None or user.disabled:
             raise RuntimeError("panel user not found or disabled")
-        row = Session(session_id=session_digest(session_id), panel_user_id=panel_user_id, expires_at=expires_at)
+        row = Session(
+            session_id=session_digest(session_id), panel_user_id=panel_user_id,
+            expires_at=expires_at, ip_address=_source_ip(params.get("source_ip")),
+            user_agent=_user_agent(params.get("user_agent")), last_seen_at=utcnow(),
+        )
         db.add(row)
         # Phase 7b feature 3: "new login to customer panel" notification --
         # admin logins are deliberately excluded (goal names only the
@@ -283,31 +423,61 @@ def login_begin(params: dict) -> dict:
     password = params.get("password")
     if not isinstance(username, str) or not isinstance(password, str) or not username:
         raise ValidationError("invalid login request")
-    gate = check_login_lockout({"username": username})
+    if len(username) > MAX_LOGIN_USERNAME_LENGTH:
+        return {"valid": False}
+    # Resolve existence before the gate for every name. Both outcomes use the
+    # same gate and public errors; real users get collision-resistant keys,
+    # while invented names share a finite anonymous bucket space.
+    with write_session() as db:
+        user = db.scalar(select(PanelUser).where(PanelUser.username == username))
+        known_user = user is not None
+    login_bucket = _login_bucket(username, known_user=known_user)
+    gate = check_login_lockout({"username": login_bucket})
     if gate["locked"]:
         return {"locked": True, "retry_after_seconds": gate["retry_after_seconds"]}
     with write_session() as db:
         user = db.scalar(select(PanelUser).where(PanelUser.username == username))
         valid = user is not None and not user.disabled and verify_password(password, user.password_hash)
         if not valid:
+            db.add(LoginFailureEvent(
+                bucket=login_bucket, source_ip=_source_ip(params.get("source_ip"))
+            ))
             return {"valid": False}
+        user_id, role, account_id, password_hash = user.id, user.role, user.account_id, user.password_hash
         has_totp = db.scalar(select(TotpCredential.id).where(
-            TotpCredential.panel_user_id == user.id, TotpCredential.enabled.is_(True),
+            TotpCredential.panel_user_id == user_id, TotpCredential.enabled.is_(True),
         )) is not None
-        user_id = user.id
-        role = user.role
-        account_id = user.account_id
+        policy = _security_policy(db)
+        policy_started = policy.admin_2fa_enabled_at
+        if policy_started is not None and policy_started.tzinfo is None:
+            policy_started = policy_started.replace(tzinfo=dt.timezone.utc)
+        policy_deadline = (
+            policy_started + dt.timedelta(days=policy.admin_2fa_grace_days)
+            if policy.require_admin_2fa and policy_started else None
+        )
+        admin_setup_required = role == "admin" and policy.require_admin_2fa and not has_totp
         if has_totp:
             raw = secrets.token_urlsafe(32)
             db.add(LoginChallenge(token_hash=hashlib.sha256(raw.encode()).hexdigest(),
-                                  panel_user_id=user_id, password_hash=user.password_hash,
+                                  panel_user_id=user_id, password_hash=password_hash,
                                   expires_at=utcnow() + dt.timedelta(minutes=5)))
     if has_totp:
         return {"needs_2fa": True, "pending_token": raw,
                 "role": role, "account_id": account_id, "panel_user_id": user_id}
-    record_login_result({"username": username, "success": True})
-    result = create_session({"panel_user_id": user_id})
-    return {"valid": True, "role": role, "account_id": account_id, **result}
+    if admin_setup_required and policy_deadline and utcnow() >= policy_deadline:
+        record_login_result({"username": login_bucket, "success": True})
+        return {"valid": False, "two_factor_setup_required": True}
+    record_login_result({"username": login_bucket, "success": True})
+    result = create_session({
+        "panel_user_id": user_id, "source_ip": params.get("source_ip"),
+        "user_agent": params.get("user_agent"),
+    })
+    return {
+        "valid": True, "role": role, "account_id": account_id,
+        "two_factor_setup_required": bool(admin_setup_required),
+        "two_factor_setup_deadline": policy_deadline.isoformat() if admin_setup_required and policy_deadline else None,
+        **result,
+    }
 
 
 def login_finish(params: dict) -> dict:
@@ -326,12 +496,14 @@ def login_finish(params: dict) -> dict:
         if user is None or user.disabled or user.password_hash != challenge.password_hash:
             return {"valid": False}
         username, user_id, role, account_id = user.username, user.id, user.role, user.account_id
-    gate = check_login_lockout({"username": username})
+    login_bucket = _login_bucket(username, known_user=True)
+    gate = check_login_lockout({"username": login_bucket})
     if gate["locked"]:
         return {"locked": True, "retry_after_seconds": gate["retry_after_seconds"]}
     from daemon.totp import check_login_code
 
     if not check_login_code({"panel_user_id": user_id, "code": code})["valid"]:
+        _record_login_failure(login_bucket, params.get("source_ip"))
         return {"valid": False}
     from sqlalchemy import update
 
@@ -341,8 +513,11 @@ def login_finish(params: dict) -> dict:
         ).values(used_at=utcnow()))
         if consumed.rowcount != 1:
             return {"valid": False}
-    record_login_result({"username": username, "success": True})
-    result = create_session({"panel_user_id": user_id})
+    record_login_result({"username": login_bucket, "success": True})
+    result = create_session({
+        "panel_user_id": user_id, "source_ip": params.get("source_ip"),
+        "user_agent": params.get("user_agent"),
+    })
     return {"valid": True, "role": role, "account_id": account_id, **result}
 
 
@@ -353,6 +528,103 @@ def revoke_session(params: dict) -> dict:
         if row is not None:
             row.revoked = True
     return {"status": "revoked"}
+
+
+def touch_session(session_hash: str | None, source_ip: object = None) -> None:
+    if not session_hash:
+        return
+    now = utcnow()
+    with write_session() as db:
+        row = db.scalar(select(Session).where(Session.session_id == session_hash))
+        if row is None or row.revoked:
+            return
+        last = row.last_seen_at
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=dt.timezone.utc)
+        if last is None or now - last >= dt.timedelta(minutes=1):
+            row.last_seen_at = now
+        safe_ip = _source_ip(source_ip)
+        if safe_ip:
+            row.ip_address = safe_ip
+
+
+def list_sessions(params: dict) -> dict:
+    panel_user_id = int(params["panel_user_id"])
+    current_hash = params.get("_current_session_hash")
+    now = utcnow()
+    with write_session() as db:
+        rows = db.scalars(select(Session).where(
+            Session.panel_user_id == panel_user_id,
+            Session.revoked.is_(False),
+            Session.expires_at > now,
+        ).order_by(Session.last_seen_at.desc(), Session.created_at.desc())).all()
+        active_impersonations = {
+            item.session_id: item for item in db.scalars(select(ImpersonationSession).where(
+                ImpersonationSession.admin_panel_user_id == panel_user_id,
+                ImpersonationSession.ended_at.is_(None),
+            )).all()
+        }
+        direct = []
+        impersonation = []
+        for row in rows:
+            item = {
+                "id": row.id,
+                "ip_address": row.ip_address,
+                "device": row.user_agent or "Unknown device",
+                "created_at": row.created_at.isoformat(),
+                "last_seen_at": (row.last_seen_at or row.created_at).isoformat(),
+                "expires_at": row.expires_at.isoformat(),
+                "current": row.session_id == current_hash,
+                "revocable": row.session_id not in active_impersonations,
+            }
+            if row.session_id in active_impersonations:
+                item["account_id"] = active_impersonations[row.session_id].account_id
+                impersonation.append(item)
+            else:
+                direct.append(item)
+        return {"sessions": direct, "impersonation_sessions": impersonation}
+
+
+def revoke_managed_session(params: dict) -> dict:
+    panel_user_id = int(params["panel_user_id"])
+    session_row_id = int(params["session_row_id"])
+    current_hash = params.get("_current_session_hash")
+    with write_session() as db:
+        row = db.get(Session, session_row_id)
+        if row is None or row.panel_user_id != panel_user_id or row.revoked:
+            raise ValidationError("Session not found")
+        if row.session_id == current_hash:
+            raise ValidationError("Use Log out to end the current session")
+        active_impersonation = db.scalar(select(ImpersonationSession.id).where(
+            ImpersonationSession.session_id == row.session_id,
+            ImpersonationSession.ended_at.is_(None),
+        ))
+        if active_impersonation is not None:
+            raise ValidationError("Return from impersonation before revoking that session")
+        row.revoked = True
+    return {"status": "revoked", "session_id": session_row_id}
+
+
+def revoke_other_sessions(params: dict) -> dict:
+    panel_user_id = int(params["panel_user_id"])
+    current_hash = params.get("_current_session_hash")
+    with write_session() as db:
+        protected = set(db.scalars(select(ImpersonationSession.session_id).where(
+            ImpersonationSession.admin_panel_user_id == panel_user_id,
+            ImpersonationSession.ended_at.is_(None),
+        )).all())
+        rows = db.scalars(select(Session).where(
+            Session.panel_user_id == panel_user_id,
+            Session.revoked.is_(False),
+            Session.session_id != current_hash,
+        )).all()
+        changed = 0
+        for row in rows:
+            if row.session_id in protected:
+                continue
+            row.revoked = True
+            changed += 1
+    return {"status": "revoked", "count": changed}
 
 
 def _generate_token(role: str) -> tuple[str, str]:

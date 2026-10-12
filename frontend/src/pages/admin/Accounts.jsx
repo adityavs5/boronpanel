@@ -259,12 +259,9 @@ export default function Accounts() {
         title="Accounts"
         description={`Manage all hosting accounts on this server. Boron ${version}.`}
         icon={Users}
-      >
-        <Button variant="secondary" onClick={() => setNsOpen(true)}>
-          <ShieldCheck className="h-4 w-4" /> Enable website isolation
-        </Button>
-        <Button asChild><Link to="/accounts/new"><Plus className="h-4 w-4" /> Create account</Link></Button>
-      </PageHeader>
+        primaryAction={<Button asChild><Link to="/accounts/new"><Plus className="h-4 w-4" /> Create account</Link></Button>}
+        moreActions={[{ label: 'Enable website isolation', icon: <ShieldCheck className="h-4 w-4" />, onSelect: () => setNsOpen(true) }]}
+      />
 
       {updateStatus?.update_available && (
         // Panel update system: dashboard banner. Teal, informational -- the

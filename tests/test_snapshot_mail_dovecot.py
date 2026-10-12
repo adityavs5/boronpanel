@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 
 import pytest
+from testsupport.host_requirements import chown_or_skip
 
 from daemon.snapshot_mail_files import build_maildir, stage_for_exchange
 from daemon import snapshot_mail_exchange as exchange
@@ -17,15 +18,15 @@ def mailbox_store():
     if not shutil.which('doveadm'):
         pytest.skip('Dovecot required')
     uid, gid = (65534, 65534) if os.geteuid() == 0 else (os.getuid(), os.getgid())
-    with tempfile.TemporaryDirectory(prefix='boron-mail-recovery-', dir='/tmp') as directory:
+    with tempfile.TemporaryDirectory(prefix='boron-mail-recovery-') as directory:
         root = Path(directory)
         if os.geteuid() == 0:
-            os.chown(root, uid, gid)
+            chown_or_skip(root, uid, gid)
         for name in ('home', 'live', 'run'):
             path = root / name
             path.mkdir()
             if os.geteuid() == 0:
-                os.chown(path, uid, gid)
+                chown_or_skip(path, uid, gid)
         config = root / 'dovecot.conf'
         config.write_text(
             f'base_dir = {root}/run\nmail_home = {root}/home\n'
@@ -53,7 +54,7 @@ def mailbox_store():
                             f'Message-ID: <{identity}@example.test>\nSubject: {identity}\n\n{identity}\n')
             if os.geteuid() == 0:
                 for item in [target, *target.iterdir(), path]:
-                    os.chown(item, uid, gid)
+                    chown_or_skip(item, uid, gid)
 
         yield root, command, message
 
@@ -90,7 +91,7 @@ def test_point_in_time_mail_restore_and_safety_undo(mailbox_store, tmp_path, mon
     home = mail_base / 'example.test/inbox'
     home.mkdir(parents=True)
     for directory in (mail_base, home.parent, home):
-        os.chown(directory, 65534, 65534)
+        chown_or_skip(directory, 65534, 65534)
     monkeypatch.setattr(settings, 'mail_base', str(mail_base))
     (root / 'live').rename(home / 'Maildir')
     name = stage_for_exchange(prepared_source, tmp_path, 'example.test', 'inbox',

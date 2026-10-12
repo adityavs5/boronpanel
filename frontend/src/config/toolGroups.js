@@ -1,4 +1,5 @@
 import { adminNav, customerNav } from './nav'
+import { pathIsAvailable } from './capabilities'
 import { Archive, CalendarClock, Cloud, DatabaseBackup, Download, FileArchive, HardDriveDownload, ListChecks, Mail, RotateCcw, BellRing } from 'lucide-react'
 
 const customerGroups = {
@@ -8,7 +9,7 @@ const customerGroups = {
     ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis', '/git', '/cron']],
     ['Site Tools', ['/files', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
     ['Advanced Tools', ['/ssh', '/terminal', '/logs', '/devtools', '/appearance']],
-    ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security']],
+    ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security', '/site-health']],
   ],
   'paper-lantern': [
     ['Domains', ['/domains', '/subdomains', '/ftp', '/ssl', '/databases', '/dns', '/php']],
@@ -16,29 +17,29 @@ const customerGroups = {
     ['Software', ['/wordpress', '/node-apps', '/python-apps', '/redis', '/git', '/cron']],
     ['Site Tools', ['/files', '/redirects', '/forwarding', '/cache', '/website-maintenance', '/error-pages', '/backups']],
     ['Advanced Tools', ['/ssh', '/terminal', '/logs', '/devtools', '/appearance']],
-    ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security']],
+    ['Usage & Security', ['/disk-usage', '/website-statistics', '/processes', '/malware', '/website-security', '/security', '/site-health']],
   ],
 }
 const adminGroups = {
   evolution: [
-    ['Account Manager', ['/accounts?new=1', '/accounts', '/resellers', '/administrators', '/plans', '/import/accounts']],
-    ['Server Manager', ['/health', '/services', '/openlitespeed', '/resource-manager', '/filesystem-isolation', '/security-center', '/stack-manager', '/db-monitor', '/slow-queries', '/dns-setup', '/cloudflare', '/dns-cluster', '/ip-management', '/backup-jobs']],
+    ['Account Manager', ['/accounts/new', '/accounts', '/resellers', '/administrators', '/plans', '/import/accounts']],
+    ['Server Manager', ['/health', '/diagnostics', '/services', '/openlitespeed', '/resource-manager', '/filesystem-isolation', '/security-center', '/stack-manager', '/db-monitor', '/slow-queries', '/dns-setup', '/cloudflare', '/dns-cluster', '/ip-management', '/backup-jobs']],
     ['Email', ['/mail-queue', '/mail-tracking', '/imap-migrations', '/notifications']],
     ['Software & Websites', ['/wordpress', '/software/node-apps', '/software/python-apps', '/templates', '/maintenance-mode', '/updates']],
     ['Security & Network', ['/ssl', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens']],
-    ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/webhooks']],
+    ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/retention', '/webhooks']],
     ['Account & Preferences', ['/server-setup', '/panel-settings', '/branding', '/appearance', '/security', '/api/docs']],
   ],
   'paper-lantern': [
-    ['Account Manager', ['/accounts?new=1', '/accounts', '/resellers', '/administrators', '/plans', '/import/accounts']],
-    ['Server & Databases', ['/health', '/services', '/openlitespeed', '/resource-manager', '/filesystem-isolation', '/security-center', '/stack-manager', '/db-monitor', '/slow-queries', '/backup-jobs', '/updates']],
+    ['Account Manager', ['/accounts/new', '/accounts', '/resellers', '/administrators', '/plans', '/import/accounts']],
+    ['Server & Databases', ['/health', '/diagnostics', '/services', '/openlitespeed', '/resource-manager', '/filesystem-isolation', '/security-center', '/stack-manager', '/db-monitor', '/slow-queries', '/backup-jobs', '/updates']],
     ['Domains & Network', ['/dns-setup', '/cloudflare', '/dns-cluster', '/ip-management']],
     ['Email', ['/mail-queue', '/mail-tracking', '/imap-migrations', '/notifications']],
-    ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/webhooks']],
+    ['Metrics, Logs & Integrations', ['/bandwidth', '/site-stats', '/audit-log', '/account-log', '/error-log', '/retention', '/webhooks']],
     ['Security', ['/ssl', '/malware', '/firewall', '/fail2ban', '/waf', '/ip-bans', '/ip-whitelist', '/tokens', '/security']],
     ['Software & Websites', ['/wordpress', '/software/node-apps', '/software/python-apps', '/templates', '/maintenance-mode']],
     ['Developer Tools', ['/api/docs']],
-    ['Preferences', ['/server-setup', '/branding', '/change-password', '/appearance']],
+    ['Preferences', ['/server-setup', '/panel-settings', '/branding', '/change-password', '/appearance']],
   ],
 }
 const labels = {
@@ -47,8 +48,9 @@ const labels = {
   '/ssl': 'SSL Certificates', '/dns': 'DNS Management', '/php': 'PHP Settings',
   '/git': 'Git Version Control', '/apps': 'Applications', '/node-apps': 'Node.js App', '/python-apps': 'Python App', '/redis': 'Redis',
   '/accounts': 'Manage Accounts', '/health': 'Server Information', '/services': 'Service Monitor',
+  '/diagnostics': 'Diagnostics',
   '/resellers': 'Reseller Management',
-  '/accounts?new=1': 'Add New User', '/administrators': 'Administrators',
+  '/accounts/new': 'Add New User', '/administrators': 'Administrators',
   '/software/node-apps': 'Node.js Applications', '/software/python-apps': 'Python Applications',
   '/updates': 'Panel Updates', '/appearance': 'Change Style',
 }
@@ -56,15 +58,15 @@ const tones = ['sky', 'green', 'amber', 'violet', 'rose', 'teal']
 
 // Look up links in the canonical role-aware navigation rather than creating
 // synthetic tools that lead nowhere. New navigation entries get a fallback group.
-export function getToolGroups(role, skin) {
-  const nav = role === 'admin' ? adminNav : customerNav
+export function getToolGroups(role, skin, capabilities = []) {
+  const nav = (role === 'admin' ? adminNav : customerNav).filter(item => item.section || pathIsAvailable(item.to, capabilities))
   const lookup = new Map(nav.filter((item) => item.to).map((item) => [item.to, item]))
   const layouts = role === 'admin' ? adminGroups : customerGroups
   const definitions = layouts[skin] || layouts.evolution
   // Change password stays available from the persistent account menu and the
   // command palette. Omitting its duplicate tile keeps every customer group at
   // six tools without hiding Appearance from dashboard search/navigation.
-  const used = new Set(['/overview', '/dashboard', ...(role === 'customer' ? ['/change-password'] : [])])
+  const used = new Set(['/overview', '/dashboard', '/tasks', ...(role === 'customer' ? ['/change-password'] : [])])
   const groups = definitions.map(([title, paths], index) => ({
     title,
     items: paths.filter((path) => lookup.has(path)).map((path, i) => {

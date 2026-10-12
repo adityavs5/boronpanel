@@ -1,4 +1,4 @@
-"""scripts/update_finalize.py -- REAL end-to-end runs in a /tmp sandbox.
+"""scripts/update_finalize.py -- real end-to-end runs in the bounded test workspace.
 
 This is the goal's "rollback verified in test environment" item: the actual
 finalizer script (a tmp COPY -- it deletes itself on success, exactly like
@@ -26,10 +26,12 @@ import threading
 from pathlib import Path
 
 import pytest
+from testsupport.host_requirements import socket_or_skip
 
 from shared.config import settings
 from shared.db import write_session
 from shared.models import UpdateJob
+from shared.rpc import protocol_envelope, RPC_PROTOCOL_VERSION
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FINALIZER_SRC = REPO_ROOT / "scripts" / "update_finalize.py"
@@ -40,9 +42,9 @@ FINALIZER_SRC = REPO_ROOT / "scripts" / "update_finalize.py"
 
 @pytest.fixture
 def sandbox(isolated_db):
-    """Short-pathed /tmp sandbox (unix socket paths are length-limited, and
+    """Short-pathed TMPDIR sandbox (Unix socket paths are length-limited, and
     pytest's tmp_path nests deep)."""
-    base = Path(tempfile.mkdtemp(prefix="fhfin-", dir="/tmp"))
+    base = Path(tempfile.mkdtemp(prefix="fhfin-"))
     try:
         root = base / "opt"
         root.mkdir()
@@ -68,11 +70,33 @@ def sandbox(isolated_db):
         # The finalizer must run from a copy -- it unlinks itself on success.
         script = base / "update_finalize.py"
         shutil.copyfile(FINALIZER_SRC, script)
+        credential = base / "finalizer.credential"
+        credential.write_text("test-finalizer-credential")
+        credential.chmod(0o600)
+        metadata = new / "release-metadata.json"
+        metadata.write_text(json.dumps({
+            "format": 1, "minimum_source_version": "0.0.0", "maximum_source_version": None,
+            "data_plane_reloads": [], "control_plane_restarts": [], "runtime_rewrites": [],
+        }))
+        config_dir = base / "etc-boron"
+        config_dir.mkdir()
+        (config_dir / "boron.toml").write_text("config_schema_version = 1\n")
+        recovery_config = base / "recovery-config"
+        shutil.copytree(config_dir, recovery_config)
+        target_group = pwd.getpwnam("nobody").pw_gid if os.geteuid() == 0 else os.getegid()
+        os.chown(recovery_config / "boron.toml", os.geteuid(), target_group)
+        target_config = base / "target-config"
+        target_config.mkdir()
+        (target_config / "boron.toml").write_text("panel_hostname = 'old.example'\n")
 
         yield {
             "base": base, "root": root, "old": old, "new": new, "live": live,
             "script": script, "systemctl": systemctl, "systemctl_log": systemctl_log,
             "log": base / "updates.log", "rpc_socket": str(base / "provisiond.sock"),
+            "credential": credential, "metadata": metadata,
+            "config_dir": config_dir, "recovery_config": recovery_config,
+            "target_config": target_config,
+            "target_group": target_group,
         }
     finally:
         shutil.rmtree(base, ignore_errors=True)
@@ -82,6 +106,9 @@ def sandbox(isolated_db):
 def health_servers(sandbox):
     """A real HTTP /healthz endpoint + a real Unix socket that answers one
     length-prefixed JSON frame per connection."""
+
+    with socket_or_skip():
+        pass
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -120,8 +147,17 @@ def health_servers(sandbox):
                     if len(header) < 4:
                         continue
                     (length,) = struct.unpack(">I", header)
-                    conn.recv(length)  # drain the request
-                    payload = json.dumps({"ok": True, "result": {}}).encode()
+                    request = json.loads(conn.recv(length).decode())
+                    operation = request.get("op")
+                    if operation == "update.readiness":
+                        result = {"checks": sandbox.get("readiness_checks", [])}
+                    else:
+                        result = {"ready": True}
+                    payload = json.dumps({
+                        "ok": True,
+                        "result": result,
+                        "protocol": protocol_envelope(),
+                    }).encode()
                     conn.sendall(struct.pack(">I", len(payload)) + payload)
                 except OSError:
                     pass
@@ -158,10 +194,17 @@ def _run_finalizer(sandbox, job_id, *, mode="update", api_url, health_timeout=20
         "--log", str(sandbox["log"]),
         "--api-health-url", api_url,
         "--rpc-socket", sandbox["rpc_socket"],
+        "--rpc-protocol-version", RPC_PROTOCOL_VERSION,
+        "--credential-file", str(sandbox["credential"]),
+        "--release-metadata", str(sandbox["metadata"]),
+        "--config-dir", str(sandbox["config_dir"]),
+        "--recovery-config-backup", str(sandbox["recovery_config"]),
         "--rpc-user", rpc_user or pwd.getpwuid(os.geteuid()).pw_name,
         "--systemctl-bin", str(sandbox["systemctl"]),
         "--health-timeout", str(health_timeout),
     ]
+    if mode == "rollback":
+        argv.extend(["--target-config-backup", str(sandbox["target_config"])])
     if convert:
         argv.append("--convert-live-dir")
     return subprocess.run(argv, capture_output=True, text=True, timeout=120)
@@ -184,7 +227,9 @@ def _install_runtime_migration_probe(sandbox, *, fail_action=None):
     (scripts / "upgrade_runtime.py").write_text(
         "import pathlib, sys\n"
         f"path = pathlib.Path({str(actions)!r})\n"
-        "action = 'apply' if len(sys.argv) == 1 else sys.argv[1]\n"
+        "args = [item for item in sys.argv[1:] if item != '--release-metadata' and not item.endswith('release-metadata.json')]\n"
+        "action = 'apply' if not args else args[0]\n"
+        "if action == '--report': print('[]')\n"
         "with path.open('a') as handle: handle.write(action + '\\n')\n"
         f"raise SystemExit(1 if action == {fail_action!r} else 0)\n"
     )
@@ -237,9 +282,14 @@ def test_update_failure_swaps_back_and_marks_rolled_back(sandbox):
     assert os.readlink(sandbox["live"]) == str(sandbox["old"])
     assert (sandbox["live"] / "marker").read_text() == "old-version"
 
-    # Restarted twice: once into the new version, once back out of it.
+    # Restarted into the new version, quiesced before runtime compensation,
+    # then restarted on the old version.
     restarts = sandbox["systemctl_log"].read_text().strip().splitlines()
-    assert restarts == ["restart boron-provisiond", "restart boron-api"] * 2
+    assert restarts == [
+        "restart boron-provisiond", "restart boron-api",
+        "stop boron-provisiond", "stop boron-api",
+        "restart boron-provisiond", "restart boron-api",
+    ]
 
     job = _read_job(job_id)
     assert job.status == "failed"
@@ -259,7 +309,7 @@ def test_update_success_commits_runtime_migration_snapshot(sandbox, health_serve
     proc = _run_finalizer(sandbox, job_id, api_url=health_servers["api_url"])
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert actions.read_text().splitlines() == ["apply", "--commit"]
+    assert actions.read_text().splitlines() == ["apply", "--report", "--commit"]
 
 
 def test_runtime_commit_failure_rolls_back_application_and_host_config(sandbox, health_servers):
@@ -270,7 +320,7 @@ def test_runtime_commit_failure_rolls_back_application_and_host_config(sandbox, 
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert os.readlink(sandbox["live"]) == str(sandbox["old"])
-    assert actions.read_text().splitlines() == ["apply", "--commit", "--rollback"]
+    assert actions.read_text().splitlines() == ["apply", "--report", "--commit", "--rollback"]
     job = _read_job(job_id)
     assert job.status == "failed"
     assert job.rolled_back is True
@@ -307,6 +357,57 @@ def test_runtime_compensation_failure_requires_manual_intervention(sandbox):
     assert job.status == "failed"
     assert job.rolled_back is False
     assert "runtime-rollback" in sandbox["log"].read_text()
+
+
+def test_bad_runtime_migration_rolls_back_before_activation(sandbox):
+    actions = _install_runtime_migration_probe(sandbox, fail_action="apply")
+    job_id = _make_job(old_dir=str(sandbox["old"]), new_dir=str(sandbox["new"]))
+
+    proc = _run_finalizer(
+        sandbox, job_id, health_timeout=3,
+        api_url="http://127.0.0.1:1/healthz",
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert actions.read_text().splitlines() == ["apply", "--rollback"]
+    assert os.readlink(sandbox["live"]) == str(sandbox["old"])
+    assert _read_job(job_id).rolled_back is True
+
+
+def test_critical_readiness_failure_rolls_back(sandbox, health_servers):
+    sandbox["readiness_checks"] = [{
+        "id": "database", "label": "Panel database", "status": "fail",
+        "critical": True, "explanation": "fixture failure",
+    }]
+    job_id = _make_job(old_dir=str(sandbox["old"]), new_dir=str(sandbox["new"]))
+
+    proc = _run_finalizer(sandbox, job_id, api_url=health_servers["api_url"])
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert os.readlink(sandbox["live"]) == str(sandbox["old"])
+    job = _read_job(job_id)
+    assert job.rolled_back is True
+    assert "critical readiness checks failed" in job.error
+
+
+def test_advisory_readiness_failure_completes_and_is_recorded(sandbox, health_servers):
+    sandbox["readiness_checks"] = [{
+        "id": "mail", "label": "Mail service", "status": "warn",
+        "critical": False, "explanation": "fixture warning",
+    }]
+    job_id = _make_job(old_dir=str(sandbox["old"]), new_dir=str(sandbox["new"]))
+
+    proc = _run_finalizer(sandbox, job_id, api_url=health_servers["api_url"])
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert os.readlink(sandbox["live"]) == str(sandbox["new"])
+    job = _read_job(job_id)
+    assert job.status == "completed"
+    assert job.rolled_back is False
+    assert job.advisories == [{
+        "id": "mail", "label": "Mail service", "status": "warn",
+        "explanation": "fixture warning",
+    }]
 
 
 def test_first_update_converts_real_dir_to_symlink_layout(sandbox, health_servers):
@@ -346,6 +447,9 @@ def test_rollback_mode_swaps_to_previous_version(sandbox, health_servers):
 
     assert os.readlink(live) == str(sandbox["old"])
     assert (live / "marker").read_text() == "old-version"
+    assert sandbox["config_dir"].joinpath("boron.toml").read_text() == "panel_hostname = 'old.example'\n"
+    assert sandbox["config_dir"].joinpath("boron.toml").stat().st_gid == sandbox["target_group"]
+    assert not sandbox["recovery_config"].exists()
     job = _read_job(job_id)
     assert job.status == "completed" and job.kind == "rollback"
 
@@ -374,7 +478,7 @@ def test_health_probe_uses_api_identity_then_restores_root(sandbox, health_serve
     job_id = _make_job()
     proc = _run_finalizer(sandbox, job_id, api_url=health_servers["api_url"], rpc_user="nobody")
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert sandbox["rpc_peer_uids"] == [account.pw_uid]
+    assert sandbox["rpc_peer_uids"] == [account.pw_uid, account.pw_uid]
     job = _read_job(job_id)
     assert job.status == "completed"  # root-only DB write after probe
     from daemon.updates import _job_to_dict

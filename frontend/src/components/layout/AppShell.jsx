@@ -5,9 +5,12 @@ import { Topbar, PageNavigation } from './Topbar'
 import { MobileBottomNav } from './MobileBottomNav'
 import { ImpersonationBanner } from './ImpersonationBanner'
 import { useAuth } from '@/store/auth'
+import { useUI } from '@/store/ui'
 import { Sidebar } from './Sidebar'
 import { MobileNavDrawer } from './MobileNavDrawer'
 import { CommandPalette } from './CommandPalette'
+import { useBranding } from '@/hooks/useBranding'
+import { routeTitle } from '@/lib/route-title'
 
 // Shown while a code-split page chunk loads (usually <100ms on repeat visits).
 function PageFallback() {
@@ -30,12 +33,22 @@ function PageFallback() {
 // Search is available throughout the authenticated app.
 export function AppShell() {
   const syncIdentity = useAuth((s) => s.syncIdentity)
-  const { pathname } = useLocation()
+  const identitySynced = useAuth((s) => s.identitySynced)
+  const skin = useUI((s) => s.skin)
+  const role = useAuth((s) => s.role)
+  const { panelName } = useBranding()
+  const { pathname, search } = useLocation()
   const inner = !['/overview', '/dashboard', '/reseller'].includes(pathname)
+  const persistentNavigation = inner && skin === 'paper-lantern'
   useLayoutEffect(() => {
     document.documentElement.dataset.innerPage = String(inner)
     return () => { delete document.documentElement.dataset.innerPage }
   }, [inner])
+  useLayoutEffect(() => {
+    const title = routeTitle(pathname, search, role)
+    document.documentElement.dataset.pageTitle = title
+    document.title = `${title} · ${panelName || 'Boron Panel'}`
+  }, [pathname, search, role, panelName])
 
   // Reconcile identity with the server session on mount so a hard refresh
   // restores the correct role and the impersonation banner (Phase 8 f1).
@@ -46,13 +59,13 @@ export function AppShell() {
       <ImpersonationBanner />
       <Topbar inner={inner} />
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {inner && <div className="persistent-navigation"><Sidebar /></div>}
+        {persistentNavigation && <div className="persistent-navigation"><Sidebar /></div>}
         <div className="flex min-w-0 flex-1 flex-col">
           <PageNavigation />
           <main id="panel-main" className="min-w-0 flex-1 overflow-y-auto bg-background" tabIndex={-1}>
             <div className="panel-content">
               <Suspense fallback={<PageFallback />}>
-                <Outlet />
+                {identitySynced ? <Outlet /> : <PageFallback />}
               </Suspense>
             </div>
           </main>

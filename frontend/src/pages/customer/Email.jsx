@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Mail, Plus, Trash2, Inbox, Forward, ShieldAlert, AtSign, Network, ScrollText,
   ShieldBan, ShieldCheck, ArrowRightLeft, Loader2, XCircle, CheckCircle2, X, ExternalLink,
-  CirclePause, CirclePlay, Settings2, LogIn,
+  CirclePause, CirclePlay, MoreHorizontal, Settings2, LogIn,
 } from 'lucide-react'
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
@@ -16,14 +16,16 @@ import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
-import { Switch } from '@/components/ui/Toggle'
+import { Switch, Checkbox } from '@/components/ui/Toggle'
 import { Badge } from '@/components/ui/Badge'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, ConfirmDialog,
 } from '@/components/ui/Dialog'
 import { EmptyState, ErrorState } from '@/components/ui/States'
 import { CenteredSpinner } from '@/components/ui/Spinner'
+import { LongValue } from '@/components/ui/LongValue'
 import { toast } from '@/components/ui/Toast'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/DropdownMenu'
 
 const EMAIL_MODES = {
   accounts: {
@@ -101,6 +103,8 @@ function MailboxesTab({ domain }) {
   const [selected, setSelected] = useState(null)
   const [password, setPassword] = useState('')
   const [quotaGb, setQuotaGb] = useState('1')
+  const [selectedMailboxes, setSelectedMailboxes] = useState(new Set())
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   useEffect(() => { if (selected) setQuotaGb(String(selected.quota_mb / 1024)) }, [selected])
   const quotaMut = useMutation({ mutationFn: () => patch(`/api/v1/mail/domains/${encodeURIComponent(domain)}/mailboxes/${encodeURIComponent(selected.local_part)}/quota`, { quota_mb: Math.round(Number(quotaGb) * 1024) }), onSuccess: result => { toast.success('Mailbox quota updated'); setSelected(current => ({ ...current, quota_mb: result.quota_mb })); qc.invalidateQueries({ queryKey: key }) }, onError: error => toast.error('Could not update quota', error.message) })
   const { launching, openWebmail } = useWebmailLaunch(username, domain)
@@ -137,6 +141,17 @@ function MailboxesTab({ domain }) {
     },
     onError: (e) => toast.error('Could not delete mailbox', e.message),
   })
+  const bulkDeleteMut = useMutation({
+    mutationFn: async () => {
+      const names = [...selectedMailboxes]
+      const results = await Promise.allSettled(names.map(localPart => del(`/api/v1/mail/domains/${domain}/mailboxes/${localPart}`)))
+      const failed = results.flatMap((result, index) => result.status === 'rejected' ? [`${names[index]}@${domain}: ${result.reason?.message || 'Could not delete'}`] : [])
+      if (failed.length) throw new Error(`${names.length - failed.length} deleted; ${failed.length} failed. ${failed.join(' ')}`)
+      return names.length
+    },
+    onSuccess: count => { toast.success(`${count} mailbox${count === 1 ? '' : 'es'} deleted`); setSelectedMailboxes(new Set()); setBulkDeleteOpen(false); qc.invalidateQueries({ queryKey: key }) },
+    onError: error => toast.error('Could not delete selected mailboxes', error.message),
+  })
 
   const activeMut = useMutation({
     mutationFn: (row) => patch(
@@ -152,6 +167,7 @@ function MailboxesTab({ domain }) {
   })
 
   const columns = [
+    { key: 'select', header: '', searchable: false, render: r => <Checkbox aria-label={`Select ${r.local_part}@${domain}`} checked={selectedMailboxes.has(r.local_part)} onCheckedChange={checked => setSelectedMailboxes(current => { const next = new Set(current); checked ? next.add(r.local_part) : next.delete(r.local_part); return next })}/> },
     {
       key: 'local_part',
       header: 'Mailbox',
@@ -176,15 +192,9 @@ function MailboxesTab({ domain }) {
       header: '',
       align: 'right',
       render: (r) => (
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="flex items-center justify-end gap-1">
           <Button variant="primary" size="sm" disabled={!r.active} loading={launching === `${r.local_part}@${domain}`} onClick={event => { event.stopPropagation(); openWebmail(r) }}><ExternalLink className="h-4 w-4" /> Log in</Button>
-          <Button variant="secondary" size="sm" onClick={event => { event.stopPropagation(); setSelected(r) }}><Settings2 className="h-4 w-4" /> Manage</Button>
-          <Button variant="secondary" size="sm" loading={activeMut.isPending && activeMut.variables?.local_part === r.local_part} onClick={event => { event.stopPropagation(); activeMut.mutate(r) }}>
-            {r.active ? <CirclePause className="h-4 w-4" /> : <CirclePlay className="h-4 w-4" />} {r.active ? 'Suspend' : 'Unsuspend'}
-          </Button>
-          <Button variant="ghost" size="icon-sm" onClick={event => { event.stopPropagation(); setToDelete(r.local_part) }} aria-label={`Delete ${r.local_part}@${domain}`}>
-            <Trash2 className="h-4 w-4 text-danger" />
-          </Button>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.local_part}@${domain}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => setSelected(r)}><Settings2 className="h-4 w-4"/>Manage</DropdownMenuItem><DropdownMenuItem disabled={activeMut.isPending} onSelect={() => activeMut.mutate(r)}>{r.active ? <CirclePause className="h-4 w-4"/> : <CirclePlay className="h-4 w-4"/>}{r.active ? 'Suspend' : 'Unsuspend'}</DropdownMenuItem><DropdownMenuSeparator/><DropdownMenuItem className="text-danger" onSelect={() => setToDelete(r.local_part)}><Trash2 className="h-4 w-4"/>Delete</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
         </div>
       ),
     },
@@ -207,6 +217,8 @@ function MailboxesTab({ domain }) {
         error={error}
         onRetry={refetch}
         filterable
+        columnPicker
+        selectionBar={selectedMailboxes.size > 0 && <div className="table-bulk-bar" aria-label="Selected mailbox actions"><strong>{selectedMailboxes.size} selected</strong><span>With selected:</span>{selectedMailboxes.size < (data?.mailboxes || []).length && <Button size="sm" variant="ghost" onClick={() => setSelectedMailboxes(new Set((data?.mailboxes || []).map(row => row.local_part)))}>Select all {(data?.mailboxes || []).length}</Button>}<Button size="sm" variant="secondary" onClick={() => setBulkDeleteOpen(true)}>Delete</Button><Button size="sm" variant="ghost" onClick={() => setSelectedMailboxes(new Set())}>Clear</Button></div>}
         searchPlaceholder="Search mailboxes…"
         pageSize={10}
         getRowKey={(r) => r.local_part}
@@ -292,6 +304,7 @@ function MailboxesTab({ domain }) {
         loading={deleteMut.isPending}
         onConfirm={() => deleteMut.mutate(toDelete)}
       />
+      <ConfirmDialog open={bulkDeleteOpen} onOpenChange={open => !open && !bulkDeleteMut.isPending && setBulkDeleteOpen(false)} title={`Delete ${selectedMailboxes.size} selected mailbox${selectedMailboxes.size === 1 ? '' : 'es'}?`} description={[...selectedMailboxes].map(name => `${name}@${domain}`).join(', ')} confirmLabel="Delete mailboxes" variant="danger" loading={bulkDeleteMut.isPending} error={bulkDeleteMut.error} onConfirm={() => bulkDeleteMut.mutate()} />
     </div>
   )
 }
@@ -347,7 +360,7 @@ function ForwardersTab({ username, domain }) {
       header: 'Forwards to',
       sortable: true,
       searchable: true,
-      render: (r) => <span className="text-foreground">{r.destination}</span>,
+      render: (r) => <LongValue value={r.destination} label="forwarder destination" />,
     },
     {
       key: 'actions',
@@ -696,11 +709,11 @@ function DeliveryLogTab({ username }) {
   const STATUS_VARIANT = { sent: 'success', bounced: 'danger', deferred: 'warning', rejected: 'danger', expired: 'danger' }
   const columns = [
     { key: 'timestamp', header: 'Time', render: (r) => <span className="whitespace-nowrap font-mono text-xs">{r.timestamp}</span> },
-    { key: 'from', header: 'From', searchable: true, render: (r) => <span className="break-all font-mono text-xs">{r.from || '—'}</span> },
-    { key: 'to', header: 'To', searchable: true, render: (r) => <span className="break-all font-mono text-xs">{r.to}</span> },
+    { key: 'from', header: 'From', searchable: true, render: (r) => <LongValue value={r.from || '—'} label="sender" /> },
+    { key: 'to', header: 'To', searchable: true, render: (r) => <LongValue value={r.to} label="recipient" /> },
     { key: 'status', header: 'Status', render: (r) => <Badge variant={STATUS_VARIANT[r.status] || 'neutral'}>{r.status}</Badge> },
     { key: 'source_user', header: 'Source', render: (r) => r.source_user ? <span className="font-mono text-xs">Local user: {r.source_user}</span> : <span className="text-muted-foreground">SMTP</span> },
-    { key: 'reason', header: 'Reason', render: (r) => <span className="break-all text-xs text-muted-foreground">{r.reason}</span> },
+    { key: 'reason', header: 'Reason', render: (r) => <LongValue value={r.reason} label="delivery reason" /> },
   ]
 
   return (
@@ -1158,8 +1171,7 @@ export default function Email({ mode = 'accounts' }) {
 
   return (
     <div>
-      <PageHeader title={config.title} description={config.description} icon={config.sections[0][2] || Mail}>
-        <div className="flex flex-wrap items-center justify-end gap-2">
+      <PageHeader title={config.title} description={config.description} icon={config.sections[0][2] || Mail} primaryAction={domains.length > 0 ? <div className="flex flex-wrap items-center justify-end gap-2">
           {domains.length > 0 && <div className="flex items-center gap-2">
             <AtSign className="h-4 w-4 text-muted-foreground" />
             <Select value={domain} onChange={(e) => setDomain(e.target.value)} className="w-56">
@@ -1168,8 +1180,7 @@ export default function Email({ mode = 'accounts' }) {
               ))}
             </Select>
           </div>}
-        </div>
-      </PageHeader>
+        </div> : null} />
 
       {domainsQ.isLoading ? (
         <CenteredSpinner />

@@ -37,8 +37,9 @@ def encrypt(source: Path, target: Path, passphrase: str) -> None:
     encryptor.authenticate_additional_data(header)
     created = False
     try:
-        with source.open("rb") as readable, target.open("xb") as writable:
-            created = True
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        created = True
+        with source.open("rb") as readable, os.fdopen(descriptor, "wb") as writable:
             writable.write(header)
             for chunk in iter(lambda: readable.read(CHUNK_SIZE), b""):
                 writable.write(encryptor.update(chunk))
@@ -69,8 +70,9 @@ def decrypt(source: Path, target: Path, passphrase: str) -> None:
             remaining = size - header_size - TAG_SIZE
             decryptor = Cipher(algorithms.AES(_derive(passphrase, salt)), modes.GCM(nonce, tag)).decryptor()
             decryptor.authenticate_additional_data(header)
-            with target.open("xb") as writable:
-                created = True
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            created = True
+            with os.fdopen(descriptor, "wb") as writable:
                 while remaining:
                     chunk = readable.read(min(CHUNK_SIZE, remaining))
                     if not chunk:

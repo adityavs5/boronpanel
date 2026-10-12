@@ -4,9 +4,10 @@ import { Search, X, CornerDownLeft } from 'lucide-react'
 import { useAuth } from '@/store/auth'
 import { adminNav, customerNav, resellerNav } from '@/config/nav'
 import { searchEntries } from '@/config/search'
+import { filterNavigation } from '@/config/capabilities'
 
-function entriesFor(role) {
-  const nav = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav
+function entriesFor(role, capabilities) {
+  const nav = filterNavigation(role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav, capabilities)
   let section = 'Tools'
   return nav.flatMap((item) => {
     if (item.section) { section = item.section; return [] }
@@ -16,12 +17,13 @@ function entriesFor(role) {
 
 export function DashboardSearch() {
   const role = useAuth((state) => state.role)
+  const capabilities = useAuth((state) => state.capabilities)
   const navigate = useNavigate()
   const root = useRef(null)
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState(0)
-  const entries = useMemo(() => entriesFor(role), [role])
+  const entries = useMemo(() => entriesFor(role, capabilities), [role, capabilities])
   const results = useMemo(() => query.trim() ? searchEntries(entries, query).slice(0, 9) : [], [entries, query])
 
   function choose(item) {

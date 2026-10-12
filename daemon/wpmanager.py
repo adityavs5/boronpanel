@@ -141,8 +141,16 @@ wp_safe_redirect(admin_url()); exit;
 """.replace('\n ', '\n')
 
     pw = pwd.getpwnam(username)
-    result = run(account_exec.wrap(username, ['/usr/bin/python3','-c',code], home=pw.pw_dir, cwd=root),
-                 input_text=json.dumps({'root':root,'name':filename,'code':bridge}), timeout=15)
+    # This is a fixed, bounded control-plane write, not customer workload.
+    # Running it in the account's web slice makes one-click login impossible
+    # precisely when PHP has reached the account memory limit: systemd-run
+    # cannot admit the helper and the request times out.  Keep the account UID
+    # and GID boundary, while using borond's control-plane cgroup for enough
+    # headroom to create this single O_NOFOLLOW file.
+    result = run(['/usr/bin/python3','-c',code],
+                 input_text=json.dumps({'root':root,'name':filename,'code':bridge}),
+                 timeout=15, cwd=root, uid=pw.pw_uid, gid=pw.pw_gid,
+                 env={'HOME':pw.pw_dir, 'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'})
     if not result.ok: raise RuntimeError('Could not create a secure login link')
     path = p.get('path','').strip('/')
     with write_session() as session:
@@ -303,12 +311,8 @@ def remove(p):
         from daemon.database_operations import serialized
         @serialized
         def finish():
-            wordpress.handlers_database.mariadb.drop_database(database)
+            wordpress.handlers_database.drop_database({'username': username, 'name': database})
             removed['database'] = True
-            wordpress.handlers_database.mariadb.drop_db_user(db_user)
-            with write_session() as session:
-                row = session.get(DatabaseGrant, grant_id)
-                if row is not None: session.delete(row)
             _forget(username,domain,path)
             _removal_worker(username,root,{**config,'action':'remove_commit'})
         return cmdjobs.submit(username,'wpmanager',root,['/usr/bin/python3',WORKER],

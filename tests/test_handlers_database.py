@@ -50,6 +50,7 @@ def stub_mariadb(monkeypatch):
         calls.append(("set_password", db_user))
 
     monkeypatch.setattr(hdb.mariadb, "database_exists", database_exists)
+    monkeypatch.setattr(hdb.mariadb, "require_ungranted_database_name", lambda _name: None)
     monkeypatch.setattr(hdb.mariadb, "create_database", create_database)
     monkeypatch.setattr(hdb.mariadb, "drop_database", drop_database)
     monkeypatch.setattr(hdb.mariadb, "create_db_user", create_db_user)

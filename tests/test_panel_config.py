@@ -2,6 +2,7 @@ import socket
 import tomllib
 
 import pytest
+from testsupport.host_requirements import socket_or_skip
 
 from daemon import panel_config as panel
 from daemon.configtx import StepResult
@@ -57,7 +58,7 @@ def test_hostname_route_failure_restores_config_and_runtime_setting(tmp_path, mo
 
 
 def test_real_conflict_check_allows_current_ports_only():
-    with socket.socket() as blocker:
+    with socket_or_skip() as blocker:
         blocker.bind(('127.0.0.1', 0))
         blocker.listen()
         port = blocker.getsockname()[1]
@@ -165,6 +166,8 @@ def test_real_tls_health_probe_pins_certificate(tmp_path, failure):
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
 
+    with socket_or_skip():
+        pass
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, 'test.example')])
     now = dt.datetime.now(dt.timezone.utc)

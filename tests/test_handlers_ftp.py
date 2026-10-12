@@ -53,10 +53,23 @@ def stub_pure_ftpd(monkeypatch):
         calls.append(("delete", login))
         accounts.pop(login, None)
 
+    def suspend_ftp_user(login):
+        calls.append(("suspend", login))
+
+    def unsuspend_ftp_user(login, uid, gid, path):
+        calls.append(("unsuspend", login, path))
+
+    def disconnect_ftp_sessions(logins):
+        calls.append(("disconnect", tuple(sorted(logins))))
+        return len(logins)
+
     monkeypatch.setattr(hf.ftp, "create_ftp_user", create_ftp_user)
     monkeypatch.setattr(hf.ftp, "set_path", set_path)
     monkeypatch.setattr(hf.ftp, "set_password", set_password)
     monkeypatch.setattr(hf.ftp, "delete_ftp_user", delete_ftp_user)
+    monkeypatch.setattr(hf.ftp, "suspend_ftp_user", suspend_ftp_user)
+    monkeypatch.setattr(hf.ftp, "unsuspend_ftp_user", unsuspend_ftp_user)
+    monkeypatch.setattr(hf.ftp, "disconnect_ftp_sessions", disconnect_ftp_sessions)
     return calls
 
 
@@ -220,3 +233,66 @@ def test_another_accounts_ftp_login_does_not_collide(isolated_db, stub_sysops, f
     hf.create_ftp_account({"username": "demo1", "label": "shared", "path": "", "password": "Secret123!Pass"})
     result = hf.create_ftp_account({"username": "demo2", "label": "shared", "path": "", "password": "Secret456!Pass"})
     assert result["ftp_login"] == "demo2_shared"
+
+
+def test_ftp_account_suspension_disables_credentials_and_active_sessions(account, fake_account_home, stub_pure_ftpd):
+    hf.create_ftp_account({"username": "demo1", "label": "designer", "path": "", "password": "Secret123!Pass"})
+    from shared.models import Account
+    with write_session() as session:
+        acct = session.scalar(select(Account).where(Account.username == "demo1"))
+        session.expunge(acct)
+
+    hf.set_account_ftp_suspended(acct, True)
+    hf.set_account_ftp_suspended(acct, False)
+
+    assert ("suspend", "demo1_designer") in stub_pure_ftpd
+    assert ("disconnect", ("demo1", "demo1_designer")) in stub_pure_ftpd
+    assert ("unsuspend", "demo1_designer", str(fake_account_home["home"])) in stub_pure_ftpd
+
+
+def test_create_ftp_account_rejects_suspended_owner(account, fake_account_home, stub_pure_ftpd):
+    from shared.models import Account
+    with write_session() as session:
+        session.scalar(select(Account).where(Account.username == "demo1")).status = "suspended"
+    with pytest.raises(RuntimeError, match="suspended"):
+        hf.create_ftp_account({"username": "demo1", "label": "late", "path": "", "password": "Secret123!Pass"})
+    assert not any(call[:2] == ("create", "demo1_late") for call in stub_pure_ftpd)
+
+
+def test_puredb_suspension_preserves_existing_ip_restrictions(tmp_path, monkeypatch):
+    from daemon import ftp
+    calls = []
+    monkeypatch.setattr(ftp, "SUSPENSION_STATE_DIR", tmp_path / "suspension")
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        output = (
+            "Allowed local IPs : 192.0.2.4\nAllowed client IPs : 198.51.100.0/24\n"
+            if argv[1] == "show" else ""
+        )
+        return type("Result", (), {"ok": True, "stderr": "", "stdout": output})()
+    monkeypatch.setattr(ftp, "run", fake_run)
+
+    ftp.suspend_ftp_user("demo1_designer")
+    ftp.unsuspend_ftp_user("demo1_designer", 5001, 5001, "/home/demo1")
+
+    assert calls[0][0] == [ftp.PURE_PW_BIN, "show", "demo1_designer"]
+    assert calls[1][0] == [ftp.PURE_PW_BIN, "usermod", "demo1_designer", "-r", ftp.SUSPENDED_IP, "-i", ftp.SUSPENDED_IP, "-m"]
+    assert calls[2][0] == [
+        ftp.PURE_PW_BIN, "usermod", "demo1_designer",
+        "-u", "5001", "-g", "5001", "-d", "/home/demo1",
+        "-r", "198.51.100.0/24", "-i", "192.0.2.4", "-m",
+    ]
+    assert not any((tmp_path / "suspension").iterdir())
+
+
+def test_disconnect_ftp_sessions_targets_only_valid_matching_processes(monkeypatch):
+    from daemon import ftp
+    from daemon.procutil import ProcResult
+    killed = []
+    monkeypatch.setattr(ftp, "run", lambda *_a, **_k: ProcResult([], 0,
+        "101|demo1_one|0|IDLE\n102|other_two|0|IDLE\n103|demo1_one|0|IDLE\n", ""))
+    monkeypatch.setattr(ftp, "_is_pure_ftp_process", lambda pid: pid == 101)
+    monkeypatch.setattr(ftp.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    assert ftp.disconnect_ftp_sessions({"demo1_one"}) == 1
+    assert killed == [(101, ftp.signal.SIGTERM)]

@@ -3,6 +3,7 @@ from copy import deepcopy
 import os
 
 import pytest
+from testsupport.host_requirements import chown_or_skip
 
 from daemon import mail, snapshot_mail_guard as guard, snapshot_mail_sieve as sieve
 from shared.config import settings
@@ -17,7 +18,7 @@ def guarded(mail_home, tmp_path, monkeypatch):
     account, other, home = mail_home
     monkeypatch.setattr(mail, 'VMAIL_UID', 150)
     monkeypatch.setattr(mail, 'VMAIL_GID', 150)
-    os.chown(home.parent, 150, 150); os.chown(home, 150, 150)
+    chown_or_skip(home.parent, 150, 150); chown_or_skip(home, 150, 150)
     monkeypatch.setattr(settings, 'mail_restore_guard_dir', str(tmp_path / 'guards'))
     entries = []
     for local in ('inbox', 'unused'):
@@ -28,7 +29,7 @@ def guarded(mail_home, tmp_path, monkeypatch):
 
 def write_script(home, content):
     path = home / sieve.SCRIPT_NAME
-    path.write_bytes(content); os.chown(path, 150, 150); path.chmod(0o600)
+    path.write_bytes(content); chown_or_skip(path, 150, 150); path.chmod(0o600)
 
 
 def document(account, **scripts):

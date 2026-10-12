@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import pytest
+from testsupport.host_requirements import chown_or_skip
 from sqlalchemy import select
 from daemon import snapshot_jobs as jobs, snapshot_storage as storage, snapshot_restores as restores
 from daemon.procutil import run
@@ -16,7 +17,7 @@ def environment(isolated_db,tmp_path,monkeypatch):
     monkeypatch.setattr(settings,'snapshot_private_dir',str(tmp_path/'private'))
     monkeypatch.setattr(settings,'home_base',str(tmp_path/'homes'))
     monkeypatch.setattr(jobs._executor,'submit',lambda *args:None)
-    home=tmp_path/'homes'/'alpha';home.mkdir(parents=True);os.chown(home,65534,65534)
+    home=tmp_path/'homes'/'alpha';home.mkdir(parents=True);chown_or_skip(home,65534,65534)
     (home/'site.txt').write_text('original')
     (home/'unrelated.txt').write_text('original unrelated')
     (home/'.php').mkdir()
@@ -145,7 +146,7 @@ def worker(source,home,paths):
 def test_worker_never_follows_target_directory_links(tmp_path):
     if os.geteuid()!=0:pytest.skip('requires root')
     source=tmp_path/'source';(source/'folder').mkdir(parents=True);(source/'folder/file').write_text('replacement')
-    home=tmp_path/'home';home.mkdir();os.chown(home,65534,65534)
+    home=tmp_path/'home';home.mkdir();chown_or_skip(home,65534,65534)
     outside=tmp_path/'outside';outside.mkdir();(outside/'file').write_text('protected')
     (home/'folder').symlink_to(outside,target_is_directory=True)
     result=worker(source,home,['folder'])
@@ -156,7 +157,7 @@ def test_worker_never_follows_target_directory_links(tmp_path):
 def test_worker_rejects_escaping_source_links_before_any_write(tmp_path):
     if os.geteuid()!=0:pytest.skip('requires root')
     source=tmp_path/'source';source.mkdir();(source/'site').write_text('replacement');(source/'escape').symlink_to('/etc/shadow')
-    home=tmp_path/'home';home.mkdir();os.chown(home,65534,65534);(home/'site').write_text('original')
+    home=tmp_path/'home';home.mkdir();chown_or_skip(home,65534,65534);(home/'site').write_text('original')
     result=worker(source,home,['.'])
     assert not result.ok
     assert 'escapes' in result.stderr
@@ -167,7 +168,7 @@ def test_worker_preserves_internal_links_and_strips_privileged_modes(tmp_path):
     if os.geteuid()!=0:pytest.skip('requires root')
     source=tmp_path/'source';source.mkdir();(source/'file').write_text('restored');(source/'file').chmod(0o6755)
     (source/'link').symlink_to('file')
-    home=tmp_path/'home';home.mkdir();os.chown(home,65534,65534)
+    home=tmp_path/'home';home.mkdir();chown_or_skip(home,65534,65534)
     result=worker(source,home,['.'])
     assert result.ok,result.stderr
     assert (home/'file').read_text()=='restored'
@@ -275,7 +276,7 @@ def test_snapshot_file_worker_restores_standard_venv_interpreter_links(tmp_path)
     (bindir/'python3').symlink_to('/usr/bin/python3')
     (bindir/'python').symlink_to('python3')
     (source/'site.txt').write_text('restored')
-    home=tmp_path/'home';home.mkdir();os.chown(home,65534,65534)
+    home=tmp_path/'home';home.mkdir();chown_or_skip(home,65534,65534)
     result=worker(source,home,['.'])
     assert result.ok,result.stderr
     assert os.readlink(home/'pythonapps/app/venv/bin/python3')=='/usr/bin/python3'

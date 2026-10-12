@@ -146,11 +146,10 @@ export default function ApiTokens() {
         title="API tokens"
         description="Bearer tokens for machine-to-machine REST API access — e.g. a billing system. Send as an Authorization: Bearer <token> header."
         icon={KeyRound}
-      >
-        <Button onClick={() => setCreateOpen(true)}>
+        primaryAction={<Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" /> Create token
-        </Button>
-      </PageHeader>
+        </Button>}
+      />
 
       <DataTable
         columns={columns}

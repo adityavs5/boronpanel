@@ -150,3 +150,35 @@ def test_multi_validate_failure_leaves_everything_untouched(tmp_path):
     assert not result.applied
     assert (tmp_path / "vhost.conf").read_text() == "old vhost\n"
     assert not (tmp_path / "httpd.conf").exists()
+
+
+def test_unchanged_single_config_does_not_reload_or_create_backup(tmp_path):
+    target = tmp_path / "vhost.conf"
+    target.write_text("same\n")
+    calls = []
+    writer = ConfigWriter(
+        target_path=str(target), validate=lambda p: StepResult(True),
+        reload=lambda: calls.append("reload") or StepResult(True),
+        verify=lambda: StepResult(True), backup_dir=str(tmp_path / "backups"),
+        subsystem="test",
+    )
+    result = writer.apply("same\n")
+    assert result.ok and result.steps[0][0] == "unchanged"
+    assert calls == []
+    assert not (tmp_path / "backups").exists()
+
+
+def test_config_backup_history_is_bounded(tmp_path, monkeypatch):
+    import daemon.configtx as configtx
+    monkeypatch.setattr(configtx, "MAX_BACKUP_FILES", 3)
+    target = tmp_path / "vhost.conf"
+    target.write_text("initial\n")
+    writer = ConfigWriter(
+        target_path=str(target), validate=lambda p: StepResult(True),
+        reload=lambda: StepResult(True), verify=lambda: StepResult(True),
+        backup_dir=str(tmp_path / "backups"), subsystem="test",
+    )
+    for index in range(8):
+        assert writer.apply(f"value {index}\n").ok
+    backups = list((tmp_path / "backups" / "test").iterdir())
+    assert len(backups) == 3

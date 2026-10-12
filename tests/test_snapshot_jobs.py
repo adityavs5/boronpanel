@@ -225,6 +225,9 @@ def test_download_is_queued_persistent_private_and_expires(environment):
     jobs.execute_download(item['id'])
     ready=jobs.list_downloads({'username':'alpha','customer_scope':True})['downloads'][0]
     assert ready['status']=='ready' and ready['sha256'] and ready['size_bytes']>0
+    queued_count=len(queued)
+    assert jobs.queue_download({'username':'alpha','run_id':run_id,'customer_scope':True})['id']==item['id']
+    assert len(queued)==queued_count
     prepared=jobs.download_file({'username':'alpha','id':item['id'],'customer_scope':True})
     path=Path(prepared['path'])
     assert path.is_file() and path.is_relative_to(Path(settings.snapshot_download_dir))
@@ -236,6 +239,46 @@ def test_download_is_queued_persistent_private_and_expires(environment):
     assert not path.exists()
     with pytest.raises(Exception,match='not ready or has expired'):
         jobs.download_file({'username':'alpha','id':item['id']})
+
+
+def test_materialized_download_cannot_exceed_account_staging_budget(environment, monkeypatch):
+    root,_=environment
+    destination=make_destination(root);policy=make_policy(destination)
+    run_id=jobs.queue_policy({'id':policy['id']})['run_ids'][0]
+    jobs.execute_run(run_id)
+    with write_session() as session:
+        account=session.scalar(select(Account).where(Account.username=='alpha'))
+        account.quota_hard_mb=0
+        run=session.get(SnapshotRun,run_id)
+        run.summary={}
+    monkeypatch.setattr(jobs,'DOWNLOAD_ACCOUNT_MIN_BUDGET',1)
+    monkeypatch.setattr(jobs.storage,'restore_size',lambda *args,**kwargs:0)
+
+    item=jobs.queue_download({'username':'alpha','run_id':run_id,'customer_scope':True})
+    jobs.execute_download(item['id'])
+
+    result=jobs.list_downloads({'username':'alpha','customer_scope':True})['downloads'][0]
+    assert result['status']=='failed'
+    assert 'download allowance' in result['error']
+
+
+def test_download_queue_reserves_shared_staging_for_other_accounts(environment, monkeypatch):
+    root,_=environment
+    destination=make_destination(root);policy=make_policy(destination)
+    run_ids=jobs.queue_policy({'id':policy['id']})['run_ids']
+    alpha_run=next(ident for ident in run_ids if jobs._row(SnapshotRun,ident).account_id==jobs._account('alpha').id)
+    jobs.execute_run(alpha_run)
+    with write_session() as session:
+        bravo=session.scalar(select(Account).where(Account.username=='bravo'))
+        session.add(SnapshotDownload(run_id=alpha_run,account_id=bravo.id,status='pending',size_bytes=60))
+        run=session.get(SnapshotRun,alpha_run)
+        run.summary={'preflight':{'estimated_source_bytes':10}}
+    monkeypatch.setattr(jobs,'DOWNLOAD_FREE_RESERVE',100)
+    monkeypatch.setattr(jobs,'DOWNLOAD_MIN_RESERVATION',50)
+    monkeypatch.setattr(jobs.shutil,'disk_usage',lambda _path:SimpleNamespace(free=200))
+
+    with pytest.raises(Exception,match='protected staging space'):
+        jobs.queue_download({'username':'alpha','run_id':alpha_run,'customer_scope':True})
 
 
 def test_hidden_destination_is_absent_from_every_customer_recovery_surface(environment):
@@ -397,7 +440,7 @@ def test_frozen_options_filters_and_recovery(environment):
 
 def test_snapshot_api_authorization_and_customer_scope(environment,monkeypatch):
     from fastapi import FastAPI
-    from fastapi.testclient import TestClient
+    from testsupport.sync_asgi import SyncASGIClient as TestClient
     from api.routers import backups,account_backups
     from api.security import Identity,get_identity
     app=FastAPI();app.include_router(backups.api_router);app.include_router(account_backups.api_router)

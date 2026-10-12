@@ -31,7 +31,7 @@ from shared.validation import ValidationError, validate_domain
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
-from daemon import phpdirectives, phpfunctions, sysops
+from daemon import appunits, phpdirectives, phpfunctions, sysops
 
 logger = logging.getLogger("borond.ols")
 
@@ -181,9 +181,15 @@ def _app_proxy_map(session) -> dict[str, dict]:
     apps could otherwise pick the identical name."""
     result: dict[str, dict] = {}
     for row in session.scalars(select(NodeApp)).all():
-        result[row.domain] = {"handler_name": f"proxy_{_vhost_name(row.domain)}", "port": row.port, "kind": "node"}
+        result[row.domain] = {
+            "handler_name": f"proxy_{_vhost_name(row.domain)}", "port": row.port, "kind": "node",
+            "socket_path": str(appunits.socket_path("node", row.id)) if row.backend_mode == "socket" else None,
+        }
     for row in session.scalars(select(PythonApp)).all():
-        result[row.domain] = {"handler_name": f"proxy_{_vhost_name(row.domain)}", "port": row.port, "kind": "python"}
+        result[row.domain] = {
+            "handler_name": f"proxy_{_vhost_name(row.domain)}", "port": row.port, "kind": "python",
+            "socket_path": str(appunits.socket_path("python", row.id)) if row.backend_mode == "socket" else None,
+        }
     return result
 
 
@@ -418,6 +424,7 @@ def render_vhost_conf(
         ssl_key_file=ssl_key_file,
         ssl_cert_file=ssl_cert_file,
         php_ini=php_ini,
+        private_session_path=(f"{home_dir}/tmp/sessions" if account.php_private_sessions else None),
         redirects=redirects,
         hotlink=_hotlink_context(domain),
         ip_block_list=domain.get("ip_block_list") or [],
@@ -565,6 +572,56 @@ WAF_RUNTIME_FILE = "/etc/modsecurity/boron-runtime.conf"
 WAF_AUDIT_LOG = "/var/log/boron/modsecurity-audit.log"
 
 
+def _waf_host_patterns(session) -> dict[str, str]:
+    """Mirror the listener aliases in safe, anchored ModSecurity regexes.
+
+    Exact child vhosts take precedence over a parent's wildcard listener.
+    Negative lookaheads preserve that routing boundary so a parent's WAF
+    exception or policy cannot spill into a separately managed child vhost.
+    """
+    active_domains = set(session.scalars(
+        select(Domain.domain).join(Account, Account.id == Domain.account_id)
+        .where(Account.status.in_(["active", "suspended"]))
+    ).all())
+    reserved = set(session.scalars(select(Domain.domain)).all())
+    reserved.update(filter(None, (
+        settings.webmail_hostname, settings.pma_hostname, settings.panel_hostname,
+    )))
+    mapped_exact = active_domains | set(filter(None, (
+        settings.webmail_hostname, settings.pma_hostname, settings.panel_hostname,
+    )))
+    # Listener maps also create an implicit www alias when it is not reserved
+    # by another explicit vhost. Include those aliases in the wildcard
+    # exclusion set so a parent policy cannot spill into the child's www host.
+    mapped_exact.update(
+        "www." + domain for domain in active_domains
+        if not domain.startswith("www.") and "www." + domain not in reserved
+    )
+    wildcard = _wildcard_map(session)
+    patterns: dict[str, str] = {}
+    ending = r"[.]?(?::[0-9]{1,5})?$"
+    for domain in active_domains:
+        exact = [domain]
+        www = "www." + domain
+        if not domain.startswith("www.") and www not in reserved:
+            exact.append(www)
+        choices = [re.escape(value) for value in exact]
+        if wildcard.get(domain, False):
+            exclusions = []
+            for child in sorted(value for value in mapped_exact if value.endswith("." + domain)):
+                exclusions.append(re.escape(child) + ending)
+                if wildcard.get(child, False):
+                    exclusions.append(r"(?:[a-z0-9-]+[.])+" + re.escape(child) + ending)
+            negative = "" if not exclusions else "(?!(?:" + "|".join(exclusions) + "))"
+            choices.append(negative + r"(?:[a-z0-9-]+[.])+" + re.escape(domain))
+        patterns[domain] = "^(?:" + "|".join(choices) + ")" + ending
+    for hostname in filter(None, (
+        settings.webmail_hostname, settings.pma_hostname, settings.panel_hostname,
+    )):
+        patterns.setdefault(hostname, "^" + re.escape(hostname) + ending)
+    return patterns
+
+
 def waf_template_context(session) -> dict:
     """Takes an already-open session (the same one the caller already used
     to fetch domain_vhosts/account_procs) rather than opening its own --
@@ -583,6 +640,20 @@ def waf_template_context(session) -> dict:
     exceptions = session.scalars(
         select(WafException).where(WafException.expires_at > utcnow())
     ).all()
+    host_patterns = _waf_host_patterns(session)
+
+    def scoped(domain: str) -> dict:
+        return {
+            "domain": domain,
+            "host_pattern": host_patterns.get(
+                domain, "^" + re.escape(domain) + r"[.]?(?::[0-9]{1,5})?$"
+            ),
+        }
+
+    def exception_deadline(value: dt.datetime) -> int:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt.timezone.utc)
+        return int(value.timestamp())
     return {
         "waf_enabled": mode != "disabled",
         "waf_mode": mode,
@@ -594,19 +665,23 @@ def waf_template_context(session) -> dict:
         "waf_audit_log": WAF_AUDIT_LOG,
         "waf_rules_file": WAF_RULES_FILE,
         "waf_domain_overrides": [
-            {"domain": o.domain} for o in overrides
+            scoped(o.domain) for o in overrides
             if (o.mode if o.mode else ("disabled" if o.disabled else "inherit")) == "disabled"
         ],
         "waf_domain_policies": [
-            {"domain": o.domain, "mode": o.mode if o.mode else ("disabled" if o.disabled else "inherit")}
+            {**scoped(o.domain), "mode": o.mode if o.mode else ("disabled" if o.disabled else "inherit")}
             for o in overrides
         ],
-        "waf_custom_rules": [{"id": r.id, "domain": r.domain, "target": r.target, "pattern": r.pattern} for r in rules],
+        "waf_custom_rules": [
+            {"id": r.id, **scoped(r.domain), "target": r.target, "pattern": r.pattern}
+            for r in rules
+        ],
         "waf_exceptions": [
             {
-                "id": row.id, "domain": row.domain, "rule_id": row.rule_id,
+                "id": row.id, **scoped(row.domain), "rule_id": row.rule_id,
                 "category": row.category, "uri_prefix": row.uri_prefix,
                 "parameter": row.parameter,
+                "expires_epoch": exception_deadline(row.expires_at),
             }
             for row in exceptions
         ],
@@ -802,7 +877,7 @@ def bootstrap_pma() -> None:
     contents = {"main": httpd_content, "pma": pma_content}
     # PHP namespaces hide /var/lib by default. Bind only the token directory;
     # its root:www-data 0770 permissions still deny hosting account identities.
-    namespace_path = Path(OLS_SERVER_BASE) / "conf/nsconf.conf"
+    namespace_path = Path(OLS_SERVER_BASE) / "lsns/conf/boron-nsconf.conf"
     if namespace_path.exists():
         token_path = str(settings.pma_token_dir)
         if not token_path.startswith("/") or any(c.isspace() or c in ',\"$' for c in token_path):
@@ -859,6 +934,10 @@ def _reload() -> StepResult:
     # ConfigWriterMulti's docstring. A failure here is what triggers
     # ConfigWriterMulti's rollback; lshttpd is never told to reload an
     # invalid config.
+    namespace_metadata = _secure_namespace_policy_metadata()
+    if not namespace_metadata.ok:
+        return namespace_metadata
+
     check = run([f"{OLS_SERVER_BASE}/bin/openlitespeed", "-t"], timeout=20)
     if not check.ok:
         return StepResult(False, f"openlitespeed -t failed: {check.stderr.strip() or check.stdout.strip()}")
@@ -866,6 +945,36 @@ def _reload() -> StepResult:
     reload_result = run(["systemctl", "reload", "lshttpd"], timeout=30)
     if not reload_result.ok:
         return StepResult(False, f"systemctl reload lshttpd failed: {reload_result.stderr.strip()}")
+    return StepResult(True)
+
+
+def _secure_namespace_policy_metadata() -> StepResult:
+    """Keep lscgid's namespace policy under the required root ownership.
+
+    OpenLiteSpeed refuses a namespace policy owned by its WebAdmin account.
+    Older installs can carry that package-created metadata, and atomic config
+    transactions deliberately preserve existing metadata.  Repair the one
+    fixed policy file through a no-follow descriptor before every validation;
+    never relax lscgid's ownership check.
+    """
+    path = Path(OLS_SERVER_BASE) / "lsns/conf/boron-nsconf.conf"
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        return StepResult(False, f"OpenLiteSpeed namespace policy is unavailable: {exc}")
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            return StepResult(False, "OpenLiteSpeed namespace policy is not a regular file")
+        os.fchown(fd, 0, 0)
+        os.fchmod(fd, 0o644)
+    except OSError as exc:
+        return StepResult(False, f"Could not secure OpenLiteSpeed namespace policy: {exc}")
+    finally:
+        os.close(fd)
     return StepResult(True)
 
 

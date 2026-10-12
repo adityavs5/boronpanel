@@ -32,6 +32,7 @@ from shared.db import write_session
 from shared.models import AuditLog, FirewallTemporaryBan, PermanentIpBan, utcnow
 from shared.validation import ValidationError, validate_ip_or_cidr
 
+from daemon import audit
 from daemon.procutil import run
 
 ALLOWED_PROTOCOLS = {"tcp", "udp", "any"}
@@ -919,12 +920,18 @@ def transactional_add_rule(params: dict) -> dict:
     to_addr = _validate_to_addr(params.get("to_addr"))
     direction = _validate_direction(params.get("direction", "in"))
     rule_id = _rule_id(action, port, protocol, from_addr, direction, to_addr)
-    return _start_change(
-        "rule.add",
-        f"Add {direction}bound {action} rule for {port}/{protocol}",
-        [{"kind": "delete_rule", "rule_id": rule_id}],
-        lambda: add_rule(params),
-    )
+    audit.change("firewall_rule", None, {
+        "rule_id": rule_id, "action": action, "port": port,
+        "protocol": protocol, "from": from_addr, "to": to_addr,
+        "direction": direction,
+    })
+    with audit.step("firewall: add guarded rule"):
+        return _start_change(
+            "rule.add",
+            f"Add {direction}bound {action} rule for {port}/{protocol}",
+            [{"kind": "delete_rule", "rule_id": rule_id}],
+            lambda: add_rule(params),
+        )
 
 
 def transactional_delete_rule(params: dict) -> dict:
@@ -936,12 +943,14 @@ def transactional_delete_rule(params: dict) -> dict:
         "direction": target["direction"], "from_addr": target["from"],
         "to_addr": target["to"], "comment": target["comment"],
     }
-    return _start_change(
-        "rule.delete",
-        f"Delete {target['direction']}bound {target['action']} rule for {target['port']}/{target['protocol']}",
-        [{"kind": "add_rule", "rule_id": target["rule_id"], "params": restore}],
-        lambda: delete_rule(params),
-    )
+    audit.change("firewall_rule", target, None)
+    with audit.step("firewall: delete guarded rule"):
+        return _start_change(
+            "rule.delete",
+            f"Delete {target['direction']}bound {target['action']} rule for {target['port']}/{target['protocol']}",
+            [{"kind": "add_rule", "rule_id": target["rule_id"], "params": restore}],
+            lambda: delete_rule(params),
+        )
 
 
 def transactional_add_bypass(params: dict) -> dict:

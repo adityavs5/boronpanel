@@ -48,6 +48,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import stat
@@ -55,18 +56,36 @@ import tarfile
 import tempfile
 import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
 from sqlalchemy import select, update
 
-from daemon import monitoring, notifications
+from daemon import diagnostics, monitoring, notifications
+from daemon.test_update_override import (
+    TestUpdateOverride,
+    load_test_update_override,
+    validate_test_asset_url,
+)
 from daemon.procutil import run
-from shared.config import settings
+from shared.config import CONFIG_PATH, settings
 from shared.db import write_session
 from shared.models import UpdateJob, UpdateState, utcnow
 from shared.release_signature import archive_digest, verify_signature
+from shared.release_metadata import (
+    ReleaseMetadataError,
+    load_release_metadata,
+    source_version_supported,
+)
+from shared.rpc import RPC_PROTOCOL_VERSION
+from shared.migrations import (
+    SchemaCompatibilityError,
+    assert_rollback_compatible,
+    load_schema_manifest,
+    rollback_compatibility,
+    schema_state_from_path,
+)
 from shared.validation import ValidationError
 from version import BORON_VERSION
 
@@ -78,7 +97,17 @@ _transport: httpx.BaseTransport | None = None
 
 # Test hook for the finalizer launch: tests replace the systemd-run argv
 # prefix to exercise the handoff without systemd.
-_SYSTEMD_RUN = ["systemd-run", "--collect"]
+# A signal-killed finalizer must resume from its idempotent transaction rather
+# than strand the live symlink in the middle of a swap.  ``on-abnormal`` is
+# intentionally narrower than ``on-failure``: handled validation/health
+# failures return a non-zero status after rollback and must not be retried.
+_SYSTEMD_RUN = [
+    "systemd-run", "--collect",
+    "--property=Restart=on-abnormal",
+    "--property=RestartSec=1s",
+    "--property=StartLimitBurst=3",
+    "--property=StartLimitIntervalSec=300s",
+]
 
 # A self-update must be strictly serialized -- one worker, ever.
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="panel-update")
@@ -196,6 +225,9 @@ def _fetch_release(tag: str | None = None) -> dict:
     (goal security rule 1: the tarball URL comes from github.com releases
     only, never anywhere an attacker could steer it).
     """
+    test_override = load_test_update_override()
+    if test_override is not None:
+        return _fetch_test_release(test_override, tag)
     repo = _require_repo()
     url = f"{GITHUB_API}/repos/{repo}/releases/" + (f"tags/{tag}" if tag else "latest")
     with httpx.Client(timeout=20.0, transport=_transport, follow_redirects=False) as client:
@@ -204,20 +236,32 @@ def _fetch_release(tag: str | None = None) -> dict:
         raise ValidationError(f"no release found ({'tag ' + tag if tag else 'latest'}) in {repo}")
     resp.raise_for_status()
     data = resp.json()
+    if data.get("draft") or data.get("prerelease"):
+        raise ValidationError("draft and pre-release versions are not eligible for panel updates")
 
     tag_name = str(data.get("tag_name", ""))
     version = "%d.%d.%d" % parse_version(tag_name)
     prefix = _release_download_prefix(repo)
     tarball_url = checksum_url = signature_url = None
+    metadata_url = metadata_signature_url = None
+    archive_size = None
     for asset in data.get("assets", []):
         name = asset.get("name", "")
         dl = asset.get("browser_download_url", "")
         if name == f"boron-{version}.tar.gz":
             tarball_url = dl
+            try:
+                archive_size = max(0, int(asset.get("size", 0))) or None
+            except (TypeError, ValueError):
+                archive_size = None
         elif name == f"boron-{version}.sha256":
             checksum_url = dl
         elif name == f"boron-{version}.tar.gz.sig":
             signature_url = dl
+        elif name == f"boron-{version}.metadata.json":
+            metadata_url = dl
+        elif name == f"boron-{version}.metadata.json.sig":
+            metadata_signature_url = dl
     if not tarball_url or not checksum_url or not signature_url:
         raise ValidationError(
             f"release {tag_name} is missing its archive, checksum or publisher signature"
@@ -231,7 +275,65 @@ def _fetch_release(tag: str | None = None) -> dict:
         "tarball_url": tarball_url,
         "checksum_url": checksum_url,
         "signature_url": signature_url,
+        "metadata_url": metadata_url,
+        "metadata_signature_url": metadata_signature_url,
+        "archive_size": archive_size,
+        "source": "github",
     }
+
+
+def _test_manifest_url(override: TestUpdateOverride, tag: str | None) -> str:
+    name = "latest.json" if tag is None else f"{tag}.json"
+    return f"{override.base_url}/{name}"
+
+
+def _fetch_test_release(override: TestUpdateOverride, tag: str | None = None) -> dict:
+    """Resolve a release from a root-configured, loopback-only lab source."""
+    manifest_url = _test_manifest_url(override, tag)
+    validate_test_asset_url(manifest_url, override)
+    with httpx.Client(
+        timeout=20.0, transport=_transport, follow_redirects=False, trust_env=False,
+    ) as client:
+        response = client.get(manifest_url, headers={"User-Agent": f"boron/{BORON_VERSION}"})
+    if response.is_redirect:
+        raise ValidationError("test update manifests may not redirect")
+    if response.status_code == 404:
+        raise ValidationError(f"no test release found ({tag or 'latest'})")
+    response.raise_for_status()
+    if len(response.content) > 64 * 1024:
+        raise ValidationError("test update manifest exceeds 64 KiB")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise ValidationError("test update manifest is not valid JSON") from exc
+    if not isinstance(data, dict) or set(data) - {"version", "changelog_url", "has_metadata", "archive_size"}:
+        raise ValidationError("test update manifest has unsupported fields")
+    version = "%d.%d.%d" % parse_version(str(data.get("version", "")))
+    if tag is not None and version != "%d.%d.%d" % parse_version(tag):
+        raise ValidationError("test update manifest version does not match its requested tag")
+    has_metadata = data.get("has_metadata", True)
+    if not isinstance(has_metadata, bool):
+        raise ValidationError("test update manifest has_metadata must be boolean")
+    archive_size = data.get("archive_size")
+    if archive_size is not None:
+        if type(archive_size) is not int or archive_size < 0:
+            raise ValidationError("test update manifest archive_size must be a non-negative integer")
+    prefix = f"{override.base_url}/boron-{version}"
+    result = {
+        "version": version,
+        "changelog_url": str(data.get("changelog_url") or ""),
+        "tarball_url": f"{prefix}.tar.gz",
+        "checksum_url": f"{prefix}.sha256",
+        "signature_url": f"{prefix}.tar.gz.sig",
+        "metadata_url": f"{prefix}.metadata.json" if has_metadata else None,
+        "metadata_signature_url": f"{prefix}.metadata.json.sig" if has_metadata else None,
+        "archive_size": archive_size,
+        "source": "test-loopback",
+    }
+    for key in ("tarball_url", "checksum_url", "signature_url", "metadata_url", "metadata_signature_url"):
+        if result[key]:
+            validate_test_asset_url(result[key], override)
+    return result
 
 
 def check(params: dict | None = None) -> dict:
@@ -244,7 +346,13 @@ def check(params: dict | None = None) -> dict:
     params = params or {}
     force = bool(params.get("force", False))
 
-    configured = bool(settings.update_github_repo.strip())
+    try:
+        test_configured = load_test_update_override() is not None
+    except ValidationError:
+        # A malformed root-created gate is still "configured" so Check now
+        # reports the actionable gate error instead of hiding it as disabled.
+        test_configured = True
+    configured = test_configured or bool(settings.update_github_repo.strip())
     if not configured:
         return {
             "configured": False,
@@ -275,6 +383,8 @@ def check(params: dict | None = None) -> dict:
                 state.changelog_url = info["changelog_url"]
                 state.tarball_url = info["tarball_url"]
                 state.checksum_url = info["checksum_url"]
+                state.release_metadata = _fetch_release_metadata(info)
+                state.release_asset_bytes = info.get("archive_size")
                 state.last_error = None
             except (httpx.HTTPError, ValidationError, ValueError) as exc:
                 # Keep serving the previous answer (if any); surface the error.
@@ -296,6 +406,8 @@ def check(params: dict | None = None) -> dict:
             "changelog_url": state.changelog_url,
             "checked_at": state.checked_at.isoformat() if state.checked_at else None,
             "error": state.last_error,
+            "release_metadata": state.release_metadata or _legacy_release_metadata(),
+            "release_asset_bytes": state.release_asset_bytes,
         }
 
 
@@ -324,6 +436,14 @@ def _job_to_dict(job: UpdateJob) -> dict:
         "initiated_by": job.initiated_by,
         "progress_message": job.progress_message,
         "steps": job.steps,
+        "release_metadata": job.release_metadata or {},
+        "preflight_report": job.preflight_report or {},
+        "advisories": job.advisories or [],
+        "runtime_changes": job.runtime_changes or [],
+        "acknowledged_data_plane": job.acknowledged_data_plane or [],
+        "override_active_tasks": bool(job.override_active_tasks),
+        "automatic_rollback_attempted": bool(job.automatic_rollback_attempted),
+        "backup_path": job.backup_path,
         "error": job.error,
         "rolled_back": job.rolled_back,
         "old_dir": job.old_dir,
@@ -359,6 +479,53 @@ def _step(job_id: int, step: str, status: str, detail: str = "") -> None:
 # dead. The finalizer's whole window (swap + two restarts + 90s health
 # deadline + failure path) is a few minutes; 30 is very generous.
 STALE_FINALIZING_SECONDS = 1800
+
+
+def recover_interrupted_jobs() -> int:
+    """Fail pre-swap jobs abandoned by a daemon restart.
+
+    Pending/running work lives in this process's executor, so no worker can
+    still own it after borond starts again.  ``finalizing`` is deliberately
+    excluded: the detached finalizer owns that state and is expected to
+    restart borond during a healthy update.  Keeping the two states separate
+    prevents both a permanently blocked updater and a false failure during
+    the atomic swap window.
+    """
+    recovered: list[dict] = []
+    now = utcnow()
+    with write_session() as session:
+        jobs = session.scalars(
+            select(UpdateJob)
+            .where(UpdateJob.status.in_(("pending", "running")))
+            .order_by(UpdateJob.id)
+        ).all()
+        for job in jobs:
+            reference = secrets.token_hex(8)
+            detail = (
+                "The provisioning daemon stopped before the atomic release "
+                "swap. The active panel release was left unchanged; review "
+                f"the update log and start the update again. (reference: {reference})"
+            )
+            entry = {
+                "step": "recovery",
+                "status": "failed",
+                "detail": detail,
+                "at": now.isoformat(),
+                "reference": reference,
+            }
+            job.steps = [*(job.steps or []), entry]
+            job.status = "failed"
+            job.progress_message = "failed (interrupted before swap)"
+            job.error = detail
+            job.completed_at = now
+            recovered.append({"job_id": job.id, **entry})
+    for entry in recovered:
+        _log_file_event(entry)
+        logger.error(
+            "update job %s was interrupted before swap (reference: %s)",
+            entry["job_id"], entry["reference"],
+        )
+    return len(recovered)
 
 
 def _active_job(session) -> UpdateJob | None:
@@ -437,6 +604,17 @@ def start_update(params: dict) -> dict:
             f"target version {to_version} is not newer than the running {BORON_VERSION} "
             "(use update.rollback to go back)"
         )
+    metadata = info.get("release_metadata") or _legacy_release_metadata()
+    supported, reason = source_version_supported(metadata, BORON_VERSION)
+    if not supported:
+        raise ValidationError(f"unsupported update path: {reason}")
+    data_plane = list(metadata.get("data_plane_reloads") or [])
+    if data_plane and not bool(params.get("acknowledge_data_plane", False)):
+        raise ValidationError(
+            "acknowledge the declared data-plane reloads before updating: "
+            + ", ".join(data_plane)
+        )
+    override_active_tasks = bool(params.get("override_active_tasks", False))
 
     with write_session() as session:
         active = _active_job(session)
@@ -449,6 +627,9 @@ def start_update(params: dict) -> dict:
             to_version=to_version,
             initiated_by=initiated_by,
             progress_message="queued",
+            release_metadata=metadata,
+            acknowledged_data_plane=data_plane if data_plane else [],
+            override_active_tasks=override_active_tasks,
         )
         session.add(job)
         session.flush()
@@ -495,7 +676,11 @@ def _run_update_job(job_id: int, to_version: str) -> None:
         tarball = _download_and_verify(job_id, to_version)
 
         # (e) staged extraction ------------------------------------------------
-        new_dir = _extract_staged(job_id, tarball, to_version, signature_file=tarball + ".sig")
+        new_dir = _extract_staged(
+            job_id, tarball, to_version, signature_file=tarball + ".sig",
+            public_key=_active_release_public_key(),
+        )
+        _validate_staged_release_metadata(job_id, new_dir)
 
         # venv for the staged tree (units exec /opt/boron/.venv/... which
         # resolves through the symlink into the new dir after the swap).
@@ -533,19 +718,207 @@ def _fail_step(job_id: int, step: str, detail: str) -> None:
     raise _StepFailed()
 
 
+_ACTIVE_TASK_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("backup_jobs", ("pending", "running")),
+    ("restore_jobs", ("pending", "running")),
+    ("wordpress_jobs", ("pending", "running")),
+    ("app_install_jobs", ("pending", "running")),
+    ("malware_scan_jobs", ("pending", "running")),
+    ("namespace_migration_jobs", ("pending", "running")),
+    ("cpanel_import_jobs", ("pending", "running")),
+    ("account_archive_import_jobs", ("pending", "running")),
+    ("bulk_action_jobs", ("pending", "running")),
+    ("command_runs", ("pending", "running")),
+    ("imap_migration_jobs", ("pending", "connecting", "running")),
+    ("snapshot_runs", ("pending", "running")),
+    ("snapshot_downloads", ("pending", "running")),
+    ("snapshot_restores", ("pending", "running")),
+    ("snapshot_destination_operations", ("pending", "running")),
+    ("panel_config_jobs", ("pending", "running")),
+    ("stack_jobs", ("queued", "pending", "running")),
+)
+
+
+def _active_task_inventory() -> list[dict]:
+    """Return bounded, non-secret identifiers for operations unsafe to overlap."""
+    rows: list[dict] = []
+    connection = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True, timeout=5)
+    try:
+        tables = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        for table, statuses in _ACTIVE_TASK_TABLES:
+            if table not in tables:
+                continue
+            placeholders = ",".join("?" for _status in statuses)
+            # Table names and status values are static declarations above.
+            query = f'SELECT id, status FROM "{table}" WHERE status IN ({placeholders}) ORDER BY id LIMIT 101'
+            for row_id, status in connection.execute(query, statuses):
+                rows.append({"kind": table, "id": int(row_id), "status": str(status)})
+                if len(rows) >= 100:
+                    return rows
+    finally:
+        connection.close()
+    return rows
+
+
+def _sqlite_integrity() -> tuple[bool, str]:
+    try:
+        connection = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True, timeout=10)
+        try:
+            row = connection.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        return False, f"SQLite integrity check could not run: {type(exc).__name__}"
+    if not row or row[0] != "ok":
+        return False, "SQLite integrity check failed"
+    return True, "SQLite integrity is valid"
+
+
+def _tree_size(path: str) -> int:
+    total = 0
+    root = Path(path)
+    if not root.exists():
+        return 0
+    for item in root.rglob("*"):
+        try:
+            if item.is_file() and not item.is_symlink():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def preflight(params: dict | None = None) -> dict:
+    """Read-only update readiness report used by both the UI and worker."""
+    params = params or {}
+    override_active = bool(params.get("override_active_tasks", False))
+    metadata = params.get("release_metadata")
+    archive_size = params.get("release_asset_bytes")
+    if not isinstance(metadata, dict):
+        info = check({"force": bool(params.get("refresh", False))})
+        metadata = info.get("release_metadata") or _legacy_release_metadata()
+        archive_size = info.get("release_asset_bytes")
+    elif not metadata.get("minimum_source_version"):
+        # Legacy queued jobs and hand-built test fixtures predate release
+        # metadata.  Treat an empty document exactly like a legacy release;
+        # never feed a partially shaped object into the compatibility parser.
+        metadata = _legacy_release_metadata()
+
+    checks: list[dict] = []
+    integrity_ok, integrity_detail = _sqlite_integrity()
+    checks.append({"id": "database_integrity", "status": "pass" if integrity_ok else "fail",
+                   "critical": True, "detail": integrity_detail})
+
+    supported, source_detail = source_version_supported(metadata, BORON_VERSION)
+    checks.append({"id": "source_version", "status": "pass" if supported else "fail",
+                   "critical": True, "detail": source_detail})
+
+    active = _active_task_inventory()
+    checks.append({
+        "id": "active_tasks",
+        "status": "warn" if active and override_active else ("fail" if active else "pass"),
+        "critical": bool(active and not override_active),
+        "detail": (
+            f"{len(active)} active operation(s) will be overridden" if active and override_active
+            else f"{len(active)} active operation(s) must finish before updating" if active
+            else "No conflicting backup, restore, migration, or maintenance operation is active"
+        ),
+    })
+
+    requested_archive = max(0, int(archive_size or 0))
+    try:
+        database_bytes = Path(settings.db_path).stat().st_size
+    except OSError:
+        database_bytes = 0
+    backup_bytes = database_bytes + _tree_size(str(CONFIG_PATH.parent))
+    required_bytes = max(
+        int(settings.update_preflight_min_free_mb) * 1024 * 1024,
+        requested_archive * 3 + backup_bytes * 2,
+    )
+    disk_failures = []
+    disk_observations = []
+    for mount in (settings.update_versions_root, settings.update_backup_dir,
+                  os.path.dirname(settings.db_path) or "/"):
+        target = mount if os.path.exists(mount) else os.path.dirname(mount) or "/"
+        try:
+            free = shutil.disk_usage(target).free
+            disk_observations.append(f"{target}: {free // (1024 * 1024)} MB free")
+            if free < required_bytes:
+                disk_failures.append(target)
+        except OSError:
+            disk_failures.append(target)
+    checks.append({
+        "id": "disk_headroom", "status": "fail" if disk_failures else "pass", "critical": True,
+        "detail": "; ".join(disk_observations)
+        + f"; need {required_bytes // (1024 * 1024)}MB for release staging and backup",
+    })
+
+    diagnostic = diagnostics.run_all({})
+    for result in diagnostic.get("checks", []):
+        check_id = str(result.get("id", ""))
+        if check_id in {"database", "root_helper", "ports"} or check_id.startswith("service_"):
+            status = str(result.get("status", "unknown"))
+            critical = bool(result.get("critical")) or (
+                check_id.startswith("service_") and status == "fail"
+            )
+            checks.append({
+                "id": f"diagnostic_{check_id}", "status": status, "critical": critical,
+                "detail": str(result.get("explanation", ""))[:500],
+            })
+    sender = next((row for row in diagnostic.get("checks", [])
+                   if row.get("id") == "notification_sender"), None)
+    if sender:
+        checks.append({
+            "id": "notification_sender", "status": sender.get("status", "unknown"),
+            "critical": False, "detail": str(sender.get("explanation", ""))[:500],
+        })
+
+    failures = [row for row in checks if row["critical"] and row["status"] == "fail"]
+    warnings = [row for row in checks if row["status"] in {"warn", "unknown"}]
+    return {
+        "can_start": not failures,
+        "checks": checks,
+        "active_tasks": active,
+        "override_required": bool(active),
+        "critical_failures": failures,
+        "warnings": warnings,
+        "release_metadata": metadata,
+        "required_free_bytes": required_bytes,
+    }
+
+
+def finalizer_readiness(_params: dict | None = None) -> dict:
+    """Authenticated read-only readiness used only by the detached finalizer."""
+    return diagnostics.run_all({})
+
+
+def finalizer_ping(_params: dict | None = None) -> dict:
+    return {"ready": True, "version": BORON_VERSION}
+
+
 def _preflight(job_id: int) -> None:
     live = settings.update_live_dir
     if not os.path.isdir(live):
         _fail_step(job_id, "preflight", f"live install dir {live} does not exist")
-
-    for mount in (settings.update_versions_root, os.path.dirname(settings.db_path) or "/"):
-        try:
-            free_mb = shutil.disk_usage(mount).free // (1024 * 1024)
-        except OSError as exc:
-            _fail_step(job_id, "preflight", f"cannot stat {mount}: {exc}")
-        if free_mb < settings.update_preflight_min_free_mb:
-            _fail_step(job_id, "preflight",
-                       f"only {free_mb}MB free on {mount} (need {settings.update_preflight_min_free_mb}MB)")
+    with write_session() as session:
+        job = session.get(UpdateJob, job_id)
+        metadata = dict(job.release_metadata or {}) if job else _legacy_release_metadata()
+        override_active = bool(job and job.override_active_tasks)
+    report = preflight({
+        "release_metadata": metadata,
+        "release_asset_bytes": None,
+        "override_active_tasks": override_active,
+    })
+    with write_session() as session:
+        job = session.get(UpdateJob, job_id)
+        if job is not None:
+            job.preflight_report = report
+            job.advisories = report["warnings"]
+    if not report["can_start"]:
+        detail = "; ".join(row["detail"] for row in report["critical_failures"][:5])
+        _fail_step(job_id, "preflight", detail)
 
     if settings.update_preflight_tests:
         suite_name = "full" if settings.update_preflight_full_tests else "focused safety"
@@ -578,12 +951,19 @@ def _pytest_run(python_bin: str, live_dir: str):
     # the long-running daemon. RuntimeMaxSec also kills orphaned test workers.
     full = settings.update_preflight_full_tests
     runtime_seconds = 3600 if full else 600
+    workspace = os.path.join(live_dir, "scripts", "test_workspace.py")
     argv = [
         "systemd-run", "--quiet", "--wait", "--pipe", "--collect",
         f"--property=WorkingDirectory={live_dir}",
         f"--property=RuntimeMaxSec={runtime_seconds}",
-        python_bin, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider",
+        python_bin, workspace,
     ]
+    if full:
+        argv.append("--require-separate")
+    argv.extend([
+        "--", python_bin, "-m", "pytest", "-q", "-rs", "--tb=no",
+        "-p", "no:cacheprovider",
+    ])
     if not full:
         argv.extend([
             "tests/test_update_version.py",
@@ -614,13 +994,70 @@ def _backup(job_id: int, to_version: str) -> str:
                 dst.close()
         finally:
             src.close()
-        # /etc/boron including secrets.env -- the backup dir itself is
+        # The configured Boron directory including secrets.env -- the backup dir itself is
         # 0700 root-only, matching the strictest file it contains.
-        shutil.copytree("/etc/boron", os.path.join(dest, "etc-boron"), symlinks=True)
+        _copytree_preserve_ownership(CONFIG_PATH.parent, Path(dest) / "etc-boron")
     except (OSError, sqlite3.Error) as exc:
         _fail_step(job_id, "backup", f"{exc}")
+    _update_job(job_id, backup_path=dest)
+    _prune_preupdate_backups(protect={os.path.realpath(dest)})
     _step(job_id, "backup", "ok", dest)
     return dest
+
+
+def _copytree_preserve_ownership(source: str | Path, target: str | Path) -> None:
+    """Copy a root-owned configuration tree without changing uid/gid.
+
+    ``copytree`` preserves modes and timestamps but intentionally assigns the
+    copying process as owner.  That breaks files deliberately readable by
+    the unprivileged API group, so ownership is reapplied from lstat metadata
+    without following symlinks.
+    """
+    source, target = Path(source), Path(target)
+    shutil.copytree(source, target, symlinks=True)
+    for source_dir, dirs, files in os.walk(source, followlinks=False):
+        relative = Path(source_dir).relative_to(source)
+        for name in [".", *dirs, *files]:
+            source_path = Path(source_dir) if name == "." else Path(source_dir) / name
+            target_path = target / relative if name == "." else target / relative / name
+            metadata = source_path.lstat()
+            os.chown(target_path, metadata.st_uid, metadata.st_gid, follow_symlinks=False)
+
+
+def _preupdate_backup_dirs() -> list[Path]:
+    root = Path(settings.update_backup_dir)
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return []
+    result = []
+    for entry in entries:
+        try:
+            if (entry.name.startswith("pre-update-") and entry.is_dir()
+                    and not entry.is_symlink() and entry.resolve().parent == root.resolve()):
+                result.append(entry)
+        except OSError:
+            continue
+    return sorted(result, key=lambda item: item.stat().st_mtime, reverse=True)
+
+
+def _prune_preupdate_backups(*, protect: set[str] | None = None) -> list[str]:
+    """Keep the newest N and every snapshot inside the age window."""
+    protect = {os.path.realpath(item) for item in (protect or set())}
+    keep_count = max(1, int(settings.update_backup_keep_count))
+    keep_days = max(1, int(settings.update_backup_keep_days))
+    cutoff = time.time() - keep_days * 86400
+    removed = []
+    for index, entry in enumerate(_preupdate_backup_dirs()):
+        try:
+            resolved = os.path.realpath(entry)
+            if resolved in protect or index < keep_count or entry.stat().st_mtime >= cutoff:
+                continue
+            shutil.rmtree(entry)
+            removed.append(str(entry))
+        except OSError:
+            logger.warning("could not prune pre-update backup %s", entry, exc_info=True)
+    return removed
 
 
 def _validate_download_url(url: str, repo: str, first_hop: bool) -> None:
@@ -665,6 +1102,124 @@ def _safe_download(url: str, dest: str, max_bytes: int) -> int:
     raise ValidationError(f"too many redirects (> {_MAX_REDIRECTS}) downloading {url}")
 
 
+def _safe_test_download(
+    url: str, dest: str, max_bytes: int, override: TestUpdateOverride,
+) -> int:
+    """Download one lab asset from the exact configured loopback origin.
+
+    Redirects are forbidden. Unlike GitHub, a disposable static HTTP server
+    has no legitimate CDN hop, and accepting one would widen this root-only
+    escape hatch unnecessarily.
+    """
+    validate_test_asset_url(url, override)
+    with httpx.Client(
+        timeout=httpx.Timeout(30.0, read=120.0), transport=_transport,
+        follow_redirects=False, trust_env=False,
+    ) as client:
+        with client.stream(
+            "GET", url, headers={"User-Agent": f"boron/{BORON_VERSION}"},
+        ) as response:
+            if response.is_redirect:
+                raise ValidationError("test update assets may not redirect")
+            response.raise_for_status()
+            written = 0
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as output:
+                for chunk in response.iter_bytes():
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise ValidationError(f"download exceeds {max_bytes} bytes -- aborted")
+                    output.write(chunk)
+            return written
+
+
+def _override_for_release(info: dict) -> TestUpdateOverride | None:
+    source = info.get("source", "github")
+    if source == "github":
+        return None
+    if source != "test-loopback":
+        raise ValidationError("release has an unknown download source")
+    override = load_test_update_override()
+    if override is None:
+        raise ValidationError("test update override marker is no longer present")
+    for key in (
+        "tarball_url", "checksum_url", "signature_url",
+        "metadata_url", "metadata_signature_url",
+    ):
+        if info.get(key):
+            validate_test_asset_url(info[key], override)
+    return override
+
+
+def _download_release_asset(info: dict, url: str, dest: str, max_bytes: int) -> int:
+    override = _override_for_release(info)
+    if override is None:
+        return _safe_download(url, dest, max_bytes)
+    return _safe_test_download(url, dest, max_bytes, override)
+
+
+def _active_release_public_key() -> bytes | None:
+    """Return the lab key only while both out-of-band root gates remain valid."""
+    override = load_test_update_override()
+    return None if override is None else override.public_key
+
+
+def _verify_release_signature(
+    version: str, digest: bytes, signature: bytes, public_key: bytes | None,
+) -> None:
+    # Keep the production call path byte-for-byte equivalent: omitting the
+    # optional argument makes shared.release_signature load the shipped pin.
+    if public_key is None:
+        verify_signature(version, digest, signature)
+    else:
+        verify_signature(version, digest, signature, public_key)
+
+
+def _legacy_release_metadata() -> dict:
+    """Safe compatibility declaration for releases predating P6 metadata."""
+    return {
+        "format": 1,
+        "minimum_source_version": "0.0.0",
+        "maximum_source_version": None,
+        "data_plane_reloads": [],
+        "control_plane_restarts": ["boron-provisiond.service", "boron-api.service"],
+        "runtime_rewrites": [],
+        "requires_data_plane_acknowledgement": False,
+        "signed": False,
+        "legacy": True,
+    }
+
+
+def _fetch_release_metadata(info: dict) -> dict:
+    metadata_url = info.get("metadata_url")
+    signature_url = info.get("metadata_signature_url")
+    if not metadata_url and not signature_url:
+        return _legacy_release_metadata()
+    if not metadata_url or not signature_url:
+        raise ValidationError("release metadata and its signature must both be present")
+    with tempfile.TemporaryDirectory(prefix="boron-release-metadata-") as directory:
+        metadata_path = os.path.join(directory, "release-metadata.json")
+        signature_path = metadata_path + ".sig"
+        try:
+            _download_release_asset(info, metadata_url, metadata_path, 64 * 1024)
+            _download_release_asset(info, signature_url, signature_path, 1024)
+            digest = archive_digest(metadata_path)
+            override = _override_for_release(info)
+            _verify_release_signature(
+                info["version"], digest, Path(signature_path).read_bytes(),
+                override.public_key if override is not None else None,
+            )
+            metadata = load_release_metadata(metadata_path)
+        except (OSError, ValueError, ReleaseMetadataError, httpx.HTTPError) as exc:
+            raise ValidationError(f"release metadata verification failed: {exc}") from exc
+    return {
+        **metadata,
+        "signed": True,
+        "legacy": False,
+        "digest": digest.hex(),
+    }
+
+
 def _download_and_verify(job_id: int, to_version: str) -> str:
     # Refresh the exact tag, even when latest-release metadata is cached.
     # The detached publisher signature is never taken from mutable DB state.
@@ -688,9 +1243,11 @@ def _download_and_verify(job_id: int, to_version: str) -> str:
     checksum_file = os.path.join(download_dir, f"boron-{to_version}.sha256")
     signature_file = os.path.join(download_dir, f"boron-{to_version}.tar.gz.sig")
     try:
-        size = _safe_download(tarball_url, tarball, settings.update_max_download_bytes)
-        _safe_download(checksum_url, checksum_file, 64 * 1024)
-        _safe_download(signature_url, signature_file, 1024)
+        size = _download_release_asset(
+            info, tarball_url, tarball, settings.update_max_download_bytes,
+        )
+        _download_release_asset(info, checksum_url, checksum_file, 64 * 1024)
+        _download_release_asset(info, signature_url, signature_file, 1024)
     except (httpx.HTTPError, ValidationError, OSError) as exc:
         _remove_quietly(tarball, checksum_file, signature_file)
         _fail_step(job_id, "download", str(exc))
@@ -711,7 +1268,11 @@ def _download_and_verify(job_id: int, to_version: str) -> str:
                    f"SHA256 mismatch (expected {expected[:12]}..., got {digest.hex()[:12]}...) -- update aborted")
     _step(job_id, "checksum", "ok", expected)
     try:
-        verify_signature(to_version, digest, Path(signature_file).read_bytes())
+        override = _override_for_release(info)
+        _verify_release_signature(
+            to_version, digest, Path(signature_file).read_bytes(),
+            override.public_key if override is not None else None,
+        )
     except (OSError, ValueError) as exc:
         _remove_quietly(tarball, checksum_file, signature_file)
         _fail_step(job_id, "signature", f"publisher authentication failed: {exc}")
@@ -755,7 +1316,10 @@ def validate_tarball_members(tf: tarfile.TarFile, expected_prefix: str, max_tota
             raise ValidationError("tarball declared contents exceed the size cap -- refused")
 
 
-def _extract_staged(job_id: int, tarball: str, to_version: str, *, signature_file: str | None = None) -> str:
+def _extract_staged(
+    job_id: int, tarball: str, to_version: str, *,
+    signature_file: str | None = None, public_key: bytes | None = None,
+) -> str:
     prefix = f"boron-{to_version}"
     target = os.path.join(settings.update_versions_root, prefix)
     live_target = _live_target()
@@ -772,7 +1336,9 @@ def _extract_staged(job_id: int, tarball: str, to_version: str, *, signature_fil
                 digest = hashlib.sha256()
                 for chunk in iter(lambda: archive_file.read(1024 * 1024), b""):
                     digest.update(chunk)
-                verify_signature(to_version, digest.digest(), Path(signature_file).read_bytes())
+                _verify_release_signature(
+                    to_version, digest.digest(), Path(signature_file).read_bytes(), public_key,
+                )
                 archive_file.seek(0)
             with tarfile.open(fileobj=archive_file, mode="r:gz") as tf:
                 validate_tarball_members(tf, prefix, settings.update_max_download_bytes * 4)
@@ -795,6 +1361,44 @@ def _extract_staged(job_id: int, tarball: str, to_version: str, *, signature_fil
         _remove_quietly(tarball, signature_file) if signature_file else _remove_quietly(tarball)
     _step(job_id, "extract", "ok", target)
     return target
+
+
+def _validate_staged_release_metadata(job_id: int, new_dir: str) -> None:
+    """Treat the archive-contained document as the final behavior authority."""
+    path = Path(new_dir) / "release-metadata.json"
+    try:
+        metadata = load_release_metadata(path)
+        supported, reason = source_version_supported(metadata, BORON_VERSION)
+    except ReleaseMetadataError as exc:
+        _fail_step(job_id, "release-metadata", str(exc))
+    if not supported:
+        _fail_step(job_id, "release-metadata", f"unsupported update path: {reason}")
+    digest = archive_digest(path).hex()
+    failure = None
+    with write_session() as session:
+        job = session.get(UpdateJob, job_id)
+        required = list(metadata.get("data_plane_reloads") or [])
+        if job is None:  # pragma: no cover
+            failure = "update job disappeared"
+        else:
+            preview = dict(job.release_metadata or {})
+            preview_digest = preview.get("digest")
+            acknowledged = list(job.acknowledged_data_plane or [])
+            if preview_digest and preview_digest != digest:
+                failure = "signed preview differs from signed archive metadata"
+            elif required != acknowledged:
+                failure = "declared data-plane reloads were not acknowledged: " + ", ".join(required)
+            else:
+                job.release_metadata = {
+                    **metadata,
+                    "signed": True,
+                    "legacy": False,
+                    "digest": digest,
+                    "authority": "publisher-signed archive",
+                }
+    if failure:
+        _fail_step(job_id, "release-metadata", failure)
+    _step(job_id, "release-metadata", "ok", f"{len(metadata['data_plane_reloads'])} data-plane reload(s) declared")
 
 
 def _build_venv(job_id: int, new_dir: str) -> None:
@@ -838,6 +1442,13 @@ def _run_migrations(job_id: int, new_dir: str) -> None:
     columns) against the live DB, using the new tree's own venv -- exactly
     what its daemon would do at boot, done early so a migration crash
     aborts before the swap instead of taking the panel down."""
+    try:
+        manifest = load_schema_manifest(new_dir)
+    except SchemaCompatibilityError as exc:
+        _fail_step(job_id, "migrate", f"release schema manifest is invalid: {exc}")
+    if manifest.get("legacy"):
+        _fail_step(job_id, "migrate", "new release is missing schema-compat.json")
+
     proc = run(
         [os.path.join(new_dir, ".venv", "bin", "python"), "-c",
          "from shared.db import init_db; init_db()"],
@@ -845,7 +1456,16 @@ def _run_migrations(job_id: int, new_dir: str) -> None:
     )
     if proc.returncode != 0:
         _fail_step(job_id, "migrate", f"new version's migrations failed: {(proc.stderr or '')[-800:]}")
-    _step(job_id, "migrate", "ok")
+    state = schema_state_from_path(settings.db_path)
+    schema_version = int(state["schema_version"])
+    if not manifest["minimum"] <= schema_version <= manifest["maximum"]:
+        _fail_step(
+            job_id,
+            "migrate",
+            f"release supports schema v{manifest['minimum']}..v{manifest['maximum']}, "
+            f"but migration produced v{schema_version}",
+        )
+    _step(job_id, "migrate", "ok", f"database schema v{schema_version}")
 
 
 def _install_db_grant_fix(job_id: int, new_dir: str, backup_dir: str) -> None:
@@ -937,6 +1557,35 @@ def _admin_alert_target() -> tuple[str, str]:
     return sender, recipient
 
 
+def _recorded_backup_path(job: UpdateJob) -> Path | None:
+    """Return the protected update backup, including legacy job records.
+
+    Releases before ``backup_path`` was mapped stored the same absolute path
+    in the successful backup step.  Accept that legacy evidence only when it
+    resolves directly below the configured backup root and uses the updater's
+    own pre-update directory prefix.
+    """
+    value = str(job.backup_path or "").strip()
+    if not value:
+        for step in reversed(job.steps or []):
+            if (isinstance(step, dict) and step.get("step") == "backup"
+                    and step.get("status") == "ok"):
+                value = str(step.get("detail") or "").strip()
+                break
+    if not value:
+        return None
+    candidate = Path(value)
+    root = Path(settings.update_backup_dir)
+    try:
+        if (not candidate.is_absolute() or candidate.is_symlink()
+                or candidate.resolve().parent != root.resolve()
+                or not candidate.name.startswith("pre-update-")):
+            return None
+    except OSError:
+        return None
+    return candidate
+
+
 def _handoff_to_finalizer(job_id: int, new_dir: str, kind: str = "update") -> None:
     live = settings.update_live_dir
     convert_from_dir = None
@@ -964,8 +1613,57 @@ def _handoff_to_finalizer(job_id: int, new_dir: str, kind: str = "update") -> No
     except OSError as exc:
         _fail_step(job_id, "finalize", f"cannot stage finalizer: {exc}")
 
+    credential = secrets.token_urlsafe(32)
+    credential_file = Path(settings.db_path).parent / f"update-finalize-{job_id}.credential"
+    try:
+        fd = os.open(
+            credential_file,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+        with os.fdopen(fd, "w") as stream:
+            stream.write(credential)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as exc:
+        finalizer_copy.unlink(missing_ok=True)
+        _fail_step(job_id, "finalize", f"cannot stage finalizer credential: {exc}")
+
     sender, recipient = _admin_alert_target()
+    handoff_failure = None
+    with write_session() as session:
+        job = session.get(UpdateJob, job_id)
+        if job is None:
+            handoff_failure = "update job disappeared before finalizer handoff"
+        elif kind == "rollback":
+            candidate = session.scalars(
+                select(UpdateJob)
+                .where(UpdateJob.kind == "update", UpdateJob.status == "completed",
+                       UpdateJob.new_dir == old_dir, UpdateJob.old_dir == new_dir)
+                .order_by(UpdateJob.id.desc())
+                .limit(1)
+            ).first()
+            recorded_backup = _recorded_backup_path(candidate) if candidate is not None else None
+            target_config = recorded_backup / "etc-boron" if recorded_backup is not None else None
+            if target_config is None or not target_config.is_dir() or target_config.is_symlink():
+                handoff_failure = "rollback configuration snapshot is unavailable"
+        else:
+            target_config = None
+            recorded_backup = _recorded_backup_path(job)
+            rescue_config = recorded_backup / "etc-boron" if recorded_backup is not None else None
+            if rescue_config is None or not rescue_config.is_dir() or rescue_config.is_symlink():
+                handoff_failure = "pre-update configuration snapshot is unavailable"
+    if handoff_failure:
+        _fail_step(job_id, "finalize", handoff_failure)
+    if kind == "rollback":
+        rescue_config = Path(settings.db_path).parent / f"rollback-config-rescue-{job_id}"
+        try:
+            _copytree_preserve_ownership(CONFIG_PATH.parent, rescue_config)
+        except OSError as exc:
+            shutil.rmtree(rescue_config, ignore_errors=True)
+            _fail_step(job_id, "backup", f"cannot snapshot current configuration: {exc}")
     _update_job(job_id, old_dir=old_dir, new_dir=new_dir, status="finalizing",
+                finalizer_token_hash=hashlib.sha256(credential.encode()).hexdigest(),
                 progress_message="finalizing: swapping symlink and restarting panel services")
     _step(job_id, "finalize", "running",
           f"handing off to detached finalizer (swap {live} -> {new_dir}, restart, health check)")
@@ -983,13 +1681,22 @@ def _handoff_to_finalizer(job_id: int, new_dir: str, kind: str = "update") -> No
         "--log", str(Path(settings.log_dir) / "updates.log"),
         "--api-health-url", f"https://127.0.0.1:{settings.api_bind_port}/healthz",
         "--rpc-socket", settings.rpc_socket,
+        "--rpc-protocol-version", RPC_PROTOCOL_VERSION,
+        "--credential-file", str(credential_file),
+        "--release-metadata", str(Path(new_dir) / "release-metadata.json"),
+        "--config-dir", str(CONFIG_PATH.parent),
+        "--recovery-config-backup", str(rescue_config),
+        "--health-timeout", str(float(settings.update_readiness_timeout_seconds)),
         "--alert-sender", sender,
         "--alert-recipient", recipient,
     ]
+    if target_config is not None:
+        argv += ["--target-config-backup", str(target_config)]
     if convert_from_dir:
         argv += ["--convert-live-dir"]
     proc = run(argv, timeout=30.0)
     if proc.returncode != 0:
+        credential_file.unlink(missing_ok=True)
         _fail_step(job_id, "finalize",
                    f"could not launch finalizer: {(proc.stderr or proc.stdout or '')[-500:]}")
     # From here the finalizer owns the job row; this daemon process is about
@@ -1019,8 +1726,18 @@ def rollback_candidate() -> dict | None:
             if (job.new_dir and job.old_dir
                     and os.path.realpath(job.new_dir) == live_target
                     and os.path.isdir(job.old_dir)):
+                try:
+                    compatibility = rollback_compatibility(job.old_dir, settings.db_path)
+                except SchemaCompatibilityError as exc:
+                    compatibility = {
+                        "compatible": False,
+                        "reason": str(exc),
+                        "schema_version": None,
+                        "target": None,
+                    }
                 return {"job_id": job.id, "to_version": job.from_version,
-                        "from_version": job.to_version, "old_dir": job.old_dir}
+                        "from_version": job.to_version, "old_dir": job.old_dir,
+                        "schema_compatibility": compatibility}
     return None
 
 
@@ -1034,6 +1751,12 @@ def start_rollback(params: dict) -> dict:
             "no rollback available -- either no update has completed, the previous "
             f"version dir was pruned (kept {settings.update_keep_old_days} days), or "
             "the live symlink no longer points at the last update's target"
+        )
+    compatibility = candidate["schema_compatibility"]
+    if not compatibility["compatible"]:
+        raise ValidationError(
+            "Rollback is blocked because the previous panel version cannot safely use "
+            f"the current database: {compatibility['reason']}"
         )
 
     with write_session() as session:
@@ -1076,7 +1799,16 @@ def _run_rollback_job(job_id: int, target_dir: str) -> None:
         for essential in ("version.py", ".venv/bin/python", "daemon/server.py"):
             if not os.path.exists(os.path.join(target_dir, essential)):
                 _fail_step(job_id, "preflight", f"rollback target {target_dir} is missing {essential}")
-        _step(job_id, "preflight", "ok", f"rolling back to {target_dir}")
+        try:
+            compatibility = assert_rollback_compatible(target_dir, settings.db_path)
+        except SchemaCompatibilityError as exc:
+            _fail_step(job_id, "preflight", f"schema compatibility check failed: {exc}")
+        _step(
+            job_id,
+            "preflight",
+            "ok",
+            f"rolling back to {target_dir}; {compatibility['reason']}",
+        )
         _handoff_to_finalizer(job_id, target_dir, kind="rollback")
     except _StepFailed:
         pass
@@ -1084,6 +1816,121 @@ def _run_rollback_job(job_id: int, target_dir: str) -> None:
         logger.exception("rollback job %s crashed", job_id)
         _update_job(job_id, status="failed", error=str(exc)[:4000],
                     progress_message="failed", completed_at=utcnow())
+
+
+# --- manual control-plane database recovery --------------------------------------
+
+
+def _database_restore_status_path() -> Path:
+    return Path(settings.db_path).parent / "database-restore-status.json"
+
+
+def _read_database_restore_status() -> dict | None:
+    path = _database_restore_status_path()
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or metadata.st_size > 64 * 1024:
+            return None
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    return {str(key): value for key, value in document.items()
+            if key in {"state", "source", "target", "rescue", "error", "rolled_back",
+                       "recovery_healthy", "updated_at"}}
+
+
+def _database_backup_row(directory: Path) -> dict | None:
+    database = directory / "boron.db"
+    if not database.is_file() or database.is_symlink():
+        return None
+    try:
+        integrity = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5)
+        try:
+            valid = integrity.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        finally:
+            integrity.close()
+        compatibility = rollback_compatibility(settings.update_live_dir, str(database))
+        metadata = directory.stat()
+    except (OSError, sqlite3.Error, SchemaCompatibilityError) as exc:
+        valid = False
+        compatibility = {"compatible": False, "reason": f"Snapshot could not be validated ({type(exc).__name__})"}
+        try:
+            metadata = directory.stat()
+        except OSError:
+            return None
+    return {
+        "id": directory.name,
+        "created_at": dt.datetime.fromtimestamp(metadata.st_mtime, dt.timezone.utc).isoformat(),
+        "database_bytes": database.stat().st_size,
+        "integrity_ok": valid,
+        "schema_compatible": bool(valid and compatibility.get("compatible")),
+        "compatibility_reason": str(compatibility.get("reason", ""))[:500],
+    }
+
+
+def list_database_backups(_params: dict | None = None) -> dict:
+    rows = []
+    for directory in _preupdate_backup_dirs():
+        row = _database_backup_row(directory)
+        if row is not None:
+            rows.append(row)
+    return {"backups": rows, "restore_status": _read_database_restore_status()}
+
+
+def restore_database_backup(params: dict) -> dict:
+    """Launch a detached, automatically compensating database restore."""
+    if params.get("confirm") is not True:
+        raise ValidationError("Confirm the panel database restore")
+    backup_id = str(params.get("backup_id", ""))
+    if not re.fullmatch(r"pre-update-[A-Za-z0-9._-]{1,180}", backup_id):
+        raise ValidationError("Select a valid pre-update backup")
+    source_dir = next((item for item in _preupdate_backup_dirs() if item.name == backup_id), None)
+    if source_dir is None:
+        raise ValidationError("The selected pre-update backup is unavailable")
+    row = _database_backup_row(source_dir)
+    if not row or not row["integrity_ok"] or not row["schema_compatible"]:
+        raise ValidationError(
+            "This panel database backup cannot be restored by the running release: "
+            + (row["compatibility_reason"] if row else "snapshot validation failed")
+        )
+    active = _active_task_inventory()
+    if active:
+        raise ValidationError("Wait for active backup, restore, migration, or maintenance tasks to finish")
+    status = _read_database_restore_status()
+    if status and status.get("state") in {"queued", "validating", "stopping", "starting"}:
+        raise ValidationError("A panel database restore is already running")
+
+    root = Path(settings.db_path).parent
+    script_source = Path(__file__).resolve().parent.parent / "scripts" / "restore_panel_database.py"
+    script_copy = root / "restore-panel-database.py"
+    shutil.copyfile(script_source, script_copy)
+    os.chmod(script_copy, 0o700)
+    status_path = _database_restore_status_path()
+    status_path.write_text(json.dumps({
+        "state": "queued", "source": backup_id, "updated_at": utcnow().isoformat(),
+    }, separators=(",", ":")), encoding="utf-8")
+    os.chmod(status_path, 0o600)
+    rescue = root / f"boron-before-restore-{utcnow().strftime('%Y%m%d-%H%M%S')}.db"
+    argv = [
+        *_SYSTEMD_RUN, "--unit=boron-database-restore",
+        "/usr/bin/python3", str(script_copy),
+        "--source", str(source_dir / "boron.db"),
+        "--target", settings.db_path,
+        "--rescue", str(rescue),
+        "--status-file", str(status_path),
+        "--health-url", f"https://127.0.0.1:{settings.api_bind_port}/healthz",
+    ]
+    result = run(argv, timeout=30)
+    if result.returncode:
+        status_path.write_text(json.dumps({
+            "state": "failed", "source": backup_id,
+            "error": "The detached restore worker could not be started",
+            "updated_at": utcnow().isoformat(),
+        }, separators=(",", ":")), encoding="utf-8")
+        raise ValidationError("The detached panel database restore could not be started")
+    return {"started": True, "backup_id": backup_id, "status": _read_database_restore_status()}
 
 
 # --- status / history / log ops ----------------------------------------------------
@@ -1106,8 +1953,15 @@ def get_status(params: dict | None = None) -> dict:
         **info,
         "active_job": active_dict,
         "last_job": last_dict,
-        "rollback_available": candidate is not None,
+        "rollback_available": bool(
+            candidate and candidate["schema_compatibility"]["compatible"]
+        ),
         "rollback_to": candidate["to_version"] if candidate else None,
+        "rollback_blocked_reason": (
+            candidate["schema_compatibility"]["reason"]
+            if candidate and not candidate["schema_compatibility"]["compatible"]
+            else None
+        ),
         "live_dir": live,
         "live_target": _live_target(),
         "symlink_layout": os.path.islink(live),

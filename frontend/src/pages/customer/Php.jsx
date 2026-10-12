@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FileCode2, Puzzle, RotateCcw, SlidersHorizontal, TriangleAlert } from 'lucide-react'
 import { get, patch, put, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
+import { useDomainContext } from '@/hooks/useDomainContext'
 import { PHP_VERSIONS } from '@/config/constants'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
@@ -72,6 +73,7 @@ export default function Php() {
       />
       <div className="php-layout">
         <div className="php-version-grid"><VersionCard username={username} /><SiteVersionsCard username={username} /></div>
+        <EffectiveConfigCard username={username} />
         <SettingsCard username={username} />
         <ExtensionsCard username={username} />
       </div>
@@ -88,6 +90,8 @@ function VersionCard({ username }) {
   })
   const {data: runtime}=useQuery({queryKey:['php-ini',username],queryFn:()=>get(`/api/v1/accounts/${username}/php-ini`),enabled:!!username})
   const [version, setVersion] = useState('')
+  const lifecycle = Object.fromEntries((runtime?.php_lifecycle || []).map(item => [item.version, item]))
+  const currentLifecycle = lifecycle[account?.php_version] || runtime?.current_php_lifecycle
   useEffect(() => {
     if (account?.php_version) setVersion(account.php_version)
   }, [account?.php_version])
@@ -117,7 +121,7 @@ function VersionCard({ username }) {
             onChange={(e) => setVersion(e.target.value)}
             className="max-w-[10rem]"
           >
-            {(runtime?.php_versions||PHP_VERSIONS).map((v) => <option key={v} value={v}>PHP {v}</option>)}
+            {(runtime?.php_versions||PHP_VERSIONS).map((v) => <option key={v} value={v}>PHP {v}{lifecycle[v]?.is_eol ? ` — EOL ${lifecycle[v].eol_date}` : lifecycle[v]?.eol_date ? ` — supported to ${lifecycle[v].eol_date}` : ''}</option>)}
           </Select>
           <Button
             variant="secondary"
@@ -128,6 +132,7 @@ function VersionCard({ username }) {
             Change version
           </Button>
         </div>
+        {currentLifecycle?.is_eol && <p className="mt-3 flex items-start gap-2 text-sm text-warning"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />PHP {account?.php_version} reached end of security support on {currentLifecycle.eol_date}. Existing sites remain unchanged; plan an application-compatible upgrade.</p>}
       </CardContent>
     </Card>
   )
@@ -138,16 +143,32 @@ function SiteVersionsCard({ username }) {
   const runtime=useQuery({queryKey:['php-ini',username],queryFn:()=>get(`/api/v1/accounts/${username}/php-ini`),enabled:!!username})
   const sites=useQuery({queryKey:['domains',username],queryFn:()=>get(`/api/v1/accounts/${username}/domains`),enabled:!!username})
   return <Card><CardHeader><div><CardTitle>PHP version per site</CardTitle><CardDescription className="mt-1.5">Choose a version for a site, or let it follow your account default.</CardDescription></div></CardHeader><CardContent>
-    {sites.isLoading?<CardSkeleton/>:sites.error?<ErrorState error={sites.error} onRetry={sites.refetch}/>:sites.data?.domains?.length?<div className="divide-y divide-border">{sites.data.domains.map(site=><SiteVersionRow key={site.domain} username={username} site={site} defaultVersion={account.data?.php_version} versions={runtime.data?.php_versions||PHP_VERSIONS}/>)}</div>:<p className="text-sm text-muted-foreground">Your sites will appear here after you create a domain.</p>}
+    {sites.isLoading?<CardSkeleton/>:sites.error?<ErrorState error={sites.error} onRetry={sites.refetch}/>:sites.data?.domains?.length?<div className="divide-y divide-border">{sites.data.domains.map(site=><SiteVersionRow key={site.domain} username={username} site={site} defaultVersion={account.data?.php_version} versions={runtime.data?.php_versions||PHP_VERSIONS} lifecycle={Object.fromEntries((runtime.data?.php_lifecycle || []).map(item => [item.version, item]))}/>)}</div>:<p className="text-sm text-muted-foreground">Your sites will appear here after you create a domain.</p>}
   </CardContent></Card>
 }
 
-function SiteVersionRow({ username, site, defaultVersion, versions }) {
+function SiteVersionRow({ username, site, defaultVersion, versions, lifecycle }) {
   const [version,setVersion]=useState(site.php_version||'')
   const qc=useQueryClient()
   useEffect(()=>setVersion(site.php_version||''),[site.php_version])
   const save=useMutation({mutationFn:()=>patch(`/api/v1/accounts/${username}/domains/${encodeURIComponent(site.domain)}/php-version`,{php_version:version||null}),onSuccess:()=>{toast.success('Site PHP version updated',site.domain);qc.invalidateQueries({queryKey:['domains',username]})},onError:e=>toast.error('Could not change site PHP version',e.message)})
-  return <div className="flex flex-wrap items-center justify-between gap-3 py-4 first:pt-0 last:pb-0"><div className="min-w-0"><p className="break-all font-medium">{site.domain}</p><p className="text-xs text-muted-foreground">Currently PHP {site.php_version||defaultVersion||'…'} · {site.php_version?'Site override':'Account default'}</p></div><div className="flex max-w-full flex-wrap gap-2"><Select aria-label={`PHP version for ${site.domain}`} value={version} onChange={e=>setVersion(e.target.value)} className="max-w-[16rem]" disabled={save.isPending}><option value="">Account default{defaultVersion?` (PHP ${defaultVersion})`:''}</option>{versions.map(v=><option key={v} value={v}>PHP {v}</option>)}</Select><Button variant="secondary" disabled={version===(site.php_version||'')} loading={save.isPending} aria-label={`Save PHP version for ${site.domain}`} onClick={()=>save.mutate()}>Save</Button></div></div>
+  const effective = site.php_version || defaultVersion
+  return <div className="flex flex-wrap items-center justify-between gap-3 py-4 first:pt-0 last:pb-0"><div className="min-w-0"><p className="break-all font-medium">{site.domain}</p><p className="text-xs text-muted-foreground">Currently PHP {effective||'…'} · {site.php_version?'Site override':'Account default'}{lifecycle?.[effective]?.is_eol ? ` · EOL since ${lifecycle[effective].eol_date}` : ''}</p></div><div className="flex max-w-full flex-wrap gap-2"><Select aria-label={`PHP version for ${site.domain}`} value={version} onChange={e=>setVersion(e.target.value)} className="max-w-[20rem]" disabled={save.isPending}><option value="">Account default{defaultVersion?` (PHP ${defaultVersion}${lifecycle?.[defaultVersion]?.is_eol ? ', EOL' : ''})`:''}</option>{versions.map(v=><option key={v} value={v}>PHP {v}{lifecycle?.[v]?.is_eol ? ` — EOL ${lifecycle[v].eol_date}` : lifecycle?.[v]?.eol_date ? ` — supported to ${lifecycle[v].eol_date}` : ''}</option>)}</Select><Button variant="secondary" disabled={version===(site.php_version||'')} loading={save.isPending} aria-label={`Save PHP version for ${site.domain}`} onClick={()=>save.mutate()}>Save</Button></div></div>
+}
+
+function EffectiveConfigCard({ username }) {
+  const sites = useQuery({ queryKey: ['domains', username], queryFn: () => get(`/api/v1/accounts/${username}/domains`), enabled: !!username })
+  const domains = (sites.data?.domains || []).map(site => site.domain)
+  const [domain, setDomain] = useDomainContext(username, domains)
+  const effective = useQuery({
+    queryKey: ['php-effective', username, domain],
+    queryFn: () => get(`/api/v1/accounts/${username}/php-ini/effective/${encodeURIComponent(domain)}`),
+    enabled: !!username && !!domain,
+  })
+  const labels = { open_basedir: 'Open basedir', disable_functions: 'Disabled functions', upload_tmp_dir: 'Upload temp directory', upload_max_filesize: 'Upload limit', 'session.save_path': 'Session directory', error_log: 'Error log' }
+  return <Card><CardHeader><div><CardTitle>Effective PHP configuration</CardTitle><CardDescription>Values are read from the rendered OpenLiteSpeed virtual host used by this domain.</CardDescription></div></CardHeader><CardContent>
+    {sites.isLoading ? <CardSkeleton /> : sites.error ? <ErrorState error={sites.error} onRetry={sites.refetch} /> : !domains.length ? <p className="text-sm text-muted-foreground">Create a domain to inspect its effective PHP configuration.</p> : <><FormField label="Domain"><Select value={domain} onChange={event => setDomain(event.target.value)}>{domains.map(item => <option key={item} value={item}>{item}</option>)}</Select></FormField>{effective.isLoading ? <CardSkeleton /> : effective.error ? <ErrorState error={effective.error} onRetry={effective.refetch} /> : <div className="mt-4 divide-y divide-border border-y border-border"><div className="grid gap-1 py-3 sm:grid-cols-[12rem_1fr]"><strong className="text-sm">PHP version</strong><code className="break-all text-sm">{effective.data?.php_version || 'n/a'}</code></div>{Object.entries(effective.data?.values || {}).map(([name, value]) => <div key={name} className="grid gap-1 py-3 sm:grid-cols-[12rem_1fr]"><strong className="text-sm">{labels[name] || name}</strong><code className="break-all whitespace-pre-wrap text-sm">{value || 'Not set in the rendered vhost'}</code></div>)}</div>}</>}
+  </CardContent></Card>
 }
 
 function SettingsCard({ username }) {

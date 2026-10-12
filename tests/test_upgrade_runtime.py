@@ -11,6 +11,7 @@ def isolate_mail_runtime_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SSO_SQL_CONFIG', tmp_path / 'sso-sql.conf')
     monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SSO_PASSDB_CONFIG', tmp_path / '09-sso-auth.conf')
     monkeypatch.setattr(upgrade_runtime, 'DOVECOT_QUOTA_CONFIG', tmp_path / '91-quota.conf')
+    monkeypatch.setattr(upgrade_runtime, '_app_runtime_records', lambda: [])
 from shared.config import settings
 
 
@@ -91,10 +92,44 @@ def test_configure_mail_tls_separates_existing_mail_services(tmp_path, monkeypat
     ]
 
 
+def test_atomic_mail_key_copy_is_private_before_first_byte(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    source = tmp_path / "default.key"
+    source.write_bytes(b"private key fixture")
+    target = tmp_path / "mail.key"
+    canary = tmp_path / "canary"
+    canary.write_text("keep")
+    (tmp_path / ".mail.key.boron-upgrade").symlink_to(canary)
+    observed = []
+    real_fsync = os.fsync
+
+    def inspect(fd):
+        observed.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        real_fsync(fd)
+
+    monkeypatch.setattr(upgrade_runtime.os, "fsync", inspect)
+    previous = os.umask(0)
+    try:
+        upgrade_runtime._atomic_copy(source, target, 0o600)
+    finally:
+        os.umask(previous)
+
+    assert observed == [0o600]
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_bytes() == source.read_bytes()
+    assert canary.read_text() == "keep"
+
+
 def test_configure_bubblewrap_mail_uses_loopback_submission(tmp_path, monkeypatch):
     target = tmp_path / "msmtprc"
     monkeypatch.setattr(upgrade_runtime, "MSMTP_CONFIG", target)
+    monkeypatch.setattr(upgrade_runtime, "MAIL_SUBMIT_SOCKET_UNIT", tmp_path / "boron-mail-submit.socket")
+    monkeypatch.setattr(upgrade_runtime, "MAIL_SUBMIT_SERVICE_UNIT", tmp_path / "boron-mail-submit@.service")
     monkeypatch.setattr(settings, "panel_hostname", "panel.example.test")
+    commands = []
+    monkeypatch.setattr(upgrade_runtime, "command", lambda args, timeout=900: commands.append(args))
 
     upgrade_runtime.configure_bubblewrap_mail()
 
@@ -107,9 +142,15 @@ def test_configure_bubblewrap_mail_uses_loopback_submission(tmp_path, monkeypatc
         "account default\n"
         "host 127.0.0.1\n"
         "port 25\n"
+        "socket /run/boron-mail-submit.sock\n"
         "auto_from on\n"
         "maildomain panel.example.test\n"
     )
+    assert commands == [
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", "boron-mail-submit.socket"],
+        ["systemctl", "restart", "boron-mail-submit.socket"],
+    ]
 
 
 def test_configure_bubblewrap_apparmor_keeps_global_userns_gate(tmp_path, monkeypatch):
@@ -154,6 +195,11 @@ def test_runtime_backup_restores_ols_mail_and_apparmor(tmp_path, monkeypatch):
     monkeypatch.setattr(upgrade_runtime, "RUNTIME_BACKUP", backup)
     monkeypatch.setattr(upgrade_runtime, "FIREWALL_RECOVER_COMMAND", tmp_path / "firewall-recover")
     monkeypatch.setattr(upgrade_runtime, "OLS_LIFECYCLE_CONFIG", tmp_path / "ols-lifecycle")
+    monkeypatch.setattr(
+        upgrade_runtime,
+        "_runtime_paths",
+        lambda: [msmtp, apparmor, ols_config, waf_runtime, vhost, upgrade_runtime.OLS_LIFECYCLE_CONFIG],
+    )
     commands = []
     monkeypatch.setattr(upgrade_runtime, "command", lambda args, timeout=900: commands.append(args))
 
@@ -174,6 +220,57 @@ def test_runtime_backup_restores_ols_mail_and_apparmor(tmp_path, monkeypatch):
         ["/usr/local/lsws/bin/openlitespeed", "-t"],
         ["systemctl", "reload", "lshttpd"],
     ]
+
+
+def test_runtime_rollback_restores_application_units_mode_and_process_shape(isolated_db, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from sqlalchemy import select
+    from shared.db import write_session
+    from shared.models import Account, NodeApp
+
+    unit_dir = tmp_path / "systemd"
+    env_dir = tmp_path / "env"
+    unit_dir.mkdir(); env_dir.mkdir()
+    with write_session() as session:
+        account = Account(username="demo", status="active")
+        session.add(account); session.flush()
+        app = NodeApp(account_id=account.id, domain="app.example", name="app", entry_point="server.js",
+                      port=31001, node_version="20", enabled=True, backend_mode="legacy")
+        session.add(app); session.flush(); app_id = app.id
+    service = f"boron-node-demo-{app_id}.service"
+    socket = service[:-8] + ".socket"
+    env = env_dir / f"{service}.env"
+    (unit_dir / service).write_text("legacy tcp unit\n")
+    env.write_text("PORT=31001\n")
+    app_state = [{"kind":"node", "id":app_id, "backend_mode":"legacy", "service":service,
+                  "socket":socket, "env":str(env), "enabled":True, "active":True}]
+    monkeypatch.setattr(upgrade_runtime, "SYSTEMD_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(upgrade_runtime, "RUNTIME_BACKUP", tmp_path / "runtime.json")
+    monkeypatch.setattr(upgrade_runtime, "_runtime_paths", lambda: [])
+    monkeypatch.setattr(upgrade_runtime, "_app_runtime_records", lambda: app_state)
+    subprocess_calls = []
+    command_calls = []
+    monkeypatch.setattr(upgrade_runtime.subprocess, "run", lambda args, **kwargs:
+                        (subprocess_calls.append(args) or SimpleNamespace(returncode=0, stdout="", stderr="")))
+    monkeypatch.setattr(upgrade_runtime, "command", lambda args, **kwargs: command_calls.append(args))
+
+    upgrade_runtime.create_runtime_backup()
+    (unit_dir / service).write_text("socket unit\n")
+    (unit_dir / socket).write_text("activation socket\n")
+    env.write_text("PORT=changed\n")
+    with write_session() as session:
+        session.get(NodeApp, app_id).backend_mode = "socket"
+    upgrade_runtime.restore_runtime_backup()
+
+    assert (unit_dir / service).read_text() == "legacy tcp unit\n"
+    assert not (unit_dir / socket).exists()
+    assert env.read_text() == "PORT=31001\n"
+    with write_session() as session:
+        assert session.get(NodeApp, app_id).backend_mode == "legacy"
+    assert ["systemctl", "daemon-reload"] in command_calls
+    assert ["systemctl", "enable", service] in command_calls
+    assert ["systemctl", "restart", service] in command_calls
+    assert ["systemctl", "stop", socket] in subprocess_calls
 
 
 def test_firewall_recovery_command_is_installed_and_rolled_back(tmp_path, monkeypatch):
@@ -207,6 +304,26 @@ def test_ols_lifecycle_configuration_is_recoverable(tmp_path, monkeypatch):
     assert ['systemctl','daemon-reload'] in calls
     upgrade_runtime.restore_runtime_backup()
     assert target.read_text() == '[Service]\nKillMode=none\n'
+
+
+def test_ols_namespace_policy_is_root_owned_and_recoverable(tmp_path, monkeypatch):
+    target = tmp_path / 'lsns/conf/boron-nsconf.conf'
+    manifest = tmp_path / 'runtime.json'
+    target.parent.mkdir(parents=True)
+    target.write_text('legacy policy\n')
+    monkeypatch.setattr(upgrade_runtime, 'OLS_NAMESPACE_POLICY', target)
+    monkeypatch.setattr(upgrade_runtime, 'RUNTIME_BACKUP', manifest)
+    monkeypatch.setattr(upgrade_runtime, '_runtime_paths', lambda: [target])
+
+    upgrade_runtime.create_runtime_backup()
+    upgrade_runtime.configure_ols_namespace_policy()
+
+    assert target.read_bytes() == (upgrade_runtime.ROOT / 'deploy/ols-nsconf.conf').read_bytes()
+    assert target.stat().st_uid == 0
+    assert target.stat().st_gid == 0
+    assert target.stat().st_mode & 0o777 == 0o644
+    upgrade_runtime.restore_runtime_backup()
+    assert target.read_text() == 'legacy policy\n'
 
 
 def test_mail_certificate_and_service_configs_are_restored_together(tmp_path, monkeypatch):

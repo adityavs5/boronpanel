@@ -3,6 +3,7 @@ import threading
 import time
 import http.client
 import pytest
+from testsupport.host_requirements import socket_or_skip
 import uvicorn
 from fastapi import FastAPI,Request
 from api.serve import bind_listeners
@@ -21,6 +22,11 @@ def test_shared_default_and_invalid_ports(monkeypatch):
 
 
 def test_shared_listener_is_bound_once():
+    # Probe the host capability before exercising the production helper.  A
+    # managed unprivileged runner may deny socket(2) entirely; the privileged
+    # nightly job covers the real bind behavior in that environment.
+    probe = socket_or_skip()
+    probe.close()
     listeners=bind_listeners('127.0.0.1',(0,0))
     try:assert len(listeners)==1
     finally:
@@ -28,11 +34,11 @@ def test_shared_listener_is_bound_once():
 
 
 def test_failed_second_binding_closes_first_socket():
-    blocker=socket.socket();blocker.bind(('127.0.0.1',0));blocker.listen()
-    first=socket.socket();first.bind(('127.0.0.1',0));port=first.getsockname()[1];first.close()
+    blocker=socket_or_skip();blocker.bind(('127.0.0.1',0));blocker.listen()
+    first=socket_or_skip();first.bind(('127.0.0.1',0));port=first.getsockname()[1];first.close()
     try:
         with pytest.raises(OSError):bind_listeners('127.0.0.1',(port,blocker.getsockname()[1]))
-        check=socket.socket()
+        check=socket_or_skip()
         try:check.bind(('127.0.0.1',port))
         finally:check.close()
     finally:blocker.close()
@@ -41,7 +47,7 @@ def test_failed_second_binding_closes_first_socket():
 def test_real_dual_listener_roles_ignore_host_header(monkeypatch):
     sockets=[]
     for _ in range(2):
-        s=socket.socket();s.bind(('127.0.0.1',0));sockets.append(s)
+        s=socket_or_skip();s.bind(('127.0.0.1',0));sockets.append(s)
     ports=[s.getsockname()[1] for s in sockets]
     monkeypatch.setattr(settings,'api_bind_port',ports[0])
     monkeypatch.setattr(settings,'api_customer_port',ports[1])
@@ -79,7 +85,7 @@ def test_existing_authentication_enforces_listener_role(monkeypatch,mode):
     monkeypatch.setattr(settings,'api_bind_port',2222);monkeypatch.setattr(settings,'api_customer_port',3333)
     monkeypatch.setattr(security,'_identity_from_bearer_token',lambda token:identity)
     monkeypatch.setattr(security,'_identity_from_session_cookie',lambda cookie:identity)
-    request=Request({'type':'http','server':('127.0.0.1',3333),'client':('127.0.0.1',1000),'headers':[(b'host',b'panel.example:2222')]})
+    request=Request({'type':'http','method':'GET','server':('127.0.0.1',3333),'client':('127.0.0.1',1000),'headers':[(b'host',b'panel.example:2222')]})
     with pytest.raises(HTTPException) as error:
         security.get_identity(request,authorization='Bearer test' if mode=='token' else None,fh_session='test' if mode=='session' else None)
     assert error.value.status_code==403

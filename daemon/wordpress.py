@@ -38,7 +38,7 @@ import secrets
 import shutil
 import sys
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from pathlib import Path
 
 import httpx

@@ -51,6 +51,13 @@ def test_set_account_password_rejects_weak(isolated_db):
         identity_admin.set_account_password({"username": "demo1", "password": "weak"})
 
 
+def test_password_reset_rejects_extra_linux_credential_record(isolated_db, monkeypatch):
+    _make_account("demo1")
+    monkeypatch.setattr(identity_admin.sysops, "set_initial_password", lambda *_: (_ for _ in ()).throw(AssertionError("password update reached")))
+    with pytest.raises(ValidationError, match="line breaks or null"):
+        identity_admin.set_account_password({"username": "demo1", "password": "TenantPass123!\r\nroot:OtherPass456!"})
+
+
 # --- contact email ---------------------------------------------------------
 
 

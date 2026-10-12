@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import pwd
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -85,7 +86,7 @@ def create_ftp_account(params: dict) -> dict:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
             raise RuntimeError(f"account '{username}' not found")
-        if account.status not in ("active", "suspended"):
+        if account.status != "active":
             raise RuntimeError(f"cannot add an FTP account to an account in status '{account.status}'")
         existing = session.scalar(select(FtpAccount).where(FtpAccount.ftp_login == ftp_login))
         if existing is not None:
@@ -192,3 +193,58 @@ def terminate_account_ftp(account: Account) -> None:
             row = session.scalar(select(FtpAccount).where(FtpAccount.ftp_login == ftp_login, FtpAccount.account_id == account.id))
             if row is not None:
                 session.delete(row)
+
+
+def set_account_ftp_suspended(account: Account, suspended: bool) -> None:
+    """Lifecycle hook that keeps PureDB credentials aligned with the account."""
+    with write_session() as session:
+        rows = session.scalars(
+            select(FtpAccount).where(FtpAccount.account_id == account.id).order_by(FtpAccount.id)
+        ).all()
+        credentials = [(row.ftp_login, row.path) for row in rows]
+    if not credentials and not suspended:
+        return
+    pw = pwd.getpwnam(account.username)
+    changed = []
+    try:
+        for login, path in credentials:
+            if suspended:
+                ftp.suspend_ftp_user(login)
+            else:
+                ftp.unsuspend_ftp_user(login, pw.pw_uid, pw.pw_gid, path)
+            changed.append((login, path))
+        if suspended:
+            # Pure-FTPd also accepts the hosting account through Unix/PAM.
+            # Closing both identities prevents a session authenticated before
+            # suspension from retaining write access.
+            ftp.disconnect_ftp_sessions({account.username, *(login for login, _path in credentials)})
+    except Exception:
+        # Keep all sub-accounts in the prior account state if one update fails.
+        for login, path in reversed(changed):
+            try:
+                if suspended:
+                    ftp.unsuspend_ftp_user(login, pw.pw_uid, pw.pw_gid, path)
+                else:
+                    ftp.suspend_ftp_user(login)
+            except Exception:
+                pass
+        raise
+
+
+def reconcile_account_ftp_suspension() -> dict:
+    """Repair accounts suspended before this lifecycle hook was installed."""
+    with write_session() as session:
+        accounts = session.scalars(
+            select(Account).where(Account.status.in_(("active", "suspended"))).order_by(Account.id)
+        ).all()
+        snapshots = [(row.id, row.username, row.status) for row in accounts]
+    errors = []
+    for account_id, username, status in snapshots:
+        try:
+            set_account_ftp_suspended(
+                SimpleNamespace(id=account_id, username=username),
+                status == "suspended",
+            )
+        except Exception as exc:
+            errors.append({"username": username, "error": str(exc)[:500]})
+    return {"accounts": len(snapshots), "errors": errors}

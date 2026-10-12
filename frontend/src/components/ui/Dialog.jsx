@@ -63,6 +63,8 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   variant = 'danger',
   loading = false,
+  loadingDescription,
+  error,
   onConfirm,
   confirmationText,
   acknowledgementLabel,
@@ -71,9 +73,19 @@ export function ConfirmDialog({
   const [acknowledged, setAcknowledged] = useState(false)
   useEffect(() => { if (!open) { setTyped(''); setAcknowledged(false) } }, [open])
   const confirmed = (!confirmationText || typed === confirmationText) && (!acknowledgementLabel || acknowledged)
+  const handleOpenChange = (nextOpen) => {
+    if (loading && !nextOpen) return
+    onOpenChange(nextOpen)
+  }
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size="sm">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent
+        size="sm"
+        showClose={!loading}
+        onEscapeKeyDown={(event) => { if (loading) event.preventDefault() }}
+        onPointerDownOutside={(event) => { if (loading) event.preventDefault() }}
+        onInteractOutside={(event) => { if (loading) event.preventDefault() }}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
@@ -84,6 +96,18 @@ export function ConfirmDialog({
             <FormField label={<>Type <span className="font-mono font-semibold">{confirmationText}</span> to confirm</>}>
               <Input value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
             </FormField>
+          </DialogBody>
+        )}
+        {loading && loadingDescription && (
+          <DialogBody className="pt-1">
+            <p className="text-sm text-foreground" role="status" aria-live="polite">{loadingDescription}</p>
+          </DialogBody>
+        )}
+        {!loading && error && (
+          <DialogBody className="pt-1">
+            <p className="rounded-control border border-danger/35 bg-danger/10 px-3 py-2 text-sm text-danger" role="alert">
+              {error instanceof Error ? error.message : String(error)}
+            </p>
           </DialogBody>
         )}
         <DialogFooter>

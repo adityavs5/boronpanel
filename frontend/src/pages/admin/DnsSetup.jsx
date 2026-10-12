@@ -68,10 +68,7 @@ export default function DnsSetup() {
   })
 
   return <div>
-    <PageHeader title="DNS Setup" description="Choose the default DNS authority, migrate zones deliberately, and verify public delegation." icon={Route}>
-      <Button variant="secondary" asChild><Link to="/cloudflare"><Cloud className="h-4 w-4" />Cloudflare accounts</Link></Button>
-      <Button variant="secondary" asChild><Link to="/dns-cluster"><Network className="h-4 w-4" />Cluster peers</Link></Button>
-    </PageHeader>
+    <PageHeader title="DNS Setup" description="Choose the default DNS authority, migrate zones deliberately, and verify public delegation." icon={Route} primaryAction={<Button variant="secondary" asChild><Link to="/cloudflare"><Cloud className="h-4 w-4" />Cloudflare accounts</Link></Button>} moreActions={[{label:'Cluster peers',icon:<Network className="h-4 w-4"/>,onSelect:()=>window.location.assign('/app/dns-cluster')}]} />
 
     <Card className="mb-5"><CardHeader><div><CardTitle>Operating mode for new zones</CardTitle><CardDescription>Changing this default never moves an existing zone. Each existing zone has a separate staged migration below.</CardDescription></div></CardHeader><CardContent className="space-y-5">
       <div className="grid gap-3 lg:grid-cols-3">{MODES.map(item => { const Icon = item.icon; const active = mode === item.id; return <button key={item.id} type="button" onClick={() => { setSelected(item.id); setPreview(null) }} className={`rounded-card border p-4 text-left transition-colors ${active ? 'border-accent bg-accent/5 ring-2 ring-accent/15' : 'border-border bg-card hover:border-accent/50'}`}><div className="mb-2 flex items-center gap-2"><Icon className="h-5 w-5 text-accent" /><span className="font-semibold">{item.title}</span>{query.data?.mode === item.id && <StatusBadge status="active" />}</div><p className="text-sm text-muted-foreground">{item.description}</p></button> })}</div>

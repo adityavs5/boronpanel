@@ -9,6 +9,7 @@ import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
+import { LongValue } from '@/components/ui/LongValue'
 
 function fmtRuntime(seconds) {
   const s = seconds % 60
@@ -39,7 +40,7 @@ export default function Processes({ embedded = false }) {
 
   const columns = [
     { key: 'pid', header: 'PID', sortable: true, render: (r) => <span className="font-mono text-xs">{r.pid}</span> },
-    { key: 'command', header: 'Command', searchable: true, render: (r) => <span className="break-all font-mono text-xs">{r.command}</span> },
+    { key: 'command', header: 'Command', searchable: true, render: (r) => <LongValue value={r.command} label={`process ${r.pid} command`} /> },
     { key: 'cpu_pct', header: 'CPU %', align: 'right', sortable: true, sortValue: (r) => r.cpu_pct, render: (r) => `${r.cpu_pct}%` },
     { key: 'memory_bytes', header: 'Memory', align: 'right', sortable: true, sortValue: (r) => r.memory_bytes, render: (r) => formatBytes(r.memory_bytes) },
     { key: 'runtime_seconds', header: 'Runtime', align: 'right', sortable: true, sortValue: (r) => r.runtime_seconds, render: (r) => fmtRuntime(r.runtime_seconds) },

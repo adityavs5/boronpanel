@@ -14,6 +14,18 @@ class StackOperation(BaseModel):
     confirm: bool = False
 
 
+class TuningBody(BaseModel):
+    confirm: bool = False
+
+
+class PhpPolicyBody(BaseModel):
+    hide_eol_for_new_domains_after: str | None = None
+
+
+class ConfirmBody(BaseModel):
+    confirm: bool = False
+
+
 @api_router.get("")
 def inventory(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -48,3 +60,39 @@ def job(job_id: int, identity: Identity = Depends(get_identity)):
 def cancel(job_id: int, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("stack.job.cancel", identity, job_id=job_id)
+
+
+@api_router.get("/tuning")
+def tuning_preview(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("stack.tuning.preview", identity)
+
+
+@api_router.post("/tuning")
+def tuning_apply(body: TuningBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("stack.tuning.apply", identity, **body.model_dump())
+
+
+@api_router.get("/php-policy")
+def php_policy(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("stack.php_policy.get", identity)
+
+
+@api_router.put("/php-policy")
+def update_php_policy(body: PhpPolicyBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("stack.php_policy.set", identity, **body.model_dump())
+
+
+@api_router.get("/php-sessions/migration")
+def php_session_migration(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("stack.php_sessions.preview", identity)
+
+
+@api_router.post("/php-sessions/migration")
+def migrate_php_sessions(body: ConfirmBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("stack.php_sessions.migrate", identity, **body.model_dump())

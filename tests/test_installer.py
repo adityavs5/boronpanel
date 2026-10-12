@@ -14,6 +14,14 @@ import pytest
 
 INSTALLER = Path(__file__).resolve().parent.parent / "scripts" / "install.sh"
 LITESPEED_KEY = INSTALLER.parent.parent / "deploy" / "litespeed-repository-key.asc"
+OLS_NAMESPACE_POLICY = INSTALLER.parent.parent / "deploy" / "ols-nsconf.conf"
+
+
+def _installer_function(name: str) -> str:
+    source = INSTALLER.read_text()
+    start = source.index(f"{name}() {{")
+    end = source.index("\n}\n", start) + 3
+    return source[start:end]
 
 
 def test_installer_exists_and_is_executable():
@@ -30,10 +38,7 @@ def test_installer_bash_syntax_ok():
 
 
 def test_installer_redacts_openlitespeed_generated_password():
-    source = INSTALLER.read_text()
-    start = source.index("_redact_command_output()")
-    end = source.index("\n}\n", start) + 3
-    function = source[start:end]
+    function = _installer_function("_redact_command_output")
     secret = "TemporaryWebAdminSecret"
     result = subprocess.run(
         ["bash", "-c", function + "\nprintf '%s\\n' \"$1\" | _redact_command_output", "bash",
@@ -43,6 +48,66 @@ def test_installer_redacts_openlitespeed_generated_password():
     assert result.returncode == 0, result.stderr
     assert secret not in result.stdout
     assert result.stdout.strip() == "WebAdmin user/password is admin/***"
+
+
+def test_installer_effective_ssh_ports_honours_sshd_and_live_connection(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_sshd = fake_bin / "sshd"
+    fake_sshd.write_text("#!/bin/sh\nprintf 'port 2200\\nport 22222\\n'\n")
+    fake_sshd.chmod(0o755)
+    command = _installer_function("effective_ssh_ports") + "\neffective_ssh_ports"
+    env = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "SSH_CONNECTION": "198.51.100.7 50000 192.0.2.10 2022",
+    }
+    result = subprocess.run(
+        ["bash", "-c", command], capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["2022", "2200", "22222"]
+
+
+def test_installer_effective_ssh_ports_uses_safe_default_without_signal(tmp_path):
+    command = _installer_function("effective_ssh_ports") + "\neffective_ssh_ports"
+    result = subprocess.run(
+        ["bash", "-c", command],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{tmp_path}:/usr/bin:/bin", "SSH_CONNECTION": ""},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["22"]
+
+
+def test_installer_apt_operations_wait_for_ubuntu_background_lock(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_apt = fake_bin / "apt-get"
+    fake_apt.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\"\n")
+    fake_apt.chmod(0o755)
+    command = "\n".join((
+        "APT_LOCK_WAIT_SECONDS=300",
+        "DRY_RUN=false",
+        "C_YELLOW=''",
+        "C_RESET=''",
+        "_logline() { :; }",
+        "_append_command_output() { cat \"$1\"; }",
+        "fail() { :; }",
+        "_redact_command_output() { cat; }",
+        _installer_function("apt_run"),
+        "apt_run test apt-get install -y example-package",
+    ))
+    result = subprocess.run(
+        ["bash", "-c", command],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{fake_bin}:/usr/bin:/bin"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == (
+        "install -y example-package -o DPkg::Lock::Timeout=300"
+    )
 
 
 @pytest.mark.skipif(shutil.which("gpg") is None, reason="gpg not installed")
@@ -94,15 +159,29 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
 
     # SSH must be admitted before UFW is enabled, and FTP's data range must
     # exactly match Pure-FTPd's configured passive range.
-    assert source.index("ufw allow 22/tcp") < source.index("ufw --force enable")
+    assert source.index("allow_ssh_firewall_rules", source.index("setup_firewall()")) < source.index("ufw --force enable")
     assert "ufw allow 30000:30100/tcp" in source
     assert "30000 30100" in source
-    assert "for p in 21 25 53 80 110 143 443 587 993 995 2222 7080; do" in source
+    # Service ports are selected by install profile.  Core web/panel ports are
+    # always admitted; mail, DNS and FTP are opened only when that component
+    # is installed.  Existing UFW policy must never be reset on a rerun.
+    assert "ports=(80 443 2222 7080)" in source
+    assert "profile_has mail && ports+=(25 110 143 587 993 995)" in source
+    assert "profile_has dns && ports+=(53)" in source
+    assert "profile_has ftp && ports+=(21)" in source
     assert 'run ufw allow "${p}/tcp"' in source
+    assert "profile_has dns && run ufw allow 53/udp" in source
+    assert "profile_has ftp && run ufw allow 30000:30100/tcp" in source
+    assert "ufw --force reset" not in source
+    existing = source[source.index("if $EXISTING_INSTALL", source.index("setup_firewall()")):]
+    assert existing.index("allow_ssh_firewall_rules") < existing.index("return 0")
+    assert 'DPkg::Lock::Timeout=${APT_LOCK_WAIT_SECONDS}' in source
+    time_sync = INSTALLER.parent / "install_time_sync.sh"
+    assert "DPkg::Lock::Timeout=300" in time_sync.read_text()
     build_command = "PATH='/opt/boron-nodejs/20/bin':\\\"\\$PATH\\\" npm ci --no-audit --no-fund"
     assert build_command in source
     assert "PATH='/opt/boron-nodejs/20/bin':\\\"\\$PATH\\\" npm run build" in source
-    assert source.index("install_node_runtimes", source.index("main()")) < source.index(
+    assert source.index("install_frontend_build_runtime", source.index("main()")) < source.index(
         "deploy_app", source.index("main()")
     )
     assert "for _wait in {1..30}" in source
@@ -124,6 +203,8 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert 'args+=(--password' not in source
     assert 'unset FH_ADMIN_PASSWORD' in source
     assert '--password-stdin' in source
+    assert 'validate_admin_bootstrap_input' in source
+    assert 'initial administrator creation failed' in source
     assert "printf '%s' \"$ADMIN_PASSWORD\"" in source
     assert 'chmod 600 "$INSTALL_LOG"' in source
     assert 'WebAdmin user/password is' in source
@@ -133,9 +214,11 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     # Namespace isolation is enabled by the generated OLS config.  The
     # namespace template and its companion lsns state must exist before the
     # first lshttpd start, or every fresh account provision fails validation.
-    assert "write_file /usr/local/lsws/conf/nsconf.conf 0644" in source
-    assert "$PASSWD,nobody,mysql" in source
-    assert "$GROUP,nogroup,mysql" in source
+    assert 'deploy/ols-nsconf.conf' in source
+    assert '/usr/local/lsws/lsns/conf/boron-nsconf.conf' in source
+    namespace_policy = OLS_NAMESPACE_POLICY.read_text()
+    assert "$PASSWD,nobody,mysql" in namespace_policy
+    assert "$GROUP,nogroup,mysql" in namespace_policy
     assert "write_file /usr/local/lsws/lsns/conf/lsns.conf 0644" in source
     assert "1000" in source[source.index("write_file /usr/local/lsws/lsns/conf/lsns.conf"):]
     assert source.index("setup_ols_namespace") < source.index("run systemctl enable --now lshttpd")

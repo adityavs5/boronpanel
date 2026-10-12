@@ -38,7 +38,7 @@ def test_dispatch_does_not_log_audit_or_return_vendor_secrets(monkeypatch, caplo
         raise exception
 
     monkeypatch.setitem(server.OP_TABLE, "test.secret_failure", fail)
-    monkeypatch.setattr(server.audit, "record", lambda *args: records.append(args))
+    monkeypatch.setattr(server.audit, "record", lambda *args, **_kwargs: records.append(args))
     with pytest.raises(type(exception), match=public_message) as raised:
         asyncio.run(server.dispatch("test.secret_failure", {"_actor": "admin", "_role": "admin"}))
     assert "GeneratedSecret123" not in str(raised.value)
@@ -54,7 +54,7 @@ def test_dispatch_redacts_secret_in_validation_detail(monkeypatch):
         raise ValidationError("password XSecret! is invalid")
 
     monkeypatch.setitem(server.OP_TABLE, "test.validation_failure", fail)
-    monkeypatch.setattr(server.audit, "record", lambda *args: records.append(args))
+    monkeypatch.setattr(server.audit, "record", lambda *args, **_kwargs: records.append(args))
     with pytest.raises(ValidationError, match=r"password \*\*\* is invalid") as raised:
         asyncio.run(server.dispatch("test.validation_failure", {
             "_actor": "admin", "_role": "admin", "password": "XSecret!",
@@ -70,16 +70,17 @@ def test_dispatch_retains_safe_validation_feedback(monkeypatch):
         raise ValidationError("domain name is invalid")
 
     monkeypatch.setitem(server.OP_TABLE, "test.safe_validation", fail)
-    monkeypatch.setattr(server.audit, "record", lambda *args: records.append(args))
+    monkeypatch.setattr(server.audit, "record", lambda *args, **_kwargs: records.append(args))
     with pytest.raises(ValidationError, match="domain name is invalid"):
         asyncio.run(server.dispatch("test.safe_validation", {"_actor": "admin", "_role": "admin"}))
-    assert records[0][-1] == "domain name is invalid"
+    assert records[0][-1].startswith("domain name is invalid (reference: ")
+    assert records[0][-1].endswith(")")
 
 
 def test_note_author_comes_from_verified_principal(monkeypatch):
     seen = []
     monkeypatch.setitem(server.OP_TABLE, 'notes.add', lambda params: seen.append(dict(params)) or {})
-    monkeypatch.setattr(server.audit, 'record', lambda *args: None)
+    monkeypatch.setattr(server.audit, 'record', lambda *args, **_kwargs: None)
     asyncio.run(server.dispatch('notes.add', {'username': 'tenant', 'author': 'forged-admin', 'body': 'note'}))
     assert seen[0]['author'] == 'admin'
 
@@ -88,6 +89,6 @@ def test_note_author_comes_from_verified_principal(monkeypatch):
 def test_ip_ban_actor_comes_from_verified_principal(monkeypatch):
     seen = []
     monkeypatch.setitem(server.OP_TABLE, 'ipban.add', lambda params: seen.append(dict(params)) or {})
-    monkeypatch.setattr(server.audit, 'record', lambda *args: None)
+    monkeypatch.setattr(server.audit, 'record', lambda *args, **_kwargs: None)
     asyncio.run(server.dispatch('ipban.add', {'value': '203.0.113.5', 'actor': 'forged-admin'}))
     assert seen[0]['actor'] == 'admin'

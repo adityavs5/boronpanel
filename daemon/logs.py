@@ -17,6 +17,7 @@ import gzip
 import io
 import re
 import stat
+import time
 
 from sqlalchemy import select
 
@@ -29,6 +30,9 @@ from daemon import appunits, safeio
 MAX_LINES = 500
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 MAX_VIEW_BYTES = 2 * 1024 * 1024
+MAX_LOG_DIRECTORY_ENTRIES = 32768
+MAX_LOG_SEGMENTS = 4096
+MAX_LOG_INVENTORY_SECONDS = 3
 LOG_TYPES = ("ols", "error", "access", "php")
 
 
@@ -103,22 +107,29 @@ def _safe_segments(username: str, base_name: str) -> list[dict]:
         raise LogsError("log directory is inaccessible or unsafe") from exc
     rows = []
     try:
-        for name in os.listdir(directory):
-            if name != base_name and not name.startswith(base_name + "."):
-                continue
-            try:
-                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
-            except OSError:
-                continue
-            if not stat.S_ISREG(info.st_mode):
-                raise LogsError("log segment is not a safe regular file")
-            rows.append({
-                "name": name,
-                "active": name == base_name,
-                "compressed": name.endswith(".gz"),
-                "size": info.st_size,
-                "modified_at": dt.datetime.fromtimestamp(info.st_mtime, dt.timezone.utc).isoformat(),
-            })
+        deadline = time.monotonic() + MAX_LOG_INVENTORY_SECONDS
+        with os.scandir(directory) as entries:
+            for examined, entry in enumerate(entries, 1):
+                if examined > MAX_LOG_DIRECTORY_ENTRIES or time.monotonic() > deadline:
+                    raise LogsError("log directory is too large to list; archive older logs or remove unrelated files")
+                name = entry.name
+                if name != base_name and not name.startswith(base_name + "."):
+                    continue
+                try:
+                    info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    raise LogsError("log segment is not a safe regular file")
+                if len(rows) >= MAX_LOG_SEGMENTS:
+                    raise LogsError("too many log segments to list; archive older rotations")
+                rows.append({
+                    "name": name,
+                    "active": name == base_name,
+                    "compressed": name.endswith(".gz"),
+                    "size": info.st_size,
+                    "modified_at": dt.datetime.fromtimestamp(info.st_mtime, dt.timezone.utc).isoformat(),
+                })
     finally:
         os.close(directory)
     rows.sort(key=lambda row: (not row["active"], row["modified_at"]), reverse=False)

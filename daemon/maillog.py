@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from collections import Counter
 from typing import Iterable
 
@@ -23,6 +24,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, MailDomain
 from shared.validation import validate_username
+from daemon import safeio
 
 # postfix/<proc>[<pid>]: <QID>: <rest>   (syslog prefix captured loosely as ts)
 _LINE_RE = re.compile(
@@ -34,8 +36,10 @@ _TO_RE = re.compile(r"\bto=<(?P<addr>[^>]*)>")
 _STATUS_RE = re.compile(r"\bstatus=(?P<status>\S+)(?:\s+(?P<reason>.*))?$")
 _UID_RE = re.compile(r"\buid=(?P<uid>\d+)\b")
 _PHP_MAIL_RE = re.compile(
-    r"mail\(\) on \[(?P<script>.+?):(?P<line>\d+)\]:\s+To:\s*(?P<to>.+?)(?:\s+--\s+Headers:|$)", re.I
+    r"mail\(\) on \[(?P<script>.+?):(?P<line>[0-9]{1,10})\]:\s+To:\s*(?P<to>.+)\Z", re.I
 )
+_PHP_MAIL_START_RE = re.compile(r"mail\(\) on \[", re.I)
+_PHP_MAIL_HEADERS_RE = re.compile(r"Headers:", re.I)
 
 
 def _domain_of(addr: str) -> str:
@@ -102,15 +106,32 @@ def parse_maillog(lines: Iterable[str], account_domains: set[str], limit: int = 
     return events[:limit]
 
 
-def _tail_bytes(path: str, max_bytes: int) -> list[str]:
+def _tail_bytes(path: str, max_bytes: int, *, username: str | None = None) -> list[str]:
     """Read up to the last max_bytes of the file and return its lines (drops a
     possibly-partial first line so we never emit a half-parsed record)."""
-    size = os.path.getsize(path)
-    with open(path, "rb") as f:
-        if size > max_bytes:
-            f.seek(size - max_bytes)
-            f.readline()  # discard the partial line at the seek boundary
-        data = f.read()
+    directory = None
+    if username is not None:
+        validate_username(username)
+        directory = safeio.open_dir_beneath(settings.home_base, f"{username}/logs")
+    try:
+        fd = os.open(os.path.basename(path) if directory is not None else path,
+                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise safeio.UnsafePathError("mail log must be a regular file")
+            start = max(0, info.st_size - max_bytes)
+            data = os.pread(fd, max_bytes, start)
+            if start:
+                # Find the boundary within captured bytes, never an unbounded
+                # readline that can consume an attacker-controlled long line.
+                newline = data.find(b"\n")
+                data = data[newline + 1:] if newline >= 0 else b""
+        finally:
+            os.close(fd)
+    finally:
+        if directory is not None:
+            os.close(directory)
     text = data.decode("utf-8", errors="replace")
     return text.splitlines()
 
@@ -156,14 +177,29 @@ def parse_php_mail_log(lines: Iterable[str], username: str) -> list[dict]:
     events = []
     home = os.path.realpath(f"{settings.home_base}/{username}") + os.sep
     for raw in lines:
-        match = _PHP_MAIL_RE.search(raw)
+        # Match one prefix rather than retrying a long failure at every
+        # attacker-controlled occurrence. Numeric fields are bounded before
+        # int(), and headers are separated with linear string operations.
+        prefix = _PHP_MAIL_START_RE.search(raw)
+        if prefix is None:
+            continue
+        match = _PHP_MAIL_RE.match(raw.rstrip("\r\n"), prefix.start())
         if not match:
             continue
-        script = os.path.realpath(match.group("script"))
+        script_name = match.group("script")
+        if len(script_name.encode("utf-8")) > 4096:
+            continue
+        script = os.path.realpath(script_name)
         if not script.startswith(home):
             continue
+        recipient = match.group("to")
+        header = _PHP_MAIL_HEADERS_RE.search(recipient)
+        if header is not None:
+            before_header = recipient[:header.start()].rstrip()
+            if before_header.endswith("--"):
+                recipient = before_header[:-2].rstrip()
         events.append({"username": username, "script": script, "line": int(match.group("line")),
-                       "to": match.group("to").strip()[:320]})
+                       "to": recipient.strip()[:320]})
     return events
 
 
@@ -210,9 +246,12 @@ def get_admin_stats(params: dict | None = None) -> dict:
     script_counts = Counter()
     for account in accounts:
         path = f"{settings.home_base}/{account.username}/logs/php-mail.log"
-        if not os.path.exists(path):
+        try:
+            lines = _tail_bytes(path, min(settings.mail_log_scan_max_bytes, 2 * 1024 * 1024), username=account.username)
+        except (OSError, safeio.UnsafePathError):
+            # One missing or hostile tenant log must not break the overview.
             continue
-        for item in parse_php_mail_log(_tail_bytes(path, min(settings.mail_log_scan_max_bytes, 2 * 1024 * 1024)), account.username):
+        for item in parse_php_mail_log(lines, account.username):
             script_counts[(item["username"], item["script"], item["to"])] += 1
 
     ranked = lambda counter, key_names: [dict(zip(key_names, key if isinstance(key, tuple) else (key,)), count=count)

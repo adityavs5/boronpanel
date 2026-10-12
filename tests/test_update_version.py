@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 pytest.importorskip("fastapi")
 pytestmark = pytest.mark.usefixtures("isolated_db")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from testsupport.sync_asgi import SyncASGIClient as TestClient
 
 import api.main as main  # noqa: E402
 from api.security import Identity, get_identity  # noqa: E402

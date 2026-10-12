@@ -51,12 +51,52 @@ def test_release_help_exits_zero():
     assert r.returncode == 0
     assert "Usage:" in r.stdout
     assert "--dry-run" in r.stdout
+    assert "--prerelease" in r.stdout
+
+
+def test_release_supports_prepared_prerelease_without_skipping_gates():
+    source = RELEASE.read_text()
+    assert 'PREPARED_VERSION=true' in source
+    assert 'release_flags+=(--prerelease)' in source
+    assert '$PREPARED_VERSION || bump_version "$new"' in source
+    assert 'published releases require both the full test suite' in source
 
 
 def test_release_rejects_unknown_flag():
     r = _run("--bogus")
     assert r.returncode != 0
     assert "unknown option" in r.stderr
+
+
+@pytest.mark.parametrize("case", ["valid", "wrong", "dirty", "version", "short"])
+def test_tested_commit_is_bound_to_clean_prepared_head(tmp_path, case):
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    script = repo / "scripts/release.sh"
+    script.write_text(RELEASE.read_text())
+    (repo / "version.py").write_text('BORON_VERSION = "3.2.0"\n')
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture")
+    head = git("rev-parse", "HEAD")
+    if case == "dirty":
+        (repo / "untracked.txt").write_text("dirty")
+    supplied = "0" * 40 if case == "wrong" else head[:8] if case == "short" else head
+    version = "3.2.1" if case == "version" else "3.2.0"
+    # Load the real functions without running publication, build or signing.
+    body = script.read_text().rsplit('main "$@"', 1)[0]
+    script.write_text(body + '\nparse_args "$@"\nvalidate_tested_commit\n')
+    # The script alteration itself is committed so cleanliness is meaningful.
+    if case != "dirty":
+        git("add", "scripts/release.sh")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "harness")
+        if case in {"valid", "version"}:
+            supplied = git("rev-parse", "HEAD")
+    result = subprocess.run(["bash", str(script), "--tested-commit", supplied, version],
+                            capture_output=True, text=True, timeout=10)
+    assert (result.returncode == 0) == (case == "valid"), result.stderr
 
 
 def test_release_rejects_malformed_version():
@@ -102,6 +142,7 @@ def test_release_dry_run_builds_verified_artifacts(tmp_path):
         # Runtime essentials present.
         for member in ("version.py", "api/main.py", "daemon/server.py",
                        "requirements.txt", "static/dist/index.html",
+                       "frontend/package.json", "frontend/package-lock.json",
                        "tests/conftest.py", "scripts/install.sh"):
             assert f"{prefix}/{member}" in names, f"missing {member}"
         # Never packaged: secrets, databases, logs, dev trees. Suffix match
@@ -111,17 +152,19 @@ def test_release_dry_run_builds_verified_artifacts(tmp_path):
             assert not any(n.endswith(suffix) for n in names), f"tarball leaked *{suffix}"
         for component in (".git", "node_modules", ".venv"):
             assert not any(component in n.split("/") for n in names), f"tarball leaked {component}"
-        assert not any(n.startswith(f"{prefix}/frontend/") for n in names), "frontend source leaked"
+        # Release archives also support a fresh install.  The installer
+        # rebuilds the shipped UI from the tracked source and lock file.
+        assert f"{prefix}/frontend/src" in names
 
 
 @pytest.mark.skipif(not (REPO_ROOT / ".git").exists(), reason="release builds require a source checkout")
 @pytest.mark.skipif(not os.environ.get("BORON_RELEASE_SIGNING_KEY_FILE"), reason="release signing key unavailable")
-def test_release_dry_run_does_not_touch_version_py():
+def test_release_dry_run_does_not_touch_version_py(tmp_path):
     before = (REPO_ROOT / "version.py").read_text()
+    output = tmp_path / "release-nochange"
     r = _run("--dry-run", "--skip-tests", "--skip-build", "--output-dir",
-             "/tmp/fh-release-nochange-test")
+             str(output))
     after = (REPO_ROOT / "version.py").read_text()
-    shutil.rmtree("/tmp/fh-release-nochange-test", ignore_errors=True)
     assert r.returncode == 0
     assert before == after
 

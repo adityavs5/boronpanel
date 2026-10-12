@@ -3,6 +3,7 @@ from pathlib import Path
 import shutil
 from dataclasses import replace
 import pytest
+from testsupport.host_requirements import socket_or_skip
 from daemon import snapshot_storage as storage
 
 
@@ -87,6 +88,7 @@ def test_landlock_sandbox_blocks_swapped_symlink_ancestor(repo, tmp_path):
     assert not (raced / str(selected / 'root-secret.txt').lstrip('/')).exists()
 
 
+@pytest.mark.timeout(300)
 def test_thousand_mailbox_paths_fit_safety_backup_and_use_one_listing(repo, tmp_path, monkeypatch):
     source = tmp_path / 'mail'
     source.mkdir()
@@ -214,12 +216,12 @@ def ssh_environment(repo,tmp_path):
         pytest.skip('isolated SSH server test requires root and sshd')
     for name in ('host_key','client_key'):
         subprocess.run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(tmp_path/name)],check=True)
-    with socket.socket() as s:
+    with socket_or_skip() as s:
         s.bind(('127.0.0.1',0));port=s.getsockname()[1]
     host_key=(tmp_path/'host_key.pub').read_text().split()
     known=tmp_path/'known_hosts'
     known.write_text(f'[127.0.0.1]:{port} {host_key[0]} {host_key[1]}\n');known.chmod(0o600)
-    auth_directory=tempfile.TemporaryDirectory(prefix='boron-ssh-proof-',dir='/root')
+    auth_directory=tempfile.TemporaryDirectory(prefix='boron-ssh-proof-')
     authorized=Path(auth_directory.name)/'authorized_keys'
     authorized.write_text((tmp_path/'client_key.pub').read_text());authorized.chmod(0o600)
     config=tmp_path/'sshd_config'

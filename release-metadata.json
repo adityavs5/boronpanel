@@ -1,0 +1,21 @@
+{
+  "format": 1,
+  "minimum_source_version": "3.0.0",
+  "maximum_source_version": null,
+  "data_plane_reloads": [
+    "lshttpd.service",
+    "dovecot.service",
+    "postfix.service"
+  ],
+  "control_plane_restarts": [
+    "boron-provisiond.service",
+    "boron-api.service",
+    "boron-mail-submit.socket"
+  ],
+  "runtime_rewrites": [
+    "apparmor-policy",
+    "mail-configuration",
+    "ols-configuration",
+    "systemd-units"
+  ]
+}

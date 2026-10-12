@@ -42,10 +42,7 @@ export default function OpenLiteSpeed() {
   if (query.isLoading || !form) return <CenteredSpinner />
   const data = query.data
   return <div className="space-y-6">
-    <PageHeader title="OpenLiteSpeed" description="Configure the web server, validate changes, and manage its WebAdmin login." icon={Server}>
-      <Button asChild variant="outline"><a href={webadmin} target="_blank" rel="noreferrer"><ExternalLink className="h-4 w-4" /> Open WebAdmin</a></Button>
-      <Button variant="secondary" loading={reloadMut.isPending} onClick={() => reloadMut.mutate()}><RefreshCw className="h-4 w-4" /> Graceful reload</Button>
-    </PageHeader>
+    <PageHeader title="OpenLiteSpeed" description="Configure the web server, validate changes, and manage its WebAdmin login." icon={Server} primaryAction={<Button asChild variant="outline"><a href={webadmin} target="_blank" rel="noreferrer"><ExternalLink className="h-4 w-4" /> Open WebAdmin</a></Button>} moreActions={[{label:reloadMut.isPending?'Reloading…':'Graceful reload',icon:<RefreshCw className="h-4 w-4"/>,disabled:reloadMut.isPending,onSelect:()=>reloadMut.mutate()}]} />
 
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
       <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Service</div><Badge className="mt-2" variant={data.active ? 'success' : 'danger'}>{data.active ? 'Running' : 'Stopped'}</Badge></CardContent></Card>

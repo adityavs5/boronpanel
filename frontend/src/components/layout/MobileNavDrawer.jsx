@@ -4,12 +4,13 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { useUI } from '@/store/ui'
 import { Sidebar } from './Sidebar'
 export function MobileNavDrawer(){
-  const open=useUI(s=>s.mobileNavOpen),setOpen=useUI(s=>s.setMobileNavOpen),location=useLocation()
+  const open=useUI(s=>s.mobileNavOpen),setOpen=useUI(s=>s.setMobileNavOpen),skin=useUI(s=>s.skin),location=useLocation()
   useEffect(()=>setOpen(false),[location.pathname,location.search,setOpen])
   useEffect(()=>{
     const media=window.matchMedia('(min-width: 1024px)')
-    const close=()=>{if(media.matches)setOpen(false)}
+    const close=()=>{if(media.matches&&skin==='paper-lantern')setOpen(false)}
+    close()
     media.addEventListener('change',close);return()=>media.removeEventListener('change',close)
-  },[setOpen])
-  return <Dialog.Root open={open} onOpenChange={setOpen}><Dialog.Portal><Dialog.Overlay className="inner-drawer-overlay"/><Dialog.Content className="inner-drawer" aria-describedby={undefined} onCloseAutoFocus={event=>{event.preventDefault();if(!useUI.getState().paletteOpen)document.querySelector('.inner-menu-button')?.focus()}}><Dialog.Title className="sr-only">Panel navigation</Dialog.Title><Sidebar mobile onNavigate={()=>setOpen(false)}/></Dialog.Content></Dialog.Portal></Dialog.Root>
+  },[setOpen,skin])
+  return <Dialog.Root open={open} onOpenChange={setOpen}><Dialog.Portal><Dialog.Overlay className="inner-drawer-overlay"/><Dialog.Content id="panel-navigation-drawer" className="inner-drawer" aria-describedby={undefined} onCloseAutoFocus={event=>{event.preventDefault();if(!useUI.getState().paletteOpen)document.querySelector('.inner-menu-button')?.focus()}}><Dialog.Title className="sr-only">Panel navigation</Dialog.Title><Sidebar mobile onNavigate={()=>setOpen(false)}/></Dialog.Content></Dialog.Portal></Dialog.Root>
 }

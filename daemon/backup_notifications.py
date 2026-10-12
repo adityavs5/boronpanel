@@ -17,7 +17,9 @@ from shared.validation import ValidationError
 
 logger=logging.getLogger('borond.backup_notifications')
 EVENTS=('backup.completed','backup.failed','backup.partial','backup.overdue',
-    'backup.destination_unavailable','backup.restore_completed','backup.restore_failed','backup.download_ready')
+    'backup.destination_unavailable','backup.restore_completed','backup.restore_failed','backup.download_ready',
+    'host.disk','host.inodes','host.memory','host.load','host.login_burst',
+    'host.service_down','host.service_recovered','task.failed')
 _transport=None
 
 
@@ -194,9 +196,10 @@ def send_telegram(event,account=None,**context):
     delivery_id=_record(event,context.get('job_id'))
     if delivery_id is None:return True
     username=getattr(account,'username',None) or context.get('username') or 'server'
-    text=f'Boron backup notification\nEvent: {event}\nAccount: {username}'
+    text=f'Boron notification\nEvent: {event}\nAccount: {username}'
     if context.get('job_id'):text+=f"\nRun: {context['job_id']}"
     if context.get('error'):text+=f"\nError: {str(context['error'])[:500]}"
+    if context.get('message'):text+=f"\n{str(context['message'])[:500]}"
     for attempt in range(3):
         try:
             _send(token,chat_id,text);_finish(delivery_id,'success',f'Delivered on attempt {attempt+1}');return True

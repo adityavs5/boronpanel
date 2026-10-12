@@ -22,13 +22,15 @@ def log_dir(tmp_path, monkeypatch):
 
 def test_build_record_has_all_required_fields():
     rec = logsetup.build_record("GET", "/api/v1/accounts", 200, 12.345, "admin", "203.0.113.5")
-    assert set(rec) == {"timestamp", "method", "path", "status", "duration_ms", "user", "ip"}
+    assert set(rec) == {"timestamp", "method", "path", "status", "duration_ms", "user", "ip", "request_id", "reference"}
     assert rec["method"] == "GET"
     assert rec["path"] == "/api/v1/accounts"
     assert rec["status"] == 200
     assert rec["duration_ms"] == 12.3  # rounded to 1dp
     assert rec["user"] == "admin"
     assert rec["ip"] == "203.0.113.5"
+    assert rec["request_id"] is None
+    assert rec["reference"] is None
     # timestamp is ISO-8601 with a timezone.
     assert rec["timestamp"].endswith("+00:00")
 
@@ -63,9 +65,12 @@ def test_5xx_written_to_both_access_and_error_logs(log_dir):
     assert len(errors) == 1 and errors[0]["status"] == 503
 
 
-def test_4xx_not_written_to_error_log(log_dir):
-    logsetup.record_access("GET", "/api/v1/accounts", 404, 2.0, "admin", "203.0.113.3")
-    assert _read_lines(logsetup.error_log_path(str(log_dir))) == []
+def test_4xx_written_to_correlated_error_log(log_dir):
+    logsetup.record_access("GET", "/api/v1/accounts", 404, 2.0, "admin", "203.0.113.3",
+                           request_id="req-404", reference="0123456789abcdef")
+    rows = _read_lines(logsetup.error_log_path(str(log_dir)))
+    assert rows[0]["request_id"] == "req-404"
+    assert rows[0]["reference"] == "0123456789abcdef"
 
 
 def test_unwritable_log_dir_does_not_raise(monkeypatch):
@@ -121,11 +126,35 @@ def test_tail_drops_partial_first_line_after_seek_cut(log_dir):
     assert [r["path"] for r in recs] == ["/recent"]
 
 
+def test_error_index_searches_reference_request_date_and_status(log_dir):
+    logsetup.record_access("POST", "/old", 422, 1, "admin", "127.0.0.1",
+                           request_id="req-old", reference="1111111111111111")
+    logsetup.record_access("POST", "/new", 403, 1, "admin", "127.0.0.1",
+                           request_id="req-new", reference="2222222222222222")
+    for index in range(110):
+        logsetup.record_access("GET", f"/noise/{index}", 404, 1, None, "127.0.0.1",
+                               request_id=f"noise-{index}", reference=f"{index:016x}")
+    assert [row["path"] for row in logsetup.search_error_records(reference="1111111111111111", log_dir=str(log_dir))] == ["/old"]
+    assert [row["path"] for row in logsetup.search_error_records(request_id="req-new", log_dir=str(log_dir))] == ["/new"]
+    assert [row["path"] for row in logsetup.search_error_records(status=422, log_dir=str(log_dir))] == ["/old"]
+
+
+def test_access_handler_reopens_after_atomic_rotation(log_dir):
+    logsetup.record_access("GET", "/before", 200, 1, None, "127.0.0.1")
+    current = logsetup.access_log_path(str(log_dir))
+    rotated = current.with_suffix(".log.1")
+    current.rename(rotated)
+    current.touch(mode=0o640)
+    logsetup.record_access("GET", "/after", 200, 1, None, "127.0.0.1")
+    assert [row["path"] for row in _read_lines(rotated)] == ["/before"]
+    assert [row["path"] for row in _read_lines(current)] == ["/after"]
+
+
 # --- admin endpoint ----------------------------------------------------------
 
 
 def test_admin_errors_endpoint_returns_recent(log_dir, isolated_db):
-    from fastapi.testclient import TestClient
+    from testsupport.sync_asgi import SyncASGIClient as TestClient
 
     import api.main as main
 
@@ -145,7 +174,7 @@ def test_admin_errors_endpoint_returns_recent(log_dir, isolated_db):
 
 
 def test_admin_errors_endpoint_requires_admin(log_dir, isolated_db):
-    from fastapi.testclient import TestClient
+    from testsupport.sync_asgi import SyncASGIClient as TestClient
 
     import api.main as main
 
@@ -160,19 +189,58 @@ def test_admin_errors_endpoint_requires_admin(log_dir, isolated_db):
 
 
 def test_admin_errors_endpoint_unauthenticated_rejected(log_dir, isolated_db):
-    from fastapi.testclient import TestClient
+    from testsupport.sync_asgi import SyncASGIClient as TestClient
 
     import api.main as main
 
     client = TestClient(main.app)
     r = client.get("/api/v1/admin/logs/errors")
     assert r.status_code == 401
+    assert r.json()["reference"] == r.headers["x-boron-error-reference"]
+    assert r.headers["x-boron-request-id"]
+
+
+def test_validation_error_has_additive_reference(log_dir, isolated_db):
+    from testsupport.sync_asgi import SyncASGIClient as TestClient
+    import api.main as main
+
+    admin = Identity(panel_user_id=1, username="adminuser", role="admin", account_id=None, auth_method="session")
+    main.app.dependency_overrides[get_identity] = lambda: admin
+    try:
+        response = TestClient(main.app).get("/api/v1/admin/logs/errors?limit=not-an-integer")
+        assert response.status_code == 422
+        assert isinstance(response.json()["detail"], list)
+        assert response.json()["reference"] == response.headers["x-boron-error-reference"]
+    finally:
+        main.app.dependency_overrides.pop(get_identity, None)
+
+
+def test_rate_limit_error_is_correlated(log_dir, isolated_db, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from starlette.requests import Request
+    from api.main import _access_log, _rate_limit
+    import api.main as main
+
+    monkeypatch.setattr(main.ratelimit, "evaluate", lambda *_args: SimpleNamespace(allowed=False, retry_after=3.2))
+    request = Request({'type': 'http', 'method': 'POST', 'path': '/login', 'headers': [],
+                       'scheme': 'https', 'server': ('testserver', 443), 'client': ('203.0.113.6', 1234)})
+
+    async def limited(req):
+        return await _rate_limit(req, lambda _request: None)
+
+    response = asyncio.run(_access_log(request, limited))
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "4"
+    assert response.headers["x-boron-error-reference"]
+    assert response.headers["x-boron-request-id"]
+    assert json.loads(response.body)["reference"] == response.headers["x-boron-error-reference"]
 
 
 def test_middleware_logs_a_real_request(log_dir, isolated_db):
     """End-to-end: a request through the real ASGI stack writes an access
     line with the true final status."""
-    from fastapi.testclient import TestClient
+    from testsupport.sync_asgi import SyncASGIClient as TestClient
 
     import api.main as main
 
@@ -197,6 +265,8 @@ def test_unhandled_api_failure_has_safe_reference_and_diagnostics(log_dir, isola
     assert len(reference)==16
     assert reference.encode() in response.body
     assert b'never-include' not in response.body
+    assert response.headers['x-boron-request-id']
+    assert json.loads(response.body)['reference'] == reference
     errors=_read_lines(logsetup.error_log_path(str(log_dir)))
     diagnostic=next(row for row in errors if row.get('reference')==reference)
     assert diagnostic['error_type']=='RuntimeError'

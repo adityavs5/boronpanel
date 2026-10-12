@@ -71,7 +71,14 @@ def test_real_standard_venv_links_restore_as_account_without_changing_system_pyt
     with tempfile.TemporaryDirectory(prefix='boron-qa-runtime-links-') as temporary:
         tmp_path = Path(temporary)
         tmp_path.chmod(0o755)
-        home=tmp_path/'home';home.mkdir();os.chown(home,65534,65534)
+        home=tmp_path/'home';home.mkdir()
+        try:
+            os.chown(home,65534,65534)
+        except OSError as exc:
+            # Root inside a user-namespaced CI sandbox may not map uid 65534.
+            if exc.errno in {1, 22}:
+                pytest.skip('runner cannot map the disposable account uid')
+            raise
         # Existing standard links are the real failing case: data_filter follows
         # them when resolving the extraction path.
         bindir=home/'pythonapps/app/venv/bin';bindir.mkdir(parents=True)

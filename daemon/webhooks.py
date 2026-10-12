@@ -15,7 +15,7 @@ import logging
 import secrets
 import socket
 import time
-from concurrent.futures import ThreadPoolExecutor
+from shared.request_context import ContextThreadPoolExecutor as ThreadPoolExecutor
 from urllib.parse import urlparse
 
 import httpx

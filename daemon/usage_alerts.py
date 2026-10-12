@@ -28,6 +28,7 @@ from shared.models import (
 from shared.validation import validate_resource_limit, validate_username
 
 from daemon import audit, events, handlers_account, usage
+from daemon.database_operations import serialized
 
 logger = logging.getLogger("borond.usage_alerts")
 
@@ -74,6 +75,7 @@ def get_limits(params: dict) -> dict:
         return _limits_to_dict(_get_limits_row(session, account.id))
 
 
+@serialized
 def set_limits(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:

@@ -5,17 +5,18 @@ import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
 import { getToolGroups } from '@/config/toolGroups'
 import { resellerNav } from '@/config/nav'
+import { filterNavigation } from '@/config/capabilities'
 import { searchEntries } from '@/config/search'
 import { Tooltip } from '@/components/ui/Tooltip'
 
 const lineIcons = {'/wordpress':Boxes,'/redis':Database,'/git':GitBranch,'/node-apps':Code,'/python-apps':Braces,'/software/node-apps':Code,'/software/python-apps':Braces}
 export function Sidebar({ mobile = false, onNavigate }) {
-  const role=useAuth(s=>s.role),skin=useUI(s=>s.skin),location=useLocation()
+  const role=useAuth(s=>s.role),capabilities=useAuth(s=>s.capabilities),skin=useUI(s=>s.skin),location=useLocation()
   const storedCollapsed=useUI(s=>s.sidebarCollapsed),toggle=useUI(s=>s.toggleSidebar)
   const collapsed=!mobile&&storedCollapsed
   const closed=useUI(s=>s.navigationGroups),setGroup=useUI(s=>s.setNavigationGroup)
   const [query,setQuery]=useState('')
-  const groups=useMemo(()=>role==='reseller'?[{title:'Reseller',items:resellerNav.filter(item=>item.to)}]:getToolGroups(role,skin),[role,skin])
+  const groups=useMemo(()=>role==='reseller'?[{title:'Reseller',items:filterNavigation(resellerNav,capabilities).filter(item=>item.to)}]:getToolGroups(role,skin,capabilities),[role,skin,capabilities])
   const candidates=groups.flatMap(group=>group.items)
   const matching=candidates.filter(item=>{
     const url=new URL(item.to,'https://panel.invalid')
@@ -23,13 +24,14 @@ export function Sidebar({ mobile = false, onNavigate }) {
   }).sort((a,b)=>b.to.length-a.to.length)
   const active=matching[0]?.to,activeLabel=matching[0]?.label
   useEffect(()=>{
-    const group=groups.find(group=>group.items.some(item=>item.to===active))
-    if(group)setGroup(`${role}:${skin}:${group.title}`,false)
+    const current=groups.find(group=>group.items.some(item=>item.to===active))
+    groups.forEach(group=>setGroup(`${role}:${skin}:${group.title}`,group.title!==current?.title))
   },[active,role,skin,groups,setGroup])
   useEffect(()=>setQuery(''),[location.pathname,location.search])
   const key=title=>`${role}:${skin}:${title}`
   const home=role==='admin'?'/overview':role==='reseller'?'/reseller':'/dashboard'
-  return <aside className="hosting-sidebar" data-collapsed={collapsed} aria-label={mobile?'Mobile tools':'Tools sidebar'}>
+  const isClosed=group=>closed[key(group.title)] ?? !group.items.some(item=>item.to===active)
+  return <aside className="hosting-sidebar" data-collapsed={collapsed} data-mobile={mobile||undefined} aria-label={mobile?'Mobile tools':'Tools sidebar'}>
     <div className="sidebar-toolbar">
       {!collapsed&&<strong>{role==='admin'?'Administration':role==='reseller'?'Reseller panel':'Hosting tools'}</strong>}
       {mobile?<button type="button" aria-label="Close navigation" onClick={onNavigate}><X/></button>:<button type="button" aria-label={collapsed?'Expand sidebar':'Collapse sidebar'} aria-expanded={!collapsed} onClick={toggle}>{collapsed?<PanelLeftOpen/>:<PanelLeftClose/>}</button>}
@@ -42,8 +44,8 @@ export function Sidebar({ mobile = false, onNavigate }) {
         if(!items.length)return null
         const id=`navigation-${mobile?'mobile':'desktop'}-${index}`
         return <section key={group.title}>
-          {!collapsed&&<button type="button" className="sidebar-section" aria-expanded={!!query||!closed[key(group.title)]} aria-controls={id} onClick={()=>setGroup(key(group.title),!closed[key(group.title)])}><span>{group.title}</span><ChevronDown data-closed={!!closed[key(group.title)]&&!query}/></button>}
-          <div id={id} hidden={!collapsed&&!query&&closed[key(group.title)]}>
+          {!collapsed&&<button type="button" className="sidebar-section" aria-expanded={!!query||!isClosed(group)} aria-controls={id} onClick={()=>setGroup(key(group.title),!isClosed(group))}><span>{group.title}</span><ChevronDown data-closed={isClosed(group)&&!query}/></button>}
+          <div id={id} hidden={!collapsed&&!query&&isClosed(group)}>
             {items.map(item=>{
               const Icon=lineIcons[item.to.split('?')[0]]||item.icon
               const content=<><Icon aria-hidden="true"/>{!collapsed&&<span>{item.label}</span>}</>

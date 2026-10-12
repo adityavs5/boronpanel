@@ -1,6 +1,8 @@
 import pytest
 
 from daemon import spamfilter as sf
+from shared.db import write_session
+from shared.models import Account, MailDomain, MailUser
 from shared.validation import ValidationError
 
 
@@ -18,6 +20,28 @@ def _no_dovecot(monkeypatch):
     monkeypatch.setattr(sf, "_dovecot_verify", lambda: sf.StepResult(True))
 
 
+@pytest.fixture(autouse=True)
+def _real_mailboxes(isolated_db):
+    """Spam rules are mailbox resources, so fixtures must own real targets."""
+    with write_session() as session:
+        account = Account(username="mailtest", uid=5101, gid=5101, status="active")
+        session.add(account)
+        session.flush()
+        for domain, local_parts in {
+            "example.com": ("sales", "support", "orphan"),
+            "peer.com": ("sales",),
+        }.items():
+            mail_domain = MailDomain(account_id=account.id, domain=domain)
+            session.add(mail_domain)
+            session.flush()
+            for local_part in local_parts:
+                session.add(MailUser(
+                    mail_domain_id=mail_domain.id,
+                    local_part=local_part,
+                    domain=domain,
+                ))
+
+
 def test_add_entry_creates_row(isolated_db):
     result = sf.add_entry({"domain": "example.com", "local_part": "sales", "kind": "blacklist", "pattern": "spammer@evil.com"})
     assert result["domain"] == "example.com"
@@ -25,6 +49,11 @@ def test_add_entry_creates_row(isolated_db):
     assert result["kind"] == "blacklist"
     assert result["pattern"] == "spammer@evil.com"
     assert result["id"] is not None
+
+
+def test_add_entry_rejects_nonexistent_mailbox(isolated_db):
+    with pytest.raises(sf.SpamFilterError, match="does not exist"):
+        sf.add_entry({"domain": "example.com", "local_part": "invented", "kind": "blacklist", "pattern": "evil.com"})
 
 
 def test_add_entry_normalizes_domain_pattern(isolated_db):

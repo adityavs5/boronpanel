@@ -2,7 +2,7 @@
 # Ubuntu 24 time synchronization. Keep operator-defined sources intact.
 set -euo pipefail
 if ! command -v chronyd >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y chrony
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 install -y chrony
 fi
 install -d -m 0755 /etc/chrony/conf.d
 cat > /etc/chrony/conf.d/boron.conf <<'CONF'

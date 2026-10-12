@@ -6,6 +6,24 @@ import subprocess
 import pytest
 
 from daemon import sysops
+from shared.validation import ValidationError
+
+
+@pytest.mark.parametrize("separator", ["\n", "\r", "\r\n", "\x00"])
+def test_password_sink_rejects_extra_records_before_command(monkeypatch, separator):
+    calls = []
+    monkeypatch.setattr(sysops, "run", lambda *a, **kw: calls.append((a, kw)))
+    with pytest.raises(ValidationError, match="line breaks or null"):
+        sysops.set_initial_password("demo1", "TenantPass123!" + separator + "root:OtherPass456!")
+    assert calls == []
+
+
+def test_password_sink_encodes_one_record_without_changing_password(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sysops, "run", lambda *a, **kw: calls.append((a, kw)))
+    password = " Tenant:Pass123!ü "
+    sysops.set_initial_password("demo1", password)
+    assert calls == [((["chpasswd"],), {"input_text": "demo1:" + password + "\n", "check": True})]
 
 
 @pytest.fixture()
@@ -117,3 +135,7 @@ def test_new_account_has_private_default_backup_folder(account_with_home, monkey
     assert root.is_dir()
     assert stat.S_IMODE(root.stat().st_mode) == 0o750
     assert (root.stat().st_uid, root.stat().st_gid) == (uid, gid)
+    sessions = account_with_home / 'tmp' / 'sessions'
+    assert sessions.is_dir()
+    assert stat.S_IMODE(sessions.stat().st_mode) == 0o700
+    assert (sessions.stat().st_uid, sessions.stat().st_gid) == (uid, gid)

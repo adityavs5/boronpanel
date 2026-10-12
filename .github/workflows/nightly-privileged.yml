@@ -1,0 +1,39 @@
+name: Nightly privileged Ubuntu integration
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-privileged-boron
+  cancel-in-progress: false
+
+jobs:
+  fresh-install:
+    # This label must identify an ephemeral Ubuntu 24.04 VM. The installer
+    # configures packages, services, firewall, users and quotas by design.
+    # The image must also mount a quota-bounded test volume at the short,
+    # root-owned /srv/bt path; the job refuses to share the panel filesystem.
+    runs-on: [self-hosted, linux, x64, ubuntu-24.04, boron-privileged-ephemeral]
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [minimal, standard, full]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fresh install and host integration checks
+        env:
+          FH_INSTALL_PROFILE: ${{ matrix.profile }}
+        run: sudo --preserve-env=GITHUB_WORKSPACE bash scripts/ci_nightly_privileged.sh
+      - name: Upload nightly skip report
+        if: always() && matrix.profile == 'full'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-skips-${{ matrix.profile }}
+          if-no-files-found: warn
+          path: test-artifacts/nightly-${{ matrix.profile }}/skip-report.*

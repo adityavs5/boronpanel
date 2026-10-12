@@ -96,6 +96,11 @@ def ping(authorization: str | None = Header(default=None)):
     return call_daemon_cluster("dnscluster.ping", _bearer(authorization))
 
 
+@peer_router.get("/capabilities")
+def capabilities(authorization: str | None = Header(default=None)):
+    return call_daemon_cluster("dnscluster.capabilities", _bearer(authorization))
+
+
 @peer_router.post("/apply")
 def apply(body: ApplyBody, authorization: str | None = Header(default=None)):
     return call_daemon_cluster("dnscluster.apply", _bearer(authorization), **body.model_dump())

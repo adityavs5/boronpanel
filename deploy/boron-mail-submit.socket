@@ -1,0 +1,13 @@
+[Unit]
+Description=Boron identity-bound local mail submission socket
+
+[Socket]
+ListenStream=/run/boron-mail-submit.sock
+SocketMode=0666
+DirectoryMode=0755
+RemoveOnStop=yes
+Accept=yes
+MaxConnections=16
+
+[Install]
+WantedBy=sockets.target

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import html
+import json
 import re
 import time
 from urllib.parse import urlsplit
@@ -20,8 +21,10 @@ import ipaddress
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from api.static_assets import PanelStaticFiles
 from sqlalchemy import select
 
@@ -30,10 +33,21 @@ from shared.db import read_session
 from shared.models import IpWhitelistEntry
 from shared.validation import ValidationError, validate_domain
 from shared import telemetry
+from shared.request_context import (
+    current_error_reference,
+    ensure_error_reference,
+    new_request_id,
+    normalize_request_id,
+    reset_error_reference,
+    reset_request_id,
+    set_error_reference,
+    set_request_id,
+)
 
 from api import logsetup, ratelimit
+from api.error_context import error_response
 from api.security import Identity, get_identity, require_admin
-from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, disktree, dns, dnscluster, dnssetup, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, isolation, logs_router, lscache_router, mail, mailqueue, maintenance, malware, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, resources, server_setup, services, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, stack_manager, staging, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
+from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, diagnostics, disktree, dns, dnscluster, dnssetup, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, isolation, logs_router, lscache_router, mail, mailqueue, maintenance, malware, metrics, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, resources, retention, server_setup, services, session_security, site_health, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, stack_manager, staging, tasks, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
 
 
 def _webmail_form_action_source() -> str | None:
@@ -123,6 +137,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_error_handler(_request, exc: StarletteHTTPException):
+    """Keep FastAPI's existing ``detail`` contract and add correlation."""
+    headers = dict(exc.headers or {})
+    reference = headers.get("X-Boron-Error-Reference") or headers.get("x-boron-error-reference")
+    return error_response(exc.detail, exc.status_code, headers=headers, reference=reference)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(_request, exc: RequestValidationError):
+    # ``errors()`` is the same list FastAPI normally returns.  Keep it intact
+    # so existing form clients continue to map errors to fields.
+    return error_response(exc.errors(), 422)
+
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 app.mount("/static", PanelStaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -160,13 +189,13 @@ def ip_allowed(client_host: str | None, whitelist_values: list[str]) -> bool:
 
 @app.middleware("http")
 async def _ip_whitelist(request, call_next):
-    if request.url.path == "/healthz":
+    if request.url.path in ("/healthz", "/metrics"):
         return await call_next(request)
     with read_session() as db:
         values = list(db.scalars(select(IpWhitelistEntry.value)).all())
     client_host = request.client.host if request.client else None
     if not ip_allowed(client_host, values):
-        return PlainTextResponse("Forbidden", status_code=403)
+        return error_response("Forbidden", 403)
     return await call_next(request)
 
 
@@ -185,15 +214,21 @@ async def _rate_limit(request, call_next):
         request.headers.get("authorization"),
     )
     if not decision.allowed:
-        return PlainTextResponse(
-            "Too many requests.\n",
-            status_code=429,
+        return error_response(
+            "Too many requests.",
+            429,
             # RFC 6585 / 9110: Retry-After is integer seconds; round up so
             # a client honoring it never retries a hair too early.
             headers={"Retry-After": str(math.ceil(decision.retry_after))},
         )
     return await call_next(request)
 
+
+from api.body_budget import RequestBodyBudget
+
+# Keep route-aware admission inside security headers and request logging.
+# The routes list is shared and populated below before the app starts.
+app.add_middleware(RequestBodyBudget, routes=app.router.routes, stream_endpoints=(filebrowser.proxy,))
 
 # Security audit finding F10: no response ever carried any of these
 # headers. Verified safe against the actual UI before adding a real CSP:
@@ -283,24 +318,85 @@ async def _security_headers(request, call_next):
 @app.middleware("http")
 async def _access_log(request, call_next):
     start = time.monotonic()
+    peer = request.client.host if request.client else None
+    # proxy_headers=False is set by the service, so the socket peer is the
+    # authority here.  Only a local reverse proxy may supply an upstream ID.
+    trusted_upstream = peer in {"127.0.0.1", "::1"}
+    incoming = normalize_request_id(request.headers.get("x-request-id")) if trusted_upstream else None
+    request_id = incoming or new_request_id()
+    request.state.request_id = request_id
+    request_token = set_request_id(request_id)
+    error_token = set_error_reference(None)
     try:
-        response = await call_next(request)
-        status = response.status_code
-    except Exception as exc:
-        # An unhandled exception propagates past the inner ExceptionMiddleware
-        # and is turned into a 500 by Starlette's outermost error handler --
-        # which sits OUTSIDE this middleware, so without catching here the
-        # crash would never reach the error log. Record safe diagnostics and
-        # return a correlated error without vendor text or a raw traceback.
-        from shared.failures import describe_failure
-        diagnostic = describe_failure(f'{request.method} {request.url.path}', exc)
-        identity = getattr(request.state, 'identity', None)
-        logsetup.record_operation_error(diagnostic, getattr(identity, 'username', None),
-                                        request.client.host if request.client else None, status=500)
-        _log(request, 500, (time.monotonic() - start) * 1000.0)
-        return JSONResponse({'detail': f"Internal operation failure (reference: {diagnostic['reference']})"},
-                            status_code=500, headers={'X-Boron-Error-Reference': diagnostic['reference']})
-    _log(request, status, (time.monotonic() - start) * 1000.0)
+        try:
+            response = await call_next(request)
+            status = response.status_code
+        except Exception as exc:
+            # Unexpected exceptions get the richer safe diagnostic.  The raw
+            # exception text and traceback never cross this boundary.
+            from shared.failures import describe_failure
+            diagnostic = describe_failure(f'{request.method} {request.url.path}', exc)
+            reference = ensure_error_reference(diagnostic["reference"])
+            request.state.error_reference = reference
+            identity = getattr(request.state, 'identity', None)
+            logsetup.record_operation_error(
+                diagnostic,
+                getattr(identity, 'username', None),
+                peer,
+                status=500,
+                request_id=request_id,
+            )
+            response = error_response(
+                f"Internal operation failure (reference: {reference})",
+                500,
+                reference=reference,
+            )
+            status = 500
+
+        if status >= 400:
+            reference = response.headers.get("X-Boron-Error-Reference") or current_error_reference()
+            reference = ensure_error_reference(reference)
+            request.state.error_reference = reference
+            response.headers["X-Boron-Error-Reference"] = reference
+            response = await _add_reference_to_json_error(response, reference)
+        response.headers["X-Boron-Request-ID"] = request_id
+        _log(request, status, (time.monotonic() - start) * 1000.0)
+        return response
+    finally:
+        reset_error_reference(error_token)
+        reset_request_id(request_token)
+
+
+async def _add_reference_to_json_error(response, reference: str):
+    """Add one field to direct JSON error responses without changing detail.
+
+    Exception handlers already produce the field.  This fallback covers
+    legacy endpoints that return a JSONResponse directly instead of raising.
+    """
+    content_type = response.headers.get("content-type", "")
+    if "application/json" not in content_type:
+        return response
+    if hasattr(response, "body_iterator"):
+        chunks = [chunk async for chunk in response.body_iterator]
+        body = b"".join(chunk.encode() if isinstance(chunk, str) else chunk for chunk in chunks)
+    else:
+        body = getattr(response, "body", b"")
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = None
+    if isinstance(payload, dict) and "reference" not in payload:
+        payload["reference"] = reference
+        body = json.dumps(payload, separators=(",", ":")).encode()
+
+    async def replay():
+        yield body
+
+    if hasattr(response, "body_iterator"):
+        response.body_iterator = replay()
+    else:
+        response.body = body
+    response.headers["content-length"] = str(len(body))
     return response
 
 
@@ -313,21 +409,28 @@ def _log(request, status: int, duration_ms: float) -> None:
         duration_ms,
         getattr(identity, "username", None),
         request.client.host if request.client else None,
+        request_id=getattr(request.state, "request_id", None),
+        reference=getattr(request.state, "error_reference", None),
     )
 
 app.include_router(auth.router)
+app.include_router(metrics.api_router)
 # UI revamp (2026-07-06): the legacy Jinja `ui_router`s are no longer
 # registered -- the React SPA at /app is the panel now. Only the JSON
 # `api_router`s (and their extra-router-object siblings) are mounted; the SPA
 # consumes the same /api/v1/... surface. The ui_router objects still exist in
 # each module (harmless dead code) but templates_ui/ has been removed.
-for module in (accounts, domains, dns, databases, mail, ssl_router, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, php_functions, site_templates, redirects, logs_router, hotlink, ipblock, ipban, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, malware, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor, nodeapps, pythonapps, redis_router, lscache_router, cpanel_import, bandwidth, webhooks, usage_alerts, staging, cloudflare):
+for module in (accounts, domains, dns, databases, mail, ssl_router, cron, usage, backups, account_backups, tokens, wordpress, pma, email, ftp, php_ini, php_functions, site_health, site_templates, redirects, logs_router, hotlink, ipblock, ipban, fileauth, git, sshkeys, disktree, nameservers, health, services, mailqueue, firewall, malware, fail2ban, auditlog, waf, slowquery, ipwhitelist, twofactor, nodeapps, pythonapps, redis_router, lscache_router, cpanel_import, bandwidth, webhooks, usage_alerts, staging, cloudflare, tasks):
     app.include_router(module.api_router)
 # Extra JSON router objects that don't fit the uniform api_router/ui_router
 # pair (see each module): account-scoped alerts, admin bandwidth ranking,
 # notifications (admin + per-account), apps (list + install), ssl account
 # surface, mail password manager, SpamAssassin admin default.
 app.include_router(usage_alerts.alerts_api_router)
+app.include_router(tasks.control_api_router)
+app.include_router(retention.api_router)
+app.include_router(session_security.api_router)
+app.include_router(session_security.admin_router)
 app.include_router(php_ini.ext_api_router)
 app.include_router(bandwidth.admin_api_router)
 app.include_router(notifications.admin_api_router)
@@ -392,6 +495,7 @@ app.include_router(panel_config.api_router)
 app.include_router(onboarding.api_router)
 # Run A feature 5: service health monitoring (admin-only).
 app.include_router(monitoring.api_router)
+app.include_router(diagnostics.api_router)
 # Run A feature 7: admin view of the panel's own recent 5xx request errors.
 app.include_router(adminlogs.api_router)
 # Panel update system: authed version info + admin update check/apply/rollback.

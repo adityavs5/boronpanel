@@ -180,6 +180,15 @@ def test_create_account_rejects_bad_username(isolated_db, stub_sysops):
         ha.create_account({"username": "Bad_Name"})
 
 
+@pytest.mark.parametrize("separator", ["\n", "\r", "\r\n", "\x00"])
+def test_create_rejects_injected_password_before_linux_user(isolated_db, stub_sysops, separator):
+    with pytest.raises(ValidationError, match="line breaks or null"):
+        ha.create_account({"username": "demo1", "password": "TenantPass123!" + separator + "root:OtherPass456!"})
+    assert stub_sysops == []
+    with write_session() as session:
+        assert session.scalar(select(Account).where(Account.username == "demo1")) is None
+
+
 def test_create_account_rejects_inverted_quota(isolated_db, stub_sysops):
     with pytest.raises(ValidationError):
         ha.create_account({"username": "demo1", "quota_soft_mb": 5000, "quota_hard_mb": 1000})
@@ -570,6 +579,15 @@ def test_reactivate_account_rejects_weak_custom_password(isolated_db, stub_sysop
     ha.terminate_account({"username": "demo1"})
     with pytest.raises(ValidationError):
         ha.reactivate_account({"username": "demo1", "password": "weak"})
+
+
+def test_reactivate_rejects_extra_password_records_before_linux_creation(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    ha.terminate_account({"username": "demo1"})
+    stub_sysops.clear()
+    with pytest.raises(ValidationError, match="line breaks or null"):
+        ha.reactivate_account({"username": "demo1", "password": "TenantPass123!\nroot:OtherPass456!"})
+    assert stub_sysops == []
 
 
 def test_reactivate_account_rejects_weak_password_before_creating_linux_user(isolated_db, stub_sysops):

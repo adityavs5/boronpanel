@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import re
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from starlette.requests import Request
@@ -18,7 +20,7 @@ from starlette.requests import Request
 from api.security import Identity, get_identity, require_admin
 from api.templates import templates
 from shared.db import read_session
-from shared.models import AccountEvent, AuditLog
+from shared.models import AccountEvent, ActionStep, AuditLog
 from shared.token_policy import READ_ONLY_OPERATIONS
 
 api_router = APIRouter(prefix="/api/v1/audit-log", tags=["audit-log"])
@@ -41,12 +43,14 @@ def _apply_filters(query, actor: str, op: str, result: str, target: str, q: str,
     if q:
         like = f"%{q}%"
         query = query.where(
-            AuditLog.actor.like(like) | AuditLog.op.like(like) | AuditLog.target.like(like) | AuditLog.detail.like(like)
+            AuditLog.actor.like(like) | AuditLog.op.like(like) | AuditLog.target.like(like)
+            | AuditLog.detail.like(like) | AuditLog.request_id.like(like)
         )
     return query
 
 
 def _row_dict(row: AuditLog) -> dict:
+    match = re.search(r"reference:\s*([a-f0-9]{16})", row.detail or "", re.IGNORECASE)
     return {
         "id": row.id,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -57,6 +61,24 @@ def _row_dict(row: AuditLog) -> dict:
         "params": row.params,
         "result": row.result,
         "detail": row.detail,
+        "request_id": row.request_id,
+        "reference": match.group(1) if match else None,
+        "source_ip": row.source_ip,
+        "duration_ms": row.duration_ms,
+        "changes": row.changes,
+    }
+
+
+def _step_dict(row: ActionStep) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "duration_ms": row.duration_ms,
+        "result": row.result,
+        "exit_code": row.exit_code,
+        "stdout_tail": row.stdout_tail,
+        "stderr_tail": row.stderr_tail,
     }
 
 
@@ -149,6 +171,8 @@ def list_account_events(
 
 
 def _csv_cell(value):
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, separators=(',', ':'))
     if isinstance(value, str):
         # Quoting a CSV cell does not disable spreadsheet formulas. Preserve
         # audit text as literal data, including whitespace/control prefixes.
@@ -161,7 +185,13 @@ def _csv_cell(value):
 
 
 def _csv_response(model, query, fields, filename):
-    def chunks():
+    # Use a native async iterator. Starlette wraps a synchronous generator in
+    # AnyIO's global worker pool; after TestClient/lifespan teardown that pool
+    # can belong to a closed portal and the export then waits forever for an
+    # idle worker. Each SQLite read is deliberately bounded to 250 rows, so
+    # yielding it directly is short and deterministic while preserving the
+    # streaming response contract.
+    async def chunks():
         buffer = io.StringIO()
         writer = csv.writer(buffer)
         writer.writerow(fields)
@@ -215,8 +245,24 @@ def export_csv(
     require_admin(identity)
     query = _apply_filters(select(AuditLog), actor, op, result, target, q, include_reads)
     return _csv_response(AuditLog, query,
-        ['id', 'created_at', 'actor', 'role', 'op', 'target', 'result', 'detail'],
+        ['id', 'created_at', 'actor', 'role', 'op', 'target', 'result', 'detail', 'request_id',
+         'source_ip', 'duration_ms', 'changes'],
         'boron-audit-log.csv')
+
+
+@api_router.get("/{entry_id}")
+def audit_log_detail(entry_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    with read_session() as db:
+        row = db.get(AuditLog, entry_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Audit entry not found")
+        steps = db.scalars(
+            select(ActionStep).where(ActionStep.audit_id == row.id).order_by(ActionStep.id)
+        ).all()
+        result = _row_dict(row)
+        result["steps"] = [_step_dict(item) for item in steps]
+        return result
 
 
 # --- server-rendered UI ------------------------------------------------------

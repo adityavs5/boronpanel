@@ -191,6 +191,9 @@ END_boron_maint_headers
        open_basedir just excluded -- without this override, a file upload
        would immediately fail with an open_basedir violation. #}
     php_admin_value upload_tmp_dir "{{ home_dir }}/tmp"
+{% if private_session_path %}
+    php_admin_value session.save_path "{{ private_session_path }}"
+{% endif %}
     {# Phase 3 feature 9: a real, persistent per-account PHP error log --
        lsphp's own compiled-in php.ini has no error_log path configured
        at all (confirmed empirically: PHP fatal errors went nowhere

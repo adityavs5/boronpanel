@@ -16,6 +16,7 @@ import {
 import { toast } from '@/components/ui/Toast'
 import { EmptyState } from '@/components/ui/States'
 import { Checkbox } from '@/components/ui/Toggle'
+import { LongValue } from '@/components/ui/LongValue'
 import { dnsOwnerPreview } from '@/lib/dns-owner'
 
 const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV', 'CAA']
@@ -124,7 +125,7 @@ export default function Dns({ emailOnly = false }) {
     { key: 'subdomain', header: 'Name', sortable: true, searchable: true, render: (r) => <button type="button" className="font-mono text-accent hover:underline text-left" onClick={() => setDialog({ mode: 'edit', subdomain: r.subdomain, type: r.type, ttl: String(r.ttl), values: r.values.join('\n') })} aria-label={`Edit ${r.type} record ${r.subdomain}`}>{r.subdomain}</button> },
     { key: 'type', header: 'Type', sortable: true, render: (r) => <span className="font-mono text-xs">{r.type}</span> },
     { key: 'ttl', header: 'TTL', sortable: true, render: (r) => r.ttl },
-    { key: 'values', header: 'Value(s)', render: (r) => <div className="whitespace-pre-line break-all font-mono text-xs">{r.values.join('\n')}</div> },
+    { key: 'values', header: 'Value(s)', render: (r) => <LongValue value={r.values.join('\n')} label={`${r.type} record value`} /> },
     {
       key: 'actions', header: '', align: 'right', render: (r) => (
         <div className="flex justify-end gap-1">
@@ -161,18 +162,14 @@ export default function Dns({ emailOnly = false }) {
         </DialogContent>
       </Dialog>
 
-      <PageHeader title={emailOnly ? 'Email DNS Records' : 'DNS'} description={emailOnly ? 'Manage MX, SPF, DKIM, DMARC, webmail, and automatic-client records.' : 'Manage the DNS zone records for your domains.'} icon={Network}>
-        <Button
+      <PageHeader title={emailOnly ? 'Email DNS Records' : 'DNS'} description={emailOnly ? 'Manage MX, SPF, DKIM, DMARC, webmail, and automatic-client records.' : 'Manage the DNS zone records for your domains.'} icon={Network} primaryAction={<Button
           onClick={() => setDialog({ mode: 'add', subdomain: '@', type: emailOnly ? 'MX' : 'A', ttl: '3600', values: '' })}
           disabled={!domain || unmanaged}
         >
           <Plus className="h-4 w-4" /> Add record
-        </Button>
-      </PageHeader>
+        </Button>} />
 
-      {!emailOnly && <div className="mb-4 flex flex-wrap gap-2"><Button variant="secondary" size="sm" disabled={!domain || unmanaged} loading={advancedLoad.isPending} onClick={() => advancedLoad.mutate()}><FileCode2 className="h-4 w-4" /> Zone editor and templates</Button></div>}
-
-      <div className="mb-4 flex items-end gap-3">
+      <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="max-w-sm flex-1">
           <FormField label="Domain" hint="Choose which zone to manage.">
             <Select
@@ -187,6 +184,7 @@ export default function Dns({ emailOnly = false }) {
             </Select>
           </FormField>
         </div>
+        {!emailOnly && <Button variant="secondary" disabled={!domain || unmanaged} loading={advancedLoad.isPending} onClick={() => advancedLoad.mutate()}><FileCode2 className="h-4 w-4" /> Zone editor and templates</Button>}
         {/* Provider badge (docs/PLAN-cloudflare.md Phase 1); enable/revert lives in the domain's DNS tab. */}
         {data?.cloudflare ? (
           <Badge variant={data.cloudflare.status === 'active' ? 'accent' : 'warning'} className="mb-7">

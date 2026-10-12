@@ -12,6 +12,7 @@ EXPECTED_PUBLIC_ROUTES = {
     "GET /app",
     "GET /app/{spa_path:path}",
     "GET /healthz",
+    "GET /metrics",
     "GET /login",
     "POST /login",
     "POST /login/2fa",
@@ -21,8 +22,9 @@ EXPECTED_PUBLIC_ROUTES = {
     # Machine-to-machine DNS peers cannot use an interactive panel session.
     # These routes forward a bearer credential to the root daemon, whose
     # `cluster_protocol` authority accepts only enabled Boron peer digests and
-    # only the dnscluster.ping/apply operations.
+    # only the reviewed DNS-cluster protocol operations.
     "GET /api/v1/dns-cluster/ping",
+    "GET /api/v1/dns-cluster/capabilities",
     "POST /api/v1/dns-cluster/apply",
 }
 

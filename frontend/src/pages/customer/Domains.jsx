@@ -26,6 +26,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/DropdownMenu'
 import { toast } from '@/components/ui/Toast'
+import { waitForControlTask } from '@/lib/control-tasks'
 
 
 // Phase 8 feature 3: parked (alias) domains — serve the same docroot as a target.
@@ -152,6 +153,7 @@ export default function Domains({ subdomainsOnly = false }) {
   const [toDelete, setToDelete] = useState(null)
   const [toSuspend,setToSuspend]=useState(null)
   const [suspensionReason,setSuspensionReason]=useState('')
+  const [createProgress,setCreateProgress]=useState(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['domains', username],
@@ -163,7 +165,11 @@ export default function Domains({ subdomainsOnly = false }) {
   const [parent, setParent] = useDomainContext(username, parentDomains)
 
   const createMut = useMutation({
-    mutationFn: (body) => post(`/api/v1/accounts/${username}/domains`, body),
+    mutationFn: async (body) => {
+      setCreateProgress(null)
+      const task = await post(`/api/v1/task-operations/accounts/${username}/domains`, body)
+      return waitForControlTask(task, { onProgress: setCreateProgress })
+    },
     onSuccess: (d) => {
       toast.success(kind === 'subdomain' ? 'Subdomain added' : 'Domain added', `${d?.domain || domain} was added to your account.`)
       qc.invalidateQueries({ queryKey: ['domains', username] })
@@ -318,11 +324,9 @@ export default function Domains({ subdomainsOnly = false }) {
 
   return (
     <div className="reference-page">
-      <PageHeader title={subdomainsOnly ? 'Subdomains' : 'Domains'} description={subdomainsOnly ? 'Create subdomains under a domain you own and choose where their files live.' : 'Primary, addon, and parked domains on your account.'} icon={Globe}>
-        <Button onClick={() => setCreateOpen(true)}>
+      <PageHeader title={subdomainsOnly ? 'Subdomains' : 'Domains'} description={subdomainsOnly ? 'Create subdomains under a domain you own and choose where their files live.' : 'Primary, addon, and parked domains on your account.'} icon={Globe} primaryAction={<Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" /> {subdomainsOnly ? 'Add subdomain' : 'Add domain'}
-        </Button>
-      </PageHeader>
+        </Button>} />
 
       <DataTable
         className="domains-reference-table"
@@ -333,7 +337,7 @@ export default function Domains({ subdomainsOnly = false }) {
         onRetry={refetch}
         filterable
         columnPicker
-        selectionBar={selectedRows.length > 0 && <div className="table-bulk-bar" aria-label="Selected domain actions"><strong>{selectedRows.length} selected</strong><span>With selected:</span><Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => row.suspended)} onClick={() => setBulkAction('suspend')}>Suspend</Button><Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => !row.suspended)} onClick={() => setBulkAction('unsuspend')}>Unsuspend</Button><Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => row.kind === 'primary')} onClick={() => setBulkAction('delete')}>Delete</Button><Button variant="ghost" size="sm" disabled={bulkMut.isPending} onClick={() => setSelected(new Set())}>Clear selection</Button></div>}
+        selectionBar={selectedRows.length > 0 && <div className="table-bulk-bar" aria-label="Selected domain actions"><strong>{selectedRows.length} selected</strong><span>With selected:</span>{selectedRows.length < visibleDomains.length && <Button variant="ghost" size="sm" disabled={bulkMut.isPending} onClick={() => setSelected(new Set(visibleDomains.map(row => row.id ?? row.domain)))}>Select all {visibleDomains.length}</Button>}<Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => row.suspended)} onClick={() => setBulkAction('suspend')}>Suspend</Button><Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => !row.suspended)} onClick={() => setBulkAction('unsuspend')}>Unsuspend</Button><Button variant="secondary" size="sm" disabled={bulkMut.isPending || selectedRows.every(row => row.kind === 'primary')} onClick={() => setBulkAction('delete')}>Delete</Button><Button variant="ghost" size="sm" disabled={bulkMut.isPending} onClick={() => setSelected(new Set())}>Clear</Button></div>}
         searchPlaceholder="Search domains…"
         pageSize={15}
         initialSort={{ key: 'domain', dir: 'asc' }}
@@ -349,8 +353,14 @@ export default function Domains({ subdomainsOnly = false }) {
       <ConfirmDialog open={!!bulkAction} onOpenChange={open => !open && !bulkMut.isPending && setBulkAction(null)} title={`${bulkAction === 'delete' ? 'Remove' : bulkAction === 'suspend' ? 'Suspend' : 'Unsuspend'} selected domains?`} description={<><p>{bulkRows.map(row => row.domain).join(', ')}</p><p>{bulkAction === 'delete' ? 'Primary domains are retained. Domain configuration is removed; files on disk are kept.' : 'Only these websites change status. Account files are retained.'}</p>{bulkProgress && <p role="status">{bulkProgress}</p>}</>} confirmationText={username} confirmLabel={bulkAction === 'delete' ? 'Remove domains' : bulkAction === 'suspend' ? 'Suspend domains' : 'Unsuspend domains'} loading={bulkMut.isPending} onConfirm={() => { setBulkReport([]); bulkMut.mutate() }} />
       {!subdomainsOnly && <ParkedDomainsCard username={username} domains={data?.domains} />}
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent size={kind === 'subdomain' ? 'lg' : 'sm'} className={kind === 'subdomain' ? 'subdomain-dialog' : undefined}>
+      <Dialog open={createOpen} onOpenChange={open => { if (!createMut.isPending) setCreateOpen(open) }}>
+        <DialogContent
+          size={kind === 'subdomain' ? 'lg' : 'sm'}
+          className={kind === 'subdomain' ? 'subdomain-dialog' : undefined}
+          showClose={!createMut.isPending}
+          onEscapeKeyDown={event => { if (createMut.isPending) event.preventDefault() }}
+          onPointerDownOutside={event => { if (createMut.isPending) event.preventDefault() }}
+        >
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">{kind === 'subdomain' && <Network className="h-5 w-5 text-accent" />}{kind === 'subdomain' ? 'Add New Subdomain' : 'Add domain'}</DialogTitle>
           </DialogHeader>
@@ -381,8 +391,11 @@ export default function Domains({ subdomainsOnly = false }) {
               {kind==='subdomain'?<div className="subdomain-dns-note"><FolderTree aria-hidden="true" /><p><strong>DNS is configured automatically.</strong><span>The address record is added through the parent zone’s active provider, including Cloudflare.</span></p></div>:<p className="text-sm text-muted-foreground">A DNS zone and website address records are added automatically.</p>}
             </DialogBody>
             <DialogFooter>
-              {createMut.isPending && <p role="status" className="mr-auto text-sm text-muted-foreground">Creating website and DNS records…</p>}
-              <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
+              <div className="mr-auto min-w-0 text-sm">
+                {createMut.isPending && <p role="status" className="text-muted-foreground">{createProgress?.progress_message || `Adding ${kind === 'subdomain' ? fullSubdomain : domain.trim()}… this can take up to 30 seconds. Do not close this page.`}</p>}
+                {!createMut.isPending && createMut.error && <p role="alert" className="text-danger">{createMut.error.message}</p>}
+              </div>
+              <Button type="button" variant="secondary" disabled={createMut.isPending} onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" loading={createMut.isPending} disabled={!!domainError || !domain.trim() || (kind === 'subdomain' && !parent)}>{kind === 'subdomain' ? 'Add subdomain' : 'Add domain'}</Button>
             </DialogFooter>
           </form>

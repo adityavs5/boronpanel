@@ -17,7 +17,7 @@ from shared.db import write_session
 from shared.models import Account, DnsZone
 from shared.validation import ValidationError, validate_domain, validate_record_type
 
-from daemon import cloudflare_ops, dkim, dnsprovider, dnssetup, mail_dns
+from daemon import audit, cloudflare_ops, dkim, dnsprovider, dnssetup, mail_dns
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 
 RECORD_VALUE_VALIDATORS = {
@@ -269,6 +269,7 @@ def set_record(params: dict) -> dict:
     name = domain_name if subdomain == '@' else f'{subdomain}.{domain_name}'
     records = dnsprovider.list_records(domain_name)
     same_name = [row for row in records if row.get('name', '').lower().rstrip('.') == name]
+    before_record = next((row for row in same_name if row.get('type') == rtype), None)
     if rtype == 'CNAME':
         if subdomain == '@':
             raise ValidationError('The zone apex needs SOA/NS records and cannot be a CNAME. Use A or AAAA instead.')
@@ -289,7 +290,13 @@ def set_record(params: dict) -> dict:
         if rtype == 'CNAME' and len(values) > 1:
             raise ValidationError('This name already has a different CNAME. Edit the existing record to replace it.')
 
-    dnsprovider.upsert_record(domain_name, subdomain, rtype, values, ttl=ttl, proxied=proxied)
+    after_record = {
+        "name": name, "type": rtype, "values": values,
+        "ttl": ttl, "proxied": proxied,
+    }
+    audit.change("dns_record", before_record, after_record, sensitive=rtype == "TXT")
+    with audit.step("DNS: write record through provider"):
+        dnsprovider.upsert_record(domain_name, subdomain, rtype, values, ttl=ttl, proxied=proxied)
     return {"zone": domain_name, "subdomain": subdomain, "type": rtype, "values": values, "ttl": ttl}
 
 
@@ -317,7 +324,13 @@ def delete_record(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     subdomain = _record_label(domain_name, params.get("subdomain", "@") or "@")
     rtype = validate_record_type(params["type"])
-    dnsprovider.delete_record(domain_name, subdomain, rtype)
+    name = domain_name if subdomain == "@" else f"{subdomain}.{domain_name}"
+    before_record = next((row for row in dnsprovider.list_records(domain_name)
+                          if row.get("name", "").lower().rstrip(".") == name
+                          and row.get("type") == rtype), None)
+    audit.change("dns_record", before_record, None, sensitive=rtype == "TXT")
+    with audit.step("DNS: delete record through provider"):
+        dnsprovider.delete_record(domain_name, subdomain, rtype)
     return {"zone": domain_name, "subdomain": subdomain, "type": rtype, "status": "deleted"}
 
 

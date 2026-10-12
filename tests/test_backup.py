@@ -348,8 +348,15 @@ def test_run_backup_job_full_to_local_destination(isolated_db, fake_home, fake_m
 
     from daemon.snapshot_jobs import lock
     build = backup._build_full_backup
+    dump = backup._dump_database
     update = backup._update_job
+    def private_dump(name, output_path):
+        assert Path(output_path).parent.stat().st_mode & 0o777 == 0o700
+        return dump(name, output_path)
     def guarded_build(*args, **kwargs):
+        staging_dir = Path(args[1])
+        assert staging_dir.stat().st_mode & 0o777 == 0o700
+        assert staging_dir.stat().st_uid == __import__('os').geteuid()
         with pytest.raises(BlockingIOError):
             with lock(f'account-{account.id}', blocking=False):
                 pass
@@ -360,6 +367,7 @@ def test_run_backup_job_full_to_local_destination(isolated_db, fake_home, fake_m
                 assert not (Path(backup.settings.backup_staging_dir) / f'job-{job_id}').exists()
         return update(ident, **fields)
     monkeypatch.setattr(backup, '_build_full_backup', guarded_build)
+    monkeypatch.setattr(backup, '_dump_database', private_dump)
     monkeypatch.setattr(backup, '_update_job', ready_after_release)
     backup._run_backup_job(job_id)
 
@@ -507,6 +515,16 @@ def test_trigger_backup_creates_job_and_submits(isolated_db, tmp_path, stub_exec
     assert result["status"] == "pending"
     assert len(stub_executor) == 1
     assert stub_executor[0][0] is backup._run_backup_job
+
+
+def test_customer_cannot_select_unconfigured_legacy_destination(isolated_db, tmp_path, stub_executor):
+    with write_session() as session:
+        make_account(session)
+    dest = backup.create_destination({"name": "admin-only", "kind": "local", "local_path": str(tmp_path / "admin")})
+    with pytest.raises(backup.BackupError, match="configured for this account"):
+        backup.trigger_backup({"username": "demo1", "kind": "full",
+                               "destination_id": dest["id"], "customer_scope": True})
+    assert stub_executor == []
 
 
 def test_trigger_backup_rejects_when_already_pending(isolated_db, tmp_path, stub_executor):

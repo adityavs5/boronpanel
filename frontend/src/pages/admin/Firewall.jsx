@@ -207,25 +207,11 @@ export default function Firewall() {
 
   return (
     <div>
-      <PageHeader title="Firewall" description="Manage UFW firewall rules for this server." icon={Flame}>
-        <div className="flex items-center gap-3">
-          <Badge variant={active ? 'success' : 'neutral'}>{active ? 'Active' : 'Inactive'}</Badge>
-          {data && (active ? (
-            <Button variant="danger" onClick={() => setToggleAction('disable')}>
-              <ShieldOff className="h-4 w-4" /> Disable
-            </Button>
-          ) : (
-            <Button variant="success" onClick={() => setToggleAction('enable')}>
-              <ShieldCheck className="h-4 w-4" /> Enable
-            </Button>
-          ))}
-          <Button onClick={() => setAddOpen(true)}>
-            <Plus className="h-4 w-4" /> Add rule
-          </Button>
-          <Button variant="outline" asChild><a href="/api/v1/firewall/configuration/export" download><Download className="h-4 w-4" /> Export</a></Button>
-          <Button variant="outline" onClick={() => setImportOpen(true)}><Upload className="h-4 w-4" /> Import</Button>
-        </div>
-      </PageHeader>
+      <PageHeader title="Firewall" titleMeta={<Badge variant={active ? 'success' : 'neutral'}>{active ? 'Active' : 'Inactive'}</Badge>} description="Manage UFW firewall rules for this server." icon={Flame} primaryAction={<Button onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" /> Add rule</Button>} moreActions={[
+        data && {label:active?'Disable':'Enable',icon:active?<ShieldOff className="h-4 w-4"/>:<ShieldCheck className="h-4 w-4"/>,destructive:active,onSelect:()=>setToggleAction(active?'disable':'enable')},
+        {label:'Export',icon:<Download className="h-4 w-4"/>,onSelect:()=>{const link=document.createElement('a');link.href='/api/v1/firewall/configuration/export';link.download='';link.click()}},
+        {label:'Import',icon:<Upload className="h-4 w-4"/>,onSelect:()=>setImportOpen(true)},
+      ].filter(Boolean)} />
 
       {pending && (
         <Card className="mb-6 border-warning/50 bg-warning/5">

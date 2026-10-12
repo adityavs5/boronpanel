@@ -152,6 +152,13 @@ function MonitoringCard() {
     admin_email: settings.data?.admin_email || '',
     cooldown_minutes: settings.data?.cooldown_minutes ?? 30,
     enabled: settings.data?.enabled ?? true,
+    channels: settings.data?.channels || ['email'],
+    disk_free_pct: settings.data?.disk_free_pct ?? 10,
+    inode_free_pct: settings.data?.inode_free_pct ?? 10,
+    memory_used_pct: settings.data?.memory_used_pct ?? 95,
+    load_per_cpu: settings.data?.load_per_cpu ?? 2,
+    failed_login_threshold: settings.data?.failed_login_threshold ?? 20,
+    failed_login_window_minutes: settings.data?.failed_login_window_minutes ?? 10,
   }
 
   const saveMut = useMutation({
@@ -172,14 +179,14 @@ function MonitoringCard() {
         <div>
           <CardTitle className="flex items-center gap-2"><BellRing className="h-4 w-4" /> Service monitoring</CardTitle>
           <CardDescription>
-            Checked every 5 minutes. The admin address gets an email when a service goes down and when it recovers
-            (re-alerts throttled per service).
+            Checked every 5 minutes. Service failures, resource pressure and failed-login bursts use the selected
+            channels, with deduplication and a recovery message.
           </CardDescription>
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
-        {/* Settings row */}
-        <div className="flex flex-wrap items-end gap-3">
+        {settings.data?.setup_warning && <div className="flex items-start gap-2 rounded-btn border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" /><span>{settings.data.setup_warning}</span></div>}
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <FormField label="Alert email" className="min-w-56 flex-1">
             <Input
               type="email"
@@ -195,16 +202,37 @@ function MonitoringCard() {
               onChange={(e) => setForm({ ...active, cooldown_minutes: e.target.value })}
             />
           </FormField>
-          <div className="flex h-9 items-center gap-2">
+          <div className="flex items-center gap-2 pt-6">
             <Switch checked={active.enabled} onCheckedChange={(v) => setForm({ ...active, enabled: v })} />
             <span className="text-sm text-muted-foreground">Alerts</span>
           </div>
+          <FormField label="Disk free warning (%)"><Input type="number" min="1" max="50" value={active.disk_free_pct} onChange={e => setForm({ ...active, disk_free_pct: e.target.value })} /></FormField>
+          <FormField label="Inode free warning (%)"><Input type="number" min="1" max="50" value={active.inode_free_pct} onChange={e => setForm({ ...active, inode_free_pct: e.target.value })} /></FormField>
+          <FormField label="Memory used warning (%)"><Input type="number" min="50" max="100" value={active.memory_used_pct} onChange={e => setForm({ ...active, memory_used_pct: e.target.value })} /></FormField>
+          <FormField label="Load per CPU warning"><Input type="number" min="0.5" max="20" step="0.1" value={active.load_per_cpu} onChange={e => setForm({ ...active, load_per_cpu: e.target.value })} /></FormField>
+          <FormField label="Failed-login threshold"><Input type="number" min="2" max="10000" value={active.failed_login_threshold} onChange={e => setForm({ ...active, failed_login_threshold: e.target.value })} /></FormField>
+          <FormField label="Login window (min)"><Input type="number" min="1" max="1440" value={active.failed_login_window_minutes} onChange={e => setForm({ ...active, failed_login_window_minutes: e.target.value })} /></FormField>
+        </div>
+        <div>
+          <div className="mb-2 text-sm font-medium text-foreground">Alert channels</div>
+          <div className="flex flex-wrap gap-4">
+            {['email', 'webhook', 'telegram'].map(channel => <label key={channel} className="flex items-center gap-2 text-sm text-foreground"><Switch checked={active.channels.includes(channel)} onCheckedChange={checked => setForm({ ...active, channels: checked ? [...active.channels, channel] : active.channels.filter(item => item !== channel) })} /><span className="capitalize">{channel}</span></label>)}
+          </div>
+        </div>
+        <div className="flex justify-start">
           <Button
             loading={saveMut.isPending}
             onClick={() => saveMut.mutate({
               admin_email: active.admin_email || null,
               cooldown_minutes: Number(active.cooldown_minutes),
               enabled: active.enabled,
+              channels: active.channels,
+              disk_free_pct: Number(active.disk_free_pct),
+              inode_free_pct: Number(active.inode_free_pct),
+              memory_used_pct: Number(active.memory_used_pct),
+              load_per_cpu: Number(active.load_per_cpu),
+              failed_login_threshold: Number(active.failed_login_threshold),
+              failed_login_window_minutes: Number(active.failed_login_window_minutes),
             })}
           >
             <Save className="h-4 w-4" /> Save
@@ -220,7 +248,7 @@ function MonitoringCard() {
               <div key={s.service} className="flex flex-wrap items-center gap-3 rounded-btn border border-border px-3 py-2">
                 <div className="w-24 shrink-0">
                   <div className="text-sm font-medium text-foreground">{s.service}</div>
-                  <div className="text-[11px] text-muted-foreground">{s.unit}</div>
+                  <div className="text-xs text-muted-foreground">{s.unit}</div>
                 </div>
                 {s.currently_down
                   ? <Badge variant="danger">Down{s.down_since ? ` since ${formatDate(s.down_since)}` : ''}</Badge>
@@ -231,7 +259,7 @@ function MonitoringCard() {
                   <div className="text-sm font-semibold tabular-nums text-foreground">
                     {s.uptime_pct != null ? `${s.uptime_pct}%` : '—'}
                   </div>
-                  <div className="text-[11px] text-muted-foreground">
+                  <div className="text-xs text-muted-foreground">
                     {s.last_alert_sent_at ? `alerted ${formatDate(s.last_alert_sent_at)}` : 'no alerts sent'}
                   </div>
                 </div>

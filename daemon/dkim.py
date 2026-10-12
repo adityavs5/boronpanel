@@ -26,6 +26,8 @@ KEY_TABLE = Path("/etc/opendkim/boron/KeyTable")
 SIGNING_TABLE = Path("/etc/opendkim/boron/SigningTable")
 TRUSTED_HOSTS = Path("/etc/opendkim/boron/TrustedHosts")
 SOCKET_PATH = Path("/var/spool/postfix/opendkim/opendkim.sock")
+POSTFIX_BORON_DIR = Path("/etc/postfix/boron")
+SENDER_LOGIN_MAP = POSTFIX_BORON_DIR / "mysql-sender-login.cf"
 
 
 class DkimError(Exception):
@@ -159,13 +161,47 @@ def _write_signer_tables() -> None:
 
 
 def _configure_postfix_milter() -> None:
+    source_map = POSTFIX_BORON_DIR / "mysql-virtual-mailboxes.cf"
+    if not source_map.exists():
+        raise DkimError("Postfix mailbox lookup configuration is unavailable")
+    source_lines = [line for line in source_map.read_text().splitlines()
+                    if not line.lstrip().startswith("query")]
+    sender_query = (
+        "query = SELECT CONCAT(u.local_part, '@', d.domain) FROM mail_user u "
+        "JOIN mail_domain d ON d.id=u.domain_id WHERE "
+        "CONCAT(u.local_part, '@', d.domain)='%s' AND u.active=1 AND d.active=1"
+    )
+    _atomic_write(SENDER_LOGIN_MAP, "\n".join(source_lines + [sender_query]) + "\n", 0o640)
+    try:
+        postfix_gid = pwd.getpwnam("postfix").pw_gid
+        os.chown(SENDER_LOGIN_MAP, 0, postfix_gid)
+    except KeyError as exc:
+        raise DkimError("Postfix service account is unavailable") from exc
     values = {
         "milter_default_action": "accept", "milter_protocol": "6",
-        "smtpd_milters": "unix:opendkim/opendkim.sock",
-        "non_smtpd_milters": "unix:opendkim/opendkim.sock",
+        # Port 25 and local pickup are shared/inbound paths and never carry a
+        # trustworthy tenant identity. Signing happens only in the two
+        # identity-bound frontends.
+        "smtpd_milters": "",
+        "non_smtpd_milters": "",
+        "boron-sign_destination_recipient_limit": "1",
     }
     for name, value in values.items():
         run(["postconf", "-e", f"{name}={value}"], timeout=15, check=True)
+    run(["postconf", "-Me", (
+        "boron-sign/unix=boron-sign unix - n n - 4 pipe flags=Rq user=opendkim "
+        "argv=/opt/boron/.venv/bin/python /opt/boron/scripts/mail_sign_filter.py "
+        "--sender ${sender} --recipient ${recipient}"
+    )], timeout=15, check=True)
+    submission_overrides = {
+        "content_filter": "boron-sign:",
+        "smtpd_sender_login_maps": f"mysql:{SENDER_LOGIN_MAP}",
+        "smtpd_sender_restrictions": "reject_authenticated_sender_login_mismatch",
+        "smtpd_relay_restrictions": "permit_sasl_authenticated,reject",
+    }
+    for name, value in submission_overrides.items():
+        run(["postconf", "-P", f"submission/inet/{name}={value}"], timeout=15, check=True)
+    run(["postconf", "-P", "smtp/inet/smtpd_sasl_auth_enable=no"], timeout=15, check=True)
 
 
 def configure_signer() -> dict:

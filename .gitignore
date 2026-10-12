@@ -3,6 +3,9 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+.coverage.*
+coverage.json
 
 # Panel control-plane database (SQLite) + sidecars
 *.db
@@ -54,3 +57,4 @@ frontend/dist/
 # Browser test evidence is generated locally, never release content.
 frontend/test-results/
 frontend/playwright-report/
+frontend/playwright-report-ci/

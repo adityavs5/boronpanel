@@ -115,7 +115,7 @@ def test_pending_job_resumes_on_startup(setup, monkeypatch):
 @pytest.mark.parametrize('role,code', [('admin', 202), ('customer', 403)])
 def test_api_restricts_port_changes_to_admin(setup, monkeypatch, role, code):
     from fastapi import FastAPI
-    from fastapi.testclient import TestClient
+    from testsupport.sync_asgi import SyncASGIClient as TestClient
     from api.routers import panel_config as router
     from api.security import Identity, get_identity
     app = FastAPI()

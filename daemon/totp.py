@@ -14,13 +14,13 @@ import secrets
 import time
 
 import pyotp
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from shared.db import write_session
 from shared.validation import ValidationError
 from daemon import appcrypto
 
-from shared.models import PanelUser, TotpCredential, TotpRecoveryCode
+from shared.models import PanelUser, SecurityPolicySettings, TotpCredential, TotpRecoveryCode
 
 RECOVERY_CODE_COUNT = 8
 ISSUER_NAME = "Boron"
@@ -118,6 +118,18 @@ def disable_totp(params: dict) -> dict:
     panel_user_id = int(params["panel_user_id"])
     with write_session() as session:
         session.execute(text("BEGIN IMMEDIATE"))
+        user = session.get(PanelUser, panel_user_id)
+        policy = session.get(SecurityPolicySettings, 1)
+        if user is not None and user.role == "admin" and policy and policy.require_admin_2fa:
+            protected = session.scalar(select(func.count()).select_from(PanelUser).join(
+                TotpCredential, TotpCredential.panel_user_id == PanelUser.id,
+            ).where(
+                PanelUser.role == "admin", PanelUser.disabled.is_(False), TotpCredential.enabled.is_(True),
+            )) or 0
+            if protected <= 1:
+                raise ValidationError(
+                    "Keep 2FA enabled on at least one active administrator while the administrator 2FA policy is required"
+                )
         session.query(TotpRecoveryCode).filter(TotpRecoveryCode.panel_user_id == panel_user_id).delete()
         row = session.scalar(select(TotpCredential).where(TotpCredential.panel_user_id == panel_user_id))
         if row is not None:

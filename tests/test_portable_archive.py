@@ -173,15 +173,31 @@ def test_prepare_download_copies_local_full_backup(isolated_db, tmp_path, monkey
         job_id = job.id
     monkeypatch.setattr(backup, "_fetch_artifact_locally", lambda path, kind, temp: path)
     monkeypatch.setattr(portable.pwd, "getpwnam", lambda _name: SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid()))
+    monkeypatch.setattr(portable.settings, "snapshot_download_dir", str(tmp_path / "downloads"))
     prepared = portable.prepare_download({"job_id": job_id})
     try:
         exported = Path(prepared["path"])
         assert exported.name == "demo1.boron.tar"
         assert exported.read_bytes() == b"portable"
-        assert exported.stat().st_mode & 0o777 == 0o600
+        assert exported.stat().st_mode & 0o777 == 0o640
+        export_dir = Path(prepared["cleanup_dir"])
+        export_root = Path(portable.settings.snapshot_download_dir)
+        assert export_root.stat().st_mode & 0o777 == 0o710
+        assert export_dir.stat().st_uid == os.geteuid()
+        assert export_dir.stat().st_mode & 0o777 == 0o710
+        assert prepared["cleanup_id"] == export_dir.name
+        assert portable.cleanup_download({"cleanup_id": prepared["cleanup_id"]}) == {"removed": True}
+        assert not export_dir.exists()
     finally:
         import shutil
         shutil.rmtree(prepared["cleanup_dir"], ignore_errors=True)
+
+
+def test_portable_export_cleanup_rejects_paths(isolated_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(portable.settings, "snapshot_download_dir", str(tmp_path / "downloads"))
+    monkeypatch.setattr(portable.pwd, "getpwnam", lambda _name: SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid()))
+    with pytest.raises(Exception, match="cleanup identifier"):
+        portable.cleanup_download({"cleanup_id": "../outside"})
 
 
 def test_trigger_import_rejects_non_staging_path(isolated_db, tmp_path):
@@ -191,9 +207,23 @@ def test_trigger_import_rejects_non_staging_path(isolated_db, tmp_path):
         portable.trigger_import({"username": "demo1", "source_ref": str(bad)})
 
 
+def test_portable_upload_reservation_is_private_and_cleanup_is_scoped(isolated_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(portable.settings, "cpanel_import_staging_dir", str(tmp_path / "imports"))
+    monkeypatch.setattr(portable.pwd, "getpwnam", lambda _name: SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid()))
+    reserved = portable.reserve_upload({})
+    path = Path(reserved["path"])
+    assert path.parent == tmp_path / "imports" / "uploads"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.stat().st_uid == os.geteuid()
+    assert portable.cleanup_upload({"upload_id": reserved["upload_id"]}) == {"removed": True}
+    assert not path.exists()
+    with pytest.raises(Exception, match="upload identifier"):
+        portable.cleanup_upload({"upload_id": "../outside"})
+
+
 def test_fresh_portable_import_creates_customer_panel_login(isolated_db, tmp_path, monkeypatch):
     built = _portable_tar(tmp_path)
-    source = Path("/tmp/boron-archive-import-panel-login.boron.tar")
+    source = tmp_path / "boron-archive-import-panel-login.boron.tar"
     shutil.copy2(built, source)
     staging = tmp_path / "staging"
     staging.mkdir()
@@ -226,7 +256,7 @@ def test_fresh_portable_import_creates_customer_panel_login(isolated_db, tmp_pat
 
 
 def test_portable_import_worker_rechecks_target_account_before_restore(isolated_db, tmp_path, monkeypatch):
-    source = Path("/tmp/boron-archive-import-stale-target.boron.tar")
+    source = tmp_path / "boron-archive-import-stale-target.boron.tar"
     source.write_bytes(b"unused")
     staging = tmp_path / "staging"
     staging.mkdir()

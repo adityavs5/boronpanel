@@ -16,7 +16,8 @@ test('failed migration can be selected again after reconnecting', async ({ page 
   })
   await page.goto('/app/import/accounts')
   for (let attempt = 0; attempt < 2; attempt++) {
-    await page.getByRole('button', { name: 'From DirectAdmin server' }).click()
+    await page.getByRole('button', { name: 'More', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'From DirectAdmin server', exact: true }).click()
     await page.getByLabel('Source server', { exact: true }).fill('source.example.com')
     await page.getByLabel('Admin password or login key').fill('test-only')
     await page.getByRole('button', { name: 'Connect and list accounts' }).click()

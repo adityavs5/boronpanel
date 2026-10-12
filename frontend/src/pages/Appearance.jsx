@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
 import { SKINS } from '@/config/themes'
+import { PageHeader } from '@/components/ui/PageHeader'
 
 function ThemePreview({ skin }) {
   return <div className={`theme-preview preview-${skin}`} aria-hidden="true">
@@ -14,7 +15,7 @@ export default function Appearance() {
   const { skin, setSkin, theme, setTheme } = useUI()
   const role = useAuth((s) => s.role)
   return <div className="appearance-page">
-    <header><span className="appearance-eyebrow">YOUR WORKSPACE</span><h1>Make yourself at home.</h1><p>Two familiar ways to manage your hosting. Choose the one that feels right for you.</p></header>
+    <PageHeader title="Appearance" description="Choose the panel theme and color mode for this browser." />
     <div className="theme-choices" role="group" aria-label="Panel theme">
       {SKINS.map((item) => <button type="button" key={item.id} className={`theme-choice ${skin === item.id ? 'selected' : ''}`} aria-pressed={skin === item.id} aria-label={`Use ${item.name} theme`} onClick={() => setSkin(item.id)}>
         <ThemePreview skin={item.id} />

@@ -87,6 +87,29 @@ def test_create_node_app_happy_path(account_with_domain, stub_ols):
     assert "demo1" in stub_ols  # ols.refresh_vhost was called to wire the proxy context
 
 
+def test_legacy_bootstrap_failure_keeps_socket_route_and_aborts_migration(
+    account_with_domain, stub_ols, monkeypatch
+):
+    result = nodeapps.create_app({"username":"demo1", "domain":"demo1.example",
+                                  "name":"secure-migrate", "entry_point":"server.js"})
+    with write_session() as session:
+        row = session.get(NodeApp, result["id"])
+        row.backend_mode = "legacy"
+        row.enabled = True
+    stopped = []
+    monkeypatch.setattr(nodeapps.appunits, "enable_start_app",
+                        lambda _unit: (_ for _ in ()).throw(RuntimeError("start failed")))
+    monkeypatch.setattr(nodeapps.appunits, "stop_disable_app", lambda unit: stopped.append(unit))
+
+    with pytest.raises(nodeapps.appunits.AppSocketMigrationError):
+        nodeapps.bootstrap_all_node_apps()
+
+    with write_session() as session:
+        assert session.get(NodeApp, result["id"]).backend_mode == "socket"
+    assert stopped == [result["unit"]]
+    assert stub_ols.count("demo1") >= 2
+
+
 def test_create_node_app_creates_app_dir_and_log_file(account_with_domain):
     result = nodeapps.create_app({
         "username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "server.js",
@@ -115,6 +138,10 @@ def test_create_node_app_writes_systemd_unit_and_env_file(account_with_domain):
     assert "user-5001.slice" in content
     assert "User=demo1" in content
     assert "Restart=on-failure" in content
+    assert "node_socket_activation.cjs" in content or "node_socket_activation.cjs" in nodeapps.appunits.env_file_path(result["unit"]).read_text()
+    socket_unit = nodeapps.appunits.unit_path(nodeapps.appunits.socket_unit_name(result["unit"]))
+    assert socket_unit.exists()
+    assert f"ListenStream={nodeapps.appunits.socket_path('node', result['id'])}" in socket_unit.read_text()
     env_path = nodeapps.appunits.env_file_path(result["unit"])
     env_content = env_path.read_text()
     assert 'SECRET="hunter2"' in env_content
@@ -317,7 +344,7 @@ def test_failed_teardown_retains_recovery_metadata(account_with_domain, monkeypa
     created = nodeapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "server.js"})
     def fail(name):
         raise RuntimeError("stop failed")
-    monkeypatch.setattr(nodeapps.appunits, "remove_unit", fail)
+    monkeypatch.setattr(nodeapps.appunits, "remove_app_unit", fail)
     with pytest.raises(RuntimeError, match="stop failed"):
         if terminate:
             with write_session() as session:

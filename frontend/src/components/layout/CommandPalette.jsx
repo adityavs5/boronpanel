@@ -7,6 +7,7 @@ import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
 import { searchEntries } from '@/config/search'
 import { customerNav, adminNav, resellerNav } from '@/config/nav'
+import { filterNavigation } from '@/config/capabilities'
 
 // Flattens the role-aware nav into palette entries, keeping section names.
 function buildEntries(nav) {
@@ -28,6 +29,7 @@ export function CommandPalette() {
   const theme = useUI((s) => s.theme)
   const toggleTheme = useUI((s) => s.toggleTheme)
   const role = useAuth((s) => s.role)
+  const capabilities = useAuth((s) => s.capabilities)
   const logout = useAuth((s) => s.logout)
   const navigate = useNavigate()
 
@@ -50,7 +52,7 @@ export function CommandPalette() {
   }, [setOpen, setMobileNavOpen])
 
   const entries = useMemo(() => {
-    const pages = buildEntries(role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav)
+    const pages = buildEntries(filterNavigation(role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav, capabilities))
     const actions = [
       {
         type: 'action', section: 'Actions', label: theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
@@ -66,7 +68,7 @@ export function CommandPalette() {
       { label:'Error telemetry', to:'/panel-settings?section=telemetry', icon:Settings, keywords:'sentry logging diagnostics reporting' },
     ].map(item=>({...item,type:'page',section:'Settings'})) : []
     return [...pages, ...settings, ...actions]
-  }, [role, theme, toggleTheme, logout, navigate])
+  }, [role, capabilities, theme, toggleTheme, logout, navigate])
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -132,7 +134,7 @@ export function CommandPalette() {
               placeholder="Go to page or action…"
               className="h-12 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
-            <kbd className="rounded border border-border px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">esc</kbd>
+            <kbd className="rounded border border-border px-1.5 py-0.5 text-xs font-medium uppercase text-muted-foreground">esc</kbd>
           </div>
           <div id="global-search-results" role="listbox" aria-label="Matching tools and settings" ref={listRef} className="max-h-[50vh] overflow-y-auto p-2">
             {results.length === 0 && (

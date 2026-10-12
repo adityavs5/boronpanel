@@ -73,7 +73,8 @@ export default function ToolDashboard() {
   const isAdmin = role === 'admin'
   const { panelName, supportUrl, supportEmail } = useBranding()
   const version = useVersion()
-  const allGroups = useMemo(() => getToolGroups(role, skin), [role, skin])
+  const capabilities = useAuth((state) => state.capabilities)
+  const allGroups = useMemo(() => getToolGroups(role, skin, capabilities), [role, skin, capabilities])
   const options = { retry: false, staleTime: 30_000 }
   const health = useQuery({ queryKey: ['health'], queryFn: () => get('/api/v1/health'), enabled: isAdmin, refetchInterval: 30_000, ...options })
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: () => get('/api/v1/accounts'), enabled: isAdmin, ...options })

@@ -101,11 +101,20 @@ for (const skin of ['evolution', 'paper-lantern']) {
   test(`${skin}: account creation uses a full page and generates credentials`, async ({ page }) => {
     await session(page, 'admin', skin)
     let payload
-    await page.route('**/api/v1/accounts', async route => {
-      if (route.request().method() === 'POST') {
-        payload = route.request().postDataJSON()
+    await page.route('**/api/v1/task-operations/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path.endsWith('/reveal')) {
         await route.fulfill({ json: { username: payload.username, initial_password: 'Test-Only-Account-42!' } })
-      } else await route.fulfill({ json: [] })
+      } else {
+        await route.fulfill({ json: { id: 42, status: 'completed', progress_message: 'Account created' } })
+      }
+    })
+    await page.route('**/api/v1/task-operations/account-create', async route => {
+      payload = route.request().postDataJSON()
+      await route.fulfill({ json: { id: 42, status: 'pending', progress_message: 'Creating account' } })
+    })
+    await page.route('**/api/v1/accounts', async route => {
+      await route.fulfill({ json: [] })
     })
     await page.goto('/app/accounts')
     await page.getByRole('link', { name: 'Create account', exact: true }).first().click()

@@ -21,6 +21,9 @@ export const useAuth = create(
       pending2fa: null, // { pendingToken } while awaiting a TOTP code
       impersonating: false, // Phase 8 f1: admin is acting as a customer
       impersonator: null, // the admin's username while impersonating
+      identitySynced: false, // guards session-sensitive queries until whoami completes after a hard navigation
+      installProfile: 'full',
+      capabilities: [],
 
       isAuthenticated: () => !!get().role,
       isAdmin: () => get().role === 'admin',
@@ -38,9 +41,13 @@ export const useAuth = create(
             username: me.username,
             impersonating: !!me.impersonating,
             impersonator: me.impersonator || null,
+            identitySynced: true,
+            installProfile: me.install_profile || 'full',
+            capabilities: me.capabilities || [],
           })
           return me
         } catch {
+          set({ identitySynced: true })
           return null
         }
       },
@@ -63,7 +70,7 @@ export const useAuth = create(
           return { needs2fa: true }
         }
         clearSessionCache()
-        set({ role: result.role, username: result.username, pending2fa: null, impersonating: false, impersonator: null })
+        set({ role: result.role, username: result.username, pending2fa: null, impersonating: false, impersonator: null, identitySynced: true, installProfile: result.installProfile || 'full', capabilities: result.capabilities || [] })
         return { needs2fa: false, role: result.role }
       },
 
@@ -72,7 +79,7 @@ export const useAuth = create(
         if (!pending2fa) throw new Error('No pending 2FA session.')
         const result = await apiAuth.loginVerify2fa(pending2fa.pendingToken, code)
         clearSessionCache()
-        set({ role: result.role, username: result.username, pending2fa: null, impersonating: false, impersonator: null })
+        set({ role: result.role, username: result.username, pending2fa: null, impersonating: false, impersonator: null, identitySynced: true, installProfile: result.installProfile || 'full', capabilities: result.capabilities || [] })
         return { role: result.role }
       },
 
@@ -82,14 +89,14 @@ export const useAuth = create(
           await apiAuth.logout()
         } finally {
           clearSessionCache()
-          set({ role: null, username: null, pending2fa: null, impersonating: false, impersonator: null })
+          set({ role: null, username: null, pending2fa: null, impersonating: false, impersonator: null, identitySynced: false, installProfile: 'full', capabilities: [] })
         }
       },
 
       // Clear local identity without an API round-trip (used by the 401 handler).
       clear() {
         clearSessionCache()
-        set({ role: null, username: null, pending2fa: null, impersonating: false, impersonator: null })
+        set({ role: null, username: null, pending2fa: null, impersonating: false, impersonator: null, identitySynced: false, installProfile: 'full', capabilities: [] })
       },
     }),
     {

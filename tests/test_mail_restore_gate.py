@@ -12,19 +12,20 @@ import tempfile
 import grp
 
 import pytest
+from testsupport.host_requirements import chown_or_skip
 
 
 @pytest.fixture
 def gate(tmp_path):
     if os.geteuid() != 0 or not shutil.which('cc'):
         pytest.skip('Root and a C compiler required for the service-owned gate')
-    with tempfile.TemporaryDirectory(prefix='boron-mail-guard-test-', dir='/tmp') as temporary:
+    with tempfile.TemporaryDirectory(prefix='boron-mail-guard-test-') as temporary:
         root = Path(temporary)
         root.chmod(0o755)
         directory = root / 'gates'
         directory.mkdir(mode=0o710)
         directory.chmod(0o710)
-        os.chown(directory, 0, grp.getgrnam('dovecot').gr_gid)
+        chown_or_skip(directory, 0, grp.getgrnam('dovecot').gr_gid)
         binary = root / 'gate'
         source = Path(__file__).parents[1] / 'daemon/mail_restore_gate.c'
         compiled = subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',

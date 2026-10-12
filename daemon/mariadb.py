@@ -74,6 +74,32 @@ def database_exists(db_name: str) -> bool:
         conn.close()
 
 
+def database_grantees(db_name: str) -> list[tuple[str, str]]:
+    """Return exact/native schema-pattern grants left for an absent name."""
+    validate_db_identifier(db_name)
+    escaped = db_name.replace("_", r"\_").replace("%", r"\%")
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT User, Host FROM mysql.db WHERE Db IN (%s, %s)",
+                (db_name, escaped),
+            )
+            return sorted({(str(user), str(host)) for user, host in cur.fetchall()})
+    finally:
+        conn.close()
+
+
+def require_ungranted_database_name(db_name: str) -> None:
+    grantees = database_grantees(db_name)
+    if grantees:
+        principals = ", ".join(f"{user}@{host}" for user, host in grantees[:5])
+        raise ValidationError(
+            f"database name '{db_name}' still has native grants ({principals}); "
+            "remove or reconcile those grants before reusing the name"
+        )
+
+
 def user_exists(db_user: str, host: str = "localhost") -> bool:
     validate_db_identifier(db_user)
     host = validate_database_host(host)

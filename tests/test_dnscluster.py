@@ -1,4 +1,5 @@
 import hashlib
+import gzip
 import json
 
 import httpx
@@ -176,8 +177,11 @@ def test_directadmin_adapter_updates_zone_previously_created_by_boron(isolated_d
 
 def test_boron_delivery_sends_event_and_bearer(isolated_db):
     result = _peer()
-    captured = {}
+    captured = {"requests": []}
     def handler(request):
+        captured["requests"].append(str(request.url))
+        if request.url.path.endswith("/capabilities"):
+            return httpx.Response(200, json=dnscluster.capabilities({}))
         captured.update(url=str(request.url), auth=request.headers.get("authorization"), body=request.read())
         return httpx.Response(200, json={"applied": True})
     dnscluster._transport = httpx.MockTransport(handler)
@@ -188,8 +192,110 @@ def test_boron_delivery_sends_event_and_bearer(isolated_db):
     finally:
         dnscluster._transport = None
     assert captured["url"].endswith("/api/v1/dns-cluster/apply")
+    assert captured["requests"][0].endswith("/api/v1/dns-cluster/capabilities")
     assert captured["auth"] == "Bearer bdc_shared_test_key"
     assert b'"event_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' in captured["body"]
+
+
+def test_boron_capability_document_is_versioned_and_complete():
+    document = dnscluster.capabilities({})
+    assert document["panel_version"]
+    assert document["protocol_version"] == dnscluster.DNS_CLUSTER_PROTOCOL_VERSION
+    assert set(document["capabilities"]) == dnscluster.DNS_CLUSTER_CAPABILITIES
+
+
+def test_boron_peer_test_persists_negotiated_capabilities(isolated_db):
+    result = _peer()
+
+    def handler(request):
+        if request.url.path.endswith("/capabilities"):
+            return httpx.Response(200, json=dnscluster.capabilities({}))
+        return httpx.Response(200, json={"ok": True})
+
+    dnscluster._transport = httpx.MockTransport(handler)
+    try:
+        tested = dnscluster.test_peer({"peer_id": result["id"]})
+    finally:
+        dnscluster._transport = None
+    assert tested["protocol_version"] == dnscluster.DNS_CLUSTER_PROTOCOL_VERSION
+    assert set(tested["capabilities"]) == dnscluster.DNS_CLUSTER_CAPABILITIES
+    with write_session() as db:
+        peer = db.get(DnsClusterPeer, result["id"])
+        assert peer.protocol_version == dnscluster.DNS_CLUSTER_PROTOCOL_VERSION
+        assert set(peer.capabilities) == dnscluster.DNS_CLUSTER_CAPABILITIES
+        assert peer.last_capability_check_at is not None
+
+
+def test_boron_peer_without_required_capability_is_rejected(isolated_db):
+    result = _peer()
+    document = dnscluster.capabilities({})
+    document["capabilities"] = document["capabilities"][1:]
+    dnscluster._transport = httpx.MockTransport(
+        lambda _request: httpx.Response(200, json=document)
+    )
+    try:
+        with write_session() as db:
+            peer = db.get(DnsClusterPeer, result["id"])
+            db.expunge(peer)
+        with httpx.Client(transport=dnscluster._transport) as client:
+            with pytest.raises(RuntimeError, match="lacks required capabilities"):
+                dnscluster._check_boron_capabilities(client, peer)
+    finally:
+        dnscluster._transport = None
+
+
+def test_peer_response_budget_rejects_oversized_stream():
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"a" * 8
+            yield b"b" * 8
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=Chunks()))
+    with httpx.Client(transport=transport) as client:
+        with pytest.raises(RuntimeError, match="allowed size"):
+            dnscluster._bounded_request(client, "GET", "https://peer.test", max_bytes=12)
+
+
+def test_peer_response_gzip_is_decoded_once_and_headers_are_normalized():
+    payload = json.dumps({"metadata": {"result": 1}}).encode()
+    transport = httpx.MockTransport(lambda request: httpx.Response(
+        200,
+        headers={"Content-Encoding": "gzip", "Content-Length": str(len(gzip.compress(payload)))},
+        content=gzip.compress(payload),
+    ))
+    with httpx.Client(transport=transport) as client:
+        response = dnscluster._bounded_request(client, "GET", "https://peer.test")
+    assert response.json() == {"metadata": {"result": 1}}
+    assert "content-encoding" not in response.headers
+    assert response.headers["content-length"] == str(len(payload))
+
+
+def test_peer_response_budget_has_absolute_deadline(monkeypatch):
+    ticks = iter((100.0, 191.0))
+    monkeypatch.setattr(dnscluster.time, "monotonic", lambda: next(ticks))
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b"ok"))
+    with httpx.Client(transport=transport) as client:
+        with pytest.raises(RuntimeError, match="deadline"):
+            dnscluster._bounded_request(client, "GET", "https://peer.test")
+
+
+def test_cpanel_dumpzone_record_count_is_bounded(isolated_db):
+    result = _peer("cpanel", "whm-token")
+
+    def handler(request):
+        command = request.url.path.rsplit("/", 1)[-1]
+        data = {"zone": [{} for _ in range(10_001)]} if command == "dumpzone" else {}
+        return httpx.Response(200, json={"data": data, "metadata": {"result": 1}})
+
+    dnscluster._transport = httpx.MockTransport(handler)
+    try:
+        with write_session() as db:
+            peer = db.get(DnsClusterPeer, result["id"])
+            db.expunge(peer)
+        with pytest.raises(RuntimeError, match="too many DNS records"):
+            dnscluster._send_cpanel(peer, "upsert", ZONE_PAYLOAD, "example.test")
+    finally:
+        dnscluster._transport = None
 
 
 def test_cpanel_adapter_replaces_template_records_and_preserves_source_ns(isolated_db):

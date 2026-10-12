@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import pwd
+import time
 
 from sqlalchemy import select
 
@@ -35,6 +36,10 @@ from daemon import resource_manager, safeio, sysops
 from daemon.procutil import run
 
 SSH_KEYGEN_BIN = "/usr/bin/ssh-keygen"
+MAX_AUTHORIZED_BYTES = 1024 * 1024
+MAX_AUTHORIZED_LINES = 1024
+MAX_INSPECTION_KEYS = 256
+MAX_INSPECTION_SECONDS = 10
 
 
 class SshKeyError(Exception):
@@ -46,10 +51,24 @@ def _read_authorized_lines(username: str) -> list[str]:
     account planted a symlink at ~/.ssh/authorized_keys (or ~/.ssh itself),
     secure_read_text returns None and we treat it as empty rather than reading
     -- and later rewriting -- the contents of whatever it pointed at."""
-    text = safeio.secure_read_text(_ssh_dir(username), "authorized_keys")
+    text = safeio.secure_read_text(_ssh_dir(username), "authorized_keys", max_bytes=MAX_AUTHORIZED_BYTES + 1)
     if text is None:
         return []
-    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return _bounded_authorized_lines(text)
+
+
+def _bounded_authorized_lines(text: str) -> list[str]:
+    if len(text.encode("utf-8")) > MAX_AUTHORIZED_BYTES:
+        raise SshKeyError("authorized_keys exceeds the 1 MiB management limit; reduce it using file access")
+    # Bound splitlines allocation as well as subsequent subprocess fanout.
+    if sum(c in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029" for c in text) - text.count("\r\n") > MAX_AUTHORIZED_LINES:
+        raise SshKeyError("authorized_keys has too many lines to manage")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if any(len(line) > 8192 for line in lines):
+        raise SshKeyError("authorized_keys contains a line longer than 8192 characters")
+    if sum(not line.startswith("#") for line in lines) > MAX_INSPECTION_KEYS:
+        raise SshKeyError("authorized_keys has more than 256 keys to inspect")
+    return lines
 
 
 def _account_home(username: str) -> str:
@@ -72,8 +91,8 @@ def _key_blob(line: str) -> tuple[str, ...]:
     return tuple(parts[:2]) if len(parts) >= 2 else (line,)
 
 
-def _inspect(key_text: str) -> dict:
-    result = run([SSH_KEYGEN_BIN, "-lf", "-"], input_text=key_text + "\n", timeout=10)
+def _inspect(key_text: str, *, timeout: float = 10) -> dict:
+    result = run([SSH_KEYGEN_BIN, "-lf", "-"], input_text=key_text + "\n", timeout=timeout, output_limit=64 * 1024)
     if not result.ok:
         raise ValidationError("not a valid SSH public key (checked with ssh-keygen)")
     # "<bits> SHA256:<fingerprint> <comment> (<type>)" -- comment may be
@@ -94,17 +113,28 @@ def _inspect(key_text: str) -> dict:
     return {"bits": bits, "fingerprint": fingerprint, "comment": comment, "type": key_type}
 
 
+def _inspect_lines(lines):
+    deadline = time.monotonic() + MAX_INSPECTION_SECONDS
+    for line in lines:
+        if line.startswith("#"):
+            yield line, None
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SshKeyError("SSH key inspection timed out; reduce the authorized_keys list")
+        try:
+            info = _inspect(line, timeout=min(10, remaining))
+        except ValidationError:
+            info = None
+        yield line, info
+
+
 def list_keys(params: dict) -> dict:
     username = validate_username(params["username"])
     keys = []
-    for line in _read_authorized_lines(username):
-        if line.startswith("#"):
-            continue
-        try:
-            info = _inspect(line)
-        except ValidationError:
-            continue  # skip a line this module didn't write rather than fail the whole listing
-        keys.append(info)
+    for line, info in _inspect_lines(_read_authorized_lines(username)):
+        if info is not None:
+            keys.append(info)
     return {"keys": keys}
 
 
@@ -152,10 +182,8 @@ def delete_key(params: dict) -> dict:
 
     remaining = []
     removed = False
-    for line in lines:
-        try:
-            info = _inspect(line)
-        except ValidationError:
+    for line, info in _inspect_lines(lines):
+        if info is None:
             remaining.append(line)  # leave a line this module didn't write alone
             continue
         if info["fingerprint"] == fingerprint:
@@ -180,6 +208,7 @@ def _write_authorized_keys(username: str, lines: list[str], uid: int, gid: int) 
     # ~/.ssh and renamed over authorized_keys, so neither a pre-planted temp
     # symlink nor a symlinked destination can redirect this root-owned write.
     content = ("\n".join(lines) + "\n") if lines else ""
+    _bounded_authorized_lines(content)
     safeio.secure_replace_file(_ssh_dir(username), "authorized_keys", content, uid, gid, 0o600)
 
 

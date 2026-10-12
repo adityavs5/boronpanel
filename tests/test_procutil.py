@@ -1,5 +1,7 @@
 import logging
 
+import pytest
+
 from daemon.procutil import run
 
 
@@ -74,7 +76,13 @@ def test_bounded_command_timeout_cleans_up_pipe_holding_child(tmp_path):
     child = int(pidfile.read_text())
     for _ in range(50):
         path = __import__('pathlib').Path(f'/proc/{child}/stat')
-        if not path.exists() or path.read_text().split()[2] == 'Z':
+        try:
+            state = path.read_text().split()[2]
+        except (FileNotFoundError, ProcessLookupError):
+            # /proc entries can disappear between exists/open (or while the
+            # procfs read is in progress). Either case proves cleanup won.
+            break
+        if state == 'Z':
             break
         time.sleep(0.01)
     else:
@@ -91,3 +99,59 @@ def test_tenant_wrapper_automatically_enforces_capture_limit(monkeypatch):
     monkeypatch.setattr(procutil, '_bounded_run', bounded)
     with pytest.raises(RuntimeError, match='bounded runner reached'):
         run(['/usr/sbin/runuser', '-u', 'tenant', '--', '/bin/true'])
+
+
+@pytest.mark.parametrize("exe", [None, "/usr/lib/systemd/systemd-executor"])
+def test_account_launch_denial_reaches_caller_and_log(monkeypatch, caplog, exe):
+    import json
+    import subprocess
+    from daemon import procutil
+    unit = 'boron-account-1000-test.service'
+    def bounded(args, **kwargs):
+        if args[0] == '/usr/bin/systemd-run':
+            return subprocess.CompletedProcess(args, 200, '', '')
+        assert args[0] == '/usr/bin/journalctl'
+        assert f'UNIT={unit}' in args
+        assert kwargs['timeout'] == 2 and kwargs['limit'] == 65536
+        entry = {'UNIT': unit, '_SYSTEMD_UNIT': unit, '_EXE': exe,
+                 'CODE_FUNC': 'exec_invoke',
+                 'MESSAGE': f'{unit}: Changing to the requested working directory failed: Permission denied'}
+        return subprocess.CompletedProcess(args, 0, json.dumps(entry), '')
+    monkeypatch.setattr(procutil, '_bounded_run', bounded)
+    with caplog.at_level(logging.WARNING, logger='borond.proc'):
+        result = run(['/usr/bin/systemd-run', '--unit=boron-account-1000-test', '--', '/bin/true'])
+    assert not result.ok and result.returncode == 200
+    assert 'Permission denied' in result.stderr
+    assert any('Permission denied' in record.message for record in caplog.records)
+    import pytest
+    with pytest.raises(procutil.CommandFailure, match='Permission denied'):
+        result.raise_if_failed()
+
+
+def test_account_diagnostic_never_exposes_untrusted_journal_text(monkeypatch):
+    import json
+    import subprocess
+    from daemon import procutil
+    unit = 'boron-account-1000-test.service'
+    entries = [
+        {'UNIT': unit, '_SYSTEMD_UNIT': unit, '_EXE': '/bin/echo', 'CODE_FUNC': 'exec_invoke',
+         'MESSAGE': f'{unit}: Changing to the requested working directory failed: Permission denied'},
+        {'UNIT': unit, '_SYSTEMD_UNIT': unit, '_EXE': '/usr/lib/systemd/systemd-executor', 'CODE_FUNC': 'exec_invoke',
+         'MESSAGE': 'password=FAKE-SECRET /private/path mail-body'},
+    ]
+    monkeypatch.setattr(procutil, '_bounded_run', lambda args, **kwargs:
+                        subprocess.CompletedProcess(args, 0, '\n'.join(map(json.dumps, entries)), ''))
+    assert procutil._account_failure_detail(unit, 200) == 'Account command failed without diagnostic output (exit status 200).'
+
+
+def test_account_diagnostic_failure_keeps_original_exit(monkeypatch):
+    import subprocess
+    from daemon import procutil
+    for error in (OSError('missing'), subprocess.TimeoutExpired('journalctl', 2),
+                  RuntimeError('capture limit'), ValueError('invalid json')):
+        def fail(*args, **kwargs):
+            raise error
+        monkeypatch.setattr(procutil, '_bounded_run', fail)
+        assert 'exit status 200' in procutil._account_failure_detail('boron-account-1000-test.service', 200)
+    # Other status codes cannot be misreported as a directory denial.
+    assert 'exit status 201' in procutil._account_failure_detail('boron-account-1000-test.service', 201)

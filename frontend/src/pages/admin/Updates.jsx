@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowUpCircle, CheckCircle2, XCircle, Loader2, RefreshCw, ExternalLink,
-  Undo2, AlertTriangle, Circle,
+  Undo2, AlertTriangle, Circle, DatabaseBackup, Eye,
 } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
@@ -14,6 +14,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import { DataTable } from '@/components/ui/Table'
 import { ProgressBar } from '@/components/ui/Progress'
 import { Input, FormField } from '@/components/ui/Input'
+import { Checkbox } from '@/components/ui/Toggle'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
   DialogBody, DialogFooter,
@@ -77,7 +78,9 @@ function StepList({ job }) {
 // TOTP field (required by the backend when the admin has 2FA enabled --
 // harmlessly ignored otherwise).
 function ConfirmActionDialog({ open, onOpenChange, title, description, confirmLabel,
-                               variant = 'primary', mutation }) {
+                               variant = 'primary', mutation, children = null,
+                               buildBody = null, submitDisabled = false,
+                               impactText = 'The panel services restart during this operation (~10–30s of panel downtime).' }) {
   const [code, setCode] = useState('')
   useEffect(() => {
     if (!open) setCode('')
@@ -92,15 +95,17 @@ function ConfirmActionDialog({ open, onOpenChange, title, description, confirmLa
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            mutation.mutate({ confirm: true, totp_code: code.trim() || null })
+            mutation.mutate(buildBody
+              ? buildBody({ confirm: true, totp_code: code.trim() || null })
+              : { confirm: true, totp_code: code.trim() || null })
           }}
         >
           <DialogBody className="space-y-3">
             <div className="rounded-btn border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground">
               <AlertTriangle className="mr-1.5 inline h-3.5 w-3.5 text-warning" />
-              The panel services restart during this operation (~10–30s of panel
-              downtime). Hosted websites, email and DNS are not touched.
+              {impactText}
             </div>
+            {children}
             <FormField label="2FA code" htmlFor="update-totp"
                        hint="Required if two-factor authentication is enabled on your admin account.">
               <Input
@@ -119,7 +124,8 @@ function ConfirmActionDialog({ open, onOpenChange, title, description, confirmLa
             <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" variant={variant} loading={mutation.isPending}>
+            <Button type="submit" variant={variant} loading={mutation.isPending}
+                    disabled={submitDisabled || mutation.isPending}>
               {confirmLabel}
             </Button>
           </DialogFooter>
@@ -134,6 +140,23 @@ export default function Updates() {
   const { data: status, isLoading, error, refetch } = useUpdateStatus()
   const [updateOpen, setUpdateOpen] = useState(false)
   const [rollbackOpen, setRollbackOpen] = useState(false)
+  const [acknowledgeDataPlane, setAcknowledgeDataPlane] = useState(false)
+  const [overrideTasks, setOverrideTasks] = useState(false)
+  const [restoreBackup, setRestoreBackup] = useState(null)
+  const [detailJob, setDetailJob] = useState(null)
+
+  const { data: preflight, isLoading: preflightLoading, error: preflightError } = useQuery({
+    queryKey: ['update-preflight', overrideTasks],
+    queryFn: () => get(`/api/v1/admin/update/preflight?override_active_tasks=${overrideTasks ? 'true' : 'false'}`),
+    enabled: updateOpen,
+    refetchOnWindowFocus: false,
+  })
+
+  const { data: databaseBackups } = useQuery({
+    queryKey: ['update-database-backups'],
+    queryFn: () => get('/api/v1/admin/update/database-backups'),
+    refetchInterval: 10000,
+  })
 
   const { data: historyData } = useQuery({
     queryKey: ['update-history'],
@@ -174,6 +197,23 @@ export default function Updates() {
     onError: (e) => toast.error('Could not start rollback', e.message),
   })
 
+  const restoreMut = useMutation({
+    mutationFn: (body) => post('/api/v1/admin/update/database-restore', body),
+    onSuccess: () => {
+      setRestoreBackup(null)
+      toast.info('Database restore started', 'The panel will reconnect after the restored database passes its health check.')
+      qc.invalidateQueries({ queryKey: ['update-database-backups'] })
+    },
+    onError: (e) => toast.error('Could not restore panel database', e.message),
+  })
+
+  useEffect(() => {
+    if (!updateOpen) {
+      setAcknowledgeDataPlane(false)
+      setOverrideTasks(false)
+    }
+  }, [updateOpen])
+
   // Terminal-state toast: fire once when the active job disappears.
   const lastActiveId = useRef(null)
   useEffect(() => {
@@ -207,6 +247,10 @@ export default function Updates() {
   const okSteps = (jobShown?.steps || []).filter((s) => s.status === 'ok').length
   const totalSteps = stepsFor(jobShown).length
   const finalizing = jobShown?.status === 'finalizing'
+  const dataPlaneReloads = preflight?.release_metadata?.data_plane_reloads
+    || status?.release_metadata?.data_plane_reloads || []
+  const preflightBlocked = Boolean(preflight?.critical_failures?.length)
+  const acknowledgementRequired = dataPlaneReloads.length > 0
 
   const historyColumns = [
     { key: 'id', header: '#', sortable: true, render: (r) => r.id },
@@ -232,6 +276,14 @@ export default function Updates() {
       key: 'duration_seconds', header: 'Duration',
       render: (r) => (r.duration_seconds != null ? `${Math.round(r.duration_seconds)}s` : '—'),
     },
+    {
+      key: 'evidence', header: 'Evidence',
+      render: (r) => (
+        <Button size="sm" variant="secondary" onClick={() => setDetailJob(r)}>
+          <Eye className="h-4 w-4" /> Details
+        </Button>
+      ),
+    },
   ]
 
   return (
@@ -240,12 +292,11 @@ export default function Updates() {
         title="Updates"
         description="Panel version, one-click updates and rollback."
         icon={ArrowUpCircle}
-      >
-        <Button variant="secondary" onClick={() => checkMut.mutate()} loading={checkMut.isPending}
+        primaryAction={<Button onClick={() => checkMut.mutate()} loading={checkMut.isPending}
                 disabled={Boolean(active)}>
           <RefreshCw className="h-4 w-4" /> Check now
-        </Button>
-      </PageHeader>
+        </Button>}
+      />
 
       {/* Version / availability card */}
       <Card className="mb-6">
@@ -309,6 +360,17 @@ export default function Updates() {
           {status?.error && (
             <div className="mt-3 text-xs text-danger">Last check error: {status.error}</div>
           )}
+          {status?.rollback_blocked_reason && (
+            <div className="mt-3 text-sm text-warning">
+              Rollback unavailable: {status.rollback_blocked_reason}
+            </div>
+          )}
+          {(status?.release_metadata?.data_plane_reloads || []).length > 0 && (
+            <div className="mt-3 text-sm text-warning">
+              This release declares reloads for: {status.release_metadata.data_plane_reloads.join(', ')}.
+              You will review and acknowledge them before installation.
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -354,6 +416,58 @@ export default function Updates() {
         </Card>
       )}
 
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Panel database recovery</CardTitle>
+          <CardDescription>
+            Restore a database from a validated pre-update snapshot. The current database is preserved as a rescue copy first.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {databaseBackups?.restore_status && (
+            <div className="rounded-btn border border-border bg-muted/30 px-3 py-2 text-sm text-foreground">
+              Latest restore: <strong>{databaseBackups.restore_status.state}</strong>
+              {databaseBackups.restore_status.source && ` · ${databaseBackups.restore_status.source}`}
+              {databaseBackups.restore_status.error && (
+                <div className="mt-1 text-danger">{databaseBackups.restore_status.error}</div>
+              )}
+            </div>
+          )}
+          {(databaseBackups?.backups || []).length === 0 ? (
+            <div className="text-sm text-muted-foreground">No pre-update database snapshots are available.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead><tr className="border-b border-border text-muted-foreground">
+                  <th className="px-2 py-2 font-medium">Snapshot</th>
+                  <th className="px-2 py-2 font-medium">Created</th>
+                  <th className="px-2 py-2 font-medium">Validation</th>
+                  <th className="sticky right-0 bg-surface px-2 py-2 text-right font-medium">Action</th>
+                </tr></thead>
+                <tbody>{databaseBackups.backups.map((backup) => (
+                  <tr key={backup.id} className="border-b border-border/70">
+                    <td className="px-2 py-2 font-mono text-xs">{backup.id}</td>
+                    <td className="px-2 py-2">{formatDate(backup.created_at)}</td>
+                    <td className="px-2 py-2">
+                      {backup.integrity_ok && backup.schema_compatible
+                        ? <Badge variant="success">Ready</Badge>
+                        : <span className="text-danger">{backup.compatibility_reason || 'Invalid snapshot'}</span>}
+                    </td>
+                    <td className="sticky right-0 bg-surface px-2 py-2 text-right">
+                      {backup.integrity_ok && backup.schema_compatible && (
+                        <Button size="sm" variant="secondary" onClick={() => setRestoreBackup(backup)}>
+                          <DatabaseBackup className="h-4 w-4" /> Restore database
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* History */}
       <Card>
         <CardHeader>
@@ -379,16 +493,96 @@ export default function Updates() {
         description={`The panel updates from v${status?.current_version} to v${status?.latest_version}. A full backup of the panel database and configuration is taken first, and a failed update rolls back automatically.`}
         confirmLabel="Start update"
         mutation={startMut}
-      />
+        buildBody={(body) => ({
+          ...body,
+          acknowledge_data_plane: acknowledgeDataPlane,
+          override_active_tasks: overrideTasks,
+        })}
+        submitDisabled={preflightLoading || Boolean(preflightError) || preflightBlocked
+          || (acknowledgementRequired && !acknowledgeDataPlane)}
+        impactText={acknowledgementRequired
+          ? `The panel restarts and this release also reloads: ${dataPlaneReloads.join(', ')}.`
+          : 'The Boron API and root helper restart during this operation (~10–30s of panel downtime).'}
+      >
+        <div className="space-y-2">
+          <div className="text-sm font-medium text-foreground">Pre-flight checks</div>
+          {preflightLoading && <div className="text-sm text-muted-foreground">Checking the server…</div>}
+          {preflightError && <div className="text-sm text-danger">Pre-flight checks could not run: {preflightError.message}</div>}
+          {(preflight?.checks || []).map((check) => (
+            <div key={check.id} className="flex items-start gap-2 text-sm">
+              {check.status === 'pass'
+                ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                : <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${check.critical ? 'text-danger' : 'text-warning'}`} />}
+              <div><span className="font-medium text-foreground">{check.id.replaceAll('_', ' ')}</span>
+                <div className="text-xs text-muted-foreground">{check.detail}</div></div>
+            </div>
+          ))}
+          {preflight?.override_required && (
+            <label className="flex items-start gap-2 text-sm text-foreground">
+              <Checkbox checked={overrideTasks} onCheckedChange={setOverrideTasks} />
+              <span>Override {preflight.active_tasks.length} active task(s). I understand they may fail.</span>
+            </label>
+          )}
+          {acknowledgementRequired && (
+            <label className="flex items-start gap-2 text-sm text-foreground">
+              <Checkbox checked={acknowledgeDataPlane} onCheckedChange={setAcknowledgeDataPlane} />
+              <span>I acknowledge the declared service reloads: {dataPlaneReloads.join(', ')}.</span>
+            </label>
+          )}
+        </div>
+      </ConfirmActionDialog>
       <ConfirmActionDialog
         open={rollbackOpen}
         onOpenChange={setRollbackOpen}
         title={`Roll back to v${status?.rollback_to}`}
-        description={`The panel returns to the previous version directory (v${status?.rollback_to}). Database schema changes are additive, so the previous version keeps working with the current database.`}
+        description={`The panel returns to the previous version directory (v${status?.rollback_to}). Boron verified that release against the current database schema before offering this action.`}
         confirmLabel="Roll back"
         variant="danger"
         mutation={rollbackMut}
       />
+      <ConfirmActionDialog
+        open={Boolean(restoreBackup)}
+        onOpenChange={(open) => { if (!open) setRestoreBackup(null) }}
+        title="Restore panel database"
+        description={`Restore ${restoreBackup?.id || ''}. Boron preserves the current database and automatically restores it if the recovered panel fails its health check.`}
+        confirmLabel="Restore database"
+        variant="danger"
+        mutation={restoreMut}
+        buildBody={(body) => ({ ...body, backup_id: restoreBackup?.id })}
+        impactText="The Boron API and root helper restart. Hosted websites, mail, DNS and databases are not restarted."
+      />
+      <Dialog open={Boolean(detailJob)} onOpenChange={(open) => { if (!open) setDetailJob(null) }}>
+        <DialogContent size="lg">
+          <DialogHeader>
+            <DialogTitle>Update evidence</DialogTitle>
+            <DialogDescription>
+              Redacted pre-flight, readiness and host-configuration evidence for update #{detailJob?.id}.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-4">
+            <section><h3 className="text-sm font-semibold text-foreground">Advisory checks</h3>
+              {(detailJob?.advisories || []).length
+                ? <ul className="mt-2 space-y-1 text-sm text-muted-foreground">{detailJob.advisories.map((item, index) => (
+                  <li key={`${item.id}-${index}`}>{item.label || item.id}: {item.explanation || item.detail || item.status}</li>
+                ))}</ul>
+                : <p className="mt-1 text-sm text-muted-foreground">No advisory failures were recorded.</p>}
+            </section>
+            <section><h3 className="text-sm font-semibold text-foreground">Runtime configuration changes</h3>
+              {(detailJob?.runtime_changes || []).length
+                ? <div className="mt-2 space-y-3">{detailJob.runtime_changes.map((item, index) => (
+                  <div key={`${item.path}-${index}`} className="border-t border-border pt-2">
+                    <div className="break-all font-mono text-xs text-foreground">{item.path}</div>
+                    {item.diff
+                      ? <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">{item.diff}</pre>
+                      : <div className="mt-1 text-xs text-muted-foreground">Content hidden; hashes retained for verification.</div>}
+                  </div>
+                ))}</div>
+                : <p className="mt-1 text-sm text-muted-foreground">No runtime files were changed.</p>}
+            </section>
+          </DialogBody>
+          <DialogFooter><Button variant="secondary" onClick={() => setDetailJob(null)}>Close</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

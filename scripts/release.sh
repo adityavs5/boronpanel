@@ -29,11 +29,14 @@ readonly VERSION_FILE="${REPO_ROOT}/version.py"
 DRY_RUN=false
 SKIP_TESTS=false
 SKIP_BUILD=false
+PRERELEASE=false
 BUMP_KIND="patch"
 EXPLICIT_VERSION=""
 GITHUB_REPO="${FH_RELEASE_REPO:-}"   # owner/repo; derived from origin if empty
 OUT_DIR="${REPO_ROOT}/dist"
 BUMPED=false
+PREPARED_VERSION=false
+TESTED_COMMIT=""
 
 # --- output helpers (same shape as scripts/install.sh) -------------------------
 
@@ -69,10 +72,17 @@ Usage: scripts/release.sh [OPTIONS] [NEW_VERSION]
   --output-dir DIR   Where artifacts land (default: dist/ in the repo).
   --skip-tests       Skip tests only for a local dry-run (debugging).
   --skip-build       Reuse static/dist only for a local dry-run (debugging).
+  --tested-commit ID Reuse completed tests for this exact full HEAD commit ID.
+                     Requires a clean tree and an explicitly prepared version.
+                     Still builds the frontend and verifies both signatures.
+  --prerelease       Publish the GitHub release as a pre-release. The built-in
+                     updater ignores it until the owner promotes it.
   -h, --help         Show this help.
 
-Artifacts: boron-{version}.tar.gz, boron-{version}.sha256, and the
-mandatory boron-{version}.tar.gz.sig Ed25519 publisher signature.
+Artifacts: boron-{version}.tar.gz, boron-{version}.sha256,
+boron-{version}.tar.gz.sig, boron-{version}.metadata.json, and
+boron-{version}.metadata.json.sig. Both signatures use the pinned Ed25519
+publisher key.
 Set BORON_RELEASE_SIGNING_KEY_FILE to the protected private PEM path.
 EOF
 }
@@ -88,6 +98,8 @@ parse_args() {
             --output-dir) shift; OUT_DIR="${1:-}" ;;
             --skip-tests) SKIP_TESTS=true ;;
             --skip-build) SKIP_BUILD=true ;;
+            --tested-commit) shift; TESTED_COMMIT="${1:-}"; [[ -n "$TESTED_COMMIT" ]] || die "--tested-commit needs a full commit ID" ;;
+            --prerelease) PRERELEASE=true ;;
             -h|--help)    usage; exit 0 ;;
             -*)           die "unknown option: $1 (try --help)" ;;
             *)
@@ -101,6 +113,22 @@ parse_args() {
         die "version must be x.y.z (got: ${EXPLICIT_VERSION})"
     fi
     [[ -n "$OUT_DIR" ]] || die "--output-dir needs a value"
+    if [[ -n "$TESTED_COMMIT" ]]; then
+        [[ "$TESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "--tested-commit requires a full 40-character commit ID"
+        if $SKIP_TESTS || $SKIP_BUILD; then
+            die "--tested-commit cannot be combined with --skip-tests or --skip-build"
+        fi
+    fi
+}
+
+validate_tested_commit() {
+    [[ -n "$TESTED_COMMIT" ]] || return 0
+    [[ "$TESTED_COMMIT" == "$(git -C "$REPO_ROOT" rev-parse HEAD)" ]] \
+        || die "tested commit does not match HEAD; run tests on the current commit"
+    [[ -z "$(git -C "$REPO_ROOT" status --porcelain)" ]] \
+        || die "tested commit requires a clean working tree"
+    [[ -n "$EXPLICIT_VERSION" && "$EXPLICIT_VERSION" == "$(current_version)" ]] \
+        || die "tested commit requires an explicit version already prepared in HEAD"
 }
 
 current_version() {
@@ -142,6 +170,7 @@ preflight() {
     require_tool git; require_tool tar; require_tool sha256sum; require_tool sed
     [[ -f "$VERSION_FILE" ]] || die "version.py not found at ${VERSION_FILE}"
     [[ -n "$(current_version)" ]] || die "could not parse BORON_VERSION from version.py"
+    validate_tested_commit
 
     if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
         PY="${REPO_ROOT}/.venv/bin/python"
@@ -209,12 +238,20 @@ PYEOF
 }
 
 run_tests() {
+    if [[ -n "$TESTED_COMMIT" ]]; then
+        validate_tested_commit
+        skip "test suite: owner attests completed tests for exact commit ${TESTED_COMMIT}"
+        return
+    fi
     if $SKIP_TESTS; then
         skip "test suite (--skip-tests) -- a real release must not skip this"
         return
     fi
     info "Running test suite (this takes several minutes)"
-    (cd "$REPO_ROOT" && "$PY" -m pytest -q) || die "test suite failing -- release aborted"
+    # Use the same bounded workspace as development and CI. Full runs refuse
+    # to share the installed panel's data/log filesystem unless an operator
+    # explicitly supplies a separate BORON_TEST_TMPDIR.
+    (cd "$REPO_ROOT" && scripts/test.sh full) || die "test suite failing -- release aborted"
     ok "test suite green"
 }
 
@@ -254,9 +291,10 @@ stage_tree() {
     mkdir -p "${root}/static"
     cp -a "${REPO_ROOT}/static/dist" "${root}/static/dist"
 
-    # The frontend source isn't needed at runtime (the built bundle ships);
-    # dropping it keeps the tarball small and the update download fast.
-    rm -rf "${root}/frontend"
+    # Keep the tracked frontend source alongside the signed, freshly built
+    # bundle.  The same archive is also a supported fresh-install input and
+    # scripts/install.sh deliberately rebuilds the UI from this source.  Git
+    # archive already excludes node_modules and other ignored build state.
 
     # Belt-and-braces: nothing secret-, database- or log-shaped may exist in
     # the staged tree, whatever future .gitignore edits do.
@@ -271,17 +309,20 @@ stage_tree() {
 
 TARBALL=""
 CHECKSUM_FILE=""
+METADATA_FILE=""
 build_artifacts() {
     local version="$1"
     info "Building tarball + checksum"
     mkdir -p "$OUT_DIR"
     TARBALL="${OUT_DIR}/boron-${version}.tar.gz"
     CHECKSUM_FILE="${OUT_DIR}/boron-${version}.sha256"
+    METADATA_FILE="${OUT_DIR}/boron-${version}.metadata.json"
     # Deterministic-ish tarball: stable member order, root ownership.
     tar -C "$STAGE_DIR" --sort=name --owner=0 --group=0 --numeric-owner \
         -czf "$TARBALL" "boron-${version}"
     (cd "$OUT_DIR" && sha256sum "boron-${version}.tar.gz" > "boron-${version}.sha256")
-    ok "artifacts: ${TARBALL} ($(du -h "$TARBALL" | cut -f1)), $(basename "$CHECKSUM_FILE")"
+    cp "${REPO_ROOT}/release-metadata.json" "$METADATA_FILE"
+    ok "artifacts: ${TARBALL} ($(du -h "$TARBALL" | cut -f1)), $(basename "$CHECKSUM_FILE"), $(basename "$METADATA_FILE")"
 }
 
 sign_artifacts() {
@@ -292,7 +333,9 @@ sign_artifacts() {
     info "Signing release with the pinned Ed25519 publisher key"
     (cd "$REPO_ROOT" && "$PY" -m scripts.sign_release "$version" "$TARBALL" "$signing_key") \
         || die "publisher signature failed -- refusing unsigned release"
-    ok "signed: boron-${version}.tar.gz.sig"
+    (cd "$REPO_ROOT" && "$PY" -m scripts.sign_release "$version" "$METADATA_FILE" "$signing_key") \
+        || die "metadata signature failed -- refusing unsigned release metadata"
+    ok "signed: boron-${version}.tar.gz.sig and boron-${version}.metadata.json.sig"
 }
 
 verify_artifacts() {
@@ -308,6 +351,16 @@ version, path = sys.argv[1:]
 verify_signature(version, archive_digest(path), Path(path + ".sig").read_bytes())
 PYEOF
     ) || die "publisher signature self-verification failed"
+    (cd "$REPO_ROOT" && "$PY" - "$version" "$METADATA_FILE" <<'PYEOF'
+import sys
+from pathlib import Path
+from shared.release_metadata import load_release_metadata
+from shared.release_signature import archive_digest, verify_signature
+version, path = sys.argv[1:]
+load_release_metadata(path)
+verify_signature(version, archive_digest(path), Path(path + ".sig").read_bytes())
+PYEOF
+    ) || die "release metadata validation/signature verification failed"
     # Every member must live under the version prefix with no traversal --
     # the update daemon rejects violations, so catch them at build time.
     local bad members
@@ -323,11 +376,16 @@ PYEOF
     packaged="$(tar -xzOf "$TARBALL" "boron-${version}/version.py" \
         | sed -n 's/^BORON_VERSION = "\(.*\)"$/\1/p')"
     [[ "$packaged" == "$version" ]] || die "packaged version.py says '${packaged}', expected '${version}'"
+    tar -tzf "$TARBALL" "boron-${version}/schema-compat.json" >/dev/null \
+        || die "release is missing schema-compat.json"
+    tar -tzf "$TARBALL" "boron-${version}/release-metadata.json" >/dev/null \
+        || die "release is missing release-metadata.json"
     # And the runtime essentials must be present.
     local member
     for member in api/main.py daemon/server.py shared/config.py \
                   shared/release_signature.py deploy/release-ed25519-public.hex requirements.txt \
-                  static/dist/index.html tests/conftest.py deploy/boron-api.service; do
+                  static/dist/index.html frontend/package.json frontend/package-lock.json \
+                  tests/conftest.py deploy/boron-api.service; do
         grep -qxF "boron-${version}/${member}" <<<"$members" \
             || die "tarball is missing ${member}"
     done
@@ -340,18 +398,24 @@ publish() {
         # NB: in a dry-run nothing was bumped, so the rehearsal artifacts
         # carry the CURRENT version; a real run would produce ${NEW_VERSION}.
         skip "publish (dry-run): a real run would commit the bump, tag v${NEW_VERSION}, push, and run:"
-        printf '       gh release create v%s --repo %s --title "Boron v%s" boron-%s.tar.gz boron-%s.sha256 boron-%s.tar.gz.sig\n' \
-            "$NEW_VERSION" "${GITHUB_REPO:-<origin>}" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION"
+        printf '       gh release create v%s --repo %s --title "Boron v%s" boron-%s.tar.gz boron-%s.sha256 boron-%s.tar.gz.sig boron-%s.metadata.json boron-%s.metadata.json.sig\n' \
+            "$NEW_VERSION" "${GITHUB_REPO:-<origin>}" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION"
         return
     fi
     info "Publishing v${version}"
-    git -C "$REPO_ROOT" add version.py frontend/package.json frontend/package-lock.json
-    git -C "$REPO_ROOT" commit -m "release: v${version}"
-    BUMPED=false   # the bump is committed now; the failure trap must not revert it
+    if ! $PREPARED_VERSION; then
+        git -C "$REPO_ROOT" add version.py frontend/package.json frontend/package-lock.json
+        git -C "$REPO_ROOT" commit -m "release: v${version}"
+        BUMPED=false   # the bump is committed now; the failure trap must not revert it
+    else
+        skip "version commit already prepared at v${version}"
+    fi
     git -C "$REPO_ROOT" tag -a "v${version}" -m "Boron v${version}"
     git -C "$REPO_ROOT" push origin HEAD "v${version}"
-    local assets=("$TARBALL" "$CHECKSUM_FILE" "${TARBALL}.sig")
-    gh release create "v${version}" --repo "$GITHUB_REPO" \
+    local assets=("$TARBALL" "$CHECKSUM_FILE" "${TARBALL}.sig" "$METADATA_FILE" "${METADATA_FILE}.sig")
+    local release_flags=()
+    $PRERELEASE && release_flags+=(--prerelease)
+    gh release create "v${version}" --repo "$GITHUB_REPO" "${release_flags[@]}" \
         --title "Boron v${version}" \
         --notes "Boron v${version}. Install/update via the panel's update system (verifies the Ed25519 publisher signature and SHA256 checksum before applying) -- see docs/RELEASING.md." \
         "${assets[@]}"
@@ -377,13 +441,16 @@ main() {
     printf '%s\n' "${C_BOLD}Boron release: v${cur} -> v${new}${C_RESET}${dry_marker}"
 
     if ! $DRY_RUN && [[ "$new" == "$cur" ]]; then
-        die "target version ${new} equals the current version"
+        [[ -n "$EXPLICIT_VERSION" ]] || die "target version ${new} equals the current version"
+        PREPARED_VERSION=true
+        info "Using prepared version v${new} from the current clean HEAD"
     fi
 
     preflight
-    bump_version "$new"
+    $PREPARED_VERSION || bump_version "$new"
     run_tests
     build_frontend
+    validate_tested_commit
     # Dry-run artifacts carry the CURRENT version (nothing was bumped).
     local artifact_version="$new"
     $DRY_RUN && artifact_version="$cur"

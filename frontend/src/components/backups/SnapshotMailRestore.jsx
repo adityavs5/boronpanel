@@ -40,6 +40,7 @@ export function SnapshotMailRestore({ username, run }) {
       </> : <p className="text-sm text-muted-foreground">This recovery point has no mailbox recovery metadata.</p>}
       <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1 h-4 w-4 accent-accent" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)}/><span>I understand that mail access will be interrupted briefly.</span></label>
       <FormField label={`Type ${username} to confirm mailbox restore`} htmlFor={`mail-restore-confirm-${run.id}`}><Input id={`mail-restore-confirm-${run.id}`} value={confirmation} onChange={event => setConfirmation(event.target.value)} autoComplete="off" spellCheck={false}/></FormField>
+      {restore.isPending && <p role="status" className="text-sm text-muted-foreground">Starting the mailbox restore… this can take up to 30 seconds. Do not close this page.</p>}
       {restore.error && <p role="alert" className="text-sm text-danger">{restore.error.message}</p>}
       <div className="flex flex-wrap gap-2"><Button type="submit" loading={restore.isPending} disabled={!valid || !acknowledged || confirmation !== username || catalog.isFetching || !!catalog.error}>Restore selected mailboxes</Button><Button type="button" variant="ghost" disabled={restore.isPending} onClick={() => setOpen(false)}>Cancel</Button></div>
     </form>}

@@ -1,25 +1,96 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldCheck, ShieldOff, ShieldAlert, Copy, Download, Smartphone } from 'lucide-react'
-import { get, post } from '@/lib/api'
+import { ShieldCheck, ShieldOff, ShieldAlert, Copy, Download, Smartphone, MonitorSmartphone, LogOut, Save } from 'lucide-react'
+import { del, get, patch, post } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { useAuth } from '@/store/auth'
-import { copyToClipboard } from '@/lib/utils'
+import { copyToClipboard, formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Input, FormField } from '@/components/ui/Input'
+import { Switch } from '@/components/ui/Toggle'
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter, ConfirmDialog,
 } from '@/components/ui/Dialog'
 import { EmptyState, ErrorState } from '@/components/ui/States'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { toast } from '@/components/ui/Toast'
 
+function ActiveSessions() {
+  const qc = useQueryClient()
+  const [revokeId, setRevokeId] = useState(null)
+  const [revokeOthers, setRevokeOthers] = useState(false)
+  const query = useQuery({ queryKey: ['active-sessions'], queryFn: () => get('/api/v1/security/sessions') })
+  const revoke = useMutation({
+    mutationFn: id => del(`/api/v1/security/sessions/${id}`),
+    onSuccess: () => { setRevokeId(null); qc.invalidateQueries({ queryKey: ['active-sessions'] }); toast.success('Session revoked') },
+    onError: error => toast.error('Could not revoke session', error.message),
+  })
+  const revokeAll = useMutation({
+    mutationFn: () => post('/api/v1/security/sessions/revoke-others'),
+    onSuccess: result => { setRevokeOthers(false); qc.invalidateQueries({ queryKey: ['active-sessions'] }); toast.success('Other sessions revoked', `${result.count} session${result.count === 1 ? '' : 's'} ended.`) },
+    onError: error => toast.error('Could not revoke other sessions', error.message),
+  })
+  const rows = query.data?.sessions || []
+  return <Card className="mt-6">
+    <CardHeader><div><CardTitle>Active sessions</CardTitle><CardDescription>Review browsers signed in to this panel account and end access you do not recognize.</CardDescription></div></CardHeader>
+    <CardContent>
+      {query.isLoading ? <CardSkeleton className="border-0 p-0 shadow-none" /> : query.error ? <ErrorState error={query.error} onRetry={query.refetch} /> : <div className="divide-y divide-border">
+        {rows.map(row => <div key={row.id} className="flex flex-wrap items-center gap-3 py-3">
+          <MonitorSmartphone className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium text-foreground" title={row.device}>{row.device}</div>
+            <div className="text-xs text-muted-foreground">{row.ip_address || 'IP unavailable'} · Last seen {formatDate(row.last_seen_at)}</div>
+          </div>
+          {row.current ? <StatusBadge status="current" /> : <Button size="sm" variant="outline" onClick={() => setRevokeId(row.id)}><LogOut className="h-4 w-4" /> Revoke</Button>}
+        </div>)}
+        {!rows.length && <p className="py-4 text-sm text-muted-foreground">No active sessions were found.</p>}
+      </div>}
+      {!!query.data?.impersonation_sessions?.length && <div className="mt-5 border-t border-border pt-4">
+        <h3 className="text-sm font-semibold text-foreground">Active impersonation sessions</h3>
+        <p className="mt-1 text-xs text-muted-foreground">Return from impersonation before ending these administrator sessions.</p>
+        {query.data.impersonation_sessions.map(row => <div key={row.id} className="mt-3 flex items-center gap-3 text-sm"><MonitorSmartphone className="h-4 w-4 text-muted-foreground" /><span className="min-w-0 flex-1 truncate">{row.device}</span><StatusBadge status="protected" /></div>)}
+      </div>}
+    </CardContent>
+    <CardFooter className="justify-end"><Button variant="outline" disabled={rows.filter(row => !row.current).length === 0} onClick={() => setRevokeOthers(true)}>Revoke all other sessions</Button></CardFooter>
+    <ConfirmDialog open={revokeId != null} onOpenChange={open => !open && setRevokeId(null)} title="Revoke this session?" description="That browser will need to sign in again. Your current session stays active." confirmLabel="Revoke session" loading={revoke.isPending} onConfirm={() => revoke.mutate(revokeId)} />
+    <ConfirmDialog open={revokeOthers} onOpenChange={setRevokeOthers} title="Revoke all other sessions?" description="Every other direct session will be signed out. Active impersonation sessions are protected until you return from them." confirmLabel="Revoke other sessions" loading={revokeAll.isPending} onConfirm={() => revokeAll.mutate()} />
+  </Card>
+}
+
+function AdminTwoFactorPolicy() {
+  const qc = useQueryClient()
+  const query = useQuery({ queryKey: ['admin-2fa-policy'], queryFn: () => get('/api/v1/admin/security-policy') })
+  const [form, setForm] = useState(null)
+  useEffect(() => {
+    if (query.data) setForm({ require_admin_2fa: query.data.require_admin_2fa, admin_2fa_grace_days: query.data.admin_2fa_grace_days })
+  }, [query.data])
+  const save = useMutation({
+    mutationFn: body => patch('/api/v1/admin/security-policy', body),
+    onSuccess: data => { qc.setQueryData(['admin-2fa-policy'], data); toast.success('Administrator 2FA policy saved') },
+    onError: error => toast.error('Could not save 2FA policy', error.message),
+  })
+  if (query.isLoading) return <CardSkeleton className="mt-6" />
+  if (query.error) return <Card className="mt-6"><CardContent><ErrorState error={query.error} onRetry={query.refetch} /></CardContent></Card>
+  return <Card className="mt-6">
+    <CardHeader><div><CardTitle>Administrator 2FA policy</CardTitle><CardDescription>Require active administrators to enroll in two-factor authentication before the grace period ends.</CardDescription></div></CardHeader>
+    <CardContent className="space-y-5">
+      <div className="flex items-center gap-3"><Switch checked={!!form?.require_admin_2fa} onCheckedChange={value => setForm(current => ({ ...current, require_admin_2fa: value }))} aria-label="Require 2FA for administrators" /><span className="text-sm text-foreground">Require 2FA for administrators</span></div>
+      <FormField label="Grace period (days)" hint={`${query.data.administrators_with_2fa} active administrator${query.data.administrators_with_2fa === 1 ? '' : 's'} currently have 2FA. At least one is required before this policy can be enabled.`}>
+        <Input type="number" min="0" max="30" className="max-w-[12rem]" value={form?.admin_2fa_grace_days ?? ''} onChange={event => setForm(current => ({ ...current, admin_2fa_grace_days: event.target.value }))} />
+      </FormField>
+    </CardContent>
+    <CardFooter><Button disabled={!form || save.isPending} loading={save.isPending} onClick={() => save.mutate({ require_admin_2fa: !!form.require_admin_2fa, admin_2fa_grace_days: Number(form.admin_2fa_grace_days) })}><Save className="h-4 w-4" /> Save policy</Button></CardFooter>
+  </Card>
+}
+
 export default function Security() {
   const username = useAccountUsername()
   const impersonating = useAuth((state) => state.impersonating)
+  const role = useAuth((state) => state.role)
+  const identitySynced = useAuth((state) => state.identitySynced)
   const qc = useQueryClient()
 
   // Enrollment is stateful across three server round-trips: setup returns a
@@ -37,7 +108,7 @@ export default function Security() {
   const { data: status, isLoading, error, refetch } = useQuery({
     queryKey: ['2fa-status', username],
     queryFn: () => get('/api/v1/2fa/status'),
-    enabled: !!username && !impersonating,
+    enabled: !!username && identitySynced && !impersonating,
   })
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['2fa-status', username] })
@@ -301,6 +372,9 @@ export default function Security() {
           )}
         />
       )}
+
+      <ActiveSessions />
+      {role === 'admin' && <AdminTwoFactorPolicy />}
 
       {/* Disable — requires the current account password (checked server-side). */}
       <Dialog

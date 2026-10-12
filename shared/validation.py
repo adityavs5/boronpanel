@@ -380,7 +380,22 @@ _COMMON_WEAK_PASSWORDS = {
 _SPECIAL_CHARS_RE = re.compile(r"[^A-Za-z0-9]")
 
 
+def validate_password_text(password: str) -> str:
+    """Keep plaintext credentials within a single line-oriented record.
+
+    Never strip or escape a password: both would change the credential. This
+    check also protects direct system-password callers without imposing a
+    new strength policy on existing credentials.
+    """
+    if not isinstance(password, str):
+        raise ValidationError("password must be text")
+    if any(character in password for character in ("\x00", "\r", "\n")):
+        raise ValidationError("password must not contain line breaks or null characters")
+    return password
+
+
 def validate_password_strength(password: str) -> str:
+    validate_password_text(password)
     if not isinstance(password, str) or len(password) < MIN_PASSWORD_LENGTH:
         raise ValidationError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
     if len(password) > 256:

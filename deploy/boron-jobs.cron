@@ -7,6 +7,8 @@
 # Per-account usage and alert evaluation.
 */15 * * * * root /opt/boron/scripts/usage_snapshot.py >> /var/log/boron/usage-snapshot.log 2>&1
 */15 * * * * root /opt/boron/scripts/usage_alert_check.py >> /var/log/boron/usage-alert-check.log 2>&1
+# Enforce inode quotas only after each account's recorded warning window.
+*/15 * * * * root /opt/boron/scripts/inode_quota_reconcile.py >> /var/log/boron/inode-quota-reconcile.log 2>&1
 
 # Backup schedules are evaluated every five minutes. The scheduler compares a
 # stable local-time boundary, so delayed invocations run once without duplicates.
@@ -15,3 +17,11 @@
 # Revoke expired phpMyAdmin sign-on users and check certificate expiry.
 */5 * * * * root /opt/boron/scripts/pma_token_cleanup.py >> /var/log/boron/pma-token-cleanup.log 2>&1
 0 6 * * * root /opt/boron/scripts/ssl_expiry_check.py >> /var/log/boron/ssl-expiry-check.log 2>&1
+
+# Apply configured retention to audit, task output, usage, bandwidth, support
+# bundles and rotated logs. The implementation clamps protected minimums,
+# aggregates usage monthly before pruning raw samples and commits small batches.
+17 2 * * * root /opt/boron/scripts/audit_retention.py >> /var/log/boron/audit-retention.log 2>&1
+
+# One-time administrator support bundles expire after seven days by default.
+37 2 * * * root /opt/boron/scripts/support_bundle_retention.py >> /var/log/boron/support-bundle-retention.log 2>&1
