@@ -14,7 +14,7 @@ async function setup(page, theme = 'light') {
     else if (path.endsWith('/plans')) data = { plans: [{ id: 1, name: 'Standard', cpu_cores: 2, mem_mb: 2048, quota_hard_mb: 20480, bandwidth_limit_mb: null, database_limit: 5, email_account_limit: 10 }] }
     else if (path.endsWith('/ip-management')) data = { ips: [{ id: 1, address: '192.0.2.1', active: true, present_on_host: true, allocation_mode: 'shared' }] }
     else if (path === '/api/v1/task-operations/account-create') { requests.push(route.request().postDataJSON()); data = { id: 7, status: 'completed' } }
-    else if (path.endsWith('/7/reveal')) data = { username: 'previewuser', initial_password: 'Fixture-only-43!NoRealAccount' }
+    else if (path.endsWith('/7/reveal')) data = { username: 'previewuser', initial_password: 'Fixture-only-43!NoRealAccount' } // pragma: allowlist secret — mocked response only, never a live credential
     await route.fulfill({ json: data })
   })
   await page.goto('/app/accounts/new')

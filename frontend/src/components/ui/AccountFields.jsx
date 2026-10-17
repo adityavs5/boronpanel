@@ -5,7 +5,7 @@ import { Button } from './Button'
 
 // Passwords are generated locally with Web Crypto, never persisted or logged.
 export function generateAccountPassword() {
-  const groups = ['abcdefghijkmnopqrstuvwxyz', 'ABCDEFGHJKLMNPQRSTUVWXYZ', '23456789', '!@#$%&*+-=?']
+  const groups = ['abcdefghijkmnopqrstuvwxyz', 'ABCDEFGHJKLMNPQRSTUVWXYZ', '23456789', '!@#$%&*+-=?'] // pragma: allowlist secret — public character alphabets, not credentials
   const pick = size => {
     const limit = 256 - (256 % size)
     const byte = new Uint8Array(1)

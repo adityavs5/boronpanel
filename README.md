@@ -81,7 +81,7 @@ Run this one line in a **root shell** on a fresh Ubuntu 24.04 server with `curl`
 curl -fsSLo install.sh https://raw.githubusercontent.com/adityavs5/boronpanel/master/install.sh && bash install.sh
 ```
 
-The launcher downloads the pinned **v3.2.0 source tag** and runs its existing installer. It defaults to the full profile, keeps interactive prompts connected to your terminal, and removes its temporary checkout when finished. Run it in an empty working directory; the download writes `install.sh` there. If `curl` is missing, install it with `apt-get update && apt-get install -y curl ca-certificates` first.
+The launcher downloads the pinned **v3.2.1 source tag** and runs its existing installer. It defaults to the full profile, keeps interactive prompts connected to your terminal, and removes its temporary checkout when finished. Run it in an empty working directory; the download writes `install.sh` there. If `curl` is missing, install it with `apt-get update && apt-get install -y curl ca-certificates` first.
 
 <details>
 <summary>Manual source checkout / inspect before installing</summary>
@@ -91,7 +91,7 @@ sudo -i
 umask 022
 apt-get update
 apt-get install -y git ca-certificates
-git clone --depth 1 --branch v3.2.0 https://github.com/adityavs5/boronpanel.git /root/boron-install
+git clone --depth 1 --branch v3.2.1 https://github.com/adityavs5/boronpanel.git /root/boron-install
 cd /root/boron-install
 bash scripts/install.sh --profile full
 ```

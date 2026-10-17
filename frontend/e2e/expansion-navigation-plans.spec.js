@@ -37,6 +37,7 @@ const expectedBackupEnd = ['/app/backups', '/app/backups?component=files', '/app
 
 for (const skin of ['evolution', 'paper-lantern']) {
   test(`${skin}: requested customer menu order and direct sections`, async ({ page }) => {
+    test.setTimeout(90_000) // Covers seven page loads; preserve all assertions on slower runners.
     await session(page, 'customer', skin)
     await page.goto('/app/dashboard')
     await expect(page.locator('.tool-link').first()).toBeVisible()

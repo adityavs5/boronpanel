@@ -2,7 +2,7 @@
 # Download a stable source release, then run its unchanged installer.
 # Keep stdin attached to the terminal so interactive setup prompts work.
 set -euo pipefail
-readonly RELEASE_TAG='v3.2.0'
+readonly RELEASE_TAG='v3.2.1'
 readonly REPOSITORY='https://github.com/adityavs5/boronpanel.git'
 
 if [[ "${1:-}" == '--help' || "${1:-}" == '-h' ]]; then

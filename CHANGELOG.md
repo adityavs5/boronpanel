@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.2.1
+
+### Changed
+
+- Refined shared inner-page surfaces, form fields, tables and dialogs in Evo and Paper, with consistent header styling.
+- Redesigned Create account with paired fields, password generation and visibility, username feedback, plan limits and sticky actions.
+- Simplified Manage Accounts with grouped account/domain identity, optional detail columns and a dedicated reseller assignment dialog.
+- Preserved desktop navigation across inner pages and improved mobile form actions.
+- Added a one-line installer launcher pinned to this release, README theme previews and a dark-mode wordmark.
+
+### Fixed
+
+- Removed the duplicate rectangular focus outline inside global search while retaining a visible keyboard focus indicator.
+- Corrected account selection checkbox sizing and excess list-header spacing.
+
+### Upgrade notes
+
+- No database schema or API contract changes in this patch. Existing updater service-reconciliation behavior is unchanged.
+
+
 ## 3.2.0 — release candidate
 
 ### New
