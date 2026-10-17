@@ -37,7 +37,7 @@ export function DialogContent({ className, children, size = 'md', showClose = tr
 }
 
 export function DialogHeader({ className, ...props }) {
-  return <div className={cn('px-6 pt-5 pb-2', className)} {...props} />
+  return <div className={cn('panel-dialog-header px-6 pt-5 pb-2', className)} {...props} />
 }
 export function DialogTitle({ className, ...props }) {
   return <DialogPrimitive.Title className={cn('text-base font-semibold text-foreground pr-6', className)} {...props} />
@@ -46,10 +46,10 @@ export function DialogDescription({ className, ...props }) {
   return <DialogPrimitive.Description className={cn('text-sm text-muted-foreground mt-1', className)} {...props} />
 }
 export function DialogBody({ className, ...props }) {
-  return <div className={cn('min-h-0 flex-1 overflow-y-auto px-6 py-3', className)} {...props} />
+  return <div className={cn('panel-dialog-body min-h-0 flex-1 overflow-y-auto px-6 py-3', className)} {...props} />
 }
 export function DialogFooter({ className, ...props }) {
-  return <div className={cn('flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-border px-6 py-4', className)} {...props} />
+  return <div className={cn('panel-dialog-footer flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-border px-6 py-4', className)} {...props} />
 }
 
 // Confirmation dialog for destructive actions (goal: "confirmation modals on

@@ -114,14 +114,14 @@ export function CommandPalette() {
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-fade-in" />
         <DialogPrimitive.Content
-          className="fixed left-1/2 top-[12vh] z-50 w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 overflow-hidden rounded-card border border-border bg-card shadow-dropdown focus:outline-none data-[state=open]:animate-scale-in"
+          className="command-palette fixed left-1/2 top-[12vh] z-50 w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 overflow-hidden rounded-card border border-border bg-card shadow-dropdown focus:outline-none data-[state=open]:animate-scale-in"
           onOpenAutoFocus={() => { if (!openerRef.current) openerRef.current = document.activeElement }}
           onCloseAutoFocus={event => { if (openerRef.current) { event.preventDefault(); const target = openerRef.current.isConnected ? openerRef.current : document.querySelector('#panel-main'); target?.focus(); openerRef.current = null } }}
           onKeyDown={onKeyDown}
         >
           <DialogPrimitive.Title className="sr-only">Search the panel</DialogPrimitive.Title>
           <DialogPrimitive.Description className="sr-only">Find tools and settings. Use arrow keys and Enter to open a result.</DialogPrimitive.Description>
-          <div className="flex items-center gap-2.5 border-b border-border px-4">
+          <div className="command-search-row flex items-center gap-2.5 border-b border-border px-4">
             <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
             <input
               role="combobox"
@@ -132,7 +132,7 @@ export function CommandPalette() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Go to page or action…"
-              className="h-12 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+              className="command-search-input h-12 w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
             <kbd className="rounded border border-border px-1.5 py-0.5 text-xs font-medium uppercase text-muted-foreground">esc</kbd>
           </div>

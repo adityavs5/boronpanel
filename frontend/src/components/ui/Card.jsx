@@ -21,5 +21,5 @@ export function CardContent({ className, ...props }) {
 }
 
 export function CardFooter({ className, ...props }) {
-  return <div className={cn('flex items-center gap-3 px-6 py-4 border-t border-border', className)} {...props} />
+  return <div className={cn('panel-card-footer flex items-center gap-3 px-6 py-4 border-t border-border', className)} {...props} />
 }

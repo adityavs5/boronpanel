@@ -61,9 +61,10 @@ export function DataTable({
   className,
   toolbar,
   columnPicker = false,
+  defaultHiddenColumns = [],
   selectionBar,
 }) {
-  const [hiddenColumns, setHiddenColumns] = useState(new Set())
+  const [hiddenColumns, setHiddenColumns] = useState(() => new Set(defaultHiddenColumns))
   const displayedColumns = columns.filter(col => !hiddenColumns.has(col.key))
   const [internalQuery, setInternalQuery] = useState('')
   const [internalSort, setInternalSort] = useState(initialSort)

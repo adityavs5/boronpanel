@@ -31,10 +31,8 @@ for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark
    await page.goto(reference==='account'?'/app/accounts/alpha':reference==='settings'?'/app/panel-settings':'/app/domains')
    await expect(page.locator('main h1').first()).toBeVisible()
    await page.keyboard.press('Tab')
-   const navigationButton = skin === 'evolution'
-    ? page.getByRole('button',{name:'Menu',exact:true})
-    : page.getByRole('button',{name:'Collapse sidebar',exact:true})
-   const navigationSelector = skin === 'evolution' ? '[aria-label="Menu"]' : '[aria-label="Collapse sidebar"]'
+   const navigationButton = page.getByRole('button',{name:'Collapse sidebar',exact:true})
+   const navigationSelector = '[aria-label="Collapse sidebar"]'
    await navigationButton.focus()
    for(const sample of await contrast(page,navigationSelector,'focus'))expect(sample.ratio,`${reference} ${sample.label}: focus`).toBeGreaterThanOrEqual(3)
    for(const sample of await contrast(page,'main [data-ui-button]:not(:disabled)'))expect(sample.ratio,`${reference} ${sample.label}: text`).toBeGreaterThanOrEqual(4.5)

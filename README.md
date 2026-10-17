@@ -26,6 +26,15 @@ Boron brings everyday server and customer operations into one interface: create 
 - **Account-level controls.** Linux users, resource limits and scoped operations separate hosted accounts. Web/PHP isolation is distinct from SSH/SFTP access.
 - **Signed updates.** Install published releases from the panel, inspect progress and return to a compatible previous version.
 
+## Theme previews
+
+Dashboard captures with sample data. Both themes support light and dark modes;
+these previews show an earlier UI revision, so current page styling may differ.
+
+| Evo | Paper |
+|---|---|
+| ![Evo dashboard](docs/images/evo-dashboard.png) | ![Paper dashboard](docs/images/paper-dashboard.png) |
+
 ## Features
 
 Availability depends on the installation profile and configured services.
@@ -63,22 +72,30 @@ Use a **fresh Ubuntu 24.04 LTS server** with root access. The installer configur
 
 ### Install a release
 
-Run the following in a root shell. This example installs the **v3.2.0 source tag** with the full profile, rather than installing the development branch.
+Run this one line in a **root shell** on a fresh Ubuntu 24.04 server with `curl` installed:
+
+```bash
+curl -fsSLo install.sh https://raw.githubusercontent.com/adityavs5/boronpanel/master/install.sh && bash install.sh
+```
+
+The launcher downloads the pinned **v3.2.0 source tag** and runs its existing installer. It defaults to the full profile, keeps interactive prompts connected to your terminal, and removes its temporary checkout when finished. Run it in an empty working directory; the download writes `install.sh` there. If `curl` is missing, install it with `apt-get update && apt-get install -y curl ca-certificates` first.
+
+<details>
+<summary>Manual source checkout / inspect before installing</summary>
 
 ```bash
 sudo -i
 umask 022
 apt-get update
 apt-get install -y git ca-certificates
-
-git clone --depth 1 --branch v3.2.0 \
-  https://github.com/adityavs5/boronpanel.git /root/boron-install
+git clone --depth 1 --branch v3.2.0 https://github.com/adityavs5/boronpanel.git /root/boron-install
 cd /root/boron-install
-
 bash scripts/install.sh --profile full
 ```
 
-Use the source checkout for a fresh installation: the installer builds the frontend. Release runtime archives are intended for the panel updater.
+Release runtime archives are intended for the panel updater; fresh installs use the source checkout to build the frontend.
+
+</details>
 
 The installer collects the panel hostname, administrator email and credentials, with an optional MaxMind license for geographic statistics. It installs the selected components, builds the UI, creates configuration and starts the panel. Cloudflare is optional; configure it later through the panel.
 
@@ -90,7 +107,7 @@ The installer collects the panel hostname, administrator email and credentials, 
 | `standard` | Web/PHP/SSL plus MariaDB, DNS, mail, FTP and fail2ban |
 | `full` — default | Standard plus application runtimes, Redis tooling, WordPress tools, backups, WAF, malware and geographic-statistics tooling |
 
-Choose the profile when running the installer, for example `bash scripts/install.sh --profile standard`. Component availability does not mean every feature is enabled or fully configured: webmail needs a hostname, GeoLite2 needs a license, and backup destinations need setup.
+Append a profile to the one-liner’s final command, for example `bash install.sh --profile standard`. From a source checkout, use `bash scripts/install.sh --profile standard`. Component availability does not mean every feature is enabled or fully configured: webmail needs a hostname, GeoLite2 needs a license, and backup destinations need setup.
 
 For prerequisites, unattended installation options and verification steps, see the [fresh-install checklist](docs/FRESH-INSTALL-CHECKLIST.md). The installer's `--help` describes its current flags and environment variables. Keep passwords and tokens out of shell history and repository files.
 
@@ -230,3 +247,11 @@ When reporting a bug, include the panel version, reproduction steps and error re
 ## License
 
 A project-wide license has not yet been declared in this repository. Third-party software, libraries and brand assets retain their respective licenses and trademarks.
+
+## Branches
+
+- **`master`** — stable source branch and the default GitHub branch.
+- **`development`** — ongoing development before promotion.
+- **`beta`** — changes staged for beta review.
+
+Branches are separate from published releases. The installer remains pinned to a published version; switching branches does not publish a release or change the panel update channel.

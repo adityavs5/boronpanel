@@ -75,7 +75,7 @@ for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark
   expect(header.searchWidth).toBeGreaterThanOrEqual(30)
   expect(header.searchLeft).toBeGreaterThanOrEqual(header.brandRight)
   expect(header.searchRight).toBeLessThanOrEqual(width)
-  if(skin==='paper-lantern'&&width>=1024)await expect(page.getByRole('complementary',{name:'Tools sidebar'})).toBeVisible()
+  if(width>=1024)await expect(page.getByRole('complementary',{name:'Tools sidebar'})).toBeVisible()
   else {await expect(page.getByRole('complementary',{name:'Tools sidebar'})).toBeHidden();await page.getByRole('button',{name:'Menu',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await expect(page.getByRole('complementary',{name:'Mobile tools'})).toBeVisible();await page.keyboard.press('Escape');await expect(page.getByRole('button',{name:'Menu',exact:true})).toBeFocused()}
   for(const sample of await sampledContrast(page))expect(sample.ratio,`${sample.text} contrast`).toBeGreaterThanOrEqual(4.5)
   await page.screenshot({path:info.outputPath(`${reference}-${skin}-${mode}-${width}.png`)})

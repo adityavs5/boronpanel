@@ -15,6 +15,7 @@ import './index.css'
 import './theme-features.css'
 import './themes.css'
 import './inner-pages.css'
+import './inner-polish.css'
 
 // Apply persisted theme before first paint.
 applyTheme(useUI.getState().theme, useUI.getState().skin)

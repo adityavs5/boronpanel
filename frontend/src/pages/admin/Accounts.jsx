@@ -3,7 +3,6 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Users, ShieldCheck, Play, ArrowUpCircle, MoreHorizontal } from 'lucide-react'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
-import { useVersion } from '@/hooks/useVersion'
 import { get, patch, post } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -14,7 +13,7 @@ import { Input, Textarea, FormField } from '@/components/ui/Input'
 import { StyledSelect as Select } from '@/components/ui/StyledSelect'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/DropdownMenu'
 import { Checkbox } from '@/components/ui/Toggle'
-import { ConfirmDialog } from '@/components/ui/Dialog'
+import { ConfirmDialog, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
 
 // Phase 8 feature 12: bulk action bar (suspend/unsuspend/update-limits/notify),
@@ -53,7 +52,7 @@ function BulkActionBar({ selected, clearSelection }) {
   useEffect(() => { if (finished && jobId) qc.invalidateQueries({ queryKey: ['accounts'] }) }, [finished, jobId, qc])
 
   return (
-    <div className="mb-4 rounded-card border border-accent/40 bg-accent/5 p-4">
+    <div className="accounts-bulk-bar">
       <ConfirmDialog open={confirmOpen} onOpenChange={setConfirmOpen} title={`Apply ${action.replaceAll('_', ' ')} to ${selected.size} accounts?`} description={`Accounts: ${[...selected].join(', ')}. Changes run in order and stop if an account fails. Individual results appear below.`} confirmLabel="Apply to selected accounts" variant={action === 'suspend' ? 'danger' : 'primary'} loading={triggerMut.isPending} onConfirm={() => triggerMut.mutate()} />
       <div className="flex flex-wrap items-end gap-3">
         <span className="text-sm font-medium text-foreground">{selected.size} selected</span>
@@ -107,6 +106,8 @@ export default function Accounts() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [selected, setSelected] = useState(() => new Set())
+  const [assignmentAccount, setAssignmentAccount] = useState(null)
+  const [assignmentOwner, setAssignmentOwner] = useState('')
   const listQuery = searchParams.get('q') || ''
   const listPage = Math.max(1, Number.parseInt(searchParams.get('page') || '1', 10) || 1)
   const sortKey = searchParams.get('sort')
@@ -125,7 +126,6 @@ export default function Accounts() {
     })
   }
   // Panel update system: version in the dashboard header + update banner.
-  const version = useVersion()
   const { data: updateStatus } = useUpdateStatus()
 
   const { data: resellerData } = useQuery({
@@ -135,7 +135,7 @@ export default function Accounts() {
   const resellers = resellerData?.resellers || []
   const moveReseller = useMutation({
     mutationFn: ({ username, resellerId }) => patch(`/api/v1/admin/resellers/accounts/${username}`, { reseller_id: resellerId || null }),
-    onSuccess: () => { toast.success('Reseller assignment updated'); qc.invalidateQueries({ queryKey: ['accounts'] }) },
+    onSuccess: () => { setAssignmentAccount(null); toast.success('Reseller assignment updated'); qc.invalidateQueries({ queryKey: ['accounts'] }) },
     onError: error => toast.error('Could not move account', error.message),
   })
 
@@ -244,20 +244,20 @@ export default function Accounts() {
         </span>
       ),
     },
-    { key: 'username', header: 'Username', sortable: true, searchable: true, render: (r) => <span className="font-medium text-foreground">{r.username}</span> },
+    { key: 'username', header: 'Username', sortable: true, searchable: true, render: (r) => <div className="account-list-identity"><span className="account-list-username">{r.username}</span><span className="account-list-domain" title={r.primary_domain || undefined}>{r.primary_domain || 'No primary domain'}</span></div> },
     { key: 'status', header: 'Status', sortable: true, render: (r) => <StatusBadge status={r.status} /> },
-    { key: 'primary_domain', header: 'Primary domain', searchable: true, render: (r) => r.primary_domain || <span className="text-muted-foreground">—</span> },
+    { key: 'primary_domain', header: 'Primary domain', searchable: true, render: (r) => r.primary_domain ? <span className="account-list-domain" title={r.primary_domain}>{r.primary_domain}</span> : <span className="text-muted-foreground">—</span> },
     { key: 'server_ip', header: 'Server IP', searchable: true, render: (r) => <span className="font-mono text-xs">{r.server_ip || '—'}</span> },
-    { key: 'reseller', header: 'Reseller', searchable: true, searchValue: r => r.reseller?.username || 'admin', render: r => <Select aria-label={`Reseller for ${r.username}`} value={r.reseller?.id || ''} disabled={moveReseller.isPending} onChange={event => moveReseller.mutate({ username: r.username, resellerId: event.target.value ? Number(event.target.value) : null })}><option value="">Admin owned</option>{resellers.filter(item => item.status === 'active' || item.id === r.reseller?.id).map(item => <option key={item.id} value={item.id}>{item.username}</option>)}</Select> },
+    { key: 'reseller', header: 'Reseller', searchable: true, searchValue: r => r.reseller?.username || 'admin', render: r => <span className="accounts-owner">{r.reseller?.username || 'Admin owned'}</span> },
     { key: 'created_at', header: 'Created', sortable: true, render: (r) => (r.created_at ? formatDate(r.created_at) : '—') },
-    { key: 'actions', header: '', align: 'right', searchable: false, render: r => <div className="flex justify-end gap-1" onClick={event => event.stopPropagation()}><Button variant="secondary" size="sm" onClick={() => navigate(`/accounts/${r.username}`)}>Manage</Button><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.username}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent>{[['Domains','domains'],['Email','email'],['Backups','backups'],['Security','security'],['Advanced','advanced']].map(([label,tab])=><DropdownMenuItem key={tab} onSelect={()=>navigate(`/accounts/${r.username}?tab=${tab}`)}>{label}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div> },
+    { key: 'actions', header: '', align: 'right', searchable: false, render: r => <div className="flex justify-end gap-1" onClick={event => event.stopPropagation()}><Button variant="secondary" size="sm" onClick={() => navigate(`/accounts/${r.username}`)}>Manage</Button><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.username}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { moveReseller.reset(); setAssignmentOwner(String(r.reseller?.id || '')); setAssignmentAccount(r) }}>Change reseller</DropdownMenuItem>{[['Domains','domains'],['Email','email'],['Backups','backups'],['Security','security'],['Advanced','advanced']].map(([label,tab])=><DropdownMenuItem key={tab} onSelect={()=>navigate(`/accounts/${r.username}?tab=${tab}`)}>{label}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div> },
   ]
 
   return (
     <div className="reference-page accounts-list">
       <PageHeader
         title="Accounts"
-        description={`Manage all hosting accounts on this server. Boron ${version}.`}
+        description="Open an account to manage its websites, email and hosting settings."
         icon={Users}
         primaryAction={<Button asChild><Link to="/accounts/new"><Plus className="h-4 w-4" /> Create account</Link></Button>}
         moreActions={[{ label: 'Enable website isolation', icon: <ShieldCheck className="h-4 w-4" />, onSelect: () => setNsOpen(true) }]}
@@ -280,10 +280,11 @@ export default function Accounts() {
         </div>
       )}
 
-      {selected.size > 0 && <BulkActionBar selected={selected} clearSelection={clearSelection} />}
-
       <DataTable
         columnPicker
+        defaultHiddenColumns={['primary_domain', 'server_ip', 'created_at']}
+        toolbar={<span className="accounts-list-count">{isLoading ? 'Loading accounts…' : error ? 'Accounts unavailable' : `${accounts.length} ${accounts.length === 1 ? 'account' : 'accounts'}`}</span>}
+        selectionBar={selected.size > 0 ? <BulkActionBar selected={selected} clearSelection={clearSelection} /> : null}
         className="accounts-reference-table"
         columns={columns}
         data={accounts}
@@ -326,6 +327,26 @@ export default function Accounts() {
         emptyIcon={Users}
         emptyAction={<Button asChild><Link to="/accounts/new"><Plus className="h-4 w-4" /> Create account</Link></Button>}
       />
+
+      <div className="accounts-list-footnote"><span>Select accounts to apply a bulk action.</span><span>IP addresses and dates are available in Columns.</span></div>
+
+      <Dialog open={!!assignmentAccount} onOpenChange={open => { if (!open && !moveReseller.isPending) setAssignmentAccount(null) }}>
+        <DialogContent size="sm" showClose={!moveReseller.isPending}>
+          <DialogHeader><DialogTitle>Change reseller</DialogTitle><DialogDescription>Choose who manages {assignmentAccount?.username}.</DialogDescription></DialogHeader>
+          <DialogBody>
+            <FormField label="Reseller" error={moveReseller.error?.message}>
+              <Select aria-label={`Reseller for ${assignmentAccount?.username}`} value={assignmentOwner} disabled={moveReseller.isPending} onChange={event => setAssignmentOwner(event.target.value)}>
+                <option value="">Admin owned</option>
+                {resellers.filter(item => item.status === 'active' || item.id === assignmentAccount?.reseller?.id).map(item => <option key={item.id} value={item.id}>{item.username}</option>)}
+              </Select>
+            </FormField>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="secondary" disabled={moveReseller.isPending} onClick={() => setAssignmentAccount(null)}>Cancel</Button>
+            <Button loading={moveReseller.isPending} disabled={assignmentOwner === String(assignmentAccount?.reseller?.id || '')} onClick={() => moveReseller.mutate({ username: assignmentAccount.username, resellerId: assignmentOwner ? Number(assignmentOwner) : null })}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={nsOpen}

@@ -5,7 +5,6 @@ import { Topbar, PageNavigation } from './Topbar'
 import { MobileBottomNav } from './MobileBottomNav'
 import { ImpersonationBanner } from './ImpersonationBanner'
 import { useAuth } from '@/store/auth'
-import { useUI } from '@/store/ui'
 import { Sidebar } from './Sidebar'
 import { MobileNavDrawer } from './MobileNavDrawer'
 import { CommandPalette } from './CommandPalette'
@@ -34,12 +33,11 @@ function PageFallback() {
 export function AppShell() {
   const syncIdentity = useAuth((s) => s.syncIdentity)
   const identitySynced = useAuth((s) => s.identitySynced)
-  const skin = useUI((s) => s.skin)
   const role = useAuth((s) => s.role)
   const { panelName } = useBranding()
   const { pathname, search } = useLocation()
   const inner = !['/overview', '/dashboard', '/reseller'].includes(pathname)
-  const persistentNavigation = inner && skin === 'paper-lantern'
+  const persistentNavigation = inner
   useLayoutEffect(() => {
     document.documentElement.dataset.innerPage = String(inner)
     return () => { delete document.documentElement.dataset.innerPage }

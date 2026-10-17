@@ -50,7 +50,7 @@ const labels = {
   '/accounts': 'Manage Accounts', '/health': 'Server Information', '/services': 'Service Monitor',
   '/diagnostics': 'Diagnostics',
   '/resellers': 'Reseller Management',
-  '/accounts/new': 'Add New User', '/administrators': 'Administrators',
+  '/accounts/new': 'Create account', '/administrators': 'Administrators',
   '/software/node-apps': 'Node.js Applications', '/software/python-apps': 'Python Applications',
   '/updates': 'Panel Updates', '/appearance': 'Change Style',
 }

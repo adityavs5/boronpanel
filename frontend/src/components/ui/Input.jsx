@@ -43,7 +43,7 @@ export const Label = forwardRef(function Label({ className, required, ...props }
 })
 
 // A labeled field wrapper with optional hint + inline validation error.
-export function FormField({ label, htmlFor, required, error, hint, children, className }) {
+export function FormField({ label, htmlFor, required, optional, error, hint, children, className }) {
   const generated = useId()
   const fieldId = htmlFor || (isValidElement(children) ? children.props.id : null) || `field-${generated.replace(/:/g, '')}`
   const messageId = error || hint ? `${fieldId}-message` : undefined
@@ -62,10 +62,10 @@ export function FormField({ label, htmlFor, required, error, hint, children, cla
     })
   }
   return (
-    <div className={cn('space-y-1.5', className)}>
+    <div className={cn('form-field space-y-1.5', className)}>
       {label && (
         <Label id={`${fieldId}-label`} htmlFor={fieldId} required={required}>
-          {label}
+          {label}{optional && <span className="field-optional"> (optional)</span>}
         </Label>
       )}
       {control}

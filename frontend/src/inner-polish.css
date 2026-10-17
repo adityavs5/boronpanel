@@ -1,0 +1,223 @@
+/* Inner tools: quiet surfaces, clear hierarchy. Dashboards and navigation keep
+   their established geometry. All dimensions derive from the theme tokens. */
+.inner-shell{
+ --page-canvas:246 248 251;
+ --page-line:220 227 235;
+ --form-section-gap:var(--tool-space-6);
+ --form-reading-width:900px;--form-search-height:48px;
+}
+html.dark .inner-shell{--page-canvas:22 29 39;--page-line:62 78 97}
+html[data-skin=paper-lantern] .inner-shell{--form-section-gap:var(--tool-space-8)}
+.inner-shell main{background:rgb(var(--page-canvas))}
+.inner-shell .panel-content{padding:var(--tool-page-pad) var(--tool-space-6) var(--tool-space-8)}
+.inner-shell .panel-page-heading{align-items:center;padding-block:var(--tool-space-2) var(--tool-space-4);margin-bottom:var(--tool-space-4)}
+.inner-shell .panel-page-heading h1{line-height:1.3;letter-spacing:-.02em}
+.inner-shell .panel-page-heading p{max-width:72ch;line-height:1.6;margin-top:var(--tool-space-2)}
+.inner-shell .page-heading-icon{display:none}
+.inner-shell .panel-card{border:1px solid rgb(var(--form-border));border-radius:var(--tool-radius);background:rgb(var(--tool-surface));box-shadow:var(--form-card-shadow)}
+.inner-shell .panel-card-header,.inner-shell .reference-page .panel-card-header{border-top:0;border-bottom:1px solid rgb(var(--page-line));padding:var(--tool-space-4) var(--tool-space-6);background:transparent}
+.inner-shell .panel-card-header h3{font-size:var(--tool-type-label);font-weight:600;line-height:1.5;letter-spacing:0}
+.inner-shell .panel-card-description{font-size:var(--tool-type-sm);line-height:1.6;max-width:72ch;margin-top:var(--tool-space-1)}
+.inner-shell .panel-card-content{padding:var(--tool-space-6)}
+.inner-shell .tool-section{border-color:rgb(var(--page-line));border-radius:var(--tool-radius)}
+.inner-shell .tool-section-heading{border-color:rgb(var(--page-line));padding:var(--tool-space-4) var(--tool-space-6)}
+.inner-shell .tool-section-heading p{line-height:1.6}
+.inner-shell .setting-row{padding:var(--tool-space-4) var(--tool-space-6);border-color:rgb(var(--page-line));gap:var(--tool-space-6)}
+.inner-shell .setting-row-description{line-height:1.6;max-width:65ch}
+.inner-shell .settings-subnav{background:transparent;border:0}
+.inner-shell .settings-subnav button{border-radius:var(--tool-radius);padding:var(--tool-space-3);text-align:left}
+.inner-shell .settings-subnav button[aria-selected=true]{background:rgb(var(--tool-blue-soft));color:rgb(var(--tool-blue));font-weight:600}
+.inner-shell .form-field{min-width:0;display:flex;flex-direction:column;gap:var(--tool-space-2)}
+.inner-shell .form-field>*{margin-top:0}
+.inner-shell .form-field>label{line-height:1.5;font-size:var(--tool-type-body);font-weight:500}
+.inner-shell .form-field>p{font-size:var(--tool-type-xs);line-height:1.6;max-width:65ch}
+.inner-shell .panel-content :is(input:not([type=checkbox]):not([type=radio]),select,textarea){background-color:rgb(var(--tool-surface));border-color:rgb(var(--tool-input));box-shadow:none;transition:border-color .12s ease}
+.inner-shell .panel-content :is(input,select,textarea):focus-visible{border-color:rgb(var(--tool-blue));outline:2px solid rgb(var(--tool-blue));outline-offset:2px}
+.inner-shell .panel-content :is(input,select,textarea)[aria-invalid=true]{border-color:rgb(var(--tool-danger))}
+.inner-shell .panel-content :is(input,select,textarea):disabled{opacity:.55;cursor:not-allowed}
+.inner-shell .panel-data-table{border:1px solid rgb(var(--page-line));border-radius:var(--tool-radius);background:rgb(var(--tool-surface))}
+.inner-shell .panel-data-table thead{background:rgb(var(--tool-soft))}
+.inner-shell .panel-data-table th{font-weight:600;color:rgb(var(--tool-muted))}
+.inner-shell .panel-data-table :is(th,td){border-color:rgb(var(--page-line))}
+/* One continuous form, with section guidance alongside the fields. */
+.inner-shell .account-create-page{max-width:var(--form-reading-width);margin-inline:auto}
+.inner-shell .account-create-form{background:rgb(var(--tool-surface));border:1px solid rgb(var(--page-line));border-radius:var(--tool-radius)}
+.inner-shell .account-create-section{display:grid;grid-template-columns:minmax(160px,1fr) minmax(0,2.6fr);gap:var(--tool-space-8);padding:var(--form-section-gap);border-bottom:1px solid rgb(var(--page-line))}
+.inner-shell .account-create-section-heading h2{font-size:var(--tool-type-label);font-weight:600;line-height:1.5;color:rgb(var(--tool-text))}
+.inner-shell .account-create-section-heading p{font-size:var(--tool-type-sm);color:rgb(var(--tool-muted));line-height:1.6;margin-top:var(--tool-space-2);max-width:28ch}
+.inner-shell .account-create-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--tool-space-6);align-items:start}
+.inner-shell .account-create-wide{grid-column:1/-1}
+.inner-shell .account-create-wide input{max-width:100%}
+.inner-shell .account-create-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:var(--tool-space-3);padding:var(--tool-space-4) var(--form-section-gap);background:rgb(var(--tool-soft));border-radius:0 0 var(--tool-radius) var(--tool-radius)}
+.inner-shell .account-create-actions [role=alert],.inner-shell .account-create-actions [role=status]{max-width:65ch;line-height:1.6}
+@media(max-width:1199px){.inner-shell .account-create-section{grid-template-columns:minmax(0,1fr);gap:var(--tool-space-4)}.inner-shell .account-create-section-heading p{max-width:65ch}}
+@media(max-width:639px){
+ .inner-shell .panel-content{padding:var(--tool-space-4) var(--tool-space-3) 80px}
+ .inner-shell .panel-card-header,.inner-shell .reference-page .panel-card-header,.inner-shell .panel-card-content,.inner-shell .tool-section-heading,.inner-shell .setting-row{padding:var(--tool-space-4)}
+ .inner-shell .account-create-section{padding:var(--tool-space-4)}
+ .inner-shell .account-create-fields{grid-template-columns:minmax(0,1fr);gap:var(--tool-space-4)}
+ .inner-shell .account-create-actions{padding:var(--tool-space-4)}
+ .inner-shell .account-create-actions>div{flex-basis:100%}
+}
+@media(prefers-reduced-motion:reduce){.inner-shell .panel-content :is(input,select,textarea){transition:none}}
+/* Shared form surfaces across admin and customer tools. */
+.inner-shell{
+ --form-border:215 224 234;
+ --form-input-border:111 128 149;
+ --form-placeholder:101 116 138;
+ --form-card-shadow:0 2px 8px rgb(23 43 70 / .04);
+ --form-focus:0 0 0 3px rgb(12 111 214 / .15);
+ --form-sticky-offset:0px;
+}
+html[data-skin=evolution] .inner-shell{--chrome-bg:255 255 255;--chrome-fg:35 52 72;--accent:7 111 213;--accent-foreground:255 255 255;--tool-blue:7 101 196;--tool-nav-active:7 111 213;--tool-blue-solid:7 111 213;--tool-on-solid:255 255 255}
+html[data-skin=evolution] .inner-shell .panel-topbar{border-bottom:1px solid rgb(var(--form-border));box-shadow:none}
+html[data-skin=evolution] .inner-shell .panel-brand .boron-brand-logo img{filter:none}
+.inner-shell .panel-topbar .global-search-trigger{border-color:rgb(var(--form-border));background:rgb(var(--tool-soft));color:rgb(var(--tool-text))}
+.inner-shell .panel-topbar .global-search-trigger kbd{border:0;color:rgb(var(--tool-muted))}
+.inner-shell .sidebar-search{border-color:rgb(var(--tool-nav-muted)/.3);background:rgb(var(--tool-nav-hover)/.5)}
+.inner-shell .account-create-page{padding-bottom:var(--tool-space-4)}
+.inner-shell .account-create-form{border-color:rgb(var(--form-border));box-shadow:var(--form-card-shadow)}
+.inner-shell .account-create-section{grid-template-columns:minmax(0,1fr);gap:var(--tool-space-4);padding:var(--tool-space-6)}
+.inner-shell .account-create-section-heading p{max-width:65ch;margin-top:var(--tool-space-1)}
+.inner-shell .account-create-fields{column-gap:var(--tool-space-6);row-gap:var(--tool-space-4)}
+.inner-shell .form-field{gap:var(--tool-space-1)}
+.inner-shell .form-field .field-optional{color:rgb(var(--tool-muted));font-weight:400}
+.inner-shell .panel-content :is(input:not([type=checkbox]):not([type=radio]),select){border-color:rgb(var(--form-input-border))}
+.inner-shell .panel-content input::placeholder{color:rgb(var(--form-placeholder));opacity:1}
+.inner-shell .panel-content :is(input,select):focus-visible{border-color:rgb(var(--tool-blue));outline:2px solid rgb(var(--tool-blue));outline-offset:1px;box-shadow:var(--form-focus)}
+.inner-shell .panel-content input[aria-invalid=true]{border-color:rgb(var(--tool-danger))}
+.inner-shell .account-create-actions{position:sticky;bottom:var(--form-sticky-offset);z-index:10;background:rgb(var(--tool-surface));border-top:1px solid rgb(var(--form-border));padding:var(--tool-space-4) var(--tool-space-6);box-shadow:0 -2px 8px rgb(23 43 70 / .04)}
+.inner-shell .account-create-actions>div:empty{display:none}
+.password-controls{display:flex;align-items:center;gap:var(--tool-space-2);min-width:0}
+.password-input-wrap{position:relative;flex:1;min-width:0}
+.password-input-wrap input{padding-right:var(--tool-control-height)}
+.password-visibility{position:absolute;right:0;top:0;display:grid;place-items:center;width:var(--tool-control-height);height:var(--tool-control-height);color:rgb(var(--tool-muted));border-radius:var(--tool-radius)}
+.password-visibility svg{width:var(--tool-type-label);height:var(--tool-type-label)}
+.password-strength,.field-feedback{display:flex;align-items:center;gap:var(--tool-space-2);font-size:var(--tool-type-xs);color:rgb(var(--tool-muted));margin-top:var(--tool-space-1);line-height:1.5}
+.field-feedback{justify-content:space-between}.field-feedback>span:first-child{display:flex;align-items:center;gap:var(--tool-space-1)}
+.field-feedback svg{width:var(--tool-type-sm);height:var(--tool-type-sm)}
+.field-valid{color:rgb(var(--tool-success))}.field-invalid{color:rgb(var(--tool-danger))}
+.password-strength-bars{display:flex;gap:var(--tool-space-1);flex:none;width:72px}
+.password-strength-bars i{height:var(--tool-space-1);flex:1;background:rgb(var(--tool-border));border-radius:var(--tool-radius)}
+.password-strength[data-strength="1"] i[data-filled=true]{background:rgb(var(--tool-danger))}
+.password-strength[data-strength="2"] i[data-filled=true]{background:rgb(var(--tool-warning))}
+.password-strength[data-strength="3"] i[data-filled=true]{background:rgb(var(--tool-success))}
+.plan-limits{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--tool-space-2) var(--tool-space-4);margin-top:var(--tool-space-3);padding-top:var(--tool-space-3);border-top:1px solid rgb(var(--form-border));font-size:var(--tool-type-xs)}
+.plan-limits>div{display:flex;flex-wrap:wrap;gap:var(--tool-space-1) var(--tool-space-2)}.plan-limits dt{color:rgb(var(--tool-muted))}.plan-limits dd{font-weight:500}
+.plan-default-note{font-size:var(--tool-type-xs);color:rgb(var(--tool-muted));margin-top:var(--tool-space-1)}
+.form-advanced>summary{cursor:pointer;padding:var(--tool-space-4) var(--tool-space-6);font-size:var(--tool-type-body);font-weight:500}
+.form-advanced>summary>span{margin-left:var(--tool-space-3);font-size:var(--tool-type-xs);color:rgb(var(--tool-muted));font-weight:400}
+html.dark .inner-shell{--form-border:63 80 101;--form-input-border:126 146 171;--form-placeholder:155 172 193;--form-card-shadow:none;--form-focus:0 0 0 3px rgb(137 200 248 / .15)}
+html.dark[data-skin=evolution] .inner-shell{--chrome-bg:30 38 49;--chrome-fg:233 239 247;--tool-blue:137 200 248;--tool-blue-solid:137 200 248;--tool-on-solid:6 49 77}
+html.dark[data-skin=evolution] .inner-shell .panel-brand .boron-brand-logo img{filter:brightness(0) invert(1)}
+@media(max-width:767px){.inner-shell{--form-sticky-offset:64px}.inner-shell main{scroll-padding-bottom:140px}}
+@media(max-width:639px){.inner-shell .account-create-section,.inner-shell .account-create-actions{padding:var(--tool-space-4)}.inner-shell .account-create-actions>div:empty{display:none}.form-advanced>summary{padding:var(--tool-space-4)}}
+
+/* Reuse the approved form finish without imposing form widths on data tables,
+   file editors, terminal panes or account summaries. */
+.inner-shell .panel-card .panel-card{box-shadow:none}
+.inner-shell .panel-card-footer{padding:var(--tool-space-4) var(--tool-space-6);border-color:rgb(var(--form-border));background:rgb(var(--tool-soft));border-radius:0 0 var(--tool-radius) var(--tool-radius);flex-wrap:wrap}
+.inner-shell .panel-content textarea{border-color:rgb(var(--form-input-border))}
+.inner-shell .panel-content textarea::placeholder{color:rgb(var(--form-placeholder));opacity:1}
+.inner-shell .panel-content textarea:focus-visible{box-shadow:var(--form-focus)}
+.inner-shell .panel-content :is(input,select,textarea)[aria-invalid=true]{border-color:rgb(var(--tool-danger))}
+.inner-shell .form-field:has([aria-invalid=true]){--form-focus:0 0 0 3px rgb(var(--tool-danger)/.15)}
+.inner-shell .panel-content [data-ui-button=secondary],.inner-shell .panel-content [data-ui-button=outline]{border-color:rgb(var(--form-border));background-color:rgb(var(--tool-surface))}
+.inner-shell .panel-content [data-ui-button=secondary]:hover,.inner-shell .panel-content [data-ui-button=outline]:hover{background-color:rgb(var(--tool-soft));border-color:rgb(var(--tool-input))}
+.inner-shell .table-toolbar{gap:var(--tool-space-3);padding-block:var(--tool-space-3)}
+.inner-shell .panel-data-table th{font-size:var(--tool-type-xs);letter-spacing:0}
+.inner-shell .panel-data-table td{font-size:var(--tool-type-body)}
+.inner-shell .panel-data-table tbody tr:hover{background-color:rgb(var(--tool-soft))}
+/* Dialogs are portalled outside the shell, so inherit the same tokens explicitly. */
+.panel-dialog{--form-border:215 224 234;--form-input-border:111 128 149;--form-placeholder:101 116 138;background:rgb(var(--tool-surface));color:rgb(var(--tool-text));border-color:rgb(var(--form-border));border-radius:var(--tool-radius)}
+html.dark .panel-dialog{--form-border:63 80 101;--form-input-border:126 146 171;--form-placeholder:155 172 193}
+.panel-dialog-header{padding:var(--tool-space-6) var(--tool-space-6) var(--tool-space-3)}
+.panel-dialog-body{padding:var(--tool-space-3) var(--tool-space-6);font-size:var(--tool-type-body)}
+.panel-dialog-footer{padding:var(--tool-space-4) var(--tool-space-6);border-color:rgb(var(--form-border));background:rgb(var(--tool-soft))}
+.panel-dialog .form-field{display:flex;flex-direction:column;gap:var(--tool-space-1);min-width:0}
+.panel-dialog .form-field>*{margin-top:0}
+.panel-dialog .form-field>label{font-size:var(--tool-type-body);font-weight:500;line-height:1.5}
+.panel-dialog .form-field>p{font-size:var(--tool-type-xs);line-height:1.6}
+.panel-dialog :is(input:not([type=checkbox]):not([type=radio]),select,textarea){background-color:rgb(var(--tool-surface));border-color:rgb(var(--form-input-border));border-radius:var(--tool-radius);color:rgb(var(--tool-text));font-size:var(--tool-type-body);box-shadow:none}
+.panel-dialog :is(input:not([type=checkbox]):not([type=radio]),select){height:var(--tool-control-height)}
+.panel-dialog :is(input,textarea)::placeholder{color:rgb(var(--form-placeholder));opacity:1}
+.panel-dialog :is(input,select,textarea)[aria-invalid=true]{border-color:rgb(var(--tool-danger))}
+/* Search is one composite control: focus belongs to its row, not an inset box.
+   Keep a visible focus indicator for keyboard users in all themes and modes. */
+.command-palette{background:rgb(var(--tool-surface));color:rgb(var(--tool-text));border-color:rgb(var(--tool-border));border-radius:var(--tool-radius)}
+.command-palette .command-search-row{border-color:rgb(var(--tool-border));transition:box-shadow .12s ease}
+.command-palette .command-search-row:focus-within{box-shadow:inset 0 -2px 0 rgb(var(--tool-blue))}
+html .command-palette .command-search-input,
+html[data-inner-page=true] .command-palette .command-search-input:focus-visible{min-width:0;border:0;outline:none;box-shadow:none;background-color:transparent;color:rgb(var(--tool-text));border-radius:0}
+.command-palette .command-search-input::placeholder{color:rgb(var(--tool-muted))}
+.command-palette .command-search-row kbd{border-color:rgb(var(--tool-border));color:rgb(var(--tool-muted));border-radius:var(--tool-radius)}
+html .hosting-sidebar .sidebar-search input:focus-visible{outline:none;box-shadow:none}
+.hosting-sidebar .sidebar-search:focus-within{border-color:rgb(var(--tool-nav-fg));box-shadow:0 0 0 2px rgb(var(--tool-nav-fg)/.15)}
+/* Consistent Evo top bar on every route; dashboard tiles remain unchanged. */
+html[data-skin=evolution] :is(.inner-shell,.dashboard-shell) .panel-topbar{background:rgb(var(--tool-surface));color:rgb(var(--tool-text));border-bottom:1px solid rgb(var(--tool-border));box-shadow:none}
+html[data-skin=evolution] :is(.inner-shell,.dashboard-shell) .panel-brand .boron-brand-logo img{filter:none}
+html.dark[data-skin=evolution] :is(.inner-shell,.dashboard-shell) .panel-brand .boron-brand-logo img{filter:brightness(0) invert(1)}
+html[data-skin=evolution] .panel-topbar .global-search-trigger{background:rgb(var(--tool-soft));border-color:rgb(var(--tool-border))}
+html[data-skin=evolution] .panel-topbar .global-search-trigger kbd{border:0;color:rgb(var(--tool-muted))}
+html[data-skin=evolution] .panel-topbar button:hover{background-color:rgb(var(--tool-soft))}
+html[data-skin=evolution] .panel-topbar :focus-visible{outline-color:rgb(var(--tool-blue))}
+@media(max-width:639px){.inner-shell .panel-card-footer,.panel-dialog-header,.panel-dialog-body,.panel-dialog-footer{padding:var(--tool-space-4)}}
+@media(prefers-reduced-motion:reduce){.command-palette .command-search-row{transition:none}}
+
+/* Account directory: one clean list, with editing kept out of data cells. */
+.inner-shell .accounts-list{--accounts-table-min:880px;--accounts-domain-max:240px;--accounts-search-width:420px;max-width:1440px;margin-inline:auto}
+.inner-shell .accounts-list .panel-page-heading{margin-bottom:var(--tool-space-6)}
+.inner-shell .accounts-reference-table{box-shadow:var(--form-card-shadow);border-color:rgb(var(--form-border));overflow:hidden}
+.inner-shell .accounts-reference-table .table-toolbar{padding:var(--tool-space-4) var(--tool-space-6);background:rgb(var(--tool-surface))}
+.inner-shell .accounts-reference-table .table-search{max-width:var(--accounts-search-width);flex:1;min-width:0}
+.inner-shell .accounts-reference-table .table-search input{background-color:rgb(var(--tool-soft));border-color:rgb(var(--form-border))}
+.inner-shell .accounts-reference-table .table-search input:focus-visible{border-color:rgb(var(--tool-blue))}
+.accounts-list-count{font-size:var(--tool-type-sm);color:rgb(var(--tool-muted));margin-right:var(--tool-space-2);white-space:nowrap}
+.inner-shell .accounts-reference-table table{min-width:var(--accounts-table-min)}
+.inner-shell .accounts-reference-table th{background:rgb(var(--tool-soft));text-transform:none;letter-spacing:0;font-size:var(--tool-type-sm);padding-inline:var(--tool-space-4)}
+.inner-shell .accounts-reference-table td{padding-inline:var(--tool-space-4);padding-block:var(--tool-space-2);border-color:rgb(var(--form-border))}
+.account-list-username{font-weight:600;color:rgb(var(--tool-text))}
+.account-list-domain{display:block;max-width:var(--accounts-domain-max);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgb(var(--tool-muted))}
+.accounts-owner{color:rgb(var(--tool-muted));font-size:var(--tool-type-sm)}
+.inner-shell .accounts-reference-table .table-actions-cell{background:rgb(var(--tool-surface));box-shadow:-1px 0 0 rgb(var(--form-border))}
+.inner-shell .accounts-reference-table tr:hover .table-actions-cell{background:rgb(var(--tool-soft))}
+.inner-shell .accounts-reference-table thead .table-actions-cell{background:rgb(var(--tool-soft))}
+.inner-shell .accounts-reference-table .table-pagination{padding:var(--tool-space-3) var(--tool-space-6);border-color:rgb(var(--form-border));font-size:var(--tool-type-sm)}
+.accounts-bulk-bar{padding:var(--tool-space-4) var(--tool-space-6);border-bottom:1px solid rgb(var(--form-border));background:rgb(var(--tool-blue-soft))}
+.accounts-list-footnote{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--tool-space-2);padding:var(--tool-space-3) var(--tool-space-1);font-size:var(--tool-type-xs);color:rgb(var(--tool-muted))}
+@media(max-width:639px){
+ .inner-shell .accounts-reference-table .table-toolbar{padding:var(--tool-space-4);align-items:stretch}
+ .inner-shell .accounts-reference-table .table-search{flex-basis:100%;max-width:none}
+ .inner-shell .accounts-reference-table .table-toolbar>div:last-child{width:100%;justify-content:space-between}
+ .inner-shell .accounts-reference-table .table-pagination,.accounts-bulk-bar{padding:var(--tool-space-4)}
+ .inner-shell .accounts-reference-table .uppercase{text-transform:none;letter-spacing:0}
+ .account-list-domain{max-width:180px}
+}
+
+/* Account directory revision: identity first, secondary data opt-in. */
+.inner-shell .accounts-list{--accounts-table-min:560px;--accounts-domain-max:420px;--account-directory-row:60px;--account-check-size:16px;max-width:1200px;gap:0}
+.inner-shell .accounts-list .panel-page-heading{padding:var(--tool-space-2) 0 var(--tool-space-6);margin:0}
+.inner-shell .accounts-reference-table .table-toolbar{padding:var(--tool-space-4) var(--tool-space-6);border-bottom:1px solid rgb(var(--form-border))}
+.inner-shell .accounts-reference-table table{min-width:var(--accounts-table-min)}
+.inner-shell .accounts-reference-table tbody tr{background:rgb(var(--tool-surface));height:var(--account-directory-row)}
+.inner-shell .accounts-reference-table tbody tr:nth-child(even){background:rgb(var(--tool-surface))}
+.inner-shell .accounts-reference-table tbody tr:hover{background:rgb(var(--tool-soft))}
+.inner-shell .accounts-reference-table td{padding-block:var(--tool-space-3);border-bottom-color:rgb(var(--form-border)/.65)}
+.inner-shell .accounts-reference-table th{background:rgb(var(--tool-soft));color:rgb(var(--tool-muted));font-size:var(--tool-type-xs);font-weight:500}
+.inner-shell .accounts-reference-table :is(th,td):first-child{width:var(--tool-space-8);padding-left:var(--tool-space-6);padding-right:var(--tool-space-3)}
+.inner-shell .accounts-reference-table button[role=checkbox]{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:var(--account-check-size);height:var(--account-check-size);min-width:var(--account-check-size);min-height:var(--account-check-size);padding:0;border-width:1px;border-radius:var(--tool-radius);vertical-align:middle}
+.account-list-identity{display:flex;flex-direction:column;align-items:flex-start;gap:var(--tool-space-1);min-width:0}
+.account-list-identity .account-list-username{font-size:var(--tool-type-body);line-height:1.3;font-weight:600}
+.account-list-identity .account-list-domain{font-size:var(--tool-type-xs);line-height:1.3}
+.inner-shell .accounts-reference-table .table-actions-cell{box-shadow:none;padding-right:var(--tool-space-6)}
+.inner-shell .accounts-reference-table .table-actions-cell [data-ui-button=secondary]{background:transparent;border-color:rgb(var(--form-border));color:rgb(var(--tool-blue))}
+.inner-shell .accounts-reference-table .table-actions-cell [data-ui-button=secondary]:hover{background:rgb(var(--tool-blue-soft));border-color:rgb(var(--tool-blue))}
+.inner-shell .accounts-reference-table .table-pagination{background:rgb(var(--tool-surface));padding-block:var(--tool-space-3)}
+.inner-shell .accounts-list-footnote{padding-top:var(--tool-space-3);margin:0}
+html[data-skin=paper-lantern] .accounts-list{--account-directory-row:64px}
+@media(max-width:639px){
+ .inner-shell .accounts-list{--accounts-domain-max:180px}
+ .inner-shell .accounts-reference-table .table-toolbar{padding:var(--tool-space-4)}
+ .inner-shell .accounts-reference-table .account-list-identity{align-items:flex-end}
+ .inner-shell .accounts-list-footnote{flex-direction:column}
+}

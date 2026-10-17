@@ -29,7 +29,7 @@ function Breadcrumb() {
           <span key={to} className="flex items-center gap-1.5">
             {i > 0 && <span className="text-border">/</span>}
             {last ? (
-              <span className="font-medium text-foreground">{({wordpress:'WordPress',dns:'DNS',ssl:'SSL',php:'PHP',ftp:'FTP',ssh:'SSH'})[part] || titleCase(part)}</span>
+              <span className="font-medium text-foreground">{(pathname === '/accounts/new' && last ? 'Create account' : null) || ({wordpress:'WordPress',dns:'DNS',ssl:'SSL',php:'PHP',ftp:'FTP',ssh:'SSH'})[part] || titleCase(part)}</span>
             ) : (
               <Link to={to} className="hover:text-foreground transition-colors">
                 {({wordpress:'WordPress',dns:'DNS',ssl:'SSL',php:'PHP',ftp:'FTP',ssh:'SSH'})[part] || titleCase(part)}

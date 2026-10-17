@@ -49,6 +49,7 @@ for (const skin of ['evolution', 'paper-lantern']) {
 
     await page.goto('/app/accounts')
     await page.getByRole('link', { name: 'Create account' }).first().click()
+    await page.getByText('Advanced options', { exact: false }).click()
     await expect(page.getByLabel('IP assignment')).toBeVisible()
     await page.getByLabel('IP assignment').selectOption('specific')
     await expect(page.getByLabel('Server IP')).toBeVisible()

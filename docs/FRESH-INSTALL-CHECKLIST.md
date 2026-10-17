@@ -21,14 +21,14 @@ before the clone step.
 
 ## One-command start
 
-Run this as a normal SSH user with `sudo`:
+Run in a root shell on Ubuntu 24.04 with `curl` installed, from an empty directory:
 
 ```bash
-sudo apt-get update && sudo apt-get install -y git && \
-  work="$(mktemp -d)" && \
-  git clone --depth 1 https://github.com/adityavs5/boronpanel.git "$work/boronpanel" && \
-  sudo bash "$work/boronpanel/scripts/install.sh"
+curl -fsSLo install.sh https://raw.githubusercontent.com/adityavs5/boronpanel/master/install.sh && bash install.sh
 ```
+
+This launcher installs the pinned v3.2.0 source release. The [manual source-checkout instructions](../README.md#install-a-release) remain available. Append `--profile minimal` or `--profile standard` to `bash install.sh` if needed. The existing source installer is unchanged. For `--dry-run`, use the source checkout directly.
+
 
 The installer derives its source directory from the script path, so use a real
 checkout rather than piping `install.sh` to `bash`.
