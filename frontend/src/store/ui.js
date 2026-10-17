@@ -2,6 +2,9 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { normalizeSkin, normalizeMode } from '../config/themes'
 
+// Applying another tab’s preferences must not persist them back and echo a storage event.
+let syncingPreferences = false
+
 // Keep the existing light/dark key for backwards compatibility. A skin changes
 // layout, while theme changes color mode. Neither touches session state.
 export const useUI = create(
@@ -10,6 +13,16 @@ export const useUI = create(
       sidebarCollapsed: false,
       theme: 'light',
       skin: 'evolution',
+      appearance: window.BoronAppearance.normalize(),
+      setAppearance: (patch) => {
+        const appearance = window.BoronAppearance.normalize({ ...get().appearance, ...patch })
+        set({ appearance })
+        applyTheme(get().theme, get().skin)
+      },
+      resetAppearance: () => {
+        set({ appearance: window.BoronAppearance.normalize() })
+        applyTheme(get().theme, get().skin)
+      },
       closedToolGroups: {},
       navigationGroups: {},
       domainContexts: {},
@@ -44,11 +57,12 @@ export const useUI = create(
       name: 'boron.ui',
       storage: createJSONStorage(() => ({
         getItem: (key) => { try { return localStorage.getItem(key) } catch { return null } },
-        setItem: (key, value) => { try { localStorage.setItem(key, value) } catch { /* Session-only preferences when storage is blocked. */ } },
+        setItem: (key, value) => { try { if (!syncingPreferences) localStorage.setItem(key, value) } catch { /* Session-only preferences when storage is blocked. */ } },
         removeItem: (key) => { try { localStorage.removeItem(key) } catch { /* Storage may be unavailable. */ } },
       })),
-      partialize: (s) => ({ sidebarCollapsed: s.sidebarCollapsed, theme: s.theme, skin: s.skin, closedToolGroups: s.closedToolGroups, navigationGroups: s.navigationGroups, domainContexts: s.domainContexts }),
+      partialize: (s) => ({ appearance: s.appearance, sidebarCollapsed: s.sidebarCollapsed, theme: s.theme, skin: s.skin, closedToolGroups: s.closedToolGroups, navigationGroups: s.navigationGroups, domainContexts: s.domainContexts }),
       merge: (saved, current) => ({ ...current,
+        appearance: window.BoronAppearance.normalize(saved?.appearance),
         sidebarCollapsed: Boolean(saved?.sidebarCollapsed),
         theme: normalizeMode(saved?.theme), skin: normalizeSkin(saved?.skin),
         closedToolGroups: saved?.closedToolGroups && typeof saved.closedToolGroups === 'object' && !Array.isArray(saved.closedToolGroups) ? saved.closedToolGroups : {},
@@ -64,18 +78,22 @@ export function applyTheme(theme, skin = 'evolution') {
   root.classList.toggle('dark', normalizeMode(theme) === 'dark')
   root.dataset.skin = normalizeSkin(skin)
   root.style.colorScheme = normalizeMode(theme)
+  window.BoronAppearance.apply(useUI.getState().appearance, normalizeSkin(skin), normalizeMode(theme) === "dark")
 }
 
 // Rehydrate only preferences, never auth, when another tab changes its skin.
 export function syncUIPreferences(event) {
-  if (event.key !== 'boron.ui') return
+  if (event.key !== 'boron.ui' || event.storageArea !== localStorage) return
   try {
-    const saved = JSON.parse(event.newValue || '{}').state || {}
+    // Storage events can be queued behind newer edits. Read the current value,
+    // not a stale event payload, so an older colour cannot replace a newer one.
+    const saved = JSON.parse(localStorage.getItem('boron.ui') || '{}').state || {}
     const theme = normalizeMode(saved.theme)
     const skin = normalizeSkin(saved.skin)
     const domainContexts = saved.domainContexts && typeof saved.domainContexts === 'object' && !Array.isArray(saved.domainContexts) ? saved.domainContexts : {}
-    if (useUI.getState().theme !== theme || useUI.getState().skin !== skin) useUI.setState({ theme, skin, domainContexts })
-    else useUI.setState({ domainContexts })
+    syncingPreferences = true
+    useUI.setState({ theme, skin, domainContexts, appearance: window.BoronAppearance.normalize(saved.appearance) })
     applyTheme(theme, skin)
   } catch { /* Ignore invalid storage from extensions or old clients. */ }
+  finally { syncingPreferences = false }
 }

@@ -5,6 +5,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from api.security import require_credential_origin
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_account_access, require_domain_access
 from api.templates import templates
@@ -43,7 +44,8 @@ def trigger_install(username: str, domain: str, app_id: str, body: InstallAppBod
 
 
 @domain_api_router.get("/jobs/{job_id}")
-def get_job(username: str, domain: str, job_id: int, identity: Identity = Depends(get_identity)):
+def get_job(request: Request, username: str, domain: str, job_id: int, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_account_access(identity, username)
     require_domain_access(identity, domain)
     return call_daemon("apps.install.get", identity, username=username, job_id=job_id)
@@ -89,6 +91,7 @@ def ui_trigger_install(
 
 @ui_router.get("/jobs/{job_id}")
 def ui_job_status(request: Request, username: str, domain: str, job_id: int, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_account_access(identity, username)
     require_domain_access(identity, domain)
     job = call_daemon("apps.install.get", identity, username=username, job_id=job_id)

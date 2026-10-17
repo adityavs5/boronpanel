@@ -30,6 +30,8 @@ def emit(event_type: str, account, **context) -> dict[str, object]:
     # Host monitoring can be configured per channel.  All pre-existing
     # callers omit this private routing hint and retain the historical fanout
     # to every configured provider.
+    # Credentials never enter notification or webhook delivery.
+    context.pop("initial_password", None)
     selected = context.pop("_channels", None)
     channels = set(selected or ("email", "webhook", "telegram"))
     results: dict[str, object] = {}

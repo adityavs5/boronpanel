@@ -50,13 +50,13 @@ function ActiveSessions() {
       </div>}
       {!!query.data?.impersonation_sessions?.length && <div className="mt-5 border-t border-border pt-4">
         <h3 className="text-sm font-semibold text-foreground">Active impersonation sessions</h3>
-        <p className="mt-1 text-xs text-muted-foreground">Return from impersonation before ending these administrator sessions.</p>
-        {query.data.impersonation_sessions.map(row => <div key={row.id} className="mt-3 flex items-center gap-3 text-sm"><MonitorSmartphone className="h-4 w-4 text-muted-foreground" /><span className="min-w-0 flex-1 truncate">{row.device}</span><StatusBadge status="protected" /></div>)}
+        <p className="mt-1 text-xs text-muted-foreground">End an impersonation session without signing out your current administrator session.</p>
+        {query.data.impersonation_sessions.map(row => <div key={row.id} className="mt-3 flex items-center gap-3 text-sm"><MonitorSmartphone className="h-4 w-4 text-muted-foreground" /><span className="min-w-0 flex-1 truncate">{row.device}</span><Button size="sm" variant="outline" disabled={!row.revocable} onClick={() => setRevokeId(row.id)}>Revoke session</Button></div>)}
       </div>}
     </CardContent>
-    <CardFooter className="justify-end"><Button variant="outline" disabled={rows.filter(row => !row.current).length === 0} onClick={() => setRevokeOthers(true)}>Revoke all other sessions</Button></CardFooter>
+    <CardFooter className="justify-end"><Button variant="outline" disabled={[...rows, ...(query.data?.impersonation_sessions || [])].filter(row => !row.current).length === 0} onClick={() => setRevokeOthers(true)}>Revoke all other sessions</Button></CardFooter>
     <ConfirmDialog open={revokeId != null} onOpenChange={open => !open && setRevokeId(null)} title="Revoke this session?" description="That browser will need to sign in again. Your current session stays active." confirmLabel="Revoke session" loading={revoke.isPending} onConfirm={() => revoke.mutate(revokeId)} />
-    <ConfirmDialog open={revokeOthers} onOpenChange={setRevokeOthers} title="Revoke all other sessions?" description="Every other direct session will be signed out. Active impersonation sessions are protected until you return from them." confirmLabel="Revoke other sessions" loading={revokeAll.isPending} onConfirm={() => revokeAll.mutate()} />
+    <ConfirmDialog open={revokeOthers} onOpenChange={setRevokeOthers} title="Revoke all other sessions?" description="Every other session, including impersonation sessions you started, will be signed out. Your current session stays active." confirmLabel="Revoke other sessions" loading={revokeAll.isPending} onConfirm={() => revokeAll.mutate()} />
   </Card>
 }
 
@@ -120,16 +120,17 @@ export default function Security() {
   }
 
   const setupMut = useMutation({
-    mutationFn: () => post('/api/v1/2fa/setup'),
+    mutationFn: () => post('/api/v1/2fa/setup', { current_password: password }),
     onSuccess: (res) => { setSetupData(res); setCode(''); setCodeError('') },
     onError: (e) => toast.error('Could not start 2FA setup', e.message),
   })
 
   const verifyMut = useMutation({
-    mutationFn: (c) => post('/api/v1/2fa/verify', { code: c }),
+    mutationFn: (c) => post('/api/v1/2fa/verify', { code: c, current_password: password }),
     onSuccess: (res) => {
       setRecoveryCodes(res.recovery_codes || [])
       setSetupData(null)
+      setPassword('')
       setCode('')
       setCodeError('')
       toast.success('Two-factor authentication enabled', 'Save your recovery codes now — they are shown only once.')
@@ -352,7 +353,7 @@ export default function Security() {
           <CardFooter>
             <Button
               variant="ghost"
-              onClick={() => { setSetupData(null); setCode(''); setCodeError('') }}
+              onClick={() => { setSetupData(null); setPassword(''); setCode(''); setCodeError('') }}
               disabled={verifyMut.isPending}
             >
               Cancel
@@ -366,9 +367,10 @@ export default function Security() {
           title="Two-factor authentication is off"
           description="Add a second layer of protection. You will scan a QR code with an authenticator app and confirm a code to turn it on."
           action={(
-            <Button loading={setupMut.isPending} onClick={() => setupMut.mutate()}>
+            <div className="space-y-3"><label className="block">Current password<Input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+            <Button disabled={!password} loading={setupMut.isPending} onClick={() => setupMut.mutate()}>
               <ShieldCheck className="h-4 w-4" /> Enable 2FA
-            </Button>
+            </Button></div>
           )}
         />
       )}

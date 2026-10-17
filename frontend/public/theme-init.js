@@ -7,4 +7,5 @@
   root.dataset.skin = state.skin === 'paper-lantern' ? 'paper-lantern' : 'evolution'
   root.classList.toggle('dark', dark)
   root.style.colorScheme = dark ? 'dark' : 'light'
+  window.BoronAppearance?.apply(state.appearance, root.dataset.skin, dark)
 })()

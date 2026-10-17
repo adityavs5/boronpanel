@@ -24,6 +24,7 @@ docs/CHECKPOINT-filebrowser-quantum.md.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -124,13 +125,12 @@ def _account_client(username: str) -> httpx.AsyncClient:
 
 
 def _backend_client(username: str, socket_path: str) -> httpx.AsyncClient:
-    if username not in _clients:
-        _clients[username] = httpx.AsyncClient(
-            transport=httpx.AsyncHTTPTransport(uds=socket_path),
-            timeout=httpx.Timeout(connect=10.0, read=None, write=None, pool=None),
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=2),
-        )
-    return _clients[username]
+    # One bounded client per admitted stream; no unbounded per-user cache.
+    return httpx.AsyncClient(
+        transport=httpx.AsyncHTTPTransport(uds=socket_path),
+        timeout=httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=5.0),
+        limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+    )
 
 
 def _sign_target(username: str) -> str:
@@ -313,6 +313,24 @@ async def proxy(request: Request, path: str = ""):
     # instant a session ends/expires.
     require_account_access(identity, target)
 
+    lease = _StreamLease(target)
+    client = None
+    try:
+        is_data_api = path == "api" or path.startswith("api/")
+        client = _account_client(target) if is_data_api else _frontend_client()
+        async with asyncio.timeout(MAX_STREAM_SECONDS):
+            response = await _proxy_content(request, path, target, client)
+        return _LeasedResponse(response, client, lease)
+    except BaseException:
+        try:
+            if client is not None:
+                await client.aclose()
+        finally:
+            lease.release()
+        raise
+
+
+async def _proxy_content(request: Request, path: str, target: str, client):
     upstream_url = httpx.URL(
         "http://filebrowser" + request.url.path,
         query=request.url.query.encode("utf-8"),
@@ -320,12 +338,11 @@ async def proxy(request: Request, path: str = ""):
     # Only data APIs reach a tenant-controlled process. The shell and all
     # executable assets come from a separate system UID with no customer homes.
     is_data_api = path == "api" or path.startswith("api/")
-    client = _account_client(target) if is_data_api else _frontend_client()
     upstream_req = client.build_request(
         request.method,
         upstream_url,
         headers=_build_upstream_headers(request, target),
-        content=request.stream(),
+        content=_bounded_upload(request),
     )
     try:
         upstream = await client.send(upstream_req, stream=True)
@@ -336,7 +353,7 @@ async def proxy(request: Request, path: str = ""):
         async def quota_events():
             pending = bytearray()
             try:
-                async for chunk in upstream.aiter_bytes():
+                async for chunk in upstream.aiter_bytes(chunk_size=65536):
                     pending.extend(chunk)
                     while True:
                         boundary = re.search(rb'\r?\n\r?\n', pending)
@@ -418,3 +435,74 @@ async def proxy(request: Request, path: str = ""):
         headers=headers,
         background=BackgroundTask(upstream.aclose),
     )
+
+
+MAX_ACCOUNT_STREAMS = 8
+MAX_GLOBAL_STREAMS = 64
+MAX_UPLOAD_BYTES = 16 * 1024 * 1024 * 1024
+MAX_STREAM_SECONDS = 3600
+_active_streams: dict[str, int] = {}
+
+
+class _StreamLease:
+    def __init__(self, username):
+        # No await between checking and incrementing: atomic in the API loop.
+        if (_active_streams.get(username, 0) >= MAX_ACCOUNT_STREAMS
+                or sum(_active_streams.values()) >= MAX_GLOBAL_STREAMS):
+            raise HTTPException(429, "Too many active file transfers. Finish a transfer and try again.",
+                                headers={"Retry-After": "5"})
+        self.username = username
+        self.released = False
+        _active_streams[username] = _active_streams.get(username, 0) + 1
+
+    def release(self):
+        if self.released:
+            return
+        self.released = True
+        count = _active_streams[self.username] - 1
+        if count:
+            _active_streams[self.username] = count
+        else:
+            del _active_streams[self.username]
+
+
+async def _bounded_upload(request):
+    total = 0
+    iterator = request.stream().__aiter__()
+    while True:
+        try:
+            async with asyncio.timeout(60):
+                chunk = await anext(iterator)
+        except StopAsyncIteration:
+            return
+        except TimeoutError:
+            raise HTTPException(408, "File upload timed out") from None
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "File upload exceeds the 16 GiB per-request limit")
+        yield chunk
+
+
+class _LeasedResponse(Response):
+    def __init__(self, response, client, lease):
+        self.response = response
+        self.client = client
+        self.lease = lease
+        self.status_code = response.status_code
+        self.raw_headers = response.raw_headers
+        self.background = None
+
+    async def __call__(self, scope, receive, send):
+        try:
+            async with asyncio.timeout(MAX_STREAM_SECONDS):
+                await self.response(scope, receive, send)
+        finally:
+            try:
+                iterator = getattr(self.response, "body_iterator", None)
+                if iterator is not None and hasattr(iterator, "aclose"):
+                    await iterator.aclose()
+            finally:
+                try:
+                    await self.client.aclose()
+                finally:
+                    self.lease.release()

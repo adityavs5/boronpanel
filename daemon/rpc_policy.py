@@ -161,6 +161,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'db.drop': 'account_username',
     'db.rename': 'account_username',
     'db.export': 'account_username',
+    'db.export.cleanup': 'account_username',
     'db.import': 'account_username',
     'db.list': 'account_username',
     'disktree.get': 'account_username',
@@ -595,9 +596,9 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'totp.check_login_code': 'root_internal_replace_with_login_protocol',
     # self_panel_user_session_only
     'totp.disable': 'self_panel_user_session_with_password',
-    'totp.setup': 'self_panel_user_session_only',
+    'totp.setup': 'self_panel_user_session_with_password',
     'totp.status': 'self_panel_user_session_only',
-    'totp.verify': 'self_panel_user_session_only',
+    'totp.verify': 'self_panel_user_session_with_password',
     # self_with_current_password_or_admin
     'panel_user.set_password': 'self_with_current_password_or_admin',
 }

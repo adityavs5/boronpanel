@@ -900,7 +900,10 @@ CREATE USER IF NOT EXISTS 'boron_mailro'@'localhost' IDENTIFIED BY '${mailro_pas
 GRANT SELECT ON boron_mail.* TO 'boron_mailro'@'localhost';
 FLUSH PRIVILEGES;
 SQL
-    mysql -u root -p"${root_pass}" boron_mail <<'SQL'
+    # Create the existing root option file privately before authenticated use.
+    (umask 077; printf '[client]\nuser=root\npassword=%s\n' "${root_pass}" >/root/.my.cnf)
+    chmod 600 /root/.my.cnf
+    mysql --defaults-file=/root/.my.cnf boron_mail <<'SQL'
 CREATE TABLE IF NOT EXISTS mail_domain (
   id INT AUTO_INCREMENT PRIMARY KEY,
   domain VARCHAR(253) NOT NULL UNIQUE,

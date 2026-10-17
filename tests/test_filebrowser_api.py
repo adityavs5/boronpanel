@@ -21,6 +21,7 @@ from api.security import Identity, get_identity
 @pytest.fixture(autouse=True)
 def isolated_backend_client(monkeypatch):
     import httpx
+    monkeypatch.setattr(fbr, "_active_streams", {})
     client = httpx.AsyncClient()
     monkeypatch.setattr(fbr, "_client", client, raising=False)
     monkeypatch.setattr(fbr, "_account_client", lambda _username: client)
@@ -419,8 +420,15 @@ def test_proxy_bounds_only_trusted_shell_and_closes_upstream(monkeypatch):
     async def download():
         response = await fbr.proxy(request('api/resources/site.html'), 'api/resources/site.html')
         assert not reply.closed
-        assert await anext(response.body_iterator) == b'first chunk'
-        await response.body_iterator.aclose()
+        # Exercise the ASGI lifecycle, including disconnect cleanup.
+        from starlette.requests import ClientDisconnect
+        async def send(message):
+            if message["type"] == "http.response.body":
+                assert message["body"] == b"first chunk"
+                raise OSError("client disconnected")
+        with pytest.raises(ClientDisconnect):
+            await response({"type": "http", "asgi": {"spec_version": "2.4"}}, None, send)
+        assert fbr._active_streams == {}
     asyncio.run(download())
     assert reply.closed
 

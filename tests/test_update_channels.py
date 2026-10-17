@@ -129,3 +129,41 @@ def test_cached_stable_result_is_not_used_after_external_tier_change(isolated_db
     assert 'No beta' in result['error']
     updates.check()
     assert len(calls) == 1  # failed lookups are cached within the same tier too
+
+
+@pytest.mark.parametrize('channel', ['beta', 'development'])
+def test_empty_tier_is_informational_and_cached(isolated_db, monkeypatch, channel):
+    monkeypatch.setattr(settings, 'update_channel', channel)
+    calls = []
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(200, json=[release('3.9.0', 'stable')])
+    monkeypatch.setattr(updates, '_transport', httpx.MockTransport(respond))
+    # Old cached errors are refreshed automatically after deployment.
+    from shared.models import utcnow
+    with write_session() as session:
+        session.add(UpdateState(id=1, checked_at=utcnow(), release_metadata={'channel': channel},
+                                last_error=f'No {channel} release has been published in acme/boron'))
+    result = updates.check()
+    assert result['error'] is None
+    assert result['release_availability'] == 'unpublished'
+    assert result['latest_version'] is None
+    assert result['update_available'] is False
+    assert result['channel'] == channel
+    assert updates.check()['release_availability'] == 'unpublished'
+    assert len(calls) == 1
+    monkeypatch.setattr(updates, '_transport', httpx.MockTransport(
+        lambda request: httpx.Response(200, json=[release('3.9.0', channel)])))
+    monkeypatch.setattr(updates, '_fetch_release_metadata', lambda info: {'channel': channel})
+    result = updates.check({'force': True})
+    assert result['latest_version'] == '3.9.0'
+    assert result['release_availability'] is None
+
+
+def test_preview_network_failure_remains_error(isolated_db, monkeypatch):
+    monkeypatch.setattr(settings, 'update_channel', 'development')
+    monkeypatch.setattr(updates, '_transport', httpx.MockTransport(
+        lambda request: httpx.Response(403, json={'message': 'rate limited'})))
+    result = updates.check({'force': True})
+    assert result['error']
+    assert result['release_availability'] is None

@@ -91,14 +91,12 @@ def _render_body(event_type: str, username: str, context: dict, welcome_body: st
         if welcome_body:
             return _fill_placeholders(welcome_body, {
                 "username": username,
-                "password": context.get("initial_password") or "(set by your administrator)",
+                "password": "(contact your administrator through a secure channel)",
                 "primary_domain": context.get("primary_domain") or "",
                 "panel_name": panel_name,
             })
         lines = [f"Your hosting account '{username}' has been created."]
-        if context.get("initial_password"):
-            lines.append(f"Initial password: {context['initial_password']}")
-            lines.append("Please log in and change this password as soon as possible.")
+        lines.append("Contact your administrator through a secure channel for your login credentials.")
         return "\n".join(lines)
     if event_type in ("account.suspended", "account.unsuspended", "account.terminated"):
         verb = event_type.split(".")[1]

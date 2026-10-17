@@ -1,5 +1,36 @@
 # Changelog
 
+## 3.2.2 — Beta
+
+### Security
+
+- Remove reusable passwords from welcome emails and integration events.
+- Require the current password to enroll two-factor authentication.
+- Restrict one-time credential retrieval to authorized, write-capable callers and same-origin browser requests.
+- Bound File Manager transfer concurrency, upload size and idle time; close transfers cleanly on disconnect.
+- Redact sensitive audit parameters and historical diagnostic output.
+- Apply mandatory resource limits before account activation and quarantine accounts when startup enforcement fails.
+- Protect local backup destinations and artifact writes against writable ancestors and symlink substitution.
+- Require replacement credentials when changing a DNS cluster peer's connection settings.
+- Use bounded, expiring shared storage for SQL exports across the API service's private temporary-directory boundary.
+- Allow administrators to revoke their own impersonation sessions.
+- Keep the MariaDB root password out of installer process arguments.
+
+### Fixed and changed
+
+- Avoid the first-update-check singleton creation race and repair SQL upload handoff between services.
+- Treat an update tier with no eligible release as unavailable rather than a failed check.
+- Refine gold accents, branding and appearance preferences; prevent preference synchronization loops.
+
+### Upgrade notes
+
+- Beta prerelease: intended for testing before Stable promotion. Release metadata binds this candidate to the beta tier.
+- Two-factor enrollment API requests now require `current_password`; read-only tokens cannot consume one-time credentials.
+- Existing unsafe backup destinations require administrator repair. SQL exports are limited to 2 GiB each and preserve a 5 GiB free-space reserve.
+- Resource enforcement failures deliberately block account activation or suspend affected accounts until repaired.
+- Previously disclosed credentials in emails, audit exports or old backups should be rotated; an update cannot retract old copies.
+- No new database schema migration. Review the declared service reloads before updating.
+
 ## 3.2.1
 
 ### Changed

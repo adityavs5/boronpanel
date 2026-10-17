@@ -1223,13 +1223,15 @@ def stub_tenant_tar(monkeypatch):
 
 
 @pytest.mark.parametrize('restore_status',['pending','running','completed','failed'])
-def test_retention_preserves_restore_history_and_active_artifacts(isolated_db,tmp_path,restore_status):
+@pytest.mark.parametrize('outside_destination', [False, True])
+def test_retention_preserves_restore_history_and_active_artifacts(isolated_db,tmp_path,restore_status,outside_destination):
     import datetime as dt
     with write_session() as db:
         account=make_account(db);aid=account.id
     dest=backup.create_destination({'name':'retention QA','kind':'local','local_path':str(tmp_path/'dest')})
     backup.set_schedule({'frequency':'daily','retention_count':1,'destination_id':dest['id']})
-    old_artifact=tmp_path/'old.tar';old_artifact.write_bytes(b'old archive')
+    old_artifact=(tmp_path if outside_destination else tmp_path/'dest')/'old.tar'
+    old_artifact.write_bytes(b'old archive')
     with write_session() as db:
         old=BackupJob(account_id=aid,kind='file',item_ref='public_html',destination_id=dest['id'],status='completed',artifact_path=str(old_artifact),completed_at=backup.utcnow()-dt.timedelta(days=1))
         new=BackupJob(account_id=aid,kind='file',item_ref='public_html',destination_id=dest['id'],status='completed',completed_at=backup.utcnow())
@@ -1239,7 +1241,8 @@ def test_retention_preserves_restore_history_and_active_artifacts(isolated_db,tm
     with write_session() as db:
         row=db.get(BackupJob,old_id)
         assert db.scalar(select(RestoreJob.id)) is not None
-        if restore_status in ('pending','running'):
+        if restore_status in ('pending','running') or outside_destination:
             assert row.status=='completed' and old_artifact.exists()
+            assert old_artifact.read_bytes() == b'old archive'
         else:
             assert row.status=='expired' and row.artifact_path is None and not old_artifact.exists()

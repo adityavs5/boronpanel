@@ -11,6 +11,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from api.security import require_credential_origin
+from starlette.requests import Request
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_account_access
 
@@ -49,7 +51,8 @@ def list_wpcli_runs(username: str, identity: Identity = Depends(get_identity)):
 
 
 @wpcli_router.get("/wpcli/runs/{job_id}")
-def get_wpcli_run(username: str, job_id: int, identity: Identity = Depends(get_identity)):
+def get_wpcli_run(request: Request, username: str, job_id: int, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_account_access(identity, username)
     return call_daemon("wpcli.get", identity, username=username, job_id=job_id)
 
@@ -73,6 +76,7 @@ def list_composer_runs(username: str, identity: Identity = Depends(get_identity)
 
 
 @composer_router.get("/runs/{job_id}")
-def get_composer_run(username: str, job_id: int, identity: Identity = Depends(get_identity)):
+def get_composer_run(request: Request, username: str, job_id: int, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_account_access(identity, username)
     return call_daemon("composer.get", identity, username=username, job_id=job_id)

@@ -19,6 +19,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import AccountEvent, ActionStep, AuditLog, utcnow
 from shared.request_context import current_request_id
+from shared.audit_redaction import sanitize_output, secret_values
 
 logger = logging.getLogger("borond.audit")
 
@@ -39,14 +40,14 @@ ACCOUNT_EVENTS_LOG = Path("/var/log/boron/account-events.log")
 # tokens, TOTP + recovery codes, and session ids are all live credentials.
 # Erring toward redaction is deliberate -- a false positive (e.g. a redirect's
 # "status_code") only loses a low-value field, a false negative leaks a secret.
-_SENSITIVE_KEY_PARTS = ("password", "secret", "token", "session_id", "code", "private_key", "api_key")
+_SENSITIVE_KEY_PARTS = ("password", "secret", "token", "session_id", "code", "private_key", "api_key", "license", "recovery", "passphrase", "access_key", "credential")
 _PRIVATE_PAYLOAD_KEYS = {
     "env", "env_vars", "environment", "content", "contents", "body",
     "content_base64", "headers", "authorization", "credential", "credentials",
 }
 
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(password|passwd|token|secret|authorization|api[_-]?key|private[_-]?key|session[_-]?id)"
+    r"(?i)\b(password|passwd|token|secret|authorization|api[_-]?key|private[_-]?key|session[_-]?id|license[_-]?key|recovery[_-]?key|ssh[_-]?key[_-]?passphrase|passphrase|access[_-]?key)"
     r"(\s*[:=]\s*)([^\s,;]+)"
 )
 _PEM_RE = re.compile(
@@ -101,7 +102,7 @@ def _collect_secret_values(key: str, value, output: set[str]) -> None:
     private = lowered in _PRIVATE_PAYLOAD_KEYS or any(part in lowered for part in _SENSITIVE_KEY_PARTS)
     if isinstance(value, dict):
         for child_key, child_value in value.items():
-            _collect_secret_values(str(child_key), child_value, output)
+            _collect_secret_values(key if private else str(child_key), child_value, output)
         return
     if isinstance(value, (list, tuple, set)):
         for item in value:
@@ -176,7 +177,7 @@ def change(field_name: str, before, after, *, sensitive: bool = False) -> None:
 def _bounded_tail(value: object, secrets: set[str]) -> str | None:
     if value is None:
         return None
-    text = str(value)
+    text = sanitize_output(value, {})
     # Mail bodies are customer content, not diagnostic output. If a captured
     # stream has message headers, omit the stream wholesale rather than trying
     # to parse every MIME/content-transfer variant safely.
@@ -202,7 +203,7 @@ def redact_diagnostic_text(value: object, *, max_bytes: int = 64 * 1024,
     excerpts. It deliberately removes email addresses as well as credentials:
     a support archive is operational metadata, never a copy of mail content.
     """
-    text = str(value or "")
+    text = sanitize_output(value or "", {})
     if len(_MAIL_HEADER_RE.findall(text)) >= 2:
         return "[REDACTED MAIL CONTENT]"
     text = _PEM_RE.sub("[REDACTED PRIVATE KEY]", text)
@@ -253,24 +254,7 @@ def step(name: str):
         )
 
 
-def _sanitize(key: str, value):
-    lowered = key.lower()
-    if lowered in _PRIVATE_PAYLOAD_KEYS or any(part in lowered for part in _SENSITIVE_KEY_PARTS):
-        return "***"
-    if isinstance(value, dict):
-        return {str(k): _sanitize(str(k), v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_sanitize(key, item) for item in value]
-    # URLs may contain basic-auth credentials, signed queries or fragments.
-    # Preserve operation/target metadata, not a second copy of the secret.
-    if isinstance(value, str) and "://" in value and any(marker in value for marker in ("@", "?", "#")):
-        return "***"
-    if isinstance(value, str) and len(value) > MAX_PARAM_VALUE_LEN:
-        # File contents (file.read/file.write) and similarly bulky values
-        # don't belong verbatim in the audit log -- truncate rather than
-        # let one file.write of a 10MB file bloat every audit row forever.
-        return f"{value[:MAX_PARAM_VALUE_LEN]}... ({len(value)} chars total)"
-    return value
+from shared.audit_redaction import sanitize as _sanitize
 
 
 def record_account_event(
@@ -408,3 +392,21 @@ def prune_retention(*, now: dt.datetime | None = None, batch_size: int = DEFAULT
         "step_retention_days": step_days,
         "batch_size": size,
     }
+
+
+def redact_historical_batch(after_id=0, limit=100):
+    """Remove previously stored credentials without deleting audit events."""
+    with write_session() as db:
+        rows = db.scalars(select(AuditLog).where(AuditLog.id > after_id).order_by(AuditLog.id).limit(limit)).all()
+        for row in rows:
+            values = set()
+            for key, value in (row.params or {}).items():
+                _collect_secret_values(str(key), value, values)
+            values.update(secret_values(row.changes))
+            row.params = _sanitize("", row.params)
+            row.changes = _sanitize("", row.changes)
+            row.detail = redact_diagnostic_text(row.detail, secret_values=values) if row.detail else row.detail
+            for item in db.scalars(select(ActionStep).where(ActionStep.audit_id == row.id)).all():
+                item.stdout_tail = _bounded_tail(item.stdout_tail, values)
+                item.stderr_tail = _bounded_tail(item.stderr_tail, values)
+        return rows[-1].id if rows else None

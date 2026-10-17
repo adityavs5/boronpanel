@@ -138,11 +138,11 @@ def test_get_welcome_email_template_default_when_never_set(isolated_db):
 def test_set_and_get_welcome_email_template(isolated_db):
     result = site_templates.set_welcome_email_template({
         "subject": "Welcome to {{panel_name}}!",
-        "body": "Hi {{username}}, your password is {{password}}.",
+        "body": "Hi {{username}}, your account is ready.",
     })
     assert result["subject"] == "Welcome to {{panel_name}}!"
     fetched = site_templates.get_welcome_email_template({})
-    assert fetched["body"] == "Hi {{username}}, your password is {{password}}."
+    assert fetched["body"] == "Hi {{username}}, your account is ready."
 
 
 def test_set_welcome_email_template_upserts_not_duplicates(isolated_db):
@@ -158,7 +158,7 @@ def test_set_welcome_email_template_rejects_unknown_placeholder(isolated_db):
 
 
 def test_set_welcome_email_template_accepts_known_placeholders(isolated_db):
-    body = "{{username}} {{password}} {{primary_domain}} {{panel_name}}"
+    body = "{{username}} {{primary_domain}} {{panel_name}}"
     result = site_templates.set_welcome_email_template({"subject": "s", "body": body})
     assert result["body"] == body
 
@@ -179,3 +179,8 @@ def test_reset_welcome_email_template_reverts_to_default(isolated_db):
 def test_reset_welcome_email_template_idempotent_when_never_set(isolated_db):
     result = site_templates.reset_welcome_email_template({})  # must not raise
     assert result["status"] == "reset"
+
+
+def test_welcome_template_rejects_password_placeholder():
+    with pytest.raises(ValidationError, match="unknown placeholder"):
+        site_templates.set_welcome_email_template({"body": "Password {{password}}"})

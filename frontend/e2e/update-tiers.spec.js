@@ -17,7 +17,7 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
         channel = route.request().postDataJSON().channel
         changes.push(channel)
         data = { channel }
-      } else if (path.endsWith('/update/status')) data = { configured: true, channel, current_version: '3.2.1', latest_version: '3.2.1', active_job: null }
+      } else if ((path.endsWith('/update/status') || path.endsWith('/update/check'))) data = { configured: true, channel, current_version: '3.2.1', latest_version: channel === 'stable' ? '3.2.1' : null, release_availability: channel === 'stable' ? null : 'unpublished', error: null, active_job: null }
       else if (path.endsWith('/update/history')) data = { jobs: [] }
       await route.fulfill({ json: data })
     })
@@ -29,6 +29,12 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
     await selector.selectOption('development')
     await expect(selector).toHaveValue('development')
     expect(changes).toEqual(['beta', 'development'])
+    await page.reload()
+    await expect(selector).toHaveValue('development')
+    await expect(page.getByText('No Development release published yet.', { exact: false })).toBeVisible()
+    await expect(page.getByText('Last check error:', { exact: false })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Check now', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'No release published yet', exact: true })).toBeDisabled()
     const logo = page.locator('.boron-brand-logo img').first()
     await expect(logo).toHaveAttribute('src', '/static/dist/brand/boron-logo-gold.svg')
     await expect(logo).toHaveCSS('filter', 'none')

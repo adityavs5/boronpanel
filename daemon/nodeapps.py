@@ -431,7 +431,7 @@ def bootstrap_all_node_apps() -> None:
             (r.id, r.account_id, r.name, r.entry_point, r.port, r.node_version, r.env_vars, r.enabled, r.backend_mode)
             for r in rows
         ]
-        usernames = {a.id: a.username for a in session.scalars(select(Account)).all()}
+        usernames = {a.id: a.username for a in session.scalars(select(Account).where(Account.status == "active")).all()}
 
     for app_id, account_id, name, entry_point, port, node_version, env_vars_enc, enabled, backend_mode in snapshot:
         username = usernames.get(account_id)

@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
+from api.security import require_credential_origin
+from starlette.requests import Request
 from api.rpc import call_daemon
 from api.upload_guard import BoundedUploadRoute
 from api.security import Identity, get_identity, require_admin
@@ -70,7 +72,8 @@ def list_imports(identity: Identity = Depends(get_identity)):
 
 
 @import_router.get("/{job_id}")
-def get_import(job_id: int, identity: Identity = Depends(get_identity)):
+def get_import(request: Request, job_id: int, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_admin(identity)
     return call_daemon("portable.import.get", identity, job_id=job_id)
 

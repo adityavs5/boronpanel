@@ -180,6 +180,9 @@ def update_peer(params: dict) -> dict:
             raise ValidationError("DNS cluster peer not found")
         data = _validate_peer(params, existing=peer)
         credential = data.pop("credential")
+        binding = ("endpoint", "peer_type", "username", "verify_tls")
+        if any(data[key] != getattr(peer, key) for key in binding) and credential is None:
+            raise ValidationError("Enter a replacement credential when changing the DNS peer endpoint, type, username or TLS policy")
         for key, value in data.items():
             setattr(peer, key, value)
         if credential is not None:

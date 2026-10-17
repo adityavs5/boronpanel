@@ -129,7 +129,7 @@ def validate_supported_objects(db_name):
     finally:connection.close()
 
 
-def dump_database(db_name,output_path,work_directory):
+def dump_database(db_name,output_path,work_directory, *, max_bytes=None):
     _database_name(db_name)
     output_path=Path(output_path)
     work=Path(work_directory)
@@ -138,7 +138,8 @@ def dump_database(db_name,output_path,work_directory):
     validate_supported_objects(db_name)
     if output_path.exists() or output_path.is_symlink():raise ValidationError('Database export target must not already exist')
     with client_config(work_directory,settings.mariadb_admin_user,settings.mariadb_admin_password) as config:
-        result=run(['/usr/bin/nice','-n','10','/usr/bin/ionice','-c','2','-n','7','/usr/bin/mariadb-dump',
+        prefix = [] if max_bytes is None else ["/usr/bin/prlimit", f"--fsize={int(max_bytes)}:{int(max_bytes)}", "--"]
+        result=run(prefix + ['/usr/bin/nice','-n','10','/usr/bin/ionice','-c','2','-n','7','/usr/bin/mariadb-dump',
             f'--defaults-file={config}','--single-transaction','--quick','--skip-dump-date','--hex-blob',
             '--skip-routines','--skip-events','--skip-triggers',f'--result-file={output_path}','--',db_name],timeout=1800,discard_stdout=True)
         if not result.ok:

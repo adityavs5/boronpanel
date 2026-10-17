@@ -170,7 +170,7 @@ export default function Updates() {
     onSuccess: (data) => {
       qc.setQueryData(['update-status'], (previous) => ({
         ...previous, channel: data.channel, branch: data.branch,
-        latest_version: null, update_available: false, checked_at: null, error: null,
+        latest_version: null, update_available: false, checked_at: null, error: null, release_availability: null,
       }))
       qc.invalidateQueries({ queryKey: ['update-status'] })
       toast.success('Update tier saved', 'Only signed releases from this tier will be offered.')
@@ -183,6 +183,7 @@ export default function Updates() {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['update-status'] })
       if (data.error) toast.error('Update check failed', data.error)
+      else if (data.release_availability === 'unpublished') toast.info('No release published yet', `The ${data.channel} tier is selected. Your current installation is unchanged.`)
       else if (data.update_available) toast.info('Update available', `v${data.latest_version} can be installed.`)
       else toast.success('Up to date', `v${data.current_version} is the latest release.`)
     },
@@ -386,10 +387,15 @@ export default function Updates() {
                 )}
                 <Button onClick={() => setUpdateOpen(true)}
                         disabled={!status.update_available || Boolean(active)}>
-                  <ArrowUpCircle className="h-4 w-4" /> {status.update_available ? `Update to v${status.latest_version}` : 'Panel is up to date'}
+                  <ArrowUpCircle className="h-4 w-4" /> {status.update_available ? `Update to v${status.latest_version}` : status.release_availability === 'unpublished' ? 'No release published yet' : 'Panel is up to date'}
                 </Button>
               </div>
             </div>
+          )}
+          {status?.release_availability === 'unpublished' && (
+            <p role="status" className="mt-3 text-sm text-muted-foreground">
+              No {status.channel === 'development' ? 'Development' : 'Beta'} release published yet. Your tier is saved; your current installation is unchanged. Check again after a signed release is published for this tier.
+            </p>
           )}
           {status?.error && (
             <div className="mt-3 text-xs text-danger">Last check error: {status.error}</div>

@@ -575,7 +575,7 @@ def list_sessions(params: dict) -> dict:
                 "last_seen_at": (row.last_seen_at or row.created_at).isoformat(),
                 "expires_at": row.expires_at.isoformat(),
                 "current": row.session_id == current_hash,
-                "revocable": row.session_id not in active_impersonations,
+                "revocable": row.session_id != current_hash,
             }
             if row.session_id in active_impersonations:
                 item["account_id"] = active_impersonations[row.session_id].account_id
@@ -595,12 +595,14 @@ def revoke_managed_session(params: dict) -> dict:
             raise ValidationError("Session not found")
         if row.session_id == current_hash:
             raise ValidationError("Use Log out to end the current session")
-        active_impersonation = db.scalar(select(ImpersonationSession.id).where(
+        active_impersonation = db.scalar(select(ImpersonationSession).where(
             ImpersonationSession.session_id == row.session_id,
             ImpersonationSession.ended_at.is_(None),
         ))
         if active_impersonation is not None:
-            raise ValidationError("Return from impersonation before revoking that session")
+            if active_impersonation.admin_panel_user_id != panel_user_id:
+                raise ValidationError("Session not found")
+            active_impersonation.ended_at = utcnow()
         row.revoked = True
     return {"status": "revoked", "session_id": session_row_id}
 
@@ -609,10 +611,10 @@ def revoke_other_sessions(params: dict) -> dict:
     panel_user_id = int(params["panel_user_id"])
     current_hash = params.get("_current_session_hash")
     with write_session() as db:
-        protected = set(db.scalars(select(ImpersonationSession.session_id).where(
+        impersonations = {item.session_id: item for item in db.scalars(select(ImpersonationSession).where(
             ImpersonationSession.admin_panel_user_id == panel_user_id,
             ImpersonationSession.ended_at.is_(None),
-        )).all())
+        )).all()}
         rows = db.scalars(select(Session).where(
             Session.panel_user_id == panel_user_id,
             Session.revoked.is_(False),
@@ -620,8 +622,8 @@ def revoke_other_sessions(params: dict) -> dict:
         )).all()
         changed = 0
         for row in rows:
-            if row.session_id in protected:
-                continue
+            if row.session_id in impersonations:
+                impersonations[row.session_id].ended_at = utcnow()
             row.revoked = True
             changed += 1
     return {"status": "revoked", "count": changed}

@@ -264,6 +264,7 @@ def bootstrap_all_slices() -> None:
     with write_session() as session:
         accounts = session.scalars(select(Account).where(Account.status.in_(["active", "suspended"]))).all()
         snapshots = [(account, effective_for_account(session, account)) for account in accounts]
+    failures = []
     for account, effective in snapshots:
         try:
             if effective["policy"] is None:
@@ -275,6 +276,13 @@ def bootstrap_all_slices() -> None:
                 apply_policy(account.username, effective["values"], uid=account.uid)
         except Exception:
             logger.exception("failed to bootstrap account resource slice for '%s'", account.username)
+            try:
+                quarantine_failed_policy(account)
+            except Exception:
+                logger.exception("resource quarantine incomplete for '%s'", account.username)
+                failures.append(account.username)
+    if failures:
+        raise CgroupError("Resource quarantine requires host intervention for: " + ", ".join(failures))
 
 
 def _account_uid_map(session) -> dict[int, str]:
@@ -339,3 +347,73 @@ def audit_php_coverage() -> dict:
 def reconcile_processes() -> int:
     """Compatibility wrapper returning uncovered PHP workers, never moving them."""
     return audit_php_coverage()["uncovered"]
+
+
+def quarantine_failed_policy(account):
+    """Deny new tenant processes when existing limits cannot be reconciled.
+
+    Retain the account and data, but require successful enforcement before
+    an explicit unsuspend. Never turn a failed safety hook into success.
+    """
+    from daemon import ols, sysops
+    from shared.models import PanelUser, Session, utcnow
+    with write_session() as db:
+        row = db.get(Account, account.id)
+        if row is None:
+            return
+        row.status = "suspended"
+        row.suspended_at = utcnow()
+        row.last_error = "Resource enforcement failed; repair resource limits before unsuspending"
+        user_ids = db.scalars(select(PanelUser.id).where(PanelUser.account_id == row.id)).all()
+        for session in db.scalars(select(Session).where(Session.panel_user_id.in_(user_ids))).all():
+            session.revoked = True
+    failures = []
+    # Attempt every barrier even when systemd, a controller or OLS is broken.
+    for label, action in (
+        ("login lock", lambda: sysops.lock_user(account.username)),
+        ("login expiry", lambda: run(["usermod", "--expiredate", "1", account.username], check=True)),
+        ("web suspension", lambda: ols.suspend_vhost(account)),
+        ("application stop", lambda: _stop_account_workloads(account)),
+    ):
+        try:
+            action()
+        except Exception:
+            logger.exception("Failed %s for resource quarantine of %s", label, account.username)
+            failures.append(label)
+    path = _cgroup_path(account.username, account.uid)
+    try:
+        (path / "pids.max").write_text("0")
+        (path / "cgroup.kill").write_text("1")
+    except OSError:
+        logger.exception("Kernel resource quarantine unavailable for %s", account.username)
+        # Account expiry blocks SSH/cron/PAM; stopped apps and suspended OLS
+        # cannot spawn work. Terminate any pre-existing tenant processes too.
+        result = run(["pkill", "-KILL", "-u", str(_resolve_uid(account.username, account.uid))], timeout=15)
+        if result.returncode not in (0, 1):
+            failures.append("process termination")
+    if failures:
+        raise CgroupError(f"Incomplete resource quarantine for {account.username}: " + ", ".join(failures))
+
+
+def _stop_account_workloads(account):
+    from daemon import appunits, filebrowser_accounts
+    from shared.models import NodeApp, PythonApp, RedisInstance
+    units = []
+    with write_session() as db:
+        for model, kind in ((NodeApp, "node"), (PythonApp, "python"), (RedisInstance, "redis")):
+            for row in db.scalars(select(model).where(model.account_id == account.id)).all():
+                units.append((appunits.unit_name(kind, account.username, row.id), kind))
+    failures = []
+    for unit, kind in units:
+        try:
+            (appunits.stop_disable if kind == "redis" else appunits.stop_disable_app)(unit)
+            if appunits.status(unit)["active"] not in ("inactive", "failed", "unknown"):
+                failures.append(unit)
+        except Exception:
+            failures.append(unit)
+    try:
+        filebrowser_accounts.stop(account.username)
+    except Exception:
+        failures.append("file manager")
+    if failures:
+        raise CgroupError("Could not stop account services: " + ", ".join(failures))

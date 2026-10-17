@@ -1,0 +1,47 @@
+/* Personal preference tokens apply to portals as well as both layout shells. */
+html[data-appearance], html[data-appearance] :is(.inner-shell,.dashboard-shell) {
+ --font-ui:var(--pref-font)!important;
+ --accent:var(--pref-accent)!important;--accent-fg:var(--pref-ink)!important;--accent-foreground:var(--pref-ink)!important;
+ --accent-50:var(--pref-soft)!important;--accent-100:var(--pref-soft)!important;
+ --accent-200:var(--pref-soft)!important;--accent-300:var(--pref-link)!important;--accent-400:var(--pref-link)!important;
+ --accent-500:var(--pref-accent)!important;--accent-600:var(--pref-link)!important;--accent-700:var(--pref-link)!important;
+ --accent-800:var(--pref-link)!important;--accent-900:var(--pref-link)!important;--accent-950:var(--pref-nav)!important;
+ --link:var(--pref-link)!important;--ring:var(--pref-link)!important;
+ --tool-blue:var(--pref-link)!important;--tool-blue-solid:var(--pref-accent)!important;--tool-blue-soft:var(--pref-soft)!important;
+ --form-focus:0 0 0 3px rgb(var(--pref-link)/.25)!important;
+}
+/* Do not recolour semantic success/danger/warning tokens or third-party logos. */
+html[data-appearance] :is(.bg-accent,[data-ui-button=primary]){color:rgb(var(--pref-ink))}
+html[data-appearance] .inner-shell [data-ui-button=primary]{background-color:rgb(var(--pref-accent));color:rgb(var(--pref-ink))}
+html[data-appearance][data-skin=evolution]{--group-header:var(--pref-group);--group-fg:255 255 255;--tool-nav-bg:var(--pref-nav);--tool-nav-hover:var(--pref-navHover);--tool-nav-border:var(--pref-accent)}
+html[data-appearance][data-skin=evolution] .tool-group-heading{color:rgb(var(--group-fg))}
+html[data-appearance] .sidebar-tool[aria-current=page]{background:rgb(var(--pref-accent));color:rgb(var(--pref-ink));border-left-color:rgb(var(--pref-ink))}
+html[data-appearance] .tool-link:hover{background:rgb(var(--pref-soft))}
+html[data-text-size=large],html[data-text-size=large] :is(.inner-shell,.dashboard-shell){--tool-type-body:16px;--tool-type-sm:14px}
+html[data-text-size=large] :is(.panel-content,.tool-label,.sidebar-tool){font-size:16px}
+html[data-density=compact],html[data-density=compact] :is(.inner-shell,.dashboard-shell){--tool-row-height:40px;--tool-control-height-sm:28px;--tool-control-height:32px;--tool-control-height-lg:36px;--tool-page-pad:16px}
+html[data-density=comfortable],html[data-density=comfortable] :is(.inner-shell,.dashboard-shell){--tool-row-height:48px;--tool-control-height-sm:32px;--tool-control-height:36px;--tool-control-height-lg:40px;--tool-page-pad:24px}
+html[data-motion=reduced] *,html[data-motion=reduced] *::before,html[data-motion=reduced] *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+.appearance-customization{margin-top:24px;border:1px solid rgb(var(--tool-border));border-radius:var(--tool-radius);padding:24px;background:rgb(var(--tool-surface))}
+.appearance-customization h2{font-size:16px;font-weight:600;margin-bottom:8px}
+.appearance-customization p{color:rgb(var(--tool-muted));font-size:14px}
+.appearance-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:24px}
+.appearance-setting{display:flex;flex-direction:column;gap:8px;min-width:0}
+.appearance-setting>label{font-size:14px;font-weight:600}
+.appearance-setting input[type=color]{width:48px;min-height:36px;padding:4px;cursor:pointer}
+.accent-presets{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.accent-presets button{padding:8px 12px;border:1px solid rgb(var(--tool-border));border-radius:var(--tool-radius);display:flex;align-items:center;gap:8px}
+.accent-presets button[aria-pressed=true]{outline:2px solid rgb(var(--pref-link));outline-offset:2px}
+.accent-presets i{width:16px;height:16px;border-radius:50%;border:1px solid rgb(var(--tool-border))}
+.appearance-sample{margin-top:24px;padding:16px;background:rgb(var(--pref-soft));border-left:3px solid rgb(var(--pref-link));color:rgb(var(--tool-text));overflow-wrap:anywhere}
+.appearance-settings-actions{margin-top:24px}
+@media(max-width:639px){.appearance-settings-grid{grid-template-columns:1fr}.appearance-customization{padding:16px}}
+html[data-appearance][data-inner-page=true] [role=dialog] [data-ui-button=primary],
+html[data-appearance] .inner-shell [role=checkbox][data-state=checked],
+html[data-appearance] .inner-shell [role=checkbox][data-state=indeterminate],
+html[data-appearance] .inner-shell [aria-label="Open account menu"]>div{color:rgb(var(--pref-ink))}
+@media(prefers-reduced-motion:reduce){html[data-motion=system] *,html[data-motion=system] *::before,html[data-motion=system] *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+html[data-appearance] [data-ui-button=primary]:hover:not(:disabled){background-color:rgb(var(--pref-hover));color:rgb(var(--pref-ink))}
+
+.preview-evolution :is(.preview-top,.preview-title){background:var(--preview-accent)}

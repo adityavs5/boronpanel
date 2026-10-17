@@ -48,6 +48,7 @@ def _qr_data_uri(otpauth_uri: str) -> str:
 
 class VerifyBody(BaseModel):
     code: str
+    current_password: str
 
 
 class DisableBody(BaseModel):
@@ -61,16 +62,16 @@ def get_status(identity: Identity = Depends(get_identity)):
 
 
 @api_router.post("/setup")
-def setup(identity: Identity = Depends(get_identity)):
+def setup(body: DisableBody, identity: Identity = Depends(get_identity)):
     _require_session_identity(identity)
-    result = call_daemon("totp.setup", identity, panel_user_id=identity.panel_user_id)
+    result = call_daemon("totp.setup", identity, panel_user_id=identity.panel_user_id, current_password=body.current_password)
     return {**result, "qr_data_uri": _qr_data_uri(result["otpauth_uri"])}
 
 
 @api_router.post("/verify")
 def verify(body: VerifyBody, identity: Identity = Depends(get_identity)):
     _require_session_identity(identity)
-    return call_daemon("totp.verify", identity, panel_user_id=identity.panel_user_id, code=body.code)
+    return call_daemon("totp.verify", identity, panel_user_id=identity.panel_user_id, code=body.code, current_password=body.current_password)
 
 
 @api_router.post("/disable")
@@ -96,19 +97,19 @@ def ui_2fa(request: Request, identity: Identity = Depends(get_identity)):
 
 
 @ui_router.post("/setup")
-def ui_setup(request: Request, identity: Identity = Depends(get_identity)):
+def ui_setup(request: Request, current_password: str = Form(...), identity: Identity = Depends(get_identity)):
     _require_session_identity(identity)
     status = call_daemon("totp.status", identity, panel_user_id=identity.panel_user_id)
-    result = call_daemon("totp.setup", identity, panel_user_id=identity.panel_user_id)
+    result = call_daemon("totp.setup", identity, panel_user_id=identity.panel_user_id, current_password=current_password)
     setup_data = {**result, "qr_data_uri": _qr_data_uri(result["otpauth_uri"])}
     return templates.TemplateResponse(request, "twofactor_setup.html", {"identity": identity, "status": status, "setup": setup_data, "recovery_codes": None, "error": None})
 
 
 @ui_router.post("/verify")
-def ui_verify(request: Request, code: str = Form(...), identity: Identity = Depends(get_identity)):
+def ui_verify(request: Request, code: str = Form(...), current_password: str = Form(...), identity: Identity = Depends(get_identity)):
     _require_session_identity(identity)
     try:
-        result = call_daemon("totp.verify", identity, panel_user_id=identity.panel_user_id, code=code)
+        result = call_daemon("totp.verify", identity, panel_user_id=identity.panel_user_id, code=code, current_password=current_password)
     except HTTPException as exc:
         status = call_daemon("totp.status", identity, panel_user_id=identity.panel_user_id)
         return templates.TemplateResponse(

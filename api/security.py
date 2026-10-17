@@ -319,3 +319,28 @@ def require_customer_self_access(identity: Identity, username: str) -> None:
         account = db.get(Account, identity.account_id)
         if account is None or account.username != username:
             raise HTTPException(status_code=403, detail="not authorized for this account")
+
+
+def require_credential_origin(request: Request, identity: Identity) -> None:
+    """Compatibility guard for legacy GETs that reveal and consume a secret.
+
+    Unlike ordinary reads these require positive same-origin browser evidence.
+    Full bearer clients retain access; read-only tokens are denied by the helper.
+    """
+    if identity.auth_method != "session":
+        return
+    site = request.headers.get("sec-fetch-site")
+    if site is not None and site != "same-origin":
+        raise HTTPException(status_code=403, detail="Open credential details from inside the panel")
+    value = request.headers.get("origin") or request.headers.get("referer")
+    if value:
+        try:
+            parsed = urlsplit(value)
+            valid = ((parsed.scheme, parsed.netloc) == (request.url.scheme, request.url.netloc)
+                     and parsed.username is None and parsed.password is None)
+        except ValueError:
+            valid = False
+    else:
+        valid = site == "same-origin"
+    if not valid:
+        raise HTTPException(status_code=403, detail="Open credential details from inside the panel")

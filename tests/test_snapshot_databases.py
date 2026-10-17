@@ -101,6 +101,18 @@ def test_import_login_is_exact_database_only(sql):
         cursor.execute('SELECT COUNT(*) FROM mysql.user WHERE User=%s',(username,));assert cursor.fetchone()[0]==0
 
 
+def test_export_file_size_budget_preserves_small_dumps_and_removes_partial_dump(sql):
+    _connection, work = sql
+    complete = work / 'bounded.sql'
+    database.dump_database('alpha_wp', complete, work, max_bytes=1024 * 1024)
+    assert 0 < complete.stat().st_size < 1024 * 1024
+    partial = work / 'too-small.sql'
+    with pytest.raises(RuntimeError, match='Database export failed'):
+        database.dump_database('alpha_wp', partial, work, max_bytes=128)
+    assert not partial.exists()
+    assert not list(work.glob('client-*.cnf'))
+
+
 @pytest.mark.parametrize('statement',[
     'DROP TABLE bravo_wp.private_data;',
     'CREATE TABLE alphaXwp.escape (id INT);',

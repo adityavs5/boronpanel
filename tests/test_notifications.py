@@ -78,7 +78,7 @@ def test_maybe_send_sends_when_fully_enabled(isolated_db, sent_emails):
     assert len(sent_emails) == 1
     assert sent_emails[0]["recipient"] == "c@example.com"
     assert sent_emails[0]["sender"] == "boron@example.com"
-    assert "s3cret!Passw0rd" in sent_emails[0]["body"]
+    assert "s3cret!Passw0rd" not in sent_emails[0]["body"]
 
 
 def test_maybe_send_returns_false_none_account(isolated_db, sent_emails):
@@ -105,16 +105,16 @@ def test_maybe_send_uses_custom_welcome_template_when_set(isolated_db, sent_emai
     with write_session() as session:
         session.add(NotificationSettings(id=1, sender_address="boron@example.com"))
         session.add(AccountNotificationPrefs(account_id=account_id, customer_email="c@example.com"))
-    site_templates.set_welcome_email_template({
-        "subject": "Welcome aboard!",
-        "body": "Hi {{username}}, your temporary password is {{password}}. Enjoy {{panel_name}}!",
-    })
+    from shared.models import WelcomeEmailTemplate
+    with write_session() as session:
+        session.add(WelcomeEmailTemplate(id=1, subject="Welcome aboard!",
+            body="Hi {{username}}, your temporary password is {{password}}. Enjoy {{panel_name}}!"))
 
     nt.maybe_send("account.created", _account(account_id), initial_password="Passw0rd!123")
 
     assert sent_emails[0]["subject"] == "Welcome aboard!"
     assert "Hi acme1" in sent_emails[0]["body"]
-    assert "Passw0rd!123" in sent_emails[0]["body"]
+    assert "Passw0rd!123" not in sent_emails[0]["body"]
 
 
 def test_maybe_send_welcome_template_substitutes_primary_domain(isolated_db, sent_emails):

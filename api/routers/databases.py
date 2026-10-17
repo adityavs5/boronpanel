@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from api.rpc import call_daemon
 from api.upload_guard import BoundedUploadRoute
+from shared.database_uploads import database_upload_directory, MAX_SQL_UPLOAD_BYTES, SQL_UPLOAD_PREFIX
 from api.security import Identity, get_identity, require_account_access
 
 api_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/accounts/{username}/databases", tags=["databases"])
@@ -81,19 +82,22 @@ def export_database(username: str, name: str, identity: Identity = Depends(get_i
     require_account_access(identity, username)
     result = call_daemon("db.export", identity, username=username, name=name)
     return FileResponse(result["path"], filename=result["filename"], media_type="application/sql",
-        headers={"Cache-Control": "private, no-store"}, background=BackgroundTask(shutil.rmtree, result["cleanup_dir"], True))
+        headers={"Cache-Control": "private, no-store"}, background=BackgroundTask(call_daemon, "db.export.cleanup", identity, username=username, export_id=result["export_id"]))
 
 
 @api_router.post("/{name}/import")
 def import_database(username: str, name: str, file: UploadFile = File(...), identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
-    fd, path = tempfile.mkstemp(prefix="boron-db-upload-", suffix=".sql", dir="/tmp")
+    try:
+        fd, path = tempfile.mkstemp(prefix=SQL_UPLOAD_PREFIX, suffix=".sql", dir=database_upload_directory())
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="SQL upload storage is unavailable or full. Ask an administrator to check the panel helper and disk space") from exc
     total = 0
     try:
         with os.fdopen(fd, "wb") as output:
             while chunk := file.file.read(1024 * 1024):
                 total += len(chunk)
-                if total > 2 * 1024 * 1024 * 1024:
+                if total > MAX_SQL_UPLOAD_BYTES:
                     raise HTTPException(status_code=413, detail="SQL import exceeds the 2 GiB limit")
                 output.write(chunk)
         if total == 0:

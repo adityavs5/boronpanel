@@ -155,7 +155,7 @@ function WelcomeEmailCard() {
             value={form.body}
             onChange={(e) => { setForm((f) => ({ ...f, body: e.target.value })); setDirty(true) }}
             rows={8}
-            placeholder={'Hi {{username}},\n\nYour hosting account has been created. Your temporary password is {{password}}.\n\n— {{panel_name}}'}
+            placeholder={'Hi {{username}},\n\nYour hosting account has been created. Contact your administrator through a secure channel for login credentials.\n\n— {{panel_name}}'}
           />
         </FormField>
       </CardContent>

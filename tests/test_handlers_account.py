@@ -13,6 +13,7 @@ def stub_sysops(monkeypatch):
         pass
 
     calls = Calls()
+    monkeypatch.setattr(ha.cgroups, "apply_limits", lambda *args, **kwargs: calls.append(("apply_limits", args[0])))
     # Importing the RPC registry during collection registers real system
     # hooks. This module tests hook dispatch with its own synthetic callbacks.
     for name in ("CREATE_HOOKS", "LIMITS_HOOKS", "SUSPEND_HOOKS", "UNSUSPEND_HOOKS", "TERMINATE_HOOKS"):
@@ -429,23 +430,19 @@ def test_create_account_fires_create_hooks(isolated_db, stub_sysops):
         ha.CREATE_HOOKS.clear()
 
 
-def test_create_account_stashes_initial_password_for_create_hooks(isolated_db, stub_sysops):
-    """Phase 7b feature 3: the "account created" notification needs the
-    plaintext initial password, which exists only in this function's local
-    scope (never persisted) -- confirms CREATE_HOOKS callables can read it
-    off the account row passed to them, and that a fixed custom password
-    (not just an auto-generated one) is stashed identically."""
+def test_create_account_keeps_password_out_of_create_hooks(isolated_db, stub_sysops):
+    """Creation responses retain credentials, but integration hooks never see them."""
     captured = []
     ha.CREATE_HOOKS.append(lambda account: captured.append(getattr(account, "initial_password", "MISSING")))
     try:
         result = ha.create_account({"username": "demo1", "password": "Str0ng!Passw0rdXY"})
-        assert captured == ["Str0ng!Passw0rdXY"]
+        assert captured == ["MISSING"]
         assert result["initial_password"] == "Str0ng!Passw0rdXY"
     finally:
         ha.CREATE_HOOKS.clear()
 
 
-def test_reactivate_account_stashes_initial_password_for_create_hooks(isolated_db, stub_sysops):
+def test_reactivate_account_keeps_password_out_of_create_hooks(isolated_db, stub_sysops):
     ha.create_account({"username": "demo1"})
     ha.terminate_account({"username": "demo1"})
 
@@ -453,8 +450,8 @@ def test_reactivate_account_stashes_initial_password_for_create_hooks(isolated_d
     ha.CREATE_HOOKS.append(lambda account: captured.append(getattr(account, "initial_password", "MISSING")))
     try:
         result = ha.reactivate_account({"username": "demo1"})
-        assert captured == [result["initial_password"]]
-        assert captured[0] != "MISSING"
+        assert captured == ["MISSING"]
+        assert result["initial_password"]
     finally:
         ha.CREATE_HOOKS.clear()
 
@@ -692,3 +689,23 @@ def test_get_account_returns_contact_email(isolated_db, email):
     result = ha.get_account({"username": "demo1"})
     assert result["email"] == email
     assert result["username"] == "demo1"
+
+
+@pytest.mark.parametrize("reactivate", [False, True])
+def test_mandatory_cgroup_failure_never_activates_identity(isolated_db, stub_sysops, monkeypatch, reactivate):
+    if reactivate:
+        with write_session() as db:
+            db.add(Account(username="demo1", status="terminated"))
+    def fail(*args, **kwargs):
+        raise ha.cgroups.CgroupError("policy unavailable")
+    monkeypatch.setattr(ha.cgroups, "apply_limits", fail)
+    operation = ha.reactivate_account if reactivate else ha.create_account
+    with pytest.raises(ha.cgroups.CgroupError, match="policy unavailable"):
+        operation({"username": "demo1"})
+    with write_session() as db:
+        account = db.scalar(select(Account).where(Account.username == "demo1"))
+        assert account is None or account.status == "terminated"
+        assert db.scalar(select(ha.PanelUser).where(ha.PanelUser.username == "demo1")) is None
+    assert not any(call[0] == "set_initial_password" for call in stub_sysops)
+    assert ("lock_user", "demo1") in stub_sysops
+    assert ("delete_linux_user", "demo1") in stub_sysops

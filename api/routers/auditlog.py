@@ -19,6 +19,7 @@ from starlette.requests import Request
 
 from api.security import Identity, get_identity, require_admin
 from api.templates import templates
+from shared.audit_redaction import sanitize, sanitize_output
 from shared.db import read_session
 from shared.models import AccountEvent, ActionStep, AuditLog
 from shared.token_policy import READ_ONLY_OPERATIONS
@@ -58,18 +59,18 @@ def _row_dict(row: AuditLog) -> dict:
         "role": row.role,
         "op": row.op,
         "target": row.target,
-        "params": row.params,
+        "params": sanitize("", row.params),
         "result": row.result,
-        "detail": row.detail,
+        "detail": sanitize_output(row.detail, row.params, row.changes),
         "request_id": row.request_id,
         "reference": match.group(1) if match else None,
         "source_ip": row.source_ip,
         "duration_ms": row.duration_ms,
-        "changes": row.changes,
+        "changes": sanitize("", row.changes),
     }
 
 
-def _step_dict(row: ActionStep) -> dict:
+def _step_dict(row: ActionStep, params=None, changes=None) -> dict:
     return {
         "id": row.id,
         "name": row.name,
@@ -77,8 +78,8 @@ def _step_dict(row: ActionStep) -> dict:
         "duration_ms": row.duration_ms,
         "result": row.result,
         "exit_code": row.exit_code,
-        "stdout_tail": row.stdout_tail,
-        "stderr_tail": row.stderr_tail,
+        "stdout_tail": sanitize_output(row.stdout_tail, params, changes),
+        "stderr_tail": sanitize_output(row.stderr_tail, params, changes),
     }
 
 
@@ -124,7 +125,7 @@ def _event_dict(row: AccountEvent) -> dict:
         "actor": row.actor,
         "actor_role": row.actor_role,
         "ip": row.ip,
-        "detail": row.detail,
+        "detail": sanitize("detail", row.detail),
     }
 
 
@@ -206,7 +207,10 @@ def _csv_response(model, query, fields, filename):
             buffer.seek(0)
             buffer.truncate(0)
             for row in rows:
-                writer.writerow([_csv_cell(getattr(row, field)) for field in fields])
+                writer.writerow([_csv_cell(
+                    sanitize_output(getattr(row, field), getattr(row, "params", None), getattr(row, "changes", None))
+                    if field == "detail" else sanitize(field, getattr(row, field))
+                ) for field in fields])
             before = rows[-1].id
             yield buffer.getvalue()
     return StreamingResponse(chunks(), media_type='text/csv', headers={
@@ -261,7 +265,7 @@ def audit_log_detail(entry_id: int, identity: Identity = Depends(get_identity)):
             select(ActionStep).where(ActionStep.audit_id == row.id).order_by(ActionStep.id)
         ).all()
         result = _row_dict(row)
-        result["steps"] = [_step_dict(item) for item in steps]
+        result["steps"] = [_step_dict(item, row.params, row.changes) for item in steps]
         return result
 
 

@@ -338,7 +338,7 @@ def bootstrap_all_redis() -> None:
     with write_session() as session:
         rows = session.scalars(select(RedisInstance)).all()
         snapshot = [(r.id, r.account_id, r.mem_mb, r.enabled) for r in rows]
-        usernames = {a.id: a.username for a in session.scalars(select(Account)).all()}
+        usernames = {a.id: a.username for a in session.scalars(select(Account).where(Account.status == "active")).all()}
 
     for instance_id, account_id, mem_mb, enabled in snapshot:
         username = usernames.get(account_id)

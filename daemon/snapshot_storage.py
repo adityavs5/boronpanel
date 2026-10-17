@@ -55,6 +55,10 @@ def validate_local_destination(value):
     for parent in (path, *path.parents):
         if parent.is_symlink():
             raise ValidationError('Local backup storage cannot use symbolic links')
+        if parent.exists():
+            info = parent.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                raise ValidationError('Every backup directory ancestor must be service-owned and not group/world writable')
     if os.statvfs(existing).f_flag & os.ST_RDONLY:
         raise ValidationError('The backup filesystem is read-only')
     return path

@@ -265,6 +265,7 @@ OP_TABLE = {
     "db.drop": handlers_database.drop_database,
     "db.rename": handlers_database.rename_database,
     "db.export": handlers_database.export_database,
+    "db.export.cleanup": handlers_database.cleanup_database_export,
     "db.import": handlers_database.import_database,
     "db.change_password": handlers_database.change_password,
     "db.user.list": handlers_database.list_users,
@@ -847,12 +848,6 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_database.termin
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_mail.terminate_account_mail(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: ssl.terminate_account_certs(account))
 handlers_account.TERMINATE_HOOKS.append(lambda account: handlers_cron.terminate_account_cron(account))
-handlers_account.CREATE_HOOKS.append(
-    lambda account: cgroups.apply_limits(
-        account.username, account.cpu_pct, account.mem_mb, account.io_mb,
-        account.pids_max, uid=account.uid,
-    )
-)
 handlers_account.LIMITS_HOOKS.append(
     lambda account: resource_manager.apply_account(account.id)
 )
@@ -900,11 +895,10 @@ handlers_account.TERMINATE_HOOKS.append(lambda account: lscache.terminate_accoun
 # fanned out through the single daemon/events.py entry point (each channel
 # does its own enabled/subscribed filtering, so this wiring never needs to
 # change when a new notification/webhook event type is added elsewhere).
-# CREATE_HOOKS' account_snapshot carries a transient `.initial_password`
-# attribute (see handlers_account.create_account/reactivate_account) that
-# only the "account created" email actually uses.
+# Welcome events never carry the initial password; only the authorized
+# creation response reveals it.
 handlers_account.CREATE_HOOKS.append(
-    lambda account: events.emit("account.created", account, initial_password=getattr(account, "initial_password", None))
+    lambda account: events.emit("account.created", account)
 )
 handlers_account.SUSPEND_HOOKS.append(lambda account: events.emit("account.suspended", account))
 handlers_account.UNSUSPEND_HOOKS.append(lambda account: events.emit("account.unsuspended", account))
@@ -1328,6 +1322,27 @@ async def _reconcile_acme_renewals() -> None:
             await asyncio.sleep(60)
 
 
+async def _redact_historical_audit():
+    cursor = 0
+    try:
+        while True:
+            cursor = await asyncio.to_thread(audit.redact_historical_batch, cursor)
+            if cursor is None:
+                return
+            await asyncio.sleep(0.05)
+    except Exception:
+        logger.exception("Historical audit redaction failed; stored audit records need review")
+
+
+async def _expire_database_exports():
+    while True:
+        await asyncio.sleep(600)
+        try:
+            await asyncio.to_thread(handlers_database.cleanup_database_exports)
+        except Exception:
+            logger.exception("Database export expiry failed")
+
+
 async def amain() -> None:
     # Parse/configure migrations stay backward-compatible in memory here.
     # Persisting a new schema marker during service startup would make an
@@ -1335,6 +1350,13 @@ async def amain() -> None:
     # Fresh installs write the current schema; explicit config maintenance can
     # call migrate_config_file after the rollback window has closed.
     init_db()
+    asyncio.create_task(_expire_database_exports())
+    asyncio.create_task(_redact_historical_audit())
+    try:
+        handlers_database.prepare_import_spool()
+        handlers_database.cleanup_database_exports()
+    except Exception:
+        logger.exception("SQL import upload directory preparation failed")
     try:
         recovered_updates = updates.recover_interrupted_jobs()
         if recovered_updates:
@@ -1380,6 +1402,7 @@ async def amain() -> None:
         await asyncio.get_running_loop().run_in_executor(None, cgroups.bootstrap_all_slices)
     except Exception:
         logger.exception("cgroup slice bootstrap failed at startup")
+        raise
     try:
         governor_result = await asyncio.get_running_loop().run_in_executor(None, db_governor.reconcile_all)
         if governor_result["errors"]:

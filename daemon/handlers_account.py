@@ -193,6 +193,8 @@ def create_account(params: dict) -> dict:
 
     password = password or sysops.generate_password()
     try:
+        # Mandatory resource enforcement precedes credentials and active state.
+        cgroups.apply_limits(username, cpu_pct, mem_mb, io_mb, pids_max, uid=uid)
         sysops.set_initial_password(username, password)
         sysops.set_quota(username, quota_soft_mb, quota_hard_mb)
     except Exception:
@@ -294,15 +296,6 @@ def create_account(params: dict) -> dict:
 
     result["dns_zone_created"] = dns_zone_created
 
-    # Phase 7b feature 3: the "account created" email needs the plaintext
-    # initial password, which exists only in this function's own local
-    # scope (never persisted -- PanelUser/Account never store it) and is
-    # gone the moment this call returns. CREATE_HOOKS callables only ever
-    # receive the Account row (every other hook -- cgroups, namespace --
-    # only needs fields already on it), so a transient, non-mapped
-    # attribute is stashed here rather than widening that shared signature
-    # for every other hook consumer just for this one's sake.
-    account_snapshot.initial_password = password
     for hook in CREATE_HOOKS:
         try:
             hook(account_snapshot)
@@ -351,6 +344,8 @@ def reactivate_account(params: dict) -> dict:
     uid, gid = sysops.create_linux_user(username)
     password = password or sysops.generate_password()
     try:
+        # Mandatory resource enforcement precedes credentials and active state.
+        cgroups.apply_limits(username, cpu_pct, mem_mb, io_mb, pids_max, uid=uid)
         sysops.set_initial_password(username, password)
         sysops.set_quota(username, quota_soft_mb, quota_hard_mb)
     except Exception:
@@ -392,7 +387,6 @@ def reactivate_account(params: dict) -> dict:
         result = _account_to_dict(account)
         account_snapshot = account
 
-    account_snapshot.initial_password = password
     for hook in CREATE_HOOKS:
         try:
             hook(account_snapshot)
@@ -501,6 +495,15 @@ def unsuspend_account(params: dict) -> dict:
         if account.status != "suspended":
             raise RuntimeError(f"cannot unsuspend account in status '{account.status}'")
 
+        from daemon.resource_manager import effective_for_account
+        effective = effective_for_account(session, account)
+        if effective["policy"] is None:
+            cgroups.apply_limits(username, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max, uid=account.uid)
+        else:
+            cgroups.apply_policy(username, effective["values"], uid=account.uid)
+        if (account.last_error or "").startswith("Resource enforcement failed;"):
+            sysops.run(["usermod", "--expiredate", "", username], check=True)
+            account.last_error = None
         sysops.unlock_user(username)
         try:
             for hook in UNSUSPEND_HOOKS:

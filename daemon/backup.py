@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import contextlib
 import stat
 import subprocess
 import secrets
@@ -133,7 +134,9 @@ def create_destination(params: dict) -> dict:
 
     if kind == "local":
         local_path = params["local_path"]
-        os.makedirs(local_path, exist_ok=True)
+        from daemon.snapshot_storage import validate_local_destination
+        local_path = str(validate_local_destination(local_path))
+        Path(local_path).mkdir(mode=0o700, parents=True, exist_ok=True)
         with write_session() as session:
             dest = BackupDestination(name=name, kind="local", local_path=local_path)
             session.add(dest)
@@ -398,7 +401,8 @@ def _trigger_backup_locked(params: dict) -> dict:
         if selected_destination is None:
             raise BackupError(f"destination {destination_id} not found")
         if selected_destination.kind == "local":
-            local_path = Path(selected_destination.local_path)
+            from daemon.snapshot_storage import validate_local_destination
+            local_path = validate_local_destination(selected_destination.local_path)
             if not local_path.is_absolute() or local_path.is_symlink():
                 raise ValidationError("The local backup destination needs administrator permission repair")
             local_path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -790,9 +794,7 @@ def _run_backup_job(job_id: int) -> None:
         _update_job(job_id, progress_message=f"uploading to destination ({size_bytes} bytes)")
 
         if dest_kind == "local":
-            os.makedirs(dest_local_path, exist_ok=True)
-            final_path = str(Path(dest_local_path) / artifact_name)
-            shutil.move(str(local_artifact), final_path)
+            final_path = _publish_local_artifact(dest_local_path, artifact_name, local_artifact)
         else:
             final_path = (
                 f"{dest_remote}:{dest_prefix}/{artifact_name}" if dest_prefix else f"{dest_remote}:{artifact_name}"
@@ -878,8 +880,12 @@ def _enforce_retention_locked(job_id: int) -> None:
                 continue
         try:
             if dest_kind == "local":
-                if artifact_path and Path(artifact_path).exists():
-                    Path(artifact_path).unlink()
+                if artifact_path:
+                    path = Path(artifact_path)
+                    if path.parent != Path(destination.local_path):
+                        raise BackupError("Backup artifact is outside its destination")
+                    with _local_directory(path.parent) as fd:
+                        os.unlink(path.name, dir_fd=fd)
             elif artifact_path:
                 rclone.delete_path(artifact_path)
         except Exception:  # noqa: BLE001
@@ -935,7 +941,20 @@ def run_scheduled_backups() -> int:
 
 def _fetch_artifact_locally(artifact_path: str, dest_kind: str, tmp_dir: str) -> str:
     if dest_kind == "local":
-        return artifact_path
+        path = Path(artifact_path)
+        # Copy a pinned regular file into private staging. Never hand callers
+        # a mutable pathname that will be reopened later as root.
+        with _local_directory(path.parent) as directory:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(fd, "rb") as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                    raise BackupError("Backup artifact is not a protected regular file")
+                target = Path(tmp_dir) / path.name
+                with target.open("xb") as output:
+                    shutil.copyfileobj(source, output, 1024 * 1024)
+                target.chmod(0o600)
+                return str(target)
     local_copy = str(Path(tmp_dir) / Path(artifact_path.split(":", 1)[1]).name)
     rclone.copy_from_remote(artifact_path, local_copy)
     return local_copy
@@ -1531,3 +1550,46 @@ def _run_restore_job(restore_job_id: int) -> None:
         if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors=True)
         guard.close()
+
+
+@contextlib.contextmanager
+def _local_directory(value):
+    """Pin each component under a root-owned, immutable-to-tenants ancestor."""
+    from daemon.snapshot_storage import validate_local_destination
+    path = validate_local_destination(value)
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in path.parts[1:]:
+            try:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                os.mkdir(component, 0o700, dir_fd=fd)
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                raise BackupError("Backup directory is writable by another identity")
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _publish_local_artifact(destination, name, source):
+    if Path(name).name != name or name in (".", ".."):
+        raise BackupError("Invalid backup artifact name")
+    temporary = ".boron-" + secrets.token_hex(16)
+    with _local_directory(destination) as directory:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            with os.fdopen(fd, "wb") as output, Path(source).open("rb") as incoming:
+                shutil.copyfileobj(incoming, output, 1024 * 1024)
+                output.flush()
+                os.fsync(output.fileno())
+            # linkat publishes without overwriting a pre-existing name/symlink.
+            os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+            os.fsync(directory)
+        finally:
+            os.unlink(temporary, dir_fd=directory)
+    Path(source).unlink()
+    return str(Path(destination) / name)

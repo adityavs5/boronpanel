@@ -38,7 +38,7 @@ MAX_BODY_LEN = 8000
 # set_welcome_email_template can reject an unknown {{token}} before it's
 # ever saved (a typo'd placeholder would otherwise render literally into
 # every future welcome email, silently, until someone happened to notice).
-WELCOME_EMAIL_PLACEHOLDERS = ("username", "password", "primary_domain", "panel_name")
+WELCOME_EMAIL_PLACEHOLDERS = ("username", "primary_domain", "panel_name")
 SUSPENSION_DESIGNS = {
     "clean": {"name": "Clean notice", "description": "A calm centered card with a clear support message."},
     "gradient": {"name": "Modern gradient", "description": "A bold branded background with a glass-style notice."},

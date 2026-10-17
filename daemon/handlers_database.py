@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 import os
+import re
+import time
 from pathlib import Path
 import pwd
 import shutil
+import stat
 import tempfile
 import uuid
 from sqlalchemy import select
 
+from shared.config import settings
 from shared.db import write_session
+from shared.database_uploads import database_upload_directory, MAX_SQL_UPLOAD_BYTES, SQL_UPLOAD_PREFIX
 from shared.models import Account, DatabaseGrant, DatabaseUser, DatabaseUserGrant
 from shared.validation import ValidationError, validate_db_identifier, validate_password_strength, validate_username
 
@@ -42,13 +47,25 @@ def _require_safety_capacity(work: Path, db_name: str, *, extra_bytes: int = 0) 
 
 def _copy_import_source(source: Path, work: Path) -> Path:
     target = work / "uploaded.sql"
-    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except OSError as exc:
+        raise ValidationError("SQL upload is no longer available. Upload the SQL file again") from exc
+    try:
+        _verify_import_stat(os.fstat(source_fd), pwd.getpwnam("boron-api").pw_uid)
+    except Exception:
+        os.close(source_fd)
+        raise
+    try:
+        target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except Exception:
+        os.close(source_fd)
+        raise
     total = 0
     try:
         while chunk := os.read(source_fd, 1024 * 1024):
             total += len(chunk)
-            if total > 2 * 1024 * 1024 * 1024:
+            if total > MAX_SQL_UPLOAD_BYTES:
                 raise ValidationError("SQL import exceeds the 2 GiB limit")
             view = memoryview(chunk)
             while view:
@@ -502,40 +519,119 @@ def _owned_database(username: str, supplied_name: str):
         return account.id, row.id, name
 
 
+EXPORT_MAX_BYTES = 2 * 1024 * 1024 * 1024
+EXPORT_FREE_RESERVE = 5 * 1024 * 1024 * 1024
+EXPORT_TTL = 3600
+
+
+def _export_directory():
+    api = pwd.getpwnam("boron-api")
+    root = Path(settings.db_path).parent / "database-exports"
+    try:
+        root.mkdir(mode=0o750)
+    except FileExistsError:
+        pass
+    else:
+        os.chown(root, 0, api.pw_gid)
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != api.pw_gid or info.st_mode & 0o027:
+        raise ValidationError("Database export storage needs administrator permission repair")
+    return root, api.pw_gid
+
+
+def cleanup_database_exports():
+    root, _ = _export_directory()
+    for entry in root.iterdir():
+        if re.fullmatch(r"[a-z][a-z0-9_]{0,31}-[0-9a-f]{32}", entry.name):
+            if entry.lstat().st_mtime < time.time() - EXPORT_TTL:
+                if entry.is_symlink():
+                    entry.unlink()
+                elif entry.is_dir():
+                    shutil.rmtree(entry)
+
+
+def cleanup_database_export(params):
+    username = validate_username(params["username"])
+    name = str(params.get("export_id", ""))
+    if not re.fullmatch(re.escape(username) + r"-[0-9a-f]{32}", name):
+        raise ValidationError("Database export does not belong to this account")
+    root, _ = _export_directory()
+    target = root / name
+    if target.is_symlink():
+        raise ValidationError("Invalid database export")
+    shutil.rmtree(target, ignore_errors=True)
+    return {"deleted": True}
+
+
 @serialized
 def export_database(params: dict) -> dict:
     username = validate_username(params["username"])
     _account_id, _grant_id, name = _owned_database(username, params["name"])
     from daemon.snapshot_databases import dump_database
-    work = Path(tempfile.mkdtemp(prefix="boron-db-export-", dir="/tmp"))
+    cleanup_database_exports()
+    root, api_gid = _export_directory()
+    entries = list(root.iterdir())
+    if len(entries) >= 16 or sum(p.name.startswith(username + "-") for p in entries) >= 2:
+        raise ValidationError("Finish an existing database download before exporting again")
+    if shutil.disk_usage(root).free < EXPORT_FREE_RESERVE + EXPORT_MAX_BYTES:
+        raise ValidationError("SQL export requires 7 GiB free to preserve the server disk reserve")
+    export_id = username + "-" + uuid.uuid4().hex
+    work = root / export_id
+    work.mkdir(mode=0o700)
     target = work / f"{name}.sql"
     try:
-        dump_database(name, target, work)
-        try:
-            api = pwd.getpwnam("boron-api")
-            os.chown(work, api.pw_uid, api.pw_gid); work.chmod(0o700)
-            os.chown(target, api.pw_uid, api.pw_gid); target.chmod(0o600)
-        except KeyError:
-            pass
-        return {"path": str(target), "filename": target.name, "cleanup_dir": str(work), "size_bytes": target.stat().st_size}
-    except Exception:
+        dump_database(name, target, work, max_bytes=EXPORT_MAX_BYTES)
+        # Only the helper can replace/remove a reservation; API gets read access.
+        os.chown(target, 0, api_gid); target.chmod(0o640)
+        os.chown(work, 0, api_gid); work.chmod(0o750)
+        return {"path": str(target), "filename": target.name, "cleanup_dir": str(work),
+                "export_id": export_id, "size_bytes": target.stat().st_size}
+    except BaseException:
         shutil.rmtree(work, ignore_errors=True)
         raise
 
 
+def prepare_import_spool() -> Path:
+    """Create the API-owned private transfer directory in the shared filesystem."""
+    api = pwd.getpwnam("boron-api")
+    directory = database_upload_directory()
+    if not directory.is_absolute():
+        raise ValidationError("Database upload directory must be absolute")
+    try:
+        directory.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    else:
+        os.chown(directory, api.pw_uid, api.pw_gid, follow_symlinks=False)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != api.pw_uid or info.st_mode & 0o077:
+        raise ValidationError("Database upload directory must be private and owned by the panel API")
+    return directory
+
+
+def _verify_import_stat(info, api_uid: int) -> None:
+    if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
+        raise ValidationError("SQL import must be a non-empty regular file")
+    if info.st_size > MAX_SQL_UPLOAD_BYTES:
+        raise ValidationError("SQL import exceeds the 2 GiB limit")
+    if info.st_uid != api_uid or info.st_mode & 0o077 or info.st_nlink != 1:
+        raise ValidationError("SQL import source must be a private upload owned by the panel API")
+
+
 def _verified_import(path_value: str) -> Path:
     path = Path(path_value)
-    info = path.lstat()
-    if not path.is_absolute() or path.is_symlink() or not path.is_file() or info.st_size <= 0:
-        raise ValidationError("SQL import must be a non-empty regular file")
-    if info.st_size > 2 * 1024 * 1024 * 1024:
-        raise ValidationError("SQL import exceeds the 2 GiB limit")
-    try:
-        api_uid = pwd.getpwnam("boron-api").pw_uid
-    except KeyError:
-        api_uid = os.geteuid()
-    if info.st_uid != api_uid or path.parent != Path("/tmp"):
+    directory = database_upload_directory()
+    if (not path.is_absolute() or path.parent != directory
+            or not path.name.startswith(SQL_UPLOAD_PREFIX) or path.suffix != ".sql"):
         raise ValidationError("SQL import source is outside the private upload spool")
+    api_uid = pwd.getpwnam("boron-api").pw_uid
+    try:
+        parent = directory.lstat()
+        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != api_uid or parent.st_mode & 0o077:
+            raise ValidationError("SQL import upload storage is not private")
+        _verify_import_stat(path.lstat(), api_uid)
+    except OSError as exc:
+        raise ValidationError("SQL upload is no longer available. Upload the SQL file again") from exc
     return path
 
 

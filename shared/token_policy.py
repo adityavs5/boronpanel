@@ -30,7 +30,6 @@ READ_ONLY_OPERATIONS = frozenset({
     'account.get',
     'account.list',
     'admin_user.list',
-    'apps.install.get',
     'apps.list',
     'apps.node.get',
     'apps.node.list',
@@ -46,9 +45,7 @@ READ_ONLY_OPERATIONS = frozenset({
     'bandwidth.ranking',
     'branding.get',
     'bulk.get',
-    'composer.get',
     'composer.list',
-    'cpanel_import.get',
     'cpanel_import.list',
     'cron.list',
     'cron.mailto.get',
@@ -118,7 +115,6 @@ READ_ONLY_OPERATIONS = frozenset({
     'php_ini.get',
     'plan.get',
     'plan.list',
-    'portable.import.get',
     'portable.import.list',
     'processes.list',
     'redirect.list',
@@ -180,9 +176,10 @@ READ_ONLY_OPERATIONS = frozenset({
     'webhooks.get',
     'webhooks.list',
     'wildcard.get',
-    'wordpress.install.get',
     'wordpress.install.list',
-    'wpcli.get',
     'wpcli.list',
     'wpmanager.inventory',
 })
+
+# These status calls also consume one-time credentials and must be audited.
+CREDENTIAL_CONSUMING_OPERATIONS = frozenset(['apps.install.get', 'composer.get', 'cpanel_import.get', 'portable.import.get', 'wordpress.install.get', 'wpcli.get'])

@@ -17,5 +17,6 @@
     "mail-configuration",
     "ols-configuration",
     "systemd-units"
-  ]
+  ],
+  "channel": "beta"
 }

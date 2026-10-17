@@ -61,6 +61,7 @@ from pathlib import Path
 
 import httpx
 from sqlalchemy import select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from daemon import diagnostics, monitoring, notifications
 from daemon.test_update_override import (
@@ -184,15 +185,18 @@ def tail_update_log(max_lines: int = 200) -> list[dict]:
 
 
 def _get_state(session) -> UpdateState:
-    row = session.get(UpdateState, 1)
-    if row is None:
-        row = UpdateState(id=1)
-        session.add(row)
-        session.flush()
-    return row
+    # Insert first: a read-then-insert races on a fresh database. SQLite
+    # serializes writers and the unique key makes this an atomic no-op if
+    # another request already created the singleton. No earlier read snapshot.
+    session.execute(sqlite_insert(UpdateState).values(id=1).on_conflict_do_nothing(index_elements=["id"]))
+    return session.get(UpdateState, 1)
 
 
 CHANNEL_BRANCHES = {"stable": "master", "beta": "beta", "development": "development"}
+
+
+class NoPublishedRelease(ValidationError):
+    """An empty preview tier is informational during discovery, not installable."""
 
 
 def _channel() -> str:
@@ -288,7 +292,7 @@ def _fetch_release(tag: str | None = None) -> dict:
                 continue
             candidates.append((version_key, release))
         if not candidates:
-            raise ValidationError(f"No {channel} release has been published in {repo}")
+            raise NoPublishedRelease(f"No {channel} release has been published in {repo}")
         data = max(candidates, key=lambda item: item[0])[1]
     if not isinstance(data, dict):
         raise ValidationError("GitHub returned invalid release metadata")
@@ -439,7 +443,10 @@ def check(params: dict | None = None) -> dict:
         # the GitHub API. force=True (Check now button, daily cron) bypasses.
         fresh = (age is not None and age < settings.update_check_cache_seconds
                  and (state.release_metadata or {}).get("channel", "stable") == _channel())
-        if force or not fresh:
+        legacy_empty_error = state.last_error == (
+            f"No {_channel()} release has been published in {settings.update_github_repo.strip()}"
+        )
+        if force or not fresh or legacy_empty_error:
             try:
                 info = _fetch_release()
                 state.latest_version = info["version"]
@@ -456,8 +463,12 @@ def check(params: dict | None = None) -> dict:
                 state.checksum_url = None
                 state.changelog_url = None
                 state.release_asset_bytes = None
-                state.last_error = str(exc)[:1000]
-                logger.warning("update check failed: %s", exc)
+                if isinstance(exc, NoPublishedRelease):
+                    state.release_metadata["availability"] = "unpublished"
+                    state.last_error = None
+                else:
+                    state.last_error = str(exc)[:1000]
+                    logger.warning("update check failed: %s", exc)
             state.checked_at = utcnow()
 
         update_available = False
@@ -478,6 +489,7 @@ def check(params: dict | None = None) -> dict:
             "error": state.last_error,
             "release_metadata": state.release_metadata or _legacy_release_metadata(),
             "release_asset_bytes": state.release_asset_bytes,
+            "release_availability": (state.release_metadata or {}).get("availability"),
         }
 
 

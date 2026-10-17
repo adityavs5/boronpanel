@@ -148,3 +148,21 @@ def test_audit_ignores_exited_process(isolated_db, tmp_path, monkeypatch):
     monkeypatch.setattr(cgroups, "LSHTTPD_CGROUP_PROCS", procs)
     monkeypatch.setattr(cgroups, "_pid_uid", lambda pid: None)
     assert cgroups.audit_php_coverage()["checked"] == 0
+
+
+def test_bootstrap_reconciles_later_accounts_when_quarantine_fails(isolated_db, monkeypatch):
+    with write_session() as db:
+        make_account(db, username="first", uid=2001)
+        make_account(db, username="second", uid=2002)
+    seen = []
+    def apply(username, *args, **kwargs):
+        seen.append(username)
+        if username == "first":
+            raise cgroups.CgroupError("systemd unavailable")
+    def quarantine(account):
+        raise cgroups.CgroupError("controller missing")
+    monkeypatch.setattr(cgroups, "apply_limits", apply)
+    monkeypatch.setattr(cgroups, "quarantine_failed_policy", quarantine)
+    with pytest.raises(cgroups.CgroupError, match="host intervention"):
+        cgroups.bootstrap_all_slices()
+    assert seen == ["first", "second"]

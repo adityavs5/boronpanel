@@ -19,6 +19,7 @@ from fastapi.responses import RedirectResponse
 from starlette.requests import Request
 from pydantic import BaseModel, Field
 
+from api.security import require_credential_origin
 from api.rpc import call_daemon
 from api.upload_guard import BoundedUploadRoute
 from api.security import Identity, get_identity, require_admin
@@ -85,7 +86,8 @@ def trigger_import(
 
 
 @api_router.get("/{job_id}")
-def get_import_job(job_id: int, username: str, identity: Identity = Depends(get_identity)):
+def get_import_job(request: Request, job_id: int, username: str, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_admin(identity)
     return call_daemon("cpanel_import.get", identity, job_id=job_id, username=username)
 
@@ -148,7 +150,8 @@ def migrate_directadmin(body: DirectAdminImport, identity: Identity = Depends(ge
 
 
 @accounts_api_router.get("/{job_id}")
-def get_account_import(job_id: int, username: str, identity: Identity = Depends(get_identity)):
+def get_account_import(request: Request, job_id: int, username: str, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_admin(identity)
     return call_daemon("cpanel_import.get", identity, job_id=job_id, username=username)
 
@@ -174,6 +177,7 @@ def ui_trigger_import(
 
 @ui_router.get("/{job_id}")
 def ui_view_job(request: Request, job_id: int, username: str, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_admin(identity)
     job = call_daemon("cpanel_import.get", identity, job_id=job_id, username=username)
     return templates.TemplateResponse(request, "cpanel_import_job.html", {"identity": identity, "job": job})

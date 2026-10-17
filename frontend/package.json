@@ -1,7 +1,7 @@
 {
   "name": "boron-frontend",
   "private": true,
-  "version": "3.2.1",
+  "version": "3.2.2",
   "type": "module",
   "description": "Boron control panel \u2014 React SPA (replaces the legacy Jinja2 UI)",
   "scripts": {
@@ -11,7 +11,10 @@
     "test:themes": "playwright test"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/lato": "^5.3.0",
     "@fontsource/open-sans": "^5.3.0",
+    "@fontsource/roboto": "^5.3.0",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-checkbox": "^1.0.4",
     "@radix-ui/react-dialog": "^1.0.5",

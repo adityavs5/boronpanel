@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import Literal
 from starlette.requests import Request
 
+from api.security import require_credential_origin
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_account_access, require_domain_access, require_admin
 from api.templates import templates
@@ -32,7 +33,8 @@ def trigger_install(username: str, domain: str, body: InstallWordPressBody, iden
 
 
 @api_router.get("/jobs/{job_id}")
-def get_job(username: str, domain: str, job_id: int, identity: Identity = Depends(get_identity)):
+def get_job(request: Request, username: str, domain: str, job_id: int, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_account_access(identity, username)
     require_domain_access(identity, domain)
     return call_daemon("wordpress.install.get", identity, username=username, job_id=job_id)
@@ -83,7 +85,8 @@ def list_wpcli_action_runs(username: str, domain: str, identity: Identity = Depe
 
 
 @api_router.get("/actions/runs/{job_id}")
-def get_wpcli_action_run(username: str, domain: str, job_id: int, identity: Identity = Depends(get_identity)):
+def get_wpcli_action_run(request: Request, username: str, domain: str, job_id: int, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_account_access(identity, username)
     require_domain_access(identity, domain)
     return call_daemon("wpcli.get", identity, username=username, job_id=job_id)
@@ -126,6 +129,7 @@ def ui_trigger_install(
 
 @ui_router.get("/jobs/{job_id}")
 def ui_job_status(request: Request, username: str, domain: str, job_id: int, identity: Identity = Depends(get_identity)):
+    require_credential_origin(request, identity)
     require_account_access(identity, username)
     require_domain_access(identity, domain)
     job = call_daemon("wordpress.install.get", identity, username=username, job_id=job_id)
