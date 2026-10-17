@@ -121,3 +121,31 @@ full live preflight.
   through `BORON_RELEASE_SIGNING_KEY_FILE`; unsigned publication is refused.
 - A failed release run reverts the version bump and removes its temp
   staging dir; artifacts already written to `dist/` are safe to delete.
+
+### Update tiers
+
+Administrators choose **Stable**, **Beta** or **Development** on Updates. The
+preference is `update_channel` in `/etc/boron/boron.toml`; old installations
+continue to use `stable`. Changing it clears discovery state, does not install
+anything, and is blocked while an update or rollback is active.
+
+| Tier | Source branch | GitHub release | Signed metadata `channel` |
+|---|---|---|---|
+| Stable | `master` | Normal/latest | `stable` (omitted means stable for older releases) |
+| Beta | `beta` | Prerelease, target `beta`, not latest | `beta` |
+| Development | `development` | Prerelease, target `development`, not latest | `development` |
+
+Branch pushes alone are **not** panel updates. Every tier needs the same five
+signed release assets. Before a preview release, set `channel` in the committed
+`release-metadata.json`, use a new unique numeric `x.y.z` version and build from
+its matching branch. `scripts/release.sh` checks the branch and sets the target
+and prerelease flags. The document inside the archive must match its separately
+signed metadata. Publisher-key, digest and archive checks remain mandatory.
+
+Preview discovery selects the highest eligible numeric version among the newest
+100 GitHub releases. No matching preview means no update is offered, rather than
+silently falling back to another tier. Stable uses GitHub's latest normal release.
+The installed version must be older than the offered version; switching back to
+Stable never forces a downgrade. Use the existing compatible rollback action or
+wait for a newer stable release. Preview publishing must not mark a prerelease
+as latest. No Beta or Development releases are created merely by enabling this UI.

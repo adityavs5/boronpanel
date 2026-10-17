@@ -490,6 +490,7 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'templates.welcome_email.get': 'global_admin',
     'templates.welcome_email.reset': 'global_admin',
     'templates.welcome_email.set': 'global_admin',
+    'update.channel': 'global_admin',
     'update.check': 'global_admin',
     'update.database_backups': 'global_admin',
     'update.database_restore': 'admin_confirmed_update',

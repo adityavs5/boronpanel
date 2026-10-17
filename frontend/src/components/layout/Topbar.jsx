@@ -148,7 +148,7 @@ export function Topbar({ inner = false }) {
             ? <span className="brand-loading-placeholder" aria-hidden="true" />
             : logoUrl
             ? <img className="custom-brand-logo" src={logoUrl} alt={panelName} />
-            : <span className="boron-brand-logo"><img src="/static/dist/brand/boron-logo-source.png" alt="Boron" /></span>}
+            : <span className="boron-brand-logo"><img src="/static/dist/brand/boron-logo-gold.svg" alt="Boron" /></span>}
         </Link>
       </div>
 

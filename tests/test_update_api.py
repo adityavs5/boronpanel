@@ -163,3 +163,14 @@ def test_preflight_and_database_restore_forward_safety_proof(as_identity, daemon
             "totp_code": "654321",
         }),
     ]
+
+
+def test_update_channel_admin_only_and_validated(as_identity, daemon_stub):
+    daemon_stub['answers']['update.channel'] = {'channel': 'beta', 'branch': 'beta'}
+    assert as_identity(CUSTOMER).post('/api/v1/admin/update/channel', json={'channel': 'beta'}).status_code == 403
+    client = as_identity(ADMIN)
+    assert client.post('/api/v1/admin/update/channel', json={'channel': 'unknown'}).status_code == 422
+    response = client.post('/api/v1/admin/update/channel', json={'channel': 'beta'})
+    assert response.status_code == 200
+    assert response.json()['channel'] == 'beta'
+    assert daemon_stub['calls'][-1] == ('update.channel', {'channel': 'beta'})

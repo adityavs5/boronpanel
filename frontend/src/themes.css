@@ -56,7 +56,7 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 [data-skin=evolution] .panel-topbar{box-shadow:0 1px 0 rgb(0 0 0/.12)}
 .panel-brand{display:flex;align-items:center;height:54px;min-width:160px;overflow:hidden;color:inherit}
 .boron-brand-logo{position:relative;display:block;width:178px;height:52px;overflow:hidden;flex:none}
-.boron-brand-logo img{position:absolute;left:0;top:-13px;width:178px;height:auto;max-width:none;filter:brightness(0) invert(1)}
+.boron-brand-logo img{position:absolute;left:0;top:-13px;width:178px;height:auto;max-width:none;}
 .custom-brand-logo{width:auto;max-width:190px;height:43px;object-fit:contain}
 .brand-loading-placeholder{display:block;width:178px;height:43px}
 .panel-topbar button:not([role]),.panel-topbar .text-foreground,.panel-topbar .text-muted-foreground{color:inherit}
@@ -247,7 +247,7 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 @media(max-width:540px){.panel-topbar .custom-brand-logo{width:130px;max-width:130px;height:42px}}
 /* Word-only Boron logo, aligned by visible artwork bounds. */
 .panel-topbar .panel-brand .boron-brand-logo{position:relative;display:block;width:120px;max-width:100%;height:auto;aspect-ratio:145 / 40;overflow:hidden;flex:none}
-.panel-topbar .panel-brand .boron-brand-logo img{position:absolute;width:149.793103%;max-width:none;min-width:0;height:auto;left:-26.344828%;top:-43.25%;filter:brightness(0) invert(1)}
+.panel-topbar .panel-brand .boron-brand-logo img{position:absolute;width:149.793103%;max-width:none;min-width:0;height:auto;left:-26.344828%;top:-43.25%;}
 @media(max-width:850px){.panel-topbar .panel-brand .boron-brand-logo{width:96px}}
 @media(max-width:540px){.inner-shell .panel-topbar .panel-brand{width:96px!important;max-width:96px!important;min-width:0!important}.inner-shell .panel-topbar .panel-brand .boron-brand-logo{width:96px!important;max-width:100%!important}.inner-shell .panel-topbar .panel-brand .boron-brand-logo img{width:149.793103%!important;max-width:none!important}}
 /* Both themes share the same navigation geometry and top-bar alignment. */

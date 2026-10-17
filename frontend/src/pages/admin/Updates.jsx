@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/Badge'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { DataTable } from '@/components/ui/Table'
 import { ProgressBar } from '@/components/ui/Progress'
+import { Select } from '@/components/ui/Select'
 import { Input, FormField } from '@/components/ui/Input'
 import { Checkbox } from '@/components/ui/Toggle'
 import {
@@ -164,6 +165,19 @@ export default function Updates() {
     refetchInterval: isUpdateJobActive(status) ? 5000 : false,
   })
 
+  const channelMut = useMutation({
+    mutationFn: (channel) => post('/api/v1/admin/update/channel', { channel }),
+    onSuccess: (data) => {
+      qc.setQueryData(['update-status'], (previous) => ({
+        ...previous, channel: data.channel, branch: data.branch,
+        latest_version: null, update_available: false, checked_at: null, error: null,
+      }))
+      qc.invalidateQueries({ queryKey: ['update-status'] })
+      toast.success('Update tier saved', 'Only signed releases from this tier will be offered.')
+    },
+    onError: (e) => toast.error('Could not change update tier', e.message),
+  })
+
   const checkMut = useMutation({
     mutationFn: () => post('/api/v1/admin/update/check'),
     onSuccess: (data) => {
@@ -297,6 +311,26 @@ export default function Updates() {
           <RefreshCw className="h-4 w-4" /> Check now
         </Button>}
       />
+
+      <Card className="mb-6">
+        <CardContent className="py-5">
+          <FormField label="Update tier" htmlFor="update-tier">
+            <Select id="update-tier" className="max-w-sm" value={status?.channel || 'stable'}
+              disabled={isLoading || Boolean(error) || Boolean(active) || channelMut.isPending}
+              onChange={(event) => channelMut.mutate(event.target.value)}>
+              <option value="stable">Stable — recommended</option>
+              <option value="beta">Beta — preview releases</option>
+              <option value="development">Development — early testing</option>
+            </Select>
+          </FormField>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Stable follows master; Beta follows beta; Development follows development.
+            All tiers require signed release packages. Switching tiers does not install or downgrade anything.
+            Beta and Development can contain unfinished changes.
+          </p>
+          {channelMut.isPending && <p role="status">Saving update tier…</p>}
+        </CardContent>
+      </Card>
 
       {/* Version / availability card */}
       <Card className="mb-6">

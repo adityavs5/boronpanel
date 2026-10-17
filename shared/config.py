@@ -385,6 +385,7 @@ class Settings:
     # official repository is the safe default; operators can explicitly set
     # this to an empty string to disable update checks.
     update_github_repo: str = "adityavs5/boronpanel"
+    update_channel: str = "stable"  # stable, beta, development; signed releases only
     update_check_cache_seconds: int = 3600  # goal: cache update.check 1hr
     update_download_dir: str = "/var/lib/boron/update-staging"
     update_max_download_bytes: int = 500 * 1024 * 1024  # 500MB (releases are ~4MB)
@@ -565,6 +566,8 @@ def settings_from_mapping(raw: dict, *, source: str = "configuration") -> Settin
         else:
             unknown[key] = value
     result = Settings(**known)
+    if result.update_channel not in ("stable", "beta", "development"):
+        raise ConfigError("invalid configuration key 'update_channel': use stable, beta or development")
     from shared.install_profiles import PROFILE_COMPONENTS, validate_profile
     try:
         result.install_profile = validate_profile(result.install_profile)

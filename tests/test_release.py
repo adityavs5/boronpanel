@@ -57,7 +57,9 @@ def test_release_help_exits_zero():
 def test_release_supports_prepared_prerelease_without_skipping_gates():
     source = RELEASE.read_text()
     assert 'PREPARED_VERSION=true' in source
-    assert 'release_flags+=(--prerelease)' in source
+    assert 'release_flags+=(--prerelease --latest=false)' in source
+    assert 'release_flags+=(--target "$RELEASE_BRANCH")' in source
+    assert 'releases must be built from branch' in source
     assert '$PREPARED_VERSION || bump_version "$new"' in source
     assert 'published releases require both the full test suite' in source
 

@@ -192,6 +192,39 @@ def _get_state(session) -> UpdateState:
     return row
 
 
+CHANNEL_BRANCHES = {"stable": "master", "beta": "beta", "development": "development"}
+
+
+def _channel() -> str:
+    channel = settings.update_channel
+    if channel not in CHANNEL_BRANCHES:
+        raise ValidationError("Update tier must be stable, beta or development")
+    return channel
+
+
+def set_channel(params: dict) -> dict:
+    """Admin-only preference; never installs a release or changes signing trust."""
+    channel = params.get("channel")
+    if not isinstance(channel, str) or channel not in CHANNEL_BRANCHES:
+        raise ValidationError("Update tier must be stable, beta or development")
+    from daemon.panel_config import apply_setup_values
+    with write_session() as session:
+        if _active_job(session) is not None:
+            raise ValidationError("Wait for the current update or rollback to finish before changing tier")
+        state = _get_state(session)
+        apply_setup_values({"update_channel": channel}, config_path=CONFIG_PATH)
+        state.checked_at = None
+        state.latest_version = None
+        state.changelog_url = None
+        state.tarball_url = None
+        state.checksum_url = None
+        state.release_metadata = {}
+        state.release_asset_bytes = None
+        state.last_error = None
+        state.last_notified_version = None
+    return {"channel": channel, "branch": CHANNEL_BRANCHES[channel]}
+
+
 def _require_repo() -> str:
     repo = settings.update_github_repo.strip()
     if not repo:
@@ -228,16 +261,42 @@ def _fetch_release(tag: str | None = None) -> dict:
     test_override = load_test_update_override()
     if test_override is not None:
         return _fetch_test_release(test_override, tag)
+    channel = _channel()
     repo = _require_repo()
     url = f"{GITHUB_API}/repos/{repo}/releases/" + (f"tags/{tag}" if tag else "latest")
+    if not tag and channel != "stable":
+        url = f"{GITHUB_API}/repos/{repo}/releases?per_page=100"
     with httpx.Client(timeout=20.0, transport=_transport, follow_redirects=False) as client:
         resp = client.get(url, headers=_github_headers())
     if resp.status_code == 404:
         raise ValidationError(f"no release found ({'tag ' + tag if tag else 'latest'}) in {repo}")
     resp.raise_for_status()
     data = resp.json()
-    if data.get("draft") or data.get("prerelease"):
-        raise ValidationError("draft and pre-release versions are not eligible for panel updates")
+    if not tag and channel != "stable":
+        if not isinstance(data, list):
+            raise ValidationError("GitHub returned an invalid release list")
+        candidates = []
+        for release in data:
+            if not isinstance(release, dict):
+                continue
+            if (release.get("draft") or not release.get("prerelease")
+                    or release.get("target_commitish") != CHANNEL_BRANCHES[channel]):
+                continue
+            try:
+                version_key = parse_version(str(release.get("tag_name", "")))
+            except ValidationError:
+                continue
+            candidates.append((version_key, release))
+        if not candidates:
+            raise ValidationError(f"No {channel} release has been published in {repo}")
+        data = max(candidates, key=lambda item: item[0])[1]
+    if not isinstance(data, dict):
+        raise ValidationError("GitHub returned invalid release metadata")
+    if data.get("draft") or (channel == "stable" and data.get("prerelease")):
+        raise ValidationError("draft and pre-release versions are not eligible for stable updates")
+    if channel != "stable" and (not data.get("prerelease") or
+            data.get("target_commitish") != CHANNEL_BRANCHES[channel]):
+        raise ValidationError(f"Release does not belong to the {channel} tier")
 
     tag_name = str(data.get("tag_name", ""))
     version = "%d.%d.%d" % parse_version(tag_name)
@@ -279,6 +338,7 @@ def _fetch_release(tag: str | None = None) -> dict:
         "metadata_signature_url": metadata_signature_url,
         "archive_size": archive_size,
         "source": "github",
+        "channel": channel,
     }
 
 
@@ -355,6 +415,8 @@ def check(params: dict | None = None) -> dict:
     configured = test_configured or bool(settings.update_github_repo.strip())
     if not configured:
         return {
+            "channel": _channel(),
+            "branch": CHANNEL_BRANCHES[_channel()],
             "configured": False,
             "current_version": BORON_VERSION,
             "latest_version": None,
@@ -375,7 +437,8 @@ def check(params: dict | None = None) -> dict:
         # The cache window applies to FAILED checks too -- otherwise a
         # misconfigured repo would make every dashboard status poll re-hit
         # the GitHub API. force=True (Check now button, daily cron) bypasses.
-        fresh = age is not None and age < settings.update_check_cache_seconds
+        fresh = (age is not None and age < settings.update_check_cache_seconds
+                 and (state.release_metadata or {}).get("channel", "stable") == _channel())
         if force or not fresh:
             try:
                 info = _fetch_release()
@@ -387,7 +450,12 @@ def check(params: dict | None = None) -> dict:
                 state.release_asset_bytes = info.get("archive_size")
                 state.last_error = None
             except (httpx.HTTPError, ValidationError, ValueError) as exc:
-                # Keep serving the previous answer (if any); surface the error.
+                state.latest_version = None
+                state.release_metadata = {"channel": _channel()}
+                state.tarball_url = None
+                state.checksum_url = None
+                state.changelog_url = None
+                state.release_asset_bytes = None
                 state.last_error = str(exc)[:1000]
                 logger.warning("update check failed: %s", exc)
             state.checked_at = utcnow()
@@ -399,6 +467,8 @@ def check(params: dict | None = None) -> dict:
             except ValidationError:
                 update_available = False
         return {
+            "channel": _channel(),
+            "branch": CHANNEL_BRANCHES[_channel()],
             "configured": True,
             "current_version": BORON_VERSION,
             "latest_version": state.latest_version,
@@ -1194,6 +1264,8 @@ def _fetch_release_metadata(info: dict) -> dict:
     metadata_url = info.get("metadata_url")
     signature_url = info.get("metadata_signature_url")
     if not metadata_url and not signature_url:
+        if info.get("channel", "stable") != "stable":
+            raise ValidationError("Beta and development releases require signed channel metadata")
         return _legacy_release_metadata()
     if not metadata_url or not signature_url:
         raise ValidationError("release metadata and its signature must both be present")
@@ -1210,6 +1282,8 @@ def _fetch_release_metadata(info: dict) -> dict:
                 override.public_key if override is not None else None,
             )
             metadata = load_release_metadata(metadata_path)
+            if metadata.get("channel", "stable") != info.get("channel", "stable"):
+                raise ValidationError("Signed release channel does not match the selected update tier")
         except (OSError, ValueError, ReleaseMetadataError, httpx.HTTPError) as exc:
             raise ValidationError(f"release metadata verification failed: {exc}") from exc
     return {
@@ -1384,7 +1458,9 @@ def _validate_staged_release_metadata(job_id: int, new_dir: str) -> None:
             preview = dict(job.release_metadata or {})
             preview_digest = preview.get("digest")
             acknowledged = list(job.acknowledged_data_plane or [])
-            if preview_digest and preview_digest != digest:
+            if metadata.get("channel", "stable") != preview.get("channel", "stable"):
+                failure = "signed archive channel does not match the selected release tier"
+            elif preview_digest and preview_digest != digest:
                 failure = "signed preview differs from signed archive metadata"
             elif required != acknowledged:
                 failure = "declared data-plane reloads were not acknowledged: " + ", ".join(required)

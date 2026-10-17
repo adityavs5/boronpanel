@@ -64,7 +64,7 @@ def render_hostname(content: str, hostname: str) -> str:
 
 
 _SERVER_SETUP_KEYS = {
-    "server_public_ip", "letsencrypt_email", "panel_hostname",
+    "update_channel", "server_public_ip", "letsencrypt_email", "panel_hostname",
     "webmail_hostname", "webmail_url", "mail_hostname", "pma_hostname",
     "default_php_version", "php_versions", "install_profile", "enabled_components",
 }

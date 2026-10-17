@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from typing import Literal
 
 from api.rpc import call_daemon
 from api.security import Identity, get_identity, require_admin
@@ -131,3 +132,13 @@ def update_log(job_id: int | None = None, identity: Identity = Depends(get_ident
 def update_history(limit: int = 50, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon("update.history", identity, limit=limit)
+
+
+class UpdateChannelBody(BaseModel):
+    channel: Literal["stable", "beta", "development"]
+
+
+@admin_api_router.post("/channel")
+def update_channel(body: UpdateChannelBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("update.channel", identity, channel=body.channel)

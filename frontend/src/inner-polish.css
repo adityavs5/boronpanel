@@ -71,7 +71,6 @@ html[data-skin=paper-lantern] .inner-shell{--form-section-gap:var(--tool-space-8
 }
 html[data-skin=evolution] .inner-shell{--chrome-bg:255 255 255;--chrome-fg:35 52 72;--accent:7 111 213;--accent-foreground:255 255 255;--tool-blue:7 101 196;--tool-nav-active:7 111 213;--tool-blue-solid:7 111 213;--tool-on-solid:255 255 255}
 html[data-skin=evolution] .inner-shell .panel-topbar{border-bottom:1px solid rgb(var(--form-border));box-shadow:none}
-html[data-skin=evolution] .inner-shell .panel-brand .boron-brand-logo img{filter:none}
 .inner-shell .panel-topbar .global-search-trigger{border-color:rgb(var(--form-border));background:rgb(var(--tool-soft));color:rgb(var(--tool-text))}
 .inner-shell .panel-topbar .global-search-trigger kbd{border:0;color:rgb(var(--tool-muted))}
 .inner-shell .sidebar-search{border-color:rgb(var(--tool-nav-muted)/.3);background:rgb(var(--tool-nav-hover)/.5)}
@@ -109,7 +108,6 @@ html[data-skin=evolution] .inner-shell .panel-brand .boron-brand-logo img{filter
 .form-advanced>summary>span{margin-left:var(--tool-space-3);font-size:var(--tool-type-xs);color:rgb(var(--tool-muted));font-weight:400}
 html.dark .inner-shell{--form-border:63 80 101;--form-input-border:126 146 171;--form-placeholder:155 172 193;--form-card-shadow:none;--form-focus:0 0 0 3px rgb(137 200 248 / .15)}
 html.dark[data-skin=evolution] .inner-shell{--chrome-bg:30 38 49;--chrome-fg:233 239 247;--tool-blue:137 200 248;--tool-blue-solid:137 200 248;--tool-on-solid:6 49 77}
-html.dark[data-skin=evolution] .inner-shell .panel-brand .boron-brand-logo img{filter:brightness(0) invert(1)}
 @media(max-width:767px){.inner-shell{--form-sticky-offset:64px}.inner-shell main{scroll-padding-bottom:140px}}
 @media(max-width:639px){.inner-shell .account-create-section,.inner-shell .account-create-actions{padding:var(--tool-space-4)}.inner-shell .account-create-actions>div:empty{display:none}.form-advanced>summary{padding:var(--tool-space-4)}}
 
@@ -155,8 +153,6 @@ html .hosting-sidebar .sidebar-search input:focus-visible{outline:none;box-shado
 .hosting-sidebar .sidebar-search:focus-within{border-color:rgb(var(--tool-nav-fg));box-shadow:0 0 0 2px rgb(var(--tool-nav-fg)/.15)}
 /* Consistent Evo top bar on every route; dashboard tiles remain unchanged. */
 html[data-skin=evolution] :is(.inner-shell,.dashboard-shell) .panel-topbar{background:rgb(var(--tool-surface));color:rgb(var(--tool-text));border-bottom:1px solid rgb(var(--tool-border));box-shadow:none}
-html[data-skin=evolution] :is(.inner-shell,.dashboard-shell) .panel-brand .boron-brand-logo img{filter:none}
-html.dark[data-skin=evolution] :is(.inner-shell,.dashboard-shell) .panel-brand .boron-brand-logo img{filter:brightness(0) invert(1)}
 html[data-skin=evolution] .panel-topbar .global-search-trigger{background:rgb(var(--tool-soft));border-color:rgb(var(--tool-border))}
 html[data-skin=evolution] .panel-topbar .global-search-trigger kbd{border:0;color:rgb(var(--tool-muted))}
 html[data-skin=evolution] .panel-topbar button:hover{background-color:rgb(var(--tool-soft))}
@@ -221,3 +217,7 @@ html[data-skin=paper-lantern] .accounts-list{--account-directory-row:64px}
  .inner-shell .accounts-reference-table .account-list-identity{align-items:flex-end}
  .inner-shell .accounts-list-footnote{flex-direction:column}
 }
+
+/* The built-in gold wordmark is shared by all skins; custom branding is untouched. */
+
+html[data-skin] .panel-topbar .panel-brand .boron-brand-logo img { filter: none; }

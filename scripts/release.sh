@@ -30,6 +30,8 @@ DRY_RUN=false
 SKIP_TESTS=false
 SKIP_BUILD=false
 PRERELEASE=false
+RELEASE_CHANNEL="stable"
+RELEASE_BRANCH="master"
 BUMP_KIND="patch"
 EXPLICIT_VERSION=""
 GITHUB_REPO="${FH_RELEASE_REPO:-}"   # owner/repo; derived from origin if empty
@@ -75,8 +77,8 @@ Usage: scripts/release.sh [OPTIONS] [NEW_VERSION]
   --tested-commit ID Reuse completed tests for this exact full HEAD commit ID.
                      Requires a clean tree and an explicitly prepared version.
                      Still builds the frontend and verifies both signatures.
-  --prerelease       Publish the GitHub release as a pre-release. The built-in
-                     updater ignores it until the owner promotes it.
+  --prerelease       Publish a beta/development release as a pre-release.
+                     Its signed metadata selects the eligible update tier.
   -h, --help         Show this help.
 
 Artifacts: boron-{version}.tar.gz, boron-{version}.sha256,
@@ -414,7 +416,8 @@ publish() {
     git -C "$REPO_ROOT" push origin HEAD "v${version}"
     local assets=("$TARBALL" "$CHECKSUM_FILE" "${TARBALL}.sig" "$METADATA_FILE" "${METADATA_FILE}.sig")
     local release_flags=()
-    $PRERELEASE && release_flags+=(--prerelease)
+    $PRERELEASE && release_flags+=(--prerelease --latest=false)
+    release_flags+=(--target "$RELEASE_BRANCH")
     gh release create "v${version}" --repo "$GITHUB_REPO" "${release_flags[@]}" \
         --title "Boron v${version}" \
         --notes "Boron v${version}. Install/update via the panel's update system (verifies the Ed25519 publisher signature and SHA256 checksum before applying) -- see docs/RELEASING.md." \
@@ -454,6 +457,16 @@ main() {
     # Dry-run artifacts carry the CURRENT version (nothing was bumped).
     local artifact_version="$new"
     $DRY_RUN && artifact_version="$cur"
+    # The signed document, not a mutable GitHub label, binds the release tier.
+    RELEASE_CHANNEL="$(cd "$REPO_ROOT" && "$PY" -c 'from shared.release_metadata import load_release_metadata; print(load_release_metadata("release-metadata.json")["channel"])')"
+    case "$RELEASE_CHANNEL" in
+        stable) RELEASE_BRANCH="master"
+            $PRERELEASE && die "--prerelease requires beta or development in release-metadata.json" ;;
+        beta|development) RELEASE_BRANCH="$RELEASE_CHANNEL"; PRERELEASE=true ;;
+        *) die "invalid signed release channel" ;;
+    esac
+    [[ "$(git -C "$REPO_ROOT" branch --show-current)" == "$RELEASE_BRANCH" ]] \
+        || die "${RELEASE_CHANNEL} releases must be built from branch ${RELEASE_BRANCH}"
     stage_tree "$artifact_version"
     build_artifacts "$artifact_version"
     sign_artifacts "$artifact_version"

@@ -1,8 +1,5 @@
 <div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/brand/boron-logo-dark.svg" />
-    <img src="frontend/public/brand/boron-logo-source.png" alt="Boron Panel" width="320" />
-  </picture>
+  <img src="frontend/public/brand/boron-logo-gold.svg" alt="Boron Panel" width="320" />
 
 # Boron Panel
 

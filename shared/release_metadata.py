@@ -42,6 +42,9 @@ def validate_release_metadata(data: object) -> dict:
         raise ReleaseMetadataError("release metadata must be a JSON object")
     if data.get("format") != FORMAT_VERSION:
         raise ReleaseMetadataError(f"release metadata format must be {FORMAT_VERSION}")
+    channel = data.get("channel", "stable")
+    if channel not in ("stable", "beta", "development"):
+        raise ReleaseMetadataError("release channel must be stable, beta or development")
     minimum = str(data.get("minimum_source_version") or "")
     version_tuple(minimum)
     maximum_raw = data.get("maximum_source_version")
@@ -53,6 +56,7 @@ def validate_release_metadata(data: object) -> dict:
     rewrites = _string_list(data, "runtime_rewrites", _CHANGE_RE, maximum=64)
     return {
         "format": FORMAT_VERSION,
+        "channel": channel,
         "minimum_source_version": minimum,
         "maximum_source_version": maximum,
         "data_plane_reloads": data_plane,

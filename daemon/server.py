@@ -668,6 +668,7 @@ OP_TABLE = {
     # rollback are admin-only at the API layer (require_admin + conditional
     # 2FA confirmation before the RPC is ever sent -- ARCHITECTURE.md SS2's
     # trust model: authorization happens in boron-api).
+    "update.channel": updates.set_channel,
     "update.check": updates.check,
     "update.database_backups": updates.list_database_backups,
     "update.database_restore": updates.restore_database_backup,
