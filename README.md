@@ -1,266 +1,197 @@
 <div align="center">
+  <img src="frontend/public/brand/boron-logo-source.png" alt="Boron Panel" width="320" />
 
-# ⚡ Boron Panel
+# Boron Panel
 
-### A focused, security-first hosting control panel for one Ubuntu server
+**Your server. Your hosting. One control panel.**
 
-Manage domains, PHP, email, databases, DNS, SSL, WordPress, files, backups,
-applications, and the server itself from one fast operator and customer UI.
+A self-hosted control panel for websites, email, databases and applications on Ubuntu.
+Familiar hosting workflows for administrators, resellers and customers.
 
-<br />
+[Get started](#installation) · [Explore features](#features) · [Documentation](#documentation) · [Releases](https://github.com/adityavs5/boronpanel/releases) · [Changelog](CHANGELOG.md)
 
-**OpenLiteSpeed · FastAPI · React · MariaDB · PowerDNS · Postfix/Dovecot**
+**OpenLiteSpeed · FastAPI · React · MariaDB · PowerDNS · Postfix & Dovecot**
 
 </div>
 
-<p align="center">
-  <a href="#quick-start">Install</a> ·
-  <a href="#feature-tour">Features</a> ·
-  <a href="docs/FRESH-INSTALL-CHECKLIST.md">Install checklist</a> ·
-  <a href="docs/ADMIN-GUIDE.md">Admin guide</a> ·
-  <a href="docs/CUSTOMER-GUIDE.md">Customer guide</a>
-</p>
+---
 
-## Quick start
+## Built for hosting
 
-Install Boron on a clean Ubuntu 24.04 server with one command:
+Boron brings everyday server and customer operations into one interface: create an account, connect a domain, install WordPress, manage mailboxes and restore a backup. It is designed as an alternative to DirectAdmin and cPanel, with a familiar organization of hosting tools.
 
-~~~bash
-sudo apt-get update && sudo apt-get install -y git && \
-  work="$(mktemp -d)" && \
-  git clone --depth 1 https://github.com/adityavs5/boronpanel.git \
-    "$work/boronpanel" && \
-  sudo bash "$work/boronpanel/scripts/install.sh"
-~~~
+- **Two interfaces, one panel.** Evo offers a compact, DirectAdmin-inspired experience; Paper follows the roomier cPanel style. Both support light and dark modes.
+- **Separate workspaces.** Administrators manage the server, resellers manage their assigned accounts, and customers work within their own hosting account.
+- **Standard services.** Websites, mail, DNS and databases run on established Linux components, with configuration and data stored on your server.
+- **Account-level controls.** Linux users, resource limits and scoped operations separate hosted accounts. Web/PHP isolation is distinct from SSH/SFTP access.
+- **Signed updates.** Install published releases from the panel, inspect progress and return to a compatible previous version.
 
-Minimum: Ubuntu 24.04 LTS, 1 GiB RAM, 10 GiB free disk, a public IP, and
-root or unrestricted <code>sudo</code>. The installer prompts for the panel
-domain, ACME/admin email, administrator credentials, and an optional MaxMind
-GeoLite2 license key. It builds the web UI from source, configures the full
-hosting stack, and prints the panel URL when finished. Use the
-[fresh-install checklist](docs/FRESH-INSTALL-CHECKLIST.md) for the complete
-runbook and acceptance checks.
+## Features
 
-## What Boron is
+Availability depends on the installation profile and configured services.
 
-Boron is a single-server Linux hosting panel for operators who want the
-workflow of a commercial control panel without a per-server license. It is
-designed for Ubuntu 24.04 LTS and uses mature, freely available components:
-OpenLiteSpeed and LSAPI for web traffic, MariaDB for hosted databases,
-PowerDNS for zones, Postfix/Dovecot for mail, Pure-FTPd for file transfer, and
-FastAPI + React for the panel experience.
-
-The latest published version is listed on [GitHub Releases](https://github.com/adityavs5/boronpanel/releases/latest). The panel is intentionally opinionated:
-one server, clear privilege boundaries, per-account Linux users, generated
-configuration with validation and rollback, and secrets kept outside the
-application tree.
-
-## Why operators choose it
-
-| | Boron’s approach |
+| Area | What you can manage |
 |---|---|
-| **Control** | Own the host, packages, data paths, backups, and update channel. |
-| **Isolation** | Customers are separate Linux accounts; privileged work is delegated to a root-only Unix-socket daemon. |
-| **Predictability** | OLS changes follow a validate → reload → verify → rollback path. |
-| **Security** | RBAC, TOTP, rate limits, audit logs, hardened PHP defaults, UFW/fail2ban, and scoped customer paths. |
-| **No lock-in** | Standard Linux services and portable data formats; no proprietary runtime is required. |
+| **Accounts & resellers** | Hosting plans, account creation, reseller plans, quotas, suspension, customer impersonation and branding |
+| **Domains & websites** | Domains and subdomains, document roots, PHP versions, redirects, maintenance mode, error pages and SSL certificates |
+| **WordPress** | Guided installation, site inventory, one-click login, plugins and themes, backups and staging clones |
+| **Email** | Mailboxes, quotas, forwarders, autoresponders, spam filtering, email DNS records, Roundcube integration and IMAP migration |
+| **Databases** | MariaDB databases and users, grants, phpMyAdmin access, database monitoring and slow-query tools |
+| **DNS** | Local PowerDNS zones, Cloudflare integration, DNS templates and cluster synchronization |
+| **Files & applications** | FileBrowser, FTP over TLS, SSH keys, terminal access, cron, Git, Node.js, Python and Redis |
+| **Backups & recovery** | Scheduled jobs, account and component backups, incremental snapshots, restore workflows and local or remote destinations |
+| **Security & operations** | Firewall rules, IP controls, fail2ban, WAF tools, malware scanning, filesystem isolation and resource monitoring |
+| **Diagnostics & automation** | Audit/error logs, task history, diagnostics, support bundles, API tokens, webhooks and notifications |
+| **Account migration** | DirectAdmin server migration and DirectAdmin/cPanel archive import workflows |
 
-## Feature tour
+Explore the [administrator guide](docs/ADMIN-GUIDE.md), [customer guide](docs/CUSTOMER-GUIDE.md) and [WordPress Manager guide](docs/WORDPRESS-MANAGER.md).
 
-### Customer workspace
-
-- **Domains:** primary, addon, parked, and subdomains; redirects, maintenance
-  mode, custom error pages, hotlink protection, and per-domain PHP settings.
-- **DNS and SSL:** PowerDNS zones, optional Cloudflare zones, ACME certificates,
-  renewals, wildcard DNS-01, and certificate expiry visibility.
-- **Email:** virtual mailboxes, quotas, forwarders, catch-all routing,
-  autoresponders, spam filtering, delivery logs, and IMAP migrations.
-- **Databases:** account-scoped MariaDB databases and users with one-time
-  credentials plus a scoped phpMyAdmin launch.
-- **WordPress:** a guided installer, user site manager and admin inventory,
-  one-click login, private backup/restore, independent staging clones, and
-  core/plugin/theme management. See the [WordPress Manager guide](docs/WORDPRESS-MANAGER.md).
-- **Files and access:** FileBrowser Quantum, scoped FTP with explicit TLS and
-  passive ports, Git deployment, SSH keys, web terminal, cron jobs, and logs.
-- **Applications:** Node.js and Python apps, Composer, Redis, PHP version
-  selection, and disk/resource usage views.
-- **Backups:** scheduled or on-demand account backups for files, databases,
-  mail, DNS, and configuration, with browse and restore workflows.
-
-### Operator workspace
-
-- Accounts, plans, quotas, CPU/memory/I/O/process limits, namespace isolation,
-  suspension, unsuspension, termination, notes, and customer impersonation.
-- Server health, service control, bandwidth rankings, site statistics, DB and
-  slow-query monitoring, mail queue, audit/account/error logs, and webhooks.
-- UFW firewall rules, permanent IP/CIDR bans, IP allowlists, fail2ban, WAF,
-  Cloudflare, cPanel import, notifications, and editable templates/branding.
-- Signed-release update checks, staged updates, health checks, rollback, and
-  release history from the configured GitHub repository.
-
-## Security architecture
-
-~~~mermaid
-flowchart LR
-    B["Browser"] -->|TLS :9443| A["boron-api (unprivileged)"]
-    A <-->|Unix socket /run/boron/provisiond.sock| D["boron-provisiond (root only)"]
-    D --> O["OpenLiteSpeed"]
-    D --> M["MariaDB / mail / DNS / FTP"]
-    D --> F["FileBrowser Quantum (loopback + owner firewall)"]
-    A --> S["SQLite control plane"]
-~~~
-
-- <code>boron-api</code> owns HTTP, authentication, RBAC, request validation,
-  and the UI; it does not hold root or MariaDB administrator privileges.
-- <code>boron-provisiond</code> is the only process that changes Linux users,
-  OLS/mail/DNS configuration, quotas, certificates, or hosted database grants.
-- Account paths are jailed and customer operations are scoped by account
-  ownership. FileBrowser’s backend port is restricted to the API service user
-  and the rule is re-applied on daemon start.
-- Runtime secrets live in <code>/etc/boron/secrets.env</code> and
-  <code>/etc/boron/api-secrets.env</code>, never in the application tree. See
-  the [security review](docs/AUDIT3-FINDINGS.md) and
-  [architecture](docs/ARCHITECTURE.md) for the threat model and boundaries.
-
-## Installation details
+## Installation
 
 ### Requirements
 
-| Requirement | Minimum | Recommended |
-|---|---:|---:|
-| Operating system | Ubuntu 24.04 LTS, amd64 | Ubuntu 24.04 LTS, amd64 |
-| Memory | 1 GiB RAM | 2–4 GiB+ for mail, databases, and builds |
-| Disk | 10 GiB free on <code>/</code> | SSD sized for hosted data and backups |
-| Access | Root or unrestricted <code>sudo</code> | Provider console access as a recovery path |
-| Network | Public IP and outbound HTTPS | DNS A/AAAA records ready before SSL issuance |
+Use a **fresh Ubuntu 24.04 LTS server** with root access. The installer configures system packages, services, users and firewall rules.
 
-The installer opens SSH, panel <code>9443</code>, HTTP/HTTPS
-<code>80/443</code>, mail <code>25/110/143/587/993/995</code>, DNS
-<code>53</code>, FTP <code>21</code>, and FTP passive TCP
-<code>30000–30100</code>. It permits SSH before enabling UFW so a fresh install
-does not lock out the operator.
+| Requirement | Details |
+|---|---|
+| Operating system | Ubuntu 24.04 LTS, x86-64 |
+| Memory | Installer minimum: 1 GiB; allow more for the full stack and hosted workloads |
+| Storage | At least 10 GiB free on `/`, plus capacity for websites, mail and backups |
+| Access | Root or unrestricted `sudo`; provider console access for recovery |
+| Network | Public IP and outbound package/download access |
+| Hostname | Recommended for trusted panel TLS and webmail; DNS must point to the server |
 
-The installer is source-aware: it copies the code to <code>/opt/boron</code>,
-installs the Python and system dependencies, runs <code>npm ci</code> +
-<code>npm run build</code>, generates configuration and secrets, configures
-services, enables scheduled jobs, and starts the panel. It does not depend on a
-pre-built <code>static/dist</code> directory being committed.
+### Install a release
 
-### Installer prompts
+Run the following in a root shell. This example installs the **v3.2.0 source tag** with the full profile, rather than installing the development branch.
 
-Interactive installs ask for:
+```bash
+sudo -i
+umask 022
+apt-get update
+apt-get install -y git ca-certificates
 
-1. **Panel domain** — e.g. <code>panel.example.com</code>; blank uses the
-   server IP.
-2. **Let's Encrypt/admin email** — ACME notices and operator notifications.
-3. **Admin username** — defaults to <code>admin</code>.
-4. **Admin password** — entered securely when not pre-seeded.
-5. **Optional MaxMind GeoLite2 license key** — blank keeps the panel fully
-   usable but disables top-country statistics.
+git clone --depth 1 --branch v3.2.0 \
+  https://github.com/adityavs5/boronpanel.git /root/boron-install
+cd /root/boron-install
 
-Cloudflare is deliberately not required during installation. PowerDNS is the
-default provider. Add a scoped Cloudflare token later through the admin
-workflow and keep it in <code>/etc/boron/secrets.env</code> (mode
-<code>0600</code>).
+bash scripts/install.sh --profile full
+```
 
-For unattended installs, use the installer’s current environment interface:
+Use the source checkout for a fresh installation: the installer builds the frontend. Release runtime archives are intended for the panel updater.
 
-~~~bash
-export FH_NONINTERACTIVE=1
-export FH_PANEL_DOMAIN=panel.example.com
-export FH_LE_EMAIL=admin@example.com
-export FH_ADMIN_USER=admin
-export FH_ADMIN_PASSWORD='replace-with-a-long-unique-password'
-export FH_SERVER_IP=203.0.113.10              # optional
-export FH_MAXMIND_LICENSE_KEY=''               # optional
+The installer collects the panel hostname, administrator email and credentials, with an optional MaxMind license for geographic statistics. It installs the selected components, builds the UI, creates configuration and starts the panel. Cloudflare is optional; configure it later through the panel.
 
-sudo --preserve-env=FH_NONINTERACTIVE,FH_PANEL_DOMAIN,FH_LE_EMAIL,\
-FH_ADMIN_USER,FH_ADMIN_PASSWORD,FH_SERVER_IP,FH_MAXMIND_LICENSE_KEY \
-  bash scripts/install.sh
-~~~
+### Choose a profile
 
-Treat the password environment variable as sensitive: avoid shell history and
-shared process listings. The [fresh-install checklist](docs/FRESH-INSTALL-CHECKLIST.md)
-contains the full step-by-step trace, verification commands, and rollback
-notes.
+| Profile | Included capabilities |
+|---|---|
+| `minimal` | Web hosting, PHP and SSL; no hosted database, mail or DNS service |
+| `standard` | Web/PHP/SSL plus MariaDB, DNS, mail, FTP and fail2ban |
+| `full` — default | Standard plus application runtimes, Redis tooling, WordPress tools, backups, WAF, malware and geographic-statistics tooling |
 
-## What gets installed
+Choose the profile when running the installer, for example `bash scripts/install.sh --profile standard`. Component availability does not mean every feature is enabled or fully configured: webmail needs a hostname, GeoLite2 needs a license, and backup destinations need setup.
 
-The installer configures the complete Boron runtime, not just the API:
+For prerequisites, unattended installation options and verification steps, see the [fresh-install checklist](docs/FRESH-INSTALL-CHECKLIST.md). The installer's `--help` describes its current flags and environment variables. Keep passwords and tokens out of shell history and repository files.
 
-- OpenLiteSpeed with LSAPI PHP 8.1–8.5 and common extensions.
-- MariaDB, Postfix, Dovecot, PowerDNS (SQLite backend), and Pure-FTPd.
-- Certbot with PowerDNS and Cloudflare DNS plugins, plus renewal jobs.
-- Node.js 18/20/22 runtimes, npm, Composer, WP-CLI, and ImapSync.
-- Redis, SpamAssassin, fail2ban, UFW, rclone, Python 3 + pip, geoipupdate,
-  and the verified FileBrowser Quantum binary.
-- <code>boron-api</code>, <code>boron-provisiond</code>, and
-  <code>boron-filebrowser</code> systemd services.
-- Cron jobs, logrotate, PHP hardening, TLS bootstrap certificates, and the
-  firewall rules required by the stack.
+### First login
 
-## First login and smoke test
+Open the URL printed by the installer:
 
-Open:
+```text
+https://<panel-hostname-or-server-ip>:2222/app/login
+```
 
-~~~text
-https://<panel-domain-or-server-ip>:9443/app
-~~~
+Sign in with the administrator credentials created during installation, then open **Server Setup** to review DNS, hostnames, TLS and the remaining configuration.
 
-The initial certificate is a bootstrap certificate; replace it through the
-SSL workflow once DNS and ACME prerequisites are ready. Verify the service and
-health endpoint before creating customer data:
+The initial HTTPS certificate is a bootstrap certificate. Configure a hostname and issue a trusted certificate through the panel's TLS workflow.
 
-~~~bash
-sudo systemctl is-active boron-api boron-provisiond boron-filebrowser
-curl -sk https://127.0.0.1:9443/healthz
+Before adding customer data:
+
+1. Confirm server and service health.
+2. Configure DNS and verify the relevant hostname records.
+3. Review mail, webmail and notification settings if those services are installed.
+4. Configure a backup destination and test a backup and restore.
+5. Create a disposable hosting account and check its website, files and required services.
+
+## Updates & recovery
+
+Use **Panel Updates** in the administrator interface to check for a release, review the available version and start an update.
+
+The updater downloads release assets, checks the archive checksum and trusted **Ed25519 publisher signature**, takes a control-plane backup, stages the new version, applies migrations and completes the version switch with service and health checks. History records the result and progress of each operation.
+
+Normal discovery follows the configured repository's latest normal release; GitHub prereleases are excluded. Rollback is subject to schema compatibility. Compatible additive database changes can remain when returning to the previous code version.
+
+Keep an independent recovery copy of your hosted data as well as the panel configuration and database. A panel update backup is not a replacement for account backups.
+
+- [Release process](docs/RELEASING.md)
+- [Schema compatibility and migrations](docs/SCHEMA-MIGRATIONS.md)
+- [Control-plane disaster recovery](docs/CONTROL-PLANE-DISASTER-RECOVERY.md)
+
+## Architecture & isolation
+
+```mermaid
+flowchart LR
+    Browser["Browser"] -->|"HTTPS :2222"| API["boron-api · unprivileged"]
+    API -->|"Authenticated Unix-socket RPC"| Helper["boron-provisiond · root"]
+    API -->|"Read access"| DB[("Panel SQLite database")]
+    Helper -->|"Write access"| DB
+    Helper --> Web["OpenLiteSpeed / PHP"]
+    Helper --> Services["MariaDB / mail / DNS / FTP"]
+    Helper --> Accounts["Linux accounts / quotas / application services"]
+```
+
+The API handles HTTP, authentication and the UI. Privileged operations pass through the provisioning daemon, which applies account and authorization checks before managing host resources. Infrastructure credentials are stored separately from the API session secret and application code.
+
+Web/PHP workloads use the supported namespace-isolation layer. SSH/SFTP and terminal access have separate boundaries based on account identity, Linux permissions and resource controls; they do not carry the same private-namespace promise. Live PHP isolation checks may be **not verifiable** until a worker is running.
+
+MariaDB is a shared server with account-specific grants. The Ubuntu package series supplies its version; separate per-account database servers are not provided.
+
+See [Architecture](docs/ARCHITECTURE.md), [isolation notes](docs/NAMESPACE-ANSWERS.md) and [PHP controls](docs/PHP-CONTROLS.md) for implementation details and limits.
+
+## Operations
+
+### Useful commands
+
+```bash
+# Panel service health
+sudo systemctl is-active boron-api boron-provisiond
+
+# Follow panel service logs
+sudo journalctl -u boron-api -u boron-provisiond -f
+
+# Local health check with the bootstrap self-signed certificate
+curl --fail --silent --show-error --insecure https://127.0.0.1:2222/healthz
+
+# Inspect firewall policy
 sudo ufw status verbose
-~~~
+```
 
-Then follow the checklist to create a disposable account, add a domain,
-connect over FTP, install WordPress, open phpMyAdmin, suspend/unsuspend the
-account, and run a backup/restore test.
+Use normal certificate verification when checking a hostname with trusted TLS. FileBrowser runs as `boron-filebrowser-ui` and per-account `boron-filebrowser@<username>` services.
 
-## Configuration and runtime paths
+### Runtime paths
 
 | Path | Purpose |
 |---|---|
-| <code>/opt/boron</code> | Deployed application and Python virtual environment |
-| <code>/etc/boron/boron.toml</code> | Non-secret operator configuration |
-| <code>/etc/boron/secrets.env</code> | Root-only infrastructure credentials |
-| <code>/etc/boron/api-secrets.env</code> | API-readable session secret |
-| <code>/var/lib/boron/boron.db</code> | SQLite control-plane database |
-| <code>/var/lib/boron/backups</code> | Backup and pre-reload rollback data |
-| <code>/var/log/boron</code> | API, daemon, FileBrowser, and job logs |
-| <code>/run/boron/provisiond.sock</code> | API → root-daemon RPC socket |
+| `/opt/boron` | Active application and Python environment; becomes a version-directory symlink during updates |
+| `/etc/boron/boron.toml` | Panel configuration |
+| `/etc/boron/secrets.env` | Root-only infrastructure credentials |
+| `/etc/boron/api-secrets.env` | API session secret |
+| `/var/lib/boron/boron.db` | Panel SQLite database |
+| `/var/lib/boron/backups` | Default backup storage; destinations are configurable |
+| `/var/backups/boron` | Pre-update control-plane backups |
+| `/var/log/boron` | Panel and job logs; service output is also available in the journal |
+| `/run/boron/provisiond.sock` | Local privileged RPC socket |
 
-Never place real credentials in the repository. Use the supplied
-[environment template](.env.example) and deployment examples under
-<code>deploy/</code> only as placeholder documentation.
-
-## Common operator commands
-
-~~~bash
-# Service status and logs
-sudo systemctl status boron-api boron-provisiond boron-filebrowser
-sudo journalctl -u boron-api -u boron-provisiond -f
-sudo tail -f /var/log/boron/api.log /var/log/boron/daemon.log
-
-# Installer plan / help (safe, no changes)
-sudo bash scripts/install.sh --dry-run
-sudo bash scripts/install.sh --help
-
-# Release/update checks
-sudo bash scripts/release.sh --dry-run
-~~~
-
-Use the admin **Updates** page for production updates. Releases are packaged
-from a fresh source tree, SHA256 verified, and optionally GPG-signed; do not
-replace a running installation with an unverified checkout.
+The default panel port is **2222**. OpenLiteSpeed WebAdmin uses **7080**. Other listeners depend on the installed profile; consult [Panel ports](docs/PANEL-PORTS.md) and the actual firewall rules.
 
 ## Development
 
-~~~bash
+Use an isolated development environment. Privileged integration tests and the installer manage real Linux users, services and filesystems; run those on a disposable Ubuntu VM.
+
+Requirements: Python 3.12 and a frontend-compatible Node version (`^20.19.0` or `>=22.12.0`, as declared in `frontend/package.json`).
+
+```bash
 git clone https://github.com/adityavs5/boronpanel.git
 cd boronpanel
 
@@ -273,49 +204,29 @@ npm ci
 npm run build
 cd ..
 
-# Fast feedback while editing; use `quick` for a five-minute cross-feature run.
-scripts/test.sh targeted tests/test_wordpress.py -k clone
+# Focused checks while developing
+scripts/test.sh targeted tests/test_validation.py
 scripts/test.sh quick
 
-# Required complete suite before publishing.
+# Complete backend suite in the prepared test environment
 scripts/test.sh full
-bash -n scripts/install.sh scripts/release.sh
-~~~
+```
 
-<code>static/dist/</code> is a generated build artifact and is intentionally
-not part of the source-only repository. Production installs and release
-packaging build it fresh. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for
-design constraints and [STATUS.md](docs/STATUS.md) for the current
-verification record.
+`static/dist/` is generated from frontend source. The test harness uses `/srv/bt` by default, with a size guard, free-space floor and retained-run limit. Full/release runs require a test filesystem separate from panel data and logs unless an explicit override is supplied. Prepare the workspace before running the suite; see [Testing](docs/TESTING.md) and [CI](docs/CI.md).
 
-## Documentation map
+When reporting a bug, include the panel version, reproduction steps and error reference if available. Remove credentials, tokens and private customer data from screenshots and logs. Keep proposed changes focused and describe how they were verified.
 
-- [Testing workflow](docs/TESTING.md) — targeted, failed, updater, quick, and
-  release-authorizing test tiers.
-- [Fresh-install checklist](docs/FRESH-INSTALL-CHECKLIST.md) — complete clean
-  server runbook and post-install acceptance checks.
-- [Administrator guide](docs/ADMIN-GUIDE.md) — accounts, plans, suspension,
-  monitoring, updates, Cloudflare, and firewall operations.
-- [Customer guide](docs/CUSTOMER-GUIDE.md) — domains, email, databases,
-  WordPress, files, FTP, applications, and backups.
-- [Architecture](docs/ARCHITECTURE.md) — privilege boundaries, data model,
-  OLS lifecycle, TLS, and explicit scope limits.
-- [Security findings](docs/AUDIT-FINDINGS.md),
-  [Audit 2](docs/AUDIT2-FINDINGS.md), and
-  [Audit 3](docs/AUDIT3-FINDINGS.md) — threat model and remediation history.
-- [Release guide](docs/RELEASING.md) — versioning, packaging, checksums, and
-  signatures.
+## Documentation
 
-## Scope and trade-offs
-
-Boron is a focused single-server panel, not a multi-server orchestration
-platform. Reseller billing, WHM-style fleet management, proprietary mail
-hosting, and a built-in third-party webmail product are outside the v1 scope.
-Roundcube/phpMyAdmin can be configured as optional operator-managed services;
-the panel remains usable without them.
+| Start here | Specialized guides |
+|---|---|
+| [Fresh installation](docs/FRESH-INSTALL-CHECKLIST.md) | [Panel TLS](docs/PANEL-TLS.md) · [Ports](docs/PANEL-PORTS.md) |
+| [Administrator guide](docs/ADMIN-GUIDE.md) | [DirectAdmin server migration](docs/DIRECTADMIN-SERVER-MIGRATION.md) · [Backup compatibility](docs/DIRECTADMIN-BACKUP-COMPATIBILITY.md) |
+| [Customer guide](docs/CUSTOMER-GUIDE.md) | [WordPress](docs/WORDPRESS-MANAGER.md) · [phpMyAdmin](docs/PHPMYADMIN.md) |
+| [Architecture](docs/ARCHITECTURE.md) | [Isolation](docs/NAMESPACE-ANSWERS.md) · [PHP controls](docs/PHP-CONTROLS.md) |
+| [Testing](docs/TESTING.md) · [CI](docs/CI.md) | [Incremental backups](docs/INCREMENTAL-BACKUPS.md) · [Disaster recovery](docs/CONTROL-PLANE-DISASTER-RECOVERY.md) |
+| [Releases](docs/RELEASING.md) · [Changelog](CHANGELOG.md) | [Schema migrations](docs/SCHEMA-MIGRATIONS.md) · [Themes](docs/THEMES.md) |
 
 ## License
 
-See the repository’s source files and dependency licenses for the applicable
-terms. Boron is assembled from open-source components; verify the licenses of
-any package or theme you add to a production image.
+A project-wide license has not yet been declared in this repository. Third-party software, libraries and brand assets retain their respective licenses and trademarks.
