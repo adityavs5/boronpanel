@@ -35,7 +35,10 @@
     const solid = readable(color, surface, 3)
     const ink = contrast(solid, [0, 0, 0]) >= contrast(solid, [255, 255, 255]) ? [0, 0, 0] : [255, 255, 255]
     const tokens = {
-      accent: solid, ink, group: color, link: readable(color, surface, 4.6),
+      // Category headers deliberately retain white lettering. Derive a dark
+      // enough brand shade; links must contrast with raised AND soft surfaces.
+      accent: solid, ink, group: readable(color, [255, 255, 255], 4.6),
+      link: readable(color, dark ? [37, 47, 60] : [244, 246, 249], 4.7),
       hover: mix(solid, ink[0] === 0 ? [255, 255, 255] : [0, 0, 0], .10),
       soft: mix(surface, color, .10), nav: mix(color, [18, 23, 30], .94),
       navHover: mix(mix(color, [18, 23, 30], .94), [255, 255, 255], .08),

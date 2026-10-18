@@ -31,7 +31,7 @@ from daemon.procutil import run
 from daemon.safeio import secure_replace_file
 
 PURE_PW_BIN = "/usr/bin/pure-pw"
-PURE_FTPWHO_BIN = "/usr/bin/pure-ftpwho"
+PURE_FTPWHO_BIN = "/usr/sbin/pure-ftpwho"
 SUSPENDED_IP = "255.255.255.255/32"
 SUSPENSION_STATE_DIR = Path("/var/lib/boron/ftp-suspension")
 

@@ -32,7 +32,7 @@ def test_all_domain_claim_paths_reject_retained_foreign_resources(owners, route,
             monkeypatch.setattr(settings, 'pma_hostname', domain)
     effects = []
     monkeypatch.setattr(handlers_account.sysops, 'create_linux_user', lambda *a: effects.append('linux'))
-    monkeypatch.setattr(handlers_domain, 'ensure_docroot', lambda *a: effects.append('files'))
+    monkeypatch.setattr(handlers_domain, 'ensure_docroot', lambda *a, **kw: effects.append('files'))
     params = {'username': 'alice', 'domain': domain}
     with pytest.raises(ValidationError):
         if route == 'addon':
@@ -52,7 +52,7 @@ def test_same_owner_can_reclaim_web_domain_with_retained_mail(owners, monkeypatc
     alice, _ = owners
     with write_session() as db:
         db.add(MailDomain(domain='retained.example', account_id=alice))
-    monkeypatch.setattr(handlers_domain, 'ensure_docroot', lambda *a: None)
+    monkeypatch.setattr(handlers_domain, 'ensure_docroot', lambda *a, **kw: None)
     monkeypatch.setattr(handlers_domain.ols, 'provision_vhost', lambda *a: None)
     monkeypatch.setattr(
         handlers_domain,

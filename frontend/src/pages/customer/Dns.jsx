@@ -1,3 +1,4 @@
+import '@/customer-polish.css'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Network, Plus, Pencil, Trash2, Cloud, CheckCircle2, AlertTriangle, Wand2, FileCode2 } from 'lucide-react'
@@ -169,8 +170,8 @@ export default function Dns({ emailOnly = false }) {
           <Plus className="h-4 w-4" /> Add record
         </Button>} />
 
-      <div className="mb-4 flex flex-wrap items-end gap-3">
-        <div className="max-w-sm flex-1">
+      <div className="customer-domain-toolbar mb-4 flex flex-wrap items-end gap-3">
+        <div className="customer-domain-field">
           <FormField label="Domain" hint="Choose which zone to manage.">
             <Select
               value={domain}
@@ -183,6 +184,7 @@ export default function Dns({ emailOnly = false }) {
               ))}
             </Select>
           </FormField>
+          {domain && <p className="customer-domain-context">{domain}</p>}
         </div>
         {!emailOnly && <Button variant="secondary" disabled={!domain || unmanaged} loading={advancedLoad.isPending} onClick={() => advancedLoad.mutate()}><FileCode2 className="h-4 w-4" /> Zone editor and templates</Button>}
         {/* Provider badge (docs/PLAN-cloudflare.md Phase 1); enable/revert lives in the domain's DNS tab. */}

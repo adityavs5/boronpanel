@@ -110,13 +110,13 @@ export default function SshKeys() {
         description="Add a public key to sign in over SSH as your account. Removing the last key disables SSH login again."
         icon={KeyRound}
       >
-        <Button onClick={() => setCreateOpen(true)}>
+        <Button onClick={() => setCreateOpen(true)} disabled={impersonating} aria-describedby={impersonating ? 'ssh-direct-login-note' : undefined}>
           <Plus className="h-4 w-4" /> Add SSH key
         </Button>
       </PageHeader>
 
       {impersonating ? (
-        <div className="rounded-btn border border-border bg-muted p-5 text-sm">
+        <div id="ssh-direct-login-note" className="rounded-btn border border-border bg-muted p-5 text-sm">
           SSH keys grant real shell access. Sign in directly as this customer to view or change their authorized keys.
         </div>
       ) : <>

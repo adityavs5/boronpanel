@@ -289,10 +289,15 @@ def test_disconnect_ftp_sessions_targets_only_valid_matching_processes(monkeypat
     from daemon import ftp
     from daemon.procutil import ProcResult
     killed = []
-    monkeypatch.setattr(ftp, "run", lambda *_a, **_k: ProcResult([], 0,
-        "101|demo1_one|0|IDLE\n102|other_two|0|IDLE\n103|demo1_one|0|IDLE\n", ""))
+    calls = []
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return ProcResult(argv, 0,
+            "101|demo1_one|0|IDLE\n102|other_two|0|IDLE\n103|demo1_one|0|IDLE\n", "")
+    monkeypatch.setattr(ftp, "run", fake_run)
     monkeypatch.setattr(ftp, "_is_pure_ftp_process", lambda pid: pid == 101)
     monkeypatch.setattr(ftp.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     assert ftp.disconnect_ftp_sessions({"demo1_one"}) == 1
+    assert calls == [(["/usr/sbin/pure-ftpwho", "-s", "-H"], {"timeout": 10, "output_limit": 256 * 1024})]
     assert killed == [(101, ftp.signal.SIGTERM)]

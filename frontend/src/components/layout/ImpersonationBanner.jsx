@@ -15,17 +15,18 @@ export function ImpersonationBanner() {
   if (!impersonating) return null
 
   return (
-    <div className="flex items-center justify-between gap-3 bg-amber-500 px-4 py-2 text-sm font-medium text-amber-950">
-      <span className="flex items-center gap-2">
+    <div className="impersonation-banner bg-amber-500 text-sm font-medium text-amber-950">
+      <span className="impersonation-context">
         <UserCog className="h-4 w-4 shrink-0" />
-        You are viewing this panel as <strong>{username}</strong>
-        {impersonator ? <span className="opacity-80">(impersonated by {impersonator})</span> : null}
+        <span>You are viewing this panel as <strong>{username}</strong>
+          {impersonator ? <span className="impersonation-actor"> (impersonated by {impersonator})</span> : null}
+        </span>
       </span>
       <button
         type="button"
         disabled={leaving}
         onClick={() => { setLeaving(true); returnToAdmin() }}
-        className="inline-flex items-center gap-1.5 rounded-md bg-amber-950/90 px-3 py-1 text-amber-50 hover:bg-amber-950 disabled:opacity-60"
+        className="impersonation-return bg-amber-950/90 text-amber-50 hover:bg-amber-950 disabled:opacity-60"
       >
         <LogOut className="h-3.5 w-3.5" /> {leaving ? 'Returning…' : 'Return to admin'}
       </button>

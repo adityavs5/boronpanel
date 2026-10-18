@@ -43,9 +43,9 @@ from shared.models import (
 from shared.validation import ValidationError
 
 _REFERENCE = re.compile(r"reference:\s*([a-f0-9]{16})", re.IGNORECASE)
-_TERMINAL = frozenset({"completed", "complete", "ready", "failed", "cancelled", "canceled"})
-_SUCCESS = frozenset({"completed", "complete", "ready", "success", "succeeded"})
+_SUCCESS = frozenset({"completed", "complete", "ready", "success", "succeeded", "consumed"})
 _FAILED = frozenset({"failed", "error"})
+_UPDATE_STAGES = ("preflight", "backup", "download", "checksum", "extract", "venv", "migrate", "finalize")
 
 
 @dataclass(frozen=True)
@@ -149,6 +149,11 @@ def _status(value: object) -> str:
 
 
 def _progress(row: Any, status: str) -> int | None:
+    # A completed operation must not inherit a stale intermediate percentage.
+    if status in {"completed", "failed", "cancelled"}:
+        return 100
+    if status == "queued":
+        return 0
     if isinstance(row, ControlTask):
         return max(0, min(100, int(row.progress_pct or 0)))
     if isinstance(row, StackJob):
@@ -158,12 +163,12 @@ def _progress(row: Any, status: str) -> int | None:
     if isinstance(row, ImapMigrationJob) and row.folders_total:
         return max(0, min(100, int(row.folders_done * 100 / row.folders_total)))
     if isinstance(row, UpdateJob) and row.steps:
-        finished = sum(1 for step in row.steps if str(step.get("status", "")).lower() in _TERMINAL | {"ok"})
-        return max(0, min(100, int(finished * 100 / len(row.steps))))
-    if status in {"completed", "failed", "cancelled"}:
-        return 100
-    if status == "queued":
-        return 0
+        # Steps are an append-only transition log, including service checks.
+        # Count each pipeline stage once, using its latest transition.
+        stages = ("preflight", "finalize") if row.kind == "rollback" else _UPDATE_STAGES
+        latest = {step.get("step"): str(step.get("status", "")).lower() for step in row.steps}
+        finished = sum(1 for name in stages if name != "finalize" and latest.get(name) in _SUCCESS | {"ok"})
+        return int(finished * 100 / len(stages) + 0.5)
     return None
 
 
@@ -173,6 +178,11 @@ def _reference(error: object) -> str | None:
 
 
 def _safe_detail(row: Any, spec: TaskSpec, status: str) -> str:
+    if isinstance(row, SupportBundleJob):
+        if row.status == "consumed":
+            return "Support bundle downloaded. Its one-time download is no longer available."
+        if row.status == "expired":
+            return "Support bundle expired. Create a new bundle from Diagnostics if needed."
     value = getattr(row, spec.progress, None) if spec.progress else None
     if isinstance(value, str) and value.strip():
         return value.strip()[:500]

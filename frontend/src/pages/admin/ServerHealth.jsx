@@ -54,8 +54,8 @@ function ChartCard({ title, data, dataKey, color, formatY }) {
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--border))" vertical={false} />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'rgb(var(--muted-fg))' }} tickLine={false} axisLine={false} minTickGap={40} />
-              <YAxis tick={{ fontSize: 11, fill: 'rgb(var(--muted-fg))' }} tickLine={false} axisLine={false} width={48} tickFormatter={formatY} />
+              <XAxis dataKey="label" tick={{ fontSize: 12, fill: 'rgb(var(--muted-fg))' }} tickLine={false} axisLine={false} minTickGap={40} />
+              <YAxis tick={{ fontSize: 12, fill: 'rgb(var(--muted-fg))' }} tickLine={false} axisLine={false} width={48} tickFormatter={formatY} />
               <RTooltip
                 contentStyle={{ background: 'rgb(var(--card))', border: '1px solid rgb(var(--border))', borderRadius: 8, fontSize: 12 }}
                 labelStyle={{ color: 'rgb(var(--muted-fg))' }}
@@ -203,7 +203,7 @@ function MonitoringCard() {
             />
           </FormField>
           <div className="flex items-center gap-2 pt-6">
-            <Switch checked={active.enabled} onCheckedChange={(v) => setForm({ ...active, enabled: v })} />
+            <Switch aria-label="Alerts" checked={active.enabled} onCheckedChange={(v) => setForm({ ...active, enabled: v })} />
             <span className="text-sm text-muted-foreground">Alerts</span>
           </div>
           <FormField label="Disk free warning (%)"><Input type="number" min="1" max="50" value={active.disk_free_pct} onChange={e => setForm({ ...active, disk_free_pct: e.target.value })} /></FormField>

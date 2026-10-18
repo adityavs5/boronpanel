@@ -20,7 +20,7 @@ def stub_sysops(monkeypatch):
 
 @pytest.fixture()
 def stub_filesystem(monkeypatch):
-    monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot, domain_name=None: None)
+    monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot, domain_name=None, **kwargs: None)
     monkeypatch.setattr(hd.ols, "provision_vhost", lambda account: None)
 
 

@@ -174,7 +174,7 @@ def add_domain(params: dict) -> dict:
         parent_zone = _find_parent_zone(domain_name)
         dns_label = _subdomain_label(domain_name, parent_zone) if parent_zone else None
         with audit.step("domain: create document root"):
-            ensure_docroot(username, docroot, domain_name)
+            ensure_docroot(username, docroot, domain_name, create_welcome=True)
         # Accounts created without a primary domain do not yet have the OLS
         # log directory. Provision it before the first later-added vhost is
         # validated; this is idempotent for ordinary existing accounts.
@@ -414,7 +414,7 @@ def set_domain_php_version(params: dict) -> dict:
     return result
 
 
-def ensure_docroot(username: str, docroot: str, domain_name: str | None = None) -> None:
+def ensure_docroot(username: str, docroot: str, domain_name: str | None = None, *, create_welcome: bool = False) -> None:
     import os
     import pwd
 
@@ -477,6 +477,10 @@ def ensure_docroot(username: str, docroot: str, domain_name: str | None = None) 
         from daemon import custom_pages
 
         custom_pages.ensure_pages_dir(username, domain_name)
+        if create_welcome:
+            from daemon import domain_welcome
+
+            domain_welcome.ensure_welcome(username, domain_name, docroot)
 
 
 def _grant_webserver_acl(docroot: str, uid: int, gid: int) -> None:

@@ -48,6 +48,8 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
     await submit.click()
     await expect(form).not.toBeVisible()
     expect(request).toEqual({ kind: 'mail', mailboxes: ['inbox@example.test', 'deleted@example.test'], confirmation: 'alpha', mail_pause_acknowledged: true })
+    await page.getByRole('dialog').getByRole('button', { name: 'Done', exact: true }).click()
+    await page.getByRole('tab', { name: 'Restore history', exact: true }).click()
     await page.getByRole('button', { name: 'Recover previous mail', exact: true }).click()
     const confirm = page.getByRole('dialog', { name: 'Recover previous mail?', exact: true })
     await confirm.getByRole('textbox').fill('alpha')

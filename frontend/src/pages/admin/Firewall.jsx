@@ -43,6 +43,7 @@ export default function Firewall() {
     queryFn: () => get('/api/v1/firewall/rules'),
   })
 
+  const unknownLabel = isLoading ? 'Loading…' : 'Unavailable'
   const active = data?.active
   const pending = data?.pending_change
   const secondsLeft = pending ? Math.max(0, Math.ceil(pending.expires_at - now / 1000)) : 0
@@ -207,7 +208,7 @@ export default function Firewall() {
 
   return (
     <div>
-      <PageHeader title="Firewall" titleMeta={<Badge variant={active ? 'success' : 'neutral'}>{active ? 'Active' : 'Inactive'}</Badge>} description="Manage UFW firewall rules for this server." icon={Flame} primaryAction={<Button onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" /> Add rule</Button>} moreActions={[
+      <PageHeader title="Firewall" titleMeta={<Badge variant={active ? 'success' : 'neutral'}>{active == null ? unknownLabel : active ? 'Active' : 'Inactive'}</Badge>} description="Manage UFW firewall rules for this server." icon={Flame} primaryAction={<Button onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" /> Add rule</Button>} moreActions={[
         data && {label:active?'Disable':'Enable',icon:active?<ShieldOff className="h-4 w-4"/>:<ShieldCheck className="h-4 w-4"/>,destructive:active,onSelect:()=>setToggleAction(active?'disable':'enable')},
         {label:'Export',icon:<Download className="h-4 w-4"/>,onSelect:()=>{const link=document.createElement('a');link.href='/api/v1/firewall/configuration/export';link.download='';link.click()}},
         {label:'Import',icon:<Upload className="h-4 w-4"/>,onSelect:()=>setImportOpen(true)},
@@ -240,10 +241,10 @@ export default function Firewall() {
       )}
 
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Inbound rules</div><div className="mt-1 text-2xl font-semibold">{(data?.rules || []).filter((row) => row.direction !== 'out').length}</div></CardContent></Card>
-        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Outbound rules</div><div className="mt-1 text-2xl font-semibold">{(data?.rules || []).filter((row) => row.direction === 'out').length}</div></CardContent></Card>
-        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Trusted networks</div><div className="mt-1 text-2xl font-semibold">{(data?.bypass || []).length}</div></CardContent></Card>
-        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Network policy</div><div className="mt-2 flex flex-wrap gap-2"><Badge variant="success">IPv4</Badge><Badge variant={data?.ipv6 ? 'success' : 'neutral'}>IPv6 {data?.ipv6 ? 'on' : 'off'}</Badge><Badge variant={data?.outbound_default === 'accept' ? 'success' : 'warning'}>Outbound {data?.outbound_default || 'unknown'}</Badge></div></CardContent></Card>
+        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Inbound rules</div><div className="mt-1 text-2xl font-semibold">{data ? (data.rules || []).filter((row) => row.direction !== 'out').length : unknownLabel}</div></CardContent></Card>
+        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Outbound rules</div><div className="mt-1 text-2xl font-semibold">{data ? (data.rules || []).filter((row) => row.direction === 'out').length : unknownLabel}</div></CardContent></Card>
+        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Trusted networks</div><div className="mt-1 text-2xl font-semibold">{data ? (data.bypass || []).length : unknownLabel}</div></CardContent></Card>
+        <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Network policy</div><div className="mt-2 flex flex-wrap gap-2">{data ? <><Badge variant="success">IPv4</Badge><Badge variant={data.ipv6 ? 'success' : 'neutral'}>IPv6 {data.ipv6 ? 'on' : 'off'}</Badge><Badge variant={data.outbound_default === 'accept' ? 'success' : 'warning'}>Outbound {data.outbound_default || 'unknown'}</Badge></> : <span className="text-sm text-muted-foreground">{unknownLabel}</span>}</div></CardContent></Card>
       </div>
 
       <Card className="mb-6"><CardHeader><CardTitle>Service presets</CardTitle><CardDescription>Add the complete rule set for a common service. The same connectivity confirmation and automatic rollback apply.</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-[1fr_160px_1fr_auto] md:items-end">
@@ -281,16 +282,16 @@ export default function Firewall() {
               <div><div className="font-mono text-sm font-medium">{entry.address}</div><div className="text-xs text-muted-foreground">{entry.label || 'Trusted administrator address'}</div></div>
               <Button variant="danger" size="sm" onClick={() => setDeleteBypass(entry)}><Trash2 className="h-4 w-4" /> Remove</Button>
             </div>)}
-          </div> : <div className="rounded-panel border border-dashed border-border p-6 text-center text-sm text-muted-foreground">No full-access IPs configured.</div>}
+          </div> : <div className="rounded-panel border border-dashed border-border p-6 text-center text-sm text-muted-foreground">{data ? 'No full-access IPs configured.' : unknownLabel}</div>}
         </CardContent>
       </Card>
 
       <Card className="mt-6">
         <CardHeader className="flex-row items-start justify-between gap-4"><div><CardTitle>Temporary IP blocks</CardTitle><CardDescription>Time-bounded server-wide blocks expire automatically. Boron refuses the current administrator address and any network covered by a full-access bypass.</CardDescription></div><Button variant="outline" onClick={() => setBanOpen(true)}><Ban className="h-4 w-4" /> Block address</Button></CardHeader>
-        <CardContent>{(data?.temporary_bans || []).length ? <div className="divide-y divide-border rounded-panel border border-border">{data.temporary_bans.map((entry) => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 p-4"><div><div className="font-mono text-sm font-medium">{entry.value}</div><div className="text-xs text-muted-foreground">Until {new Date(entry.expires_at).toLocaleString()} · {entry.reason || 'No reason supplied'}</div></div><Button size="sm" variant="danger" onClick={() => setDeleteBan(entry)}>Unblock</Button></div>)}</div> : <div className="rounded-panel border border-dashed border-border p-6 text-center text-sm text-muted-foreground">No temporary blocks are active.</div>}</CardContent>
+        <CardContent>{(data?.temporary_bans || []).length ? <div className="divide-y divide-border rounded-panel border border-border">{data.temporary_bans.map((entry) => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 p-4"><div><div className="font-mono text-sm font-medium">{entry.value}</div><div className="text-xs text-muted-foreground">Until {new Date(entry.expires_at).toLocaleString()} · {entry.reason || 'No reason supplied'}</div></div><Button size="sm" variant="danger" onClick={() => setDeleteBan(entry)}>Unblock</Button></div>)}</div> : <div className="rounded-panel border border-dashed border-border p-6 text-center text-sm text-muted-foreground">{data ? 'No temporary blocks are active.' : unknownLabel}</div>}</CardContent>
       </Card>
 
-      <Card className="mt-6"><CardHeader><CardTitle><History className="h-5 w-5" /> Recent firewall changes</CardTitle><CardDescription>The complete request and result trail remains available in Audit Log.</CardDescription></CardHeader><CardContent>{(data?.recent_changes || []).length ? <div className="divide-y divide-border rounded-panel border border-border">{data.recent_changes.slice(0, 10).map((entry) => <div key={entry.id} className="grid gap-1 p-3 text-sm sm:grid-cols-[180px_1fr_auto]"><span className="text-muted-foreground">{new Date(entry.created_at).toLocaleString()}</span><span>{entry.operation} · {entry.actor}</span><Badge variant={entry.result === 'ok' ? 'success' : 'danger'}>{entry.result}</Badge></div>)}</div> : <p className="text-sm text-muted-foreground">No recorded firewall changes yet.</p>}</CardContent></Card>
+      <Card className="mt-6"><CardHeader><CardTitle><History className="h-5 w-5" /> Recent firewall changes</CardTitle><CardDescription>The complete request and result trail remains available in Audit Log.</CardDescription></CardHeader><CardContent>{(data?.recent_changes || []).length ? <div className="divide-y divide-border rounded-panel border border-border">{data.recent_changes.slice(0, 10).map((entry) => <div key={entry.id} className="grid gap-1 p-3 text-sm sm:grid-cols-[180px_1fr_auto]"><span className="text-muted-foreground">{new Date(entry.created_at).toLocaleString()}</span><span>{entry.operation} · {entry.actor}</span><Badge variant={entry.result === 'ok' ? 'success' : 'danger'}>{entry.result}</Badge></div>)}</div> : <p className="text-sm text-muted-foreground">{data ? 'No recorded firewall changes yet.' : unknownLabel}</p>}</CardContent></Card>
 
       {/* Add rule dialog */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>

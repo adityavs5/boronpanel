@@ -1,0 +1,40 @@
+/* Template editors share the panel's type, spacing and control tokens. The
+   preview viewport is deliberately independent of the surrounding UI theme. */
+.templates-workspace{max-width:1100px;margin-inline:auto;min-width:0}
+.templates-workspace [role=tabpanel][hidden]{display:none}
+.templates-workspace [role=tablist]{flex-wrap:wrap;overflow:visible}
+.template-section{display:grid;gap:var(--tool-space-4);min-width:0;padding-block:var(--tool-space-4)}
+.template-section+.template-section{margin-top:var(--tool-space-6);border-top:1px solid rgb(var(--border))}
+.template-section__heading h2{font-size:var(--tool-type-body);font-weight:600}
+.template-section__heading p,.template-muted{margin-top:var(--tool-space-1);font-size:var(--tool-type-sm);color:rgb(var(--muted-fg));line-height:1.6}
+.template-preview{min-width:0;overflow:hidden;border:1px solid rgb(var(--border));border-radius:var(--radius);background:rgb(var(--card))}
+.template-preview__toolbar{display:flex;align-items:center;justify-content:space-between;gap:var(--tool-space-2);padding:var(--tool-space-2) var(--tool-space-3);border-bottom:1px solid rgb(var(--border));flex-wrap:wrap}
+.template-preview__toolbar strong{font-size:var(--tool-type-sm);font-weight:500}
+.template-preview__toolbar [role=group]{display:flex;gap:var(--tool-space-1)}
+.template-preview__toolbar button[aria-pressed=true]{background:rgb(var(--accent)/.12);color:rgb(var(--link))}
+.template-preview__canvas{display:flex;justify-content:center;overflow:hidden;min-width:0;background:rgb(var(--muted))}
+.template-preview__viewport{position:relative;flex-shrink:0;overflow:hidden;background:white}
+.template-preview iframe{display:block;position:absolute;top:0;left:0;border:0;transform-origin:top left;background:white}
+.template-preview__note{border-top:1px solid rgb(var(--border));padding:var(--tool-space-2) var(--tool-space-3);font-size:12px;color:rgb(var(--muted-fg))}
+.template-design-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--tool-space-3)}
+.templates-workspace .template-design{display:block;height:auto!important;padding:0;text-align:left;overflow:hidden;border:1px solid rgb(var(--border));border-radius:var(--radius);background:rgb(var(--card));color:rgb(var(--fg))}
+.template-design[aria-pressed=true]{border-color:rgb(var(--accent));outline:2px solid rgb(var(--accent)/.3);outline-offset:1px}
+.template-design:focus-visible{outline:2px solid rgb(var(--ring));outline-offset:3px}
+.template-preview--thumbnail iframe{pointer-events:none}
+.template-preview--thumbnail{border:0;border-bottom:1px solid rgb(var(--border));border-radius:0}
+.template-design__label{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--tool-space-2);padding:var(--tool-space-3)}
+.template-design__label strong{display:block;font-size:var(--tool-type-body);font-weight:500}
+.template-design__label small{display:block;font-size:12px;line-height:1.5;color:rgb(var(--muted-fg));margin-top:var(--tool-space-1)}
+.template-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--tool-space-4)}
+.template-color-control{display:flex;gap:var(--tool-space-2)}
+.template-color-control input[type=color]{width:48px;min-width:48px;padding:var(--tool-space-1)}
+.template-source{border-top:1px solid rgb(var(--border));border-bottom:1px solid rgb(var(--border))}
+.template-source summary{cursor:pointer;padding-block:var(--tool-space-3);font-size:var(--tool-type-body);font-weight:500}
+.template-source summary:focus-visible{outline:2px solid rgb(var(--ring));outline-offset:2px}
+.template-source>div{padding-bottom:var(--tool-space-4)}
+.template-actions{display:flex;flex-wrap:wrap;gap:var(--tool-space-2)}
+.template-email-preview{border:1px solid rgb(var(--border));border-radius:var(--radius);padding:var(--tool-space-4);background:rgb(var(--card));overflow-wrap:anywhere}
+.template-email-preview strong{display:block;font-size:var(--tool-type-body);font-weight:600;padding-bottom:var(--tool-space-3);border-bottom:1px solid rgb(var(--border))}
+.template-email-preview p{white-space:pre-wrap;margin-block:var(--tool-space-4);font-size:var(--tool-type-body);line-height:1.6}
+.template-email-preview small{font-size:12px;color:rgb(var(--muted-fg))}
+@media(max-width:639px){.template-design-grid,.template-form-grid{grid-template-columns:minmax(0,1fr)}.template-preview__toolbar{align-items:flex-start}.template-preview__toolbar strong{flex-basis:100%}}

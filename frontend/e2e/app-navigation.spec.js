@@ -12,7 +12,7 @@ for (const skin of ['evolution','paper-lantern']) {
     })
     for (const [query,label,route] of [['django','Python App','python-apps'],['nodejs','Node.js App','node-apps']]) {
       await page.goto('/app/dashboard')
-      await page.getByRole('textbox',{name:'Search hosting tools'}).fill(query)
+      await page.getByRole('combobox',{name:'Search hosting tools'}).fill(query)
       await page.getByRole('option').filter({hasText:label}).click()
       await expect(page).toHaveURL(new RegExp('/'+route+'$'))
       await expect(page.getByRole('heading',{name:label,exact:true})).toBeVisible()

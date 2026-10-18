@@ -21,11 +21,33 @@ class WelcomeEmailBody(BaseModel):
     body: str | None = None
 
 
+class WelcomePageBody(BaseModel):
+    content: str
+
+
 class SuspensionDesignBody(BaseModel):
     template_key: str
     accent_color: str
     heading: str
     message: str
+
+
+@api_router.get("/welcome-page")
+def get_welcome_page(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("templates.welcome_page.get", identity)
+
+
+@api_router.put("/welcome-page")
+def set_welcome_page(body: WelcomePageBody, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("templates.welcome_page.set", identity, content=body.content)
+
+
+@api_router.delete("/welcome-page")
+def reset_welcome_page(identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("templates.welcome_page.reset", identity)
 
 
 @api_router.get("/suspended-page")

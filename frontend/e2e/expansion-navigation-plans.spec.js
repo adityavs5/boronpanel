@@ -45,7 +45,7 @@ for (const skin of ['evolution', 'paper-lantern']) {
     expect(links.slice(0, expectedCustomerStart.length)).toEqual(expectedCustomerStart)
     expect(links.slice(-expectedBackupEnd.length)).toEqual(expectedBackupEnd)
 
-    await page.getByRole('textbox', { name: 'Search hosting tools' }).fill('mail deliverability')
+    await page.getByRole('combobox', { name: 'Search hosting tools' }).fill('mail deliverability')
     await expect(page.getByRole('option').filter({ hasText: 'Email DNS Records' })).toBeVisible()
 
     await page.goto('/app/subdomains')

@@ -22,11 +22,15 @@ import shutil
 import time
 import html
 import re
+import os
+import secrets
+import stat
+from contextlib import contextmanager
 from pathlib import Path
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import SuspensionPageSettings, WelcomeEmailTemplate
+from shared.models import BrandingSettings, SuspensionPageSettings, WelcomeEmailTemplate
 from shared.validation import ValidationError
 
 MAX_PAGE_BYTES = 512 * 1024  # generous for a real branded HTML page, bounded against abuse
@@ -39,6 +43,9 @@ MAX_BODY_LEN = 8000
 # ever saved (a typo'd placeholder would otherwise render literally into
 # every future welcome email, silently, until someone happened to notice).
 WELCOME_EMAIL_PLACEHOLDERS = ("username", "primary_domain", "panel_name")
+WELCOME_PAGE_PLACEHOLDERS = ("domain", "panel_name")
+_WELCOME_PAGE_DEFAULT = Path(__file__).resolve().parent.parent / "templates/site_pages/welcome.html"
+_WELCOME_TOKEN = re.compile(r"\{\{\s*([a-zA-Z_]+)\s*\}\}")
 SUSPENSION_DESIGNS = {
     "clean": {"name": "Clean notice", "description": "A calm centered card with a clear support message."},
     "gradient": {"name": "Modern gradient", "description": "A bold branded background with a glass-style notice."},
@@ -49,6 +56,124 @@ SUSPENSION_DESIGNS = {
 
 class SiteTemplatesError(Exception):
     pass
+
+
+@contextmanager
+def _welcome_store(*, create: bool = False):
+    """Root-controlled configuration, never a tenant's document root."""
+    from daemon.safeio import open_dir_beneath
+
+    parent = open_dir_beneath(str(Path(settings.db_path).parent))
+    directory = None
+    try:
+        info = os.fstat(parent)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise SiteTemplatesError("The template configuration directory is not protected")
+        if create:
+            try:
+                os.mkdir("site-templates", 0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+        try:
+            directory = os.open("site-templates", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        except FileNotFoundError:
+            yield None
+            return
+        info = os.fstat(directory)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise SiteTemplatesError("The template configuration directory must be private")
+        yield directory
+    finally:
+        if directory is not None:
+            os.close(directory)
+        os.close(parent)
+
+
+def _read_welcome_override(directory: int | None) -> str | None:
+    if directory is None:
+        return None
+    try:
+        fd = os.open("welcome.html", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=directory)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise SiteTemplatesError("The welcome template is not a protected regular file")
+        content = stream.read(MAX_PAGE_BYTES + 1)
+    if len(content) > MAX_PAGE_BYTES:
+        raise SiteTemplatesError("The stored welcome template exceeds the size limit")
+    return content.decode("utf-8")
+
+
+def _store_template_file(directory: int, name: str, content: str) -> None:
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(content.encode("utf-8"))
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _backup_welcome(directory: int, content: str | None) -> None:
+    if content is None:
+        return
+    name = f"welcome-backup-{time.time_ns()}-{secrets.token_hex(6)}.html"
+    _store_template_file(directory, name, content)
+    # A private configuration history, bounded independently of tenant data.
+    backups = sorted(name for name in os.listdir(directory) if re.fullmatch(r"welcome-backup-\d+-[a-f0-9]{12}\.html", name))
+    for old in backups[:-10]:
+        os.unlink(old, dir_fd=directory)
+
+
+def get_welcome_page(params: dict | None = None) -> dict:
+    default = _WELCOME_PAGE_DEFAULT.read_text(encoding="utf-8")
+    with _welcome_store() as directory:
+        custom = _read_welcome_override(directory)
+    return {"content": custom if custom is not None else default, "default_content": default,
+            "is_custom": custom is not None, "placeholders": list(WELCOME_PAGE_PLACEHOLDERS)}
+
+
+def set_welcome_page(params: dict) -> dict:
+    content = _validate_html(params.get("content", ""))
+    for token in re.findall(r"\{\{(.*?)\}\}", content, flags=re.S):
+        if token.strip() not in WELCOME_PAGE_PLACEHOLDERS:
+            raise ValidationError("Welcome page placeholders are {{domain}} and {{panel_name}}")
+    with _welcome_store(create=True) as directory:
+        _backup_welcome(directory, _read_welcome_override(directory))
+        temporary = f".welcome-{secrets.token_hex(12)}.tmp"
+        try:
+            _store_template_file(directory, temporary, content)
+            os.replace(temporary, "welcome.html", src_dir_fd=directory, dst_dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+    return {**get_welcome_page(), "status": "saved"}
+
+
+def reset_welcome_page(params: dict | None = None) -> dict:
+    with _welcome_store() as directory:
+        current = _read_welcome_override(directory)
+        if current is not None:
+            _backup_welcome(directory, current)
+            os.unlink("welcome.html", dir_fd=directory)
+            os.fsync(directory)
+    return {**get_welcome_page(), "status": "reset"}
+
+
+def render_domain_welcome(domain: str) -> str:
+    """Literal HTML substitution only; never execute admin template code."""
+    from shared.validation import validate_domain
+
+    domain = validate_domain(domain)
+    content = get_welcome_page()["content"]
+    with write_session() as session:
+        brand = session.get(BrandingSettings, 1)
+        panel_name = brand.panel_name if brand else "Boron"
+    values = {"domain": html.escape(domain, quote=True), "panel_name": html.escape(panel_name, quote=True)}
+    return _WELCOME_TOKEN.sub(lambda match: values[match.group(1)], content)
 
 
 def _validate_html(content: str) -> str:

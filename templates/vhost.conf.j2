@@ -1,4 +1,11 @@
 docRoot                   {{ docroot }}
+{# A real site index always wins. welcome.html is generated only for empty
+   new domain roots and retired after an installation or user upload. #}
+index {
+  useServer               0
+  indexFiles              index.html, index.php, welcome.html
+  autoIndex               0
+}
 {# Security fix (Phase 6a research finding): this was hardcoded to 1
    (follow symlinks unconditionally), the maximally-permissive setting --
    independent of namespace isolation, this let an account plant a symlink

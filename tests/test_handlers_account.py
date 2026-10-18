@@ -51,7 +51,7 @@ def stub_sysops(monkeypatch):
     monkeypatch.setattr(ha.sysops, "delete_linux_user", delete_linux_user)
     monkeypatch.setattr(ha.sysops, "remove_quota", remove_quota)
     monkeypatch.setattr(ha.sysops, "ensure_web_logs", lambda username: calls.append(("ensure_web_logs", username)))
-    monkeypatch.setattr(ha.handlers_domain, "ensure_docroot", lambda username, docroot, domain_name=None: None)
+    monkeypatch.setattr(ha.handlers_domain, "ensure_docroot", lambda username, docroot, domain_name=None, **kwargs: None)
     monkeypatch.setattr(ha.ols, "provision_vhost", lambda account: None)
     zone_calls = {"create": [], "delete": []}
     monkeypatch.setattr(

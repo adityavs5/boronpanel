@@ -470,3 +470,36 @@ def test_filesystem_actions_use_account_launcher_and_hide_failure_output(monkeyp
     assert wrapped[0][0] == 'demo1'
     assert calls[0][1].get('uid') is None and calls[0][1].get('gid') is None
     assert 'secret' not in calls[0][0]
+
+
+def test_install_retires_managed_domain_welcome(account_with_domain, stub_network, stub_system, stub_install_script, stub_database, monkeypatch):
+    from daemon import domain_welcome, site_templates
+    monkeypatch.setattr(site_templates, 'render_domain_welcome', lambda domain: '<!doctype html><title>Welcome</title>')
+    original = account_with_domain['docroot']
+    monkeypatch.setattr(settings, 'home_base', str(original.parent))
+    docroot = original.parent / 'demo1' / 'public_html'
+    docroot.parent.mkdir()
+    original.rename(docroot)
+    with write_session() as session:
+        session.scalar(select(Domain).where(Domain.domain == 'demo1.example')).docroot = str(docroot)
+    assert domain_welcome.ensure_welcome('demo1', 'demo1.example', str(docroot))
+    result = wp.install({'username': 'demo1', 'domain': 'demo1.example'})
+    assert result['status'] == 'installed'
+    assert not (docroot / 'welcome.html').exists()
+
+
+def test_subdirectory_install_keeps_parent_domain_welcome(account_with_domain, stub_network, stub_system, stub_install_script, stub_database, monkeypatch):
+    from daemon import domain_welcome, site_templates
+    monkeypatch.setattr(site_templates, 'render_domain_welcome', lambda domain: '<!doctype html><title>Welcome</title>')
+    original = account_with_domain['docroot']
+    monkeypatch.setattr(settings, 'home_base', str(original.parent))
+    docroot = original.parent / 'demo1' / 'public_html'
+    docroot.parent.mkdir()
+    original.rename(docroot)
+    with write_session() as session:
+        session.scalar(select(Domain).where(Domain.domain == 'demo1.example')).docroot = str(docroot)
+    assert domain_welcome.ensure_welcome('demo1', 'demo1.example', str(docroot))
+    result = wp.install({'username': 'demo1', 'domain': 'demo1.example', 'path': 'blog'})
+    assert result['path'] == 'blog'
+    assert (docroot / 'welcome.html').exists()
+    assert (docroot / 'blog/wp-config.php').exists()

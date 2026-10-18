@@ -14,8 +14,9 @@ import { toast } from '@/components/ui/Toast'
 
 const fields = [
   ['cpu_cores', 'CPU cores', .25, .25], ['cpu_weight', 'CPU priority weight', 1, 1],
-  ['memory_high_gb', 'Soft memory limit (GB)', .0625, .0625],
-  ['memory_max_gb', 'Hard memory limit (GB)', .0625, .0625], ['io_read_iops', 'Read IOPS', 1, 1],
+  // Stored limits use whole MiB; preserve that precision when editing in GiB.
+  ['memory_high_gb', 'Soft memory limit (GB)', .0625, 1 / 1024],
+  ['memory_max_gb', 'Hard memory limit (GB)', .0625, 1 / 1024], ['io_read_iops', 'Read IOPS', 1, 1],
   ['io_write_iops', 'Write IOPS', 1, 1], ['nproc', 'NPROC', 10, 1],
   ['entry_processes', 'Entry processes', 1, 1],
 ]
@@ -60,7 +61,7 @@ export default function ResourceManager() {
   const byId = Object.fromEntries(users.map(user => [user.account_id, user.username]))
   const userColumns = [
     { key: 'username', header: 'Account', sortable: true, searchable: true, render: row => <button className="font-medium text-accent hover:underline" onClick={() => setEdit({ ...row, form: editValues(row) })}>{row.username}</button> },
-    { key: 'cpu', header: 'CPU', render: row => <span>{row.usage ? `${row.usage.cpu_pct.toFixed(1)}%` : '—'} / {row.values.cpu_cores == null ? 'Unlimited' : `${row.values.cpu_cores} cores`}{row.capacity_adjusted && <small className="block text-info">Stored {row.configured_cpu_cores} cores; capped to host capacity</small>}</span> },
+    { key: 'cpu', header: 'CPU', render: row => <span>{row.usage ? `${row.usage.cpu_pct.toFixed(1)}%` : '—'} / {row.values.cpu_cores == null ? 'Unlimited' : `${row.values.cpu_cores} cores`}{row.capacity_adjusted && <span className="block text-xs text-info">Stored {row.configured_cpu_cores} cores; capped to host capacity</span>}</span> },
     { key: 'memory', header: 'Memory', render: row => <span>{row.usage ? formatBytes(row.usage.memory_bytes) : '—'} / {row.values.memory_max_mb == null ? 'Unlimited' : `${(row.values.memory_max_mb / 1024).toLocaleString(undefined, { maximumFractionDigits: 2 })} GB`}</span> },
     { key: 'pids', header: 'Processes', render: row => `${row.usage?.pids ?? '—'} / ${row.values.nproc ?? 'Unlimited'}` },
     { key: 'source', header: 'Policy source', render: row => <Badge variant={row.policy?.scope_type === 'account' ? 'warning' : 'neutral'}>{row.policy ? `${row.policy.scope_type}:${row.policy.scope_id}` : 'Legacy limits'}</Badge> },

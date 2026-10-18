@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Welcome to {{domain}}</title>
+  <style>
+    :root { color-scheme: light; --ink: #172b43; --muted: #52667d; --accent: #1767a6; --line: #d7e1ec; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: #f6f8fc; color: var(--ink); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    header, footer { width: min(1080px, 100%); margin: 0 auto; padding: 24px; }
+    header { font-size: 20px; font-weight: 600; }
+    main { flex: 1; display: grid; align-content: center; width: min(1080px, 100%); margin: 0 auto; padding: 48px 24px; }
+    .notice { max-width: 760px; border-left: 4px solid var(--accent); padding-left: 28px; }
+    .status { margin: 0 0 16px; color: var(--accent); font-size: 16px; font-weight: 600; }
+    h1 { margin: 0 0 20px; font-size: clamp(32px, 5vw, 56px); line-height: 1.15; letter-spacing: -.025em; font-weight: 600; overflow-wrap: anywhere; }
+    p { max-width: 560px; margin: 0; color: var(--muted); }
+    footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+    @media (max-width: 480px) { header, footer { padding: 20px; } main { padding: 32px 20px; } .notice { padding-left: 20px; } }
+  </style>
+</head>
+<body>
+  <header>{{panel_name}}</header>
+  <main>
+    <div class="notice">
+      <p class="status">Your hosting space is ready</p>
+      <h1>Welcome to<br>{{domain}}</h1>
+      <p>Upload your website or install an application to replace this welcome page. Your website will appear here when it is ready.</p>
+    </div>
+  </main>
+  <footer>Hosted with {{panel_name}}</footer>
+</body>
+</html>

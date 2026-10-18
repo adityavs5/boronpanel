@@ -183,7 +183,7 @@ def _extract_wordpress(zip_path: Path, docroot: str) -> None:
                 secure_write_file_beneath(docroot, relative, data, root_stat.st_uid, root_stat.st_gid, 0o640)
 
 
-def _docroot_is_empty_enough(docroot: str) -> bool:
+def _docroot_is_empty_enough(docroot: str, username: str | None = None) -> bool:
     """Refuses to install over existing customer content -- conservative
     by design (goal gives no "force overwrite" instruction, and silently
     clobbering a docroot is exactly the kind of destructive action this
@@ -193,7 +193,11 @@ def _docroot_is_empty_enough(docroot: str) -> bool:
     allowed to remain."""
     if not os.path.isdir(docroot):
         return True
-    visible = [name for name in os.listdir(docroot) if not name.startswith(".") and not (name == "error_pages" and os.path.isdir(os.path.join(docroot, name)) and not os.listdir(os.path.join(docroot, name)))]
+    from daemon import domain_welcome
+    managed_welcome = bool(username and domain_welcome.is_managed_welcome(username, docroot))
+    visible = [name for name in os.listdir(docroot) if not name.startswith(".")
+               and not (name == "welcome.html" and managed_welcome)
+               and not (name == "error_pages" and os.path.isdir(os.path.join(docroot, name)) and not os.listdir(os.path.join(docroot, name)))]
     return not visible
 
 
@@ -374,7 +378,7 @@ def install(params: dict) -> dict:
 
     if os.path.exists(os.path.join(target_dir, "wp-config.php")):
         raise WordPressError(f"'{target_dir}' already has a wp-config.php -- refusing to overwrite an existing install")
-    if not _docroot_is_empty_enough(target_dir):
+    if not _docroot_is_empty_enough(target_dir, username):
         raise WordPressError(
             f"'{target_dir}' is not empty -- a WordPress install requires an empty directory "
             "(move or back up existing content first)"
@@ -435,6 +439,9 @@ def install(params: dict) -> dict:
                 admin_user=admin_user,
             )
         )
+
+    from daemon import domain_welcome
+    domain_welcome.retire_welcome(username, target_dir, installed=True)
 
     return {
         "domain": domain_name,

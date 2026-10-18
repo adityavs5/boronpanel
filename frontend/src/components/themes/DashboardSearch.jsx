@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search, X, CornerDownLeft } from 'lucide-react'
 import { useAuth } from '@/store/auth'
@@ -20,11 +20,18 @@ export function DashboardSearch() {
   const capabilities = useAuth((state) => state.capabilities)
   const navigate = useNavigate()
   const root = useRef(null)
+  const input = useRef(null)
+  const listId = useId()
+  const optionRefs = useRef([])
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState(0)
   const entries = useMemo(() => entriesFor(role, capabilities), [role, capabilities])
   const results = useMemo(() => query.trim() ? searchEntries(entries, query).slice(0, 9) : [], [entries, query])
+
+  useEffect(() => {
+    if (open) optionRefs.current[selected]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [selected, open, query])
 
   function choose(item) {
     setOpen(false)
@@ -35,7 +42,7 @@ export function DashboardSearch() {
 
   function onKeyDown(event) {
     if (event.key === 'ArrowDown') {
-      event.preventDefault(); setSelected((value) => Math.min(value + 1, results.length - 1))
+      event.preventDefault(); setOpen(true); setSelected((value) => Math.min(value + 1, Math.max(0, results.length - 1)))
     } else if (event.key === 'ArrowUp') {
       event.preventDefault(); setSelected((value) => Math.max(0, value - 1))
     } else if (event.key === 'Enter' && results[selected]) {
@@ -52,9 +59,13 @@ export function DashboardSearch() {
       <div className="dashboard-search-field">
         <Search aria-hidden="true" />
         <input
+          ref={input}
+          role="combobox"
+          aria-autocomplete="list"
           aria-label="Search hosting tools"
-          aria-expanded={open && !!query}
-          aria-controls="dashboard-search-results"
+          aria-expanded={open && !!query.trim()}
+          aria-controls={open && query.trim() ? listId : undefined}
+          aria-activedescendant={open && query.trim() && results[selected] ? `${listId}-${selected}` : undefined}
           autoComplete="off"
           spellCheck="false"
           placeholder="Search hosting tools — try DNS editor, WordPress, redirects…"
@@ -63,14 +74,14 @@ export function DashboardSearch() {
           onChange={(event) => { setQuery(event.target.value); setSelected(0); setOpen(true) }}
           onKeyDown={onKeyDown}
         />
-        {query && <button type="button" aria-label="Clear search" onClick={() => { setQuery(''); setOpen(false) }}><X /></button>}
+        {query && <button type="button" aria-label="Clear search" onClick={() => { setQuery(''); setOpen(false); input.current?.focus() }}><X /></button>}
       </div>
       {open && query.trim() && (
-        <div id="dashboard-search-results" className="dashboard-search-results" role="listbox">
+        <div id={listId} aria-label="Hosting tools" className="dashboard-search-results" role="listbox">
           {results.length ? results.map((item, index) => {
             const Icon = item.icon
-            return <button key={`${item.section}-${item.label}`} type="button" role="option" aria-selected={index === selected}
-              onMouseEnter={() => setSelected(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(item)}>
+            return <button key={`${item.section}-${item.label}`} type="button" role="option" id={`${listId}-${index}`} ref={node => { optionRefs.current[index] = node }} tabIndex={-1} aria-selected={index === selected}
+              onFocus={() => setSelected(index)} onMouseEnter={() => setSelected(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(item)}>
               <span className="search-result-icon"><Icon /></span>
               <span><strong>{item.label}</strong><small>{item.section}</small></span>
               {index === selected && <CornerDownLeft className="search-enter" />}

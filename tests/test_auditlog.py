@@ -207,3 +207,35 @@ def test_error_alias_and_historical_read_visibility(isolated_db):
     assert auditlog._query_rows('', '', '', '', '', 1, 50, include_reads=True)[1] == 6
     errors,total=auditlog._query_rows('', '', 'error', '', '', 1, 50)
     assert total==2 and all(row.result=='failed' for row in errors)
+
+
+def test_inventory_read_filter_and_export_preserve_failures_and_token_policy(isolated_db):
+    from shared.token_policy import READ_ONLY_OPERATIONS
+
+    inventories = auditlog.AUDIT_READ_OPERATIONS - READ_ONLY_OPERATIONS
+    assert {"resources.overview", "namespace.overview", "snapshot.catalog.accounts"} <= inventories
+    assert inventories.isdisjoint(READ_ONLY_OPERATIONS)
+    with write_session() as db:
+        for operation in inventories:
+            for result in ("ok", "failed"):
+                db.add(AuditLog(actor="admin", role="admin", op=operation, result=result))
+        db.add(AuditLog(actor="admin", role="admin", op="resources.policy.account", result="ok"))
+    rows, total = auditlog._query_rows("", "", "", "", "", 1, 50)
+    assert total == len(inventories) + 1
+    assert all(row.result == "failed" or row.op == "resources.policy.account" for row in rows)
+    assert auditlog._query_rows("", "", "", "", "", 1, 100, include_reads=True)[1] == len(inventories) * 2 + 1
+    identity = sec.Identity(1, "admin", "admin", None, "session")
+    exported = list(csv.DictReader(io.StringIO(_body(auditlog.export_csv(identity=identity)))))
+    assert len(exported) == len(inventories) + 1
+    assert all(row["result"] == "failed" or row["op"] == "resources.policy.account" for row in exported)
+
+
+def test_display_read_catalogue_preserves_mutating_and_credential_consuming_reads():
+    from shared.token_policy import CREDENTIAL_CONSUMING_OPERATIONS
+
+    assert auditlog.AUDIT_READ_OPERATIONS.isdisjoint(CREDENTIAL_CONSUMING_OPERATIONS)
+    assert auditlog.AUDIT_READ_OPERATIONS.isdisjoint({
+        "db.health",  # Optional repair=True changes database tables.
+        "cf.zone_status",  # Optional check_now requests an activation check.
+        "snapshot.destination.recovery_key", "support_bundle.consume", "taskops.reveal",
+    })

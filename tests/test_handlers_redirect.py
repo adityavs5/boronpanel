@@ -123,7 +123,7 @@ def test_terminate_account_cleans_up_redirects_for_primary_domain(account_with_d
 def test_remove_domain_cleans_up_redirects(account_with_domain, stub_ols, monkeypatch):
     monkeypatch.setattr(hd.ols, "provision_vhost", lambda account: None)
     monkeypatch.setattr(hd.ols, "remove_domain_vhost", lambda account, domain: None)
-    monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot, domain_name=None: None)
+    monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot, domain_name=None, **kwargs: None)
     monkeypatch.setattr(hd, "_create_managed_zone", lambda username, domain: {"zone": domain})
 
     hd.add_domain({"username": "demo1", "domain": "addon.demo1.example", "kind": "addon"})

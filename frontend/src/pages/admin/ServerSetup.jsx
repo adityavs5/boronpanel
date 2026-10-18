@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Circle, Cloud, Globe2, ServerCog, Settings2 } from 'lucide-react'
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { toast } from '@/components/ui/Toast'
+import '@/operations-polish.css'
 
 const selectClass = 'flex h-9 w-full rounded-btn border border-input bg-input-surface px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:border-accent focus-visible:ring-[3px] focus-visible:ring-ring/25'
 const lines = value => value.split(/[\s,]+/).map(item => item.trim()).filter(Boolean)
@@ -22,6 +23,8 @@ export default function ServerSetup() {
   const query = useQuery({ queryKey: ['server-setup'], queryFn: () => get('/api/v1/admin/server-setup') })
   const data = query.data
   const [step, setStep] = useState(1)
+  const [stepsExpanded, setStepsExpanded] = useState(false)
+  const stepPickerRef = useRef(null)
   const [form, setForm] = useState({})
   const [preview, setPreview] = useState(null)
   const [replaceConflicts, setReplaceConflicts] = useState(false)
@@ -71,13 +74,21 @@ export default function ServerSetup() {
     return {}
   }
   const steps = data?.steps || Array.from({ length: 13 }, (_, index) => ({ number: index + 1, title: `Step ${index + 1}` }))
+  const selectedStep = steps.find(item => item.number === step)
+  const prerequisites = resultFor(step)?.state === 'completed' || data?.legacy_completed ? []
+    : (selectedStep?.dependencies || []).filter(number => resultFor(number)?.state !== 'completed')
 
   if (query.isLoading) return <div className="p-6 text-sm text-muted-foreground">Loading server setup…</div>
   if (query.error) return <div className="rounded-card border border-danger/30 bg-danger/5 p-5"><p className="font-semibold">Could not load server setup</p><p className="text-sm text-muted-foreground">{query.error.message}</p><Button className="mt-3" onClick={() => query.refetch()}>Retry</Button></div>
 
   return <div>
     <PageHeader title="Server Setup" description="A resumable setup for identity, DNS authority, service records, certificates, GeoLite2, and the hosting stack." icon={ServerCog}><StatusBadge status={data.completed ? 'completed' : 'pending'} label={data.completed ? 'Setup complete' : `Next required: step ${data.current_step} · ${data.completed_steps || 0} completed`} /></PageHeader>
-    <div className="mb-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{steps.map(item => { const result = resultFor(item.number); const active = item.number === step; const blocked = item.dependencies?.some(number => resultFor(number)?.state !== 'completed') && !data.legacy_completed; return <button type="button" key={item.number} onClick={() => { setStep(item.number); setPreview(null) }} className={`flex items-start gap-3 rounded-btn border p-3 text-left ${active ? 'border-accent bg-accent/5' : 'border-border bg-card hover:border-accent/40'}`} aria-disabled={blocked || undefined}>{result?.state === 'completed' ? <Check className="mt-0.5 h-4 w-4 text-success" /> : <Circle className={`mt-0.5 h-4 w-4 ${active ? 'text-accent' : 'text-muted-foreground'}`} />}<span><span className="block text-xs text-muted-foreground">Step {item.number}</span><span className="block text-sm font-semibold">{item.title}</span>{result?.state && <span className="text-xs capitalize text-muted-foreground">{result.state.replaceAll('_', ' ')}</span>}{result?.warning && <span className="block text-xs text-warning">{result.warning}</span>}{blocked && <span className="block text-xs text-warning">Complete earlier steps first</span>}</span></button> })}</div>
+    <div className="setup-step-picker mb-4 items-center justify-between gap-3 rounded-btn border border-border p-3">
+      <div className="min-w-0"><p className="text-xs text-muted-foreground">Step {step} of {steps.length}</p><p className="text-sm font-semibold">{selectedStep?.title}</p></div>
+      <Button ref={stepPickerRef} variant="secondary" size="sm" aria-expanded={stepsExpanded} aria-controls="setup-steps" onClick={() => setStepsExpanded(value => !value)}>{stepsExpanded ? 'Hide steps' : 'All steps'}</Button>
+    </div>
+    <nav id="setup-steps" aria-label="Setup steps" className="setup-steps" data-expanded={stepsExpanded}>{steps.map(item => { const result = resultFor(item.number); const active = item.number === step; return <button type="button" key={item.number} onClick={() => { setStep(item.number); setPreview(null); setStepsExpanded(false); if (window.matchMedia('(max-width: 639px)').matches) stepPickerRef.current?.focus() }} className={`flex items-start gap-3 rounded-btn border p-3 text-left ${active ? 'border-accent bg-accent/5' : 'border-border bg-card hover:border-accent/40'}`} aria-current={active ? 'step' : undefined}>{result?.state === 'completed' ? <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" /> : <Circle className={`mt-0.5 h-4 w-4 shrink-0 ${active ? 'text-accent' : 'text-muted-foreground'}`} />}<span><span className="block text-xs text-muted-foreground">Step {item.number}</span><span className="block text-sm font-semibold">{item.title}</span>{result?.state && <span className="text-xs capitalize text-muted-foreground">{result.state.replaceAll('_', ' ')}</span>}{result?.warning && <span className="block text-xs text-warning">{result.warning}</span>}</span></button> })}</nav>
+    {prerequisites.length > 0 && <p role="status" className="mb-4 rounded-btn border border-warning/40 bg-warning/5 p-3 text-sm">Complete earlier steps first: {prerequisites.map(number => `${number}. ${steps.find(item => item.number === number)?.title || `Step ${number}`}`).join('; ')}.</p>}
 
     {step === 1 && <StepShell title="Server identity" description="Set the public identity used by service DNS, certificate requests, and panel links."><div className="grid gap-4 md:grid-cols-2"><FormField label="Panel hostname" required><Input value={form.panel_hostname || ''} onChange={event => update('panel_hostname', event.target.value)} placeholder="panel.example.com" /></FormField><FormField label="Public server IP" required><Input value={form.server_public_ip || ''} onChange={event => update('server_public_ip', event.target.value)} placeholder="192.0.2.10" /></FormField><FormField label="Administrator contact email" required><Input type="email" value={form.contact_email || ''} onChange={event => update('contact_email', event.target.value)} placeholder="admin@example.com" /></FormField></div><Actions run={run} onRun={() => runStep(bodyForStep())} /></StepShell>}
     {step === 2 && <StepShell title="DNS operating mode" description="This becomes the default for new zones. Existing zones remain until you stage them from DNS Setup."><div className="grid gap-3 md:grid-cols-3">{[['cloudflare', Cloud, 'Cloudflare DNS'], ['local', Globe2, 'Local PowerDNS'], ['cluster', Settings2, 'DNS cluster']].map(([id, Icon, label]) => <button type="button" key={id} onClick={() => { update('mode', id); setPreview(null) }} className={`rounded-btn border p-4 text-left ${form.mode === id ? 'border-accent bg-accent/5' : 'border-border'}`}><Icon className="mb-2 h-5 w-5 text-accent" /><strong>{label}</strong></button>)}</div>{form.mode !== 'cloudflare' && <FormField className="mt-4" label="Authoritative nameservers" required><textarea className="min-h-24 w-full rounded-btn border border-input bg-input-surface px-3 py-2 text-sm" value={form.local_nameservers_text || ''} onChange={event => update('local_nameservers_text', event.target.value)} placeholder={'ns1.example.net\nns2.example.net'} /></FormField>}{preview?.step === 2 && <PreviewBox preview={preview} />}<Actions run={run} previewLabel="Preview change" onPreview={() => runStep(bodyForStep(false))} onRun={() => runStep(bodyForStep(true))} disableRun={!preview || (form.mode === 'local' && preview.blockers?.length)} /></StepShell>}

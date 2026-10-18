@@ -8,9 +8,9 @@ import { Button } from './Button'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuCheckboxItem } from './DropdownMenu'
 
 // Low-level table primitives (for hand-built tables / detail views).
-export function Table({ className, ...props }) {
+export function Table({ className, scrollLabel = 'Scrollable table', ...props }) {
   return (
-    <div className="w-full overflow-x-auto">
+    <div className="panel-table-scroll w-full max-h-[min(65dvh,42rem)] overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" role="region" aria-label={scrollLabel} tabIndex={0}>
       <table className={cn('w-full caption-bottom text-sm', className)} {...props} />
     </div>
   )
@@ -232,7 +232,7 @@ export function DataTable({
                         type="button"
                         onClick={() => toggleSort(col)}
                         aria-label={`Sort by ${typeof col.header === 'string' ? col.header : col.key}${active ? `, currently ${sort.dir === 'asc' ? 'ascending' : 'descending'}` : ''}`}
-                        className={cn('inline-flex items-center gap-1 hover:text-foreground transition-colors', active && 'text-foreground', col.align === 'right' && 'flex-row-reverse')}
+                        className={cn('table-sort-control inline-flex items-center gap-1 hover:text-foreground transition-colors', active && 'text-foreground', col.align === 'right' && 'flex-row-reverse')}
                       >
                         {col.header}
                         <SortIcon className="h-3.5 w-3.5" />

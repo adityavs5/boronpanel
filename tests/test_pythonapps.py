@@ -282,3 +282,23 @@ def test_failed_teardown_retains_recovery_metadata(account_with_domain, monkeypa
             pythonapps.delete_app({"username": "demo1", "id": created["id"]})
     with write_session() as session:
         assert session.get(PythonApp, created["id"]) is not None
+
+
+@pytest.mark.parametrize('provision_fails', [False, True])
+def test_app_retires_welcome_only_after_route_provisioning(account_with_domain, monkeypatch, provision_fails):
+    from daemon import domain_welcome, site_templates
+    monkeypatch.setattr(site_templates, 'render_domain_welcome', lambda domain: '<!doctype html><title>Welcome</title>')
+    docroot = account_with_domain['home'] / 'public_html'
+    docroot.mkdir()
+    assert domain_welcome.ensure_welcome('demo1', 'demo1.example', str(docroot))
+    params = {'username': 'demo1', 'domain': 'demo1.example', 'name': 'welcome-app', 'entry_point': 'app:app'}
+    if provision_fails:
+        def fail(_account):
+            raise RuntimeError('Test route validation failed')
+        monkeypatch.setattr(pythonapps.ols, 'refresh_vhost', fail)
+        with pytest.raises(RuntimeError, match='Test route validation failed'):
+            pythonapps.create_app(params)
+        assert (docroot / 'welcome.html').exists()
+    else:
+        pythonapps.create_app(params)
+        assert not (docroot / 'welcome.html').exists()

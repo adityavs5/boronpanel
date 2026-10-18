@@ -83,8 +83,8 @@ export function getToolGroups(role, skin, capabilities = []) {
       { ...backupTool, to: '/backup-jobs', label: 'Backup Manager', icon: Archive, tone: 'sky' },
       { ...backupTool, to: '/backup-jobs?tab=jobs', label: 'Backup Jobs', icon: CalendarClock, tone: 'green' },
       { ...backupTool, to: '/backup-jobs?tab=destinations', label: 'Destinations', icon: Cloud, tone: 'violet' },
-      { ...backupTool, to: '/backup-jobs?tab=history', label: 'Restore & Downloads', icon: RotateCcw, tone: 'amber' },
-      { ...backupTool, to: '/backup-jobs?tab=history', label: 'Queue & Logs', icon: ListChecks, tone: 'teal' },
+      { ...backupTool, to: '/backup-jobs?tab=history&view=recovery', label: 'Restore & Downloads', icon: RotateCcw, tone: 'amber' },
+      { ...backupTool, to: '/backup-jobs?tab=history&view=activity', label: 'Queue & Logs', icon: ListChecks, tone: 'teal' },
       { ...backupTool, to: '/backup-jobs?tab=notifications', label: 'Notification Plugins', icon: BellRing, tone: 'rose' },
     ] : [
       { ...backupTool, to: '/backups', label: 'Backup Manager', icon: Archive, tone: 'sky' },

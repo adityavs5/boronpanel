@@ -265,6 +265,7 @@ def create_account(params: dict) -> dict:
                 username,
                 f"{settings.home_base}/{username}/public_html",
                 primary_domain,
+                create_welcome=True,
             )
             # OLS opens per-vhost logs as its shared worker identity. Create
             # the private account log directory and its narrow ACL before

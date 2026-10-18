@@ -156,6 +156,7 @@ READ_ONLY_OPERATIONS = frozenset({
     'templates.suspended_page.get',
     'templates.suspension_designs.get',
     'templates.welcome_email.get',
+    'templates.welcome_page.get',
     'tasks.list',
     'tasks.get',
     'taskops.get',

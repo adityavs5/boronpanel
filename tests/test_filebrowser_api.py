@@ -468,3 +468,14 @@ def test_file_manager_live_source_events_preserve_quota_and_other_events(isolate
     assert fbr._account_source_event(untouched, 'quotauser') == untouched+b'\n\n'
     malformed = b'data: {"eventType":"sourceUpdate","message":"invalid"}'
     assert fbr._account_source_event(malformed, 'quotauser') == b': invalid source statistics\n\n'
+
+
+def test_accessible_shell_uses_fixed_external_assets_without_weakening_csp():
+    body = b'<html><head><script>window.globalVars = {}</script></head><body></body></html>'
+    result = fbr.accessible_spa_shell(body)
+    assert result.count(b'/static/dist/filebrowser-accessibility.js') == 1
+    assert result.count(b'/static/dist/filebrowser-accessibility.css') == 1
+    assert b'<script>window.globalVars = {}</script>' in result
+    assert fbr.html_csp(result) == fbr.html_csp(body)
+    assert "script-src 'self' 'wasm-unsafe-eval'" in fbr.html_csp(result)
+    assert fbr.accessible_spa_shell(b'not a document') == b'not a document'

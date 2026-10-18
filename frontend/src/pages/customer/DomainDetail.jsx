@@ -838,7 +838,7 @@ function LscacheForm({ username, domain, settings }) {
             <p className="text-sm font-medium text-foreground">Enable full-page cache</p>
             <p className="text-xs text-muted-foreground">Serve cached responses for this domain.</p>
           </div>
-          <Switch checked={form.enabled} onCheckedChange={(v) => setForm((f) => ({ ...f, enabled: v }))} />
+          <Switch aria-label="Enable full-page cache" checked={form.enabled} onCheckedChange={(v) => setForm((f) => ({ ...f, enabled: v }))} />
         </div>
         <FormField label="Cache TTL (seconds)">
           <Input type="number" min="0" value={form.ttl_seconds}

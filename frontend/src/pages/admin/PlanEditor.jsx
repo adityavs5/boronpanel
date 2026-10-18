@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Cpu, Database, Gauge, Layers, Mail, Save, Server } from 'lucide-react'
@@ -13,6 +13,7 @@ import { Switch } from '@/components/ui/Toggle'
 import { CenteredSpinner } from '@/components/ui/Spinner'
 import { ErrorState } from '@/components/ui/States'
 import { toast } from '@/components/ui/Toast'
+import { DraftChanges, useDraftSection } from '@/components/ui/DraftChanges'
 
 const CPU_PRESETS = ['0.25', '0.5', '1', '2', '4', '8']
 const EMPTY = { name: '', cpu_cores: .5, cpu_weight: 100, memory_high_gb: .875, memory_max_gb: 1, io_read_mb: 50, io_write_mb: 50, io_read_iops: 500, io_write_iops: 250, nproc: 100, entry_processes: 20, mem_mb: 1024, io_mb: 50, pids_max: 100, quota_soft_gb: 10, quota_hard_gb: 12, inode_soft_limit: 450000, inode_hard_limit: 500000, bandwidth_limit_gb: '', database_limit: '', email_account_limit: '', subdomain_limit: '', ftp_account_limit: '', app_limit: '', redis_enabled: true }
@@ -22,20 +23,33 @@ function Section({ icon: Icon, title, description, children }) { return <Card cl
 function fromPlan(plan) { const result = { ...EMPTY, ...plan, cpu_cores: plan.cpu_cores ?? plan.cpu_pct / 100, memory_high_gb: (plan.memory_high_mb ?? Math.round((plan.mem_mb || 1024) * .9 / 64) * 64) / 1024, memory_max_gb: (plan.memory_max_mb ?? plan.mem_mb) / 1024, quota_soft_gb: plan.quota_soft_mb / 1024, quota_hard_gb: plan.quota_hard_mb / 1024, bandwidth_limit_gb: plan.bandwidth_limit_mb == null ? '' : plan.bandwidth_limit_mb / 1024, io_read_mb: plan.io_read_bps == null ? '' : Math.round(plan.io_read_bps / 1048576), io_write_mb: plan.io_write_bps == null ? '' : Math.round(plan.io_write_bps / 1048576), io_read_iops: plan.io_read_iops ?? 500, io_write_iops: plan.io_write_iops ?? 250, nproc: plan.nproc ?? plan.pids_max }; optional.forEach(key => { result[key] = plan[key] ?? '' }); return result }
 function payload(form) { const cpu = form.cpu_cores === '' ? null : Number(form.cpu_cores); const memoryMax = form.memory_max_gb === '' ? null : Math.round(Number(form.memory_max_gb) * 1024); const readMb = form.io_read_mb === '' ? null : Number(form.io_read_mb); const writeMb = form.io_write_mb === '' ? null : Number(form.io_write_mb); const nproc = form.nproc === '' ? null : Number(form.nproc); const body = { name: form.name.trim(), cpu_pct: cpu == null ? 25 : Math.round(cpu * 100), cpu_cores: cpu, cpu_weight: form.cpu_weight === '' ? null : Number(form.cpu_weight), mem_mb: memoryMax ?? 1024, memory_high_mb: form.memory_high_gb === '' ? null : Math.round(Number(form.memory_high_gb) * 1024), memory_max_mb: memoryMax, io_mb: readMb ?? writeMb ?? 50, io_read_bps: readMb == null ? null : readMb * 1048576, io_write_bps: writeMb == null ? null : writeMb * 1048576, io_read_iops: form.io_read_iops === '' ? null : Number(form.io_read_iops), io_write_iops: form.io_write_iops === '' ? null : Number(form.io_write_iops), pids_max: nproc ?? 100, nproc, entry_processes: form.entry_processes === '' ? null : Number(form.entry_processes), quota_soft_mb: Math.round(Number(form.quota_soft_gb) * 1024), quota_hard_mb: Math.round(Number(form.quota_hard_gb) * 1024), inode_soft_limit: Number(form.inode_soft_limit), inode_hard_limit: Number(form.inode_hard_limit), bandwidth_limit_mb: form.bandwidth_limit_gb === '' ? null : Math.round(Number(form.bandwidth_limit_gb) * 1024), redis_enabled: !!form.redis_enabled }; optional.forEach(key => { body[key] = form[key] === '' ? null : Number(form[key]) }); return body }
 
-export default function PlanEditor() {
+function PlanEditorForm() {
   const { planId } = useParams(); const editing = !!planId; const navigate = useNavigate(); const qc = useQueryClient()
-  const [form, setForm] = useState({ ...EMPTY }); const [template, setTemplate] = useState('wordpress')
+  const [draft, setDraft] = useState(null); const [template, setTemplate] = useState('wordpress')
+  const [saved, setSaved] = useState(null)
+  const formRef = useRef(null)
   const [cpuMode, setCpuMode] = useState('0.5')
   const capacityQuery = useQuery({ queryKey: ['resource-manager'], queryFn: () => get('/api/v1/admin/resources'), staleTime: 30000 })
   const cpuCapacity = capacityQuery.data?.host?.cpu_cores
   const memoryCapacity = capacityQuery.data?.host?.memory_gb
   const query = useQuery({ queryKey: ['plan', planId], queryFn: () => get(`/api/v1/admin/plans/${planId}`), enabled: editing })
-  useEffect(() => { const next = query.data ? fromPlan(query.data) : !editing ? fromPlan(PLAN_PRESETS.wordpress.values) : null; if (next) { setForm(next); const value = next.cpu_cores === '' || next.cpu_cores == null ? 'unlimited' : String(next.cpu_cores); setCpuMode(CPU_PRESETS.includes(value) ? value : 'custom') } }, [query.data, editing])
-  const save = useMutation({ mutationFn: body => editing ? patch(`/api/v1/admin/plans/${planId}`, body) : post('/api/v1/admin/plans', body), onSuccess: () => { toast.success(editing ? 'Plan updated' : 'Plan created'); qc.invalidateQueries({ queryKey: ['plans'] }); navigate('/plans') }, onError: error => toast.error('Could not save plan', error.message) })
+  const initialForm = useMemo(() => query.data ? fromPlan(query.data) : fromPlan(PLAN_PRESETS.wordpress.values), [query.data])
+  const form = draft ?? initialForm
+  const setForm = update => setDraft(previous => typeof update === 'function' ? update(previous ?? initialForm) : update)
+  useEffect(() => { if (draft === null) { const value = initialForm.cpu_cores === '' || initialForm.cpu_cores == null ? 'unlimited' : String(initialForm.cpu_cores); setCpuMode(CPU_PRESETS.includes(value) ? value : 'custom') } }, [initialForm, draft])
+  const save = useMutation({ mutationFn: body => editing ? patch(`/api/v1/admin/plans/${planId}`, body) : post('/api/v1/admin/plans', body), onSuccess: (_, submitted) => { toast.success(editing ? 'Plan updated' : 'Plan created'); qc.invalidateQueries({ queryKey: ['plans'] }); setSaved(submitted) }, onError: error => toast.error('Could not save plan', error.message) })
+  const dirty = JSON.stringify(payload(form)) !== JSON.stringify(saved ?? payload(initialForm))
+  const savePlan = () => {
+    if (!formRef.current?.reportValidity()) return
+    return save.mutateAsync(payload(form))
+  }
+  useDraftSection('hosting-plan', { dirty, busy: save.isPending, disabled: !form.name.trim(), label: 'Hosting plan', saveLabel: 'Save plan', onSave: savePlan, onDiscard: () => { setDraft(saved ? fromPlan(saved) : null); setTemplate('wordpress') } })
+  useEffect(() => { if (saved && !dirty) navigate('/plans') }, [saved, dirty, navigate])
   if (editing && query.isLoading) return <CenteredSpinner />
   if (editing && query.error) return <ErrorState error={query.error} onRetry={query.refetch} />
-  return <form className="plan-editor" onSubmit={event => { event.preventDefault(); save.mutate(payload(form)) }}>
+  return <form ref={formRef} className="plan-editor" onSubmit={event => { event.preventDefault(); savePlan()?.catch(() => {}) }}>
     <PageHeader title={editing ? `Edit ${query.data?.name || 'plan'}` : 'Create Hosting Plan'} description="Set account resources and service limits in clearly separated sections." icon={Layers} primaryAction={<Button type="submit" loading={save.isPending} disabled={!form.name.trim()}><Save className="h-4 w-4" /> Save plan</Button>} moreActions={[{label:'Plans',icon:<ArrowLeft className="h-4 w-4"/>,onSelect:()=>navigate('/plans')}]} />
+    <fieldset className="contents" disabled={save.isPending} aria-label="Hosting plan settings">
     {!editing && <Section icon={Layers} title="Plan template" description="Start with sensible values, then adjust any limit."><FormField label="Starting template"><Select value={template} onChange={event => { const id = event.target.value; setTemplate(id); if (PLAN_PRESETS[id]) { const next = fromPlan(PLAN_PRESETS[id].values); setForm(next); const cores = next.cpu_cores === '' ? 'unlimited' : String(next.cpu_cores); setCpuMode(CPU_PRESETS.includes(cores) ? cores : 'custom') } }}>{Object.entries(PLAN_PRESETS).map(([id, item]) => <option key={id} value={id}>{item.label} — {item.description}</option>)}</Select></FormField><FormField label="Plan name"><Input autoFocus required value={form.name} onChange={event => setForm(value => ({ ...value, name: event.target.value }))} /></FormField></Section>}
     {editing && <Section icon={Layers} title="Plan identity" description="The name administrators see when assigning this package."><FormField label="Plan name"><Input autoFocus required value={form.name} onChange={event => setForm(value => ({ ...value, name: event.target.value }))} /></FormField></Section>}
     <Section icon={Cpu} title="Compute resources" description={`Sustained work is throttled at the CPU allocation; this server currently exposes ${cpuCapacity ?? '…'} logical cores.`}><FormField label="CPU allocation"><Select value={cpuMode} onChange={event => { const value = event.target.value; setCpuMode(value); if (value === 'unlimited') setForm(current => ({ ...current, cpu_cores: '' })); else if (value !== 'custom') setForm(current => ({ ...current, cpu_cores: value })) }}>{CPU_PRESETS.filter(value => !cpuCapacity || Number(value) <= cpuCapacity).map(value => <option key={value} value={value}>{value === '0.25' ? '¼' : value === '0.5' ? '½' : value} {Number(value) === 1 ? 'core' : 'cores'}</option>)}<option value="unlimited">All available CPU</option><option value="custom">Custom</option></Select></FormField>{cpuMode === 'custom' && <NumberField form={form} setForm={setForm} name="cpu_cores" label="Custom CPU cores" min={.25} max={cpuCapacity || undefined} step={.01} hint={cpuCapacity ? `Maximum ${cpuCapacity} cores on this server.` : undefined} />}<NumberField form={form} setForm={setForm} name="cpu_weight" label="CPU priority weight" min={1} hint="100 is the normal relative priority." /><NumberField form={form} setForm={setForm} name="nproc" label="Processes / threads (NPROC)" min={10} placeholder="Unlimited" /></Section>
@@ -45,5 +59,8 @@ export default function PlanEditor() {
     <Section icon={Server} title="Websites and applications" description="How many hosted resources an account may create."><NumberField form={form} setForm={setForm} name="subdomain_limit" label="Subdomains" placeholder="Unlimited" /><NumberField form={form} setForm={setForm} name="ftp_account_limit" label="FTP accounts" placeholder="Unlimited" /><NumberField form={form} setForm={setForm} name="app_limit" label="Node.js / Python apps" placeholder="Unlimited" /></Section>
     <Section icon={Mail} title="Email" description="Mailbox allowance for domains owned by the account."><NumberField form={form} setForm={setForm} name="email_account_limit" label="Email accounts" placeholder="Unlimited" /></Section>
     <Section icon={Database} title="Databases and software" description="Database allowance and managed software defaults."><NumberField form={form} setForm={setForm} name="database_limit" label="Databases" placeholder="Unlimited" /><label className="plan-switch"><span><strong>Redis</strong><small>Provision an isolated Redis instance when this plan is applied.</small></span><Switch checked={form.redis_enabled} onCheckedChange={checked => setForm(value => ({ ...value, redis_enabled: checked }))} /></label></Section>
+    </fieldset>
   </form>
 }
+
+export default function PlanEditor() { return <DraftChanges><PlanEditorForm /></DraftChanges> }

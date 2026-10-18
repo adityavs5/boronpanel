@@ -24,7 +24,7 @@ for (const skin of ['evolution','paper-lantern']) {
       await route.fulfill({json:data})
     })
     await page.goto('/app/dashboard')
-    const search=page.getByRole('textbox',{name:'Search hosting tools'})
+    const search=page.getByRole('combobox',{name:'Search hosting tools'})
     await search.fill('DNS zone edito')
     await expect(page.getByRole('option').filter({hasText:'DNS Management'})).toBeVisible()
     await search.fill('softaculous')

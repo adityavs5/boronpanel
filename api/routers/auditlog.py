@@ -29,10 +29,45 @@ ui_router = APIRouter(prefix="/ui/audit-log", tags=["ui:audit-log"])
 
 MAX_PAGE_SIZE = 500
 
+# Display classification is deliberately separate from API-token permissions.
+# These newer inventory reads are safe to hide, but this must not grant a
+# read-only credential permission to invoke an additional operation.
+AUDIT_READ_OPERATIONS = READ_ONLY_OPERATIONS | frozenset({
+    "cf.health",
+    "cf.rails_status",
+    "cf.zones_overview",
+    "dbgovernor.statistics",
+    "dbmonitor.connections",
+    "dbmonitor.db_sizes",
+    "dbmonitor.kill_privilege_status",
+    "dbmonitor.processlist",
+    "dbmonitor.slow_queries",
+    "dnscluster.capabilities",
+    "dnscluster.ping",
+    "fail2ban.recent_events",
+    "firewall.pending",
+    "imapsync.list_folders",
+    "namespace.health_summary",
+    "php_ini.effective",
+    "resources.overview",
+    "namespace.overview",
+    "sessions.list",
+    "snapshot.catalog.accounts",
+    "snapshot.drive.folders",
+    "snapshot.notifications.deliveries",
+    "snapshot.restore.configuration",
+    "snapshot.restore.databases",
+    "snapshot.restore.mailboxes",
+    "snapshot.restore.mail_routing",
+    "stack.php_policy.get",
+    "stack.php_sessions.preview",
+    "wpcli.detect",
+})
+
 
 def _apply_filters(query, actor: str, op: str, result: str, target: str, q: str, include_reads: bool = False):
     if not include_reads:
-        query = query.where(~((AuditLog.result == 'ok') & AuditLog.op.in_(READ_ONLY_OPERATIONS)))
+        query = query.where(~((AuditLog.result == 'ok') & AuditLog.op.in_(AUDIT_READ_OPERATIONS)))
     if actor:
         query = query.where(AuditLog.actor.contains(actor))
     if op:

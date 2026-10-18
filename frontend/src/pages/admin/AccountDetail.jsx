@@ -130,33 +130,40 @@ function DisabledReasonButton({ reason, children, ...props }) {
   return reason ? <Tooltip content={reason}><span className="inline-flex">{button}</span></Tooltip> : button
 }
 
+function resourcePayload(limits) {
+  return { cpu_pct: Math.round(Number(limits.cpu_cores) * 100), mem_mb: Math.round(Number(limits.memory_gb) * 1024), io_mb: Number(limits.io_mb), pids_max: Number(limits.pids_max) }
+}
+
 function PhpAndLimits({ username, account, part = 'both' }) {
   const qc = useQueryClient()
-  const [phpVersion, setPhpVersion] = useState(account.php_version)
+  const [phpDraft, setPhpVersion] = useState(null)
+  const phpVersion = phpDraft ?? account.php_version
   const [touchedLimits,setTouchedLimits] = useState({})
-  const [limits, setLimits] = useState({
+  const originalLimits = {
     cpu_cores: account.cpu_cores ?? account.cpu_pct / 100, memory_gb: account.mem_mb / 1024, io_mb: account.io_mb, pids_max: account.pids_max,
-  })
-  useEffect(() => { setPhpVersion(account.php_version); setLimits({ cpu_cores: account.cpu_cores ?? account.cpu_pct / 100, memory_gb: account.mem_mb / 1024, io_mb: account.io_mb, pids_max: account.pids_max }) }, [account.php_version, account.cpu_cores, account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max])
+  }
+  const [limitsDraft, setLimitsDraft] = useState(null)
+  const limits = limitsDraft ?? originalLimits
+  const setLimits = update => setLimitsDraft(previous => typeof update === 'function' ? update(previous ?? originalLimits) : update)
   const invalidate = () => qc.invalidateQueries({ queryKey: ['account', username] })
 
   const phpMut = useMutation({
-    mutationFn: () => patch(`/api/v1/accounts/${username}/php-version`, { php_version: phpVersion }),
-    onSuccess: () => { toast.success('PHP version updated'); invalidate() },
+    mutationFn: version => patch(`/api/v1/accounts/${username}/php-version`, { php_version: version }),
+    onSuccess: (_, version) => { toast.success('PHP version updated'); qc.setQueryData(['account', username], previous => ({ ...previous, php_version: version })); setPhpVersion(current => current === version ? null : current); invalidate() },
     onError: (e) => toast.error('Could not change PHP version', e.message),
   })
   const limitsMut = useMutation({
-    mutationFn: () => patch(`/api/v1/accounts/${username}/limits`, {
-      cpu_pct: Math.round(Number(limits.cpu_cores) * 100), mem_mb: Math.round(Number(limits.memory_gb) * 1024), io_mb: Number(limits.io_mb), pids_max: Number(limits.pids_max),
-    }),
-    onSuccess: () => { toast.success('Limits updated'); invalidate() },
+    mutationFn: body => patch(`/api/v1/accounts/${username}/limits`, body),
+    onSuccess: (_, body) => { toast.success('Limits updated'); qc.setQueryData(['account', username], previous => ({ ...previous, ...body, cpu_cores: body.cpu_pct / 100 })); setLimitsDraft(current => current && JSON.stringify(resourcePayload(current)) !== JSON.stringify(body) ? current : null); setTouchedLimits({}); invalidate() },
     onError: (e) => toast.error('Could not update resource limits', e.message),
   })
 
-  const originalLimits = {cpu_cores:account.cpu_cores ?? account.cpu_pct/100,memory_gb:account.mem_mb/1024,io_mb:account.io_mb,pids_max:account.pids_max}
   const limitsDirty = Object.keys(originalLimits).some(key=>Number(limits[key])!==Number(originalLimits[key]))
   const phpDirty = phpVersion !== account.php_version
   const limitsValid = Number.isInteger(Number(limits.pids_max)) && Number(limits.cpu_cores)>=0.01 && Number(limits.cpu_cores)<=(account.host_cpu_cores??Infinity) && Number(limits.memory_gb)>=0.0625 && Number(limits.memory_gb)<=64 && Number(limits.io_mb)>=1 && Number(limits.pids_max)>=10
+  const saveLimits = () => limitsMut.mutateAsync(resourcePayload(limits))
+  useDraftSection(`account-php-${part}`, { dirty: part !== 'limits' && phpDirty, busy: phpMut.isPending, label: 'PHP version', onSave: () => phpMut.mutateAsync(phpVersion), onDiscard: () => setPhpVersion(null) })
+  useDraftSection(`account-resources-${part}`, { dirty: part !== 'php' && limitsDirty, busy: limitsMut.isPending, disabled: !limitsValid, label: 'Resource limits', onSave: saveLimits, onDiscard: () => { setLimitsDraft(null); setTouchedLimits({}) } })
 
   return (
     <>
@@ -167,7 +174,7 @@ function PhpAndLimits({ username, account, part = 'both' }) {
               {PHP_VERSIONS.map((v) => <option key={v} value={v}>PHP {v}</option>)}
             </Select>
           </FormField>
-          <DisabledReasonButton reason={!phpDirty ? 'Choose a different PHP version to enable Save.' : null} loading={phpMut.isPending} disabled={!phpDirty} onClick={() => phpMut.mutate()}>Save</DisabledReasonButton>
+          <DisabledReasonButton reason={!phpDirty ? 'Choose a different PHP version to enable Save.' : null} loading={phpMut.isPending} disabled={!phpDirty} onClick={() => phpMut.mutate(phpVersion)}>Save</DisabledReasonButton>
           {phpMut.isPending&&<p role="status" className="setting-row-description">Changing PHP version…</p>}
         </div>
       </SettingsSection>}
@@ -175,11 +182,11 @@ function PhpAndLimits({ username, account, part = 'both' }) {
       {part !== 'php' && <SettingsSection title="Resource limits" description="Limit compute resources for this account without changing its files or websites.">
         <div className="account-setting-fields">
           <FormField label="CPU cores" error={touchedLimits.cpu_cores&&!(Number(limits.cpu_cores)>=0.01&&Number(limits.cpu_cores)<=(account.host_cpu_cores??Infinity))?`Enter a core count from 0.01 to ${account.host_cpu_cores??'the server maximum'}.`:null} hint={<>{`Maximum ${account.host_cpu_cores ?? 'server'} cores available.`}{account.configured_cpu_cores > account.host_cpu_cores && <span className="account-field-warning"><AlertTriangle aria-hidden="true" />Stored as {account.configured_cpu_cores} cores; effective use is capped at {account.host_cpu_cores}. Save to reconcile it.</span>}</>}><Input aria-label="CPU cores" type="number" min="0.01" max={account.host_cpu_cores} step="0.01" value={limits.cpu_cores} onBlur={()=>setTouchedLimits(t=>({...t,cpu_cores:true}))} onChange={e=>setLimits(l=>({...l,cpu_cores:e.target.value}))}/></FormField>
-          <FormField label="Memory (GB)" error={touchedLimits.memory_gb&&!(Number(limits.memory_gb)>=0.0625&&Number(limits.memory_gb)<=64)?'Memory must be between 0.0625 and 64 GB.':null} hint={`Server RAM: ${account.host_memory_gb?.toFixed(1) ?? 'n/a'} GB. Allocations can overcommit shared RAM.`}><Input aria-label="Memory (GB)" type="number" min="0.0625" step="0.0625" value={limits.memory_gb} onBlur={()=>setTouchedLimits(t=>({...t,memory_gb:true}))} onChange={e=>setLimits(l=>({...l,memory_gb:e.target.value}))}/></FormField>
+          <FormField label="Memory (GB)" error={touchedLimits.memory_gb&&!(Number(limits.memory_gb)>=0.0625&&Number(limits.memory_gb)<=64)?'Memory must be between 0.0625 and 64 GB.':null} hint={`Server RAM: ${account.host_memory_gb?.toFixed(1) ?? 'n/a'} GB. Allocations can overcommit shared RAM.`}><Input aria-label="Memory (GB)" type="number" min="0.0625" step={1 / 1024} value={limits.memory_gb} onBlur={()=>setTouchedLimits(t=>({...t,memory_gb:true}))} onChange={e=>setLimits(l=>({...l,memory_gb:e.target.value}))}/></FormField>
           <FormField label="Disk IO (MB/s)" error={touchedLimits.io_mb&&!(Number(limits.io_mb)>=1)?'Enter an IO limit of at least 1 MB/s.':null}><Input aria-label="Disk IO (MB/s)" type="number" min="1" value={limits.io_mb} onBlur={()=>setTouchedLimits(t=>({...t,io_mb:true}))} onChange={e=>setLimits(l=>({...l,io_mb:e.target.value}))}/></FormField>
           <FormField label="Max processes" error={touchedLimits.pids_max&&!(Number.isInteger(Number(limits.pids_max))&&Number(limits.pids_max)>=10)?'Enter a whole process count of at least 10.':null}><Input aria-label="Max processes" type="number" min="10" value={limits.pids_max} onBlur={()=>setTouchedLimits(t=>({...t,pids_max:true}))} onChange={e=>setLimits(l=>({...l,pids_max:e.target.value}))}/></FormField>
           {Number(limits.memory_gb) > account.host_memory_gb && <p className="text-sm text-warning">This allocation exceeds total server RAM. Simultaneous usage by accounts can exhaust memory.</p>}
-          <DisabledReasonButton reason={!limitsValid ? 'Correct the invalid values before updating limits.' : !limitsDirty ? 'Change a resource value to enable Update limits.' : null} loading={limitsMut.isPending} disabled={!limitsValid || !limitsDirty} onClick={() => limitsMut.mutate()}>Update limits</DisabledReasonButton>
+          <DisabledReasonButton reason={!limitsValid ? 'Correct the invalid values before updating limits.' : !limitsDirty ? 'Change a resource value to enable Update limits.' : null} loading={limitsMut.isPending} disabled={!limitsValid || !limitsDirty} onClick={() => saveLimits().catch(() => {})}>Update limits</DisabledReasonButton>
           {limitsMut.isPending&&<p role="status" className="setting-row-description">Applying resource limits…</p>}
         </div>
       </SettingsSection>}
@@ -250,11 +257,13 @@ function UsageLimitsForm({ username, data }) {
     subdomain_limit: data.subdomain_limit ?? '',
     auto_suspend_at_100: !!data.auto_suspend_at_100,
   }
-  const [form, setForm] = useState(originalForm)
+  const [draft, setDraft] = useState(null)
+  const form = draft ?? originalForm
+  const setForm = update => setDraft(previous => typeof update === 'function' ? update(previous ?? originalForm) : update)
 
   const mut = useMutation({
     mutationFn: (body) => patch(`/api/v1/accounts/${username}/usage-limits`, body),
-    onSuccess: () => { toast.success('Usage limits updated'); qc.invalidateQueries({ queryKey: ['usage-limits', username] }) },
+    onSuccess: (_, body) => { toast.success('Usage limits updated'); qc.setQueryData(['usage-limits', username], previous => ({ ...previous, ...body })); qc.invalidateQueries({ queryKey: ['usage-limits', username] }) },
     onError: (e) => toast.error('Could not save usage limits', e.message),
   })
 
@@ -269,9 +278,19 @@ function UsageLimitsForm({ username, data }) {
     }
     if (form.auto_suspend_at_100 !== !!data.auto_suspend_at_100) body.auto_suspend_at_100 = form.auto_suspend_at_100
     if (Object.keys(body).length === 0) { toast.info('No changes to save'); return }
-    return mut.mutateAsync(body)
+    const submitted = { ...form }
+    return mut.mutateAsync(body).then(result => {
+      setDraft(current => current && JSON.stringify(current) !== JSON.stringify(submitted) ? current : null)
+      return result
+    })
   }
   const valid=USAGE_LIMIT_FIELDS.every(f=>form[f.key]===''||(Number.isFinite(Number(form[f.key]))&&Number(form[f.key])>=1&&(f.apiKey||Number.isInteger(Number(form[f.key])))))
+  const dirty = USAGE_LIMIT_FIELDS.some(field => {
+    const current = form[field.key] === '' ? null : Number(form[field.key])
+    const apiValue = field.apiKey && current != null ? Math.round(current * 1024) : current
+    return apiValue !== (data[field.apiKey || field.key] ?? null)
+  }) || form.auto_suspend_at_100 !== originalForm.auto_suspend_at_100
+  useDraftSection('account-usage-limits', { dirty, busy: mut.isPending, disabled: !valid, label: 'Advanced account limits', onSave: save, onDiscard: () => setDraft(null) })
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -293,6 +312,7 @@ function UsageLimitsForm({ username, data }) {
           <div className="text-muted-foreground">Suspend this account when any tracked limit is fully reached.</div>
         </div>
         <Switch
+          aria-label="Auto-suspend at 100%"
           checked={form.auto_suspend_at_100}
           onCheckedChange={(v) => setForm((s) => ({ ...s, auto_suspend_at_100: v }))}
         />
@@ -316,7 +336,7 @@ function UsageLimitsCard() {
         ) : error ? (
           <ErrorState error={error} onRetry={refetch} />
         ) : data ? (
-          <UsageLimitsForm key={data.updated_at || 'new'} username={username} data={data} />
+          <UsageLimitsForm key={username} username={username} data={data} />
         ) : null}
       </div></details>
 }

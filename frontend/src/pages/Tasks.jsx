@@ -8,10 +8,11 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
+import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
+import '@/operations-polish.css'
 
 function when(value) {
   if (!value) return '—'
@@ -64,18 +65,26 @@ export default function Tasks() {
     { key: 'label', header: 'Task', sortable: true, render: (row) => <div><div className="font-medium">{row.label}</div><div className="text-xs text-muted-foreground">{row.key}</div></div> },
     ...(role === 'admin' ? [{ key: 'account', header: 'Account', sortable: true, render: (row) => row.account || 'Server' }] : []),
     { key: 'status', header: 'Status', sortable: true, render: (row) => <StatusBadge status={row.status} /> },
-    { key: 'progress', header: 'Progress', render: (row) => <div className="min-w-28"><span>{row.progress == null ? 'In progress' : `${row.progress}%`}</span>{row.progress != null && <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-accent" style={{ width: `${row.progress}%` }} /></div>}</div> },
+    { key: 'progress', header: 'Progress', render: (row) => <div className="min-w-28"><span>{row.progress == null ? 'Progress unavailable' : `${row.progress}%`}</span>{row.progress != null && <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-accent" style={{ width: `${row.progress}%` }} /></div>}</div> },
     { key: 'started_at', header: 'Started', sortable: true, render: (row) => when(row.started_at) },
     { key: 'duration_seconds', header: 'Duration', sortable: true, render: (row) => elapsed(row.duration_seconds) },
     { key: 'actions', header: '', render: (row) => <div className="flex justify-end gap-2"><Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); setSelected(row) }}>Details</Button>{row.can_retry && <Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); setAction({ task: row, action: 'retry' }) }}><RotateCcw className="h-4 w-4" />Retry</Button>}{row.can_cancel && <Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); setAction({ task: row, action: 'cancel' }) }}><Square className="h-4 w-4" />Cancel</Button>}</div> },
   ]
-  const toolbar = <div className="flex flex-wrap items-center gap-2">
-    <Input aria-label="Search tasks" placeholder="Search tasks" value={filters.query} onChange={(event) => update('query', event.target.value)} className="w-48" />
-    <Select aria-label="Filter by status" value={filters.status} onChange={(event) => update('status', event.target.value)}><option value="">All statuses</option>{['queued', 'running', 'completed', 'failed', 'cancelled'].map((value) => <option key={value} value={value}>{value}</option>)}</Select>
-    <Select aria-label="Filter by task type" value={filters.kind} onChange={(event) => update('kind', event.target.value)}><option value="">All task types</option>{kinds.map((item) => <option key={item.kind} value={item.kind}>{item.label}</option>)}</Select>
-    {role === 'admin' && <Select aria-label="Filter by account" value={filters.account} onChange={(event) => update('account', event.target.value)}><option value="">All accounts</option>{accounts.map((account) => <option key={account} value={account}>{account}</option>)}</Select>}
-    <Input type="date" aria-label="Tasks from date" value={filters.date_from} onChange={(event) => update('date_from', event.target.value)} />
-    <Input type="date" aria-label="Tasks through date" value={filters.date_to} onChange={(event) => update('date_to', event.target.value)} />
+  const extraFilterCount = ['account', 'date_from', 'date_to'].filter(key => filters[key]).length
+  const toolbar = <div className="task-filters">
+    <div className="task-filters__row">
+      <FormField label="Search tasks"><Input placeholder="Name, ID or detail" value={filters.query} onChange={(event) => update('query', event.target.value)} /></FormField>
+      <FormField label="Status"><Select value={filters.status} onChange={(event) => update('status', event.target.value)}><option value="">All statuses</option>{['queued', 'running', 'completed', 'failed', 'cancelled'].map((value) => <option key={value} value={value}>{value}</option>)}</Select></FormField>
+      <FormField label="Task type"><Select value={filters.kind} onChange={(event) => update('kind', event.target.value)}><option value="">All task types</option>{kinds.map((item) => <option key={item.kind} value={item.kind}>{item.label}</option>)}</Select></FormField>
+    </div>
+    <details className="mt-2">
+      <summary className="cursor-pointer text-xs text-muted-foreground">Date{role === 'admin' ? ' and account' : ''} filters{extraFilterCount ? ` (${extraFilterCount} active)` : ''}</summary>
+      <div className="task-filters__row mt-3">
+        {role === 'admin' && <FormField label="Account"><Select value={filters.account} onChange={(event) => update('account', event.target.value)}><option value="">All accounts</option>{accounts.map((account) => <option key={account} value={account}>{account}</option>)}</Select></FormField>}
+        <FormField label="From"><Input type="date" value={filters.date_from} onChange={(event) => update('date_from', event.target.value)} /></FormField>
+        <FormField label="To"><Input type="date" value={filters.date_to} onChange={(event) => update('date_to', event.target.value)} /></FormField>
+      </div>
+    </details>
   </div>
 
   const detail = detailsQuery.data

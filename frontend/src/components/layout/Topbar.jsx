@@ -8,6 +8,7 @@ import { get } from '@/lib/api'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
 import { titleCase } from '@/lib/utils'
+import { adminNav, customerNav, resellerNav } from '@/config/nav'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { useAccountUsername } from '@/hooks/useAccount'
@@ -19,6 +20,9 @@ import {
 
 function Breadcrumb() {
   const { pathname } = useLocation()
+  const role = useAuth(state => state.role)
+  const nav = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav
+  const reachable = new Set(nav.filter(item => !item.external && item.to).map(item => item.to.split('?')[0]))
   const parts = pathname.split('/').filter(Boolean)
   return (
     <nav className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex" aria-label="Breadcrumb">
@@ -30,11 +34,11 @@ function Breadcrumb() {
             {i > 0 && <span className="text-border">/</span>}
             {last ? (
               <span className="font-medium text-foreground">{(pathname === '/accounts/new' && last ? 'Create account' : null) || ({wordpress:'WordPress',dns:'DNS',ssl:'SSL',php:'PHP',ftp:'FTP',ssh:'SSH'})[part] || titleCase(part)}</span>
-            ) : (
+            ) : reachable.has(to) || (role === 'admin' && /^\/accounts\/[^/]+$/.test(to)) ? (
               <Link to={to} className="hover:text-foreground transition-colors">
                 {({wordpress:'WordPress',dns:'DNS',ssl:'SSL',php:'PHP',ftp:'FTP',ssh:'SSH'})[part] || titleCase(part)}
               </Link>
-            )}
+            ) : <span>{titleCase(part)}</span>}
           </span>
         )
       })}
@@ -141,7 +145,7 @@ export function Topbar({ inner = false }) {
 
   return (
     <header className="panel-topbar">
-      <div className="flex items-center gap-3 min-w-0">
+      <div className="topbar-identity">
         {inner && <button type="button" className="inner-menu-button" aria-label="Menu" aria-expanded={mobileNavOpen} aria-controls="panel-navigation-drawer" onClick={() => setMobileNavOpen(true)}><Menu aria-hidden="true" /><span>Menu</span></button>}
         <Link to={home} className="panel-brand" aria-label={`${panelName} home`}>
           {!brandingReady
@@ -152,7 +156,7 @@ export function Topbar({ inner = false }) {
         </Link>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="topbar-actions">
         <button type="button" className={`global-search-trigger ${inner ? '' : 'dashboard-global-search'}`} aria-label="Search the panel" aria-haspopup="dialog" onClick={() => setPaletteOpen(true)}><Search aria-hidden="true" /><span>Search</span><kbd>Ctrl K</kbd></button>
         {identitySynced && !isAdmin && !isReseller && <DomainSwitcher />}
         <ThemeSelector compact />

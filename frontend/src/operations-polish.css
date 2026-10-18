@@ -1,0 +1,16 @@
+/* Operations-specific layout; colors and control metrics follow each theme. */
+.task-filters { width: 100%; min-width: 0; }
+.task-filters__row { display: grid; grid-template-columns: minmax(12rem, 2fr) repeat(2, minmax(9rem, 1fr)); gap: .75rem; }
+.task-filters__row > * { min-width: 0; }
+.setup-step-picker { display: none; }
+.setup-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; margin-bottom: 1.5rem; }
+@media (max-width: 1023px) {
+  .setup-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 639px) {
+  .task-filters__row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .task-filters__row > :first-child { grid-column: 1 / -1; }
+  .setup-step-picker { display: flex; }
+  .setup-steps { display: none; grid-template-columns: 1fr; }
+  .setup-steps[data-expanded="true"] { display: grid; }
+}

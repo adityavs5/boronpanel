@@ -1,0 +1,11 @@
+/* FileBrowser owns its colour mode. Inherit its primary text instead of the
+   upstream fixed middle grey, which fails on its dark surface. */
+.status-info, .size-label { color: inherit !important; }
+.size-label, .status-info { font-size: max(12px, .875rem) !important; }
+.listing-item:focus-visible, #gallery-size:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+/* Keep upstream selection attributes/borders; its translucent accent is too
+   bright behind white text. This opaque shade also covers very light accents. */
+.listing-items .listing-item[aria-selected="true"] {
+  background-color: color-mix(in srgb, var(--primaryColor) 45%, black) !important;
+  color: #fff !important;
+}

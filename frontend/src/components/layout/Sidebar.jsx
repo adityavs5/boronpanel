@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { ChevronDown, PanelLeftClose, PanelLeftOpen, Search, LayoutDashboard, X, Boxes, GitBranch, Code, Braces, Database } from 'lucide-react'
+import { ChevronDown, PanelLeftClose, PanelLeftOpen, Search, LayoutDashboard, ListChecks, X, Boxes, GitBranch, Code, Braces, Database } from 'lucide-react'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
 import { getToolGroups } from '@/config/toolGroups'
@@ -16,7 +16,13 @@ export function Sidebar({ mobile = false, onNavigate }) {
   const collapsed=!mobile&&storedCollapsed
   const closed=useUI(s=>s.navigationGroups),setGroup=useUI(s=>s.setNavigationGroup)
   const [query,setQuery]=useState('')
-  const groups=useMemo(()=>role==='reseller'?[{title:'Reseller',items:filterNavigation(resellerNav,capabilities).filter(item=>item.to)}]:getToolGroups(role,skin,capabilities),[role,skin,capabilities])
+  const groups=useMemo(()=>{
+    if(role==='reseller')return [{title:'Reseller',items:filterNavigation(resellerNav,capabilities).filter(item=>item.to)}]
+    const items=getToolGroups(role,skin,capabilities)
+    const target=items.find(g=>g.title===(role==='admin'?'Metrics, Logs & Integrations':'Advanced Tools'))
+    target?.items.unshift({label:'Tasks',to:'/tasks',icon:ListChecks})
+    return items
+  },[role,skin,capabilities])
   const candidates=groups.flatMap(group=>group.items)
   const matching=candidates.filter(item=>{
     const url=new URL(item.to,'https://panel.invalid')

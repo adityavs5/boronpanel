@@ -1,3 +1,4 @@
+import '@/customer-polish.css'
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FileCode2, Puzzle, RotateCcw, SlidersHorizontal, TriangleAlert } from 'lucide-react'
@@ -72,7 +73,7 @@ export default function Php() {
         icon={FileCode2}
       />
       <div className="php-layout">
-        <div className="php-version-grid"><VersionCard username={username} /><SiteVersionsCard username={username} /></div>
+        <div className="php-version-grid customer-php-versions"><VersionCard username={username} /><SiteVersionsCard username={username} /></div>
         <EffectiveConfigCard username={username} />
         <SettingsCard username={username} />
         <ExtensionsCard username={username} />
@@ -114,12 +115,12 @@ function VersionCard({ username }) {
         </CardDescription></div>
       </CardHeader>
       <CardContent>
-        <div className="flex items-center gap-2">
+        <div className="customer-php-default-controls">
           <Select
             aria-label="PHP version"
             value={version}
             onChange={(e) => setVersion(e.target.value)}
-            className="max-w-[10rem]"
+            className="customer-php-default-select"
           >
             {(runtime?.php_versions||PHP_VERSIONS).map((v) => <option key={v} value={v}>PHP {v}{lifecycle[v]?.is_eol ? ` — EOL ${lifecycle[v].eol_date}` : lifecycle[v]?.eol_date ? ` — supported to ${lifecycle[v].eol_date}` : ''}</option>)}
           </Select>
@@ -312,7 +313,7 @@ function DirectiveField({ descriptor: d, value, overridden, onChange }) {
 
   if (d.type === 'bool') {
     return (
-      <div className="flex items-start justify-between gap-4 rounded-btn border border-border px-3 py-2.5">
+      <div className="relative flex items-start justify-between gap-4 rounded-btn border border-border px-3 py-2.5">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             {copy.label}

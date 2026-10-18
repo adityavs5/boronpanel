@@ -117,10 +117,13 @@ def _account_and_domain(username: str, domain_name: str) -> tuple[int, str]:
         return account.id, real_docroot
 
 
-def _docroot_is_empty_enough(docroot: str) -> bool:
+def _docroot_is_empty_enough(docroot: str, username: str | None = None) -> bool:
     if not os.path.isdir(docroot):
         return True
-    visible = [name for name in os.listdir(docroot) if not name.startswith(".")]
+    from daemon import domain_welcome
+    managed_welcome = bool(username and domain_welcome.is_managed_welcome(username, docroot))
+    visible = [name for name in os.listdir(docroot) if not name.startswith(".")
+               and not (name == "welcome.html" and managed_welcome)]
     return not visible
 
 
@@ -141,7 +144,7 @@ def _files_as_account(username: str, action: str, docroot: str, *, payload=None,
     helper = Path(__file__).resolve().parent.parent / 'scripts/app_files.py'
     inputs = {'input_path': str(archive)} if archive is not None else {'input_text': json.dumps(payload or {})}
     result = run(account_exec.wrap(username, [sys.executable, str(helper), action, docroot],
-                 home=user.pw_dir, cwd=docroot), timeout=300, **inputs)
+                 home=user.pw_dir, cwd=docroot), timeout=660 if action == "laravel-project" else 300, **inputs)
     if not result.ok:
         raise AppInstallError('Application file preparation failed; check directory permissions and retry')
     return json.loads(result.stdout)
@@ -292,12 +295,14 @@ def _install_wordpress(username: str, domain_name: str, title: str, admin_user: 
 
 def _install_static(username: str, domain_name: str, title: str, admin_user: str, admin_email: str, admin_password: str) -> dict:
     account_id, docroot = _account_and_domain(username, domain_name)
-    if not _docroot_is_empty_enough(docroot):
+    if not _docroot_is_empty_enough(docroot, username):
         raise AppInstallError(f"'{docroot}' is not empty -- refusing to overwrite existing content")
 
     _files_as_account(username, 'static', docroot, payload={'title': title or domain_name})
 
     _set_ownership(username, docroot)
+    from daemon import domain_welcome
+    domain_welcome.retire_welcome(username, docroot, installed=True)
     return {"version": "1.0", "admin_url": f"https://{domain_name}/", "admin_user": None, "admin_password": None}
 
 
@@ -427,7 +432,7 @@ def _php_str(value: str) -> str:
 
 def install_joomla(username: str, domain_name: str, title: str, admin_user: str, admin_email: str, admin_password: str) -> dict:
     account_id, docroot = _account_and_domain(username, domain_name)
-    if not _docroot_is_empty_enough(docroot):
+    if not _docroot_is_empty_enough(docroot, username):
         raise AppInstallError(f"'{docroot}' is not empty -- refusing to overwrite existing content")
 
     version, download_url = fetch_joomla_latest_version_and_url()
@@ -537,7 +542,7 @@ def fetch_prestashop_latest_version_and_url() -> tuple[str, str]:
 
 def install_prestashop(username: str, domain_name: str, title: str, admin_user: str, admin_email: str, admin_password: str) -> dict:
     account_id, docroot = _account_and_domain(username, domain_name)
-    if not _docroot_is_empty_enough(docroot):
+    if not _docroot_is_empty_enough(docroot, username):
         raise AppInstallError(f"'{docroot}' is not empty -- refusing to overwrite existing content")
 
     version, download_url = fetch_prestashop_latest_version_and_url()
@@ -631,7 +636,7 @@ def install_laravel(username: str, domain_name: str, title: str, admin_user: str
     "credentials" here means the database credentials a developer needs to
     start working, not a login URL."""
     account_id, docroot = _account_and_domain(username, domain_name)
-    if not _docroot_is_empty_enough(docroot):
+    if not _docroot_is_empty_enough(docroot, username):
         raise AppInstallError(f"'{docroot}' is not empty -- refusing to overwrite existing content")
 
     grant = _allocate_database(username, "lv")
@@ -641,11 +646,10 @@ def install_laravel(username: str, domain_name: str, title: str, admin_user: str
     _set_ownership(username, docroot)
 
     pw = pwd.getpwnam(username)
-    result = run(account_exec.wrap(username,
-        ["composer", "create-project", "--prefer-dist", "--no-interaction", "laravel/laravel", docroot],
-        home=pw.pw_dir, cwd=docroot, env={"COMPOSER_ALLOW_SUPERUSER": "0"}), timeout=600)
-    if not result.ok:
-        raise AppInstallError(f"composer create-project laravel/laravel failed: {result.stderr.strip()[:800]}")
+    # Composer requires a truly empty project directory, whereas a domain
+    # already has ACME files and possibly Boron's welcome page. Build in a
+    # private account-UID staging directory, then publish without overwrites.
+    _files_as_account(username, 'laravel-project', docroot)
 
     _files_as_account(username, 'laravel-env', docroot, payload={'values': {
         'DB_HOST': 'localhost', 'DB_PORT': '3306', 'DB_DATABASE': db_name,
@@ -761,6 +765,9 @@ def _run_install_job(job_id: int, username: str, domain_name: str, app_id: str, 
         admin_email = (params.get("admin_email") or f"webmaster@{domain_name}").strip()
         admin_password = validate_password_strength(params["admin_password"]) if params.get("admin_password") else _generate_password()
         result = APPS[app_id]["installer"](username, domain_name, title, admin_user, admin_email, admin_password)
+        from daemon import domain_welcome
+        _, installed_root = _account_and_domain(username, domain_name)
+        domain_welcome.retire_welcome(username, installed_root, installed=True)
     except Exception as exc:  # noqa: BLE001 -- report to the job row, don't crash the worker thread
         # Vendor/DB failures can embed installer arguments or SQL, including
         # generated passwords. Neither the job row nor service log should

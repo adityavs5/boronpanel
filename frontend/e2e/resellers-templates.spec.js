@@ -33,6 +33,7 @@ async function mockSession(page, role, skin) {
     else if (path === '/api/v1/reseller/dashboard') data = { profile: { username: 'sellerone', company: 'Seller One Hosting', status: 'active' }, plan: { name: 'Agency', max_accounts: 20, max_total_disk_mb: 204800 }, usage: { accounts: 3, disk_mb: 30720 }, accounts: [{ username: 'clientone', primary_domain: 'client.example', php_version: '8.3', quota_hard_mb: 10240, status: 'active' }] }
     else if (path.endsWith('/suspension-designs')) data = { current: { template_key: 'clean', accent_color: '#2563eb', heading: 'Account suspended', message: 'Please contact your hosting provider for assistance.' }, templates }
     else if (path.endsWith('/suspended-page')) data = { content: '<html><body>Suspended</body></html>' }
+    else if (path.endsWith('/welcome-page')) data = { content: '<html><body>Welcome to {{domain}}</body></html>', is_custom: false }
     else if (path.endsWith('/welcome-email')) data = { subject: null, body: null, placeholders: [] }
     await route.fulfill({ json: data })
   })
@@ -64,7 +65,8 @@ for (const skin of ['evolution', 'paper-lantern']) {
 
     await page.goto('/app/templates')
     await expect(page.getByRole('heading', { name: 'Templates' })).toBeVisible()
-    await expect(page.locator('iframe')).toHaveCount(4)
+    await page.getByRole('tab', { name: 'Suspension page', exact: true }).click()
+    await expect(page.locator('.template-design iframe')).toHaveCount(4)
     await page.getByRole('button', { name: /Modern gradient/ }).click()
     await page.getByLabel('Heading').fill('Website temporarily unavailable')
     await page.getByRole('button', { name: 'Apply design' }).click()

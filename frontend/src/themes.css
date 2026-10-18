@@ -54,7 +54,9 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 :where(button,a,input,select,textarea):focus-visible{outline:2px solid rgb(var(--ring));outline-offset:3px}
 .panel-topbar{height:64px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 20px;background:rgb(var(--chrome-bg));color:rgb(var(--chrome-fg));z-index:20}
 [data-skin=evolution] .panel-topbar{box-shadow:0 1px 0 rgb(0 0 0/.12)}
-.panel-brand{display:flex;align-items:center;height:54px;min-width:160px;overflow:hidden;color:inherit}
+.topbar-identity{display:flex;align-items:center;gap:12px;min-width:0;flex:1}
+.topbar-actions{display:flex;align-items:center;gap:8px;flex:none}
+.panel-brand{display:flex;align-items:center;height:54px;width:120px;min-width:0;flex:0 1 120px;overflow:hidden;color:inherit}
 .boron-brand-logo{position:relative;display:block;width:178px;height:52px;overflow:hidden;flex:none}
 .boron-brand-logo img{position:absolute;left:0;top:-13px;width:178px;height:auto;max-width:none;}
 .custom-brand-logo{width:auto;max-width:190px;height:43px;object-fit:contain}
@@ -238,17 +240,33 @@ button,a,input,select{-webkit-tap-highlight-color:transparent}
 @media(min-width:1800px){[data-skin=evolution] .tool-grid{grid-template-columns:repeat(8,minmax(0,1fr))}[data-skin='paper-lantern'] .tool-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:1100px){.dashboard-columns{grid-template-columns:minmax(0,1fr) 290px}.tool-grid,[data-skin=evolution] .tool-grid{grid-template-columns:repeat(4,minmax(0,1fr))}[data-skin='paper-lantern'] .tool-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.access-level>span{display:none}}
 @media(max-width:850px){.dashboard-columns{grid-template-columns:minmax(0,1fr)}.dashboard-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.stats-panel{margin-bottom:0}.settings-columns,.php-version-grid{grid-template-columns:minmax(0,1fr)}.theme-choices{grid-template-columns:1fr}.panel-topbar{padding:0 12px;gap:8px}.access-level{display:none}.domain-context-trigger{max-width:220px}}
-@media(max-width:540px){.panel-content,[data-skin='paper-lantern'] .panel-content{padding:16px 12px 84px}.page-navigation{padding:5px 12px}.panel-brand{min-width:106px}.boron-brand-logo{width:112px;height:38px}.boron-brand-logo img{width:112px;top:-7px}.custom-brand-logo{max-width:112px;height:34px}.domain-context-trigger{width:38px;padding:0 10px}.domain-context-trigger>span,.domain-context-trigger>svg:last-child{display:none}.dashboard-role{display:none}.dashboard-heading h1,[data-skin='paper-lantern'] .dashboard-heading h1{font-size:23px}.tool-grid,[data-skin=evolution] .tool-grid{grid-template-columns:repeat(3,minmax(0,1fr));padding:8px 4px;gap:2px}.tool-link,[data-skin=evolution] .tool-link{min-height:105px;padding:8px 3px}.tool-label{font-size:13px}.dashboard-stats{display:block}.stats-panel{margin-bottom:16px}[data-skin='paper-lantern'] .tool-grid{grid-template-columns:repeat(2,minmax(0,1fr));padding:8px 4px}[data-skin='paper-lantern'] .tool-link{gap:7px;padding:6px 3px}[data-skin='paper-lantern'] .tool-icon{width:32px;height:32px}[data-skin='paper-lantern'] .tool-icon>svg,[data-skin='paper-lantern'] .tool-icon>img{width:30px;height:30px}[data-skin='paper-lantern'] .tool-label{font-size:13px}.panel-page-heading h1,[data-skin='paper-lantern'] .panel-page-heading h1{font-size:25px}.filter-shortcut{display:none}.settings-list>div{grid-template-columns:1fr;gap:6px}.domain-picker{flex-wrap:wrap}.domain-picker select{min-width:0;max-width:100%}.subdomain-address-composer{grid-template-columns:minmax(0,1fr)}.subdomain-address-composer .subdomain-label-input{border-radius:4px 4px 0 0}.subdomain-parent-control{border-left:1px solid rgb(var(--input));border-top:0;border-radius:0 0 4px 4px}.subdomain-address-preview{grid-template-columns:20px minmax(0,1fr)}.subdomain-address-preview strong{grid-column:2}}
+@media(max-width:540px){.panel-content,[data-skin='paper-lantern'] .panel-content{padding:16px 12px 84px}.page-navigation{padding:5px 12px}.custom-brand-logo{max-width:112px;height:34px}.domain-context-trigger{width:38px;padding:0 10px}.domain-context-trigger>span,.domain-context-trigger>svg:last-child{display:none}.dashboard-role{display:none}.dashboard-heading h1,[data-skin='paper-lantern'] .dashboard-heading h1{font-size:23px}.tool-grid,[data-skin=evolution] .tool-grid{grid-template-columns:repeat(3,minmax(0,1fr));padding:8px 4px;gap:2px}.tool-link,[data-skin=evolution] .tool-link{min-height:105px;padding:8px 3px}.tool-label{font-size:13px}.dashboard-stats{display:block}.stats-panel{margin-bottom:16px}[data-skin='paper-lantern'] .tool-grid{grid-template-columns:repeat(2,minmax(0,1fr));padding:8px 4px}[data-skin='paper-lantern'] .tool-link{gap:7px;padding:6px 3px}[data-skin='paper-lantern'] .tool-icon{width:32px;height:32px}[data-skin='paper-lantern'] .tool-icon>svg,[data-skin='paper-lantern'] .tool-icon>img{width:30px;height:30px}[data-skin='paper-lantern'] .tool-label{font-size:13px}.panel-page-heading h1,[data-skin='paper-lantern'] .panel-page-heading h1{font-size:25px}.filter-shortcut{display:none}.settings-list>div{grid-template-columns:1fr;gap:6px}.domain-picker{flex-wrap:wrap}.domain-picker select{min-width:0;max-width:100%}.subdomain-address-composer{grid-template-columns:minmax(0,1fr)}.subdomain-address-composer .subdomain-label-input{border-radius:4px 4px 0 0}.subdomain-parent-control{border-left:1px solid rgb(var(--input));border-top:0;border-radius:0 0 4px 4px}.subdomain-address-preview{grid-template-columns:20px minmax(0,1fr)}.subdomain-address-preview strong{grid-column:2}}
 /* Horizontal Boron logo: preserve proportions and contrast on panel surfaces. */
-.panel-topbar .custom-brand-logo{width:180px;max-width:180px;height:52px;object-fit:contain;filter:brightness(0) invert(1)}
+.panel-topbar .custom-brand-logo{width:100%;max-width:100%;height:52px;object-fit:contain;filter:brightness(0) invert(1)}
 .login-page img[src^="/api/v1/branding/logo"]{width:220px;max-width:100%;height:auto;object-fit:contain;border-radius:0}
 .login-page img[src^="/api/v1/branding/logo"]+span{display:none}
 .login-page>div:first-child img[src^="/api/v1/branding/logo"],.dark .login-page img[src^="/api/v1/branding/logo"]{filter:brightness(0) invert(1)}
-@media(max-width:540px){.panel-topbar .custom-brand-logo{width:130px;max-width:130px;height:42px}}
+@media(max-width:540px){.panel-topbar .custom-brand-logo{height:36px}}
 /* Word-only Boron logo, aligned by visible artwork bounds. */
 .panel-topbar .panel-brand .boron-brand-logo{position:relative;display:block;width:120px;max-width:100%;height:auto;aspect-ratio:145 / 40;overflow:hidden;flex:none}
 .panel-topbar .panel-brand .boron-brand-logo img{position:absolute;width:149.793103%;max-width:none;min-width:0;height:auto;left:-26.344828%;top:-43.25%;}
-@media(max-width:850px){.panel-topbar .panel-brand .boron-brand-logo{width:96px}}
-@media(max-width:540px){.inner-shell .panel-topbar .panel-brand{width:96px!important;max-width:96px!important;min-width:0!important}.inner-shell .panel-topbar .panel-brand .boron-brand-logo{width:96px!important;max-width:100%!important}.inner-shell .panel-topbar .panel-brand .boron-brand-logo img{width:149.793103%!important;max-width:none!important}}
+
+/* Logo and actions share real flex space; never paint into the search button. */
+@media(max-width:639px){
+ .panel-topbar{gap:8px;padding-inline:8px}
+ .topbar-identity{gap:8px}
+ .topbar-actions{gap:4px}
+ .panel-topbar .panel-brand{width:96px;flex:0 1 96px;min-width:0;max-width:100%}
+ .panel-topbar .panel-brand .boron-brand-logo{width:100%;max-width:96px}
+ .panel-topbar :is(.global-search-trigger,.skin-selector,.domain-context-trigger,[aria-label="Open account menu"],[title^="Switch to"]){width:var(--tool-control-height);height:var(--tool-control-height);min-height:var(--tool-control-height);flex:none;padding:4px;justify-content:center}
+ .panel-topbar .inner-menu-button{flex:none;gap:4px;padding-inline:4px}
+}
+.impersonation-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 16px;flex:none}
+.impersonation-context{display:flex;align-items:flex-start;gap:8px;min-width:0;line-height:1.5}
+.impersonation-context>span{min-width:0;overflow-wrap:anywhere}
+.impersonation-context>svg{margin-top:2px}
+.impersonation-return{display:inline-flex;align-items:center;justify-content:center;gap:8px;flex:none;white-space:nowrap;border-radius:var(--tool-radius);padding:4px 12px;min-height:var(--tool-control-height)}
+@media(max-width:639px){.impersonation-banner{flex-wrap:wrap;padding:8px 12px;gap:8px}.impersonation-context{flex:1 1 100%}.impersonation-actor{display:block}.impersonation-return{margin-left:24px}}
+
 /* Both themes share the same navigation geometry and top-bar alignment. */
 @media(min-width:1024px){html[data-skin=evolution] .inner-shell .persistent-navigation{display:block}html[data-skin=evolution] .inner-shell .inner-menu-button{display:none}}

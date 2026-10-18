@@ -61,6 +61,35 @@ def execute(action, target, payload=None, archive=None):
         secure_replace_file(str(directory), 'settings.php', (content + payload['content']).encode(),
                             os.geteuid(), os.getegid(), 0o640)
         (directory / 'files').mkdir(exist_ok=True, mode=0o750)
+    elif action == 'laravel-project':
+        from daemon import safeio
+        from daemon.domain_welcome import _rename_noreplace
+        with tempfile.TemporaryDirectory(prefix='.boron-laravel-project-', dir=target) as staging:
+            project = Path(staging) / 'project'
+            result = subprocess.run(
+                ['composer', 'create-project', '--prefer-dist', '--no-interaction', 'laravel/laravel', str(project)],
+                cwd=target, env={**os.environ, 'COMPOSER_ALLOW_SUPERUSER': '0'},
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600, check=False,
+            )
+            if result.returncode:
+                raise RuntimeError('Composer could not create the Laravel project')
+            source_fd = safeio.open_dir_beneath(str(project))
+            try:
+                target_fd = safeio.open_dir_beneath(target)
+                try:
+                    names = os.listdir(source_fd)
+                    for name in names:
+                        try:
+                            os.stat(name, dir_fd=target_fd, follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+                        raise FileExistsError('An uploaded file conflicts with the Laravel project')
+                    for name in names:
+                        _rename_noreplace(source_fd, name, target_fd, name)
+                finally:
+                    os.close(target_fd)
+            finally:
+                os.close(source_fd)
     elif action == 'laravel-env':
         import re
         env = root / '.env'

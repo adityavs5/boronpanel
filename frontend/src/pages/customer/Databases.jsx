@@ -1,3 +1,4 @@
+import '@/customer-polish.css'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Database, Trash2, MoreHorizontal, KeyRound, ExternalLink, Copy, Plus, Stethoscope } from 'lucide-react'
@@ -251,7 +252,7 @@ export default function Databases() {
   ]
 
   return (
-    <div>
+    <div className="customer-databases">
       <PageHeader title="Databases" description="Create and manage MySQL databases, users and application credentials." icon={Database} primaryAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4"/>Create database</Button>} />
       <Tabs defaultValue="databases">
         <TabsList aria-label="Database management sections">

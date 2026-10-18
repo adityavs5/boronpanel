@@ -1,3 +1,4 @@
+import '@/customer-polish.css'
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -9,7 +10,6 @@ import {
 import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { useDomainContext } from '@/hooks/useDomainContext'
-import { formatMB } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/Card'
 import { DataTable } from '@/components/ui/Table'
@@ -19,13 +19,15 @@ import { Select } from '@/components/ui/Select'
 import { Switch, Checkbox } from '@/components/ui/Toggle'
 import { Badge } from '@/components/ui/Badge'
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, ConfirmDialog,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter, ConfirmDialog,
 } from '@/components/ui/Dialog'
 import { EmptyState, ErrorState } from '@/components/ui/States'
 import { CenteredSpinner } from '@/components/ui/Spinner'
 import { LongValue } from '@/components/ui/LongValue'
 import { toast } from '@/components/ui/Toast'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/DropdownMenu'
+
+const formatQuotaGb = value => value == null ? '—' : `${Number(value) / 1024} GB`
 
 const EMAIL_MODES = {
   accounts: {
@@ -93,12 +95,11 @@ function useWebmailLaunch(username, domain) {
 
 // --- Mailboxes -----------------------------------------------------------
 
-function MailboxesTab({ domain }) {
+function MailboxesTab({ domain, createOpen, setCreateOpen }) {
   const username = useAccountUsername()
   const qc = useQueryClient()
   const key = ['mailboxes', domain]
-  const [createOpen, setCreateOpen] = useState(false)
-  const [form, setForm] = useState({ local_part: '', password: '', quota_mb: 1024 })
+  const [form, setForm] = useState({ local_part: '', password: '', quota_gb: '1' })
   const [toDelete, setToDelete] = useState(null)
   const [selected, setSelected] = useState(null)
   const [password, setPassword] = useState('')
@@ -127,7 +128,7 @@ function MailboxesTab({ domain }) {
       toast.success('Mailbox created')
       qc.invalidateQueries({ queryKey: key })
       setCreateOpen(false)
-      setForm({ local_part: '', password: '', quota_mb: 1024 })
+      setForm({ local_part: '', password: '', quota_gb: '1' })
     },
     onError: (e) => toast.error('Could not create mailbox', e.message),
   })
@@ -180,7 +181,7 @@ function MailboxesTab({ domain }) {
       header: 'Quota',
       sortable: true,
       sortValue: (r) => r.quota_mb ?? 0,
-      render: (r) => formatMB(r.quota_mb),
+      render: (r) => formatQuotaGb(r.quota_mb),
     },
     {
       key: 'active',
@@ -202,13 +203,6 @@ function MailboxesTab({ domain }) {
 
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">Mailboxes for <span className="font-medium text-foreground">{domain}</span></p>
-        <Button size="sm" onClick={() => setCreateOpen(true)}>
-          <Plus className="h-4 w-4" /> Create mailbox
-        </Button>
-      </div>
-
       <DataTable
         columns={columns}
         data={data?.mailboxes}
@@ -229,11 +223,11 @@ function MailboxesTab({ domain }) {
       />
 
       <Dialog open={!!selected} onOpenChange={open => { if (!open && !passwordMut.isPending) { setSelected(null); setPassword('') } }}>
-        <DialogContent size="sm"><DialogHeader><DialogTitle>Manage mailbox</DialogTitle></DialogHeader>
+        <DialogContent size="sm"><DialogHeader><DialogTitle>Manage mailbox</DialogTitle><DialogDescription>Update this mailbox’s storage limit or password.</DialogDescription></DialogHeader>
           <form onSubmit={event => { event.preventDefault(); if (password.length >= 12 && !passwordMut.isPending) passwordMut.mutate() }}>
             <DialogBody className="space-y-4"><p className="break-all font-medium">{selected?.local_part}@{domain}</p>
-              <p className="text-sm text-muted-foreground">Quota: {formatMB(selected?.quota_mb)} · {selected?.active ? 'Active' : 'Inactive'}</p>
-              <FormField label="Mailbox quota (GB)" hint="This is the mailbox storage limit. Updating it does not delete mail."><div className="flex items-center gap-2"><Input type="number" min={1 / 1024} max="100" step={1 / 1024} value={quotaGb} onChange={event => setQuotaGb(event.target.value)} /><Button type="button" variant="secondary" loading={quotaMut.isPending} disabled={!quotaGb || Number(quotaGb) <= 0 || Number(quotaGb) > 100} onClick={() => quotaMut.mutate()}>Update quota</Button></div></FormField>
+              <p className="text-sm text-muted-foreground">Quota: {formatQuotaGb(selected?.quota_mb)} · {selected?.active ? 'Active' : 'Inactive'}</p>
+              <FormField label="Mailbox quota (GB)" htmlFor="mailbox-manage-quota" hint="This is the mailbox storage limit. Updating it does not delete mail."><div className="flex items-center gap-2"><Input id="mailbox-manage-quota" type="number" min={1 / 1024} max="100" step={1 / 1024} value={quotaGb} onChange={event => setQuotaGb(event.target.value)} /><Button type="button" variant="secondary" loading={quotaMut.isPending} disabled={!quotaGb || Number(quotaGb) <= 0 || Number(quotaGb) > 100} onClick={() => quotaMut.mutate()}>Update quota</Button></div></FormField>
               <FormField label="New mailbox password" required hint="Update your email clients after changing this password."><Input type="password" autoComplete="new-password" minLength={12} required value={password} disabled={passwordMut.isPending} onChange={event => setPassword(event.target.value)}/></FormField>
             </DialogBody><DialogFooter><Button type="button" variant="secondary" disabled={passwordMut.isPending} onClick={() => { setSelected(null); setPassword('') }}>Done</Button><Button type="submit" loading={passwordMut.isPending} disabled={password.length < 12}>Update password</Button></DialogFooter>
           </form>
@@ -243,6 +237,7 @@ function MailboxesTab({ domain }) {
         <DialogContent size="sm">
           <DialogHeader>
             <DialogTitle>Create mailbox</DialogTitle>
+            <DialogDescription>Choose an address, password, and storage limit for the new mailbox.</DialogDescription>
           </DialogHeader>
           <form
             onSubmit={(e) => {
@@ -251,44 +246,50 @@ function MailboxesTab({ domain }) {
                 domain,
                 local_part: form.local_part,
                 password: form.password,
-                quota_mb: Number(form.quota_mb) || 1024,
+                quota_mb: Math.round(Number(form.quota_gb) * 1024),
               })
             }}
           >
             <DialogBody className="space-y-4">
-              <FormField label="Mailbox" required hint={`The full address will be ${form.local_part || 'name'}@${domain}`}>
-                <div className="flex items-center gap-2">
+              <FormField label="Mailbox" htmlFor="mailbox-create-name" required hint={`The full address will be ${form.local_part || 'name'}@${domain}`}>
+                <div className="customer-mailbox-address">
                   <Input
+                    id="mailbox-create-name"
                     autoFocus
                     value={form.local_part}
                     onChange={(e) => setForm((f) => ({ ...f, local_part: e.target.value }))}
                     placeholder="john"
                     required
                   />
-                  <span className="whitespace-nowrap text-sm text-muted-foreground">@{domain}</span>
+                  <span className="text-sm text-muted-foreground">@{domain}</span>
                 </div>
               </FormField>
-              <FormField label="Password" required hint="Minimum 10 characters.">
+              <FormField label="Password" required hint="Minimum 12 characters.">
                 <Input
                   type="password"
+                  autoComplete="new-password"
+                  minLength={12}
                   value={form.password}
                   onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
                   placeholder="••••••••••"
                   required
                 />
               </FormField>
-              <FormField label="Quota (MB)" hint="Storage limit for this mailbox.">
+              <FormField label="Quota (GB)" hint="Storage limit for this mailbox.">
                 <Input
                   type="number"
-                  min="1"
-                  value={form.quota_mb}
-                  onChange={(e) => setForm((f) => ({ ...f, quota_mb: e.target.value }))}
+                  min={1 / 1024}
+                  max="100"
+                  step={1 / 1024}
+                  required
+                  value={form.quota_gb}
+                  onChange={(e) => setForm((f) => ({ ...f, quota_gb: e.target.value }))}
                 />
               </FormField>
             </DialogBody>
             <DialogFooter>
               <Button type="button" variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
-              <Button type="submit" loading={createMut.isPending}>Create mailbox</Button>
+              <Button type="submit" loading={createMut.isPending} disabled={form.password.length < 12}>Create mailbox</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -1133,6 +1134,7 @@ function ProgressBarInline({ value, max }) {
 }
 
 export default function Email({ mode = 'accounts' }) {
+  const [createOpen, setCreateOpen] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const effectiveMode = searchParams.get('webmail') === '1' ? 'webmail' : mode
   const config = EMAIL_MODES[effectiveMode] || EMAIL_MODES.accounts
@@ -1158,7 +1160,7 @@ export default function Email({ mode = 'accounts' }) {
   })
 
   const content = {
-    mailboxes: <MailboxesTab domain={domain} />,
+    mailboxes: <MailboxesTab domain={domain} createOpen={createOpen} setCreateOpen={setCreateOpen} />,
     webmail: <WebmailTab username={username} domain={domain} />,
     forwarders: <ForwardersTab username={username} domain={domain} />,
     catchall: <CatchallTab username={username} domain={domain} />,
@@ -1171,16 +1173,15 @@ export default function Email({ mode = 'accounts' }) {
 
   return (
     <div>
-      <PageHeader title={config.title} description={config.description} icon={config.sections[0][2] || Mail} primaryAction={domains.length > 0 ? <div className="flex flex-wrap items-center justify-end gap-2">
-          {domains.length > 0 && <div className="flex items-center gap-2">
-            <AtSign className="h-4 w-4 text-muted-foreground" />
-            <Select value={domain} onChange={(e) => setDomain(e.target.value)} className="w-56">
-              {domains.map((d) => (
-                <option key={d.domain} value={d.domain}>{d.domain}</option>
-              ))}
-            </Select>
-          </div>}
-        </div> : null} />
+      <PageHeader title={config.title} description={config.description} icon={config.sections[0][2] || Mail} primaryAction={activeSection === 'mailboxes' && domains.length > 0 ? <Button disabled={!domain} onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create mailbox</Button> : null} />
+      {domains.length > 0 && <div className="customer-domain-toolbar mb-4">
+        <div className="customer-domain-field">
+          <FormField label="Domain" htmlFor="email-domain"><Select id="email-domain" value={domain} onChange={(e) => { setCreateOpen(false); setDomain(e.target.value) }}>
+            {domains.map((d) => <option key={d.domain} value={d.domain}>{d.domain}</option>)}
+          </Select></FormField>
+          {domain && <p className="customer-domain-context">{domain}</p>}
+        </div>
+      </div>}
 
       {domainsQ.isLoading ? (
         <CenteredSpinner />

@@ -589,3 +589,14 @@ def test_incomplete_drupal_installer_cannot_publish_claimable_site(account_with_
     with pytest.raises(ai.AppInstallError, match='unavailable'):
         ai.install_drupal('demo1', 'demo1.example', 'site', 'admin', 'admin@example.com', 'password')
     assert not list(account_with_domain['docroot'].iterdir())
+
+
+def test_static_install_retires_only_managed_welcome(account_with_domain, monkeypatch):
+    from daemon import domain_welcome, site_templates
+    monkeypatch.setattr(site_templates, 'render_domain_welcome', lambda domain: '<!doctype html><title>Welcome</title>')
+    docroot = account_with_domain['docroot']
+    assert domain_welcome.ensure_welcome('demo1', 'demo1.example', str(docroot))
+    result = ai._install_static('demo1', 'demo1.example', 'Actual site', 'admin', 'admin@example.test', 'unused')
+    assert result['version'] == '1.0'
+    assert not (docroot / 'welcome.html').exists()
+    assert 'Actual site' in (docroot / 'index.html').read_text()

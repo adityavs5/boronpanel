@@ -16,7 +16,7 @@ import { toast } from '@/components/ui/Toast'
 
 const statusLabel={pending:'Queued',running:'In progress',completed:'Ready',failed:'Failed',expired:'Expired'}
 function RunStatus({ status }) { return <Badge variant={status==='completed'?'success':status==='failed'?'danger':'neutral'}>{statusLabel[status]||status}</Badge> }
-function RunDialog({ run, username, admin, onClose }) {
+export function SnapshotRunDialog({ run, username, admin = false, onClose, showRestoreHistory = true }) {
   const [directory,setDirectory]=useState('/')
   const [browsing,setBrowsing]=useState(false)
   const [restorePaths,setRestorePaths]=useState('')
@@ -59,11 +59,11 @@ function RunDialog({ run, username, admin, onClose }) {
     <SnapshotMailRestore username={username} run={run}/>
     <SnapshotRoutingRestore username={username} run={run}/>
     <SnapshotConfigurationRestore username={username} run={run}/>
-    <SnapshotRestoreHistory username={username}/>
+    {showRestoreHistory && <SnapshotRestoreHistory username={username}/>}
   </DialogBody><DialogFooter><Button variant="secondary" onClick={onClose}>Done</Button></DialogFooter></DialogContent></Dialog>
 }
 
-export function SnapshotHistory({ admin=false, username }) {
+export function SnapshotHistory({ admin=false, username, view = 'all' }) {
   const [selected,setSelected]=useState(null)
   const history=useQuery({queryKey:['snapshot-runs',admin?'admin':username,username],queryFn:()=>get(admin?`/api/v1/backups/snapshots/runs${username?`?username=${encodeURIComponent(username)}`:''}`:`/api/v1/accounts/${encodeURIComponent(username)}/backups/snapshots/runs`),enabled:admin||!!username,refetchInterval:query=>(query.state.data?.runs||[]).some(r=>['pending','running'].includes(r.status))?3000:false})
   const columns=[
@@ -75,7 +75,8 @@ export function SnapshotHistory({ admin=false, username }) {
     {key:'progress_message',header:'Progress',render:r=><span className={r.status==='failed'?'text-danger':'text-muted-foreground'}>{r.error||r.progress_message}</span>},
     {key:'actions',header:'Actions',render:r=><Button size="sm" variant="secondary" onClick={e=>{e.stopPropagation();setSelected(r)}}>View details</Button>},
   ]
-  const contents=<><DataTable data={history.data?.runs} loading={history.isLoading} error={history.error} onRetry={history.refetch} onRowClick={setSelected} columns={columns} filterable pageSize={15} emptyIcon={Archive} emptyTitle="No scheduled recovery points yet" emptyDescription={admin?'Run a backup job to create the first recovery point.':'Recovery points from your hosting provider’s backup jobs will appear here.'}/>{selected&&<RunDialog run={history.data?.runs.find(r=>r.id===selected.id)||selected} username={username||selected.username} admin={admin} onClose={()=>setSelected(null)}/>}</>
+  const runs = view === 'recovery' ? history.data?.runs?.filter(run => run.status === 'completed' && run.snapshot_id) : history.data?.runs
+  const contents=<><DataTable data={runs} loading={history.isLoading} error={history.error} onRetry={history.refetch} onRowClick={setSelected} columns={columns} filterable pageSize={15} emptyIcon={Archive} emptyTitle={view === 'recovery' ? "No recovery points ready yet" : "No scheduled recovery points yet"} emptyDescription={admin?'Run a backup job to create the first recovery point.':'Recovery points from your hosting provider’s backup jobs will appear here.'}/>{selected&&<SnapshotRunDialog run={history.data?.runs.find(r=>r.id===selected.id)||selected} username={username||selected.username} admin={admin} onClose={()=>setSelected(null)}/>}</>
   if (admin) return contents
   return <Card className="mb-6"><CardHeader><div><CardTitle>Scheduled recovery points</CardTitle><CardDescription>Encrypted snapshots created by your hosting provider.</CardDescription></div><Button size="sm" variant="ghost" loading={history.isFetching} onClick={()=>history.refetch()}><RefreshCw className="h-4 w-4"/>Refresh</Button></CardHeader><CardContent>{contents}<SnapshotRestoreHistory username={username}/></CardContent></Card>
 }

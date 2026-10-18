@@ -1,8 +1,11 @@
-import { SnapshotHistory } from '@/components/backups/SnapshotHistory'
-import { useEffect, useRef, useState } from 'react'
+import '@/customer-polish.css'
+import { SnapshotRunDialog } from '@/components/backups/SnapshotHistory'
+import { SnapshotRestoreHistory } from '@/components/backups/SnapshotRestore'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Archive, Plus, RotateCcw, History, FolderOpen, Download, Mail, MoreHorizontal } from 'lucide-react'
+import { Archive, Plus, RotateCcw, RefreshCw, FolderOpen, Download, Mail, MoreHorizontal } from 'lucide-react'
 import { get, patch, post } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatBytes, formatDate } from '@/lib/utils'
@@ -38,8 +41,8 @@ function BackupEmailPreferences({ username }) {
   const [form,setForm]=useState(null)
   useEffect(()=>{if(preferences.data)setForm({customer_email:preferences.data.customer_email||'',events:{...preferences.data.events}})},[preferences.data])
   const save=useMutation({mutationFn:()=>patch(endpoint,form),onSuccess:data=>{setForm({customer_email:data.customer_email||'',events:{...data.events}});toast.success('Backup email preferences saved')}})
-  if(!form)return null
-  return <section className="mt-8 rounded-card border border-border bg-card p-5"><div className="mb-4"><h2 className="text-lg font-semibold">Backup email notifications</h2><p className="text-sm text-muted-foreground">Choose which backup activity is sent to your account email. Server notification settings still apply.</p></div><div className="grid gap-5 lg:grid-cols-[minmax(0,22rem)_1fr]"><FormField label="Notification email"><Input type="email" value={form.customer_email} onChange={event=>setForm(value=>({...value,customer_email:event.target.value}))} placeholder="you@example.com"/></FormField><fieldset><legend className="mb-2 text-sm font-medium">Events</legend><div className="grid gap-2 sm:grid-cols-2">{BACKUP_EMAIL_EVENTS.map(([key,label])=><label key={key} className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-accent" checked={form.events[key]??true} onChange={event=>setForm(value=>({...value,events:{...value.events,[key]:event.target.checked}}))}/>{label}</label>)}</div></fieldset></div>{save.error&&<p className="mt-3 text-sm text-danger">{save.error.message}</p>}<Button className="mt-4" loading={save.isPending} onClick={()=>save.mutate()}>Save email preferences</Button></section>
+  if(!form)return preferences.error ? <ErrorState error={preferences.error} onRetry={preferences.refetch} /> : <CenteredSpinner />
+  return <section className="rounded-card border border-border bg-card p-5"><div className="mb-4"><h2 className="text-lg font-semibold">Backup email notifications</h2><p className="text-sm text-muted-foreground">Choose which backup activity is sent to your account email. Server notification settings still apply.</p></div><div className="grid gap-5 lg:grid-cols-[minmax(0,22rem)_1fr]"><FormField label="Notification email"><Input type="email" value={form.customer_email} onChange={event=>setForm(value=>({...value,customer_email:event.target.value}))} placeholder="you@example.com"/></FormField><fieldset><legend className="mb-2 text-sm font-medium">Events</legend><div className="grid gap-2 sm:grid-cols-2">{BACKUP_EMAIL_EVENTS.map(([key,label])=><label key={key} className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-accent" checked={form.events[key]??true} onChange={event=>setForm(value=>({...value,events:{...value.events,[key]:event.target.checked}}))}/>{label}</label>)}</div></fieldset></div>{save.error&&<p className="mt-3 text-sm text-danger">{save.error.message}</p>}<Button className="mt-4" loading={save.isPending} onClick={()=>save.mutate()}>Save email preferences</Button></section>
 }
 
 // Poll while any job is still working so progress + status stay live.
@@ -165,7 +168,9 @@ export default function Backups() {
   const isAdmin = useAuth(state => state.role === 'admin')
   const qc = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
-  const restoreHistoryRef = useRef(null)
+  const [section, setSection] = useState(searchParams.get('view') === 'restores' ? 'history' : 'inventory')
+  const [backupType, setBackupType] = useState('all')
+  const [snapshot, setSnapshot] = useState(null)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [form, setForm] = useState({ kind: 'full', item_ref: '', mail_domain: '' })
@@ -179,7 +184,7 @@ export default function Backups() {
       setCreateOpen(true)
       setSearchParams({}, { replace: true })
     } else if (searchParams.get('view') === 'restores') {
-      requestAnimationFrame(() => restoreHistoryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+      setSection('history')
       setSearchParams({}, { replace: true })
     }
   }, [searchParams, setSearchParams])
@@ -189,6 +194,13 @@ export default function Backups() {
     queryFn: () => get(`/api/v1/accounts/${username}/backups`),
     enabled: !!username,
     refetchInterval: (query) => (isActive(query.state.data?.jobs || []) ? 5000 : false),
+  })
+
+  const snapshots = useQuery({
+    queryKey: ['snapshot-runs', username, username],
+    queryFn: () => get(`/api/v1/accounts/${encodeURIComponent(username)}/backups/snapshots/runs`),
+    enabled: !!username,
+    refetchInterval: query => isActive(query.state.data?.runs || []) ? 3000 : false,
   })
 
   const restores = useQuery({
@@ -214,6 +226,8 @@ export default function Backups() {
     onSuccess: () => {
       toast.success('Backup started', 'The backup job is running in the background.')
       qc.invalidateQueries({ queryKey: ['backups', username] })
+      setSection('inventory')
+      setBackupType('all')
       setCreateOpen(false)
       setForm({ kind: 'full', item_ref: '', mail_domain: '' })
     },
@@ -225,23 +239,31 @@ export default function Backups() {
       toast.success('Restore started', 'The restore job is running in the background.')
       qc.invalidateQueries({ queryKey: ['backups', username] })
       qc.invalidateQueries({ queryKey: ['backup-restores', username] })
+      setSection('history')
       setToRestore(null)
     },
   })
 
   const needsItemRef = !['full', 'databases'].includes(form.kind)
 
+  const inventory = [
+    ...(snapshots.data?.runs || []).map(row => ({ ...row, _source: 'snapshot', _key: `snapshot-${row.id}`, kind: (row.options?.components || []).map(value => ({files: 'Files', databases: 'Databases', mail: 'Email', config: 'Configuration'})[value] || value).join(', ') || 'Recovery point' })),
+    ...(backups.data?.jobs || []).map(row => ({ ...row, _source: 'archive', _key: `archive-${row.id}` })),
+  ].filter(row => backupType === 'all' || row._source === backupType)
+
   const backupColumns = [
+    { key: 'id', header: 'Backup', render: row => row._source === 'snapshot' ? <button className="font-medium text-accent hover:underline" onClick={() => setSnapshot(row)}>Backup #{row.id}</button> : `Archive #${row.id}` },
+    { key: '_source', header: 'Backup type', sortable: true, render: row => row._source === 'snapshot' ? 'Scheduled recovery point' : 'On-demand archive' },
     { key: 'kind', header: 'Kind', sortable: true, searchable: true, render: (r) => <KindCell row={r} /> },
     { key: 'status', header: 'Status', sortable: true, render: (r) => <StatusBadge status={r.status} /> },
-    { key: 'trigger', header: 'Trigger', sortable: true, render: (r) => <span className="capitalize text-muted-foreground">{r.trigger || '—'}</span> },
+    { key: 'trigger', header: 'Trigger', sortable: true, render: (r) => <span className="capitalize text-muted-foreground">{r.trigger || (r._source === 'snapshot' ? 'Provider backup job' : '—')}</span> },
     {
       key: 'size_bytes',
       header: 'Size',
       sortable: true,
       align: 'right',
-      sortValue: (r) => r.size_bytes ?? 0,
-      render: (r) => <span className="tabular-nums">{r.size_bytes ? formatBytes(r.size_bytes) : '—'}</span>,
+      sortValue: (r) => (r._source === 'snapshot' ? r.summary?.total_bytes_processed : r.size_bytes) ?? 0,
+      render: (r) => <span className="tabular-nums">{(r._source === 'snapshot' ? r.summary?.total_bytes_processed : r.size_bytes) != null ? formatBytes(r._source === 'snapshot' ? r.summary.total_bytes_processed : r.size_bytes) : '—'}</span>,
     },
     { key: 'started_at', header: 'Started', sortable: true, render: (r) => formatDate(r.started_at) },
     { key: 'progress_message', header: 'Progress', render: (r) => <ProgressCell row={r} /> },
@@ -250,7 +272,7 @@ export default function Backups() {
       header: '',
       align: 'right',
       render: (r) =>
-        r.status === 'completed' ? (
+        r._source === 'snapshot' ? <Button size="sm" variant="secondary" onClick={() => setSnapshot(r)}>View details</Button> : r.status === 'completed' ? (
           <div className="flex justify-end gap-1">
             <Button variant="outline" size="sm" onClick={() => setToRestore(r)}>
               <RotateCcw className="h-4 w-4" /> Restore
@@ -261,13 +283,6 @@ export default function Backups() {
     },
   ]
 
-  const restoreColumns = [
-    { key: 'kind', header: 'Kind', sortable: true, searchable: true, render: (r) => <KindCell row={r} /> },
-    { key: 'status', header: 'Status', sortable: true, render: (r) => <StatusBadge status={r.status} /> },
-    { key: 'started_at', header: 'Started', sortable: true, render: (r) => formatDate(r.started_at) },
-    { key: 'completed_at', header: 'Completed', sortable: true, render: (r) => formatDate(r.completed_at) },
-    { key: 'progress_message', header: 'Progress', render: (r) => <ProgressCell row={r} /> },
-  ]
 
   return (
     <div>
@@ -275,45 +290,39 @@ export default function Backups() {
           <Plus className="h-4 w-4" /> Create backup
         </Button>} />
 
-      <SnapshotHistory username={username} />
-      <BackupEmailPreferences username={username} />
-      <h2 className="mb-3 text-lg font-semibold">On-demand archive backups</h2><p className="mb-4 text-sm text-muted-foreground">Archives use your configured backup destination. If no archive schedule exists, Boron uses protected local storage and keeps the latest three archives of each type.</p>
-      <DataTable
-        columns={backupColumns}
-        data={backups.data?.jobs}
-        loading={backups.isLoading}
-        error={backups.error}
-        onRetry={backups.refetch}
-        filterable
-        searchPlaceholder="Search backups…"
-        pageSize={15}
-        initialSort={{ key: 'started_at', dir: 'desc' }}
-        getRowKey={(r) => r.id}
-        emptyTitle="No backups yet"
-        emptyDescription="Create a full or partial backup point to protect your account."
-        emptyIcon={Archive}
-        emptyAction={<Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create backup</Button>}
-      />
-
-      <div className="mt-8 scroll-mt-6" ref={restoreHistoryRef}>
-        <div className="mb-3 flex items-center gap-2">
-          <History className="h-4 w-4 text-muted-foreground" />
-          <h2 className="text-base font-semibold text-foreground">Restore history</h2>
-        </div>
-        <DataTable
-          columns={restoreColumns}
-          data={restores.data?.restore_jobs}
-          loading={restores.isLoading}
-          error={restores.error}
-          onRetry={restores.refetch}
-          pageSize={10}
-          initialSort={{ key: 'started_at', dir: 'desc' }}
-          getRowKey={(r) => r.id}
-          emptyTitle="No restores yet"
-          emptyDescription="Restoring a completed backup will show its progress here."
-          emptyIcon={History}
-        />
-      </div>
+      <Tabs value={section} onValueChange={setSection}>
+        <TabsList aria-label="Backup sections">
+          <TabsTrigger value="inventory">Backups</TabsTrigger>
+          <TabsTrigger value="history">Restore history</TabsTrigger>
+          <TabsTrigger value="notifications">Email notifications</TabsTrigger>
+        </TabsList>
+        <TabsContent value="inventory">
+          <div className="mb-4 flex flex-wrap items-end gap-3"><FormField className="w-full max-w-sm" label="Backup type" htmlFor="customer-backup-type"><Select id="customer-backup-type" value={backupType} onChange={event => setBackupType(event.target.value)}>
+            <option value="all">All backup types</option><option value="snapshot">Scheduled recovery points</option><option value="archive">On-demand archives</option>
+          </Select></FormField><Button variant="ghost" loading={snapshots.isFetching || backups.isFetching} onClick={() => { snapshots.refetch(); backups.refetch() }}><RefreshCw className="h-4 w-4"/>Refresh</Button></div>
+          <p className="customer-backup-description">Scheduled recovery points are created by your hosting provider. On-demand archives are backups you create here. View a recovery point’s details to browse, download or restore its contents.</p>
+          <DataTable
+            columns={backupColumns}
+            data={inventory}
+            loading={backups.isLoading || snapshots.isLoading}
+            error={backups.error || snapshots.error}
+            onRetry={() => { backups.refetch(); snapshots.refetch() }}
+            filterable
+            searchPlaceholder="Search backups…"
+            pageSize={15}
+            initialSort={{ key: 'started_at', dir: 'desc' }}
+            getRowKey={row => row._key}
+            emptyTitle={backupType === 'snapshot' ? 'No scheduled recovery points yet' : backupType === 'archive' ? 'No on-demand archives yet' : 'No backups yet'}
+            emptyDescription={backupType === 'snapshot' ? 'Recovery points from your hosting provider’s backup jobs will appear here.' : 'Create a full or partial archive backup to protect your account.'}
+            emptyIcon={Archive}
+            emptyAction={backupType !== 'snapshot' ? <Button onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create backup</Button> : undefined}
+          />
+          <p className="customer-backup-description mt-4">Archives use your configured backup destination. If no archive schedule exists, Boron uses protected local storage and keeps the latest three archives of each type.</p>
+        </TabsContent>
+        <TabsContent value="history"><SnapshotRestoreHistory username={username} archiveHistory={restores} showHeading={false}/></TabsContent>
+        <TabsContent value="notifications" forceMount hidden={section !== 'notifications'}><BackupEmailPreferences username={username} /></TabsContent>
+      </Tabs>
+      {snapshot && <SnapshotRunDialog run={snapshots.data?.runs?.find(row => row.id === snapshot.id) || snapshot} username={username} showRestoreHistory={false} onClose={() => setSnapshot(null)} />}
 
       {/* Create backup */}
       <Dialog open={createOpen} onOpenChange={open => { if (!createMut.isPending) setCreateOpen(open) }}>

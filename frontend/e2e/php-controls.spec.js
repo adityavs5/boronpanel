@@ -7,7 +7,7 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
    localStorage.setItem('boron.auth',JSON.stringify({state:{role:'customer',username:'alpha'},version:0}))
   },{skin,mode})
   let defaultVersion='8.3',override=null,settingsRequest=null,siteRequests=[]
-  const defaults={memory_limit:'128M',upload_max_filesize:'2M',post_max_size:'8M',max_execution_time:30,max_input_vars:1000}
+  const defaults={memory_limit:'128M',upload_max_filesize:'2M',post_max_size:'8M',max_execution_time:30,max_input_vars:1000,display_errors:false,allow_url_fopen:true}
   const presets=[{id:'lite',name:'Lite',directives:{memory_limit:'128M'}},{id:'moderate',name:'Moderate',description:'Typical WordPress sites.',directives:{memory_limit:'256M',upload_max_filesize:'64M',post_max_size:'80M',max_execution_time:120,max_input_vars:3000}},{id:'max',name:'Max',directives:{memory_limit:'512M'}}]
   await page.route('**/api/**',async route=>{
    const p=new URL(route.request().url()).pathname,method=route.request().method();let data={}
@@ -19,9 +19,9 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
    else if(p.endsWith('/domains'))data={domains:[{domain:'example.com',php_version:override}]}
    else if(p.endsWith('/php-ini')){
     if(method==='PATCH')settingsRequest=route.request().postDataJSON()
-    data={php_versions:['8.1','8.3'],limit_presets:presets,directives:Object.entries(defaults).map(([name,value])=>({name,type:typeof value==='number'?'int':'size',default:value,value:settingsRequest?.directives[name]??null,min:1,max:10000,max_mb:2048}))}
+    data={php_versions:['8.1','8.3'],limit_presets:presets,directives:Object.entries(defaults).map(([name,value])=>({name,type:typeof value==='boolean'?'bool':typeof value==='number'?'int':'size',default:value,value:settingsRequest?.directives[name]??null,min:1,max:10000,max_mb:2048}))}
    }
-   else if(p.endsWith('/php-extensions'))data={extensions:[],enabled:[]}
+   else if(p.endsWith('/php-extensions'))data={extensions:[{name:'opcache',stock_enabled:true,enabled:true}],enabled:['opcache']}
    await route.fulfill({json:data})
   })
   await page.goto('/app/php')
@@ -30,11 +30,13 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
   await page.getByLabel('PHP limits template',{exact:true}).selectOption('moderate')
   await expect(page.getByLabel('Memory limit',{exact:true})).toHaveValue('256M')
   await page.getByLabel('Memory limit',{exact:true}).fill('384M')
+  await page.getByRole('switch',{name:'Display errors',exact:true}).click()
   await expect(page.getByLabel('PHP limits template',{exact:true})).toHaveValue('custom')
   expect(settingsRequest).toBeNull()
   await page.getByRole('button',{name:'Save changes',exact:true}).click()
   await expect.poll(()=>settingsRequest?.directives.memory_limit).toBe('384M')
   expect(settingsRequest.directives.max_execution_time).toBe(120)
+  expect(settingsRequest.directives.display_errors).toBe(true)
   await page.getByLabel('PHP version for example.com',{exact:true}).selectOption('8.1')
   await page.getByRole('button',{name:'Save PHP version for example.com',exact:true}).click()
   await expect(page.getByText('Currently PHP 8.1 · Site override',{exact:true})).toBeVisible()
@@ -52,6 +54,17 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
   await page.screenshot({path:info.outputPath(`${skin}-${mode}-php-mobile.png`),fullPage:true})
   await page.getByLabel('PHP limits template',{exact:true}).scrollIntoViewIfNeeded()
   await page.screenshot({path:info.outputPath(`${skin}-${mode}-php-limits-mobile.png`),fullPage:true})
+  for(const width of [1440,375]){
+   await page.setViewportSize({width,height:900})
+   await page.locator('main').evaluate(el=>{el.scrollTop=0})
+   await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight))
+   await expect.poll(()=>page.evaluate(()=>scrollY)).toBe(0)
+   expect(await page.evaluate(()=>document.documentElement.scrollHeight<=innerHeight)).toBe(true)
+   await page.locator('main').evaluate(el=>{el.scrollTop=el.scrollHeight})
+   expect(await page.locator('main').evaluate(el=>el.scrollTop)).toBeGreaterThan(0)
+   await expect(page.getByRole('switch',{name:'Toggle opcache',exact:true})).toBeInViewport()
+   await page.screenshot({path:info.outputPath(`${skin}-${mode}-php-scroll-${width}.png`)})
+  }
   expect(errors).toEqual([])
  })
 }

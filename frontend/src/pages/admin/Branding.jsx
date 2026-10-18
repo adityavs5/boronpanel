@@ -112,8 +112,7 @@ export default function Branding() {
         icon={Palette}
       />
 
-      <TerminalBannerCard />
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Panel name &amp; support</CardTitle>
@@ -172,6 +171,10 @@ export default function Branding() {
           />
         </div>
       </div>
+      <details className="mt-6 rounded-card border border-border bg-card p-4">
+        <summary className="cursor-pointer text-sm font-semibold">Advanced: admin terminal welcome</summary>
+        <div className="mt-4"><TerminalBannerCard /></div>
+      </details>
     </div>
   )
 }

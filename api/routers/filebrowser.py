@@ -235,6 +235,20 @@ def _build_response_headers(upstream: httpx.Response) -> list[tuple[str, str]]:
 _INLINE_SCRIPT_RE = re.compile(rb"<script(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script>", re.S | re.I)
 
 
+def accessible_spa_shell(body: bytes) -> bytes:
+    """Attach fixed, same-origin UI adapters to the trusted SPA shell only.
+
+    The proxy's existing exact-path check must run first. Hosted documents,
+    downloads and API responses never pass through here. No inline script or
+    permissive CSP exception is added.
+    """
+    assets = (
+        b'<link rel="stylesheet" href="/static/dist/filebrowser-accessibility.css">'
+        b'<script defer src="/static/dist/filebrowser-accessibility.js"></script>'
+    )
+    return re.sub(rb"</head\s*>", lambda _: assets + b"</head>", body, count=1, flags=re.I)
+
+
 def html_csp(body: bytes) -> str:
     """CSP for the trusted FileBrowser SPA shell only, never hosted files.
 
@@ -411,8 +425,9 @@ async def _proxy_content(request: Request, path: str, target: str, client):
             await upstream.aclose()
         headers = dict(_build_response_headers(upstream))
         headers.pop('content-encoding', None)
-        headers["content-security-policy"] = html_csp(bytes(body))
-        return Response(content=bytes(body), status_code=upstream.status_code, headers=headers)
+        body = accessible_spa_shell(bytes(body))
+        headers["content-security-policy"] = html_csp(body)
+        return Response(content=body, status_code=upstream.status_code, headers=headers)
 
     headers = dict(_build_response_headers(upstream))
     if is_html:

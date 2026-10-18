@@ -217,7 +217,7 @@ def create_app(params: dict) -> dict:
 
     with write_session() as session:
         account = _get_account(session, username)
-        _get_domain_for_account(session, account, domain_name)
+        domain_docroot = _get_domain_for_account(session, account, domain_name).docroot
         _assert_domain_free(session, domain_name)
         if session.scalar(select(PythonApp).where(PythonApp.account_id == account.id, PythonApp.name == name)) is not None:
             raise ValidationError(f"app name '{name}' already exists for account '{username}'")
@@ -256,6 +256,9 @@ def create_app(params: dict) -> dict:
                 session.delete(orphan)
         appunits.remove_app_unit(appunits.unit_name(KIND, username, app_id))
         raise
+
+    from daemon import domain_welcome
+    domain_welcome.retire_welcome(username, domain_docroot, installed=True)
 
     with write_session() as session:
         row = session.get(PythonApp, app_id)

@@ -1,0 +1,13 @@
+/* Customer tools share the established Evo/Paper type and control tokens. */
+.customer-domain-field{flex:1 1 20rem;min-width:0;max-width:32rem}
+.customer-domain-context{margin-top:var(--tool-space-2);font-size:var(--tool-type-sm);font-weight:500;overflow-wrap:anywhere;color:rgb(var(--fg))}
+.customer-php-versions{grid-template-columns:minmax(0,1fr)}
+.customer-php-versions>.panel-card{height:auto}
+.customer-php-default-controls{display:flex;flex-wrap:wrap;gap:var(--tool-space-2);align-items:center}
+.customer-php-default-select{flex:1 1 18rem;max-width:26rem;min-width:0}
+.customer-mailbox-address{display:flex;flex-wrap:wrap;gap:var(--tool-space-2);align-items:center}
+.customer-mailbox-address input{flex:1 1 10rem;min-width:0}
+.customer-mailbox-address span{overflow-wrap:anywhere;max-width:100%}
+.customer-databases .interior-section-title,.customer-databases .database-create-section h2{font-size:var(--tool-type-label);font-weight:600;line-height:1.5}
+.customer-backup-description{max-width:75ch;margin-bottom:var(--tool-space-4);color:rgb(var(--muted-fg));font-size:var(--tool-type-sm);line-height:1.6}
+@media(max-width:640px){.customer-domain-field{flex-basis:100%;max-width:none;width:100%}.customer-domain-toolbar>[data-ui-badge]{margin-bottom:0}.customer-php-default-select{max-width:100%}}

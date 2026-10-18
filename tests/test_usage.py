@@ -30,7 +30,7 @@ def stub_ols(monkeypatch):
 
 @pytest.fixture()
 def stub_filesystem(monkeypatch):
-    monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot, domain_name=None: None)
+    monkeypatch.setattr(hd, "ensure_docroot", lambda username, docroot, domain_name=None, **kwargs: None)
 
 
 @pytest.fixture(autouse=True)

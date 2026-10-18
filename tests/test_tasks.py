@@ -10,6 +10,8 @@ from shared.models import (
     AuditLog,
     BackupDestination,
     BackupJob,
+    ControlTask,
+    SupportBundleJob,
     UpdateJob,
     utcnow,
 )
@@ -125,3 +127,48 @@ def test_invalid_customer_scope_is_rejected(isolated_db):
     _seed()
     with pytest.raises(ValidationError, match="Customer account"):
         tasks.list_tasks({"_authenticated_role": "customer", "limit": 100})
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
+def test_terminal_task_progress_takes_precedence(status):
+    assert tasks._progress(ControlTask(progress_pct=68), status) == 100
+    assert tasks._progress(UpdateJob(steps=[{"step": "preflight", "status": "running"}]), status) == 100
+
+
+def test_update_progress_counts_latest_distinct_pipeline_stages():
+    assert tasks._progress(UpdateJob(kind="update", steps=[{"step": "preflight", "status": "ok"}]), "running") == 13
+    job = UpdateJob(kind="update", steps=[
+        {"step": "preflight", "status": "running"},
+        {"step": "preflight", "status": "ok"},
+        {"step": "backup", "status": "ok"},
+        {"step": "download", "status": "ok"},
+        {"step": "download", "status": "running"},
+        {"step": "service-api", "status": "ok"},
+    ])
+    assert tasks._progress(job, "running") == 25
+    job.steps = [{"step": name, "status": "ok"} for name in tasks._UPDATE_STAGES]
+    assert tasks._progress(job, "running") == 88
+    assert tasks._progress(job, "completed") == 100
+
+
+def test_update_progress_handles_rollback_and_ignores_auxiliary_checks():
+    job = UpdateJob(kind="rollback", steps=[{"step": "preflight", "status": "ok"}])
+    assert tasks._progress(job, "running") == 50
+    job.kind = "update"
+    job.steps = [{"step": name, "status": "ok"} for name in tasks._UPDATE_STAGES[:-1]] + [
+        {"step": "mail-guard", "status": "running"},
+    ]
+    assert tasks._progress(job, "running") == 88
+
+
+def test_consumed_support_bundle_is_completed_and_unknown_progress_stays_unknown():
+    ready = utcnow()
+    task = tasks._task(tasks.SPEC_BY_KIND["support-bundle"], SupportBundleJob(
+        id=42, status="consumed", created_at=ready, ready_at=ready,
+        progress_message="Support bundle ready for one-time download",
+    ), {}, role="admin")
+    assert task["status"] == "completed"
+    assert task["progress"] == 100
+    assert "no longer available" in task["detail"]
+    assert task["can_retry"] is False and task["can_cancel"] is False
+    assert tasks._progress(SupportBundleJob(), "unknown") is None

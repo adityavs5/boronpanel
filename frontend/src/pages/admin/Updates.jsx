@@ -36,6 +36,12 @@ const STEP_LABELS = {
   venv: 'Build Python environment',
   migrate: 'Run database migrations',
   'mail-guard': 'Prepare mailbox recovery',
+  'db-grants': 'Reconcile database permissions',
+  'litespeed-repo': 'Verify LiteSpeed repository configuration',
+  'ols-webadmin': 'Configure OpenLiteSpeed administration',
+  'ftps-tls': 'Configure FTP certificates',
+  signature: 'Verify publisher signature',
+  'release-metadata': 'Validate release metadata',
   finalize: 'Swap, restart panel services, health check',
 }
 
@@ -88,12 +94,13 @@ function ConfirmActionDialog({ open, onOpenChange, title, description, confirmLa
   }, [open])
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size="sm">
-        <DialogHeader>
+      <DialogContent size={children ? 'lg' : 'sm'}>
+        <DialogHeader className="shrink-0">
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         <form
+          className="flex min-h-0 flex-1 flex-col overflow-hidden"
           onSubmit={(e) => {
             e.preventDefault()
             mutation.mutate(buildBody
@@ -153,7 +160,7 @@ export default function Updates() {
     refetchOnWindowFocus: false,
   })
 
-  const { data: databaseBackups } = useQuery({
+  const { data: databaseBackups, isLoading: databaseBackupsLoading, error: databaseBackupsError, refetch: refetchDatabaseBackups } = useQuery({
     queryKey: ['update-database-backups'],
     queryFn: () => get('/api/v1/admin/update/database-backups'),
     refetchInterval: 10000,
@@ -259,9 +266,22 @@ export default function Updates() {
   const active = status?.active_job
   const last = status?.last_job
   const jobShown = active || null
-  const okSteps = (jobShown?.steps || []).filter((s) => s.status === 'ok').length
-  const totalSteps = stepsFor(jobShown).length
+  // Count the fixed pipeline stages, not log entries: finalization emits
+  // extra service checks and can report the same stage more than once.
+  const progressSteps = jobShown?.kind === 'rollback' ? ['preflight', 'finalize'] : UPDATE_STEPS
+  const latestSteps = Object.fromEntries((jobShown?.steps || []).map(step => [step.step, step]))
+  const okSteps = progressSteps.filter(name => latestSteps[name]?.status === 'ok'
+    && (name !== 'finalize' || jobShown?.status === 'completed')).length
+  const totalSteps = progressSteps.length
+  const progressPercent = Math.round((okSteps / totalSteps) * 100)
   const finalizing = jobShown?.status === 'finalizing'
+  const runningStep = [...(jobShown?.steps || [])].reverse().find(step =>
+    step.status === 'running' && latestSteps[step.step] === step)
+  const currentStage = jobShown?.status === 'pending' ? 'Waiting to start'
+    : finalizing ? STEP_LABELS.finalize
+    : STEP_LABELS[runningStep?.step]
+      || STEP_LABELS[progressSteps.find(name => latestSteps[name]?.status !== 'ok')]
+      || 'Finishing update'
   const dataPlaneReloads = preflight?.release_metadata?.data_plane_reloads
     || status?.release_metadata?.data_plane_reloads || []
   const preflightBlocked = Boolean(preflight?.critical_failures?.length)
@@ -312,6 +332,27 @@ export default function Updates() {
           <RefreshCw className="h-4 w-4" /> Check now
         </Button>}
       />
+
+      {jobShown && (
+        <section aria-label="Update progress" className="mb-6 rounded-card border border-accent/40 bg-card p-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+            <h2 className="font-semibold">{jobShown.kind === 'rollback' ? 'Rollback' : 'Update'} progress</h2>
+            <span className="font-medium tabular-nums">{progressPercent}% · {okSteps} of {totalSteps} stages complete</span>
+          </div>
+          <div role="progressbar" aria-label="Completed update stages" aria-valuemin={0}
+               aria-valuemax={totalSteps} aria-valuenow={okSteps}
+               aria-valuetext={`${okSteps} of ${totalSteps} stages complete. ${currentStage}`}>
+            <ProgressBar value={progressPercent} color="bg-accent" showTrack />
+          </div>
+          <p role="status" className="mt-2 text-sm">{currentStage}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Based on completed stages, not time remaining. Some stages take longer than others.
+          </p>
+          {error && <p role="status" className="mt-2 text-sm text-warning">
+            Connection interrupted. Showing the last reported progress; reconnecting automatically.
+          </p>}
+        </section>
+      )}
 
       <Card className="mb-6">
         <CardContent className="py-5">
@@ -429,7 +470,7 @@ export default function Updates() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <ProgressBar value={(okSteps / totalSteps) * 100} color="bg-accent" showTrack />
+            <ProgressBar value={progressPercent} color="bg-accent" showTrack />
             <StepList job={jobShown} />
           </CardContent>
         </Card>
@@ -456,58 +497,6 @@ export default function Updates() {
         </Card>
       )}
 
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>Panel database recovery</CardTitle>
-          <CardDescription>
-            Restore a database from a validated pre-update snapshot. The current database is preserved as a rescue copy first.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {databaseBackups?.restore_status && (
-            <div className="rounded-btn border border-border bg-muted/30 px-3 py-2 text-sm text-foreground">
-              Latest restore: <strong>{databaseBackups.restore_status.state}</strong>
-              {databaseBackups.restore_status.source && ` · ${databaseBackups.restore_status.source}`}
-              {databaseBackups.restore_status.error && (
-                <div className="mt-1 text-danger">{databaseBackups.restore_status.error}</div>
-              )}
-            </div>
-          )}
-          {(databaseBackups?.backups || []).length === 0 ? (
-            <div className="text-sm text-muted-foreground">No pre-update database snapshots are available.</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead><tr className="border-b border-border text-muted-foreground">
-                  <th className="px-2 py-2 font-medium">Snapshot</th>
-                  <th className="px-2 py-2 font-medium">Created</th>
-                  <th className="px-2 py-2 font-medium">Validation</th>
-                  <th className="sticky right-0 bg-surface px-2 py-2 text-right font-medium">Action</th>
-                </tr></thead>
-                <tbody>{databaseBackups.backups.map((backup) => (
-                  <tr key={backup.id} className="border-b border-border/70">
-                    <td className="px-2 py-2 font-mono text-xs">{backup.id}</td>
-                    <td className="px-2 py-2">{formatDate(backup.created_at)}</td>
-                    <td className="px-2 py-2">
-                      {backup.integrity_ok && backup.schema_compatible
-                        ? <Badge variant="success">Ready</Badge>
-                        : <span className="text-danger">{backup.compatibility_reason || 'Invalid snapshot'}</span>}
-                    </td>
-                    <td className="sticky right-0 bg-surface px-2 py-2 text-right">
-                      {backup.integrity_ok && backup.schema_compatible && (
-                        <Button size="sm" variant="secondary" onClick={() => setRestoreBackup(backup)}>
-                          <DatabaseBackup className="h-4 w-4" /> Restore database
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
       {/* History */}
       <Card>
         <CardHeader>
@@ -525,6 +514,43 @@ export default function Updates() {
           />
         </CardContent>
       </Card>
+
+      <details className="mt-6 rounded-card border border-border bg-card p-4">
+        <summary className="cursor-pointer text-sm font-semibold">
+          Panel database recovery{databaseBackups?.backups ? ` (${databaseBackups.backups.length} snapshots)` : ''}
+        </summary>
+        <div className="mt-4 space-y-3">
+          <p className="text-sm text-muted-foreground">Restore a database from a validated pre-update snapshot. The current database is preserved as a rescue copy first.</p>
+          {databaseBackups?.restore_status && (
+            <div className="rounded-btn border border-border bg-muted/30 px-3 py-2 text-sm text-foreground">
+              Latest restore: <strong>{databaseBackups.restore_status.state}</strong>
+              {databaseBackups.restore_status.source && <span className="mt-1 block break-all text-xs text-muted-foreground">{databaseBackups.restore_status.source}</span>}
+              {databaseBackups.restore_status.error && <div className="mt-1 text-danger">{databaseBackups.restore_status.error}</div>}
+            </div>
+          )}
+          <DataTable
+            data={databaseBackups?.backups || []}
+            loading={databaseBackupsLoading}
+            error={databaseBackupsError}
+            onRetry={refetchDatabaseBackups}
+            getRowKey={backup => backup.id}
+            pageSize={5}
+            emptyTitle="No pre-update database snapshots are available."
+            columns={[
+              { key: 'id', header: 'Snapshot', render: backup => {
+                const version = backup.id.match(/^pre-update-(.+)-\d{8}-\d{6}$/)?.[1]
+                return <details><summary className="cursor-pointer font-medium">{version ? `Before update to v${version}` : 'Pre-update snapshot'}</summary><code className="mt-1 block max-w-xs break-all text-xs text-muted-foreground">{backup.id}</code></details>
+              } },
+              { key: 'created_at', header: 'Created', render: backup => formatDate(backup.created_at) },
+              { key: 'validation', header: 'Validation', render: backup => backup.integrity_ok && backup.schema_compatible
+                ? <Badge variant="success">Ready</Badge>
+                : <span className="text-danger">{backup.compatibility_reason || 'Invalid snapshot'}</span> },
+              { key: 'actions', header: 'Action', align: 'right', render: backup => backup.integrity_ok && backup.schema_compatible
+                ? <Button size="sm" variant="secondary" onClick={() => setRestoreBackup(backup)}><DatabaseBackup className="h-4 w-4" /> Restore database</Button> : null },
+            ]}
+          />
+        </div>
+      </details>
 
       <ConfirmActionDialog
         open={updateOpen}

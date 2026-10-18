@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { BellRing, Save, AtSign, AlertTriangle } from 'lucide-react'
 import { get, patch } from '@/lib/api'
@@ -14,6 +14,7 @@ import { Switch } from '@/components/ui/Toggle'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/States'
 import { toast } from '@/components/ui/Toast'
+import { DraftChanges, useDraftSection } from '@/components/ui/DraftChanges'
 
 // Friendly label for an event key: prefer the known catalog, otherwise
 // humanize whatever key the backend returned (event maps can drift ahead of
@@ -22,31 +23,32 @@ function eventLabel(key) {
   return NOTIFICATION_EVENTS.find((e) => e.key === key)?.label || titleCase(key.replace(/[._]+/g, ' '))
 }
 
-export default function NotificationSettings() {
+function NotificationSettingsForm() {
   // Admin settings live under /admin/notifications, but keep the account context
   // in the cache key so the page stays correct if reused per-identity.
   const username = useAccountUsername()
   const qc = useQueryClient()
+  const formRef = useRef(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['admin-notification-settings', username],
     queryFn: () => get('/api/v1/admin/notifications/settings'),
   })
 
-  // Editable form state, seeded from the server once (and on any refetch).
-  const [senderAddress, setSenderAddress] = useState('')
-  const [events, setEvents] = useState({})
-
-  useEffect(() => {
-    if (!data) return
-    setSenderAddress(data.sender_address || '')
+  // Keep local edits separate so a background read cannot replace a draft.
+  const [draft, setDraft] = useState(null)
+  const savedEvents = useMemo(() => {
     // Resolve every known + returned event to a concrete boolean. A missing key
     // defaults to enabled, mirroring the legacy `events.get(event, True)`.
     const resolved = {}
-    for (const { key } of NOTIFICATION_EVENTS) resolved[key] = data.events?.[key] ?? true
-    for (const [key, val] of Object.entries(data.events || {})) resolved[key] = !!val
-    setEvents(resolved)
+    for (const { key } of NOTIFICATION_EVENTS) resolved[key] = data?.events?.[key] ?? true
+    for (const [key, val] of Object.entries(data?.events || {})) resolved[key] = !!val
+    return resolved
   }, [data])
+  const senderAddress = draft?.sender_address ?? data?.sender_address ?? ''
+  const events = draft?.events ?? savedEvents
+  const setSenderAddress = value => setDraft({ sender_address: value, events })
+  const setEvents = update => setDraft({ sender_address: senderAddress, events: update(events) })
 
   // One row per event: the full known catalog plus any extra keys the backend
   // sent that we don't have a hardcoded label for.
@@ -64,16 +66,24 @@ export default function NotificationSettings() {
 
   const saveMut = useMutation({
     mutationFn: (body) => patch('/api/v1/admin/notifications/settings', body),
-    onSuccess: () => {
+    onSuccess: (result, submitted) => {
       toast.success('Notification settings saved')
+      qc.setQueryData(['admin-notification-settings', username], previous => ({ ...previous, ...result, ...submitted }))
+      setDraft(current => current && (current.sender_address.trim() !== submitted.sender_address || JSON.stringify(current.events) !== JSON.stringify(submitted.events)) ? current : null)
       qc.invalidateQueries({ queryKey: ['admin-notification-settings', username] })
     },
     onError: (e) => toast.error('Could not save settings', e.message),
   })
 
+  const save = () => {
+    if (!formRef.current?.reportValidity()) return
+    return saveMut.mutateAsync({ sender_address: senderAddress.trim(), events })
+  }
+  useDraftSection('notification-settings', { dirty, busy: saveMut.isPending, label: 'Notification settings', saveLabel: 'Save changes', onSave: save, onDiscard: () => setDraft(null) })
+
   function handleSave(e) {
     e.preventDefault()
-    saveMut.mutate({ sender_address: senderAddress.trim(), events })
+    save()?.catch(() => {})
   }
 
   const senderEmpty = !!data && !senderAddress.trim()
@@ -111,7 +121,7 @@ export default function NotificationSettings() {
   ]
 
   return (
-    <form onSubmit={handleSave}>
+    <form ref={formRef} onSubmit={handleSave}>
       <PageHeader
         title="Notification settings"
         description="Server-wide email notifications, relayed via local Postfix. A message is only sent when both this global switch and the account's own preference are enabled for that event."
@@ -204,3 +214,5 @@ export default function NotificationSettings() {
     </form>
   )
 }
+
+export default function NotificationSettings() { return <DraftChanges><NotificationSettingsForm /></DraftChanges> }

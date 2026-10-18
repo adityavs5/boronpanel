@@ -389,6 +389,9 @@ OP_TABLE = {
     "templates.welcome_email.get": site_templates.get_welcome_email_template,
     "templates.welcome_email.set": site_templates.set_welcome_email_template,
     "templates.welcome_email.reset": site_templates.reset_welcome_email_template,
+    "templates.welcome_page.get": site_templates.get_welcome_page,
+    "templates.welcome_page.set": site_templates.set_welcome_page,
+    "templates.welcome_page.reset": site_templates.reset_welcome_page,
     # Phase 3 feature 7: per-domain redirects
     "redirect.create": handlers_redirect.create_redirect,
     "redirect.update": handlers_redirect.update_redirect,
@@ -1343,6 +1346,18 @@ async def _expire_database_exports():
             logger.exception("Database export expiry failed")
 
 
+async def _welcome_page_cleanup_loop():
+    """Inspect pending Boron placeholders only; never scan tenant file trees."""
+    from daemon import domain_welcome
+
+    while True:
+        await asyncio.sleep(10)
+        try:
+            await asyncio.to_thread(domain_welcome.reconcile_pending, limit=100)
+        except Exception:
+            logger.exception("Domain welcome-page cleanup failed")
+
+
 async def amain() -> None:
     # Parse/configure migrations stay backward-compatible in memory here.
     # Persisting a new schema marker during service startup would make an
@@ -1351,6 +1366,7 @@ async def amain() -> None:
     # call migrate_config_file after the rollback window has closed.
     init_db()
     asyncio.create_task(_expire_database_exports())
+    asyncio.create_task(_welcome_page_cleanup_loop())
     asyncio.create_task(_redact_historical_audit())
     try:
         handlers_database.prepare_import_spool()
