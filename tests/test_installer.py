@@ -188,7 +188,7 @@ def test_installer_covers_runtime_dependencies_and_firewall_policy():
     assert "sudo -u boron-api -- test -r /run/boron/provisiond.sock" in source
     assert "sudo -u boron-api -- test -w /run/boron/provisiond.sock" in source
     assert "provisioning daemon socket was not ready for boron-api after 30 seconds" in source
-    assert source.count("mysql --defaults-file=/root/.my.cnf") == 3
+    assert source.count("mysql --defaults-file=/root/.my.cnf") == 4
     assert "existing_root_pass" in source
     assert "systemctl enable --now clamav-freshclam" in source
     assert "web UI built from frontend source" in source

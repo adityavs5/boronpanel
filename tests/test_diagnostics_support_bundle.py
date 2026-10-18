@@ -73,17 +73,27 @@ def test_hung_diagnostic_times_out_without_blocking(monkeypatch):
     monkeypatch.setattr(settings, "diagnostics_check_timeout_seconds", 0.03)
     monkeypatch.setattr(settings, "diagnostics_total_timeout_seconds", 0.08)
 
+    import threading
+
+    release = threading.Event()
+
     def slow():
-        time.sleep(0.15)
+        release.wait(5)
         return diagnostics._result("slow", "Slow", "pass", "late")
 
     started = time.monotonic()
-    result = diagnostics.run_all(checks=[
-        ("fast", lambda: diagnostics._result("fast", "Fast", "pass", "done")),
-        ("slow", slow),
-    ])
-    elapsed = time.monotonic() - started
-    assert elapsed < 0.12
+    try:
+        result = diagnostics.run_all(checks=[
+            ("fast", lambda: diagnostics._result("fast", "Fast", "pass", "done")),
+            ("slow", slow),
+        ])
+        elapsed = time.monotonic() - started
+        # Production clamps the budget to 100 ms. Allow scheduling jitter,
+        # while proving we returned before the blocked worker was released.
+        assert elapsed < 1.0
+        assert not release.is_set()
+    finally:
+        release.set()
     assert [item["id"] for item in result["checks"]] == ["fast", "slow"]
     assert result["checks"][0]["status"] == "pass"
     assert result["checks"][1]["status"] == "unknown"

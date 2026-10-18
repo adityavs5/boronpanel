@@ -32,7 +32,10 @@ the short, root-owned, traversable directory `/srv/bt`; override it with
 `BORON_TEST_TMPDIR` when a dedicated test volume is mounted elsewhere. The
 directory is marked as test-only and contains only disposable test data.
 Shared parents are mode `0755`; tests that need private content create their
-own `0700` directories below them. The harness refuses a temporary path over
+own `0700` directories below them. These parent modes are enforced even when
+the caller uses umask `077`; test subprocesses start with umask `022`.
+Clone the test checkout with umask `022` as well, so installed-style helper
+files are readable by the service identities used in integration tests. The harness refuses a temporary path over
 40 bytes so Dovecot and other Unix socket users remain below the platform
 limit. A run is stopped above 8 GiB or below 5 GiB free by default
 (`BORON_TEST_TMP_MAX_GB` and `BORON_TEST_MIN_FREE_GB`), and the newest three

@@ -178,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
         break
     else:
         raise SystemExit(f"ERROR: could not allocate a unique test run below {base}")
+    # These test-only ancestors must remain traversable even under umask 077.
+    run_dir.chmod(0o755)
     temp_dir = run_dir / "t"
     temp_path_bytes = len(os.fsencode(str(temp_dir)))
     if temp_path_bytes > MAX_TEMP_PATH_BYTES:
@@ -188,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
             "Set BORON_TEST_TMPDIR to a shorter dedicated path such as /srv/bt."
         )
     temp_dir.mkdir(mode=0o755)
+    temp_dir.chmod(0o755)
     default_report_dir = run_dir / "a"
     report_dir = Path(os.environ.get("BORON_TEST_REPORT_DIR", str(default_report_dir)))
     report_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -213,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         f"Boron test workspace: {run_dir} (cap {cap_gb} GiB, protected free floor {min_free_gb} GiB, keep {keep})",
         flush=True,
     )
-    process = subprocess.Popen(command, env=env, start_new_session=True)
+    process = subprocess.Popen(command, env=env, start_new_session=True, umask=0o022)
     status: int | None = None
     while status is None:
         status = process.poll()
