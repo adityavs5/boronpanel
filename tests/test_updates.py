@@ -1482,3 +1482,13 @@ def test_update_job_claim_is_atomic(update_env):
     with ThreadPoolExecutor(max_workers=2) as pool:
         claims = list(pool.map(lambda _: updates._claim_job(job_id, 'update'), range(2)))
     assert sum(claim is not None for claim in claims) == 1
+
+
+def test_finalizer_expects_the_target_release_protocol(tmp_path):
+    """A 3.2 daemon handing off to a 3.3 release must expect protocol 3.3."""
+    from daemon import updates
+    (tmp_path / "version.py").write_text('"""doc"""\n\nBORON_VERSION = "3.3.0"\n')
+    assert updates._release_protocol_version(str(tmp_path)) == "3.3"
+    (tmp_path / "version.py").write_text("garbage\n")
+    assert updates._release_protocol_version(str(tmp_path)) == updates.RPC_PROTOCOL_VERSION
+    assert updates._release_protocol_version(str(tmp_path / "missing")) == updates.RPC_PROTOCOL_VERSION

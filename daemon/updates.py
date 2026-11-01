@@ -1811,6 +1811,21 @@ def _recorded_backup_path(job: UpdateJob) -> Path | None:
     return candidate
 
 
+def _release_protocol_version(release_dir: str) -> str:
+    """RPC protocol the daemon from ``release_dir`` will speak once started.
+
+    The protocol follows the release's MAJOR.MINOR, so the finalizer must
+    expect the target release's value, not this (outgoing) daemon's: passing
+    our own made every minor upgrade fail its post-swap health check.
+    """
+    try:
+        text = (Path(release_dir) / "version.py").read_text(encoding="utf-8")
+    except OSError:
+        return RPC_PROTOCOL_VERSION
+    match = re.search(r'^BORON_VERSION = "(\d+)\.(\d+)\.\d+"$', text, re.MULTILINE)
+    return f"{match.group(1)}.{match.group(2)}" if match else RPC_PROTOCOL_VERSION
+
+
 def _handoff_to_finalizer(job_id: int, new_dir: str, kind: str = "update") -> None:
     live = settings.update_live_dir
     convert_from_dir = None
@@ -1906,7 +1921,7 @@ def _handoff_to_finalizer(job_id: int, new_dir: str, kind: str = "update") -> No
         "--log", str(Path(settings.log_dir) / "updates.log"),
         "--api-health-url", f"https://127.0.0.1:{settings.api_bind_port}/healthz",
         "--rpc-socket", settings.rpc_socket,
-        "--rpc-protocol-version", RPC_PROTOCOL_VERSION,
+        "--rpc-protocol-version", _release_protocol_version(new_dir),
         "--credential-file", str(credential_file),
         "--release-metadata", str(Path(new_dir) / "release-metadata.json"),
         "--config-dir", str(CONFIG_PATH.parent),
