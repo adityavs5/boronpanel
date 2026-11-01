@@ -4,6 +4,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { Topbar, PageNavigation } from './Topbar'
 import { MobileBottomNav } from './MobileBottomNav'
 import { ImpersonationBanner } from './ImpersonationBanner'
+import { LicenseBanner } from './LicenseBanner'
 import { useAuth } from '@/store/auth'
 import { Sidebar } from './Sidebar'
 import { MobileNavDrawer } from './MobileNavDrawer'
@@ -55,6 +56,7 @@ export function AppShell() {
   return (
     <div className={`flex h-full flex-col overflow-hidden ${inner ? 'inner-shell' : 'dashboard-shell'}`}>
       <ImpersonationBanner />
+      <LicenseBanner />
       <Topbar inner={inner} />
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {persistentNavigation && <div className="persistent-navigation"><Sidebar /></div>}

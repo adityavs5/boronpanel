@@ -23,6 +23,9 @@ coverage.json
 *secrets*
 !deploy/*secrets*.example
 *.key
+/master
+/master.pub
+/backup/
 *.pem
 *.p12
 *.pfx

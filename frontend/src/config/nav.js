@@ -6,7 +6,7 @@ import {
   History, FileCode2, Cloud, Layers, Palette, AlertOctagon, BookOpen, ArrowUpCircle,
   DatabaseZap, Construction, BarChart3, ArrowRightLeft, Ban, ShieldBan, FileText, Store,
   ExternalLink, Zap, Shield, GaugeCircle, Route, ServerCog, Stethoscope,
-  ArchiveRestore,
+  ArchiveRestore, BadgeCheck,
 } from 'lucide-react'
 import { WordPressIcon, RedisIcon, NodeIcon, PythonIcon, GitIcon } from '@/components/icons/BrandIcons'
 
@@ -83,6 +83,7 @@ export const adminNav = [
   { label: 'OpenLiteSpeed', to: '/openlitespeed', icon: Server },
   // Sidebar shows an accent dot on this item while an update is available.
   { label: 'Updates', to: '/updates', icon: ArrowUpCircle },
+  { label: 'License', to: '/license', icon: BadgeCheck },
   { section: 'Hosting Management' },
   { label: 'Backup Manager', to: '/backup-jobs', icon: Archive },
   { label: 'Plans', to: '/plans', icon: Layers },

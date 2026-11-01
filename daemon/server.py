@@ -31,7 +31,7 @@ from shared.request_context import (
     request_context,
 )
 
-from daemon import panel_config, panel_jobs, panel_tls, snapshot_config, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, appunits, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, control_tasks, cpanel_import, custom_pages, diagnostics, disktree, db_governor, dbmonitor, dnscluster, dnssetup, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, htaccess, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, mail_dns, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, php_lifecycle, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, resource_manager, resource_tuning, retention, server_setup, servicemgr, site_health, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, stack_manager, staging, support_bundle, tasks, terminal, totp, updates, usage_alerts, waf, webhooks, webmail_sso, wordpress, wpcli
+from daemon import license_client, panel_config, panel_jobs, panel_tls, snapshot_config, snapshot_restores, snapshot_jobs, wpmanager, appinstaller, appunits, audit, backup, backup_notifications, branding, bulkops, cgroups, cloudflare_accounts, cloudflare_ops, cmdjobs, composerui, control_tasks, cpanel_import, custom_pages, diagnostics, disktree, db_governor, dbmonitor, dnscluster, dnssetup, events, fail2ban, fileauth, filebrowser, firewall, forwarding, gitrepo, handlers_account, handlers_auth, handlers_cron, handlers_database, handlers_dns, handlers_domain, handlers_email_routing, handlers_ftp, handlers_hotlink, handlers_ipblock, handlers_mail, handlers_maintenance, handlers_notes, handlers_php_ini, handlers_redirect, handlers_usage, handlers_wildcard, health, htaccess, identity_admin, imapsync, impersonation, ipban, ipmanager, ipwhitelist, logs, lscache, mail_dns, maillog, mailqueue, malware, monitoring, nameservers, nodeapps, notifications, nsisolation, ols, onboarding, parked, phpext, php_lifecycle, phpfunctions, plans, pma, portable_archive, procmanager, pythonapps, redisacct, resellers, resource_manager, resource_tuning, retention, server_setup, servicemgr, site_health, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl, stack_manager, staging, support_bundle, tasks, terminal, totp, updates, usage_alerts, waf, webhooks, webmail_sso, wordpress, wpcli
 from daemon.logsetup import configure_logging
 from daemon.rpc_authority import AuthenticationError, AuthorizationError, authorize, resolve_principal
 from daemon import directadmin_remote
@@ -680,6 +680,9 @@ OP_TABLE = {
     "update.readiness": updates.finalizer_readiness,
     "update.finalizer.ping": updates.finalizer_ping,
     "update.status": updates.get_status,
+    "license.status": license_client.status,
+    "license.refresh": license_client.refresh,
+    "license.activate": license_client.activate,
     "update.start": updates.start_update,
     "update.rollback": updates.start_rollback,
     "update.history": updates.get_history,
@@ -759,6 +762,8 @@ REPORTING_OPS = {
     # runs on updates.py's own single-worker executor) so they stay off
     # the reporting pool.
     "update.check", "update.database_backups", "update.preflight", "update.readiness", "update.finalizer.ping", "update.status", "update.history", "update.log",
+    # License checks make an outbound call to license.boronpanel.com.
+    "license.status", "license.refresh", "license.activate",
     "services.status", "services.list",
     "mailqueue.list",
     "firewall.list", "firewall.bypass.list",

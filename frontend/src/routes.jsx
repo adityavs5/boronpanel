@@ -72,6 +72,7 @@ const ApiTokens = lazy(() => import('@/pages/admin/ApiTokens'))
 const Cloudflare = lazy(() => import('@/pages/admin/Cloudflare'))
 const WordPressManager = lazy(() => import('@/pages/WordPressManager'))
 const Updates = lazy(() => import('@/pages/admin/Updates'))
+const License = lazy(() => import('@/pages/admin/License'))
 const DbMonitor = lazy(() => import('@/pages/admin/DbMonitor'))
 // Named MaintenanceOverview locally -- `Maintenance` (the panel's own
 // system-maintenance/downtime page) is already imported above from
@@ -230,6 +231,7 @@ export const router = createBrowserRouter(
         { path: 'tokens', element: admin(<ApiTokens />) },
         { path: 'wordpress', element: <WordPressManager /> },
         { path: 'updates', element: admin(<Updates />) },
+        { path: 'license', element: admin(<License />) },
         { path: 'db-monitor', element: admin(<DbMonitor />) },
         { path: 'maintenance-mode', element: admin(<MaintenanceOverview />) },
         { path: 'site-stats', element: admin(<SiteStats />) },

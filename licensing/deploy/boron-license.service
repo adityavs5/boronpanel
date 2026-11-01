@@ -1,0 +1,46 @@
+[Unit]
+Description=Boron license server
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=exec
+User=boronlic
+Group=boronlic
+WorkingDirectory=/opt/boron-license/app
+EnvironmentFile=/etc/boron-license/config.env
+Environment=PYTHONPATH=/opt/boron-license/app PYTHONDONTWRITEBYTECODE=1
+# Client IPs come from nginx's X-Real-IP, read by the app itself; uvicorn must
+# not rewrite the peer address from forwarded headers.
+ExecStart=/opt/boron-license/.venv/bin/uvicorn --factory boron_license.api:app_factory \
+    --host 127.0.0.1 --port 8100 --workers 2 --no-proxy-headers --no-server-header \
+    --no-date-header --log-level warning
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

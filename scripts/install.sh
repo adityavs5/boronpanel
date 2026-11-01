@@ -68,6 +68,11 @@ ADMIN_PASSWORD="${FH_ADMIN_PASSWORD:-}"
 unset FH_ADMIN_PASSWORD
 SERVER_IP="${FH_SERVER_IP:-}"
 WEBMAIL_DOMAIN="${FH_WEBMAIL_DOMAIN:-}"
+# Boron license key (BRN-XXXX-XXXX-XXXX-XXXX). Optional at install time: the
+# administrator area stays locked until one is activated on the License page.
+LICENSE_KEY="${FH_LICENSE_KEY:-}"
+unset FH_LICENSE_KEY
+readonly LICENSE_SERVER_URL="${FH_LICENSE_SERVER_URL:-https://license.boronpanel.com}"
 # QA round 2, item 12: optional -- MaxMind requires a free account + license
 # key for GeoLite2 downloads (no anonymous path), so this is never prompted
 # interactively (same treatment as CLOUDFLARE_API_TOKEN -- an operator
@@ -1314,6 +1319,8 @@ install_cron_and_logrotate() {
     profile_has dns && run install -m 644 "${DEST}/deploy/boron-cloudflare.cron" /etc/cron.d/boron-cloudflare
     # Panel update system: daily release check + admin email + old-version pruning.
     run install -m 644 "${DEST}/deploy/boron-update.cron" /etc/cron.d/boron-update
+    # Licensing: twice-daily signed license refresh.
+    run install -m 644 "${DEST}/deploy/boron-license.cron" /etc/cron.d/boron-license
     # Core infrastructure crons (health, usage, backups, ssl expiry, pma
     # tokens, usage alerts) -- root-owned, same trust level as the daemon.
     run install -m 644 "${DEST}/deploy/boron-jobs.cron" /etc/cron.d/boron-jobs
@@ -1627,6 +1634,53 @@ seed_server_setup_wizard() {
     unset BORON_SETUP_PANEL_DOMAIN BORON_SETUP_SERVER_IP BORON_SETUP_EMAIL BORON_SETUP_MAXMIND_SKIPPED
 }
 
+# --- license -----------------------------------------------------------------
+
+check_license_key() {
+    # Fail before installing anything when the key cannot work on this server.
+    # The check never binds the license; activation happens after install.
+    if [[ -z "$LICENSE_KEY" ]]; then
+        warn "no license key given: the admin area stays locked until one is added at /app/license"
+        return 0
+    fi
+    LICENSE_KEY="$(printf '%s' "$LICENSE_KEY" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+    [[ "$LICENSE_KEY" =~ ^BRN(-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}){4}$ ]]         || die "license key must look like BRN-XXXX-XXXX-XXXX-XXXX"
+    $DRY_RUN && { skip "license key check (dry-run)"; return 0; }
+    local body response status
+    body="$(printf '{"license_key":"%s","install_id":"installer-preflight","version":"%s"}' "$LICENSE_KEY" "$BORON_VERSION")"
+    if ! response="$(curl -sS --proto '=https' --max-time 20 -X POST -H 'Content-Type: application/json'             --data-binary @- "${LICENSE_SERVER_URL}/v1/check" <<<"$body" 2>/dev/null)"; then
+        warn "license server unreachable; the key will be activated later from the License page"
+        return 0
+    fi
+    status="$(python3 -c 'import json,sys
+d = json.load(sys.stdin)
+print(d.get("payload", {}).get("status") or d.get("error") or "unknown")' <<<"$response" 2>/dev/null || echo unknown)"
+    case "$status" in
+        active|not_activated) ok "license key accepted by the license server" ;;
+        invalid_license) die "the license key was not recognised by the license server" ;;
+        ip_mismatch) die "this license is bound to another server's IP; ask Boron support to move it" ;;
+        suspended|cancelled|expired) die "this license is ${status}; contact Boron support" ;;
+        *) warn "unexpected license server answer (${status}); continuing without activation" ;;
+    esac
+}
+
+activate_license() {
+    [[ -n "$LICENSE_KEY" ]] || return 0
+    if $DRY_RUN; then
+        skip "license activation (dry-run)"
+        return 0
+    fi
+    # The key reaches Python on stdin, never on a command line.
+    local state
+    if state="$(printf '%s' "$LICENSE_KEY" | (cd "$DEST" && "${VENV}/bin/python" -c 'import sys
+from daemon import license_client
+print(license_client.activate({"license_key": sys.stdin.read()})["state"])') 2>>"$INSTALL_LOG")"; then
+        ok "license activated (state: ${state})"
+    else
+        warn "license activation failed; enter the key on the License page after signing in"
+    fi
+}
+
 # --- prompts -----------------------------------------------------------------
 
 prompt_inputs() {
@@ -1642,6 +1696,9 @@ prompt_inputs() {
     if [[ -z "$ADMIN_USER" ]]; then
         read -r -p "Admin username [admin]: " ADMIN_USER
         ADMIN_USER="${ADMIN_USER:-admin}"
+    fi
+    if [[ -z "$LICENSE_KEY" ]]; then
+        read -r -p "Boron license key (BRN-XXXX-XXXX-XXXX-XXXX, blank to add it later): " LICENSE_KEY
     fi
     if [[ -z "$MAXMIND_LICENSE_KEY" ]]; then
         read -r -s -p "Optional MaxMind GeoLite2 license key (blank skips top-countries stats): " MAXMIND_LICENSE_KEY
@@ -1725,6 +1782,7 @@ Boron Panel installer
 Usage: sudo bash scripts/install.sh [OPTIONS]
 
   --profile NAME  Install minimal, standard, or full (default: full).
+  --license KEY   Boron license key; checked before anything is installed.
   --force         Continue on unsupported OS or detected software/port conflicts.
   --dry-run      Print every step without changing anything.
   --uninstall    Remove Boron services, code and config (keeps user data).
@@ -1733,7 +1791,7 @@ Usage: sudo bash scripts/install.sh [OPTIONS]
 Non-interactive install via env vars:
   FH_PANEL_DOMAIN, FH_LE_EMAIL, FH_ADMIN_USER, FH_ADMIN_PASSWORD,
   FH_SERVER_IP, FH_WEBMAIL_DOMAIN, FH_NONINTERACTIVE=1, FH_INSTALL_PROFILE,
-  FH_MAXMIND_LICENSE_KEY (optional,
+  FH_LICENSE_KEY, FH_MAXMIND_LICENSE_KEY (optional,
   see README.md "GeoLite2 setup")
 EOF
 }
@@ -1745,6 +1803,7 @@ parse_args() {
             --uninstall) UNINSTALL=true ;;
             --force)     FORCE=true ;;
             --profile)   shift; [[ $# -gt 0 ]] || die "--profile requires a value"; INSTALL_PROFILE="$1"; PROFILE_EXPLICIT=true ;;
+            --license)   shift; [[ $# -gt 0 ]] || die "--license requires a value"; LICENSE_KEY="$1" ;;
             -h|--help)   usage; exit 0 ;;
             *)           die "unknown option: $1 (try --help)" ;;
         esac
@@ -1774,6 +1833,7 @@ main() {
 
     preflight
     prompt_inputs
+    check_license_key
     validate_admin_bootstrap_input
 
     apt_update
@@ -1807,6 +1867,7 @@ main() {
     profile_has mail && setup_webmail
     profile_has fail2ban && bootstrap_security_services
     create_admin
+    activate_license
     profile_has geoip && setup_geoip
     seed_server_setup_wizard
 

@@ -36,6 +36,9 @@ api.interceptors.response.use(
       onUnauthorized()
     } else if (status === 503) {
       onMaintenance()
+    } else if (status === 402 && error.response?.data?.detail === 'license_required') {
+      // Administration is restricted until the server license is usable.
+      if (!window.location.pathname.startsWith(`${BASE_PATH}/license`)) window.location.assign(`${BASE_PATH}/license`)
     }
     return Promise.reject(normalizeError(error))
   },

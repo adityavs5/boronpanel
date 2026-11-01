@@ -376,6 +376,15 @@ class Settings:
     filebrowser_header: str = "X-Fb-User"
     filebrowser_brand: str = "Boron Files"
 
+    # Licensing (shared/license.py, daemon/license_client.py). The key file is
+    # root-only; the signed document and install ID are readable by the API.
+    license_server_url: str = "https://license.boronpanel.com"
+    license_key_path: str = "/etc/boron/license.key"
+    license_document_path: str = "/etc/boron/license.json"
+    license_install_id_path: str = "/etc/boron/install-id"
+    license_state_path: str = "/var/lib/boron/license-state.json"
+    license_enforcement: bool = True
+
     # Panel update system. update_github_repo ("owner/repo") is the ONLY
     # place release downloads can come from -- empty means update checks are
     # unconfigured and the whole feature reports "not configured" rather

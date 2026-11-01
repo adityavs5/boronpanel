@@ -30,7 +30,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import cgroups, handlers_domain, notifications, ols, sysops
+from daemon import cgroups, handlers_domain, license_client, notifications, ols, sysops
 
 logger = logging.getLogger("borond.account")
 
@@ -175,6 +175,8 @@ def create_account(params: dict) -> dict:
     # -- validated up front for the same reason the password is (a rejected
     # bad email must never leave an orphaned Linux user behind).
     email = validate_email_address(params["email"]) if params.get("email") else None
+    # Checked before any system change, like the validations above.
+    license_client.require_account_capacity()
 
     with write_session() as session:
         existing = session.scalar(select(Account).where(Account.username == username))

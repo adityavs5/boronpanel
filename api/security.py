@@ -156,6 +156,20 @@ def enforce_listener_role(identity,connection):
         raise HTTPException(status_code=403,detail=f'Use the {role} panel on port {expected}.')
 
 
+def enforce_license(identity: Identity, request: Request) -> None:
+    """Restrict administration, not hosting, when the panel license is unusable.
+
+    Administrators (including while impersonating a customer) keep access to
+    the license page, sign-in and branding so they can always fix it.
+    Customers and resellers are never affected.
+    """
+    if identity.role != "admin" and not identity.is_impersonating:
+        return
+    from shared import license as license_state
+    if not license_state.admin_path_allowed(request.url.path):
+        raise HTTPException(status_code=402, detail="license_required")
+
+
 def get_identity(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -172,6 +186,7 @@ def get_identity(
             if identity.token_scope == 'read-only' and request.method not in ('GET', 'HEAD', 'OPTIONS'):
                 raise HTTPException(status_code=403, detail='This API token is read-only')
             enforce_listener_role(identity,request)
+            enforce_license(identity, request)
             identity.ip = client_ip
             # Run A feature 7: let the access-log middleware name the user
             # without repeating this resolution (it runs outside every
@@ -185,6 +200,7 @@ def get_identity(
         if identity is not None:
             require_cookie_write_origin(request)
             enforce_listener_role(identity,request)
+            enforce_license(identity, request)
             identity.ip = client_ip
             request.state.identity = identity
             return identity

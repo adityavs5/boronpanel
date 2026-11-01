@@ -14,7 +14,8 @@ import pytest
 # encryption key into /etc/boron (or a device such as /dev/null).
 _test_config = tempfile.TemporaryDirectory(prefix="boron-test-config-")
 _test_root = Path(_test_config.name)
-(_test_root / "boron.toml").write_text("")
+# License enforcement is exercised explicitly by tests/test_license_panel.py.
+(_test_root / "boron.toml").write_text("license_enforcement = false\n")
 (_test_root / "secrets.env").write_text(
     "SESSION_SECRET=" + secrets.token_hex(32) + "\n"
     "APP_ENV_KEY=" + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode() + "\n"

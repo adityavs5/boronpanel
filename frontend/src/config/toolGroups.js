@@ -52,7 +52,7 @@ const labels = {
   '/resellers': 'Reseller Management',
   '/accounts/new': 'Create account', '/administrators': 'Administrators',
   '/software/node-apps': 'Node.js Applications', '/software/python-apps': 'Python Applications',
-  '/updates': 'Panel Updates', '/appearance': 'Change Style',
+  '/updates': 'Panel Updates', '/license': 'License', '/appearance': 'Change Style',
 }
 const tones = ['sky', 'green', 'amber', 'violet', 'rose', 'teal']
 

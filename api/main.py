@@ -47,7 +47,7 @@ from shared.request_context import (
 from api import logsetup, ratelimit
 from api.error_context import error_response
 from api.security import Identity, get_identity, require_admin
-from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, diagnostics, disktree, dns, dnscluster, dnssetup, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, isolation, logs_router, lscache_router, mail, mailqueue, maintenance, malware, metrics, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, resources, retention, server_setup, services, session_security, site_health, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, stack_manager, staging, tasks, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
+from api.routers import panel_config, account_backups, accounts, adminlogs, apps, auditlog, auth, backups, bandwidth, branding, bulkops, cloudflare, cpanel_import, cron, databases, dbmonitor, devtools, diagnostics, disktree, dns, dnscluster, dnssetup, domains, email, email_extras, errorpages, fail2ban, fileauth, filebrowser, firewall, forwarding, ftp, git, health, hotlink, identity_admin, imapsync, impersonation, ipban, ipblock, ipmanager, ipwhitelist, isolation, license, logs_router, lscache_router, mail, mailqueue, maintenance, malware, metrics, monitoring, nameservers, nodeapps, notes, notifications, olsadmin, onboarding, parked, php_functions, php_ini, plans, pma, portable_archive, processes, pythonapps, redirects, redis_router, resellers, resources, retention, server_setup, services, session_security, site_health, site_templates, sitestats, slowquery, spamfilter, sshkeys, ssl_router, stack_manager, staging, tasks, terminal, tokens, twofactor, update, usage, usage_alerts, waf, webhooks, wildcard, wordpress
 
 
 def _webmail_form_action_source() -> str | None:
@@ -456,6 +456,7 @@ app.include_router(dnscluster.admin_router)
 app.include_router(dnscluster.peer_router)
 app.include_router(dnssetup.router)
 app.include_router(server_setup.router)
+app.include_router(license.router)
 app.include_router(resources.router)
 # Phase 8 feature 3/4: parked domains + whole-domain forwarding.
 app.include_router(parked.api_router)

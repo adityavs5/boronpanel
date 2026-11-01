@@ -1,0 +1,2 @@
+# Server-side code that must never ship inside panel packages (git archive).
+licensing/** export-ignore
