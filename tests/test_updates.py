@@ -1,9 +1,9 @@
 """daemon/updates.py -- update check, download safety, tarball validation,
 job guards, rollback candidacy, cleanup safety.
 
-All GitHub traffic goes through updates._transport (httpx.MockTransport);
-nothing here touches the network, /opt, or systemd. Filesystem work happens
-under tmp_path via monkeypatched settings.
+All license-server and download traffic goes through updates._transport
+(httpx.MockTransport); nothing here touches the network, /opt, or systemd.
+Filesystem work happens under tmp_path via monkeypatched settings.
 """
 from __future__ import annotations
 
@@ -33,28 +33,68 @@ _TEST_SIGNER = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
 _TEST_PUBLIC_KEY = _TEST_SIGNER.public_key().public_bytes(
     serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
+UPDATE_SERVER_HOST = "license.boronpanel.com"
+DOWNLOAD_HOST = "download.boronpanel.com"
+DOWNLOAD_PREFIX = "https://download.boronpanel.com/protected/"
+TEST_LICENSE_KEY = "BRN-ABCD-EFGH-JKLM-NPQR"
+TEST_INSTALL_ID = "0b6c2c3e-4f5a-4d7e-9b1a-2c3d4e5f6a7b"
+LINK_QUERY = "md5=c2VjcmV0LXRva2Vu&expires=4102444800"
+
+# The archive's own release-metadata.json and the separately signed
+# metadata asset are the same file in a real release (scripts/release.sh).
+_RELEASE_METADATA = json.dumps({
+    "format": 1,
+    "minimum_source_version": "0.0.0",
+    "maximum_source_version": None,
+    "data_plane_reloads": [],
+    "control_plane_restarts": ["boron-provisiond.service", "boron-api.service"],
+    "runtime_rewrites": [],
+})
+
 
 # --- helpers ---------------------------------------------------------------------
 
 
-def _release_json(version="1.0.1", repo="acme/boron", assets=True, tag=None):
-    tag = tag or f"v{version}"
-    prefix = f"https://github.com/{repo}/releases/download/{tag}"
+def _asset_url(version: str, name: str) -> str:
+    return f"{DOWNLOAD_PREFIX}releases/{version}/{name}?{LINK_QUERY}"
+
+
+def _update_answer(version="1.0.1", channel="stable", **overrides) -> dict:
+    """A POST /v1/updates 200 answer, as the license server sends it."""
     data = {
-        "tag_name": tag,
-        "html_url": f"https://github.com/{repo}/releases/tag/{tag}",
-        "assets": [],
+        "format": 1,
+        "channel": channel,
+        "version": version,
+        "published_at": "2026-11-01T18:00:00Z",
+        "changelog": f"## {version}\n\n- Fixes a thing",
+        "archive_size": 1234,
+        "urls": {kind: _asset_url(version, name.format(version=version))
+                 for kind, name in updates._RELEASE_FILES.items()},
+        "links_expire_at": "2026-11-01T18:15:00Z",
     }
-    if assets:
-        data["assets"] = [
-            {"name": f"boron-{version}.tar.gz",
-             "browser_download_url": f"{prefix}/boron-{version}.tar.gz"},
-            {"name": f"boron-{version}.sha256",
-             "browser_download_url": f"{prefix}/boron-{version}.sha256"},
-            {"name": f"boron-{version}.tar.gz.sig",
-             "browser_download_url": f"{prefix}/boron-{version}.tar.gz.sig"},
-        ]
+    data.update(overrides)
     return data
+
+
+def _use_license(monkeypatch, key: str | None = TEST_LICENSE_KEY) -> None:
+    monkeypatch.setattr(updates.license_client, "read_key", lambda: key)
+    monkeypatch.setattr(updates.license_client, "install_id", lambda: TEST_INSTALL_ID)
+    monkeypatch.setattr(updates, "load_test_update_override", lambda: None)
+
+
+def _serve_update_server(monkeypatch, respond, requests: list | None = None) -> None:
+    """MockTransport answering only POST /v1/updates with respond(body)."""
+    _use_license(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == UPDATE_SERVER_HOST
+        assert request.method == "POST" and request.url.path == "/v1/updates"
+        body = json.loads(request.content)
+        if requests is not None:
+            requests.append(body)
+        return respond(body)
+
+    monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
 
 
 def _make_tarball_bytes(version="1.0.1", members_extra=None) -> bytes:
@@ -67,14 +107,7 @@ def _make_tarball_bytes(version="1.0.1", members_extra=None) -> bytes:
         f"{prefix}/requirements.txt": "httpx\n",
         f"{prefix}/daemon/server.py": "# stub\n",
         f"{prefix}/api/main.py": "# stub\n",
-        f"{prefix}/release-metadata.json": json.dumps({
-            "format": 1,
-            "minimum_source_version": "0.0.0",
-            "maximum_source_version": None,
-            "data_plane_reloads": [],
-            "control_plane_restarts": ["boron-provisiond.service", "boron-api.service"],
-            "runtime_rewrites": [],
-        }),
+        f"{prefix}/release-metadata.json": _RELEASE_METADATA,
         f"{prefix}/schema-compat.json": json.dumps({
             "schema_version": CURRENT_SCHEMA_VERSION,
             "minimum_supported_schema": 0,
@@ -92,41 +125,55 @@ def _make_tarball_bytes(version="1.0.1", members_extra=None) -> bytes:
     return buf.getvalue()
 
 
-def _mock_github(monkeypatch, version="1.0.1", repo="acme/boron",
-                 tarball: bytes | None = None, sha256_text: str | None = None,
-                 counter: dict | None = None, redirect_host="objects.githubusercontent.com",
-                 signature: bytes | None = None):
-    """MockTransport speaking the whole flow: releases API -> 302 from
-    github.com -> content from the CDN host."""
+def _mock_update_server(monkeypatch, version="1.0.1",
+                        tarball: bytes | None = None, sha256_text: str | None = None,
+                        counter: dict | None = None, signature: bytes | None = None,
+                        channel="stable", answer: dict | None = None,
+                        requests: list | None = None, metadata: bytes | None = None):
+    """MockTransport speaking the whole flow: POST /v1/updates on the
+    license server -> signed short-lived links on the download host. A
+    licensed panel is simulated; counter["calls"] counts update-server
+    requests and counter["downloads"] download-host requests."""
     tarball = tarball if tarball is not None else _make_tarball_bytes(version)
     sha = sha256_text if sha256_text is not None else (
         hashlib.sha256(tarball).hexdigest() + f"  boron-{version}.tar.gz\n")
     signature = signature if signature is not None else _TEST_SIGNER.sign(
         signed_message(version, hashlib.sha256(tarball).digest()))
+    metadata = metadata if metadata is not None else _RELEASE_METADATA.encode()
     monkeypatch.setattr(updates, "verify_signature", lambda version, digest, sig:
                         verify_signature(version, digest, sig, _TEST_PUBLIC_KEY))
+    _use_license(monkeypatch)
+    payload = answer if answer is not None else _update_answer(
+        version, channel, archive_size=len(tarball))
+    files = {
+        f"boron-{version}.tar.gz": tarball,
+        f"boron-{version}.sha256": sha.encode(),
+        f"boron-{version}.tar.gz.sig": signature,
+        f"boron-{version}.metadata.json": metadata,
+        f"boron-{version}.metadata.json.sig": _TEST_SIGNER.sign(
+            signed_message(version, hashlib.sha256(metadata).digest())),
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if counter is not None:
-            counter["calls"] = counter.get("calls", 0) + 1
-        url = str(request.url)
         host = request.url.host
-        if host == "api.github.com":
-            return httpx.Response(200, json=_release_json(version, repo))
-        if host == "github.com":
-            name = url.rsplit("/", 1)[-1]
-            return httpx.Response(302, headers={
-                "location": f"https://{redirect_host}/x/{name}"})
-        if host == redirect_host:
-            if url.endswith(".sha256"):
-                return httpx.Response(200, content=sha.encode())
-            if url.endswith(".sig"):
-                return httpx.Response(200, content=signature)
-            return httpx.Response(200, content=tarball)
+        if host == UPDATE_SERVER_HOST:
+            assert request.method == "POST" and request.url.path == "/v1/updates"
+            if counter is not None:
+                counter["calls"] = counter.get("calls", 0) + 1
+            body = json.loads(request.content)
+            if requests is not None:
+                requests.append(body)
+            return httpx.Response(200, json=payload)
+        if host == DOWNLOAD_HOST:
+            if counter is not None:
+                counter["downloads"] = counter.get("downloads", 0) + 1
+            assert request.url.query.decode() == LINK_QUERY
+            name = request.url.path.rsplit("/", 1)[-1]
+            if request.url.path == f"/protected/releases/{version}/{name}" and name in files:
+                return httpx.Response(200, content=files[name])
         return httpx.Response(404)
 
     monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "update_github_repo", repo)
     return tarball
 
 
@@ -255,26 +302,48 @@ def test_is_newer_comparisons():
 # --- update.check --------------------------------------------------------------------
 
 
-def test_check_unconfigured_reports_not_configured(isolated_db, monkeypatch):
-    monkeypatch.setattr(settings, "update_github_repo", "")
-    out = updates.check({})
+def test_check_without_license_key_reports_license_required(isolated_db, monkeypatch):
+    _use_license(monkeypatch, key=None)
+    monkeypatch.setattr(updates, "_transport", httpx.MockTransport(
+        lambda request: pytest.fail("no request may be sent without a license key")))
+    out = updates.check({"force": True})
     assert out["configured"] is False
+    assert out["license_required"] is True
+    assert "license" in out["message"].lower() and "Admin > License" in out["message"]
     assert out["update_available"] is False
+    assert out["error"] is None
     assert out["current_version"] == updates.BORON_VERSION
+    with pytest.raises(ValidationError, match="active Boron license"):
+        updates._fetch_release()
 
 
 def test_check_fetches_compares_and_caches(isolated_db, monkeypatch):
-    counter = {}
-    _mock_github(monkeypatch, version="99.0.0", counter=counter)
+    counter, requests = {}, []
+    _mock_update_server(monkeypatch, version="99.0.0", counter=counter, requests=requests)
     out = updates.check({})
     assert out["configured"] and out["update_available"]
+    assert out["license_required"] is False
     assert out["latest_version"] == "99.0.0"
-    assert out["changelog_url"].startswith("https://github.com/")
+    assert out["changelog"] == "## 99.0.0\n\n- Fixes a thing"
+    assert out["changelog_url"] == updates.RELEASE_NOTES_URL
+    assert out["published_at"] == "2026-11-01T18:00:00Z"
+    assert out["release_metadata"]["signed"] is True
+    assert "release_notes" not in out["release_metadata"]
     assert counter["calls"] == 1
+    assert requests == [{
+        "license_key": TEST_LICENSE_KEY, "install_id": TEST_INSTALL_ID,
+        "channel": "stable", "current_version": updates.BORON_VERSION,
+    }]
+    # Download tokens are never persisted.
+    from shared.db import write_session
+    with write_session() as session:
+        state = session.get(UpdateState, 1)
+        assert "md5=" not in (state.tarball_url or "") and "md5=" not in (state.checksum_url or "")
 
     # Second call inside the cache window: served from UpdateState, no HTTP.
     out2 = updates.check({})
     assert out2["latest_version"] == "99.0.0"
+    assert out2["changelog"] == out["changelog"]
     assert counter["calls"] == 1
 
     # force=True bypasses the cache.
@@ -283,123 +352,243 @@ def test_check_fetches_compares_and_caches(isolated_db, monkeypatch):
 
 
 def test_check_not_available_when_older_or_equal(isolated_db, monkeypatch):
-    _mock_github(monkeypatch, version=updates.BORON_VERSION)
+    _mock_update_server(monkeypatch, version=updates.BORON_VERSION)
     out = updates.check({"force": True})
     assert out["update_available"] is False
 
 
 def test_check_error_is_cached_and_surfaced(isolated_db, monkeypatch):
-    def handler(request):
-        handler.calls = getattr(handler, "calls", 0) + 1
-        return httpx.Response(404)
-
-    monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
+    calls = []
+    _serve_update_server(monkeypatch, lambda body: (calls.append(body), httpx.Response(500))[1])
     out = updates.check({})
-    assert out["error"] and "no release found" in out["error"]
+    assert out["error"] and "HTTP 500" in out["error"]
     assert out["update_available"] is False
-    # A failed check is cached too -- dashboard polling must not hammer GitHub.
+    # A failed check is cached too -- dashboard polling must not hammer the server.
     updates.check({})
-    assert handler.calls == 1
+    assert len(calls) == 1
 
 
-def test_check_refuses_assets_outside_github_releases(isolated_db, monkeypatch):
-    def handler(request):
-        data = _release_json("1.0.1")
-        data["assets"][0]["browser_download_url"] = "https://evil.example.com/boron-1.0.1.tar.gz"
-        return httpx.Response(200, json=data)
-
-    monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
+def test_check_reports_unknown_license_key(isolated_db, monkeypatch):
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(
+        403, json={"error": "invalid_license"}))
     out = updates.check({"force": True})
-    assert "refusing release asset URL" in (out["error"] or "")
+    assert out["configured"] is True
+    assert "did not recognise" in out["error"]
     assert out["latest_version"] is None
 
 
-@pytest.mark.parametrize("field", ["draft", "prerelease"])
-def test_update_discovery_refuses_unpromoted_releases(isolated_db, monkeypatch, field):
-    def handler(request):
-        data = _release_json("99.0.0")
-        data[field] = True
-        return httpx.Response(200, json=data)
+@pytest.mark.parametrize("reason,text", [
+    ("suspended", "suspended"),
+    ("cancelled", "cancelled"),
+    ("expired", "expired"),
+    ("ip_mismatch", "different server IP address"),
+    ("not_activated", "not been activated"),
+    ("something_new", "not active"),
+])
+def test_check_reports_license_not_usable(isolated_db, monkeypatch, reason, text):
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(
+        403, json={"error": "license_not_usable", "reason": reason}))
+    out = updates.check({"force": True})
+    assert out["error"].startswith("Updates are unavailable because")
+    assert text in out["error"]
+    assert out["update_available"] is False
+    assert out["release_availability"] is None
 
-    monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
+
+def test_check_reports_channel_not_allowed(isolated_db, monkeypatch):
+    monkeypatch.setattr(settings, "update_channel", "beta")
+    requests = []
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(
+        403, json={"error": "channel_not_allowed"}), requests)
+    out = updates.check({"force": True})
+    assert requests[0]["channel"] == "beta"
+    assert "does not include beta releases" in out["error"]
+    assert out["latest_version"] is None
+
+
+def test_check_no_release_is_informational(isolated_db, monkeypatch):
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(404, json={"error": "no_release"}))
+    out = updates.check({"force": True})
+    assert out["error"] is None
+    assert out["release_availability"] == "unpublished"
+    assert out["latest_version"] is None
+    with pytest.raises(updates.NoPublishedRelease):
+        updates._fetch_release()
+
+
+def test_check_reports_unconfigured_update_service(isolated_db, monkeypatch):
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(
+        503, json={"error": "updates_unavailable"}))
+    out = updates.check({"force": True})
+    assert "temporarily unavailable" in out["error"]
+
+
+def test_update_server_redirect_is_refused(isolated_db, monkeypatch):
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(
+        307, headers={"location": "https://evil.example.com/v1/updates"}))
+    with pytest.raises(ValidationError, match="redirect"):
+        updates._fetch_release()
+
+
+def test_update_server_must_be_https(isolated_db, monkeypatch):
+    _serve_update_server(monkeypatch, lambda body: pytest.fail("must not be contacted"))
+    monkeypatch.setattr(settings, "update_server_url", "http://license.boronpanel.com")
+    with pytest.raises(ValidationError, match="https"):
+        updates._fetch_release()
+
+
+def test_exact_version_request_and_mismatch(isolated_db, monkeypatch):
+    requests = []
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(
+        200, json=_update_answer("1.0.2")), requests)
+    with pytest.raises(ValidationError, match="instead of the requested 1.0.1"):
+        updates._fetch_release(tag="v1.0.1")
+    assert requests[0]["version"] == "1.0.1"
+
+
+def test_check_refuses_answer_for_another_tier(isolated_db, monkeypatch):
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(
+        200, json=_update_answer("99.0.0", channel="beta")))
     out = updates.check({"force": True})
     assert out["latest_version"] is None
-    assert "not eligible" in (out["error"] or "")
+    assert "different tier" in out["error"]
+
+
+def test_check_refuses_assets_outside_download_prefix(isolated_db, monkeypatch):
+    answer = _update_answer("1.0.1")
+    answer["urls"]["archive"] = "https://evil.example.com/protected/releases/1.0.1/boron-1.0.1.tar.gz"
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(200, json=answer))
+    out = updates.check({"force": True})
+    assert "refusing download outside" in (out["error"] or "")
+    assert out["latest_version"] is None
+
+
+@pytest.mark.parametrize("url", [
+    # Public tree on the right host, wrong release, wrong file, traversal.
+    "https://download.boronpanel.com/releases/1.0.1/boron-1.0.1.tar.gz",
+    f"{DOWNLOAD_PREFIX}releases/1.0.0/boron-1.0.1.tar.gz?{LINK_QUERY}",
+    f"{DOWNLOAD_PREFIX}releases/1.0.1/other.tar.gz?{LINK_QUERY}",
+    f"{DOWNLOAD_PREFIX}releases/1.0.1/../1.0.0/boron-1.0.1.tar.gz",
+    "http://download.boronpanel.com/protected/releases/1.0.1/boron-1.0.1.tar.gz",
+])
+def test_release_links_must_name_exactly_this_release(isolated_db, monkeypatch, url):
+    answer = _update_answer("1.0.1")
+    answer["urls"]["archive"] = url
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(200, json=answer))
+    with pytest.raises(ValidationError, match="refusing"):
+        updates._fetch_release()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("format", 2), ("archive_size", 0), ("archive_size", "12"), ("urls", None),
+    ("version", "1.0"),
+])
+def test_malformed_update_answer_is_refused(isolated_db, monkeypatch, field, value):
+    answer = _update_answer("1.0.1")
+    answer[field] = value
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(200, json=answer))
+    with pytest.raises(ValidationError):
+        updates._fetch_release()
+
+
+def test_missing_metadata_link_is_refused(isolated_db, monkeypatch):
+    answer = _update_answer("1.0.1")
+    del answer["urls"]["metadata_signature"]
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(200, json=answer))
+    with pytest.raises(ValidationError, match="missing its boron-1.0.1.metadata.json.sig link"):
+        updates._fetch_release()
+
+
+def test_github_settings_are_ignored(isolated_db, monkeypatch):
+    """An old boron.toml's update_github_repo must not steer anything."""
+    from shared.config import settings_from_mapping
+    loaded = settings_from_mapping({"update_github_repo": "acme/boron"})
+    assert not loaded.unknown_config
+    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
+    counter = {}
+    _mock_update_server(monkeypatch, version="99.0.0", counter=counter)
+    assert updates.check({"force": True})["latest_version"] == "99.0.0"
+    assert counter["calls"] == 1
+    source = Path(updates.__file__).read_text()
+    assert "github" not in source.lower()
 
 
 # --- download safety ------------------------------------------------------------------
 
 
-def test_safe_download_follows_github_redirect_only(update_env, monkeypatch, tmp_path):
-    tarball = _mock_github(monkeypatch)
+def test_safe_download_fetches_from_download_prefix(update_env, monkeypatch, tmp_path):
+    tarball = _mock_update_server(monkeypatch)
     dest = tmp_path / "out.tar.gz"
-    n = updates._safe_download(
-        "https://github.com/acme/boron/releases/download/v1.0.1/boron-1.0.1.tar.gz",
-        str(dest), max_bytes=10_000_000)
+    n = updates._safe_download(_asset_url("1.0.1", "boron-1.0.1.tar.gz"),
+                               str(dest), max_bytes=10_000_000)
     assert n == len(tarball) and dest.read_bytes() == tarball
 
 
-def test_safe_download_refuses_first_hop_outside_release_prefix(update_env, monkeypatch):
-    _mock_github(monkeypatch)
-    with pytest.raises(ValidationError, match="refusing download outside"):
-        updates._safe_download("https://github.com/acme/boron/archive/main.tar.gz",
+def test_safe_download_refuses_url_outside_prefix(update_env, monkeypatch):
+    _mock_update_server(monkeypatch)
+    for url in (
+        "https://download.boronpanel.com/releases/1.0.1/boron-1.0.1.tar.gz",
+        "https://evil.example.com/protected/releases/1.0.1/boron-1.0.1.tar.gz",
+        "https://download.boronpanel.com.evil.example/protected/releases/x.tar.gz",
+        "https://user@download.boronpanel.com/protected/releases/x.tar.gz",
+    ):
+        with pytest.raises(ValidationError, match="refusing download outside"):
+            updates._safe_download(url, "/dev/null", max_bytes=1000)
+    with pytest.raises(ValidationError, match="non-https"):
+        updates._safe_download("http://download.boronpanel.com/protected/releases/x.tar.gz",
                                "/dev/null", max_bytes=1000)
-    with pytest.raises(ValidationError, match="refusing"):
-        updates._safe_download("https://evil.example.com/acme/boron/releases/download/x.tar.gz",
+    with pytest.raises(ValidationError, match="relative path"):
+        updates._safe_download(f"{DOWNLOAD_PREFIX}releases/%2e%2e/%2e%2e/install.sh",
                                "/dev/null", max_bytes=1000)
 
 
-def test_safe_download_refuses_redirect_to_non_github_host(update_env, monkeypatch, tmp_path):
-    _mock_github(monkeypatch, redirect_host="evil.example.com")
-    with pytest.raises(ValidationError, match="non-GitHub host"):
-        updates._safe_download(
-            "https://github.com/acme/boron/releases/download/v1.0.1/boron-1.0.1.tar.gz",
-            str(tmp_path / "x"), max_bytes=10_000_000)
-
-
-def test_safe_download_refuses_http_redirect(update_env, monkeypatch, tmp_path):
+def test_safe_download_refuses_redirect(update_env, monkeypatch, tmp_path):
     def handler(request):
-        if request.url.host == "github.com":
-            return httpx.Response(302, headers={"location": "http://objects.githubusercontent.com/x"})
-        return httpx.Response(200, content=b"x")
+        if request.url.path.endswith(".tar.gz"):
+            return httpx.Response(302, headers={
+                "location": f"{DOWNLOAD_PREFIX}releases/1.0.1/other.tar.gz"})
+        return pytest.fail("the redirect target must never be requested")
 
     monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
-    with pytest.raises(ValidationError, match="non-https"):
-        updates._safe_download(
-            "https://github.com/acme/boron/releases/download/v1.0.1/boron-1.0.1.tar.gz",
-            str(tmp_path / "x"), max_bytes=1000)
+    with pytest.raises(ValidationError, match="refusing redirect"):
+        updates._safe_download(_asset_url("1.0.1", "boron-1.0.1.tar.gz"),
+                               str(tmp_path / "x"), max_bytes=1000)
 
 
 def test_safe_download_enforces_size_cap(update_env, monkeypatch, tmp_path):
-    _mock_github(monkeypatch, tarball=b"A" * 5000)
+    _mock_update_server(monkeypatch, tarball=b"A" * 5000)
     with pytest.raises(ValidationError, match="exceeds"):
-        updates._safe_download(
-            "https://github.com/acme/boron/releases/download/v1.0.1/boron-1.0.1.tar.gz",
-            str(tmp_path / "x"), max_bytes=1024)
+        updates._safe_download(_asset_url("1.0.1", "boron-1.0.1.tar.gz"),
+                               str(tmp_path / "x"), max_bytes=1024)
 
 
-def test_safe_download_redirect_loop_capped(update_env, monkeypatch, tmp_path):
-    def handler(request):
-        return httpx.Response(302, headers={
-            "location": "https://github.com/acme/boron/releases/download/v1/loop.tar.gz"})
+def test_safe_download_expired_link_hides_token(update_env, monkeypatch, tmp_path):
+    monkeypatch.setattr(updates, "_transport", httpx.MockTransport(
+        lambda request: httpx.Response(403)))
+    with pytest.raises(ValidationError, match="may have expired") as excinfo:
+        updates._safe_download(_asset_url("1.0.1", "boron-1.0.1.tar.gz"),
+                               str(tmp_path / "x"), max_bytes=1000)
+    assert "md5" not in str(excinfo.value) and "c2VjcmV0" not in str(excinfo.value)
 
-    monkeypatch.setattr(updates, "_transport", httpx.MockTransport(handler))
-    monkeypatch.setattr(settings, "update_github_repo", "acme/boron")
-    with pytest.raises(ValidationError, match="too many redirects"):
-        updates._safe_download(
-            "https://github.com/acme/boron/releases/download/v1/loop.tar.gz",
-            str(tmp_path / "x"), max_bytes=1000)
+
+def test_download_step_log_never_contains_link_token(update_env, monkeypatch):
+    requests = []
+    _mock_update_server(monkeypatch, requests=requests)
+    job_id = _make_job()
+    updates._download_and_verify(job_id, "1.0.1")
+    # The exact version is re-requested with fresh links before downloading.
+    assert requests[-1]["version"] == "1.0.1"
+    steps = json.dumps(_get_job(job_id)["steps"])
+    assert "md5=" not in steps and "c2VjcmV0" not in steps
+    log = (update_env["tmp"] / "log" / "updates.log").read_text()
+    assert "md5=" not in log
 
 
 # --- checksum gate (goal: mismatch -> update aborted) ------------------------------------
 
 
 def test_checksum_mismatch_aborts_update(update_env, monkeypatch):
-    _mock_github(monkeypatch, sha256_text="0" * 64 + "  boron-1.0.1.tar.gz\n")
+    _mock_update_server(monkeypatch, sha256_text="0" * 64 + "  boron-1.0.1.tar.gz\n")
     updates.check({"force": True})  # populate cached asset URLs
     job_id = _make_job()
     with pytest.raises(updates._StepFailed):
@@ -412,7 +601,7 @@ def test_checksum_mismatch_aborts_update(update_env, monkeypatch):
 
 
 def test_update_refuses_writable_staging_directory(update_env, monkeypatch):
-    _mock_github(monkeypatch)
+    _mock_update_server(monkeypatch)
     staging = update_env["tmp"] / "dl"
     staging.mkdir(mode=0o700)
     staging.chmod(0o777)
@@ -423,7 +612,7 @@ def test_update_refuses_writable_staging_directory(update_env, monkeypatch):
 
 
 def test_checksum_malformed_asset_aborts(update_env, monkeypatch):
-    _mock_github(monkeypatch, sha256_text="not a checksum at all\n")
+    _mock_update_server(monkeypatch, sha256_text="not a checksum at all\n")
     updates.check({"force": True})
     job_id = _make_job()
     with pytest.raises(updates._StepFailed):
@@ -432,7 +621,7 @@ def test_checksum_malformed_asset_aborts(update_env, monkeypatch):
 
 
 def test_checksum_match_passes(update_env, monkeypatch):
-    tarball = _mock_github(monkeypatch)
+    tarball = _mock_update_server(monkeypatch)
     updates.check({"force": True})
     job_id = _make_job()
     path = updates._download_and_verify(job_id, "1.0.1")
@@ -441,7 +630,7 @@ def test_checksum_match_passes(update_env, monkeypatch):
 
 
 def test_bad_publisher_signature_aborts_before_extraction(update_env, monkeypatch):
-    _mock_github(monkeypatch, signature=b"0" * 64)
+    _mock_update_server(monkeypatch, signature=b"0" * 64)
     job_id = _make_job()
     with pytest.raises(updates._StepFailed):
         updates._download_and_verify(job_id, "1.0.1")
@@ -450,7 +639,7 @@ def test_bad_publisher_signature_aborts_before_extraction(update_env, monkeypatc
 
 
 def test_extraction_rechecks_signature_on_the_open_archive(update_env, monkeypatch):
-    _mock_github(monkeypatch)
+    _mock_update_server(monkeypatch)
     job_id = _make_job()
     path = updates._download_and_verify(job_id, "1.0.1")
     # Simulate a pathname replacement after download verification. The
@@ -464,7 +653,7 @@ def test_extraction_rechecks_signature_on_the_open_archive(update_env, monkeypat
 
 
 def test_signed_archive_extracts_from_verified_handle(update_env, monkeypatch):
-    _mock_github(monkeypatch)
+    _mock_update_server(monkeypatch)
     job_id = _make_job()
     path = updates._download_and_verify(job_id, "1.0.1")
     target = updates._extract_staged(job_id, path, "1.0.1", signature_file=path + ".sig")
@@ -599,27 +788,27 @@ def test_extract_refuses_to_overwrite_live_target(update_env, tmp_path):
 # --- job guards -----------------------------------------------------------------------
 
 
-def test_start_update_requires_configured_repo(isolated_db, monkeypatch):
-    monkeypatch.setattr(settings, "update_github_repo", "")
-    with pytest.raises(ValidationError, match="not configured"):
+def test_start_update_requires_license(isolated_db, monkeypatch):
+    _use_license(monkeypatch, key=None)
+    with pytest.raises(ValidationError, match="require an active Boron license"):
         updates.start_update({"initiated_by": "admin"})
 
 
 def test_start_update_refuses_non_newer_target(isolated_db, monkeypatch):
-    _mock_github(monkeypatch, version=updates.BORON_VERSION)
+    _mock_update_server(monkeypatch, version=updates.BORON_VERSION)
     with pytest.raises(ValidationError, match="not newer"):
         updates.start_update({"initiated_by": "admin"})
 
 
 def test_start_update_refuses_concurrent_job(isolated_db, monkeypatch):
-    _mock_github(monkeypatch, version="99.0.0")
+    _mock_update_server(monkeypatch, version="99.0.0")
     _make_job(status="running", to_version="99.0.0")
     with pytest.raises(ValidationError, match="already"):
         updates.start_update({"initiated_by": "admin"})
 
 
 def test_start_update_queues_job(isolated_db, monkeypatch):
-    _mock_github(monkeypatch, version="99.0.0")
+    _mock_update_server(monkeypatch, version="99.0.0")
     # Keep the worker from actually running the pipeline.
     monkeypatch.setattr(updates._executor, "submit", lambda *a, **k: None)
     out = updates.start_update({"initiated_by": "admin"})
@@ -743,7 +932,7 @@ def test_history_newest_first_with_duration(isolated_db):
 
 
 def test_status_shape(update_env, monkeypatch):
-    _mock_github(monkeypatch, version="99.0.0")
+    _mock_update_server(monkeypatch, version="99.0.0")
     out = updates.get_status({})
     assert out["update_available"] is True
     assert out["active_job"] is None
@@ -768,17 +957,19 @@ def test_notify_emails_once_per_release(update_env, monkeypatch):
     from daemon import monitoring, notifications
     from shared.db import write_session
 
-    _mock_github(monkeypatch, version="99.0.0")
+    _mock_update_server(monkeypatch, version="99.0.0")
     with write_session() as session:
         notifications._get_settings(session).sender_address = "panel@example.com"
         monitoring._get_settings(session).admin_email = "admin@example.com"
 
     sent = []
     monkeypatch.setattr(notifications, "_send_email",
-                        lambda s, r, subj, body: sent.append((r, subj)))
+                        lambda s, r, subj, body: sent.append((r, subj, body)))
     out = updates.notify_if_update_available()
     assert out["notified"] is True
     assert sent and "99.0.0" in sent[0][1]
+    assert "- Fixes a thing" in sent[0][2]
+    assert updates.RELEASE_NOTES_URL in sent[0][2] and "md5=" not in sent[0][2]
 
     out2 = updates.notify_if_update_available()
     assert out2["notified"] is False  # deduped per release
@@ -788,7 +979,7 @@ def test_notify_emails_once_per_release(update_env, monkeypatch):
 def test_notify_skips_without_recipient(update_env, monkeypatch):
     from daemon import notifications
 
-    _mock_github(monkeypatch, version="99.0.0")
+    _mock_update_server(monkeypatch, version="99.0.0")
     sent = []
     monkeypatch.setattr(notifications, "_send_email",
                         lambda *a: sent.append(a))
@@ -836,7 +1027,7 @@ def test_full_update_job_pipeline(update_env, monkeypatch):
     # A release/version bump must not make the fixed 1.0.1 fixture cease to be
     # newer than the version under test.
     monkeypatch.setattr(updates, "BORON_VERSION", "1.0.0")
-    _mock_github(monkeypatch, version="1.0.1")
+    _mock_update_server(monkeypatch, version="1.0.1")
     monkeypatch.setattr(updates.diagnostics, "run_all", lambda _params: {"checks": [
         {"id": "database", "status": "pass", "critical": True, "explanation": "ok"},
         {"id": "root_helper", "status": "pass", "critical": True, "explanation": "ok"},
@@ -942,7 +1133,7 @@ def test_stale_finalizing_job_expires_and_unblocks(update_env, monkeypatch):
 
     from shared.db import write_session
 
-    _mock_github(monkeypatch, version="99.0.0")
+    _mock_update_server(monkeypatch, version="99.0.0")
     job_id = _make_job(status="finalizing")
     stale_at = (updates.utcnow() - dtm.timedelta(seconds=updates.STALE_FINALIZING_SECONDS + 60)).isoformat()
     with write_session() as session:

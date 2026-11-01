@@ -3,7 +3,8 @@
 
 Run via a system cron once a day (deploy/boron-update.cron) -- same
 root-owned infrastructure-cron category as scripts/monitoring_check.py.
-One pass = one forced GitHub releases check (bypasses the 1h cache), an
+One pass = one forced license-gated release check against the Boron
+license server (bypasses the 1h cache), an
 admin email if a NEW release appeared (deduped per version via
 UpdateState.last_notified_version -- one email per release, not one per
 day forever), and pruning of /opt/boron-X.Y.Z version dirs older than
@@ -26,7 +27,8 @@ logger = logging.getLogger("update_check")
 def main() -> int:
     result = updates.notify_if_update_available()
     if not result["configured"]:
-        logger.info("update checks not configured (update_github_repo unset) -- nothing to do")
+        logger.info("update checks not configured (no license key installed; add one under "
+                    "Admin > License) -- nothing to do")
     else:
         logger.info(
             "current=%s latest=%s update_available=%s notified=%s error=%s",

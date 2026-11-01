@@ -1,4 +1,4 @@
-"""Channel selection never turns a branch into an unsigned installation source."""
+"""Tier selection never turns into an unsigned or cross-tier installation source."""
 import json
 
 import httpx
@@ -10,47 +10,42 @@ from shared.db import write_session
 from shared.models import UpdateJob, UpdateState
 from shared.release_metadata import validate_release_metadata, ReleaseMetadataError
 from shared.validation import ValidationError
-from tests.test_updates import _release_json
+from tests.test_updates import _serve_update_server, _update_answer, _use_license
 
 
 @pytest.fixture(autouse=True)
 def channel_defaults(monkeypatch):
     monkeypatch.setattr(settings, 'update_channel', 'stable')
-    monkeypatch.setattr(settings, 'update_github_repo', 'acme/boron')
-    monkeypatch.setattr(updates, 'load_test_update_override', lambda: None)
+    _use_license(monkeypatch)
 
 
-def release(version, channel, **extra):
-    return {**_release_json(version), 'prerelease': channel != 'stable',
-            'target_commitish': updates.CHANNEL_BRANCHES[channel], **extra}
+def answer_for(version, channel):
+    return lambda body: httpx.Response(200, json=_update_answer(version, channel))
 
 
 @pytest.mark.parametrize('channel', ['beta', 'development'])
-def test_preview_discovery_selects_only_matching_branch(monkeypatch, channel):
+def test_preview_tiers_request_beta_releases(monkeypatch, channel):
     monkeypatch.setattr(settings, 'update_channel', channel)
-    releases = [release('3.9.0', 'stable'), release('3.6.0', 'beta'),
-                release('3.7.0', 'development'), release('9.0.0', channel, draft=True)]
-    monkeypatch.setattr(updates, '_transport', httpx.MockTransport(
-        lambda request: httpx.Response(200, json=releases)))
+    requests = []
+    _serve_update_server(monkeypatch, answer_for('3.6.0', 'beta'), requests)
     result = updates._fetch_release()
-    assert result['version'] == {'beta': '3.6.0', 'development': '3.7.0'}[channel]
-    assert result['channel'] == channel
+    assert result['version'] == '3.6.0'
+    assert result['channel'] == 'beta'
+    assert requests[0]['channel'] == 'beta'
 
 
 def test_preview_empty_does_not_fall_back(monkeypatch):
     monkeypatch.setattr(settings, 'update_channel', 'beta')
-    monkeypatch.setattr(updates, '_transport', httpx.MockTransport(
-        lambda request: httpx.Response(200, json=[release('3.9.0', 'stable')])))
-    with pytest.raises(ValidationError, match='No beta release'):
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(404, json={'error': 'no_release'}))
+    with pytest.raises(updates.NoPublishedRelease, match='No beta release'):
         updates._fetch_release()
 
 
-@pytest.mark.parametrize('channel,other', [('stable', 'beta'), ('beta', 'development'), ('development', 'stable')])
-def test_exact_tag_cannot_cross_tiers(monkeypatch, channel, other):
+@pytest.mark.parametrize('channel,other', [('stable', 'beta'), ('beta', 'stable'), ('development', 'stable')])
+def test_exact_version_cannot_cross_tiers(monkeypatch, channel, other):
     monkeypatch.setattr(settings, 'update_channel', channel)
-    monkeypatch.setattr(updates, '_transport', httpx.MockTransport(
-        lambda request: httpx.Response(200, json=release('3.5.0', other))))
-    with pytest.raises(ValidationError):
+    _serve_update_server(monkeypatch, answer_for('3.5.0', other))
+    with pytest.raises(ValidationError, match='different tier'):
         updates._fetch_release('v3.5.0')
 
 
@@ -67,6 +62,11 @@ def test_metadata_channel_defaults_and_validation():
         validate_release_metadata({**data, 'channel': 'arbitrary'})
     with pytest.raises(ConfigError):
         settings_from_mapping({'update_channel': 'arbitrary'})
+    # Older config files keep loading: the retired tier and the retired
+    # GitHub source key are both accepted.
+    legacy = settings_from_mapping({'update_channel': 'development', 'update_github_repo': 'acme/boron'})
+    assert legacy.update_channel == 'development'
+    assert not legacy.unknown_config
 
 
 def test_set_channel_persists_and_clears_cache(isolated_db, tmp_path, monkeypatch):
@@ -76,7 +76,7 @@ def test_set_channel_persists_and_clears_cache(isolated_db, tmp_path, monkeypatc
     monkeypatch.setattr(settings, 'backup_dir', str(tmp_path / 'backups'))
     with write_session() as session:
         session.add(UpdateState(id=1, latest_version='9.0.0', release_metadata={'channel': 'stable'}))
-    assert updates.set_channel({'channel': 'beta'}) == {'channel': 'beta', 'branch': 'beta'}
+    assert updates.set_channel({'channel': 'beta'}) == {'channel': 'beta', 'release_channel': 'beta'}
     assert settings.update_channel == 'beta'
     assert 'update_channel = "beta"' in config.read_text()
     with write_session() as session:
@@ -84,6 +84,15 @@ def test_set_channel_persists_and_clears_cache(isolated_db, tmp_path, monkeypatc
         assert state.latest_version is None
         assert state.checked_at is None
         assert state.release_metadata == {}
+
+
+def test_set_channel_accepts_legacy_development_tier(isolated_db, tmp_path, monkeypatch):
+    config = tmp_path / 'boron.toml'
+    config.write_text('')
+    monkeypatch.setattr(updates, 'CONFIG_PATH', config)
+    monkeypatch.setattr(settings, 'backup_dir', str(tmp_path / 'backups'))
+    assert updates.set_channel({'channel': 'development'}) == {
+        'channel': 'development', 'release_channel': 'beta'}
 
 
 def test_set_channel_blocked_during_update(isolated_db, monkeypatch):
@@ -120,30 +129,38 @@ def test_cached_stable_result_is_not_used_after_external_tier_change(isolated_db
     calls = []
     def unavailable(*a, **k):
         calls.append(True)
-        raise ValidationError('No beta release has been published')
+        raise ValidationError('This license does not include beta releases')
     monkeypatch.setattr(updates, '_fetch_release', unavailable)
     result = updates.check()
     assert result['channel'] == 'beta'
     assert result['latest_version'] is None
     assert result['update_available'] is False
-    assert 'No beta' in result['error']
+    assert 'beta releases' in result['error']
     updates.check()
     assert len(calls) == 1  # failed lookups are cached within the same tier too
+
+
+def test_development_tier_uses_beta_cache(isolated_db, monkeypatch):
+    from shared.models import utcnow
+    with write_session() as session:
+        session.add(UpdateState(id=1, latest_version='9.0.0', checked_at=utcnow(),
+                                release_metadata={'channel': 'beta'}))
+    monkeypatch.setattr(settings, 'update_channel', 'development')
+    monkeypatch.setattr(updates, '_fetch_release', lambda *a, **k: pytest.fail('cache is fresh'))
+    result = updates.check()
+    assert result['channel'] == 'development'
+    assert result['release_channel'] == 'beta'
+    assert result['latest_version'] == '9.0.0'
 
 
 @pytest.mark.parametrize('channel', ['beta', 'development'])
 def test_empty_tier_is_informational_and_cached(isolated_db, monkeypatch, channel):
     monkeypatch.setattr(settings, 'update_channel', channel)
     calls = []
-    def respond(request):
-        calls.append(request)
-        return httpx.Response(200, json=[release('3.9.0', 'stable')])
-    monkeypatch.setattr(updates, '_transport', httpx.MockTransport(respond))
-    # Old cached errors are refreshed automatically after deployment.
-    from shared.models import utcnow
-    with write_session() as session:
-        session.add(UpdateState(id=1, checked_at=utcnow(), release_metadata={'channel': channel},
-                                last_error=f'No {channel} release has been published in acme/boron'))
+    def respond(body):
+        calls.append(body)
+        return httpx.Response(404, json={'error': 'no_release'})
+    _serve_update_server(monkeypatch, respond)
     result = updates.check()
     assert result['error'] is None
     assert result['release_availability'] == 'unpublished'
@@ -152,18 +169,18 @@ def test_empty_tier_is_informational_and_cached(isolated_db, monkeypatch, channe
     assert result['channel'] == channel
     assert updates.check()['release_availability'] == 'unpublished'
     assert len(calls) == 1
-    monkeypatch.setattr(updates, '_transport', httpx.MockTransport(
-        lambda request: httpx.Response(200, json=[release('3.9.0', channel)])))
-    monkeypatch.setattr(updates, '_fetch_release_metadata', lambda info: {'channel': channel})
+    _serve_update_server(monkeypatch, answer_for('3.9.0', 'beta'))
+    monkeypatch.setattr(updates, '_fetch_release_metadata', lambda info: {'channel': 'beta'})
     result = updates.check({'force': True})
     assert result['latest_version'] == '3.9.0'
     assert result['release_availability'] is None
 
 
 def test_preview_network_failure_remains_error(isolated_db, monkeypatch):
-    monkeypatch.setattr(settings, 'update_channel', 'development')
-    monkeypatch.setattr(updates, '_transport', httpx.MockTransport(
-        lambda request: httpx.Response(403, json={'message': 'rate limited'})))
+    monkeypatch.setattr(settings, 'update_channel', 'beta')
+    def unreachable(body):
+        raise httpx.ConnectError('connection refused')
+    _serve_update_server(monkeypatch, unreachable)
     result = updates.check({'force': True})
-    assert result['error']
+    assert 'unreachable' in result['error']
     assert result['release_availability'] is None

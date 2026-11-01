@@ -10,7 +10,8 @@ time).
 
 Everything under /api/v1/admin/update/* is admin-only and thin: the daemon
 owns all update logic (it's the only process allowed to touch /opt, systemd,
-and the GitHub download path); this router just authorizes and forwards.
+the license key and the license-gated download path); this router just
+authorizes and forwards.
 """
 from __future__ import annotations
 

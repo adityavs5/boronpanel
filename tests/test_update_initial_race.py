@@ -10,7 +10,7 @@ from shared.models import UpdateState
 
 
 def test_simultaneous_first_checks_create_one_state(isolated_db, monkeypatch):
-    monkeypatch.setattr(settings, 'update_github_repo', 'acme/boron')
+    monkeypatch.setattr(updates.license_client, 'read_key', lambda: 'BRN-ABCD-EFGH-JKLM-NPQR')
     monkeypatch.setattr(settings, 'update_channel', 'stable')
     monkeypatch.setattr(updates, 'load_test_update_override', lambda: None)
     fetched = []

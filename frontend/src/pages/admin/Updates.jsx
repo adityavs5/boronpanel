@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowUpCircle, CheckCircle2, XCircle, Loader2, RefreshCw, ExternalLink,
-  Undo2, AlertTriangle, Circle, DatabaseBackup, Eye,
+  Undo2, AlertTriangle, Circle, DatabaseBackup, Eye, BadgeCheck,
 } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { formatDate } from '@/lib/utils'
@@ -27,10 +28,16 @@ import { isUpdateJobActive, useUpdateStatus } from '@/hooks/useUpdateStatus'
 // have reported ok. "finalize" covers swap+restart+healthcheck done by the
 // detached finalizer (the API briefly restarts during it).
 const UPDATE_STEPS = ['preflight', 'backup', 'download', 'checksum', 'extract', 'venv', 'migrate', 'finalize']
+// Release-notes links come from the update server; only plain https links
+// are rendered (never javascript: or other schemes).
+function safeExternalUrl(url) {
+  return typeof url === 'string' && /^https:\/\/[^\s]+$/i.test(url) ? url : null
+}
+
 const STEP_LABELS = {
   preflight: 'Pre-flight checks (test suite, disk space)',
   backup: 'Backup panel DB + /etc/boron',
-  download: 'Download release from GitHub',
+  download: 'Download signed release',
   checksum: 'Verify SHA256 checksum',
   extract: 'Validate + stage new version',
   venv: 'Build Python environment',
@@ -176,8 +183,9 @@ export default function Updates() {
     mutationFn: (channel) => post('/api/v1/admin/update/channel', { channel }),
     onSuccess: (data) => {
       qc.setQueryData(['update-status'], (previous) => ({
-        ...previous, channel: data.channel, branch: data.branch,
+        ...previous, channel: data.channel, release_channel: data.release_channel,
         latest_version: null, update_available: false, checked_at: null, error: null, release_availability: null,
+        changelog: null, published_at: null,
       }))
       qc.invalidateQueries({ queryKey: ['update-status'] })
       toast.success('Update tier saved', 'Only signed releases from this tier will be offered.')
@@ -189,7 +197,8 @@ export default function Updates() {
     mutationFn: () => post('/api/v1/admin/update/check'),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['update-status'] })
-      if (data.error) toast.error('Update check failed', data.error)
+      if (!data.configured) toast.info('License required', data.message || 'Panel updates require an active Boron license.')
+      else if (data.error) toast.error('Update check failed', data.error)
       else if (data.release_availability === 'unpublished') toast.info('No release published yet', `The ${data.channel} tier is selected. Your current installation is unchanged.`)
       else if (data.update_available) toast.info('Update available', `v${data.latest_version} can be installed.`)
       else toast.success('Up to date', `v${data.current_version} is the latest release.`)
@@ -362,13 +371,16 @@ export default function Updates() {
               onChange={(event) => channelMut.mutate(event.target.value)}>
               <option value="stable">Stable — recommended</option>
               <option value="beta">Beta — preview releases</option>
-              <option value="development">Development — early testing</option>
+              {status?.channel === 'development' && (
+                <option value="development">Development — legacy, receives Beta releases</option>
+              )}
             </Select>
           </FormField>
           <p className="mt-2 text-sm text-muted-foreground">
-            Stable follows master; Beta follows beta; Development follows development.
-            All tiers require signed release packages. Switching tiers does not install or downgrade anything.
-            Beta and Development can contain unfinished changes.
+            Updates are delivered by the Boron license server to servers with an active license.
+            Every release package is signed and verified before it is installed. Switching tiers does
+            not install or downgrade anything. Beta releases can contain unfinished changes and
+            require a license with Beta access.
           </p>
           {channelMut.isPending && <p role="status">Saving update tier…</p>}
         </CardContent>
@@ -382,11 +394,15 @@ export default function Updates() {
           ) : error ? (
             <div className="text-sm text-danger">Could not load update status: {error.message}</div>
           ) : !status?.configured ? (
-            <div className="text-sm text-muted-foreground">
-              <div className="mb-1 font-medium text-foreground">Update checks are not configured.</div>
-              Set <code className="font-mono text-xs">update_github_repo = "owner/repo"</code> in{' '}
-              <code className="font-mono text-xs">/etc/boron/boron.toml</code> and restart the
-              daemon to enable release checks against GitHub.
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="text-sm text-muted-foreground">
+                <div className="mb-1 font-medium text-foreground">Updates require an active license.</div>
+                {status?.message || 'Panel updates require an active Boron license.'}{' '}
+                Hosted sites and services keep running either way; you are on v{status?.current_version}.
+              </div>
+              <Button asChild>
+                <Link to="/license"><BadgeCheck className="h-4 w-4" /> Add a license</Link>
+              </Button>
             </div>
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -414,10 +430,10 @@ export default function Updates() {
                 )}
               </div>
               <div className="flex items-center gap-2">
-                {status.changelog_url && (
+                {safeExternalUrl(status.changelog_url) && (
                   <Button variant="outline" asChild>
-                    <a href={status.changelog_url} target="_blank" rel="noopener noreferrer">
-                      <ExternalLink className="h-4 w-4" /> Changelog
+                    <a href={safeExternalUrl(status.changelog_url)} target="_blank" rel="noopener noreferrer">
+                      <ExternalLink className="h-4 w-4" /> Release notes
                     </a>
                   </Button>
                 )}
@@ -435,8 +451,19 @@ export default function Updates() {
           )}
           {status?.release_availability === 'unpublished' && (
             <p role="status" className="mt-3 text-sm text-muted-foreground">
-              No {status.channel === 'development' ? 'Development' : 'Beta'} release published yet. Your tier is saved; your current installation is unchanged. Check again after a signed release is published for this tier.
+              No {status.release_channel === 'beta' ? 'Beta' : 'Stable'} release published yet. Your tier is saved; your current installation is unchanged. Check again after a signed release is published for this tier.
             </p>
+          )}
+          {status?.configured && status?.latest_version && status?.changelog && (
+            <div className="mt-4">
+              <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">
+                What's new in v{status.latest_version}
+                {status.published_at && <> · published {formatDate(status.published_at)}</>}
+              </div>
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 p-3 font-sans text-sm text-foreground">
+                {status.changelog}
+              </pre>
+            </div>
           )}
           {status?.error && (
             <div className="mt-3 text-xs text-danger">Last check error: {status.error}</div>

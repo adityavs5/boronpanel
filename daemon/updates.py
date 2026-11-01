@@ -1,22 +1,31 @@
-"""Panel update system: check GitHub releases, apply updates, roll back.
+"""Panel update system: license-gated release checks, apply, roll back.
 
-Design (goal: "release tarballs from GitHub, never git pull on production"):
+Design (goal: "signed release tarballs from our own servers, never an
+in-place checkout on production"):
 
-- `update.check` polls the GitHub releases API for `settings.
-  update_github_repo`, caches the answer in the single-row UpdateState
-  table for `update_check_cache_seconds` (1h), and compares against the
-  running `version.py`.
+- `update.check` asks the Boron license server (`POST
+  {settings.update_server_url}/v1/updates`) for the current release of the
+  selected tier, authenticated by this server's license key and install ID
+  (daemon/license_client.py). Only an active, unexpired license bound to
+  this server's IP gets an answer. The result is cached in the single-row
+  UpdateState table for `update_check_cache_seconds` (1h) and compared
+  against the running `version.py`. Without a license key the feature
+  reports configured=False ("add a license") instead of an error.
 - `update.start` runs an async job (CpanelImportJob-style, single worker)
   that does everything SAFE while the current code keeps running:
   pre-flight (tests + disk), backup (panel DB + /etc/boron), download
-  (github.com release URL only, every redirect hop re-validated against a
-  GitHub-owned host allowlist), SHA256 and pinned publisher-signature verify
-  BEFORE extraction, tarball
+  (short-lived signed links under `settings.update_download_prefix` only,
+  https only, redirects refused, size capped), SHA256 and pinned
+  publisher-signature verify BEFORE extraction, tarball
   member validation (no absolute/traversal/link members) + staged
   extraction to /opt/boron-{version}/, venv build, and the new
   version's DB migrations (create_all + additive -- old code keeps working
   after a rollback because migrations are additive-only by project
   convention).
+- The license server only decides WHO may download a release, never WHAT
+  gets installed: every archive and metadata file must still carry a valid
+  Ed25519 signature from the pinned release key
+  (deploy/release-ed25519-public.hex via shared/release_signature.py).
 - The DANGEROUS window -- atomic symlink swap of /opt/boron, service
   restarts, health check, swap-back on failure -- is delegated to
   scripts/update_finalize.py, a stdlib-only script launched as a detached
@@ -63,7 +72,7 @@ import httpx
 from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from daemon import diagnostics, monitoring, notifications
+from daemon import diagnostics, license_client, monitoring, notifications
 from daemon.test_update_override import (
     TestUpdateOverride,
     load_test_update_override,
@@ -93,7 +102,7 @@ from version import BORON_VERSION
 logger = logging.getLogger("borond.updates")
 
 # Test hook, same convention as daemon/cloudflare.py's _transport: tests
-# swap in an httpx.MockTransport so nothing ever hits the real GitHub API.
+# swap in an httpx.MockTransport so nothing ever hits the real update server.
 _transport: httpx.BaseTransport | None = None
 
 # Test hook for the finalizer launch: tests replace the systemd-run argv
@@ -113,18 +122,23 @@ _SYSTEMD_RUN = [
 # A self-update must be strictly serialized -- one worker, ever.
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="panel-update")
 
-GITHUB_API = "https://api.github.com"
-# Hosts a release-asset download may touch. The FIRST hop must be the
-# canonical https://github.com/{repo}/releases/download/... URL; GitHub then
-# 302s to its CDN (*.githubusercontent.com). The goal's literal "no redirect
-# following" is unimplementable against real GitHub (assets are ALWAYS
-# served via redirect) -- the security intent (no attacker-steerable hop)
-# is enforced instead by re-validating EVERY hop against this allowlist,
-# https-only, with a hop cap. Documented in CHECKPOINT-update-3.
-_REDIRECT_HOST_SUFFIX = ".githubusercontent.com"
-_MAX_REDIRECTS = 4
-
-_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+# Release assets are files under {update_download_prefix}releases/<ver>/,
+# served by nginx behind short-lived secure_link tokens the license server
+# mints per request. There is no legitimate redirect hop on that host, so
+# every redirect is refused rather than re-validated.
+_RELEASE_FILES = {
+    "archive": "boron-{version}.tar.gz",
+    "checksum": "boron-{version}.sha256",
+    "signature": "boron-{version}.tar.gz.sig",
+    "metadata": "boron-{version}.metadata.json",
+    "metadata_signature": "boron-{version}.metadata.json.sig",
+}
+# Generous caps on the update server's JSON answer and its changelog text;
+# the changelog is shown verbatim (as text) on the Updates page.
+_MAX_UPDATE_RESPONSE_BYTES = 256 * 1024
+_MAX_CHANGELOG_CHARS = 20000
+# Public release-notes page linked from the UI and the admin email.
+RELEASE_NOTES_URL = "https://download.boronpanel.com/"
 _VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 # Version dirs we own under /opt. Deliberately anchored and digits-only so
 # neighbours like /opt/boron-nodejs or /opt/boron.pre-filebrowser
@@ -192,24 +206,45 @@ def _get_state(session) -> UpdateState:
     return session.get(UpdateState, 1)
 
 
-CHANNEL_BRANCHES = {"stable": "master", "beta": "beta", "development": "development"}
+# Tiers an administrator can select. The license server publishes only the
+# stable and beta channels; "development" predates it and is still accepted
+# so existing boron.toml files keep loading -- it receives beta releases.
+UPDATE_CHANNELS = ("stable", "beta", "development")
+_RELEASE_CHANNELS = {"stable": "stable", "beta": "beta", "development": "beta"}
+
+NO_LICENSE_MESSAGE = (
+    "Panel updates require an active Boron license. Add your license key "
+    "under Admin > License to receive updates."
+)
+_LICENSE_REASONS = {
+    "suspended": "the license is suspended",
+    "cancelled": "the license has been cancelled",
+    "expired": "the license has expired",
+    "ip_mismatch": "the license is bound to a different server IP address",
+    "not_activated": "the license has not been activated on this server yet",
+}
 
 
 class NoPublishedRelease(ValidationError):
-    """An empty preview tier is informational during discovery, not installable."""
+    """An empty tier is informational during discovery, not installable."""
 
 
 def _channel() -> str:
     channel = settings.update_channel
-    if channel not in CHANNEL_BRANCHES:
+    if channel not in UPDATE_CHANNELS:
         raise ValidationError("Update tier must be stable, beta or development")
     return channel
+
+
+def _release_channel() -> str:
+    """The published channel the selected tier receives (development -> beta)."""
+    return _RELEASE_CHANNELS[_channel()]
 
 
 def set_channel(params: dict) -> dict:
     """Admin-only preference; never installs a release or changes signing trust."""
     channel = params.get("channel")
-    if not isinstance(channel, str) or channel not in CHANNEL_BRANCHES:
+    if not isinstance(channel, str) or channel not in UPDATE_CHANNELS:
         raise ValidationError("Update tier must be stable, beta or development")
     from daemon.panel_config import apply_setup_values
     with write_session() as session:
@@ -226,124 +261,170 @@ def set_channel(params: dict) -> dict:
         state.release_asset_bytes = None
         state.last_error = None
         state.last_notified_version = None
-    return {"channel": channel, "branch": CHANNEL_BRANCHES[channel]}
+    return {"channel": channel, "release_channel": _RELEASE_CHANNELS[channel]}
 
 
-def _require_repo() -> str:
-    repo = settings.update_github_repo.strip()
-    if not repo:
-        raise ValidationError(
-            "update checks are not configured -- set update_github_repo "
-            '(e.g. "boronpanel/boronpanel") in /etc/boron/boron.toml'
+def _https_base(value: str, key: str) -> urllib.parse.SplitResult:
+    parsed = urllib.parse.urlsplit(value)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment):
+        raise ValidationError(f"{key} must be a plain https:// URL")
+    return parsed
+
+
+def _update_endpoint() -> str:
+    base = settings.update_server_url.strip().rstrip("/")
+    _https_base(base, "update_server_url")
+    return base + "/v1/updates"
+
+
+def _download_prefix() -> str:
+    prefix = settings.update_download_prefix.strip()
+    parsed = _https_base(prefix, "update_download_prefix")
+    if not prefix.endswith("/") or not parsed.path.startswith("/"):
+        raise ValidationError("update_download_prefix must end with /")
+    return prefix
+
+
+def _display_url(url: str) -> str:
+    """A download link without its query: the secure_link token stays out of
+    job steps, updates.log and error messages."""
+    return url.split("?", 1)[0].split("#", 1)[0]
+
+
+def _license_credentials() -> tuple[str, str]:
+    key = license_client.read_key()
+    if key is None:
+        raise ValidationError(NO_LICENSE_MESSAGE)
+    try:
+        install = license_client.install_id()
+    except OSError as exc:
+        raise ValidationError(f"cannot read this server's install ID: {exc.__class__.__name__}") from exc
+    return key, install
+
+
+def _update_server_error(response: httpx.Response, channel: str, wanted: str | None) -> ValidationError:
+    """Map a refusal from POST /v1/updates to an admin-facing explanation."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    code = body.get("error") if isinstance(body, dict) else None
+    if code == "invalid_license":
+        return ValidationError(
+            "The license server did not recognise this panel's license key. "
+            "Check the key under Admin > License."
         )
-    if not _REPO_RE.match(repo):
-        raise ValidationError(f"invalid update_github_repo: {repo!r}")
-    return repo
+    if code == "license_not_usable":
+        reason = _LICENSE_REASONS.get(body.get("reason"), "the license is not active")
+        return ValidationError(f"Updates are unavailable because {reason}. See Admin > License.")
+    if code == "channel_not_allowed":
+        return ValidationError(
+            f"This license does not include {channel} releases. Select the Stable tier "
+            "or upgrade the license."
+        )
+    if code == "no_release":
+        if wanted is not None:
+            return NoPublishedRelease(f"Release {wanted} is not published in the {channel} tier")
+        return NoPublishedRelease(f"No {channel} release has been published yet")
+    if code == "updates_unavailable":
+        return ValidationError("The update server is temporarily unavailable. Try again later.")
+    return ValidationError(f"update server answered HTTP {response.status_code}")
 
 
-def _github_headers() -> dict:
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": f"boron/{BORON_VERSION}"}
-    token = settings.secrets.get("GITHUB_TOKEN", "")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
+def _release_asset_url(urls: dict, kind: str, version: str, prefix: str) -> str:
+    url = urls.get(kind)
+    name = _RELEASE_FILES[kind].format(version=version)
+    if not isinstance(url, str) or not url:
+        raise ValidationError(f"release {version} is missing its {name} link")
+    _validate_download_url(url)
+    # The link must name exactly this release's file; only the secure_link
+    # query (token + expiry) is the server's to choose.
+    if _display_url(url) != f"{prefix}releases/{version}/{name}":
+        raise ValidationError(f"refusing release asset URL outside {prefix}releases/{version}/: "
+                              f"{_display_url(url)}")
+    return url
 
 
-def _release_download_prefix(repo: str) -> str:
-    return f"https://github.com/{repo}/releases/download/"
+def _parse_update_response(data, channel: str, wanted: str | None) -> dict:
+    if not isinstance(data, dict) or data.get("format") != 1:
+        raise ValidationError("update server returned an unsupported release description")
+    if data.get("channel") != channel:
+        raise ValidationError(f"update server answered for a different tier than {channel}")
+    version = ".".join(map(str, parse_version(str(data.get("version", "")))))
+    if wanted is not None and version != wanted:
+        raise ValidationError(f"update server returned {version} instead of the requested {wanted}")
+    urls = data.get("urls")
+    if not isinstance(urls, dict):
+        raise ValidationError(f"release {version} has no download links")
+    prefix = _download_prefix()
+    resolved = {kind: _release_asset_url(urls, kind, version, prefix) for kind in _RELEASE_FILES}
+    archive_size = data.get("archive_size")
+    if type(archive_size) is not int or archive_size <= 0:
+        raise ValidationError("update server returned an invalid archive size")
+    if archive_size > settings.update_max_download_bytes:
+        raise ValidationError(
+            f"release {version} archive ({archive_size} bytes) exceeds update_max_download_bytes"
+        )
+    changelog = data.get("changelog")
+    changelog = changelog.strip()[:_MAX_CHANGELOG_CHARS] if isinstance(changelog, str) else ""
+    published_at = data.get("published_at")
+    published_at = published_at[:64] if isinstance(published_at, str) else None
+    return {
+        "version": version,
+        "changelog": changelog,
+        "changelog_url": RELEASE_NOTES_URL,
+        "published_at": published_at,
+        "tarball_url": resolved["archive"],
+        "checksum_url": resolved["checksum"],
+        "signature_url": resolved["signature"],
+        "metadata_url": resolved["metadata"],
+        "metadata_signature_url": resolved["metadata_signature"],
+        "archive_size": archive_size,
+        "source": "boron",
+        "channel": channel,
+    }
 
 
 def _fetch_release(tag: str | None = None) -> dict:
-    """Fetch release metadata from the GitHub API (latest, or an exact tag).
+    """Ask the license server for the current release (or an exact version).
 
-    Returns {version, changelog_url, tarball_url, checksum_url, signature_url}. Raises
-    ValidationError on anything malformed -- including assets whose
-    download URL is not under https://github.com/{repo}/releases/download/
-    (goal security rule 1: the tarball URL comes from github.com releases
-    only, never anywhere an attacker could steer it).
+    Returns {version, changelog, changelog_url, tarball_url, checksum_url,
+    signature_url, metadata_url, metadata_signature_url, archive_size,
+    source, channel}. Raises ValidationError on anything malformed --
+    including asset links that are not exactly this release's files under
+    settings.update_download_prefix -- and NoPublishedRelease when the tier
+    has nothing published. The links are short-lived (minutes), so callers
+    that download fetch a fresh answer instead of reusing cached URLs.
     """
     test_override = load_test_update_override()
     if test_override is not None:
         return _fetch_test_release(test_override, tag)
-    channel = _channel()
-    repo = _require_repo()
-    url = f"{GITHUB_API}/repos/{repo}/releases/" + (f"tags/{tag}" if tag else "latest")
-    if not tag and channel != "stable":
-        url = f"{GITHUB_API}/repos/{repo}/releases?per_page=100"
-    with httpx.Client(timeout=20.0, transport=_transport, follow_redirects=False) as client:
-        resp = client.get(url, headers=_github_headers())
-    if resp.status_code == 404:
-        raise ValidationError(f"no release found ({'tag ' + tag if tag else 'latest'}) in {repo}")
-    resp.raise_for_status()
-    data = resp.json()
-    if not tag and channel != "stable":
-        if not isinstance(data, list):
-            raise ValidationError("GitHub returned an invalid release list")
-        candidates = []
-        for release in data:
-            if not isinstance(release, dict):
-                continue
-            if (release.get("draft") or not release.get("prerelease")
-                    or release.get("target_commitish") != CHANNEL_BRANCHES[channel]):
-                continue
-            try:
-                version_key = parse_version(str(release.get("tag_name", "")))
-            except ValidationError:
-                continue
-            candidates.append((version_key, release))
-        if not candidates:
-            raise NoPublishedRelease(f"No {channel} release has been published in {repo}")
-        data = max(candidates, key=lambda item: item[0])[1]
-    if not isinstance(data, dict):
-        raise ValidationError("GitHub returned invalid release metadata")
-    if data.get("draft") or (channel == "stable" and data.get("prerelease")):
-        raise ValidationError("draft and pre-release versions are not eligible for stable updates")
-    if channel != "stable" and (not data.get("prerelease") or
-            data.get("target_commitish") != CHANNEL_BRANCHES[channel]):
-        raise ValidationError(f"Release does not belong to the {channel} tier")
-
-    tag_name = str(data.get("tag_name", ""))
-    version = "%d.%d.%d" % parse_version(tag_name)
-    prefix = _release_download_prefix(repo)
-    tarball_url = checksum_url = signature_url = None
-    metadata_url = metadata_signature_url = None
-    archive_size = None
-    for asset in data.get("assets", []):
-        name = asset.get("name", "")
-        dl = asset.get("browser_download_url", "")
-        if name == f"boron-{version}.tar.gz":
-            tarball_url = dl
-            try:
-                archive_size = max(0, int(asset.get("size", 0))) or None
-            except (TypeError, ValueError):
-                archive_size = None
-        elif name == f"boron-{version}.sha256":
-            checksum_url = dl
-        elif name == f"boron-{version}.tar.gz.sig":
-            signature_url = dl
-        elif name == f"boron-{version}.metadata.json":
-            metadata_url = dl
-        elif name == f"boron-{version}.metadata.json.sig":
-            metadata_signature_url = dl
-    if not tarball_url or not checksum_url or not signature_url:
-        raise ValidationError(
-            f"release {tag_name} is missing its archive, checksum or publisher signature"
-        )
-    for dl in (tarball_url, checksum_url, signature_url):
-        if not dl.startswith(prefix):
-            raise ValidationError(f"refusing release asset URL outside {prefix}: {dl}")
-    return {
-        "version": version,
-        "changelog_url": str(data.get("html_url", "")),
-        "tarball_url": tarball_url,
-        "checksum_url": checksum_url,
-        "signature_url": signature_url,
-        "metadata_url": metadata_url,
-        "metadata_signature_url": metadata_signature_url,
-        "archive_size": archive_size,
-        "source": "github",
-        "channel": channel,
-    }
+    channel = _release_channel()
+    wanted = None if tag is None else ".".join(map(str, parse_version(tag)))
+    key, install = _license_credentials()
+    endpoint = _update_endpoint()
+    body = {"license_key": key, "install_id": install, "channel": channel,
+            "current_version": BORON_VERSION}
+    if wanted is not None:
+        body["version"] = wanted
+    try:
+        with httpx.Client(timeout=20.0, transport=_transport, follow_redirects=False) as client:
+            response = client.post(endpoint, json=body, headers={
+                "Accept": "application/json", "User-Agent": f"boron-panel/{BORON_VERSION}"})
+    except httpx.HTTPError as exc:
+        raise ValidationError(f"update server unreachable: {exc.__class__.__name__}") from exc
+    if 300 <= response.status_code < 400:
+        raise ValidationError("update server answered with a redirect; refusing to follow it")
+    if response.status_code != 200:
+        raise _update_server_error(response, channel, wanted)
+    if len(response.content) > _MAX_UPDATE_RESPONSE_BYTES:
+        raise ValidationError("update server response is too large")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise ValidationError("update server returned invalid JSON") from exc
+    return _parse_update_response(data, channel, wanted)
 
 
 def _test_manifest_url(override: TestUpdateOverride, tag: str | None) -> str:
@@ -404,8 +485,10 @@ def check(params: dict | None = None) -> dict:
     """Op `update.check`: current vs latest, cached for 1h.
 
     force=True bypasses the cache (the UI's "Check now" button and the
-    daily cron). An unconfigured repo reports configured=False rather than
-    erroring, so the admin UI can render a setup hint instead of a 400.
+    daily cron). A panel without a license key reports configured=False
+    (with license_required and an explanatory message) rather than
+    erroring, so the admin UI can point at the License page instead of
+    showing a 400.
     """
     params = params or {}
     force = bool(params.get("force", False))
@@ -416,16 +499,20 @@ def check(params: dict | None = None) -> dict:
         # A malformed root-created gate is still "configured" so Check now
         # reports the actionable gate error instead of hiding it as disabled.
         test_configured = True
-    configured = test_configured or bool(settings.update_github_repo.strip())
+    configured = test_configured or license_client.read_key() is not None
     if not configured:
         return {
             "channel": _channel(),
-            "branch": CHANNEL_BRANCHES[_channel()],
+            "release_channel": _release_channel(),
             "configured": False,
+            "license_required": True,
+            "message": NO_LICENSE_MESSAGE,
             "current_version": BORON_VERSION,
             "latest_version": None,
             "update_available": False,
+            "changelog": None,
             "changelog_url": None,
+            "published_at": None,
             "checked_at": None,
             "error": None,
         }
@@ -439,26 +526,29 @@ def check(params: dict | None = None) -> dict:
                 checked = checked.replace(tzinfo=dt.timezone.utc)
             age = (utcnow() - checked).total_seconds()
         # The cache window applies to FAILED checks too -- otherwise a
-        # misconfigured repo would make every dashboard status poll re-hit
-        # the GitHub API. force=True (Check now button, daily cron) bypasses.
+        # refused license would make every dashboard status poll re-hit
+        # the update server. force=True (Check now button, daily cron) bypasses.
         fresh = (age is not None and age < settings.update_check_cache_seconds
-                 and (state.release_metadata or {}).get("channel", "stable") == _channel())
-        legacy_empty_error = state.last_error == (
-            f"No {_channel()} release has been published in {settings.update_github_repo.strip()}"
-        )
-        if force or not fresh or legacy_empty_error:
+                 and (state.release_metadata or {}).get("channel", "stable") == _release_channel())
+        if force or not fresh:
             try:
                 info = _fetch_release()
+                metadata = _fetch_release_metadata(info)
                 state.latest_version = info["version"]
                 state.changelog_url = info["changelog_url"]
-                state.tarball_url = info["tarball_url"]
-                state.checksum_url = info["checksum_url"]
-                state.release_metadata = _fetch_release_metadata(info)
+                # Links expire within minutes and carry a download token;
+                # only their token-free form is kept for reference.
+                state.tarball_url = _display_url(info["tarball_url"])
+                state.checksum_url = _display_url(info["checksum_url"])
+                state.release_metadata = {**metadata, "release_notes": {
+                    "changelog": info.get("changelog") or "",
+                    "published_at": info.get("published_at"),
+                }}
                 state.release_asset_bytes = info.get("archive_size")
                 state.last_error = None
             except (httpx.HTTPError, ValidationError, ValueError) as exc:
                 state.latest_version = None
-                state.release_metadata = {"channel": _channel()}
+                state.release_metadata = {"channel": _release_channel()}
                 state.tarball_url = None
                 state.checksum_url = None
                 state.changelog_url = None
@@ -477,19 +567,25 @@ def check(params: dict | None = None) -> dict:
                 update_available = is_newer(state.latest_version, BORON_VERSION)
             except ValidationError:
                 update_available = False
+        stored = dict(state.release_metadata or {})
+        notes = stored.pop("release_notes", None)
+        notes = notes if isinstance(notes, dict) else {}
         return {
             "channel": _channel(),
-            "branch": CHANNEL_BRANCHES[_channel()],
+            "release_channel": _release_channel(),
             "configured": True,
+            "license_required": False,
             "current_version": BORON_VERSION,
             "latest_version": state.latest_version,
             "update_available": update_available,
+            "changelog": notes.get("changelog") or None,
             "changelog_url": state.changelog_url,
+            "published_at": notes.get("published_at"),
             "checked_at": state.checked_at.isoformat() if state.checked_at else None,
             "error": state.last_error,
-            "release_metadata": state.release_metadata or _legacy_release_metadata(),
+            "release_metadata": stored or _legacy_release_metadata(),
             "release_asset_bytes": state.release_asset_bytes,
-            "release_availability": (state.release_metadata or {}).get("availability"),
+            "release_availability": stored.get("availability"),
         }
 
 
@@ -676,7 +772,7 @@ def start_update(params: dict) -> dict:
 
     info = check({"force": bool(params.get("refresh", False))})
     if not info["configured"]:
-        raise ValidationError("update_github_repo is not configured")
+        raise ValidationError(NO_LICENSE_MESSAGE)
     to_version = str(params.get("to_version") or info["latest_version"] or "").strip()
     if not to_version:
         raise ValidationError(f"no release available to update to (last check error: {info['error']})")
@@ -1142,36 +1238,43 @@ def _prune_preupdate_backups(*, protect: set[str] | None = None) -> list[str]:
     return removed
 
 
-def _validate_download_url(url: str, repo: str, first_hop: bool) -> None:
+def _validate_download_url(url: str) -> None:
+    """A release download must be https and under update_download_prefix."""
+    prefix = _download_prefix()
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https":
-        raise ValidationError(f"refusing non-https download hop: {url}")
-    host = (parsed.hostname or "").lower()
-    if first_hop:
-        if not url.startswith(_release_download_prefix(repo)):
-            raise ValidationError(f"refusing download outside {_release_download_prefix(repo)}: {url}")
-    else:
-        if host != "github.com" and not host.endswith(_REDIRECT_HOST_SUFFIX):
-            raise ValidationError(f"refusing redirect to non-GitHub host: {host}")
+        raise ValidationError(f"refusing non-https download: {_display_url(url)}")
+    if (not url.startswith(prefix) or parsed.username is not None or parsed.password is not None
+            or parsed.fragment):
+        raise ValidationError(f"refusing download outside {prefix}: {_display_url(url)}")
+    path = urllib.parse.unquote(parsed.path)
+    if "\\" in path or any(part in (".", "..") for part in path.split("/")):
+        raise ValidationError(f"refusing download with a relative path: {_display_url(url)}")
 
 
 def _safe_download(url: str, dest: str, max_bytes: int) -> int:
-    """Download with every redirect hop validated (https + GitHub-owned
-    hosts only, hop cap) and a hard size cap. Returns bytes written."""
-    repo = _require_repo()
-    current = url
-    for hop in range(_MAX_REDIRECTS + 1):
-        _validate_download_url(current, repo, first_hop=(hop == 0))
+    """Download one release asset: https, under update_download_prefix,
+    redirects refused (the distribution host never needs one, so a redirect
+    can only steer the download elsewhere) and a hard size cap. Returns
+    bytes written. Error messages never include the link's token."""
+    _validate_download_url(url)
+    shown = _display_url(url)
+    try:
         with httpx.Client(timeout=httpx.Timeout(30.0, read=120.0), transport=_transport,
                           follow_redirects=False) as client:
-            with client.stream("GET", current, headers={"User-Agent": f"boron/{BORON_VERSION}"}) as resp:
-                if resp.status_code in (301, 302, 303, 307, 308):
-                    location = resp.headers.get("location", "")
-                    if not location:
-                        raise ValidationError("redirect with no Location header")
-                    current = urllib.parse.urljoin(current, location)
-                    continue
-                resp.raise_for_status()
+            with client.stream("GET", url, headers={"User-Agent": f"boron-panel/{BORON_VERSION}"}) as resp:
+                if 300 <= resp.status_code < 400:
+                    raise ValidationError(f"refusing redirect while downloading {shown}")
+                if resp.status_code in (403, 410):
+                    raise ValidationError(
+                        f"download link for {shown} was refused (HTTP {resp.status_code}); "
+                        "it may have expired -- check for updates and try again"
+                    )
+                if resp.status_code != 200:
+                    raise ValidationError(f"download server answered HTTP {resp.status_code} for {shown}")
+                declared = resp.headers.get("content-length", "")
+                if declared.isdigit() and int(declared) > max_bytes:
+                    raise ValidationError(f"download exceeds {max_bytes} bytes -- aborted")
                 written = 0
                 fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, "wb") as f:
@@ -1181,7 +1284,8 @@ def _safe_download(url: str, dest: str, max_bytes: int) -> int:
                             raise ValidationError(f"download exceeds {max_bytes} bytes -- aborted")
                         f.write(chunk)
                 return written
-    raise ValidationError(f"too many redirects (> {_MAX_REDIRECTS}) downloading {url}")
+    except httpx.HTTPError as exc:
+        raise ValidationError(f"download of {shown} failed: {exc.__class__.__name__}") from exc
 
 
 def _safe_test_download(
@@ -1189,9 +1293,9 @@ def _safe_test_download(
 ) -> int:
     """Download one lab asset from the exact configured loopback origin.
 
-    Redirects are forbidden. Unlike GitHub, a disposable static HTTP server
-    has no legitimate CDN hop, and accepting one would widen this root-only
-    escape hatch unnecessarily.
+    Redirects are forbidden, exactly as for production downloads: a
+    disposable static HTTP server has no legitimate redirect hop, and
+    accepting one would widen this root-only escape hatch unnecessarily.
     """
     validate_test_asset_url(url, override)
     with httpx.Client(
@@ -1216,8 +1320,8 @@ def _safe_test_download(
 
 
 def _override_for_release(info: dict) -> TestUpdateOverride | None:
-    source = info.get("source", "github")
-    if source == "github":
+    source = info.get("source", "boron")
+    if source == "boron":
         return None
     if source != "test-loopback":
         raise ValidationError("release has an unknown download source")
@@ -1307,8 +1411,10 @@ def _fetch_release_metadata(info: dict) -> dict:
 
 
 def _download_and_verify(job_id: int, to_version: str) -> str:
-    # Refresh the exact tag, even when latest-release metadata is cached.
-    # The detached publisher signature is never taken from mutable DB state.
+    # Ask for the exact version right before downloading: the license server
+    # re-checks the license and mints fresh links (they expire within
+    # minutes, so cached ones are never reused). The detached publisher
+    # signature is never taken from mutable DB state.
     try:
         info = _fetch_release(tag=f"v{to_version}")
         if info["version"] != to_version:
@@ -1337,7 +1443,7 @@ def _download_and_verify(job_id: int, to_version: str) -> str:
     except (httpx.HTTPError, ValidationError, OSError) as exc:
         _remove_quietly(tarball, checksum_file, signature_file)
         _fail_step(job_id, "download", str(exc))
-    _step(job_id, "download", "ok", f"{size} bytes from {tarball_url}")
+    _step(job_id, "download", "ok", f"{size} bytes from {_display_url(tarball_url)}")
 
     # (d) SHA256 BEFORE anything touches the archive contents.
     try:
@@ -2027,7 +2133,7 @@ def restore_database_backup(params: dict) -> dict:
 def get_status(params: dict | None = None) -> dict:
     """Op `update.status`: everything the admin UI's update card needs in
     one call. Serves the cached check (may refresh if the 1h cache
-    expired); never forces a GitHub call -- that's update.check force=True.
+    expired); never forces an update-server call -- that's update.check force=True.
     """
     info = check({})
     with write_session() as session:
@@ -2100,6 +2206,9 @@ def notify_if_update_available() -> dict:
     if not sender or not recipient:
         logger.info("update %s available but admin email/sender not configured -- not emailing", latest)
         return {**info, "notified": False}
+    changelog = (info.get("changelog") or "").strip()
+    if len(changelog) > 4000:
+        changelog = changelog[:4000].rstrip() + "\n..."
     try:  # noqa: SIM105
         notifications._send_email(
             sender, recipient,
@@ -2107,8 +2216,9 @@ def notify_if_update_available() -> dict:
             f"A new Boron release is available.\n\n"
             f"  Current version: {info['current_version']}\n"
             f"  Latest version:  {latest}\n"
-            f"  Changelog:       {info['changelog_url']}\n\n"
-            f"Apply it from the admin panel: Updates page -> Update now.\n",
+            f"  Release notes:   {info.get('changelog_url') or RELEASE_NOTES_URL}\n\n"
+            + (f"What's new:\n\n{changelog}\n\n" if changelog else "")
+            + "Apply it from the admin panel: Updates page -> Update now.\n",
         )
     except OSError as exc:
         logger.warning("could not send update-available email: %s", exc)

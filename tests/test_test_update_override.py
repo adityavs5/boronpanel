@@ -119,10 +119,10 @@ def test_root_gate_loads_only_root_owned_private_loopback_descriptor(tmp_path, m
         lab_override.load_test_update_override()
 
 
-def test_marker_with_github_or_hostname_source_is_rejected(tmp_path, monkeypatch):
+def test_marker_with_remote_or_hostname_source_is_rejected(tmp_path, monkeypatch):
     signer = Ed25519PrivateKey.generate()
     for source in (
-        "https://github.com/example/boron/releases",
+        "https://download.boronpanel.com/protected/releases",
         "http://localhost:8765/releases",
         "http://192.0.2.10:8765/releases",
     ):
@@ -183,6 +183,11 @@ def test_loopback_override_verifies_throwaway_release_end_to_end(
         return httpx.Response(200, content=assets[request.url.path.rsplit("/", 1)[-1]])
 
     monkeypatch.setattr(updates, "_transport", httpx.MockTransport(serve))
+    # The lab source needs no license key and never talks to the license server.
+    monkeypatch.setattr(updates.license_client, "read_key", lambda: None)
+    status = updates.check({"force": True})
+    assert status["configured"] is True and status["error"] is None
+    assert status["latest_version"] == VERSION
     latest = updates._fetch_release()
     assert latest["source"] == "test-loopback"
     assert updates._fetch_release_metadata(latest)["signed"] is True
@@ -203,25 +208,20 @@ def test_production_without_marker_rejects_throwaway_signature(
     archive = _archive()
     digest = hashlib.sha256(archive).digest()
     signature = signer.sign(signed_message(VERSION, digest))
-    repo = "example/boron"
-    prefix = f"https://github.com/{repo}/releases/download/v{VERSION}"
+    prefix = f"{settings.update_download_prefix}releases/{VERSION}/"
     release = {
-        "tag_name": f"v{VERSION}",
-        "html_url": f"https://github.com/{repo}/releases/tag/v{VERSION}",
-        "assets": [
-            {"name": f"boron-{VERSION}.tar.gz", "browser_download_url": f"{prefix}/boron-{VERSION}.tar.gz"},
-            {"name": f"boron-{VERSION}.sha256", "browser_download_url": f"{prefix}/boron-{VERSION}.sha256"},
-            {"name": f"boron-{VERSION}.tar.gz.sig", "browser_download_url": f"{prefix}/boron-{VERSION}.tar.gz.sig"},
-        ],
+        "format": 1, "channel": "stable", "version": VERSION,
+        "published_at": "2026-11-01T18:00:00Z", "changelog": "", "archive_size": len(archive),
+        "urls": {
+            kind: prefix + name.format(version=VERSION) + "?md5=dG9rZW4&expires=4102444800"
+            for kind, name in updates._RELEASE_FILES.items()
+        },
     }
 
     def serve(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "api.github.com":
+        if request.url.host == "license.boronpanel.com":
             return httpx.Response(200, json=release)
-        if request.url.host == "github.com":
-            return httpx.Response(302, headers={
-                "location": f"https://objects.githubusercontent.com/{request.url.path.rsplit('/', 1)[-1]}"
-            })
+        assert request.url.host == "download.boronpanel.com"
         name = request.url.path.rsplit("/", 1)[-1]
         if name.endswith(".sha256"):
             return httpx.Response(200, content=(digest.hex() + "  archive\n").encode())
@@ -230,7 +230,8 @@ def test_production_without_marker_rejects_throwaway_signature(
         return httpx.Response(200, content=archive)
 
     monkeypatch.setattr(updates, "_transport", httpx.MockTransport(serve))
-    monkeypatch.setattr(settings, "update_github_repo", repo)
+    monkeypatch.setattr(updates.license_client, "read_key", lambda: "BRN-ABCD-EFGH-JKLM-NPQR")
+    monkeypatch.setattr(updates.license_client, "install_id", lambda: "install-0001")
     job = _job()
     with pytest.raises(updates._StepFailed):
         updates._download_and_verify(job, VERSION)

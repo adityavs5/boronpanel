@@ -166,7 +166,7 @@ def test_preflight_and_database_restore_forward_safety_proof(as_identity, daemon
 
 
 def test_update_channel_admin_only_and_validated(as_identity, daemon_stub):
-    daemon_stub['answers']['update.channel'] = {'channel': 'beta', 'branch': 'beta'}
+    daemon_stub['answers']['update.channel'] = {'channel': 'beta', 'release_channel': 'beta'}
     assert as_identity(CUSTOMER).post('/api/v1/admin/update/channel', json={'channel': 'beta'}).status_code == 403
     client = as_identity(ADMIN)
     assert client.post('/api/v1/admin/update/channel', json={'channel': 'unknown'}).status_code == 422
@@ -174,3 +174,11 @@ def test_update_channel_admin_only_and_validated(as_identity, daemon_stub):
     assert response.status_code == 200
     assert response.json()['channel'] == 'beta'
     assert daemon_stub['calls'][-1] == ('update.channel', {'channel': 'beta'})
+
+
+def test_update_channel_still_accepts_legacy_development_tier(as_identity, daemon_stub):
+    daemon_stub['answers']['update.channel'] = {'channel': 'development', 'release_channel': 'beta'}
+    response = as_identity(ADMIN).post('/api/v1/admin/update/channel', json={'channel': 'development'})
+    assert response.status_code == 200
+    assert response.json()['release_channel'] == 'beta'
+    assert daemon_stub['calls'][-1] == ('update.channel', {'channel': 'development'})
