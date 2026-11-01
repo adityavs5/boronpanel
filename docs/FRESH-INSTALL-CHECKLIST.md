@@ -2,8 +2,8 @@
 
 This is the operator runbook for a new Ubuntu 24.04 amd64 server. It is a
 static trace of the current `scripts/install.sh`; it does not replace the
-installer and it does not require running any commands from this repository
-before the clone step.
+installer. The signed launcher at `https://download.boronpanel.com/install.sh`
+downloads and verifies the release, then runs that installer.
 
 ## Before you start
 
@@ -16,6 +16,10 @@ before the clone step.
       not register a domain or change an external DNS provider.
 - [ ] Decide whether to use the built-in PowerDNS provider (the default) or
       Cloudflare for individual zones. Cloudflare is optional.
+- [ ] Have your Boron Panel license key (`BRN-XXXX-XXXX-XXXX-XXXX`) from
+      [boronpanel.com](https://boronpanel.com). The license binds to the
+      server's public IP on activation. Installing without a key is supported;
+      the admin area then shows only the License page until a key is added.
 - [ ] If using top-country site statistics, create a free MaxMind account and
       have a GeoLite2-Country license key ready. Leaving it blank is supported.
 
@@ -24,28 +28,31 @@ before the clone step.
 Run in a root shell on Ubuntu 24.04 with `curl` installed, from an empty directory:
 
 ```bash
-curl -fsSLo install.sh https://raw.githubusercontent.com/adityavs5/boronpanel/master/install.sh && bash install.sh
+curl -fsSLo install.sh https://download.boronpanel.com/install.sh && bash install.sh --license BRN-XXXX-XXXX-XXXX-XXXX
 ```
 
-This launcher installs the pinned v3.2.1 source release. The [manual source-checkout instructions](../README.md#install-a-release) remain available. Append `--profile minimal` or `--profile standard` to `bash install.sh` if needed. The existing source installer is unchanged. For `--dry-run`, use the source checkout directly.
+The launcher downloads the current stable release, verifies the manifest's
+Ed25519 signature and the archive's SHA-256, and only then runs
+`scripts/install.sh` from the verified archive. `--license` is optional; with
+a key, the installer checks it with `license.boronpanel.com` before changing
+anything and activates it at the end. Append `--profile minimal` or
+`--profile standard` if needed. Other launcher options: `--verify-only`
+(download and verify, install nothing), `--version X.Y.Z` (a specific release)
+and `--channel beta`. Installer options such as `--dry-run` are passed through.
 
-
-The installer derives its source directory from the script path, so use a real
-checkout rather than piping `install.sh` to `bash`.
-
-For an unattended run, set these before invoking the script (protect the shell
-history and process environment appropriately):
+For an unattended run, set these in a root shell before invoking the launcher
+(protect the shell history and process environment appropriately):
 
 ```bash
 export FH_NONINTERACTIVE=1
+export FH_LICENSE_KEY=BRN-XXXX-XXXX-XXXX-XXXX   # optional; or pass --license
 export FH_PANEL_DOMAIN=panel.example.com
 export FH_LE_EMAIL=admin@example.com
 export FH_ADMIN_USER=admin
 export FH_ADMIN_PASSWORD='use-a-long-unique-password'
 export FH_SERVER_IP=203.0.113.10       # optional; otherwise auto-detected
 export FH_MAXMIND_LICENSE_KEY=''       # optional; blank disables GeoLite2
-sudo --preserve-env=FH_NONINTERACTIVE,FH_PANEL_DOMAIN,FH_LE_EMAIL,FH_ADMIN_USER,FH_ADMIN_PASSWORD,FH_SERVER_IP,FH_MAXMIND_LICENSE_KEY \
-  bash scripts/install.sh
+bash install.sh
 ```
 
 ## Installer prompts and values
@@ -65,7 +72,13 @@ below are taken directly from `scripts/install.sh`.
 4. **Admin password** (`FH_ADMIN_PASSWORD`): if not preseeded, the
    `create_admin.py` step securely prompts for `Password (min 12 chars)`.
    Prefer this prompt over putting a password in shell history.
-5. **Optional MaxMind GeoLite2 license key** (`FH_MAXMIND_LICENSE_KEY`): the
+5. **Boron license key** (`--license` or `FH_LICENSE_KEY`): prompted for when
+   not given; blank installs without a license, to be added later on the
+   License page. An unknown, suspended, cancelled, expired or IP-mismatched
+   key stops the installer before it changes the system. If the license
+   server is unreachable, installation continues and the key is activated
+   later from the License page.
+6. **Optional MaxMind GeoLite2 license key** (`FH_MAXMIND_LICENSE_KEY`): the
    hidden prompt accepts a blank value. A key installs GeoLite2-Country and a
    weekly refresh; blank means top-countries cards are unavailable while the
    rest of the panel works.
@@ -134,7 +147,7 @@ PowerDNS bind configuration is disabled. `imapsync` is exposed at the stable
 
 ### 7. Deploy code, Python environment, and web UI
 
-- Rsyncs the checkout to `/opt/boron`, excluding `.git`, `.venv`, and frontend
+- Rsyncs the unpacked release to `/opt/boron`, excluding `.git`, `.venv`, and frontend
   dependencies; applies safe directory modes.
 - Creates `/opt/boron/.venv`, upgrades pip, and installs the pinned
   `requirements.txt` (including Certbot and both DNS plugins).

@@ -1,151 +1,236 @@
 # Releasing Boron
 
-Boron ships as **versioned release tarballs attached to GitHub
-releases**. Production servers never `git pull` — they consume these
-tarballs through the panel's built-in update system (or an operator
-downloads one manually). The pinned Ed25519 publisher signature and SHA256
-checksum are verified before a single byte is extracted.
+Owner's guide. Boron releases are built and signed on the owner's machine and
+published to our own distribution server. GitHub is not used for releases,
+installs or updates, and nothing is pushed anywhere.
 
-## The artifacts
-
-Every release `vX.Y.Z` carries:
-
-| Asset | What it is |
+| Host | Serves |
 |---|---|
-| `boron-X.Y.Z.tar.gz` | The deployable tree: `api/`, `daemon/`, `shared/`, `scripts/`, `deploy/`, `templates/`, `static/` (with the **freshly built** SPA bundle in `static/dist`), `frontend/` source, `tests/` (used by the updater's pre-flight), `docs/`, `version.py`, `requirements.txt`, `pytest.ini`, `README.md` — all under a single `boron-X.Y.Z/` top-level directory. |
-| `boron-X.Y.Z.sha256` | `sha256sum` output for the tarball. The update daemon aborts on any mismatch. |
-| `boron-X.Y.Z.tar.gz.sig` | Mandatory detached Ed25519 signature over the release version and archive SHA256 digest. |
-| `boron-X.Y.Z.metadata.json` | Signed compatibility, service-reload and runtime-rewrite declarations. |
-| `boron-X.Y.Z.metadata.json.sig` | Mandatory detached signature for the metadata document. |
+| `download.boronpanel.com` | `install.sh`, the public signed **source** archives for fresh installs, and the **protected** panel update releases (`/protected/`, reachable only through short-lived `secure_link` URLs) |
+| `license.boronpanel.com` | License API. `POST /v1/updates` checks the license and gives a licensed panel short-lived download links for one release |
 
-What is **never** in the tarball, by construction: the tarball is built
-from `git archive HEAD` (tracked files only), so `secrets.env`,
-`api-secrets.env`, `*.db`, logs, `.venv`, `node_modules` and `.git` cannot
-leak into it — none of those are tracked. `scripts/release.sh` additionally
-refuses to package if anything secret/database/log-shaped is found in the
-staged tree, and `tests/test_release.py` pins the same invariants. The
-`frontend/` source tree is retained because fresh installation rebuilds the
-SPA; ignored dependencies and build caches remain excluded.
+Both run on `104.234.179.66` (web root `/srv/download`, license server in
+`/opt/boron-license`). See [LICENSING-AND-UPDATES.md](LICENSING-AND-UPDATES.md)
+for the design.
 
-## Prerequisites (release machine, not production)
+## What a release contains
 
-- A clean checkout with the `origin` remote pointing at the GitHub repo
-  (or pass `--repo OWNER/REPO` / set `FH_RELEASE_REPO`).
-- [`gh`](https://cli.github.com/) installed and authenticated
-  (`gh auth login`) with permission to create releases.
-- Node 20.19+ or 22.12+ / npm (frontend build) and the repo `.venv` (test suite).
-- Set `BORON_RELEASE_SIGNING_KEY_FILE` to the protected Ed25519 private PEM
-  matching `deploy/release-ed25519-public.hex`. The private PEM must never
-  enter Git, release archives, backups shipped with the panel, or logs. Keep
-  a protected off-host recovery copy; loss of the key requires an explicit
-  operator-managed trust-key migration.
+`scripts/dist_release.sh` publishes two things from the committed `HEAD`.
+
+**Panel update release** (license-gated) in
+`/srv/download/protected/releases/X.Y.Z/`:
+
+| File | What it is |
+|---|---|
+| `boron-X.Y.Z.tar.gz` | Runtime tree under `boron-X.Y.Z/`: tracked files from `git archive HEAD` plus the prebuilt SPA in `static/dist` |
+| `boron-X.Y.Z.sha256` | `sha256sum` output for the archive |
+| `boron-X.Y.Z.tar.gz.sig` | 64-byte Ed25519 signature over the version and archive digest |
+| `boron-X.Y.Z.metadata.json` | Signed `release-metadata.json`: channel, minimum source version, service reloads, runtime rewrites |
+| `boron-X.Y.Z.metadata.json.sig` | Signature of the metadata document |
+| `release.json` | Index read by the license server: version, channel, `published_at`, this version's CHANGELOG section, file names, archive size |
+
+`protected/channels/<channel>.json` is a copy of the current `release.json`
+for `stable` or `beta`.
+
+**Public source release** (fresh installs) in `/srv/download/releases/X.Y.Z/`:
+`boron-X.Y.Z.tar.gz` (plain `git archive HEAD`), `boron-X.Y.Z.manifest` and
+its signature, with `channels/<channel>.manifest(.sig)` and `/install.sh`. The
+launcher verifies the manifest with the public key embedded in `install.sh`.
+
+Never packaged: the archives come from tracked files only, so `secrets/`,
+`master`, `*.db`, logs, `.venv` and `node_modules` cannot get in, and the
+build refuses to continue if anything secret-, database- or log-shaped shows
+up in the staged tree. `licensing/` is `export-ignore`d.
+
+## Keys
+
+| Key | Where | Used for |
+|---|---|---|
+| Release signing key | `secrets/release-signing.key` on the owner's machine, plus an offline backup | Both signatures above and the source manifests. Public key `34f15d91f0324d873eb770e668577d36a1d4772232b4f3be938a16a559c43843`, pinned in `deploy/release-ed25519-public.hex` and embedded in `install.sh` |
+| Distribution SSH key | `master` on the owner's machine | Root SSH to `104.234.179.66` |
+
+The release key never goes on a server. `dist_release.sh` refuses a key that
+does not match `deploy/release-ed25519-public.hex` and `install.sh`.
+
+## Prerequisites
+
+- **Linux or WSL Ubuntu** for the publish step (GNU tar, `sha256sum`,
+  `openssl`, `ssh`).
+- A Python with the repository dependencies, given as `PYTHON` (for example
+  `~/bpaudit/.venv/bin/python` in WSL). The default is `.venv/bin/python`,
+  then `python3`.
+- Node 20.19+ or 22.12+ where the frontend is built. WSL has no Node, so build
+  `static/dist` on Windows and pass `--static-dir static/dist`.
+- The SSH key readable only by you. Under WSL, files on `/mnt/c` look
+  world-readable and `ssh` rejects them, so copy it once:
+  `install -m 600 master ~/.ssh/boron-dist` and set
+  `BORON_DIST_SSH_KEY=~/.ssh/boron-dist`.
+- The server allows 6 SSH connections per 30 seconds. A publish uses one.
 
 ## Cutting a release
 
-```bash
-# 1. Rehearse -- runs the FULL pipeline (tests, frontend build, tarball,
-#    checksum, self-verification) but bumps nothing and publishes nothing:
-scripts/release.sh --dry-run
+1. **Prepare the version.** Write the `## X.Y.Z` section at the top of
+   `CHANGELOG.md`; `release.json` carries it to the panels. Review
+   `release-metadata.json`: `channel` (`stable` or `beta`),
+   `minimum_source_version`, and the declared reloads and rewrites. Then
+   either let `scripts/release.sh X.Y.Z` bump `version.py`,
+   `frontend/package.json` and `frontend/package-lock.json`, run the full test
+   suite, build and verify the artifacts, and commit `release: vX.Y.Z` with a
+   local tag; or make those edits by hand, run the tests and commit.
+   `release.sh` never pushes or uploads.
+2. **Build the frontend** for that commit (on Windows):
 
-# 2. Release for real:
-scripts/release.sh --patch     # 1.0.0 -> 1.0.1 (default)
-scripts/release.sh --minor     # 1.0.0 -> 1.1.0
-scripts/release.sh --major     # 1.0.0 -> 2.0.0
-scripts/release.sh 2.1.0       # explicit target version
+   ```bash
+   cd frontend && npm ci && npm run build   # writes ../static/dist
+   ```
+
+3. **Rehearse** in WSL from the repository root. This builds, signs and
+   verifies everything into `dist/release-X.Y.Z/` and connects to nothing:
+
+   ```bash
+   export PYTHON=~/bpaudit/.venv/bin/python
+   export BORON_DIST_SSH_KEY=~/.ssh/boron-dist
+   scripts/dist_release.sh --dry-run --static-dir static/dist
+   ```
+
+4. **Publish:**
+
+   ```bash
+   scripts/dist_release.sh --static-dir static/dist
+   ```
+
+5. **Check it.** `bash install.sh --verify-only` on any Linux machine verifies
+   the public channel. On the demo panel (`demo.boronpanel.com`), **Updates →
+   Check now** must offer the new version and the update must complete.
+
+Without `--static-dir`, `dist_release.sh` runs `npm ci` and `npm run build`
+itself. `--channel` is only a confirmation: it must equal the channel signed
+into `release-metadata.json`. `--output-dir DIR` writes the artifacts to an
+empty directory instead of `dist/release-X.Y.Z/`. `--help` lists everything,
+including `BORON_RELEASE_SIGNING_KEY_FILE`, `BORON_DIST_HOST` and
+`BORON_DIST_ROOT`.
+
+## What `dist_release.sh` does
+
+1. **Pre-flight.** Tracked files must be committed; `HEAD` is what ships.
+   `version.py` and `frontend/package.json` must agree, `CHANGELOG.md` must
+   have the version's section, and the signing key must match the pinned
+   public key. The bundle in `--static-dir` must contain the version string,
+   so a stale build is refused.
+2. **Build** the runtime archive with the steps shared with `release.sh`
+   (`scripts/release_lib.sh`): stage `git archive HEAD`, add the SPA, write a
+   reproducible tarball (sorted members, root ownership, commit timestamps,
+   no gzip timestamp) and its `.sha256`.
+3. **Sign** archive and metadata with `scripts/sign_release.py`, then
+   **self-verify** both signatures against
+   `deploy/release-ed25519-public.hex`, the checksum, member paths, the
+   packaged `version.py` and the runtime essentials.
+4. **Write `release.json`.**
+5. **Build the public source archive and manifest** with the same code as
+   `scripts/dist_publish.sh` (`scripts/dist_common.sh`) and self-verify the
+   manifest signature.
+6. **Upload** everything over one SSH connection into a private staging
+   directory under `/srv/download`. The server checks every checksum and
+   refuses a version that is already published with different bytes before
+   it changes anything. It then moves the protected version directory into
+   place in one rename, replaces `protected/channels/<channel>.json`
+   atomically, and finally publishes the source archive, its channel manifest
+   and `install.sh`.
+
+Published versions are immutable. Re-running the same commit is safe: the
+archives are byte-identical, so the server reports "already published with
+identical bytes" and keeps the original `release.json`. Any change, even to
+the CHANGELOG, needs a new version number. To move a release from beta to
+stable, publish a new version with `"channel": "stable"`; the channel is part
+of the signed metadata.
+
+## Only the launcher or source archive
+
+`scripts/dist_publish.sh [--channel stable|beta] [--no-channel]` publishes
+just the public source archive and `install.sh` for the current `HEAD`, with
+the same immutability rules. Use it to ship a launcher fix. It reads the key
+from `BORON_SIGNING_KEY`, then `BORON_RELEASE_SIGNING_KEY_FILE`, then
+`secrets/release-signing.key`.
+
+## License server
+
+Customer licenses are managed on the server with the `boron-license` CLI
+(`issue`, `list`, `show`, `suspend`, `resume`, `rebind`, `update`, `tier`,
+`token`); see [licensing/README.md](../licensing/README.md). Deploy changes to
+the service by uploading `licensing/` and running `bash
+deploy/install_server.sh` there.
+
+`POST /v1/updates` reads `BORON_LICENSE_RELEASES_DIR` (default
+`/srv/download/protected`) and signs links with
+`BORON_LICENSE_DOWNLOAD_SECRET`, which nginx shares through
+`secure_link_md5`. Links last 15 minutes and are bound to the caller's IP.
+Without the secret the endpoint answers `503 updates_unavailable`. A
+`stable` license gets stable releases; a `beta` license may ask for either.
+
+## How a panel updates
+
+**Updates → Check now** sends the license key and install ID from
+`/etc/boron` to `POST https://license.boronpanel.com/v1/updates` for the
+panel's channel. A panel without a key reports that a license is needed. The
+answer names the version and gives one short-lived URL per file, all under
+`update_download_prefix` (`https://download.boronpanel.com/protected/`). The
+updater downloads over HTTPS without following redirects, checks size limits,
+the SHA-256, the publisher signature with the pinned key and the signed
+metadata, then extracts into a staging tree, runs its pre-flight, swaps
+`/opt/boron` and rolls back automatically if the health checks fail.
+
+The pre-flight is a focused safety suite (update rules, transactions, RPC,
+finalizer rollback and mailbox recovery, about two minutes). The full suite
+was already run before the release. Set `update_preflight_full_tests = true`
+in `boron.toml` to run the full suite on the panel instead.
+
+`update_channel` in `/etc/boron/boron.toml` (Stable or Beta on the Updates
+page) selects the channel. Changing it installs nothing, and switching back
+to Stable never downgrades.
+
+## Panels still on 3.2.x
+
+3.2.x panels look for updates on GitHub and trust only the previous release
+key, so they never offer 3.3.0 by themselves. 3.2.x was a pre-commercial beta.
+Lab and demo servers can be moved with the root-only loopback test source
+(`/etc/boron/test-update-override.enabled` plus
+`/etc/boron/test-update-source.json` with the new public key, as in
+`tests/test_test_update_override.py`) serving the files from
+`dist/release-3.3.0/protected/`. Any other 3.2.x server needs a support-led
+move; it cannot pick up 3.3.0 from the new servers alone.
+
+## Checks without CI
+
+The repository no longer has hosted CI. Run the same scripts locally (Linux or
+WSL) before a release:
+
+```bash
+scripts/ci_lint.sh            # ruff correctness rules, schema migrations, JS syntax
+scripts/ci_secret_scan.sh     # detect-secrets against .secrets.baseline
+scripts/ci_backend.sh         # full backend suite with coverage; BORON_TEST_TMPDIR on a separate filesystem
+BORON_CI_ADMIN_PASSWORD="$(openssl rand -base64 30)" \
+BORON_CI_CUSTOMER_PASSWORD="$(openssl rand -base64 30)" \
+  scripts/ci_e2e.sh           # seeded Playwright smoke (after npm ci, npm run build, npx playwright install chromium)
+cd licensing && python -m pytest   # license server
 ```
 
-A real run, in order:
-
-1. **Pre-flight** — required tools, `gh auth status`, repo resolution, and
-   a **clean working tree** (the tarball is built from `HEAD`; uncommitted
-   changes would silently not ship).
-2. **Bump** — rewrites `version.py` (the single source of truth) and syncs
-   `frontend/package.json`. If any later step fails before the release
-   commit, the bump is automatically reverted.
-3. **Tests** — full `pytest` suite; any failure aborts the release.
-4. **Frontend build** — `npm ci && npm run build` into `static/dist`, so
-   the bundle always matches the source being released (the SPA bakes the
-   version in from `version.py` at build time).
-5. **Stage** — `git archive HEAD` into a temp dir under a
-   `boron-X.Y.Z/` prefix, overlaying the bumped `version.py` and the
-   freshly built `static/dist`; retains the installable `frontend/` source;
-   refuses to continue if
-   anything secret-shaped is present.
-6. **Artifacts** — deterministic-ish tarball (sorted members, root
-   ownership) into `dist/` (gitignored; override with `--output-dir`),
-   plus the `.sha256`.
-7. **Sign** — mandatory detached Ed25519 signature, bound to version and
-   digest; aborts if the private key is missing or mismatched.
-8. **Self-verify** — Ed25519 signature and `sha256sum -c`, no members outside the version
-   prefix, no absolute/`..` paths, packaged `version.py` matches, runtime
-   essentials present. These mirror the checks the update daemon runs.
-9. **Publish** — commit `release: vX.Y.Z`, annotated tag `vX.Y.Z`, push,
-   `gh release create` with all assets attached.
-
-## Flags you should rarely use
-
-- `--skip-tests` / `--skip-build` — local dry-run debugging only (used by
-  `tests/test_release.py`, which can't run pytest inside pytest). The release
-  command rejects either flag for a published release.
-- `--output-dir DIR` — relocate artifacts (default `dist/`).
-
-## How production consumes a release
-
-The daemon's `update.check` op polls
-`https://api.github.com/repos/OWNER/REPO/releases/latest` (the repo comes
-from `update_github_repo` in `/etc/boron/boron.toml`), compares
-`tag_name` against the running `version.py`, and surfaces "update
-available" in the admin UI. The one-click update job downloads the tarball
-**only** from `https://github.com/OWNER/REPO/releases/download/...`,
-verifies the pinned publisher signature and SHA256 against the `.sha256`
-asset before extraction,
-validates every tarball member against path traversal, stages into
-`/opt/boron-X.Y.Z/`, and atomically swaps the `/opt/boron`
-symlink. See the update-system checkpoints in `docs/` for the full design.
-
-The updater first runs a focused safety suite against the live install. This
-checks update/download rules, transaction boundaries, RPC, finalizer rollback,
-and mailbox recovery in about two minutes. It does not repeat the full suite
-because the release command has already run that suite against the new code.
-Set `update_preflight_full_tests = true` in `boron.toml` to restore the legacy
-full live preflight.
+`scripts/ci_backend.sh` accepts `BORON_TEST_SHARD` and `BORON_TEST_SHARDS`
+to split the suite. `scripts/ci_nightly_privileged.sh` runs the real
+installer and host checks and is only for a disposable Ubuntu 24.04 VM, as
+root. `scripts/test.sh full` is the usual full run; see
+[TESTING.md](TESTING.md).
 
 ## Troubleshooting
 
-- **"gh is not authenticated"** — `gh auth login`, or export
-  `GH_TOKEN`.
-- **"working tree is dirty"** — commit or stash; the tarball ships `HEAD`.
-- **"no 'origin' remote"** — `git remote add origin git@github.com:OWNER/REPO.git`
-  or pass `--repo OWNER/REPO`.
-- **Signing key missing or mismatched** — provide the correct protected PEM
-  through `BORON_RELEASE_SIGNING_KEY_FILE`; unsigned publication is refused.
-- A failed release run reverts the version bump and removes its temp
-  staging dir; artifacts already written to `dist/` are safe to delete.
-
-### Update tiers
-
-Administrators choose **Stable**, **Beta** or **Development** on Updates. The
-preference is `update_channel` in `/etc/boron/boron.toml`; old installations
-continue to use `stable`. Changing it clears discovery state, does not install
-anything, and is blocked while an update or rollback is active.
-
-| Tier | Source branch | GitHub release | Signed metadata `channel` |
-|---|---|---|---|
-| Stable | `master` | Normal/latest | `stable` (omitted means stable for older releases) |
-| Beta | `beta` | Prerelease, target `beta`, not latest | `beta` |
-| Development | `development` | Prerelease, target `development`, not latest | `development` |
-
-Branch pushes alone are **not** panel updates. Every tier needs the same five
-signed release assets. Before a preview release, set `channel` in the committed
-`release-metadata.json`, use a new unique numeric `x.y.z` version and build from
-its matching branch. `scripts/release.sh` checks the branch and sets the target
-and prerelease flags. The document inside the archive must match its separately
-signed metadata. Publisher-key, digest and archive checks remain mandatory.
-
-Preview discovery selects the highest eligible numeric version among the newest
-100 GitHub releases. No matching preview means no update is offered, rather than
-silently falling back to another tier. Stable uses GitHub's latest normal release.
-The installed version must be older than the offered version; switching back to
-Stable never forces a downgrade. Use the existing compatible rollback action or
-wait for a newer stable release. Preview publishing must not mark a prerelease
-as latest. No Beta or Development releases are created merely by enabling this UI.
+- **"tracked files have uncommitted changes"**: commit or stash. Untracked
+  files are ignored.
+- **"signing key does not match deploy/release-ed25519-public.hex"**: wrong
+  PEM in `BORON_RELEASE_SIGNING_KEY_FILE`.
+- **"the frontend in … was not built for X.Y.Z"**: rebuild `static/dist`
+  after the version bump.
+- **"already published with different bytes"**: that version is live and
+  immutable; bump the version.
+- **`ssh` says the key has bad permissions**: copy it to `~/.ssh` with mode
+  0600 (see Prerequisites).
+- **Upload interrupted**: re-run the same command. Nothing is published until
+  every file has been checked, and identical files are accepted.
