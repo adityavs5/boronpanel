@@ -101,6 +101,27 @@ from version import BORON_VERSION
 
 logger = logging.getLogger("borond.updates")
 
+
+class _RedactQueryFilter(logging.Filter):
+    """Strip query strings from httpx's per-request INFO lines.
+
+    Release download links carry a secure_link token in their query
+    (?md5=...&expires=...). httpx logs "HTTP Request: GET <url>" for every
+    request, which would copy those tokens into daemon.log and the systemd
+    journal; the journal cannot be redacted afterwards.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and any(isinstance(a, httpx.URL) for a in record.args):
+            record.args = tuple(
+                a.copy_with(query=None) if isinstance(a, httpx.URL) else a for a in record.args
+            )
+        return True
+
+
+_HTTPX_LOG_FILTER = _RedactQueryFilter()
+logging.getLogger("httpx").addFilter(_HTTPX_LOG_FILTER)
+
 # Test hook, same convention as daemon/cloudflare.py's _transport: tests
 # swap in an httpx.MockTransport so nothing ever hits the real update server.
 _transport: httpx.BaseTransport | None = None
@@ -303,10 +324,11 @@ def _license_credentials() -> tuple[str, str]:
     return key, install
 
 
-def _update_server_error(response: httpx.Response, channel: str, wanted: str | None) -> ValidationError:
+def _update_server_error(status_code: int, content: bytes, channel: str,
+                         wanted: str | None) -> ValidationError:
     """Map a refusal from POST /v1/updates to an admin-facing explanation."""
     try:
-        body = response.json()
+        body = json.loads(content)
     except ValueError:
         body = None
     code = body.get("error") if isinstance(body, dict) else None
@@ -316,7 +338,9 @@ def _update_server_error(response: httpx.Response, channel: str, wanted: str | N
             "Check the key under Admin > License."
         )
     if code == "license_not_usable":
-        reason = _LICENSE_REASONS.get(body.get("reason"), "the license is not active")
+        reason = body.get("reason")
+        reason = _LICENSE_REASONS.get(reason) if isinstance(reason, str) else None
+        reason = reason or "the license is not active"
         return ValidationError(f"Updates are unavailable because {reason}. See Admin > License.")
     if code == "channel_not_allowed":
         return ValidationError(
@@ -329,7 +353,7 @@ def _update_server_error(response: httpx.Response, channel: str, wanted: str | N
         return NoPublishedRelease(f"No {channel} release has been published yet")
     if code == "updates_unavailable":
         return ValidationError("The update server is temporarily unavailable. Try again later.")
-    return ValidationError(f"update server answered HTTP {response.status_code}")
+    return ValidationError(f"update server answered HTTP {status_code}")
 
 
 def _release_asset_url(urls: dict, kind: str, version: str, prefix: str) -> str:
@@ -410,18 +434,25 @@ def _fetch_release(tag: str | None = None) -> dict:
         body["version"] = wanted
     try:
         with httpx.Client(timeout=20.0, transport=_transport, follow_redirects=False) as client:
-            response = client.post(endpoint, json=body, headers={
-                "Accept": "application/json", "User-Agent": f"boron-panel/{BORON_VERSION}"})
+            with client.stream("POST", endpoint, json=body, headers={
+                    "Accept": "application/json",
+                    "User-Agent": f"boron-panel/{BORON_VERSION}"}) as response:
+                status_code = response.status_code
+                if 300 <= status_code < 400:
+                    raise ValidationError("update server answered with a redirect; refusing to follow it")
+                # Success and error bodies alike are read under the cap, so a
+                # misbehaving server cannot make the daemon buffer unbounded data.
+                content = bytearray()
+                for chunk in response.iter_bytes():
+                    content += chunk
+                    if len(content) > _MAX_UPDATE_RESPONSE_BYTES:
+                        raise ValidationError("update server response is too large")
     except httpx.HTTPError as exc:
         raise ValidationError(f"update server unreachable: {exc.__class__.__name__}") from exc
-    if 300 <= response.status_code < 400:
-        raise ValidationError("update server answered with a redirect; refusing to follow it")
-    if response.status_code != 200:
-        raise _update_server_error(response, channel, wanted)
-    if len(response.content) > _MAX_UPDATE_RESPONSE_BYTES:
-        raise ValidationError("update server response is too large")
+    if status_code != 200:
+        raise _update_server_error(status_code, bytes(content), channel, wanted)
     try:
-        data = response.json()
+        data = json.loads(content)
     except ValueError as exc:
         raise ValidationError("update server returned invalid JSON") from exc
     return _parse_update_response(data, channel, wanted)

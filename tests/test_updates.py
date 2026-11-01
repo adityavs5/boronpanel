@@ -395,6 +395,35 @@ def test_check_reports_license_not_usable(isolated_db, monkeypatch, reason, text
     assert out["release_availability"] is None
 
 
+@pytest.mark.parametrize("reason", [["x"], {"a": 1}, 7, None])
+def test_check_tolerates_malformed_license_reason(isolated_db, monkeypatch, reason):
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(
+        403, json={"error": "license_not_usable", "reason": reason}))
+    out = updates.check({"force": True})
+    assert out["error"] == "Updates are unavailable because the license is not active. See Admin > License."
+
+
+@pytest.mark.parametrize("status", [200, 403])
+def test_oversized_update_server_body_is_refused(isolated_db, monkeypatch, status):
+    big = b"{" + b" " * (updates._MAX_UPDATE_RESPONSE_BYTES + 1) + b"}"
+    _serve_update_server(monkeypatch, lambda body: httpx.Response(
+        status, content=big, headers={"content-type": "application/json"}))
+    with pytest.raises(ValidationError, match="too large"):
+        updates._fetch_release()
+    out = updates.check({"force": True})
+    assert "too large" in out["error"]
+
+
+def test_download_tokens_stay_out_of_httpx_logs(isolated_db, monkeypatch, caplog):
+    import logging
+    _mock_update_server(monkeypatch)
+    with caplog.at_level(logging.INFO):
+        updates.check({"force": True})
+    lines = [r.getMessage() for r in caplog.records if r.name == "httpx"]
+    assert any("download.boronpanel.com/protected/releases/" in line for line in lines)
+    assert not any("md5=" in line or "expires=" in line for line in lines)
+
+
 def test_check_reports_channel_not_allowed(isolated_db, monkeypatch):
     monkeypatch.setattr(settings, "update_channel", "beta")
     requests = []
