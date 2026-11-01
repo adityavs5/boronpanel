@@ -151,7 +151,7 @@ def _run(session, args):
         return {"schema": "ready", "tiers_created": service.seed_tiers(session)}
     if args.command == "tier":
         if args.tier_command == "set":
-            service.upsert_tier(session, args.name, None if args.unlimited else args.max_accounts)
+            service.upsert_tier(session, args.name, None if args.unlimited else args.max_accounts, actor=actor)
         return [{"name": t.name, "max_accounts": t.max_accounts}
                 for t in session.scalars(select(Tier).order_by(Tier.id))]
     if args.command == "issue":

@@ -1,22 +1,23 @@
 """HTTP API served behind nginx at license.boronpanel.com.
 
-Client endpoints (/v1/activate, /v1/check) are called by panels. Admin
-endpoints (/v1/admin/...) need a bearer token created with the CLI.
+Client endpoints (/v1/activate, /v1/check, /v1/updates) are called by panels.
+Admin endpoints (/v1/admin/...) need a bearer token created with the CLI; the
+admin portal at /admin is a static page that calls them with such a token.
 """
 
 from collections.abc import Iterator
 from datetime import datetime, timezone
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from boron_license import config, service
 from boron_license.db import make_engine, make_sessionmaker
-from boron_license.models import AdminToken, Tier
+from boron_license.models import AdminToken
 from boron_license.service import LicenseError
 from boron_license.signing import Signer, load_private_key, public_pem
 
@@ -62,6 +63,43 @@ class RebindRequest(BaseModel):
     ip: str | None = Field(default=None, max_length=45)
 
 
+class UpdatesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    license_key: str = Field(max_length=64)
+    install_id: str = Field(pattern=r"^[A-Za-z0-9-]{8,64}$")
+    channel: Literal["stable", "beta"] = "stable"
+    # An exact release to fetch (reinstall or pinned upgrade); default: the
+    # channel's current release.
+    version: str | None = Field(default=None, max_length=20, pattern=r"^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$")
+    current_version: str = Field(default="", max_length=32, pattern=r"^[0-9A-Za-z.+-]*$")
+
+
+class TierRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(max_length=40)
+    # None means unlimited hosting accounts.
+    max_accounts: int | None = Field(default=None, ge=1, le=10_000_000)
+
+
+ADMIN_DIR = Path(__file__).resolve().parent / "admin"
+ADMIN_ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
+                "app.css": "text/css; charset=utf-8"}
+# Same-origin only, no inline code and no third parties. The API is same-origin
+# too, so connect-src 'self' covers it.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+                               "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; "
+                               "frame-ancestors 'none'",
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+}
+
+
 def _utc(value: datetime | None) -> datetime | None:
     if value is not None and value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -74,10 +112,19 @@ def create_app(settings: config.Settings | None = None, sessions: sessionmaker[S
     sessions = sessions or make_sessionmaker(make_engine(settings.database_url))
     signer = signer or Signer(load_private_key(settings.signing_key_path))
     app = FastAPI(title="Boron license server", docs_url=None, redoc_url=None, openapi_url=None)
+    # Read once: the portal is part of the deployed code, not user content.
+    admin_assets = {name: (ADMIN_DIR / name).read_bytes() for name in ADMIN_ASSETS}
 
     @app.exception_handler(LicenseError)
     async def license_error(_request: Request, exc: LicenseError) -> JSONResponse:
-        return JSONResponse({"error": exc.code}, status_code=exc.http_status)
+        return JSONResponse({"error": exc.code, **exc.extra}, status_code=exc.http_status)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        return response
 
     def session_scope() -> Iterator[Session]:
         # Routes commit through transact() before responding; anything left
@@ -135,6 +182,30 @@ def create_app(settings: config.Settings | None = None, sessions: sessionmaker[S
     def check(body: ClientRequest, request: Request, session: SessionDep) -> dict:
         return _client_call(body, request, session, bind=False)
 
+    @app.post("/v1/updates")
+    def updates(body: UpdatesRequest, request: Request, session: SessionDep) -> dict:
+        return transact(session, lambda: service.updates(
+            session, raw_key=body.license_key, install_id=body.install_id, ip=client_ip(request),
+            channel=body.channel, version=body.version, current_version=body.current_version,
+            releases_dir=settings.releases_dir, secret=settings.download_secret,
+            base_url=settings.download_base_url, lifetime=settings.link_lifetime))
+
+    # --- Admin portal (static; every action goes through the admin API) -----
+
+    @app.get("/admin", include_in_schema=False)
+    def admin_page() -> Response:
+        return Response(admin_assets["index.html"], media_type=ADMIN_ASSETS["index.html"])
+
+    @app.get("/admin/", include_in_schema=False)
+    def admin_slash() -> RedirectResponse:
+        return RedirectResponse("/admin", status_code=308)
+
+    @app.get("/admin/{asset}", include_in_schema=False)
+    def admin_asset(asset: str) -> Response:
+        if asset not in ADMIN_ASSETS or asset == "index.html":
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        return Response(admin_assets[asset], media_type=ADMIN_ASSETS[asset])
+
     # --- Admin --------------------------------------------------------------
 
     def actor(token: AdminToken) -> str:
@@ -143,10 +214,20 @@ def create_app(settings: config.Settings | None = None, sessions: sessionmaker[S
     def described(session: Session, operation) -> dict:
         return transact(session, lambda: {"license": service.describe(operation())})
 
+    @app.get("/v1/admin/me")
+    def whoami(admin: AdminDep, session: SessionDep) -> dict:
+        return transact(session, lambda: {"token": admin.name})
+
     @app.get("/v1/admin/tiers")
     def list_tiers(admin: AdminDep, session: SessionDep) -> list[dict]:
-        return transact(session, lambda: [{"name": t.name, "max_accounts": t.max_accounts}
-                                          for t in session.scalars(select(Tier).order_by(Tier.id))])
+        return transact(session, lambda: service.list_tiers(session))
+
+    @app.post("/v1/admin/tiers")
+    def set_tier(body: TierRequest, admin: AdminDep, session: SessionDep) -> list[dict]:
+        def operation() -> list[dict]:
+            service.upsert_tier(session, body.name, body.max_accounts, actor=actor(admin))
+            return service.list_tiers(session)
+        return transact(session, operation)
 
     @app.get("/v1/admin/licenses")
     def list_licenses(admin: AdminDep, session: SessionDep, q: str = "", status: str | None = None,
@@ -170,6 +251,10 @@ def create_app(settings: config.Settings | None = None, sessions: sessionmaker[S
         return transact(session, lambda: {
             "license": service.describe(service.get_license(session, license_id)),
             "installations": service.installations(session, license_id)})
+
+    @app.get("/v1/admin/licenses/{license_id}/events")
+    def license_events(license_id: int, admin: AdminDep, session: SessionDep, limit: int = 50) -> list[dict]:
+        return transact(session, lambda: service.events(session, license_id, limit=limit))
 
     @app.patch("/v1/admin/licenses/{license_id}")
     def update_license(license_id: int, body: UpdateRequest, admin: AdminDep, session: SessionDep) -> dict:

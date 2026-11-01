@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Boron License Admin</title>
+<link rel="stylesheet" href="/admin/app.css">
+<script src="/admin/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo" aria-hidden="true">B</span><span>Boron <strong>Licenses</strong></span></div>
+  <div class="session" id="session" hidden>
+    <span class="muted" id="session-name"></span>
+    <button type="button" class="btn ghost small" id="sign-out">Sign out</button>
+  </div>
+</header>
+
+<main>
+  <section id="login" class="card narrow" hidden>
+    <h1>Admin sign-in</h1>
+    <p class="muted">Paste an admin API token (<code>boron-license token create NAME</code> on the server).
+      It is kept in this browser tab only and is forgotten when the tab closes.</p>
+    <form id="login-form" autocomplete="off">
+      <label for="token">Admin token</label>
+      <input id="token" name="token" type="password" spellcheck="false" autocomplete="off" required
+             placeholder="blt_…">
+      <div class="actions"><button type="submit" class="btn primary">Connect</button></div>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <nav class="tabs" role="tablist">
+      <button type="button" role="tab" class="tab" data-view="licenses">Licenses</button>
+      <button type="button" role="tab" class="tab" data-view="issue">Issue license</button>
+      <button type="button" role="tab" class="tab" data-view="tiers">Tiers</button>
+    </nav>
+
+    <section id="view-licenses" class="view">
+      <form id="search-form" class="toolbar" role="search">
+        <input id="search-q" type="search" placeholder="Email, name, IP, key, key hint or ID" aria-label="Search">
+        <select id="search-status" aria-label="Status">
+          <option value="">Any status</option>
+          <option value="active">Active</option>
+          <option value="suspended">Suspended</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <button type="submit" class="btn primary">Search</button>
+      </form>
+      <div class="card flush">
+        <div class="table-wrap">
+          <table class="table clickable">
+            <thead><tr><th>ID</th><th>Customer</th><th>Tier</th><th>Status</th><th>Server IP</th>
+              <th>Channel</th><th>Expires</th><th>Last check</th></tr></thead>
+            <tbody id="license-rows"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="license-empty" hidden>No licenses found.</p>
+      </div>
+    </section>
+
+    <section id="view-detail" class="view" hidden>
+      <div class="toolbar">
+        <button type="button" class="btn ghost" id="back">&larr; All licenses</button>
+        <button type="button" class="btn ghost" id="reload-detail">Refresh</button>
+      </div>
+      <div class="card">
+        <div class="detail-head">
+          <div>
+            <h1 id="d-title"></h1>
+            <p class="muted" id="d-subtitle"></p>
+          </div>
+          <span class="badge" id="d-status"></span>
+        </div>
+        <dl class="facts" id="d-facts"></dl>
+        <p class="notes" id="d-notes" hidden></p>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <h2>Status</h2>
+          <form id="status-form">
+            <label for="status-reason">Reason (recorded in the audit log)</label>
+            <input id="status-reason" maxlength="500" placeholder="e.g. unpaid invoice">
+            <div class="actions">
+              <button type="button" class="btn" data-status="suspend">Suspend</button>
+              <button type="button" class="btn" data-status="resume">Resume</button>
+              <button type="button" class="btn danger" data-status="cancel">Cancel license</button>
+            </div>
+          </form>
+        </div>
+        <div class="card">
+          <h2>Server IP</h2>
+          <form id="rebind-form">
+            <label for="rebind-ip">New IP address</label>
+            <input id="rebind-ip" maxlength="45" spellcheck="false" placeholder="203.0.113.10">
+            <div class="actions">
+              <button type="submit" class="btn">Bind to IP</button>
+              <button type="button" class="btn ghost" id="rebind-clear">Clear (bind on next activation)</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Details</h2>
+        <form id="edit-form" class="form-grid">
+          <div><label for="e-tier">Tier</label><select id="e-tier"></select></div>
+          <div><label for="e-channel">Update channel</label>
+            <select id="e-channel"><option value="stable">stable</option><option value="beta">beta</option></select></div>
+          <div><label for="e-expires">Expires (end of day, UTC)</label><input id="e-expires" type="date"></div>
+          <div class="check"><label><input id="e-no-expiry" type="checkbox"> Never expires</label></div>
+          <div><label for="e-name">Customer name</label><input id="e-name" maxlength="200" required></div>
+          <div><label for="e-email">Customer email</label><input id="e-email" type="email" maxlength="254" required></div>
+          <div class="wide"><label for="e-notes">Notes</label><textarea id="e-notes" rows="3" maxlength="5000"></textarea></div>
+          <div class="wide actions"><button type="submit" class="btn primary">Save changes</button></div>
+        </form>
+      </div>
+
+      <div class="card flush">
+        <h2 class="pad">Installations</h2>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Install ID</th><th>IP</th><th>Hostname</th><th>Version</th><th>Accounts</th>
+              <th>First seen</th><th>Last seen</th></tr></thead>
+            <tbody id="d-installs"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="d-installs-empty" hidden>No installation has checked in yet.</p>
+      </div>
+
+      <div class="card flush">
+        <h2 class="pad">Recent events</h2>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>When</th><th>Action</th><th>Actor</th><th>IP</th><th>Detail</th></tr></thead>
+            <tbody id="d-events"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="d-events-empty" hidden>No events.</p>
+      </div>
+    </section>
+
+    <section id="view-issue" class="view" hidden>
+      <div class="card">
+        <h1>Issue a license</h1>
+        <form id="issue-form" class="form-grid">
+          <div><label for="i-name">Customer name</label><input id="i-name" maxlength="200" required></div>
+          <div><label for="i-email">Customer email</label><input id="i-email" type="email" maxlength="254" required></div>
+          <div><label for="i-tier">Tier</label><select id="i-tier" required></select></div>
+          <div><label for="i-channel">Update channel</label>
+            <select id="i-channel"><option value="stable">stable</option><option value="beta">beta</option></select></div>
+          <div><label for="i-expires">Expires (end of day, UTC; empty = never)</label><input id="i-expires" type="date"></div>
+          <div><label for="i-ip">Server IP (optional; else bound on first activation)</label>
+            <input id="i-ip" maxlength="45" spellcheck="false"></div>
+          <div class="wide"><label for="i-notes">Notes</label><textarea id="i-notes" rows="3" maxlength="5000"></textarea></div>
+          <div class="wide actions"><button type="submit" class="btn primary">Issue license</button></div>
+        </form>
+      </div>
+      <div class="card key-card" id="issued" hidden>
+        <h2>License issued</h2>
+        <p><strong>This key is shown only once.</strong> Send it to the customer now; it cannot be recovered later.</p>
+        <div class="key-row">
+          <code id="issued-key"></code>
+          <button type="button" class="btn primary" id="copy-key">Copy</button>
+        </div>
+        <div class="actions"><button type="button" class="btn ghost" id="open-issued">Open license</button></div>
+      </div>
+    </section>
+
+    <section id="view-tiers" class="view" hidden>
+      <div class="grid">
+        <div class="card flush">
+          <h2 class="pad">Tiers</h2>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Name</th><th>Hosting accounts</th></tr></thead>
+              <tbody id="tier-rows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Create or change a tier</h2>
+          <form id="tier-form">
+            <label for="t-name">Name</label>
+            <input id="t-name" maxlength="40" pattern="[a-z0-9][a-z0-9-]*" required placeholder="enterprise">
+            <label for="t-max">Maximum hosting accounts (empty = unlimited)</label>
+            <input id="t-max" type="number" min="1" max="10000000" inputmode="numeric">
+            <div class="actions"><button type="submit" class="btn primary">Save tier</button></div>
+          </form>
+          <p class="muted small">Changing a tier's limit applies to every license on that tier at its next check.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

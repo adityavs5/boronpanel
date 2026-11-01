@@ -61,6 +61,39 @@ def test_admin_errors_are_reported(client, admin_headers):
     assert bad_email.json() == {"error": "invalid_customer_email"}
 
 
+def test_license_events_newest_first(client, admin_headers, issue):
+    license_id, key = issue()
+    other_id, _ = issue(customer_email="other@acme.example")
+    call(client, "activate", key)
+    client.post(f"/v1/admin/licenses/{license_id}/suspend", headers=admin_headers, json={"reason": "unpaid"})
+    events = client.get(f"/v1/admin/licenses/{license_id}/events", headers=admin_headers).json()
+    assert [row["action"] for row in events] == ["status:suspended", "activate", "bind", "issue"]
+    assert events[0]["actor"] == "token:tests" and events[0]["detail"]["reason"] == "unpaid"
+    assert events[1]["ip"] == "203.0.113.10" and events[1]["detail"]["result"] == "active"
+    limited = client.get(f"/v1/admin/licenses/{license_id}/events", headers=admin_headers, params={"limit": 1})
+    assert len(limited.json()) == 1
+    assert [row["action"] for row in client.get(f"/v1/admin/licenses/{other_id}/events",
+                                                headers=admin_headers).json()] == ["issue"]
+    assert client.get("/v1/admin/licenses/999/events", headers=admin_headers).status_code == 404
+    assert client.get(f"/v1/admin/licenses/{license_id}/events").status_code == 401
+
+
+def test_tiers_can_be_listed_and_set(client, admin_headers, sessions):
+    assert client.post("/v1/admin/tiers", json={"name": "x", "max_accounts": 1}).status_code == 401
+    tiers = client.post("/v1/admin/tiers", headers=admin_headers, json={"name": "Enterprise", "max_accounts": None})
+    assert tiers.status_code == 200 and {"name": "enterprise", "max_accounts": None} in tiers.json()
+    changed = client.post("/v1/admin/tiers", headers=admin_headers, json={"name": "pro", "max_accounts": 40}).json()
+    assert {"name": "pro", "max_accounts": 40} in changed
+    assert client.get("/v1/admin/tiers", headers=admin_headers).json() == changed
+    bad = client.post("/v1/admin/tiers", headers=admin_headers, json={"name": "no spaces", "max_accounts": 3})
+    assert bad.status_code == 400 and bad.json() == {"error": "invalid_tier_name"}
+    assert client.post("/v1/admin/tiers", headers=admin_headers,
+                       json={"name": "zero", "max_accounts": 0}).status_code == 422
+    with sessions() as session:
+        event = session.scalars(select(Event).where(Event.action == "tier:set").order_by(Event.id.desc())).first()
+        assert event.actor == "token:tests" and event.detail == {"name": "pro", "max_accounts": 40, "previous": 30}
+
+
 def test_search_finds_by_email_key_ip_and_id(client, admin_headers, issue):
     license_id, key = issue(customer_email="find@me.example")
     call(client, "activate", key, ip="192.0.2.77")

@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import NoReturn
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from boron_license import keys
+from boron_license import keys, releases
 from boron_license.models import (
     AdminToken,
     Event,
@@ -34,10 +36,12 @@ DOCUMENT_FORMAT = 1
 
 
 class LicenseError(Exception):
-    def __init__(self, code: str, http_status: int = 400):
+    def __init__(self, code: str, http_status: int = 400, **extra: str):
         super().__init__(code)
         self.code = code
         self.http_status = http_status
+        # Additional fields of the JSON error body, e.g. a refusal reason.
+        self.extra = extra
 
 
 def normalize_ip(raw: str) -> str:
@@ -67,6 +71,11 @@ def seed_tiers(session: Session) -> list[str]:
     return created
 
 
+def list_tiers(session: Session) -> list[dict]:
+    return [{"name": t.name, "max_accounts": t.max_accounts}
+            for t in session.scalars(select(Tier).order_by(Tier.id))]
+
+
 def get_tier(session: Session, name: str) -> Tier:
     tier = session.scalar(select(Tier).where(Tier.name == name.strip().lower()))
     if tier is None:
@@ -74,19 +83,21 @@ def get_tier(session: Session, name: str) -> Tier:
     return tier
 
 
-def upsert_tier(session: Session, name: str, max_accounts: int | None) -> Tier:
+def upsert_tier(session: Session, name: str, max_accounts: int | None, *, actor: str = "system") -> Tier:
     name = name.strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", name):
         raise LicenseError("invalid_tier_name")
-    if max_accounts is not None and max_accounts < 1:
+    if max_accounts is not None and not 1 <= max_accounts <= 10_000_000:
         raise LicenseError("invalid_max_accounts")
     tier = session.scalar(select(Tier).where(Tier.name == name))
+    previous = None if tier is None else tier.max_accounts
     if tier is None:
         tier = Tier(name=name, max_accounts=max_accounts)
         session.add(tier)
     else:
         tier.max_accounts = max_accounts
     session.flush()
+    record(session, actor=actor, action="tier:set", name=name, max_accounts=max_accounts, previous=previous)
     return tier
 
 
@@ -222,6 +233,15 @@ def installations(session: Session, license_id: int) -> list[dict]:
              "last_seen": aware(row.last_seen).isoformat()} for row in rows]
 
 
+def events(session: Session, license_id: int, *, limit: int = 50) -> list[dict]:
+    """Most recent audit records of one license, newest first."""
+    get_license(session, license_id)
+    rows = session.scalars(select(Event).where(Event.license_id == license_id)
+                           .order_by(Event.id.desc()).limit(max(1, min(limit, 500))))
+    return [{"id": row.id, "at": aware(row.at).isoformat(), "actor": row.actor, "action": row.action,
+             "ip": row.ip, "detail": row.detail or {}} for row in rows]
+
+
 def effective_status(license_: License, now: datetime) -> str:
     if license_.status != "active":
         return license_.status
@@ -305,6 +325,68 @@ def _document(license_: License, *, status: str, install_id: str, ip: str, now: 
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat(timespec="seconds") if value is not None else None
+
+
+def updates(session: Session, *, raw_key: str, install_id: str, ip: str, channel: str,
+            version: str | None, current_version: str = "", releases_dir: Path, secret: str,
+            base_url: str, lifetime: int, now: datetime | None = None) -> dict:
+    """Describe the release a usable license may install, with signed download links.
+
+    Unlike activate/check, refusals are plain errors: nothing here is cached by
+    the panel, and the files themselves carry the publisher's signature.
+    """
+    now = now or utcnow()
+    if not INSTALL_ID.fullmatch(install_id or ""):
+        raise LicenseError("invalid_install_id")
+    ip = normalize_ip(ip)
+    key = keys.normalize_key(raw_key)
+    license_ = None if key is None else session.scalar(
+        select(License).where(License.key_hash == keys.hash_secret(key)))
+    if license_ is None:
+        record(session, actor="client", action="unknown_key", ip=ip, endpoint="updates",
+               hint=keys.key_hint(key) if key else None)
+        raise LicenseError("invalid_license", 403)
+
+    detail = {"install_id": install_id, "channel": channel, "requested_version": version,
+              "current_version": current_version[:32]}
+
+    def refuse(result: str, code: str, http_status: int, *, note: str | None = None, **extra: str) -> NoReturn:
+        record(session, actor="client", action="updates", license_id=license_.id, ip=ip, result=result,
+               **detail, **({"note": note[:200]} if note else {}))
+        raise LicenseError(code, http_status, **extra)
+
+    status = effective_status(license_, now)
+    if status == "active":
+        if license_.bound_ip is None:
+            status = "not_activated"
+        elif license_.bound_ip != ip:
+            status = "ip_mismatch"
+    if status != "active":
+        refuse(status, "license_not_usable", 403, reason=status)
+    if channel not in releases.allowed_channels(license_.channel):
+        refuse("channel_not_allowed", "channel_not_allowed", 403)
+    if not secret:
+        refuse("updates_unavailable", "updates_unavailable", 503)
+    try:
+        index = (releases.version_index(releases_dir, version) if version
+                 else releases.channel_index(releases_dir, channel))
+    except releases.ReleaseNotFound as exc:
+        refuse("no_release", "no_release", 404, note=str(exc))
+    # An exact version is only served from a channel the request may use, so a
+    # stable license cannot name a beta build.
+    if index["channel"] not in releases.allowed_channels(channel):
+        refuse("channel_not_allowed", "channel_not_allowed", 403, note=f"release is {index['channel']}")
+
+    expires = int(now.timestamp()) + lifetime
+    urls = {role: releases.signed_url(base_url, releases.file_uri(index["version"], name), client_ip=ip,
+                                      secret=secret, expires=expires)
+            for role, name in index["files"].items()}
+    record(session, actor="client", action="updates", license_id=license_.id, ip=ip, result="ok",
+           **detail, version=index["version"])
+    return {"format": index["format"], "channel": index["channel"], "version": index["version"],
+            "published_at": index["published_at"], "changelog": index["changelog"],
+            "archive_size": index["archive_size"], "urls": urls,
+            "links_expire_at": _iso(datetime.fromtimestamp(expires, timezone.utc))}
 
 
 # --- Admin tokens ------------------------------------------------------------

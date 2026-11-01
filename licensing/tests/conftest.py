@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from boron_license import config, service
 from boron_license.api import create_app
@@ -49,6 +51,39 @@ def issue(sessions):
             session.commit()
             return license_.id, key
     return _issue
+
+
+DOWNLOAD_SECRET = "test-download-secret-0123456789abcdefghijklmnop"
+
+
+def write_release(root, version, channel="stable", *, publish=True, overrides=None):
+    """Lay out releases/<ver>/release.json (and channels/<channel>.json) like the release tooling."""
+    files = {"archive": f"boron-{version}.tar.gz", "checksum": f"boron-{version}.sha256",
+             "signature": f"boron-{version}.tar.gz.sig", "metadata": f"boron-{version}.metadata.json",
+             "metadata_signature": f"boron-{version}.metadata.json.sig"}
+    index = {"format": 1, "channel": channel, "version": version, "published_at": "2026-11-01T18:00:00Z",
+             "changelog": f"## {version}\n- Changes", "files": files, "sizes": {"archive": 123456}} | (overrides or {})
+    release_dir = root / "releases" / version
+    release_dir.mkdir(parents=True, exist_ok=True)
+    (release_dir / "release.json").write_text(json.dumps(index))
+    if publish:
+        (root / "channels").mkdir(parents=True, exist_ok=True)
+        (root / "channels" / f"{channel}.json").write_text(json.dumps(index))
+    return index
+
+
+@pytest.fixture
+def releases_dir(tmp_path):
+    root = tmp_path / "protected"
+    (root / "releases").mkdir(parents=True)
+    (root / "channels").mkdir()
+    return root
+
+
+@pytest.fixture
+def updates_client(sessions, signer, releases_dir):
+    settings = config.Settings(database_url="unused", download_secret=DOWNLOAD_SECRET, releases_dir=releases_dir)
+    return TestClient(create_app(settings, sessions, signer), client=PROXY)
 
 
 def call(client, endpoint, key, ip="203.0.113.10", install_id="install-0001", **extra):

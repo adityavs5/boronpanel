@@ -46,6 +46,62 @@ EOF
 fi
 install -d -m 0700 -o "$user" -g "$user" "$etc/keys"
 
+# Download link secret, shared with nginx secure_link; also added to configs
+# written by older versions of this script. Never printed.
+if ! grep -Eq '^BORON_LICENSE_DOWNLOAD_SECRET=[A-Za-z0-9_-]{43,}$' "$etc/config.env"; then
+    secret="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+    sed -i '/^BORON_LICENSE_DOWNLOAD_SECRET=/d' "$etc/config.env"
+    printf 'BORON_LICENSE_DOWNLOAD_SECRET=%s\n' "$secret" >> "$etc/config.env"
+    unset secret
+fi
+grep -q '^BORON_LICENSE_RELEASES_DIR=' "$etc/config.env" \
+    || echo 'BORON_LICENSE_RELEASES_DIR=/srv/download/protected' >> "$etc/config.env"
+download_secret="$(sed -n 's/^BORON_LICENSE_DOWNLOAD_SECRET=//p' "$etc/config.env" | tail -n 1)"
+[[ "$download_secret" =~ ^[A-Za-z0-9_-]{43,}$ ]] || { echo 'bad BORON_LICENSE_DOWNLOAD_SECRET' >&2; exit 1; }
+
+# Protected release tree: written by the release tooling as root, read by
+# nginx and by the license service (index files only).
+install -d -m 0755 -o root -g root /srv/download/protected /srv/download/protected/releases \
+    /srv/download/protected/channels
+
+# nginx snippet for download.boronpanel.com, holding the secret (root only).
+install -d -m 0755 /etc/nginx/snippets
+snippet=/etc/nginx/snippets/boron-download-protected.conf
+snippet_tmp="$(mktemp /etc/nginx/snippets/.boron-download-protected.XXXXXX)"
+sed "s|__DOWNLOAD_SECRET__|$download_secret|" "$src/deploy/nginx-download-protected.conf" > "$snippet_tmp"
+unset download_secret
+chown root:root "$snippet_tmp"
+chmod 0600 "$snippet_tmp"
+mv -f "$snippet_tmp" "$snippet"
+
+# Include it in the download server's 443 block, before its catch-all 404.
+dist_site=/etc/nginx/sites-available/boron-dist.conf
+include_status=2
+if [[ -f "$dist_site" ]]; then
+    # Exit 0 inserted (previous file kept as .bak-boron), 1 already there.
+    python3 "$src/deploy/nginx_include.py" "$dist_site" && include_status=0 || include_status=$?
+fi
+if [[ "$include_status" -le 1 ]] && command -v nginx >/dev/null 2>&1; then
+    if nginx -t -q; then
+        systemctl reload nginx
+    else
+        echo "nginx -t failed; nginx was not reloaded" >&2
+        if [[ "$include_status" -eq 0 ]]; then
+            echo "restoring $dist_site from $dist_site.bak-boron" >&2
+            cp -p "$dist_site.bak-boron" "$dist_site"
+        fi
+        exit 1
+    fi
+fi
+if [[ "$include_status" -gt 1 ]]; then
+    cat >&2 <<EOF
+NOTE: protected downloads are not enabled yet. The download.boronpanel.com
+443 server block must contain, before its 'location / { return 404; }':
+    include snippets/boron-download-protected.conf;
+Add it, then run: nginx -t && systemctl reload nginx
+EOF
+fi
+
 cat > /usr/local/bin/boron-license <<EOF
 #!/usr/bin/env bash
 # Admin CLI for the Boron license server; runs as the service user.
