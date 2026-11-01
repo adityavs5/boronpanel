@@ -481,3 +481,49 @@ def test_dist_publish_standalone_publishes_source_only(dist_repo):
     assert (server / "channels/stable.manifest").exists()
     assert (server / "install.sh").exists()
     assert not (server / "protected").exists()
+
+
+def _seed_newer_channels(server: Path) -> tuple[bytes, bytes]:
+    """Point both channels at a newer version than the one being published."""
+    (server / "protected/channels").mkdir(parents=True)
+    (server / "channels").mkdir()
+    index = (server / "protected/channels/stable.json")
+    index.write_text(json.dumps({"format": 1, "channel": "stable", "version": "99.0.0"}, indent=2) + "\n")
+    manifest = server / "channels/stable.manifest"
+    manifest.write_text("format=1\nversion=99.0.0\nchannel=stable\n")
+    return index.read_bytes(), manifest.read_bytes()
+
+
+def test_dist_release_refuses_to_move_channels_backwards(dist_repo):
+    server = dist_repo["server"]
+    index_before, manifest_before = _seed_newer_channels(server)
+    r = _dist(dist_repo, "--static-dir", str(dist_repo["static"]))
+    assert r.returncode != 0
+    assert "newer than" in r.stderr and "--allow-downgrade" in r.stderr
+    assert (server / "protected/channels/stable.json").read_bytes() == index_before
+    assert (server / "channels/stable.manifest").read_bytes() == manifest_before
+    assert not (server / "protected/releases").exists(), "nothing may be published on refusal"
+    assert not (server / "releases").exists()
+    assert not list(server.glob(".upload-*"))
+
+    r = _dist(dist_repo, "--static-dir", str(dist_repo["static"]), "--allow-downgrade")
+    assert r.returncode == 0, r.stdout + r.stderr
+    version = dist_repo["version"]
+    assert json.loads((server / "protected/channels/stable.json").read_text())["version"] == version
+    assert f"version={version}\n" in (server / "channels/stable.manifest").read_text()
+
+
+def test_dist_publish_refuses_to_move_channel_backwards(dist_repo):
+    server = dist_repo["server"]
+    _, manifest_before = _seed_newer_channels(server)
+    env = {**dist_repo["env"], "BORON_SIGNING_KEY": str(dist_repo["key"])}
+    cmd = ["bash", str(dist_repo["repo"] / "scripts/dist_publish.sh"), "--channel", "stable"]
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=dist_repo["repo"],
+                       timeout=300, check=False)
+    assert r.returncode != 0
+    assert "newer than" in r.stderr
+    assert (server / "channels/stable.manifest").read_bytes() == manifest_before
+    r = subprocess.run([*cmd, "--allow-downgrade"], capture_output=True, text=True, env=env, check=False,
+                       cwd=dist_repo["repo"], timeout=300)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"version={dist_repo['version']}\n" in (server / "channels/stable.manifest").read_text()

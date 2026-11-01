@@ -9,7 +9,8 @@
 # of a release manifest and its signature. scripts/dist_release.sh runs the
 # same steps together with the license-gated panel update release.
 #
-# Usage: scripts/dist_publish.sh [--channel stable|beta] [--no-channel]
+# Usage: scripts/dist_publish.sh [--channel stable|beta] [--no-channel] [--allow-downgrade]
+#   --allow-downgrade  let the channel pointer move to an older version
 # Environment:
 #   BORON_SIGNING_KEY  Ed25519 private key PEM (default: $BORON_RELEASE_SIGNING_KEY_FILE,
 #                      then secrets/release-signing.key)
@@ -26,11 +27,13 @@ cd "$repo_root"
 . scripts/dist_common.sh
 channel='stable'
 update_channel=true
+allow_downgrade=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --channel) [[ $# -ge 2 ]] || die '--channel requires a value'; channel="$2"; shift 2 ;;
         --no-channel) update_channel=false; shift ;;
-        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+        --allow-downgrade) allow_downgrade=true; shift ;;
+        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
 done
@@ -54,4 +57,4 @@ out="$(mktemp -d)"
 trap 'rm -rf -- "$out"' EXIT
 dist_build_public "$out/public" "$version" "$channel" "$signing_key"
 dist_write_apply "$out/apply.sh"
-dist_upload "$out" "$host" "$ssh_key" "$dist_root" "$version" "$channel" "$update_channel"
+dist_upload "$out" "$host" "$ssh_key" "$dist_root" "$version" "$channel" "$update_channel" "$allow_downgrade"

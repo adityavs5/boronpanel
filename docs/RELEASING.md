@@ -144,6 +144,11 @@ the CHANGELOG, needs a new version number. To move a release from beta to
 stable, publish a new version with `"channel": "stable"`; the channel is part
 of the signed metadata.
 
+A channel pointer never moves backwards: publishing an older version than the
+one `protected/channels/<channel>.json` or `channels/<channel>.manifest`
+points to is refused before anything is published. Pass `--allow-downgrade`
+only to roll a channel back on purpose.
+
 ## Only the launcher or source archive
 
 `scripts/dist_publish.sh [--channel stable|beta] [--no-channel]` publishes
@@ -195,9 +200,24 @@ key, so they never offer 3.3.0 by themselves. 3.2.x was a pre-commercial beta.
 Lab and demo servers can be moved with the root-only loopback test source
 (`/etc/boron/test-update-override.enabled` plus
 `/etc/boron/test-update-source.json` with the new public key, as in
-`tests/test_test_update_override.py`) serving the files from
-`dist/release-3.3.0/protected/`. Any other 3.2.x server needs a support-led
-move; it cannot pick up 3.3.0 from the new servers alone.
+`tests/test_test_update_override.py`) serving the five artifacts from
+`dist/release-3.3.0/protected/`. The 3.2.x updater does not read
+`release.json`: it asks the source for `latest.json` (or `3.3.0.json`) and
+accepts only the keys `version`, `changelog_url`, `has_metadata` and
+`archive_size`, so serve this file next to the artifacts (any other key, and a
+renamed `release.json`, is rejected; without it the panel reports "no test
+release found"):
+
+```bash
+cd dist/release-3.3.0/protected
+printf '{"version": "3.3.0", "has_metadata": true, "archive_size": %d}\n' \
+  "$(stat -c %s boron-3.3.0.tar.gz)" > latest.json
+cp latest.json 3.3.0.json
+```
+
+Do not upload these two files to the distribution server. Any other 3.2.x
+server needs a support-led move; it cannot pick up 3.3.0 from the new servers
+alone.
 
 ## Checks without CI
 

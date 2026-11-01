@@ -61,13 +61,24 @@ EOF
 dist_write_apply() {
     cat > "$1" <<'REMOTE'
 # Runs on the distribution server from the unpacked upload directory.
-# Arguments: dist_root version channel update_channel
+# Arguments: dist_root version channel update_channel [allow_downgrade]
 # Everything is verified before anything is published. Published versions
 # are immutable: identical bytes are accepted, different bytes are refused.
+# A channel pointer never moves to an older version unless allow_downgrade
+# is true.
 set -euo pipefail
-dist_root="$1" version="$2" channel="$3" update_channel="$4"
+dist_root="$1" version="$2" channel="$3" update_channel="$4" allow_downgrade="${5:-false}"
 file="boron-${version}.tar.gz"
 fail() { echo "error: $*" >&2; exit 1; }
+# True when $1 is a strictly older version than $2.
+older_than() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" ]]; }
+refuse_downgrade() {
+    local current="$1" pointer="$2"
+    [[ -n "$current" ]] || return 0
+    if older_than "$version" "$current" && [[ "$allow_downgrade" != true ]]; then
+        fail "${pointer} points to ${current}, newer than ${version}; pass --allow-downgrade to move it back"
+    fi
+}
 artifacts=("$file" "boron-${version}.sha256" "${file}.sig"
            "boron-${version}.metadata.json" "boron-${version}.metadata.json.sig")
 
@@ -89,6 +100,20 @@ if [[ -d public ]]; then
     pub_dir="${dist_root}/releases/${version}"
     if [[ -e "${pub_dir}/${file}" ]] && ! cmp -s "${pub_dir}/${file}" "public/${file}"; then
         fail "source archive ${version} is already published with different bytes; bump version.py"
+    fi
+fi
+
+# The channel pointers never go backwards by accident.
+if [[ "$update_channel" == true ]]; then
+    pointer="${dist_root}/protected/channels/${channel}.json"
+    if [[ -d protected && -f "$pointer" ]]; then
+        current="$(grep -o '"version": *"[^"]*"' "$pointer" | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')"
+        refuse_downgrade "$current" "protected/channels/${channel}.json"
+    fi
+    pointer="${dist_root}/channels/${channel}.manifest"
+    if [[ -d public && -f "$pointer" ]]; then
+        current="$(sed -n 's/^version=//p' "$pointer" | head -n1)"
+        refuse_downgrade "$current" "channels/${channel}.manifest"
     fi
 fi
 
@@ -148,9 +173,11 @@ REMOTE
 
 # Upload an upload directory and apply it over a single ssh connection (the
 # server rate-limits SSH). Arguments: upload_dir host ssh_key dist_root version
-# channel update_channel. All arguments must already be validated.
+# channel update_channel [allow_downgrade]. All arguments must already be
+# validated.
 dist_upload() {
     local up="$1" host="$2" ssh_key="$3" dist_root="$4" version="$5" channel="$6" update_channel="$7"
+    local allow_downgrade="${8:-false}"
     local members=(apply.sh)
     [[ -d "$up/protected" ]] && members+=(protected)
     [[ -d "$up/public" ]] && members+=(public)
@@ -159,5 +186,5 @@ dist_upload() {
         | ssh -i "$ssh_key" -o IdentitiesOnly=yes -o BatchMode=yes "$host" \
             "set -e; up=\$(mktemp -d '${dist_root}/.upload-XXXXXXXX'); \
             trap 'rm -rf -- \"\$up\"' EXIT; tar -C \"\$up\" --no-same-owner -xf -; cd \"\$up\"; \
-            bash apply.sh '${dist_root}' '${version}' '${channel}' '${update_channel}'"
+            bash apply.sh '${dist_root}' '${version}' '${channel}' '${update_channel}' '${allow_downgrade}'"
 }

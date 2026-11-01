@@ -17,7 +17,8 @@
 # Both are signed locally and self-verified, then uploaded over ONE ssh
 # connection (the server rate-limits SSH) into a staging directory, verified
 # there and moved into place. Published versions are immutable. The channel
-# pointers are updated last. Nothing is pushed anywhere and GitHub is not used.
+# pointers are updated last and never move to an older version unless
+# --allow-downgrade is given. Nothing is pushed anywhere and GitHub is not used.
 
 set -euo pipefail
 umask 022
@@ -34,6 +35,7 @@ cd "$REPO_ROOT"
 # --- runtime flags ------------------------------------------------------------
 
 DRY_RUN=false
+ALLOW_DOWNGRADE=false
 CHANNEL=""
 STATIC_DIR=""
 OUT_DIR_ARG=""
@@ -70,6 +72,8 @@ uploads them to the distribution server over one SSH connection.
                      npm run build. Must be built from the same version.
   --dry-run          Build, sign and verify everything into the output
                      directory; connect to nothing and upload nothing.
+  --allow-downgrade  Let the channel pointers move to an older version than
+                     the one they point to now (refused by default).
   --output-dir DIR   Where the artifacts are written (default:
                      dist/release-<version>; must be empty if given).
   -h, --help         Show this help.
@@ -102,6 +106,7 @@ parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --dry-run)    DRY_RUN=true ;;
+            --allow-downgrade) ALLOW_DOWNGRADE=true ;;
             --channel)    [[ $# -ge 2 ]] || die "--channel needs a value"; shift; CHANNEL="$1" ;;
             --static-dir) [[ $# -ge 2 ]] || die "--static-dir needs a directory"; shift; STATIC_DIR="$1" ;;
             --output-dir) [[ $# -ge 2 ]] || die "--output-dir needs a directory"; shift; OUT_DIR_ARG="$1" ;;
@@ -329,7 +334,7 @@ upload() {
         return
     fi
     info "Uploading to ${DIST_HOST} (one SSH connection)"
-    dist_upload "$OUT" "$DIST_HOST" "$DIST_SSH_KEY" "$DIST_ROOT" "$VERSION" "$CHANNEL" true \
+    dist_upload "$OUT" "$DIST_HOST" "$DIST_SSH_KEY" "$DIST_ROOT" "$VERSION" "$CHANNEL" true "$ALLOW_DOWNGRADE" \
         || die "upload failed; nothing after the failing step was published (re-run is safe)"
     ok "published Boron ${VERSION} to the ${CHANNEL} channel"
 }
