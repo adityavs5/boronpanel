@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "minimum_source_version": "3.0.0",
+  "minimum_source_version": "3.2.0",
   "maximum_source_version": null,
   "data_plane_reloads": [
     "lshttpd.service",
@@ -18,5 +18,5 @@
     "ols-configuration",
     "systemd-units"
   ],
-  "channel": "beta"
+  "channel": "stable"
 }

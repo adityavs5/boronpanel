@@ -7,7 +7,7 @@ set -euo pipefail
 }
 
 mapfile -d '' files < <(
-  find api daemon shared scripts tests testsupport deploy templates docs .github \
+  find api daemon shared scripts tests testsupport deploy templates docs \
     frontend/src frontend/e2e -type f \
     \( -name '*.py' -o -name '*.sh' -o -name '*.js' -o -name '*.jsx' \
        -o -name '*.mjs' -o -name '*.md' -o -name '*.toml' -o -name '*.j2' \

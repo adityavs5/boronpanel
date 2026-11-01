@@ -8,7 +8,7 @@
 A self-hosted control panel for websites, email, databases and applications on Ubuntu.
 Familiar hosting workflows for administrators, resellers and customers.
 
-[Get started](#installation) · [Explore features](#features) · [Documentation](#documentation) · [Releases](https://github.com/adityavs5/boronpanel/releases) · [Changelog](CHANGELOG.md)
+[Get started](#installation) · [Explore features](#features) · [Documentation](#documentation) · [Get a license](https://boronpanel.com)
 
 **OpenLiteSpeed · FastAPI · React · MariaDB · PowerDNS · Postfix & Dovecot**
 
@@ -72,28 +72,26 @@ Use a **fresh Ubuntu 24.04 LTS server** with root access. The installer configur
 
 ### Install a release
 
+Boron Panel needs a license. Get one at [boronpanel.com](https://boronpanel.com); keys look like `BRN-XXXX-XXXX-XXXX-XXXX`.
+
 Run this one line in a **root shell** on a fresh Ubuntu 24.04 server with `curl` installed:
 
 ```bash
-curl -fsSLo install.sh https://raw.githubusercontent.com/adityavs5/boronpanel/master/install.sh && bash install.sh
+curl -fsSLo install.sh https://download.boronpanel.com/install.sh && bash install.sh --license BRN-XXXX-XXXX-XXXX-XXXX
 ```
 
-The launcher downloads the pinned **v3.2.1 source tag** and runs its existing installer. It defaults to the full profile, keeps interactive prompts connected to your terminal, and removes its temporary checkout when finished. Run it in an empty working directory; the download writes `install.sh` there. If `curl` is missing, install it with `apt-get update && apt-get install -y curl ca-certificates` first.
+The launcher downloads the current stable release from `download.boronpanel.com`, verifies its Ed25519 signature and SHA-256 checksum, and only then runs the installer. It defaults to the full profile, keeps interactive prompts connected to your terminal, and removes its temporary files when finished. Run it in an empty working directory; the download writes `install.sh` there. If `curl` is missing, install it with `apt-get update && apt-get install -y curl ca-certificates` first.
+
+`--license` is optional. With a key, the installer checks it before installing anything and activates it for this server's public IP at the end. Without one, the installation completes, but the administrator area shows only the **License** page until you add a key there. Websites, mail and DNS work either way.
 
 <details>
-<summary>Manual source checkout / inspect before installing</summary>
+<summary>Inspect before installing</summary>
 
 ```bash
-sudo -i
-umask 022
-apt-get update
-apt-get install -y git ca-certificates
-git clone --depth 1 --branch v3.2.1 https://github.com/adityavs5/boronpanel.git /root/boron-install
-cd /root/boron-install
-bash scripts/install.sh --profile full
+bash install.sh --help          # launcher options
+bash install.sh --verify-only   # download and verify the release, install nothing
+bash install.sh --version 3.3.0 --license BRN-XXXX-XXXX-XXXX-XXXX   # a specific release
 ```
-
-Release runtime archives are intended for the panel updater; fresh installs use the source checkout to build the frontend.
 
 </details>
 
@@ -107,7 +105,7 @@ The installer collects the panel hostname, administrator email and credentials, 
 | `standard` | Web/PHP/SSL plus MariaDB, DNS, mail, FTP and fail2ban |
 | `full` — default | Standard plus application runtimes, Redis tooling, WordPress tools, backups, WAF, malware and geographic-statistics tooling |
 
-Append a profile to the one-liner’s final command, for example `bash install.sh --profile standard`. From a source checkout, use `bash scripts/install.sh --profile standard`. Component availability does not mean every feature is enabled or fully configured: webmail needs a hostname, GeoLite2 needs a license, and backup destinations need setup.
+Append a profile to the one-liner’s final command, for example `bash install.sh --license BRN-XXXX-XXXX-XXXX-XXXX --profile standard`. Component availability does not mean every feature is enabled or fully configured: webmail needs a hostname, GeoLite2 needs a license, and backup destinations need setup.
 
 For prerequisites, unattended installation options and verification steps, see the [fresh-install checklist](docs/FRESH-INSTALL-CHECKLIST.md). The installer's `--help` describes its current flags and environment variables. Keep passwords and tokens out of shell history and repository files.
 
@@ -135,13 +133,14 @@ Before adding customer data:
 
 Use **Panel Updates** in the administrator interface to check for a release, review the available version and start an update.
 
-The updater downloads release assets, checks the archive checksum and trusted **Ed25519 publisher signature**, takes a control-plane backup, stages the new version, applies migrations and completes the version switch with service and health checks. History records the result and progress of each operation.
+Updates are part of your license. The panel asks `license.boronpanel.com` for the newest release of its channel (**Stable** by default, or **Beta**) and downloads it from `download.boronpanel.com` through short-lived links issued only to the licensed server. Without a valid license the Updates page asks you to add one.
 
-Normal discovery follows the configured repository's latest normal release; GitHub prereleases are excluded. Rollback is subject to schema compatibility. Compatible additive database changes can remain when returning to the previous code version.
+The updater checks the archive checksum and trusted **Ed25519 publisher signature**, takes a control-plane backup, stages the new version, applies migrations and completes the version switch with service and health checks. History records the result and progress of each operation.
+
+Rollback is subject to schema compatibility. Compatible additive database changes can remain when returning to the previous code version.
 
 Keep an independent recovery copy of your hosted data as well as the panel configuration and database. A panel update backup is not a replacement for account backups.
 
-- [Release process](docs/RELEASING.md)
 - [Schema compatibility and migrations](docs/SCHEMA-MIGRATIONS.md)
 - [Control-plane disaster recovery](docs/CONTROL-PLANE-DISASTER-RECOVERY.md)
 
@@ -208,10 +207,9 @@ Use an isolated development environment. Privileged integration tests and the in
 
 Requirements: Python 3.12 and a frontend-compatible Node version (`^20.19.0` or `>=22.12.0`, as declared in `frontend/package.json`).
 
-```bash
-git clone https://github.com/adityavs5/boronpanel.git
-cd boronpanel
+From the root of the source repository:
 
+```bash
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
@@ -242,16 +240,10 @@ When reporting a bug, include the panel version, reproduction steps and error re
 | [Customer guide](docs/CUSTOMER-GUIDE.md) | [WordPress](docs/WORDPRESS-MANAGER.md) · [phpMyAdmin](docs/PHPMYADMIN.md) |
 | [Architecture](docs/ARCHITECTURE.md) | [Isolation](docs/NAMESPACE-ANSWERS.md) · [PHP controls](docs/PHP-CONTROLS.md) |
 | [Testing](docs/TESTING.md) · [CI](docs/CI.md) | [Incremental backups](docs/INCREMENTAL-BACKUPS.md) · [Disaster recovery](docs/CONTROL-PLANE-DISASTER-RECOVERY.md) |
-| [Releases](docs/RELEASING.md) · [Changelog](CHANGELOG.md) | [Schema migrations](docs/SCHEMA-MIGRATIONS.md) · [Themes](docs/THEMES.md) |
+| [Updates & recovery](#updates--recovery) | [Schema migrations](docs/SCHEMA-MIGRATIONS.md) · [Themes](docs/THEMES.md) |
 
 ## License
 
-A project-wide license has not yet been declared in this repository. Third-party software, libraries and brand assets retain their respective licenses and trademarks.
+Boron Panel is proprietary commercial software. Copyright © Boron Panel. All rights reserved.
 
-## Branches
-
-- **`master`** — stable source branch and the default GitHub branch.
-- **`development`** — ongoing development before promotion.
-- **`beta`** — changes staged for beta review.
-
-Branches are separate from published releases. The installer remains pinned to a published version; switching branches does not publish a release or change the panel update channel.
+Installing and using Boron Panel requires a license; see [boronpanel.com](https://boronpanel.com) for plans and terms. No part of this software may be copied, modified or redistributed except as your license allows. Third-party software, libraries and brand assets retain their respective licenses and trademarks.

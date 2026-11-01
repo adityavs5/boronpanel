@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 #
-# Boron release pipeline -- builds a versioned, checksummed release
-# tarball and publishes it as a GitHub release. See docs/RELEASING.md.
+# Boron release preparation -- bumps the version, runs the test suite and
+# builds a versioned, checksummed and signed runtime archive locally. See
+# docs/RELEASING.md.
 #
-#   scripts/release.sh --dry-run              # full local rehearsal, publishes nothing
-#   scripts/release.sh --patch                # bump 1.0.0 -> 1.0.1, test, build, publish
+#   scripts/release.sh --dry-run              # full local rehearsal, changes nothing
+#   scripts/release.sh --patch                # bump 1.0.0 -> 1.0.1, test, build, commit
 #   scripts/release.sh 2.1.0                  # explicit target version
 #
 # Pipeline: bump version.py -> run test suite -> build React frontend ->
 # stage tracked files only (git archive; secrets/DB/logs are untracked by
 # construction) -> tarball boron-{version}.tar.gz + SHA256 checksum ->
-# Ed25519-sign with the pinned publisher key -> git commit + tag + push + gh release.
+# Ed25519-sign with the pinned publisher key -> local commit + tag.
 #
-# Production servers NEVER git-pull: they consume these tarballs through the
-# panel's update system (daemon/updates.py), which verifies the SHA256 and
-# publisher signature before extracting anything.
+# Nothing is pushed or uploaded. Publication to download.boronpanel.com is
+# scripts/dist_release.sh, which rebuilds the same artifacts from the
+# committed HEAD. Production servers NEVER git-pull: they consume these
+# archives through the panel's update system (daemon/updates.py), which
+# verifies the SHA256 and publisher signature before extracting anything.
 
 set -euo pipefail
 
@@ -29,12 +32,9 @@ readonly VERSION_FILE="${REPO_ROOT}/version.py"
 DRY_RUN=false
 SKIP_TESTS=false
 SKIP_BUILD=false
-PRERELEASE=false
 RELEASE_CHANNEL="stable"
-RELEASE_BRANCH="master"
 BUMP_KIND="patch"
 EXPLICIT_VERSION=""
-GITHUB_REPO="${FH_RELEASE_REPO:-}"   # owner/repo; derived from origin if empty
 OUT_DIR="${REPO_ROOT}/dist"
 BUMPED=false
 PREPARED_VERSION=false
@@ -59,33 +59,33 @@ die()  { printf '%s[FAIL]%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 usage() {
     cat <<EOF
-Boron release pipeline
+Boron release preparation (local only; publish with scripts/dist_release.sh)
 
 Usage: scripts/release.sh [OPTIONS] [NEW_VERSION]
 
   --dry-run          Run the full pipeline locally (tests, frontend build,
-                     tarball, checksum) but bump nothing and publish nothing.
+                     tarball, checksum) but bump and commit nothing.
   --patch            Bump the patch component (default).
   --minor            Bump the minor component, reset patch.
   --major            Bump the major component, reset minor+patch.
   NEW_VERSION        Explicit x.y.z target instead of a bump flag.
-  --repo OWNER/REPO  GitHub repository for the release (default: derived
-                     from the 'origin' remote, or \$FH_RELEASE_REPO).
   --output-dir DIR   Where artifacts land (default: dist/ in the repo).
   --skip-tests       Skip tests only for a local dry-run (debugging).
   --skip-build       Reuse static/dist only for a local dry-run (debugging).
   --tested-commit ID Reuse completed tests for this exact full HEAD commit ID.
                      Requires a clean tree and an explicitly prepared version.
                      Still builds the frontend and verifies both signatures.
-  --prerelease       Publish a beta/development release as a pre-release.
-                     Its signed metadata selects the eligible update tier.
   -h, --help         Show this help.
 
 Artifacts: boron-{version}.tar.gz, boron-{version}.sha256,
 boron-{version}.tar.gz.sig, boron-{version}.metadata.json, and
 boron-{version}.metadata.json.sig. Both signatures use the pinned Ed25519
-publisher key.
+publisher key. The release channel comes from release-metadata.json.
 Set BORON_RELEASE_SIGNING_KEY_FILE to the protected private PEM path.
+
+A real run commits the version bump as "release: vX.Y.Z" and creates the
+local annotated tag vX.Y.Z. It never pushes or uploads anything; run
+scripts/dist_release.sh afterwards to publish to the distribution server.
 EOF
 }
 
@@ -96,12 +96,10 @@ parse_args() {
             --patch)      BUMP_KIND="patch" ;;
             --minor)      BUMP_KIND="minor" ;;
             --major)      BUMP_KIND="major" ;;
-            --repo)       shift; GITHUB_REPO="${1:-}" ;;
             --output-dir) shift; OUT_DIR="${1:-}" ;;
             --skip-tests) SKIP_TESTS=true ;;
             --skip-build) SKIP_BUILD=true ;;
             --tested-commit) shift; TESTED_COMMIT="${1:-}"; [[ -n "$TESTED_COMMIT" ]] || die "--tested-commit needs a full commit ID" ;;
-            --prerelease) PRERELEASE=true ;;
             -h|--help)    usage; exit 0 ;;
             -*)           die "unknown option: $1 (try --help)" ;;
             *)
@@ -190,15 +188,6 @@ preflight() {
         if $SKIP_TESTS || $SKIP_BUILD; then
             die "published releases require both the full test suite and a fresh frontend build"
         fi
-        require_tool gh
-        gh auth status >/dev/null 2>&1 || die "gh is not authenticated (run: gh auth login)"
-        if [[ -z "$GITHUB_REPO" ]]; then
-            local origin_url
-            origin_url="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
-            [[ -n "$origin_url" ]] || die "no 'origin' remote and no --repo given -- cannot publish"
-            GITHUB_REPO="$(printf '%s' "$origin_url" | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##')"
-        fi
-        [[ "$GITHUB_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "bad GitHub repo: ${GITHUB_REPO}"
         # A real release is cut from a clean tree only -- the tarball is built
         # from HEAD, so uncommitted changes would silently not ship.
         if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
@@ -222,7 +211,7 @@ bump_version() {
     sed -i "s/^BORON_VERSION = \".*\"$/BORON_VERSION = \"${new}\"/" "$VERSION_FILE"
     # Keep the npm package metadata in sync (not displayed anywhere, but
     # drift is confusing). JSON-rewritten with python, not sed.
-    "$PY" - "$new" <<'PYEOF'
+    (cd "$REPO_ROOT" && "$PY" - "$new") <<'PYEOF'
 import json, sys, pathlib
 p = pathlib.Path("frontend/package.json")
 data = json.loads(p.read_text())
@@ -270,141 +259,20 @@ build_frontend() {
     ok "frontend built into static/dist"
 }
 
-STAGE_DIR=""
-stage_tree() {
-    local version="$1"
-    info "Staging release tree (tracked files only)"
-    STAGE_DIR="$(mktemp -d /tmp/boron-release.XXXXXX)"
-    # git archive ships ONLY tracked files: secrets.env / *.db / logs /
-    # node_modules / .venv are untracked or gitignored, so they cannot leak
-    # into the tarball by construction. The two overlays below are the only
-    # not-from-HEAD content.
-    git -C "$REPO_ROOT" archive --format=tar --prefix="boron-${version}/" HEAD \
-        | tar -x -C "$STAGE_DIR"
-    local root="${STAGE_DIR}/boron-${version}"
-    [[ -d "$root" ]] || die "git archive produced no staging tree"
+# Staging, tarball, signing and self-verification are shared with
+# scripts/dist_release.sh so both always produce the same artifacts.
+# shellcheck source=scripts/release_lib.sh
+. "${REPO_ROOT}/scripts/release_lib.sh"
 
-    # Overlay 1: the bumped version.py (the bump commit happens after the
-    # artifacts are built, so HEAD still carries the old version here).
-    cp "$VERSION_FILE" "${root}/version.py"
-    # Overlay 2: the freshly built SPA bundle (the committed static/dist may
-    # lag the source; releases always ship the bundle built in this run).
-    rm -rf "${root}/static/dist"
-    mkdir -p "${root}/static"
-    cp -a "${REPO_ROOT}/static/dist" "${root}/static/dist"
-
-    # Keep the tracked frontend source alongside the signed, freshly built
-    # bundle.  The same archive is also a supported fresh-install input and
-    # scripts/install.sh deliberately rebuilds the UI from this source.  Git
-    # archive already excludes node_modules and other ignored build state.
-
-    # Belt-and-braces: nothing secret-, database- or log-shaped may exist in
-    # the staged tree, whatever future .gitignore edits do.
-    local leaks
-    leaks="$(find "$root" \( -name 'secrets*.env' -o -name '*secrets.env' -o -name '*.db' \
-        -o -name '*.db-wal' -o -name '*.db-shm' -o -name '.env' -o -name '*.log' \
-        -o -name '.git' -o -name 'node_modules' -o -name '.venv' \) -print | head -5)"
-    [[ -z "$leaks" ]] || die "refusing to package -- secret/db/log-shaped paths in stage: ${leaks}"
-
-    ok "staged $(find "$root" -type f | wc -l) files"
-}
-
-TARBALL=""
-CHECKSUM_FILE=""
-METADATA_FILE=""
-build_artifacts() {
-    local version="$1"
-    info "Building tarball + checksum"
-    mkdir -p "$OUT_DIR"
-    TARBALL="${OUT_DIR}/boron-${version}.tar.gz"
-    CHECKSUM_FILE="${OUT_DIR}/boron-${version}.sha256"
-    METADATA_FILE="${OUT_DIR}/boron-${version}.metadata.json"
-    # Deterministic-ish tarball: stable member order, root ownership.
-    tar -C "$STAGE_DIR" --sort=name --owner=0 --group=0 --numeric-owner \
-        -czf "$TARBALL" "boron-${version}"
-    (cd "$OUT_DIR" && sha256sum "boron-${version}.tar.gz" > "boron-${version}.sha256")
-    cp "${REPO_ROOT}/release-metadata.json" "$METADATA_FILE"
-    ok "artifacts: ${TARBALL} ($(du -h "$TARBALL" | cut -f1)), $(basename "$CHECKSUM_FILE"), $(basename "$METADATA_FILE")"
-}
-
-sign_artifacts() {
-    local version="$1"
-    local signing_key="${BORON_RELEASE_SIGNING_KEY_FILE:-}"
-    [[ -n "$signing_key" && -f "$signing_key" ]] \
-        || die "BORON_RELEASE_SIGNING_KEY_FILE must name the protected Ed25519 private key"
-    info "Signing release with the pinned Ed25519 publisher key"
-    (cd "$REPO_ROOT" && "$PY" -m scripts.sign_release "$version" "$TARBALL" "$signing_key") \
-        || die "publisher signature failed -- refusing unsigned release"
-    (cd "$REPO_ROOT" && "$PY" -m scripts.sign_release "$version" "$METADATA_FILE" "$signing_key") \
-        || die "metadata signature failed -- refusing unsigned release metadata"
-    ok "signed: boron-${version}.tar.gz.sig and boron-${version}.metadata.json.sig"
-}
-
-verify_artifacts() {
-    local version="$1"
-    info "Self-verifying artifacts (the same checks the updater will run)"
-    (cd "$OUT_DIR" && sha256sum -c "boron-${version}.sha256" >/dev/null) \
-        || die "checksum self-verification failed"
-    (cd "$REPO_ROOT" && "$PY" - "$version" "$TARBALL" <<'PYEOF'
-import sys
-from pathlib import Path
-from shared.release_signature import archive_digest, verify_signature
-version, path = sys.argv[1:]
-verify_signature(version, archive_digest(path), Path(path + ".sig").read_bytes())
-PYEOF
-    ) || die "publisher signature self-verification failed"
-    (cd "$REPO_ROOT" && "$PY" - "$version" "$METADATA_FILE" <<'PYEOF'
-import sys
-from pathlib import Path
-from shared.release_metadata import load_release_metadata
-from shared.release_signature import archive_digest, verify_signature
-version, path = sys.argv[1:]
-load_release_metadata(path)
-verify_signature(version, archive_digest(path), Path(path + ".sig").read_bytes())
-PYEOF
-    ) || die "release metadata validation/signature verification failed"
-    # Every member must live under the version prefix with no traversal --
-    # the update daemon rejects violations, so catch them at build time.
-    local bad members
-    # Read the compressed listing once; repeatedly invoking tar for every
-    # member makes dry-run verification unnecessarily slow on constrained CI.
-    members="$(tar -tzf "$TARBALL")"
-    bad="$(printf '%s\n' "$members" | grep -Ev "^boron-${version}(/|$)" | head -3 || true)"
-    [[ -z "$bad" ]] || die "tarball contains members outside boron-${version}/: ${bad}"
-    bad="$(printf '%s\n' "$members" | grep -E '(^/|(^|/)\.\.(/|$))' | head -3 || true)"
-    [[ -z "$bad" ]] || die "tarball contains absolute/traversal paths: ${bad}"
-    # The packaged version.py must carry exactly the released version.
-    local packaged
-    packaged="$(tar -xzOf "$TARBALL" "boron-${version}/version.py" \
-        | sed -n 's/^BORON_VERSION = "\(.*\)"$/\1/p')"
-    [[ "$packaged" == "$version" ]] || die "packaged version.py says '${packaged}', expected '${version}'"
-    tar -tzf "$TARBALL" "boron-${version}/schema-compat.json" >/dev/null \
-        || die "release is missing schema-compat.json"
-    tar -tzf "$TARBALL" "boron-${version}/release-metadata.json" >/dev/null \
-        || die "release is missing release-metadata.json"
-    # And the runtime essentials must be present.
-    local member
-    for member in api/main.py daemon/server.py shared/config.py \
-                  shared/release_signature.py deploy/release-ed25519-public.hex requirements.txt \
-                  static/dist/index.html frontend/package.json frontend/package-lock.json \
-                  tests/conftest.py deploy/boron-api.service; do
-        grep -qxF "boron-${version}/${member}" <<<"$members" \
-            || die "tarball is missing ${member}"
-    done
-    ok "artifacts verified"
-}
-
-publish() {
+finish_release() {
     local version="$1"
     if $DRY_RUN; then
         # NB: in a dry-run nothing was bumped, so the rehearsal artifacts
         # carry the CURRENT version; a real run would produce ${NEW_VERSION}.
-        skip "publish (dry-run): a real run would commit the bump, tag v${NEW_VERSION}, push, and run:"
-        printf '       gh release create v%s --repo %s --title "Boron v%s" boron-%s.tar.gz boron-%s.sha256 boron-%s.tar.gz.sig boron-%s.metadata.json boron-%s.metadata.json.sig\n' \
-            "$NEW_VERSION" "${GITHUB_REPO:-<origin>}" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION" "$NEW_VERSION"
+        skip "commit (dry-run): a real run would commit the bump as 'release: v${NEW_VERSION}' and tag v${NEW_VERSION} locally"
         return
     fi
-    info "Publishing v${version}"
+    info "Recording v${version} locally"
     if ! $PREPARED_VERSION; then
         git -C "$REPO_ROOT" add version.py frontend/package.json frontend/package-lock.json
         git -C "$REPO_ROOT" commit -m "release: v${version}"
@@ -412,17 +280,13 @@ publish() {
     else
         skip "version commit already prepared at v${version}"
     fi
-    git -C "$REPO_ROOT" tag -a "v${version}" -m "Boron v${version}"
-    git -C "$REPO_ROOT" push origin HEAD "v${version}"
-    local assets=("$TARBALL" "$CHECKSUM_FILE" "${TARBALL}.sig" "$METADATA_FILE" "${METADATA_FILE}.sig")
-    local release_flags=()
-    $PRERELEASE && release_flags+=(--prerelease --latest=false)
-    release_flags+=(--target "$RELEASE_BRANCH")
-    gh release create "v${version}" --repo "$GITHUB_REPO" "${release_flags[@]}" \
-        --title "Boron v${version}" \
-        --notes "Boron v${version}. Install/update via the panel's update system (verifies the Ed25519 publisher signature and SHA256 checksum before applying) -- see docs/RELEASING.md." \
-        "${assets[@]}"
-    ok "release v${version} published to ${GITHUB_REPO}"
+    if git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
+        skip "tag v${version} already exists"
+    else
+        git -C "$REPO_ROOT" tag -a "v${version}" -m "Boron v${version}"
+    fi
+    ok "v${version} committed and tagged locally; nothing was pushed or uploaded"
+    printf '       publish it with: scripts/dist_release.sh --channel %s\n' "$RELEASE_CHANNEL"
 }
 
 # --- main -----------------------------------------------------------------------
@@ -457,21 +321,17 @@ main() {
     # Dry-run artifacts carry the CURRENT version (nothing was bumped).
     local artifact_version="$new"
     $DRY_RUN && artifact_version="$cur"
-    # The signed document, not a mutable GitHub label, binds the release tier.
+    # The signed document, not a mutable label, binds the release tier.
     RELEASE_CHANNEL="$(cd "$REPO_ROOT" && "$PY" -c 'from shared.release_metadata import load_release_metadata; print(load_release_metadata("release-metadata.json")["channel"])')"
     case "$RELEASE_CHANNEL" in
-        stable) RELEASE_BRANCH="master"
-            $PRERELEASE && die "--prerelease requires beta or development in release-metadata.json" ;;
-        beta|development) RELEASE_BRANCH="$RELEASE_CHANNEL"; PRERELEASE=true ;;
+        stable|beta|development) ;;
         *) die "invalid signed release channel" ;;
     esac
-    [[ "$(git -C "$REPO_ROOT" branch --show-current)" == "$RELEASE_BRANCH" ]] \
-        || die "${RELEASE_CHANNEL} releases must be built from branch ${RELEASE_BRANCH}"
     stage_tree "$artifact_version"
     build_artifacts "$artifact_version"
     sign_artifacts "$artifact_version"
     verify_artifacts "$artifact_version"
-    publish "$artifact_version"
+    finish_release "$artifact_version"
 
     ok "done"
 }

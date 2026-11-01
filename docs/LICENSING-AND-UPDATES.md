@@ -3,7 +3,10 @@
 Design for Boron as licensed software. This replaces the GitHub-release updater
 and the public GitHub install path. Status: the distribution server and signed
 installer (part 1) and the license server MVP (part 2: API and CLI; the admin
-portal UI is still to come) are live. Operations: [licensing/README.md](../licensing/README.md).
+portal UI is still to come) are live. The panel client (part 3) and
+license-gated updates (part 4) are built for 3.3.0. Operations:
+[licensing/README.md](../licensing/README.md); releasing:
+[RELEASING.md](RELEASING.md).
 
 ## Decisions
 
@@ -64,12 +67,14 @@ A manifest is `key=value` text (`format`, `product`, `channel`, `version`,
 The launcher verifies the signature with its embedded public key, checks the
 archive's SHA-256, and only then extracts and runs `scripts/install.sh`.
 Published versions are immutable. `scripts/dist_publish.sh` builds
-reproducibly from `HEAD`, signs locally and uploads over one SSH connection.
+reproducibly from `HEAD`, signs locally and uploads over one SSH connection;
+`scripts/dist_release.sh` does the same together with the update release
+(part 4).
 
-Install command:
+Install command (`--license` is optional):
 
 ```bash
-curl -fsSLo install.sh https://download.boronpanel.com/install.sh && bash install.sh
+curl -fsSLo install.sh https://download.boronpanel.com/install.sh && bash install.sh --license BRN-XXXX-XXXX-XXXX-XXXX
 ```
 
 ## Part 2 — License server
@@ -92,8 +97,9 @@ PostgreSQL (local only). Matches the panel's stack.
 - `POST /check` — every 12 h with jitter: key, install ID, version, account
   count. Returns a fresh signed document or a reason (`ip_mismatch`,
   `suspended`, `expired`).
-- `POST /updates/<channel>` — returns the signed release manifest and a
-  short-lived download link for valid licenses only.
+- `POST /updates` — key, install ID, channel, optional exact version. Returns
+  the release index and short-lived download links for valid licenses only
+  (part 4).
 - Admin API (token + IP-restricted): issue, suspend, resume, change tier,
   rebind IP, list, search. The billing integration later uses this too.
 
@@ -144,29 +150,72 @@ determined user can patch out local checks. The protection that matters is on
 the server side: **updates are only served to valid licenses**. That is the
 product.
 
-## Part 4 — Updates
+## Part 4 — Updates (built)
 
-- Discovery and download use `POST /v1/updates/<channel>` on the license server
-  instead of GitHub. Download links are nginx `secure_link` URLs (HMAC, about
-  10 minutes) under `download.boronpanel.com/protected/`, so no application code
-  sits in the download path.
-- The panel verifies the manifest signature with the embedded release key and
-  the archive's SHA-256 before applying.
-- **Recommendation:** keep the existing apply engine
-  (`scripts/update_finalize.py`: staged swap, health checks, migrations and
-  automatic rollback, already covered by tests) and rebuild only the
-  discovery, download and trust layer that used to point at GitHub.
-- Update packages are runtime archives with a pre-built frontend and no tests.
-  Fresh installs keep using the source archive.
+| Piece | Where |
+|---|---|
+| Release files | `/srv/download/protected/releases/<ver>/`: the five artifacts the updater has always verified (`boron-<ver>.tar.gz`, `.sha256`, `.tar.gz.sig`, `.metadata.json`, `.metadata.json.sig`) plus `release.json` |
+| Channel pointer | `/srv/download/protected/channels/<channel>.json`, a copy of the current `release.json` (`stable`, `beta`) |
+| Endpoint | `POST https://license.boronpanel.com/v1/updates` |
+| Panel updater | `daemon/updates.py`; settings `update_server_url`, `update_download_prefix` |
+| Publishing | `scripts/dist_release.sh` (owner's machine) |
+
+**Index** (`release.json`): `format` 1, `channel`, `version`, `published_at`,
+`changelog` (that version's CHANGELOG section), `files` (archive, checksum,
+signature, metadata, metadata_signature) and `sizes.archive`.
+
+**Endpoint.** Request: `license_key`, `install_id` (same rules as
+`/v1/check`), `channel` (`stable` or `beta`), optional exact `version`,
+optional `current_version`. The license must be known, active, not expired and
+bound to the caller's IP (same client-IP rules as `/v1/check`). A `beta`
+license may ask for beta or stable, a `stable` license only for stable. The
+answer carries the index fields, `archive_size`, one URL per file and
+`links_expire_at`. Errors: `403 invalid_license`; `403 license_not_usable`
+with a reason (`suspended`, `cancelled`, `expired`, `ip_mismatch`,
+`not_activated`); `403 channel_not_allowed`; `404 no_release`;
+`503 updates_unavailable` when no download secret is configured. Every call is
+audited in `events`.
+
+**Download links** are nginx `secure_link` URLs, valid 15 minutes and bound to
+the caller's IP:
+`https://download.boronpanel.com/protected/releases/<ver>/<file>?md5=<token>&expires=<unix>`,
+with `token = base64url(md5("<expires><uri><client_ip> <secret>"))` without
+padding, matching `secure_link_md5 "$secure_link_expires$uri$remote_addr <secret>"`.
+The secret is `BORON_LICENSE_DOWNLOAD_SECRET`, the index directory
+`BORON_LICENSE_RELEASES_DIR` (default `/srv/download/protected`). No
+application code sits in the download path.
+
+**Panel.** Discovery and download use the endpoint instead of the GitHub API.
+The key and install ID come from `daemon/license_client.py`; without a key the
+Updates page reports that a license is needed. Downloads must be HTTPS under
+`update_download_prefix`, redirects are not followed and the size caps stay.
+The existing apply engine is unchanged: SHA-256, publisher signature with the
+pinned key (`deploy/release-ed25519-public.hex`, now
+`34f15d91f0324d873eb770e668577d36a1d4772232b4f3be938a16a559c43843`), signed
+metadata, staged extraction, `scripts/update_finalize.py` (swap, health
+checks, migrations, automatic rollback). An old `update_github_repo` setting
+is accepted and ignored. The root-only loopback test source
+(`daemon/test_update_override.py`) still works for lab tests.
+
+**Publishing.** `scripts/dist_release.sh` builds the committed `HEAD` into the
+runtime archive (shared steps with `scripts/release.sh`, prebuilt frontend),
+signs and self-verifies it, writes `release.json`, uploads over one SSH
+connection, verifies on the server, refuses to change a published version and
+updates `channels/<channel>.json` last. It also publishes the public signed
+source archive and launcher (part 1). Update packages are runtime archives
+with a prebuilt frontend; fresh installs keep using the source archive.
 
 ## Build order
 
-1. License server MVP: schema, admin CLI and API, `/activate`, `/check`, signed
-   documents, tests.
-2. Panel client and installer `--license`, enforcement and License page.
-3. License-gated updates: `secure_link` downloads, `/updates`, updater switch,
-   end-to-end update test on the demo server.
+1. ~~License server MVP: schema, admin CLI and API, `/activate`, `/check`,
+   signed documents, tests.~~ Done.
+2. ~~Panel client and installer `--license`, enforcement and License page.~~
+   Done.
+3. License-gated updates: ~~`secure_link` downloads, `/v1/updates`, updater
+   switch, `dist_release.sh`~~ built; still to do: nginx `secure_link`
+   configuration and the download secret on `.66`, then an end-to-end update
+   test on the demo server.
 4. Admin portal UI.
 5. Billing integration (HostBill, WHMCS or Stripe) through the admin API.
 
-First commercial release: **3.3.0**.
+First commercial release: **3.3.0** (stable).

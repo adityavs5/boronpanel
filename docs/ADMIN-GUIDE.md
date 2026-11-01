@@ -56,10 +56,30 @@ detail page; changing a plan does not silently terminate existing resources.
   and assign an account/server schedule. The root hourly job starts due
   backups; customers can trigger their own scoped backup jobs.
 
+## License
+
+Boron Panel needs a license from [boronpanel.com](https://boronpanel.com). Add
+the key during installation (`bash install.sh --license BRN-XXXX-XXXX-XXXX-XXXX`)
+or later on **License**, which also shows the tier, account limit, bound IP and
+expiry, and can refresh the license on demand. The panel confirms the license
+twice a day. If it cannot reach the license server, it keeps working for 14 days
+on its last signed license and shows a banner after three days without a
+successful check.
+
+Without a valid license (missing, expired, suspended or bound to another IP)
+the admin area shows only **License**. Customer and reseller logins and all
+hosted websites, mail, DNS and databases keep working. Creating accounts beyond
+the tier's account limit is refused. If the server's public IP changes, ask
+support to rebind the license.
+
 ## Updates and rollback
 
-Open **Updates** and use **Check now** to poll the configured GitHub release
-repository. Applying an update requires an explicit confirmation and a browser
+Open **Updates** and use **Check now** to ask the license server
+(`license.boronpanel.com`) for the newest release of the selected channel
+(Stable or Beta). Updates need a valid license: without one, the page asks you
+to add a key on **License** instead of offering an update. Downloads come from
+`download.boronpanel.com` through short-lived links issued to this server only.
+Applying an update requires an explicit confirmation and a browser
 session; if admin TOTP is enabled, enter a fresh TOTP code. Boron downloads a
 SHA256-verified release, backs up the database and `/etc/boron`, runs its
 pre-flight, swaps the versioned `/opt/boron` tree, and health-checks the two
@@ -67,9 +87,12 @@ panel services. A failed health check automatically swaps back. Use **Rollback**
 from the same page during the configured rollback window. Hosted sites and
 OpenLiteSpeed are not restarted by the panel update.
 
-The repository setting is `update_github_repo = "adityavs5/boronpanel"` in
-`/etc/boron/boron.toml`. Never replace production code with an unverified
-checkout or disable the checksum/TOTP gates.
+The update servers are `update_server_url = "https://license.boronpanel.com"`
+and `update_download_prefix = "https://download.boronpanel.com/protected/"` in
+`/etc/boron/boron.toml`; leave the defaults unless support asks otherwise. An
+old `update_github_repo` line is ignored and can be removed. Never replace
+production code with an unverified checkout or disable the checksum,
+signature or TOTP gates.
 
 ## IP blocking and allowlists
 

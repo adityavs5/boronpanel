@@ -1,5 +1,52 @@
 # Changelog
 
+## 3.3.0 — Stable
+
+First commercial release. Boron Panel is proprietary software and requires a
+license from [boronpanel.com](https://boronpanel.com).
+
+### New
+
+- Licensing. A license server at `license.boronpanel.com` issues licenses
+  bound to the server's public IP and returns Ed25519-signed license documents
+  that the panel verifies locally.
+- License enforcement. Without a valid license, or after the 14-day offline
+  grace period, administrators see only the new **License** page. Customer and
+  reseller logins, websites, mail, DNS and databases keep working. Account
+  creation respects the plan's account limit.
+- **License** page for administrators: add or replace a key, check the status
+  and refresh it. A banner warns when the license has not been confirmed for
+  three days.
+- Installer `--license BRN-XXXX-XXXX-XXXX-XXXX` (or `FH_LICENSE_KEY`). The key
+  is checked before anything is installed and activated afterwards. It is
+  optional; it can be added later on the License page.
+- New signed installer at `https://download.boronpanel.com/install.sh`. It
+  verifies the release manifest's Ed25519 signature and the archive's SHA-256
+  before running anything.
+
+### Changed
+
+- Panel updates are license-gated and served from our own servers. The panel
+  asks `license.boronpanel.com` for the release and downloads it from
+  `download.boronpanel.com` through short-lived links tied to the licensed
+  server. Checksum, publisher signature, signed metadata, staged extraction
+  and automatic rollback are unchanged.
+- New release signing key. Panels now pin
+  `34f15d91f0324d873eb770e668577d36a1d4772232b4f3be938a16a559c43843`.
+- GitHub is no longer used for installation, updates or releases.
+  `update_github_repo` in `boron.toml` is accepted but ignored; the new
+  settings are `update_server_url` and `update_download_prefix`.
+
+### Upgrade notes
+
+- Add a license on the License page after updating; without one, update
+  checks report that a license is needed and the admin area is locked.
+- The signed metadata accepts panels from 3.2.0 onwards. The update reloads
+  OpenLiteSpeed, Dovecot and Postfix and restarts the panel services.
+- 3.2.x panels still look for updates on GitHub and trust only the previous
+  release key, so they do not offer 3.3.0 on their own. Moving them is a
+  one-time operator step; see [docs/RELEASING.md](docs/RELEASING.md).
+
 ## 3.2.2 — Beta
 
 ### Security
