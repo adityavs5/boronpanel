@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import base64
 import binascii
-from datetime import datetime, timedelta, timezone
 import json
 import os
-from pathlib import Path
 import re
 import threading
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.serialization import load_pem_public_key

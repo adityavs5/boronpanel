@@ -39,6 +39,7 @@ OLS_NAMESPACE_POLICY = Path("/usr/local/lsws/lsns/conf/boron-nsconf.conf")
 OLS_WAF_RUNTIME = Path("/etc/modsecurity/boron-runtime.conf")
 RUNTIME_BACKUP = Path("/var/lib/boron/update-runtime-backup.json")
 FIREWALL_RECOVER_COMMAND = Path("/usr/local/sbin/boron-firewall-recover")
+LICENSE_CRON = Path("/etc/cron.d/boron-license")
 OLS_LIFECYCLE_CONFIG = Path("/etc/systemd/system/lshttpd.service.d/boron-lifecycle.conf")
 MAIL_SUBMIT_SOCKET_UNIT = Path("/etc/systemd/system/boron-mail-submit.socket")
 MAIL_SUBMIT_SERVICE_UNIT = Path("/etc/systemd/system/boron-mail-submit@.service")
@@ -116,6 +117,7 @@ def command(args: list[str], timeout: int = 900) -> None:
 
 def _runtime_paths() -> list[Path]:
     paths = [MSMTP_CONFIG, APPARMOR_BWRAP_PROFILE, OLS_CONFIG, OLS_NAMESPACE_POLICY, OLS_WAF_RUNTIME, FIREWALL_RECOVER_COMMAND, OLS_LIFECYCLE_CONFIG,
+             LICENSE_CRON,
              DOVECOT_BORON_CONFIG, POSTFIX_MAIN_CONFIG, SSL_DIR / 'mail.crt', SSL_DIR / 'mail.key',
              POSTFIX_MASTER_CONFIG, POSTFIX_SENDER_LOGIN,
              MAIL_SUBMIT_SOCKET_UNIT, MAIL_SUBMIT_SERVICE_UNIT,
@@ -373,6 +375,11 @@ def configure_firewall_recovery() -> None:
         temporary.replace(FIREWALL_RECOVER_COMMAND)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def configure_license_cron() -> None:
+    """Panels updated from releases without licensing need its periodic refresh."""
+    _atomic_copy(ROOT / "deploy" / "boron-license.cron", LICENSE_CRON, 0o644)
 
 
 def configure_ols_lifecycle() -> None:
@@ -655,6 +662,7 @@ def main(argv: list[str] | None = None) -> int:
     init_db()
     create_runtime_backup()
     configure_firewall_recovery()
+    configure_license_cron()
     configure_ols_lifecycle()
     configure_ols_namespace_policy()
     webmail_sso.ensure_schema()
