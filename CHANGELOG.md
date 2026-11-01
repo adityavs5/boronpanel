@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.3.1 — Stable
+
+### Fixed
+
+- Minor-version updates (for example 3.3 to 3.4) no longer fail their
+  post-swap health check and roll back: the update finalizer now expects the
+  RPC protocol of the release being installed rather than the outgoing one.
+
+### Upgrade notes
+
+- No database schema change. Update from 3.3.0 through Admin > Updates.
+
 ## 3.3.0 — Stable
 
 First commercial release. Boron Panel is proprietary software and requires a
