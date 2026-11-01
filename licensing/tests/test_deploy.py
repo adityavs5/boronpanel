@@ -88,3 +88,29 @@ def test_install_script_wires_the_download_secret():
     assert "chmod 0600" in script and "nginx -t" in script
     assert "deploy/nginx_include.py" in script and "/etc/nginx/sites-available/boron-dist.conf" in script
     assert "/srv/download/protected/releases" in script and "/srv/download/protected/channels" in script
+
+
+def test_install_script_keeps_the_download_secret_out_of_argv():
+    # Only builtins may see the expanded secret; /proc/<pid>/cmdline is world-readable.
+    script = (DEPLOY / "install_server.sh").read_text()
+    uses = [line.strip() for line in script.splitlines() if "$download_secret" in line]
+    assert uses
+    for line in uses:
+        assert line.startswith(("[[ ", "printf ")), line
+
+
+def test_install_script_renders_the_snippet(tmp_path):
+    import shutil
+    import subprocess
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash not available")
+    script = (DEPLOY / "install_server.sh").read_text().splitlines()
+    start = next(i for i, line in enumerate(script) if line.startswith("snippet_template="))
+    render = "\n".join(script[start - 1:start + 3])
+    secret = "Ab_-" + "x" * 44
+    out = tmp_path / "snippet.conf"
+    subprocess.run([bash, "-c", f'set -euo pipefail\nsrc="$1"\nsnippet_tmp="$2"\ndownload_secret="$3"\n{render}',
+                    "render", str(DEPLOY.parent), str(out), secret], check=True)
+    template = (DEPLOY / "nginx-download-protected.conf").read_text()
+    assert out.read_text() == template.replace("__DOWNLOAD_SECRET__", secret)

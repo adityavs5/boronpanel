@@ -68,7 +68,10 @@ install -d -m 0755 -o root -g root /srv/download/protected /srv/download/protect
 install -d -m 0755 /etc/nginx/snippets
 snippet=/etc/nginx/snippets/boron-download-protected.conf
 snippet_tmp="$(mktemp /etc/nginx/snippets/.boron-download-protected.XXXXXX)"
-sed "s|__DOWNLOAD_SECRET__|$download_secret|" "$src/deploy/nginx-download-protected.conf" > "$snippet_tmp"
+# Substituted with builtins only, so the secret never reaches an argv.
+snippet_template="$(<"$src/deploy/nginx-download-protected.conf")"
+printf '%s\n' "${snippet_template//__DOWNLOAD_SECRET__/"$download_secret"}" > "$snippet_tmp"
+unset snippet_template
 unset download_secret
 chown root:root "$snippet_tmp"
 chmod 0600 "$snippet_tmp"
