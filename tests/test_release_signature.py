@@ -31,3 +31,29 @@ def test_release_signature_fails_without_pinned_key(monkeypatch, tmp_path):
     monkeypatch.setattr(release_signature, "PUBLIC_KEY_FILE", tmp_path / "absent")
     with pytest.raises(ValueError, match="unavailable"):
         release_signature.verify_signature("1.5.1", b"x" * 32, b"x" * 64)
+
+
+# The release signing key introduced with license-gated updates (3.3.0). Its
+# private half is held offline by the release operator.
+PINNED_RELEASE_KEY_HEX = "34f15d91f0324d873eb770e668577d36a1d4772232b4f3be938a16a559c43843"
+
+
+def test_shipped_pin_is_the_current_release_key():
+    assert release_signature.PUBLIC_KEY_FILE.read_text() == PINNED_RELEASE_KEY_HEX + "\n"
+    assert len(bytes.fromhex(PINNED_RELEASE_KEY_HEX)) == 32
+
+
+def test_fresh_key_verifies_only_when_it_is_the_pinned_key(monkeypatch, tmp_path):
+    signer = Ed25519PrivateKey.generate()
+    digest = hashlib.sha256(b"release fixture").digest()
+    signature = signer.sign(release_signature.signed_message("3.3.0", digest))
+
+    # Against the shipped pin, a signature from any other key is refused.
+    with pytest.raises(ValueError, match="signature is invalid"):
+        release_signature.verify_signature("3.3.0", digest, signature)
+
+    pinned = tmp_path / "release-ed25519-public.hex"
+    pinned.write_text(signer.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex() + "\n")
+    monkeypatch.setattr(release_signature, "PUBLIC_KEY_FILE", pinned)
+    release_signature.verify_signature("3.3.0", digest, signature)

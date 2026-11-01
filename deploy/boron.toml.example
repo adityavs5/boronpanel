@@ -15,9 +15,21 @@ server_public_ip = "203.0.113.10"
 # Email address certbot uses for Let's Encrypt registration/expiry notices.
 letsencrypt_email = "admin@example.com"
 
-# GitHub "owner/repo" the panel update system checks for new releases.
-# The official Boron Panel release repository.
-update_github_repo = "adityavs5/boronpanel"
+# Panel updates are license-gated: the panel asks the Boron license server
+# for new releases with its license key (/etc/boron/license.key, added under
+# Admin > License) and downloads them through short-lived links under the
+# download prefix. Every release is verified against the pinned publisher
+# key before it is installed. The defaults below are the official servers;
+# leave them unchanged unless Boron support tells you otherwise.
+# update_server_url = "https://license.boronpanel.com"
+# update_download_prefix = "https://download.boronpanel.com/protected/"
+#
+# Release tier: "stable" (recommended) or "beta" (requires a license with
+# beta access). "development" is still accepted and receives beta releases.
+# update_channel = "stable"
+#
+# update_github_repo is no longer used (updates do not come from GitHub any
+# more); an existing value is accepted and ignored.
 
 # DNS provider used for new zones/domains when the operator doesn't pick one
 # explicitly. "powerdns" (self-hosted, the default) or "cloudflare" (requires

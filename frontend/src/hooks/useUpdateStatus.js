@@ -5,8 +5,8 @@ import { useAuth } from '@/store/auth'
 // Admin-only panel-update status: current/latest version, whether an update
 // is available, the active/last job, rollback availability. Drives the
 // sidebar badge, the dashboard banner and the Updates page. Polls fast only
-// while a job is actually running (the daemon caches the GitHub check for
-// 1h, so the idle poll is a cheap local read). refetchInterval keeps firing
+// while a job is actually running (the daemon caches the license-server
+// release check for 1h, so the idle poll is a cheap local read). refetchInterval keeps firing
 // through fetch errors -- exactly what we want while the panel services
 // restart mid-update.
 const ACTIVE = new Set(['pending', 'running', 'finalizing'])

@@ -385,16 +385,21 @@ class Settings:
     license_state_path: str = "/var/lib/boron/license-state.json"
     license_enforcement: bool = True
 
-    # Panel update system. update_github_repo ("owner/repo") is the ONLY
-    # place release downloads can come from -- empty means update checks are
-    # unconfigured and the whole feature reports "not configured" rather
-    # than guessing a repo. The tarball URL itself is never operator- or
-    # request-supplied: it must be
-    # https://github.com/{update_github_repo}/releases/download/... . The
-    # official repository is the safe default; operators can explicitly set
-    # this to an empty string to disable update checks.
-    update_github_repo: str = "adityavs5/boronpanel"
-    update_channel: str = "stable"  # stable, beta, development; signed releases only
+    # Panel update system. Releases are license-gated: the panel asks
+    # POST {update_server_url}/v1/updates with this server's license key and
+    # install ID (license_key_path / license_install_id_path above), and the
+    # answer's short-lived download links must start with
+    # update_download_prefix (https only, no redirects). Without a license
+    # key the feature reports "not configured". Every archive is still
+    # verified against the pinned release key, whoever served it.
+    update_server_url: str = "https://license.boronpanel.com"
+    update_download_prefix: str = "https://download.boronpanel.com/protected/"
+    # Deprecated and ignored: updates no longer come from GitHub. Kept only so
+    # boron.toml files written by older releases still load cleanly.
+    update_github_repo: str = ""
+    # stable or beta; signed releases only. "development" is still accepted
+    # for older config files and receives beta releases.
+    update_channel: str = "stable"
     update_check_cache_seconds: int = 3600  # goal: cache update.check 1hr
     update_download_dir: str = "/var/lib/boron/update-staging"
     update_max_download_bytes: int = 500 * 1024 * 1024  # 500MB (releases are ~4MB)
