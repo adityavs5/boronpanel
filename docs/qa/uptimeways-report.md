@@ -5,6 +5,7 @@
 - **Method:** API driven as the browser does (cookie session with same-origin headers, scripts in `/root/qa/uptimeways/`), public checks from a Windows PC, and a headless Chrome (Playwright) run through 38 customer screens.
 - **Line numbers** refer to the deployed code in `/opt/boron-3.3.1`. Local `HEAD` differs by a few lines in some files.
 - **Error references** can be found with `journalctl -u borond -u boron-api | grep <ref>`.
+- **Retest on 3.3.3 (2026-11-02, 11:08 to 11:25 UTC):** see [Retest on 3.3.3](#retest-on-333) at the end. 15 of the 17 checklist items are fixed, and the regression pass is clean. Still open: H1 (the certificate now includes www, but a reissued certificate is not loaded until some unrelated change reloads the web server) and H8 (phpMyAdmin is installed but cannot be used until an admin sets a hostname). New: N1 (deleting a reseller returns 502 although the delete succeeds).
 
 ## Summary
 
@@ -286,3 +287,121 @@ Only `/api/v1/admin/account-archives/{id}/download` exists, and `Backups.jsx` sh
 
 ## Retest checklist (after fixes)
 C1 (add a subdomain from the UI), C2 (587 send to local, with a DKIM-Signature header), H1, H2 (staging create, change, sync), H3 (autoresponder and Junk), H4, H5, H6, H7, H8, M2, M3, M6, M7, M8, L1, L2. After those, run a quick regression of SSL, WordPress SSO, backups and restore, and suspension.
+
+## Retest on 3.3.3
+
+- **Build:** `/opt/boron -> /opt/boron-3.3.3`, installed through the panel updater at about 11:00 UTC.
+- **Time:** retest 11:08 to 11:25 UTC.
+- **Method:** same as round 1. Scripts `r01.py` to `r12.py` in `/root/qa/uptimeways/`. Their output is in `r*.out` in the same folder.
+- **C1 in the UI:** checked again with headless Chrome.
+- **Line numbers** in this section refer to `/opt/boron-3.3.3`.
+
+### Results
+
+| Item | Result | Evidence |
+|---|---|---|
+| C1 customer adds a domain or subdomain | **Fixed** | `POST /api/v1/task-operations/accounts/uwcust/domains {"domain":"uwc1.uptimeways.com","kind":"subdomain","parent_domain":"uptimeways.com"}` returns 202, task 35 completes and the site answers 200. In the real UI, Subdomains > Add subdomain `uiblog333` shows the toast "Subdomain added" and the new row. |
+| C2 SMTP-AUTH send | **Fixed** | 587 info@ to sales@, and to the hello@ forwarder: both delivered (`relay=boron-sign … status=sent (delivered via boron-sign service)`) with `DKIM-Signature: d=uptimeways.com`. No bounces since 3.3.3. |
+| H1 www on the certificate | **Still open** (partly fixed) | See [H1 retest](#h1-retest-the-reissued-certificate-is-not-loaded) below. The SAN is now `uptimeways.com, www.uptimeways.com`, but the web server kept serving the old apex-only certificate after the reissue. |
+| H2 staging create, change, sync, delete | **Fixed** | Create returns 200 in 13 s (`staging.uptimeways.com`, db `uwcust_stg`, siteurl rewritten, HTTPS 200). A staging-only change (option and file) is not pushed to live. Sync (live to staging) wipes the staging change and brings in a new live file. Delete drops `uwcust_stg`. Over a leftover folder, create returns a clear 409 ("…already contains files. Move or delete them…") instead of failing halfway. Minor: delete leaves an empty `staging.uptimeways.com/error_pages` folder. |
+| H3 autoresponder and Junk | **Fixed** | LMTP now has `mail_plugins = " quota sieve"`. Dovecot logs `vacation action: sent vacation response to <info@uptimeways.com>`, and info@ received "Out of office" with `Auto-Submitted: auto-replied (vacation)`. GTUBE scored 999 and was filed by `fileinto action: stored mail into mailbox 'Junk'`, and a Junk folder now exists. (Note for testers: SpamAssassin 4.0 uses the new GTUBE string `…NSBN3*2IDNEN*GTUBE…`. The old string scores 0.) |
+| H4 full restore recreates a deleted mailbox | **Fixed** | Backup 9, delete sales@, restore: the mailbox is back in the list. The restore finishes "completed with warnings: Recreated mailboxes have new random passwords (backups never store passwords); set new ones for: sales@uptimeways.com". After `PATCH /api/v1/accounts/uwcust/email/sales/password`, IMAP works with all 7 INBOX messages and 1 Junk message. This matches the documented behaviour. |
+| H5 restore a terminated account | **Fixed** | `POST /api/v1/accounts/uwrc2/backups/8/restore` on terminated uwrc2: the account is active again, with its Linux user, `fresh.txt` served on its domain, database `uwrc2_fdb`, and mailbox boss@. |
+| H6 Python app | **Fixed** | Created `uwpy2` on py.uptimeways.com and started it. `boron-python-uwcust-1.socket` and `.service` are active, gunicorn listens on `unix:/run/boron-apps/python-1.sock`, `NRestarts=0`, `StartLimitBurst=5`, and http://py.uptimeways.com/ returns "python ok" with 200. |
+| H7 suspension blocks SSH | **Fixed** | While suspended, SSH key login and SFTP get "Connection closed", the account expires on 1970-01-02, IMAP and FTP are refused, the site and wp-login return 503, and the panel login returns 403 "This hosting account is suspended…". After unsuspend, all of these work again. |
+| H8 phpMyAdmin | **Still open** (needs admin configuration) | See [H8 retest](#h8-retest-installed-but-not-published) below. |
+| M2 email DNS readiness | **Fixed** | Every record now reports `"source": "public"`. Minor: the MX row says `present` while `expected` is `10 webmail.demo.boronpanel.com.` and `actual` is `10 mail.uptimeways.com.`. Both names reach this server, but the UI could explain why it accepts a different host. |
+| M3 WordPress clone to a fresh subdomain | **Fixed** | Clone to `uwc1.uptimeways.com` (its docroot held `welcome.html`) completes in 3 s, "Clone ready". The installs list shows WordPress 7.1.4. |
+| M6 snapshot DNS restore with DKIM | **Fixed** | New snapshot run 3: `dns_available: true`, zone uptimeways.com available with 16 records. |
+| M7 duplicate mailbox | **Fixed** | 409 `mailbox 'info@uptimeways.com' already exists`. |
+| M8 reseller limit and in-use plan | **Fixed** | Plan delete returns 409 "plan is assigned to 1 reseller(s)…". Going over the account limit returns 409 "Reseller account limit reached: your plan allows 2 account(s) and all are in use…". |
+| L1 missing account | **Fixed** | 404 `account 'uwnosuchacct' not found`. |
+| L2 unmapped 502s | **Fixed** | Parking a domain owned by another active account returns 409 "already belongs to another account" (adding it as an addon does the same). Duplicate DB returns 409. Bad cron schedule returns 400. A 200 KB cron command returns 400 "exceeds 1000 characters". Git `../../etc` returns 400. Foreign-DB backup returns 400 "choose a database owned by this account". |
+
+**Other round-1 low items that changed:**
+- **L3:** a force-HTTPS switch now exists. When enabled, http:// gives a 301 to https.
+- **L4:** a clone now gets a valid certificate automatically.
+- **L8:** a snapshot policy, a destination and an in-use-free reseller plan can now be deleted. Deleting a reseller hits N1.
+- **L10:** the suspended page is now 503, and a suspended customer's login gets a clear 403.
+
+### Regression (all pass)
+
+- **SSL issuance:** uptimeways.com (apex and www), uwwp.uptimeways.com (with www), and the clone's automatic certificate all verify with a public CA.
+- **WordPress:**
+  - a fresh install on `uwwp.uptimeways.com` completes in 8 s;
+  - SSO works into both uwwp and uptimeways.com: the bridge returns 302 to wp-admin, the dashboard renders, REST `users/me` returns 200, and a reused token gets 404.
+- **Backups and restore:**
+  - a full legacy backup and restore on an active account (H4);
+  - a terminated-account restore (H5);
+  - snapshot run 3, then a selective file restore of `public_html/uw-canary.txt` ("Selected files restored; unrelated files retained").
+- **Suspension:** see H7. The site, SSH, SFTP, IMAP, FTP, panel and wp-login are all blocked, then all restored on unsuspend.
+
+### H1 retest: the reissued certificate is not loaded
+
+- **Request:** `POST /api/v1/accounts/uwcust/domains/uptimeways.com/ssl/issue {}` at 11:09:02.
+- **Response:** `200 {"domain":"uptimeways.com","challenge":"http-01","status":"issued","names":["uptimeways.com","www.uptimeways.com"]}`.
+- **On disk:** `/etc/letsencrypt/live/uptimeways.com/cert.pem` has `DNS:uptimeways.com, DNS:www.uptimeways.com` (notBefore 10:10). The deploy hook logged `applied new certificate for uptimeways.com (account uwcust, wildcard=False)` at 11:09:15.
+- **Served:** `openssl s_client -servername uptimeways.com` still returned the round-1 certificate, `DNS:uptimeways.com` only (notBefore 03:03). `curl https://www.uptimeways.com/` failed verification (`ssl_verify_result=1`) for several minutes.
+- **What fixed it:** at 11:20, adding a subdomain made the panel reload OpenLiteSpeed. Only then did www verify (`301 https://uptimeways.com/`, verify 0).
+- **Root cause:**
+  - `scripts/ssl_deploy_hook.py:106` calls `ols.refresh_vhost`. That re-renders the vhost and hands it to `ConfigWriterMulti`.
+  - `daemon/configtx.py:237-239` returns early ("unchanged") when every rendered file matches what is already on disk. The reload in `ols._reload` (`ols.py:1226`) is then skipped.
+  - A reissued or renewed certificate keeps the same `/etc/letsencrypt/live/<domain>/` paths, so the config never changes and lshttpd keeps the old certificate in memory.
+  - Round 1 did not show this, because the first issue changed `ssl_status` (none to active) and therefore the vhost text.
+- **Impact:** the same path runs on every automatic renewal, so renewed certificates are not served until something else reloads the web server. Expired certificates can be served even though the renewal succeeded.
+- **Expected:** the deploy hook always reloads OpenLiteSpeed after it deploys a certificate, even when the config text is unchanged. For example, add a `force_reload` option to the writer, or call `ols.graceful_reload` from the hook.
+
+### H8 retest: installed but not published
+
+- **Requests:**
+  - `GET /api/v1/admin/phpmyadmin` returns `200 {"installed": true, "published": false, "hostname": null, "target_hostname": null, "provisioning": "installed", "last_error": null, "last_source": "upgrade", …}`.
+  - The customer call `POST /api/v1/accounts/uwcust/databases/uwcust_wp/pma-token` returns `200 {"token": null, "db_name": "uwcust_wp", "pma_url": null, "available": false, "expires_in_seconds": 0}`.
+- **What changed:** the 3.3.3 upgrade now installs phpMyAdmin, so the round-1 "not installed" part is fixed.
+- **Why it is still open:** it is published only after an admin sets a phpMyAdmin hostname in Server Setup (`api/routers/server_setup.py:23`, `daemon/pma.py:634-653`), and the readiness check reports "installed but not published: no phpMyAdmin hostname is configured". On this server, customers still get "phpMyAdmin is not set up".
+- **Not tested:** I did not set the hostname, because it is a global setting (and needs a DNS name outside uptimeways.com). So the full end-to-end flow is untested.
+- **Suggestion:** default the hostname to `pma.<panel host>` when the installer or upgrader can, or make the customer message tell the customer to ask the admin.
+
+### N1 (new, medium): Deleting a reseller returns 502 although the delete succeeds
+
+- **Request:** `DELETE /api/v1/admin/resellers/3` (uwres, suspended; its accounts uwrc1, uwrc2 and uwrc4 were all terminated, so the reseller owned no live account).
+- **Response:** `502 {"detail": "internal operation failure (reference: 7da6c7a2aff27e87)"}`. The audit log records `reseller.delete … result: failed, detail: CgroupError`.
+- **Actual state:**
+  - The reseller is gone from `GET /api/v1/admin/resellers`.
+  - Its login was disabled and renamed.
+  - Its plan then deleted with 200, so the delete itself had committed.
+- **Daemon frames:** `resellers.py:414 (delete_reseller) -> resellers.py:27 (_reconcile_account) -> resource_manager.py:258 -> cgroups.py:210 (apply_policy) -> cgroups.py:180 -> cgroups.py:166 -> cgroups.py:157 (_resolve_uid)`.
+- **Root cause:**
+  - `daemon/resellers.py:393` collects `released_ids` from every reseller link, including links to terminated accounts.
+  - After the transaction commits, `resellers.py:413-414` reconciles cgroups for each of them.
+  - A terminated account has no Linux user, and its uid may already be reused (uwrc4 got uid 1018, which uwrc2 had before). So `_resolve_uid` raises `CgroupError` ("no resolvable uid" / "uid does not match the Linux identity").
+  - That turns a completed delete into a 502 and a "failed" audit entry.
+- **Expected:**
+  - Only reconcile accounts that are not terminated (the `live` list).
+  - Catch reconcile errors after the commit and log them.
+  - Return 200 with `released_accounts`.
+
+### Not retested in this round
+
+- **Not in the checklist:** M1 (global DB lock), M4 (customer download of legacy backups), L5–L7 and L9.
+- **Environment:** M5 (webmail host DNS and certificate), and the known webmail-certificate ACME preflight failure, which you said is already fixed for the next release.
+
+### Observations
+
+- **Domain delete keeps folders:** deleting a subdomain removes the vhost and DNS but leaves `/home/<user>/<domain>/` on disk (seen for `uwc1`, `uwwp`, `uiblog333` and `uwpark`). This may be intended (cPanel does the same). If so, say it in the confirmation dialog.
+- **Customers can park unowned names under the panel's domain:** the park check refuses names owned by an active account. But a customer could park `mail1.qa.boronpanel.com` (its owner account had been removed by the other tester), and the panel created a local DNS zone for it. Consider refusing names under the panel or server hostname's own domain. Not tested further, to avoid touching panel hostnames. I removed the park straight away, and its zone went with it.
+
+### State after the retest
+
+- **Kept:**
+  - account `uwcust` with WordPress at https://uptimeways.com (now with a www certificate), the clone at https://clone.uptimeways.com, and the Node app on `app`;
+  - the Python app `uwpy2` on https://py.uptimeways.com (running, shows that H6 is fixed);
+  - mailboxes info, sales and support (sales@ password reset to the stored value in `mbx_sales.pw`), the forwarder and the autoresponder;
+  - FTP, Git and the SSH key.
+- **Removed:**
+  - temporary subdomains `uwc1`, `uwwp` and `uiblog333`, their databases and folders;
+  - the staging site;
+  - the round-1 orphan staging folder (H2 evidence, no longer needed);
+  - reseller `uwres` and its plan;
+  - snapshot policy `uw-policy` and destination `uw-local-snap` (configuration only; the files remain in `/var/backups/uw-snap`);
+  - accounts `uwrc2` (re-terminated after the H5 restore) and `uwrc4` (terminated).
+- **Cloudflare:** no DNS records added or changed in this round.
