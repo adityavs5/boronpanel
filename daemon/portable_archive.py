@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import re
+import secrets
 import pwd
 import shutil
 import tarfile
@@ -25,8 +28,28 @@ from daemon.archive_limits import ArchiveMetadataTooLarge, open_guarded_tar
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="account-archive")
 
 
-class PortableArchiveError(Exception):
+logger = logging.getLogger(__name__)
+
+# An absolute host path inside an error message (staging files, homes).
+_HOST_PATH_RE = re.compile(r"(?<![\w.:/])/(?:[\w.@+-]+/)*[\w.@+-]+/?")
+
+
+class PortableArchiveError(ValidationError):
     pass
+
+
+def public_import_error(exc: BaseException) -> str:
+    """The text an import job may show: never a host path or internals.
+
+    Validation failures keep their explanation with any absolute path
+    replaced. Anything else is logged in full under a short reference and
+    reported only by that reference.
+    """
+    if isinstance(exc, ValidationError):
+        return _HOST_PATH_RE.sub("[server path]", str(exc))[:1000]
+    reference = secrets.token_hex(8)
+    logger.error("account archive import failed (reference: %s)", reference, exc_info=exc)
+    return f"The archive could not be restored because of an internal error (reference: {reference})"
 
 
 def _export_base() -> Path:
@@ -240,9 +263,14 @@ def _validate_inner_tar(path: Path) -> int:
 
 
 def validate_archive(archive_path: Path, extract_dir: Path, expected_username: str) -> tuple[dict, Path]:
-    from daemon.cpanel_import import _extract_archive
+    from daemon.cpanel_import import CpanelImportError, _extract_archive
 
-    _extract_archive(archive_path, extract_dir)
+    try:
+        _extract_archive(archive_path, extract_dir)
+    except CpanelImportError as exc:
+        if isinstance(exc.__cause__, (tarfile.TarError, ArchiveMetadataTooLarge)):
+            raise PortableArchiveError("The uploaded file is not a Boron archive") from exc
+        raise PortableArchiveError(str(exc)) from exc
     root = _archive_root(extract_dir)
     try:
         manifest_path = root / "manifest.json"
@@ -373,7 +401,8 @@ def _run_import(job_id: int, username: str, source_ref: str) -> None:
                 account = session.scalar(select(Account).where(Account.username == username))
                 if account is not None and account.status == "terminated":
                     session.delete(account)
-        _update(job_id, status="failed", progress_message="failed", error=str(exc), completed_at=utcnow())
+        _update(job_id, status="failed", progress_message="failed", error=public_import_error(exc),
+                completed_at=utcnow())
     finally:
         Path(source_ref).unlink(missing_ok=True)
         if work_dir is not None:

@@ -301,6 +301,13 @@ def setup_dns_signing(domain: str, selector: str = DEFAULT_SELECTOR) -> dict:
             error = f"Signing is active but DNS publication failed: {exc}"[:1000]
             logger.exception("failed to publish DKIM record for '%s'", domain)
 
+    dmarc_published = False
+    if zone:
+        try:
+            dmarc_published = _ensure_default_dmarc(domain, zone)
+        except Exception:  # best effort, like DKIM publication: never undo mail setup
+            logger.exception("failed to publish the default DMARC record for '%s'", domain)
+
     verified_at = None
     if dns_published and shutil.which("opendkim-testkey"):
         checked = run(["opendkim-testkey", "-x", "/etc/opendkim.conf", "-d", domain,
@@ -321,8 +328,89 @@ def setup_dns_signing(domain: str, selector: str = DEFAULT_SELECTOR) -> dict:
         "selector": selector, "dkim_record_name": dkim_name,
         "dkim_record_value": dkim_value, "spf_record_value": "v=spf1 mx a ~all",
         "dns_published": dns_published, "signing_active": signing_active,
+        "dmarc_record_value": DEFAULT_DMARC, "dmarc_published": dmarc_published,
         "last_error": error,
     }
+
+
+# Monitoring-only policy: it never changes delivery, but lets receivers
+# evaluate the SPF/DKIM alignment the panel already provides. Customers
+# tighten it through the DMARC editor (daemon/mail_dns.set_dmarc).
+DEFAULT_DMARC = "v=DMARC1; p=none"
+
+
+def _dmarc_label(domain: str, zone: str) -> str:
+    label = label_within_zone(domain, zone)
+    return "_dmarc" if label == "@" else f"_dmarc.{label}"
+
+
+def _existing_txt(zone: str, label: str) -> list[str] | None:
+    fqdn = zone if label == "@" else f"{label}.{zone}"
+    for record in dnsprovider.list_records(zone):
+        name = str(record.get("name", "")).lower().rstrip(".")
+        if name == fqdn and str(record.get("type", "")).upper() == "TXT":
+            return [str(value) for value in (record.get("values") or [])]
+    return None
+
+
+def _public_dmarc_exists(name: str) -> bool | None:
+    """True/False when public DNS answers definitively, None when unsure."""
+    import dns.exception
+    import dns.resolver
+
+    from daemon.mail_local_delivery import _resolver
+    try:
+        answer = _resolver().resolve(f"_dmarc.{name}", "TXT")
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return False
+    except dns.exception.DNSException:
+        return None
+    return any(b"".join(row.strings).lower().startswith(b"v=dmarc1") for row in answer)
+
+
+def _ancestor_has_dmarc(domain: str, zone: str) -> bool:
+    """A subdomain's own record overrides its organizational domain's
+    policy (RFC 7489 section 6.6.3), so p=none published under a parent
+    with p=reject or sp=reject would weaken it. Ancestors inside the zone
+    are read from the zone; ancestors above a delegated zone from public
+    DNS, treating an unanswered lookup as "present" (publish nothing)."""
+    labels = domain.lower().rstrip(".").split(".")
+    zone = zone.lower().rstrip(".")
+    for index in range(1, len(labels) - 1):  # never the domain itself or the TLD
+        ancestor = ".".join(labels[index:])
+        if ancestor == zone or ancestor.endswith("." + zone):
+            if _existing_txt(zone, _dmarc_label(ancestor, zone)) is not None:
+                return True
+        elif _public_dmarc_exists(ancestor) is not False:
+            return True
+    return False
+
+
+def _ensure_default_dmarc(domain: str, zone: str) -> bool:
+    """Publish p=none unless the domain or a parent already has DMARC.
+
+    An existing record (customer edited, or imported with the zone) is the
+    customer's policy and is never overwritten, and a parent's policy is
+    never shadowed by a weaker subdomain record.
+    """
+    label = _dmarc_label(domain, zone)
+    if _existing_txt(zone, label) is not None:
+        return False
+    if _ancestor_has_dmarc(domain, zone):
+        return False
+    with dnsprovider.batch_cluster_notifications():
+        dnsprovider.upsert_record(zone, label, "TXT", [_quote(DEFAULT_DMARC)])
+    return True
+
+
+def _remove_default_dmarc(domain: str, zone: str) -> None:
+    """Remove only the record this module published, never a custom one."""
+    label = _dmarc_label(domain, zone)
+    values = _existing_txt(zone, label)
+    if values is None:
+        return
+    if [dnsprovider.txt_text(value.strip()) for value in values] == [DEFAULT_DMARC]:
+        dnsprovider.delete_record(zone, label, "TXT")
 
 
 def teardown_dns_signing(domain: str) -> None:
@@ -339,6 +427,10 @@ def teardown_dns_signing(domain: str) -> None:
             dnsprovider.delete_record(zone, dkim_label, "TXT")
         except dnsprovider.DnsError:
             pass
+        try:
+            _remove_default_dmarc(domain, zone)
+        except Exception:  # best effort: the domain is being removed regardless
+            logger.exception("failed to remove the default DMARC record for '%s'", domain)
     shutil.rmtree(_domain_dir(domain), ignore_errors=True)
     if shutil.which("opendkim"):
         try:

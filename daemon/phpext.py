@@ -187,7 +187,10 @@ def _scan_root() -> str:
     writable by group/other; otherwise someone other than root could swap
     an account's scan directory. Mode 0711 stops accounts listing which
     other accounts have an override while still letting lsphp traverse."""
-    root = phpdirectives.PHP_SCAN_ROOT
+    return _private_root(phpdirectives.PHP_SCAN_ROOT)
+
+
+def _private_root(root: str) -> str:
     os.makedirs(root, mode=0o755, exist_ok=True)
     # Explicit modes: borond runs with UMask=0027, which would otherwise
     # leave the parent untraversable for the account-uid lsphp workers.
@@ -205,6 +208,61 @@ def _scan_root() -> str:
         finally:
             os.close(fd)
     return root
+
+
+def materialize_disable_functions(values: dict[str, set[str]]) -> None:
+    """Write one root-owned ini per (account, disable_functions value) that
+    an extProcessor is about to reference (see
+    phpdirectives.disable_functions_scan_dir). Must run before the OLS
+    reload that points PHP_INI_SCAN_DIR at them; idempotent."""
+    if not values:
+        return
+    root = _private_root(phpdirectives.PHP_FUNCTIONS_ROOT)
+    for username, wanted in values.items():
+        username = validate_username(username)
+        for value in wanted:
+            relative = os.path.relpath(phpdirectives.disable_functions_scan_dir(username, value), root)
+            secure_mkdirs(root, relative, 0, 0, 0o755)
+            directory_fd = open_dir_beneath(root, relative)
+            try:
+                _replace_file_at_fd(directory_fd, phpdirectives.DISABLE_FUNCTIONS_INI,
+                                    phpdirectives.disable_functions_ini(value), 0, 0, 0o644)
+            finally:
+                os.close(directory_fd)
+
+
+def prune_disable_functions(values: dict[str, set[str]]) -> None:
+    """After a successful OLS apply: drop every function-override directory
+    no live extProcessor references any more (values is the complete set
+    for every active/suspended account)."""
+    root = phpdirectives.PHP_FUNCTIONS_ROOT
+    if not os.path.isdir(root):
+        return
+    root = _private_root(root)
+    keep = {
+        username: {os.path.basename(phpdirectives.disable_functions_scan_dir(username, value)) for value in wanted}
+        for username, wanted in values.items()
+    }
+    root_fd = open_dir_beneath(root)
+    try:
+        with os.scandir(root_fd) as entries:
+            users = [entry.name for entry in entries]
+    finally:
+        os.close(root_fd)
+    for username in users:
+        if username not in keep:
+            _remove_entry_at(root, username, root_owned_only=False)
+            continue
+        user_dir = f"{root}/{validate_username(username)}"
+        user_fd = open_dir_beneath(user_dir)
+        try:
+            with os.scandir(user_fd) as entries:
+                digests = [entry.name for entry in entries]
+        finally:
+            os.close(user_fd)
+        for digest in digests:
+            if digest not in keep[username]:
+                _remove_entry_at(user_dir, digest, root_owned_only=False)
 
 
 def _remove_entry_at(parent: str, name: str, *, root_owned_only: bool) -> bool:

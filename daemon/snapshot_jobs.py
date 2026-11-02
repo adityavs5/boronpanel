@@ -35,7 +35,7 @@ from daemon.database_operations import serialized_worker
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, AppInstall, BackupJob, RestoreJob, DatabaseGrant, Domain, FtpAccount, GitRepo, MailDomain, NodeApp, PythonApp, RedisInstance, SnapshotDestination, SnapshotDestinationOperation, SnapshotDownload, SnapshotOAuthState, SnapshotPolicy, SnapshotRun, SnapshotRestore, WordPressInstall, utcnow
-from shared.validation import ValidationError, validate_username
+from shared.validation import NotFoundError, ValidationError, validate_username
 
 logger = logging.getLogger('borond.snapshot_jobs')
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='snapshots')
@@ -413,9 +413,9 @@ def delete_destination(params):
     with lock('configuration'),write_session() as session:
         row=session.get(SnapshotDestination,ident)
         if row is None:raise ValidationError('Backup destination not found')
-        policies=session.scalars(select(SnapshotPolicy).where(SnapshotPolicy.destination_id==ident)).all()
-        policies += [policy for policy in session.scalars(select(SnapshotPolicy)).all()
-                     if ident in (policy.options or {}).get('destination_ids',[]) and policy not in policies]
+        policies=[policy for policy in session.scalars(select(SnapshotPolicy)).all()
+                  if not policy_deleted(policy) and (policy.destination_id==ident
+                      or ident in (policy.options or {}).get('destination_ids',[]))]
         if policies:raise ValidationError('Remove this destination from backup jobs before deleting it')
         if session.scalar(select(SnapshotRun.id).where(SnapshotRun.destination_id==ident,SnapshotRun.status.in_(ACTIVE))):
             raise ValidationError('Wait for active backup or restore work to finish')
@@ -734,6 +734,41 @@ def _policy_dict(row):
         enabled=row.enabled,options=row.options,last_queued_at=row.last_queued_at.isoformat() if row.last_queued_at else None)
 
 
+def policy_deleted(row):
+    """A deleted job whose run history is kept (runs reference the job)."""
+    return bool((row.options or {}).get('deleted_at'))
+
+
+def _live_policy(session, ident):
+    row=session.get(SnapshotPolicy,ident)
+    if row is None or policy_deleted(row): raise NotFoundError('Backup job not found')
+    return row
+
+
+def delete_policy(params):
+    """Delete a backup job so its destinations can be removed.
+
+    A job that never ran is removed outright. A job with run history is
+    retired instead: its runs (and the snapshots they point at) stay listed
+    and restorable, while the job leaves every list, schedule and
+    destination-in-use check and frees its name.
+    """
+    ident=storage._positive(params['id'])
+    with lock('configuration'), lock('queue'), write_session() as session:
+        row=_live_policy(session,ident)
+        if session.scalar(select(SnapshotRun.id).where(SnapshotRun.policy_id==ident,SnapshotRun.status.in_(ACTIVE))):
+            raise ValidationError('Wait for this job\'s active backups to finish before deleting it')
+        name=row.name
+        if session.scalar(select(SnapshotRun.id).where(SnapshotRun.policy_id==ident)) is None:
+            session.delete(row)
+            return {'id':ident,'name':name,'status':'deleted','history_kept':False}
+        options=dict(row.options or {});options['deleted_at']=utcnow().isoformat();options['deleted_name']=name
+        row.options=options;row.enabled=False;row.frequency='manual'
+        row.name=f'{name[:70]} (deleted job {ident})'
+        session.flush()
+        return {'id':ident,'name':name,'status':'deleted','history_kept':True}
+
+
 def save_policy(params):
     name = str(params.get('name','')).strip()
     if not 1<=len(name)<=100: raise ValidationError('Enter a job name of up to 100 characters')
@@ -750,8 +785,7 @@ def save_policy(params):
         raise ValidationError(f"{options['mode'].capitalize()} backups are not supported by every selected destination")
     destination = destination_rows[0]
     with lock('configuration'), write_session() as session:
-        row = session.get(SnapshotPolicy,params['id']) if params.get('id') else SnapshotPolicy()
-        if row is None: raise ValidationError('Backup job not found')
+        row = _live_policy(session,params['id']) if params.get('id') else SnapshotPolicy()
         duplicate = session.scalar(select(SnapshotPolicy).where(SnapshotPolicy.name==name))
         if duplicate and duplicate.id!=row.id: raise ValidationError('A job with this name already exists')
         row.name=name;row.destination_id=destination.id;row.options=options;row.frequency=frequency;row.enabled=params.get('enabled',True)
@@ -761,7 +795,8 @@ def save_policy(params):
 
 def policies(params):
     with write_session() as session:
-        return {'policies':[_policy_dict(row) for row in session.scalars(select(SnapshotPolicy).order_by(SnapshotPolicy.id)).all()]}
+        return {'policies':[_policy_dict(row) for row in session.scalars(select(SnapshotPolicy).order_by(SnapshotPolicy.id)).all()
+                            if not policy_deleted(row)]}
 
 
 def _run_dict(row, customer=False):
@@ -882,8 +917,7 @@ def queue_policy(params):
 def _queue_policy(params):
     ids=[]
     with lock('queue'), write_session() as session:
-        policy=session.get(SnapshotPolicy,storage._positive(params['id']))
-        if not policy: raise ValidationError('Backup job not found')
+        policy=_live_policy(session,storage._positive(params['id']))
         scheduled=params.get('trigger')=='scheduled'
         if scheduled:
             if not scheduled_due(policy):return {'run_ids':[]}

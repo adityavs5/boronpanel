@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import hashlib
 import json
 import datetime as dt
 from pathlib import Path
@@ -26,12 +27,12 @@ from sqlalchemy import func, select
 
 from shared.config import settings
 from shared.db import write_session
-from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, OlsServerSettings, ParkedDomain, PhpExtensionSet, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafException, WafSettings, WildcardDomain, utcnow
+from shared.models import Account, Domain, DomainForwarding, FileAuthDir, LscacheSettings, MaintenanceMode, NodeApp, OlsServerSettings, ParkedDomain, PhpExtensionSet, PhpFunctionOverride, PhpIniDirective, PhpIniOverride, PythonApp, Redirect, WafCustomRule, WafDomainOverride, WafException, WafSettings, WildcardDomain, utcnow
 from shared.validation import ValidationError, validate_domain
 
 from daemon.configtx import ConfigWriterMulti, StepResult
 from daemon.procutil import run
-from daemon import appunits, phpdirectives, phpfunctions, sysops
+from daemon import appunits, phpdirectives, sysops
 
 logger = logging.getLogger("borond.ols")
 
@@ -98,8 +99,32 @@ def _ols_settings_from_session(session) -> dict:
     return {key: getattr(row, key) for key in OLS_SETTINGS_DEFAULTS}
 
 
-def _php_app_name(username: str, php_version: str) -> str:
-    return f"{username}_php{php_version.replace('.', '')}"
+def _php_app_name(username: str, php_version: str, function_variant: str | None = None) -> str:
+    """extProcessor name. function_variant is set for a domain whose admin
+    disable_functions override differs from its account's: that value is
+    applied at PHP startup, so such a domain needs its own LSAPI pool."""
+    base = f"{username}_php{php_version.replace('.', '')}"
+    if function_variant is None:
+        return base
+    return f"{base}_f{hashlib.sha256(function_variant.encode()).hexdigest()[:10]}"
+
+
+def _function_override_map(session) -> dict[int, dict[str | None, str]]:
+    """account_id -> {domain or None (account-wide): disable_functions}."""
+    result: dict[int, dict[str | None, str]] = {}
+    for row in session.scalars(select(PhpFunctionOverride)).all():
+        result.setdefault(row.account_id, {})[row.domain] = row.disable_functions
+    return result
+
+
+def _php_scan_dir_value(extension_dir: str | None, functions_dir: str | None) -> str | None:
+    """PHP_INI_SCAN_DIR for one extProcessor. An empty leading element
+    keeps PHP's compiled-in scan dir (verified against this lsphp build:
+    `PHP_INI_SCAN_DIR=:/x php --ini` still parses mods-available), so a
+    function override alone never drops the stock extensions."""
+    if functions_dir is None:
+        return extension_dir
+    return f"{extension_dir or ''}:{functions_dir}"
 
 
 def _lsphp_path(php_version: str) -> str:
@@ -244,33 +269,43 @@ def _php_ini_for_account(session, account_id: int) -> dict | None:
     }
 
 
-def _with_disable_functions(php_ini: dict | None, disable_functions: str | None) -> dict | None:
-    """QA round 2, item 9: layers an admin-set disable_functions override
-    (daemon/phpfunctions.py, per-account or per-domain) onto whatever
-    _php_ini_for_account already computed for this account -- None means
-    no admin override at any scope for this domain, so the account's
-    existing php_ini (possibly also None) is returned completely
-    untouched, preserving the exact "absence means default" behavior
-    every other override in this template already has. Deliberately
-    creates a minimal php_ini dict (DEFAULTS + just this one extra) when
-    php_ini was None but a disable_functions override IS set -- an
-    account with zero other PHP customization can still get a
-    disable_functions override rendered."""
-    if disable_functions is None:
-        return php_ini
-    base = php_ini or {**phpdirectives.DEFAULTS, "extras": []}
-    extras = [e for e in (base.get("extras") or []) if e["name"] != "disable_functions"]
-    extras.append({"name": "disable_functions", "value": disable_functions})
-    return {**base, "extras": extras}
+# A RewriteRule substitution is not literal text: $N / ${...} are rule
+# back-references and maps, %N / %{VAR} condition back-references and server
+# variables (e.g. %{HTTP_COOKIE} would copy visitors' cookies into the
+# Location sent to an external site), and backslash escapes. OLS offers no
+# documented escape for them, so redirect targets must not contain any.
+_REWRITE_EXPANSION_RE = re.compile(r"[$\\]|%(?:[0-9]|\{)")
+
+
+def literal_rewrite_target(target_url: str) -> str:
+    """Reject redirect/forwarding targets the rewrite engine would expand
+    instead of emitting verbatim. Applied at write time and again when
+    rendering rows stored by older releases."""
+    if _REWRITE_EXPANSION_RE.search(target_url):
+        raise ValidationError(
+            "Redirect target URL cannot contain '$', a backslash, or '%' followed by a digit or '{' "
+            "(the web server would expand them as rewrite variables); write those characters "
+            "unencoded or remove them"
+        )
+    return target_url
+
+
+def _literal_or_none(target_url: str, what: str) -> str | None:
+    try:
+        return literal_rewrite_target(target_url)
+    except ValidationError:
+        logger.warning("not rendering %s with rewrite-variable target %r", what, target_url[:200])
+        return None
 
 
 def _forwarding_for_domain(session, domain_name: str) -> dict | None:
     """Phase 8 feature 4. None (no whole-domain redirect rendered) unless a
     DomainForwarding row exists. The target URL is a plain replacement string
-    (not a regex), already validated http(s) with no newline/bracket/space by
-    validate_redirect_target, so it's safe to interpolate into the rewrite."""
+    (not a regex), validated http(s) with no newline/bracket/space by
+    validate_redirect_target and free of rewrite expansions
+    (literal_rewrite_target), so it's safe to interpolate into the rewrite."""
     row = session.scalar(select(DomainForwarding).where(DomainForwarding.domain == domain_name))
-    if row is None:
+    if row is None or _literal_or_none(row.target_url, f"forwarding for {domain_name}") is None:
         return None
     return {"target_url": row.target_url, "status_code": row.status_code, "keep_path": row.keep_path}
 
@@ -325,7 +360,10 @@ def _wildcard_map(session) -> dict[str, bool]:
 
 
 def _redirects_for_domain(session, domain_name: str) -> list[dict]:
-    rows = session.scalars(select(Redirect).where(Redirect.domain == domain_name)).all()
+    rows = [
+        r for r in session.scalars(select(Redirect).where(Redirect.domain == domain_name)).all()
+        if _literal_or_none(r.target_url, f"redirect {r.path} on {domain_name}") is not None
+    ]
     return [
         {
             # Escaped here, once, in Python -- never in the Jinja template --
@@ -389,6 +427,41 @@ def _hotlink_context(domain: dict) -> dict | None:
     return {"allowed_domains_escaped": [d.replace(".", "\\.") for d in allowed], "extensions": HOTLINK_PROTECTED_EXTENSIONS}
 
 
+def _access_control(rule: dict | None, ip_block_list: list[str]) -> dict | None:
+    """OLS accessControl lists for one context: a translated .htaccess IP
+    rule (daemon/htaccess.py) plus the domain's IP block list, which every
+    context must repeat because OLS contexts do not inherit it."""
+    if rule is not None and rule["mode"] == "ip":
+        deny = list(dict.fromkeys([*rule["deny"], *ip_block_list]))
+        return {"allow": list(rule["allow"]), "deny": deny}
+    if ip_block_list:
+        return {"allow": ["*"], "deny": list(ip_block_list)}
+    return None
+
+
+def _directory_contexts(protected_dirs: list[dict], access_rules: list[dict], ip_block_list: list[str]) -> list[dict]:
+    """One vhost context per directory: panel password realms and
+    translated .htaccess access rules, merged when they name the same
+    directory (OLS rejects two contexts with the same URI)."""
+    contexts: dict[str, dict] = {}
+    for pd in protected_dirs:
+        contexts[pd["relative_path"]] = {
+            "relative_path": pd["relative_path"], "realm_name": pd["realm_name"], "deny": False,
+            "access_control": _access_control(None, ip_block_list),
+        }
+    for rule in access_rules:
+        relative = rule["relative_path"]
+        if not relative:
+            continue  # the docroot itself is the root context
+        entry = contexts.setdefault(relative, {"relative_path": relative, "realm_name": None, "deny": False})
+        if rule["mode"] == "deny" and rule.get("authentication") and entry["realm_name"]:
+            # "Require valid-user": the panel-managed realm already enforces it.
+            continue
+        entry["deny"] = rule["mode"] == "deny"
+        entry["access_control"] = _access_control(rule, ip_block_list)
+    return [contexts[key] for key in sorted(contexts)]
+
+
 def render_vhost_conf(
     account: Account,
     domain: dict,
@@ -404,8 +477,20 @@ def render_vhost_conf(
     maintenance: dict | None = None,
     error_pages: dict[int, str] | None = None,
     bubblewrap_enabled: bool = True,
+    php_app_name: str | None = None,
+    access_rules: list[dict] | None = None,
 ) -> str:
     home_dir = f"{settings.home_base}/{account.username}"
+    app_proxy = app_proxy or domain.get("app_proxy")
+    ip_block_list = domain.get("ip_block_list") or []
+    # Translated .htaccess access rules only apply where the docroot is what
+    # OLS serves: a suspended vhost serves the suspended page and an app
+    # vhost proxies every path to the application.
+    if suspended or app_proxy:
+        access_rules = []
+    else:
+        access_rules = list(access_rules if access_rules is not None else domain.get("access_rules") or [])
+    root_rule = next((rule for rule in access_rules if rule["relative_path"] == ""), None)
     template = _env.get_template("vhost.conf.j2")
     return template.render(
         vhost_name=_vhost_name(domain["domain"]),
@@ -418,7 +503,7 @@ def render_vhost_conf(
         # extProcessor _all_active_vhosts actually declared for this
         # (account, effective-version) pair in httpd_config.conf, or this
         # scripthandler would reference an extProcessor that doesn't exist.
-        php_app_name=_php_app_name(account.username, domain.get("php_version") or account.php_version),
+        php_app_name=php_app_name or _php_app_name(account.username, domain.get("php_version") or account.php_version),
         suspended=suspended,
         suspended_page_root=settings.suspended_page_root,
         ssl_key_file=ssl_key_file,
@@ -427,9 +512,12 @@ def render_vhost_conf(
         private_session_path=(f"{home_dir}/tmp/sessions" if account.php_private_sessions else None),
         redirects=redirects,
         hotlink=_hotlink_context(domain),
-        ip_block_list=domain.get("ip_block_list") or [],
+        root_access_control=_access_control(root_rule, ip_block_list),
+        root_denied=root_rule is not None and root_rule["mode"] == "deny",
+        directory_contexts=_directory_contexts(protected_dirs or [], access_rules, ip_block_list),
+        vhost_log_dir=sysops.vhost_log_dir(account.username),
         protected_dirs=protected_dirs or [],
-        app_proxy=app_proxy or domain.get("app_proxy"),
+        app_proxy=app_proxy,
         lscache=lscache or domain.get("lscache"),
         maintenance=maintenance or domain.get("maintenance"),
         error_pages=error_pages or domain.get("error_pages"),
@@ -488,6 +576,7 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
     # env line on their extProcessor (daemon/phpext.py's mechanism); everyone
     # else keeps the compiled-in stock scan dir by rendering nothing.
     ext_override_ids = set(session.scalars(select(PhpExtensionSet.account_id)).all())
+    function_overrides = _function_override_map(session)
     reserved_hosts = set(session.scalars(select(Domain.domain)).all())
     reserved_hosts.update((settings.webmail_hostname, settings.pma_hostname, settings.panel_hostname))
     domain_vhosts = []
@@ -513,20 +602,33 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
         # the pre-existing behavior), but a domain with its own override
         # contributes a second, separate extProcessor block if no sibling
         # domain already uses that same effective version.
-        versions_seen: set[str] = set()
+        #
+        # Admin disable_functions overrides (daemon/phpfunctions.py) only take
+        # effect at PHP startup, so they are applied through the pool's
+        # PHP_INI_SCAN_DIR. The account-wide value shapes the account's own
+        # pool; a domain whose own override differs gets a separate pool.
+        overrides = function_overrides.get(account.id, {})
+        account_functions = overrides.get(None)
+        processes_seen: set[str] = set()
         for d in domains:
             effective_version = d.php_version or account.php_version
-            if effective_version not in versions_seen:
-                versions_seen.add(effective_version)
+            functions = overrides.get(d.domain, account_functions)
+            variant = None if functions == account_functions else functions
+            app_name = _php_app_name(account.username, effective_version, variant)
+            if app_name not in processes_seen:
+                processes_seen.add(app_name)
                 process = {
                     "username": account.username,
-                    "php_app_name": _php_app_name(account.username, effective_version),
+                    "php_app_name": app_name,
                     "lsphp_path": _lsphp_path(effective_version),
                     "home_dir": account_home,
-                    "php_scan_dir": (
+                    "php_scan_dir": _php_scan_dir_value(
                         phpdirectives.php_scan_dir(account.username, effective_version)
-                        if account.id in ext_override_ids else None
+                        if account.id in ext_override_ids else None,
+                        phpdirectives.disable_functions_scan_dir(account.username, functions)
+                        if functions is not None else None,
                     ),
+                    "disable_functions": functions,
                 }
                 if entry_processes != 20:
                     process["entry_processes"] = entry_processes
@@ -534,6 +636,7 @@ def _all_active_vhosts(session) -> tuple[list[dict], list[dict]]:
             domain_vhosts.append({
                 "vhost_name": _vhost_name(d.domain),
                 "domain": d.domain,
+                "php_app_name": app_name,
                 "www_alias": not d.domain.startswith("www.") and "www." + d.domain not in reserved_hosts,
                 "account_home": account_home,
                 "app_proxy": app_proxies.get(d.domain),
@@ -998,6 +1101,25 @@ def _domains_as_plain(account_id: int) -> list[dict]:
         return plain
 
 
+def _access_rules_by_domain(domains: list[dict]) -> dict[str, list[dict]]:
+    """Translated .htaccess access rules per domain (daemon/htaccess.py),
+    scanning each document root once even when parked domains share it."""
+    from daemon import htaccess
+
+    by_docroot: dict[str, list[dict]] = {}
+    result = {}
+    for domain in domains:
+        docroot = domain["docroot"]
+        if docroot not in by_docroot:
+            try:
+                by_docroot[docroot] = htaccess.effective_access_contexts(htaccess.scan_access_rules(docroot))
+            except Exception:
+                logger.exception("could not read .htaccess access rules under %s", docroot)
+                by_docroot[docroot] = []
+        result[domain["domain"]] = by_docroot[docroot]
+    return result
+
+
 def _apply_targets(account: Account, domains: list[dict], suspended: bool, context: str) -> None:
     """Regenerate every vhost file in `domains` (each gets its own docRoot/
     SSL cert/log files -- Phase 2 feature 4) plus httpd_config.conf, as ONE
@@ -1008,10 +1130,7 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
     with write_session() as session:
         domain_vhosts, account_procs = _all_active_vhosts(session)
         php_ini = _php_ini_for_account(session, account.id)
-        disable_functions_by_domain = {
-            domain["domain"]: phpfunctions.effective_disable_functions(session, account.id, domain["domain"])
-            for domain in domains
-        }
+        php_app_names = {vhost["domain"]: vhost["php_app_name"] for vhost in domain_vhosts}
         redirects_by_domain = {domain["domain"]: _redirects_for_domain(session, domain["domain"]) for domain in domains}
         forwarding_by_domain = {domain["domain"]: _forwarding_for_domain(session, domain["domain"]) for domain in domains}
         protected_dirs_by_domain = {
@@ -1026,6 +1145,11 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
         ols_settings = _ols_settings_from_session(session)
 
     bubblewrap_enabled = _account_bubblewrap_enabled(account)
+    access_rules_by_domain = _access_rules_by_domain(domains)
+    if domains and not os.path.isdir(sysops.vhost_log_dir(account.username)):
+        # e.g. right after an account rename: OLS needs the directory to
+        # exist before it opens the renamed account's logs.
+        sysops.ensure_vhost_log_dir(account.username)
     error_pages_by_domain = {
         domain["domain"]: _error_pages_for_domain(
             account.username, domain["domain"], maintenance_active=bool(maintenance_by_domain[domain["domain"]])
@@ -1043,16 +1167,38 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
             account, domain, suspended or bool(domain.get("suspended")) or
                 suspended_by_name.get(parked_targets.get(domain['domain']), False),
             ssl_key_file=ssl_key_file, ssl_cert_file=ssl_cert_file,
-            php_ini=_with_disable_functions(php_ini, disable_functions_by_domain[domain["domain"]]),
+            php_ini=php_ini,
+            php_app_name=php_app_names.get(domain["domain"]),
             redirects=redirects_by_domain[domain["domain"]],
             protected_dirs=protected_dirs_by_domain[domain["domain"]],
             forwarding=forwarding_by_domain[domain["domain"]],
             maintenance=maintenance_by_domain[domain["domain"]],
             error_pages=error_pages_by_domain[domain["domain"]],
             bubblewrap_enabled=bubblewrap_enabled,
+            access_rules=access_rules_by_domain[domain["domain"]],
         )
 
     _attach_waf_config(targets, content, waf)
+    _apply_with_php_function_dirs(targets, content, account_procs, context)
+
+
+def _function_dir_values(account_procs: list[dict]) -> dict[str, set[str]]:
+    values: dict[str, set[str]] = {}
+    for process in account_procs:
+        if process.get("disable_functions") is not None:
+            values.setdefault(process["username"], set()).add(process["disable_functions"])
+    return values
+
+
+def _apply_with_php_function_dirs(targets: dict, contents: dict, account_procs: list[dict], context: str) -> None:
+    """Every OLS transaction renders every extProcessor, so the
+    disable_functions ini files they reference are created first and the
+    ones nothing references any more are removed only after the new
+    configuration is live."""
+    from daemon import phpext
+
+    values = _function_dir_values(account_procs)
+    phpext.materialize_disable_functions(values)
     writer = ConfigWriterMulti(
         targets=targets,
         validate=_validate_multi,
@@ -1061,9 +1207,13 @@ def _apply_targets(account: Account, domains: list[dict], suspended: bool, conte
         backup_dir=settings.backup_dir,
         subsystem="ols",
     )
-    result = writer.apply(content)
+    result = writer.apply(contents)
     if not result.ok:
         raise RuntimeError(f"OLS config transaction failed during {context}: {result.summary()}")
+    try:
+        phpext.prune_disable_functions(values)
+    except Exception:
+        logger.exception("could not prune unused PHP disable_functions directories")
 
 
 def provision_vhost(account: Account) -> None:
@@ -1076,15 +1226,22 @@ def provision_vhost(account: Account) -> None:
     _apply_targets(account, domains, suspended=False, context="provision")
 
 
-def refresh_vhost(account: Account) -> None:
+def refresh_vhost(account: Account, *, recycle_php: bool = False) -> None:
     """Re-render and re-apply every one of this account's domain-vhosts
     from current DB state (SSL status per domain, PHP version) -- used by
     the certbot deploy-hook (Phase f) after marking a domain's ssl_status
-    active, and by the PHP-version-switch hook (Phase 2 feature 1)."""
+    active, and by the PHP-version-switch hook (Phase 2 feature 1).
+
+    recycle_php restarts the account's warm LSAPI workers afterwards; needed
+    when an extProcessor's startup environment changed (PHP_INI_SCAN_DIR,
+    e.g. an admin disable_functions override), which running workers never
+    re-read."""
     domains = _domains_as_plain(account.id)
     if not domains:
         return
     _apply_targets(account, domains, suspended=(account.status == "suspended"), context="refresh")
+    if recycle_php:
+        sysops.recycle_php_workers(account.username)
 
 
 def suspend_vhost(account: Account) -> None:
@@ -1133,16 +1290,17 @@ def terminate_vhost(account: Account) -> None:
         domain_names = list(session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all())
         domain_vhosts, account_procs = _all_active_vhosts(session)
 
-    if not domain_names:
-        return
+    if domain_names:
+        _apply_main_only(domain_vhosts, account_procs, context="terminate")
 
-    _apply_main_only(domain_vhosts, account_procs, context="terminate")
+        import shutil
 
-    import shutil
-
-    for domain_name in domain_names:
-        vhost_dir = Path(OLS_SERVER_BASE) / "conf" / "vhosts" / _vhost_name(domain_name)
-        shutil.rmtree(vhost_dir, ignore_errors=True)
+        for domain_name in domain_names:
+            vhost_dir = Path(OLS_SERVER_BASE) / "conf" / "vhosts" / _vhost_name(domain_name)
+            shutil.rmtree(vhost_dir, ignore_errors=True)
+    # Vhost logs live outside the home (sysops.VHOST_LOG_ROOT), so home
+    # removal no longer takes them; OLS stopped writing them above.
+    sysops.remove_vhost_log_dir(account.username)
 
 
 def _apply_main_only(domain_vhosts: list[dict], account_procs: list[dict], context: str) -> None:
@@ -1153,17 +1311,7 @@ def _apply_main_only(domain_vhosts: list[dict], account_procs: list[dict], conte
     targets = {"main": HTTPD_CONFIG_PATH}
     contents = {"main": httpd_content}
     _attach_waf_config(targets, contents, waf)
-    writer = ConfigWriterMulti(
-        targets=targets,
-        validate=_validate_multi,
-        reload=_reload,
-        verify=_verify,
-        backup_dir=settings.backup_dir,
-        subsystem="ols",
-    )
-    result = writer.apply(contents)
-    if not result.ok:
-        raise RuntimeError(f"OLS config transaction failed during {context}: {result.summary()}")
+    _apply_with_php_function_dirs(targets, contents, account_procs, context)
 
 
 def refresh_main_config() -> None:
@@ -1198,10 +1346,15 @@ def refresh_all_vhosts() -> None:
         accounts = list(session.scalars(
             select(Account).where(Account.status.in_(["active", "suspended"]))
         ).all())
+        function_override_ids = set(session.scalars(select(PhpFunctionOverride.account_id)).all())
     for account in accounts:
         sysops.ensure_tmp_dir(account.username)
+        # Also moves vhost logs out of the pre-hardening ~/logs location.
         sysops.ensure_web_logs(account.username)
-        refresh_vhost(account)
+        # Admin disable_functions overrides moved from an (unenforced) vhost
+        # php_admin_value to the pool's PHP_INI_SCAN_DIR; warm workers only
+        # pick that up when restarted.
+        refresh_vhost(account, recycle_php=account.id in function_override_ids)
 
 
 def migrate_error_page_paths() -> int:

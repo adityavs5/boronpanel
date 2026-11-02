@@ -137,6 +137,14 @@ def effective_domain_config(params: dict) -> dict:
         if domain is None:
             raise ValidationError(f"domain '{domain_name}' does not belong to account '{username}'")
         effective_version = domain.php_version or account.php_version
+        from daemon import phpfunctions
+
+        # disable_functions is applied at PHP startup (php.ini, or an admin
+        # override's scan-dir ini), never through the vhost, so report the
+        # list actually in force rather than a rendered vhost line.
+        disable_functions = phpfunctions.effective_disable_functions(session, account.id, domain_name)
+        if disable_functions is None:
+            disable_functions = ",".join(phpdirectives.DEFAULT_DISABLE_FUNCTIONS)
     config_path = Path(ols._vhost_conf_path(ols._vhost_name(domain_name)))
     try:
         rendered = config_path.read_text()
@@ -145,6 +153,7 @@ def effective_domain_config(params: dict) -> dict:
             f"OpenLiteSpeed configuration for '{domain_name}' has not been rendered yet"
         ) from None
     values = {match.group("name"): match.group("value") for match in _PHP_ADMIN_VALUE.finditer(rendered)}
+    values["disable_functions"] = disable_functions
     wanted = (
         "open_basedir", "disable_functions", "upload_tmp_dir",
         "upload_max_filesize", "session.save_path", "error_log",

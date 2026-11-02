@@ -17,7 +17,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, ParkedDomain
-from shared.validation import validate_domain, validate_username
+from shared.validation import ConflictError, NotFoundError, ValidationError, validate_domain, validate_username
 
 from daemon import database_operations, dnsprovider, ols
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
@@ -48,14 +48,14 @@ def add_parked_domain(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
-            raise RuntimeError(f"cannot add a parked domain to an account in status '{account.status}'")
+            raise ConflictError(f"cannot add a parked domain to an account in status '{account.status}'")
         from daemon import domain_ownership
         domain_ownership.require_available(session, parked_domain, account.id)
 
         if session.scalar(select(Domain).where(Domain.domain == parked_domain)) is not None:
-            raise RuntimeError(f"domain '{parked_domain}' is already in use")
+            raise ConflictError(f"domain '{parked_domain}' is already in use")
 
         # Resolve the target domain (defaults to the account's primary domain).
         if target_domain:
@@ -68,9 +68,9 @@ def add_parked_domain(params: dict) -> dict:
                 select(Domain).where(Domain.account_id == account.id, Domain.kind == "primary")
             )
         if target is None:
-            raise RuntimeError("target domain not found for this account (add it first, or set a primary domain)")
+            raise NotFoundError("target domain not found for this account (add it first, or set a primary domain)")
         if target.kind == "parked":
-            raise RuntimeError("cannot park onto another parked domain")
+            raise ValidationError("cannot park onto another parked domain")
         target_domain = target.domain
         docroot = target.docroot
 
@@ -117,7 +117,7 @@ def list_parked_domains(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         rows = session.scalars(
             select(ParkedDomain).where(ParkedDomain.account_id == account.id).order_by(ParkedDomain.parked_domain)
         ).all()
@@ -137,14 +137,14 @@ def remove_parked_domain(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         parked = session.scalar(
             select(ParkedDomain).where(
                 ParkedDomain.parked_domain == parked_domain, ParkedDomain.account_id == account.id
             )
         )
         if parked is None:
-            raise RuntimeError(f"parked domain '{parked_domain}' not found for account '{username}'")
+            raise NotFoundError(f"parked domain '{parked_domain}' not found for account '{username}'")
         domain_row = session.scalar(
             select(Domain).where(Domain.domain == parked_domain, Domain.account_id == account.id)
         )

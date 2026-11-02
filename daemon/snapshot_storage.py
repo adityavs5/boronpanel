@@ -24,6 +24,10 @@ class SnapshotStorageError(RuntimeError):
 
 
 def _absolute(value):
+    # A missing path (e.g. a local destination posted without local_path)
+    # is a validation error, not a TypeError from Path(None).
+    if not isinstance(value, (str, Path)) or not str(value).strip():
+        raise ValidationError('Enter the absolute path of the backup directory')
     path = Path(value)
     if not path.is_absolute() or path == Path('/') or '..' in path.parts or any(c in str(value) for c in ('\0','\n','\r')):
         raise ValidationError('Use an absolute path without parent-directory references or control characters')

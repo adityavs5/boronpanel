@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -25,6 +25,17 @@ class CreateTokenBody(BaseModel):
     expires_in_days: int = 30
 
 
+def _require_admin_session(identity: Identity) -> None:
+    """Token management needs an interactive administrator session.
+
+    A Bearer token that could mint or revoke tokens would let one leaked
+    credential create descendants that survive its own revocation.
+    """
+    require_admin(identity)
+    if identity.auth_method != "session" or identity.panel_user_id <= 0 or identity.is_impersonating:
+        raise HTTPException(status_code=403, detail="A current administrator session is required")
+
+
 @api_router.get("")
 def list_tokens(identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -45,13 +56,13 @@ def list_tokens(identity: Identity = Depends(get_identity)):
 
 @api_router.post("")
 def create_token(body: CreateTokenBody, identity: Identity = Depends(get_identity)):
-    require_admin(identity)
+    _require_admin_session(identity)
     return call_daemon("auth.create_api_token", identity, **body.model_dump(exclude_none=True))
 
 
 @api_router.delete("/{token_id}")
 def revoke_token(token_id: int, identity: Identity = Depends(get_identity)):
-    require_admin(identity)
+    _require_admin_session(identity)
     return call_daemon("auth.revoke_api_token", identity, token_id=token_id)
 
 
@@ -65,7 +76,7 @@ def ui_list_tokens(request: Request, identity: Identity = Depends(get_identity))
 
 @ui_router.post("")
 def ui_create_token(request: Request, label: str = Form(...), identity: Identity = Depends(get_identity)):
-    require_admin(identity)
+    _require_admin_session(identity)
     result = call_daemon("auth.create_api_token", identity, label=label, role="admin")
     with read_session() as db:
         rows = db.scalars(select(ApiToken)).all()
@@ -76,6 +87,6 @@ def ui_create_token(request: Request, label: str = Form(...), identity: Identity
 
 @ui_router.post("/{token_id}/revoke")
 def ui_revoke_token(token_id: int, identity: Identity = Depends(get_identity)):
-    require_admin(identity)
+    _require_admin_session(identity)
     call_daemon("auth.revoke_api_token", identity, token_id=token_id)
     return RedirectResponse("/ui/tokens", status_code=303)

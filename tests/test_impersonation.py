@@ -121,7 +121,7 @@ def test_redeem_rejects_expired_token(isolated_db):
     with write_session() as db:
         row = db.scalar(select(ImpersonationToken))
         row.expires_at = utcnow() - dt.timedelta(seconds=1)
-    with pytest.raises(RuntimeError, match="expired"):
+    with pytest.raises(impersonation.ValidationError, match="expired"):
         impersonation.redeem_token({"token": token, "admin_username": "admin", "admin_panel_user_id": admin["id"]})
 
 
@@ -129,14 +129,14 @@ def test_redeem_rejects_wrong_admin(isolated_db):
     _make_account("demo1")
     other = _make_admin("admin2")
     token = _issue(admin_username="admin")  # issued by "admin"
-    with pytest.raises(RuntimeError, match="different admin"):
+    with pytest.raises(impersonation.ValidationError, match="different admin"):
         impersonation.redeem_token({"token": token, "admin_username": "admin2", "admin_panel_user_id": other["id"]})
 
 
 def test_redeem_rejects_invalid_token(isolated_db):
     _make_account("demo1")
     admin = _make_admin()
-    with pytest.raises(RuntimeError, match="invalid"):
+    with pytest.raises(impersonation.ValidationError, match="invalid"):
         impersonation.redeem_token({"token": "fh_imp_bogus", "admin_username": "admin", "admin_panel_user_id": admin["id"]})
 
 

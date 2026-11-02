@@ -42,7 +42,7 @@ MAX_INSPECTION_KEYS = 256
 MAX_INSPECTION_SECONDS = 10
 
 
-class SshKeyError(Exception):
+class SshKeyError(ValidationError):
     pass
 
 
@@ -83,12 +83,30 @@ def _authorized_keys_path(username: str) -> str:
     return os.path.join(_ssh_dir(username), "authorized_keys")
 
 
-def _key_blob(line: str) -> tuple[str, ...]:
-    """(type, base64) -- the part of the line that actually identifies the
-    key, ignoring the trailing comment (two entries differing only by
-    comment are still the same key)."""
-    parts = line.split(None, 2)
-    return tuple(parts[:2]) if len(parts) >= 2 else (line,)
+# Public key algorithms OpenSSH accepts in authorized_keys. A line that does
+# not start with one of these starts with authorized_keys(5) options.
+PUBLIC_KEY_TYPES = frozenset({
+    "ssh-ed25519", "ssh-rsa", "ssh-dss",
+    "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
+    "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com",
+})
+
+
+def _bare_public_key(key_text: str) -> str:
+    """Accept only `<type> <base64> [comment]`.
+
+    authorized_keys(5) lets a line start with options (command=, from=,
+    environment=, permitopen=, ...). The panel field is a public key, not a
+    policy line, so an options prefix is refused instead of being written
+    verbatim where sshd would enforce it.
+    """
+    parts = key_text.split(None, 2)
+    if len(parts) < 2 or parts[0] not in PUBLIC_KEY_TYPES:
+        raise ValidationError(
+            "paste only the public key (it starts with ssh-ed25519, ssh-rsa or ecdsa-sha2-...); "
+            "authorized_keys options such as command= or from= are not accepted"
+        )
+    return key_text
 
 
 def _inspect(key_text: str, *, timeout: float = 10) -> dict:
@@ -140,7 +158,7 @@ def list_keys(params: dict) -> dict:
 
 def add_key(params: dict) -> dict:
     username = validate_username(params["username"])
-    key_text = validate_ssh_key_text(params["key"])
+    key_text = _bare_public_key(validate_ssh_key_text(params["key"]))
     info = _inspect(key_text)  # raises ValidationError if malformed -- never written if so
 
     with write_session() as session:
@@ -160,7 +178,10 @@ def add_key(params: dict) -> dict:
     safeio.secure_mkdirs(home, ".ssh", pw.pw_uid, pw.pw_gid, 0o700)
 
     existing_lines = _read_authorized_lines(username)
-    if _key_blob(key_text) in {_key_blob(ln) for ln in existing_lines}:
+    # Compare the key material itself (ssh-keygen's fingerprint), so a line
+    # carrying options or a different comment still counts as the same key.
+    if any(existing is not None and existing["fingerprint"] == info["fingerprint"]
+           for _line, existing in _inspect_lines(existing_lines)):
         raise ValidationError("this SSH key is already added for this account")
 
     existing_lines.append(key_text)

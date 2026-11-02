@@ -10,7 +10,10 @@ from sqlalchemy import func, select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, PanelUser, ResellerAccount, ResellerPlan, ResellerProfile, ResourcePolicy
-from shared.validation import ValidationError, generate_strong_password, validate_domain, validate_php_version, validate_username
+from shared.validation import (
+    ConflictError, NotFoundError, ValidationError, generate_strong_password, validate_domain,
+    validate_php_version, validate_username,
+)
 
 from daemon import audit, handlers_account, handlers_auth, resource_manager
 
@@ -24,7 +27,7 @@ def _reconcile_account(account_id: int) -> None:
         hook(account_id)
 
 
-class ResellerError(Exception):
+class ResellerError(ValidationError):
     pass
 
 
@@ -215,8 +218,11 @@ def delete_plan(params: dict) -> dict:
         row = session.get(ResellerPlan, plan_id)
         if row is None:
             raise ResellerError(f"reseller plan {plan_id} not found")
-        if session.scalar(select(ResellerProfile.id).where(ResellerProfile.plan_id == plan_id)) is not None:
-            raise ResellerError("plan is assigned to a reseller")
+        assigned = session.scalar(select(func.count()).select_from(ResellerProfile).where(ResellerProfile.plan_id == plan_id)) or 0
+        if assigned:
+            raise ConflictError(
+                f"plan is assigned to {assigned} reseller(s); move them to another plan or delete them first"
+            )
         policy = session.scalar(select(ResourcePolicy).where(
             ResourcePolicy.scope_type == "reseller_plan", ResourcePolicy.scope_id == plan_id,
         ))
@@ -317,6 +323,66 @@ def update_reseller(params: dict) -> dict:
     return result
 
 
+def delete_reseller(params: dict) -> dict:
+    """Remove a reseller so its plan (and its login name) can be reused.
+
+    Refused while the reseller still owns live (non-terminated) accounts,
+    unless release_accounts is true: those accounts then return to
+    administrator ownership, like reseller.account.move with no target, and
+    their resources are reconciled without the reseller plan's policy.
+    Terminated accounts only lose the ownership link; their history stays.
+    The reseller's panel login cannot be deleted (sessions, tokens and the
+    audit trail reference it), so it is disabled, its sessions revoked and
+    its name released as "<name>~r<id>".
+    """
+    from shared.models import LoginAttempt, LoginChallenge, Session
+
+    profile_id = int(params["reseller_id"])
+    release = params.get("release_accounts", False)
+    if not isinstance(release, bool):
+        raise ValidationError("release_accounts must be true or false")
+    with _state_lock, write_session() as session:
+        profile = session.get(ResellerProfile, profile_id)
+        if profile is None:
+            raise NotFoundError(f"reseller {profile_id} not found")
+        links = session.scalars(select(ResellerAccount).where(ResellerAccount.reseller_id == profile.id)).all()
+        live = session.scalars(select(Account.username).join(ResellerAccount, ResellerAccount.account_id == Account.id).where(
+            ResellerAccount.reseller_id == profile.id, Account.status != "terminated",
+        ).order_by(Account.username)).all()
+        if live and not release:
+            shown = ", ".join(live[:5]) + (f" and {len(live) - 5} more" if len(live) > 5 else "")
+            raise ConflictError(
+                f"reseller still owns {len(live)} account(s) ({shown}); move or terminate them, "
+                "or delete with release_accounts to return them to administrator ownership"
+            )
+        released_ids = [link.account_id for link in links]
+        for link in links:
+            session.delete(link)
+        user = session.get(PanelUser, profile.panel_user_id)
+        reseller_username = user.username if user is not None else None
+        if user is not None:
+            user.disabled = True
+            suffix = f"~r{profile.id}"
+            if not user.username.endswith(suffix):
+                user.username = f"{user.username}{suffix}"
+            for row in session.scalars(select(Session).where(Session.panel_user_id == user.id)).all():
+                row.revoked = True
+            for row in session.scalars(select(LoginChallenge).where(LoginChallenge.panel_user_id == user.id)).all():
+                session.delete(row)
+            # The lockout counter is keyed by name: it belongs to the old
+            # login, not to the next reseller or customer who takes the name.
+            if reseller_username is not None:
+                for row in session.scalars(select(LoginAttempt).where(LoginAttempt.username == reseller_username)).all():
+                    session.delete(row)
+        session.flush()
+        session.delete(profile)
+    for account_id in released_ids:
+        _reconcile_account(account_id)
+    logger.info("deleted reseller %s (%s); %d account(s) returned to administrator ownership",
+                profile_id, reseller_username, len(live))
+    return {"status": "deleted", "id": profile_id, "username": reseller_username, "released_accounts": list(live)}
+
+
 def move_account(params: dict) -> dict:
     """Assign an account to a reseller, move it, or return it to admin ownership."""
     username = validate_username(params["username"])
@@ -414,7 +480,11 @@ def create_account(params: dict) -> dict:
                 raise ResellerError("reseller account limit reached")
             if sum(account.quota_hard_mb for account in accounts) + plan.account_quota_hard_mb > plan.max_total_disk_mb:
                 raise ResellerError("reseller disk allocation limit reached")
-            if session.scalar(select(PanelUser.id).where(PanelUser.username == username)) is not None:
+            login = session.scalar(select(PanelUser).where(PanelUser.username == username))
+            # A terminated account's login is released by create_account.
+            if login is not None and not (login.role == "customer" and login.account_id is not None and session.scalar(
+                select(Account.status).where(Account.id == login.account_id)
+            ) == "terminated"):
                 raise ResellerError(f"panel login '{username}' already exists")
             policy = session.scalar(select(ResourcePolicy).where(
                 ResourcePolicy.scope_type == "reseller_plan", ResourcePolicy.scope_id == plan.id,

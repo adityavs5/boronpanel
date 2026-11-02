@@ -165,8 +165,61 @@ def test_copy_files_reasserts_docroot_permissions(isolated_db, tmp_path, monkeyp
 def test_copy_files_raises_on_cp_failure(monkeypatch):
     monkeypatch.setattr(real_pwd, 'getpwnam', lambda name: real_pwd.struct_passwd((name, 'x', 5001, 5001, '', '/home/demo1', '/bin/bash')))
     monkeypatch.setattr(staging, "run", lambda *a, **k: type("R", (), {"ok": False, "stderr": "no such file"})())
-    with pytest.raises(staging.StagingError):
+    # cp(1) failing is an internal failure (502 by reference), not a
+    # caller mistake whose message -- here cp's stderr -- is shown to them.
+    with pytest.raises(RuntimeError) as raised:
         staging._copy_files("/nonexistent/source", "/nonexistent/dest", "demo1")
+    assert not isinstance(raised.value, staging.ValidationError)
+
+
+def _run_unprivileged(argv, **kwargs):
+    """Execute the account-scoped command for real, without changing uid."""
+    import subprocess
+    from daemon.procutil import ProcResult
+
+    assert kwargs["uid"] == kwargs["gid"] == 5001
+    completed = subprocess.run(argv, capture_output=True, text=True)
+    return ProcResult(argv, completed.returncode, completed.stdout, completed.stderr)
+
+
+def test_replace_files_removes_staging_only_files(tmp_path, monkeypatch):
+    """Regression: sync overwrote changed files but kept files that only
+    existed in staging, so staging was not a copy of production."""
+    monkeypatch.setattr(real_pwd, "getpwnam", lambda name: real_pwd.struct_passwd(
+        (name, "x", 5001, 5001, "", str(tmp_path), "/usr/sbin/nologin")))
+    monkeypatch.setattr(staging, "run", _run_unprivileged)
+    reasserted = []
+    monkeypatch.setattr(staging.handlers_domain, "ensure_docroot", lambda username, docroot: reasserted.append(docroot))
+    source = tmp_path / "public_html"
+    source.mkdir()
+    (source / "hello.txt").write_text("v2")
+    (source / "sub").mkdir()
+    (source / "sub" / ".htaccess").write_text("x")
+    staging_docroot = tmp_path / "staging.example" / "public_html"
+    staging_docroot.mkdir(parents=True)
+    (staging_docroot / "hello.txt").write_text("v1")
+    (staging_docroot / "stageonly.txt").write_text("stale")
+
+    staging._replace_files(str(source), str(staging_docroot), "demo1")
+
+    assert sorted(p.name for p in staging_docroot.iterdir()) == ["hello.txt", "sub"]
+    assert (staging_docroot / "hello.txt").read_text() == "v2"
+    assert (staging_docroot / "sub" / ".htaccess").exists()
+    assert sorted(p.name for p in staging_docroot.parent.iterdir()) == ["public_html"]
+    assert reasserted == [str(staging_docroot)]
+
+
+def test_replace_files_keeps_previous_staging_when_copy_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(real_pwd, "getpwnam", lambda name: real_pwd.struct_passwd(
+        (name, "x", 5001, 5001, "", str(tmp_path), "/usr/sbin/nologin")))
+    monkeypatch.setattr(staging, "run", _run_unprivileged)
+    staging_docroot = tmp_path / "staging.example" / "public_html"
+    staging_docroot.mkdir(parents=True)
+    (staging_docroot / "keep.txt").write_text("previous")
+    with pytest.raises(RuntimeError):
+        staging._replace_files(str(tmp_path / "missing-source"), str(staging_docroot), "demo1")
+    assert (staging_docroot / "keep.txt").read_text() == "previous"
+    assert sorted(p.name for p in staging_docroot.parent.iterdir()) == ["public_html"]
 
 
 # --- orchestration (create/sync/get/delete), file-copy + db-clone mocked ---
@@ -194,6 +247,7 @@ def stub_filesystem(monkeypatch):
 def stub_copy_files(monkeypatch):
     calls = []
     monkeypatch.setattr(staging, "_copy_files", lambda src, dst, username: calls.append((src, dst, username)))
+    monkeypatch.setattr(staging, "_replace_files", lambda src, dst, username: calls.append((src, dst, username)))
     return calls
 
 
@@ -467,3 +521,9 @@ def test_sync_refuses_reassigned_staging_domain(account_with_domain, stub_ols, s
     with pytest.raises(staging.StagingError, match='no longer exists'):
         staging.sync_staging({'username': 'demo1', 'domain': 'demo1.example'})
     assert stub_copy_files == []
+
+
+def test_create_staging_refuses_a_staging_domain_as_source(account_with_domain, stub_ols, stub_filesystem, stub_copy_files, stub_ssl, stub_database):
+    created = staging.create_staging({"username": "demo1", "domain": "demo1.example"})
+    with pytest.raises(staging.StagingError, match="itself a staging environment"):
+        staging.create_staging({"username": "demo1", "domain": created["staging_domain"]})

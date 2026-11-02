@@ -5,4 +5,4 @@
 # Every 5 minutes: systemctl is-active per monitored service (OLS, Postfix,
 # Dovecot, PowerDNS, MariaDB, Pure-FTPd, fail2ban), history row each, admin
 # alert email on down + recovery (30 min re-alert cooldown per service).
-*/5 * * * * root /opt/boron/scripts/monitoring_check.py >> /var/log/boron/monitoring-check.log 2>&1
+*/5 * * * * root /opt/boron/.venv/bin/python /opt/boron/scripts/monitoring_check.py >> /var/log/boron/monitoring-check.log 2>&1

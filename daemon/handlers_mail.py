@@ -15,6 +15,8 @@ from sqlalchemy import select
 from shared.db import write_session
 from shared.models import Account, Domain, MailDomain, MailUser
 from shared.validation import (
+    ConflictError,
+    NotFoundError,
     ValidationError,
     validate_domain,
     validate_email_address,
@@ -25,7 +27,9 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import autoresponder, dkim, mail, resource_limits, spamfilter, webmail_sso
+from daemon import (
+    autoresponder, dkim, handlers_email_routing, mail, resource_limits, spamfilter, webmail_sso,
+)
 from daemon.mail_mutation import serialized
 
 # Bounds for a single mailbox's quota. 100 GB is a generous shared-hosting
@@ -50,13 +54,13 @@ def create_mail_domain(params: dict) -> dict:
         if username:
             account = session.scalar(select(Account).where(Account.username == username))
             if account is None:
-                raise RuntimeError(f"account '{username}' not found")
+                raise NotFoundError(f"account '{username}' not found")
             account_id = account.id
         else:
             domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
             account = session.get(Account, domain.account_id) if domain else None
             if account is None:
-                raise RuntimeError(f"mail domain '{domain_name}' requires an owning hosting account")
+                raise ValidationError(f"mail domain '{domain_name}' requires an owning hosting account")
             account_id = account.id
         hosting_domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
         if hosting_domain is not None and hosting_domain.account_id != account_id:
@@ -68,10 +72,10 @@ def create_mail_domain(params: dict) -> dict:
             domain_ownership.require_no_foreign_overlap(session, domain_name, account_id)
         existing = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))
         if existing is not None:
-            raise RuntimeError(f"mail domain '{domain_name}' already provisioned")
+            raise ConflictError(f"mail domain '{domain_name}' already provisioned")
 
     if mail.domain_exists(domain_name):
-        raise RuntimeError(f"mail domain '{domain_name}' already exists")
+        raise ConflictError(f"mail domain '{domain_name}' already exists")
 
     # Local acceptance starts only once the public MX points here (or the
     # operator trusts the domain), so a claimed external domain never
@@ -166,7 +170,7 @@ def ensure_mail_domain(domain_name: str) -> None:
             domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
             account = session.get(Account, domain.account_id) if domain else None
             if account is None or account.status != 'active':
-                raise RuntimeError(f"mail domain '{domain_name}' not provisioned for an active hosting account")
+                raise NotFoundError(f"mail domain '{domain_name}' not provisioned for an active hosting account")
             username, account_id = account.username, account.id
         if mail.domain_exists(domain_name):
             # Missing ownership metadata is not evidence that external mail
@@ -196,12 +200,12 @@ def create_mailbox(params: dict) -> dict:
     with write_session() as session:
         mail_domain = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))
         if mail_domain is None:
-            raise RuntimeError(f"mail domain '{domain_name}' not provisioned")
+            raise NotFoundError(f"mail domain '{domain_name}' not provisioned")
         existing = session.scalar(
             select(MailUser).where(MailUser.domain == domain_name, MailUser.local_part == local_part)
         )
         if existing is not None:
-            raise RuntimeError(f"mailbox '{local_part}@{domain_name}' already exists")
+            raise ConflictError(f"mailbox '{local_part}@{domain_name}' already exists")
         if mail_domain.account_id is not None:
             resource_limits.require_capacity(session, mail_domain.account_id, "mailbox")
         mail_domain_id = mail_domain.id
@@ -231,14 +235,19 @@ def delete_mailbox(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
     webmail_sso.revoke_mailbox(f"{local_part}@{domain_name}")
-    mail.delete_mailbox(domain_name, local_part)
+    removed = mail.delete_mailbox(domain_name, local_part)
     spamfilter.delete_entries_for_mailbox(domain_name, local_part)
     with write_session() as session:
         row = session.scalar(
             select(MailUser).where(MailUser.domain == domain_name, MailUser.local_part == local_part)
         )
-        if row is not None:
+        cached = row is not None
+        if cached:
             session.delete(row)
+    # A retry after a partial failure finds only the cache row; a mailbox
+    # that exists nowhere was never deleted and must not report success.
+    if not removed and not cached:
+        raise NotFoundError(f"mailbox '{local_part}@{domain_name}' does not exist")
     return {"domain": domain_name, "local_part": local_part, "status": "deleted"}
 
 
@@ -270,7 +279,8 @@ def change_mailbox_password(params: dict) -> dict:
     local_part = validate_mailbox_local_part(params["local_part"])
     new_password = validate_password_strength(params["password"])
     webmail_sso.revoke_mailbox(f"{local_part}@{domain_name}")
-    mail.change_mailbox_password(domain_name, local_part, new_password)
+    if not mail.change_mailbox_password(domain_name, local_part, new_password):
+        raise NotFoundError(f"mailbox '{local_part}@{domain_name}' does not exist")
     return {"domain": domain_name, "local_part": local_part, "status": "password_changed"}
 
 
@@ -281,8 +291,12 @@ def terminate_account_mail(account: Account) -> None:
     account owns."""
     with write_session() as session:
         domains = session.scalars(select(MailDomain.domain).where(MailDomain.account_id == account.id)).all()
+        hosted = session.scalars(select(Domain.domain).where(Domain.account_id == account.id)).all()
     for domain_name in domains:
         delete_mail_domain({"domain": domain_name})
+    # Per-domain routing outlives a plain mail-domain delete on purpose (the
+    # hosting domain keeps its MX choice), but not the account itself.
+    handlers_email_routing.delete_routing_for_domains([*domains, *hosted])
 
 
 # --- Forwarders (Phase 3 feature 4) -----------------------------------
@@ -327,7 +341,8 @@ def delete_forward(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
     destination = validate_email_address(params["destination"])
-    mail.delete_forward(domain_name, local_part, destination)
+    if not mail.delete_forward(domain_name, local_part, destination):
+        raise NotFoundError(f"forwarder '{local_part}@{domain_name}' -> '{destination}' does not exist")
     return {"domain": domain_name, "local_part": local_part, "destination": destination, "status": "deleted"}
 
 
@@ -405,16 +420,18 @@ def _restore_autoresponder_file(snapshot: dict) -> None:
 def set_autoresponder(params: dict) -> dict:
     domain_name = validate_domain(params["domain"])
     local_part = validate_mailbox_local_part(params["local_part"])
-    subject = params["subject"].strip()
-    body = params["body"]
+    subject, body = params.get("subject"), params.get("body")
+    if not isinstance(subject, str) or not isinstance(body, str):
+        raise ValidationError("subject and body must be text")
+    subject = subject.strip()
     if not subject or len(subject) > MAX_AUTORESPONDER_SUBJECT_LEN:
-        raise ValueError(f"subject must be 1-{MAX_AUTORESPONDER_SUBJECT_LEN} characters")
+        raise ValidationError(f"subject must be 1-{MAX_AUTORESPONDER_SUBJECT_LEN} characters")
     if not body or len(body) > MAX_AUTORESPONDER_BODY_LEN:
-        raise ValueError(f"body must be 1-{MAX_AUTORESPONDER_BODY_LEN} characters")
+        raise ValidationError(f"body must be 1-{MAX_AUTORESPONDER_BODY_LEN} characters")
     start_date = validate_iso_date(params["start_date"]) if params.get("start_date") else None
     end_date = validate_iso_date(params["end_date"]) if params.get("end_date") else None
     if start_date and end_date and end_date < start_date:
-        raise ValueError("end_date must not be before start_date")
+        raise ValidationError("end_date must not be before start_date")
 
     snapshot = _autoresponder_file_snapshot(domain_name, local_part)
     try:

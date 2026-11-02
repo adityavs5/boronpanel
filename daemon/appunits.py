@@ -25,7 +25,7 @@ import stat
 from pathlib import Path
 
 from shared.config import settings
-from shared.validation import ENV_VAR_KEY_RE
+from shared.validation import ENV_VAR_KEY_RE, ValidationError
 
 from daemon.procutil import run
 from daemon import safeio
@@ -107,8 +107,10 @@ def enable_start_app(service_name: str) -> None:
 
 
 def stop_disable_app(service_name: str) -> None:
-    stop_disable(service_name)
+    # Socket first: while it listens, a proxied request re-activates the
+    # service that is being stopped (observed as a unit stuck "activating").
     stop_disable(socket_unit_name(service_name))
+    stop_disable(service_name)
 
 
 def restart_app(service_name: str) -> None:
@@ -129,6 +131,67 @@ def private_socket_ready(service_name: str, kind: str, app_id: int) -> bool:
                 and stat.S_IMODE(info.st_mode) == 0o600)
     except (FileNotFoundError, KeyError, OSError):
         return False
+
+
+# A crash-looping Restart=on-failure service is briefly "active" between
+# restarts, so one `systemctl is-active` right after start proves nothing.
+# Healthy means: running, with the same main PID and restart count for a
+# settle window longer than the units' RestartSec=2.
+START_SETTLE_SECONDS = 3.0
+START_TIMEOUT_SECONDS = 20.0
+START_POLL_SECONDS = 0.5
+
+
+class AppStartError(ValidationError):
+    """The application process did not stay up after being started."""
+
+
+def _service_state(name: str) -> dict:
+    shown = run(["systemctl", "show", name, "--property=ActiveState,SubState,NRestarts,MainPID"], timeout=10)
+    state = {}
+    for line in shown.stdout.splitlines():
+        key, _, value = line.partition("=")
+        state[key.strip()] = value.strip()
+    return state
+
+
+def wait_until_running(service_name: str, kind: str, app_id: int, log_path: str | None = None) -> dict:
+    """Block until a just-(re)started application service is stably running
+    (and, for socket-backed apps, its private socket is ready), or raise
+    AppStartError with the state and the tail of the app's own log."""
+    import time
+
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    stable_since = None
+    observed = None
+    state: dict = {}
+    while True:
+        state = _service_state(service_name)
+        running = state.get("ActiveState") == "active" and state.get("SubState") == "running"
+        key = (state.get("MainPID"), state.get("NRestarts"))
+        now = time.monotonic()
+        if running and key == observed:
+            if now - stable_since >= START_SETTLE_SECONDS:
+                socket_unit = unit_path(socket_unit_name(service_name))
+                if not socket_unit.exists() or private_socket_ready(service_name, kind, app_id):
+                    return {"active": "active", "restarts": state.get("NRestarts")}
+        elif running:
+            observed, stable_since = key, now
+        else:
+            observed = stable_since = None
+        if now >= deadline:
+            break
+        time.sleep(START_POLL_SECONDS)
+    excerpt = []
+    if log_path:
+        try:
+            excerpt = tail_log_file(log_path, lines=10)
+        except (safeio.UnsafePathError, OSError, ValueError):
+            excerpt = []
+    detail = " | ".join(line.strip() for line in excerpt if line.strip())[-1500:]
+    status = state.get("SubState") or state.get("ActiveState") or "unknown"
+    message = f"The application did not start (service state: {status}, restarts: {state.get('NRestarts', '?')})."
+    raise AppStartError(f"{message} Last log lines: {detail}" if detail else f"{message} Its log is empty.")
 
 
 def remove_socket_unit(service_name: str) -> None:

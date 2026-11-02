@@ -23,6 +23,8 @@ def stub_sysops(monkeypatch):
     monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
     monkeypatch.setattr(ha.sysops, "lock_user", lambda username: None)
     monkeypatch.setattr(ha.sysops, "unlock_user", lambda username: None)
+    # Suspension also expires the login and ends SSH sessions (usermod/pkill).
+    monkeypatch.setattr(ha.sysops, "run", lambda *args, **kwargs: type("R", (), {"returncode": 0, "ok": True})())
 
 
 def _account(username="demo1"):

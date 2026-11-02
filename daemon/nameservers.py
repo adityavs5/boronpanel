@@ -8,10 +8,11 @@ and any glue A/AAAA records this writes are just more PowerDNS records,
 the same primitive upsert_record()/list_records() already provide.
 
 This module's own job is the validation layer the general DNS editor
-deliberately doesn't have -- NS is excluded from validate_record_type's
-allowed set on purpose, since NS at the zone apex is normally
-auto-managed (daemon/handlers_dns.py's create_zone seeds ns1/ns2 defaults
-pointing at this server's own IP). The one thing that actually needs new
+deliberately doesn't have -- both record editors refuse the zone-apex NS
+rrset (handlers_dns.validate_rrset / APEX_NS_MESSAGE) and send the user
+here, since NS at the zone apex is normally auto-managed
+(daemon/handlers_dns.py's create_zone seeds the default delegation from
+default_delegation() below). The one thing that actually needs new
 logic here: detecting when a chosen NS hostname is itself a subdomain of
 (or equal to) the zone being delegated -- a circular-resolution problem
 (you can't look up ns1.example.com's own address without first being able
@@ -23,13 +24,17 @@ from __future__ import annotations
 
 import ipaddress
 
+from sqlalchemy import select
+
 from shared.config import settings
+from shared.db import write_session
+from shared.models import Domain
 from shared.validation import ValidationError, validate_domain
 
-from daemon import dnsprovider
+from daemon import dns_operations, dnsprovider, dnssetup
 
 
-class NameserverError(Exception):
+class NameserverError(ValidationError):
     pass
 
 
@@ -95,6 +100,81 @@ def list_nameservers(params: dict) -> dict:
     return {"domain": domain, "provider": "local", "nameservers": nameservers, "glue": glue}
 
 
+def default_delegation(domain: str) -> tuple[list[str], dict[str, str]]:
+    """The NS set and in-zone glue a brand-new zone gets: the configured
+    server nameservers (dnssetup.local_nameservers, ns1/ns2.<zone> when none
+    are configured), each in-zone one glued to the server's primary address.
+    External nameservers must be resolved by their owner, so get no glue."""
+    nameservers = dnssetup.local_nameservers(domain)
+    ip = settings.server_public_ip
+    glue = {ns: ip for ns in nameservers if ip and _needs_glue(domain, ns) and ns != domain}
+    return nameservers, glue
+
+
+def _current_nameservers(domain: str, records: list[dict]) -> list[str]:
+    rrset = next((r for r in records if r["type"] == "NS" and r["name"].rstrip(".") == domain), None)
+    return [v.rstrip(".").lower() for v in (rrset["values"] if rrset else [])]
+
+
+def _glue_still_used(domain: str, ns: str, records: list[dict]) -> str | None:
+    """Why the address records of a dropped nameserver are more than glue,
+    or None. A host that also carries other records, or that another record
+    points at (MX, CNAME, SRV, sub-zone NS -- not the apex NS being
+    replaced), keeps its address."""
+    for row in records:
+        name = row["name"].rstrip(".").lower()
+        if name == ns and row["type"] not in ("A", "AAAA"):
+            return f"it also has {row['type']} records"
+        if row["type"] in ("MX", "CNAME", "SRV", "NS") and name != ns and not (row["type"] == "NS" and name == domain):
+            for value in row.get("values", []):
+                target = str(value).split()[-1:]  # the hostname is the last field
+                if target and target[0].rstrip(".").lower() == ns:
+                    return f"{name} {row['type']} points at it"
+    return None
+
+
+def _remove_stale_glue(domain: str, records: list[dict], previous: list[str], keep: set[str]) -> tuple[list[str], list[dict]]:
+    """Delete the glue A/AAAA of in-zone nameservers that are no longer
+    delegated to. Glue only exists because the host was a nameserver; left
+    behind it keeps answering with an address nobody manages any more.
+    The zone apex, hosted website names, the server's own configured
+    nameservers (other zones delegate to them) and hosts other records
+    still use are never touched -- they are reported as kept instead."""
+    with write_session() as session:
+        hosted = set(session.scalars(select(Domain.domain).where(Domain.domain.in_(previous or [""]))).all())
+    server_nameservers = {name.rstrip(".").lower() for name in dnssetup.local_nameservers()}
+    removed, kept = [], []
+    for ns in previous:
+        if ns in keep or ns == domain or not _needs_glue(domain, ns):
+            continue
+        present = [rtype for rtype in ("A", "AAAA")
+                   if any(r["type"] == rtype and r["name"].rstrip(".").lower() == ns for r in records)]
+        if not present:
+            continue
+        reason = ("it is a hosted website name" if ns in hosted
+                  else "it is one of this server's nameservers" if ns in server_nameservers
+                  else _glue_still_used(domain, ns, records))
+        if reason:
+            kept.append({"name": ns, "types": present, "reason": reason})
+            continue
+        for rtype in present:
+            dnsprovider.delete_record(domain, _relative_subdomain(domain, ns), rtype)
+            removed.append(f"{ns} {rtype}")
+    return removed, kept
+
+
+def _apply_delegation(domain: str, nameservers: list[str], glue: dict[str, str]) -> tuple[list[str], list[dict]]:
+    records = dnsprovider.list_records(domain)
+    previous = _current_nameservers(domain, records)
+    with dnsprovider.batch_cluster_notifications():
+        for ns, ip in glue.items():
+            rtype = "AAAA" if ":" in ip else "A"
+            dnsprovider.upsert_record(domain, _relative_subdomain(domain, ns), rtype, [ip])
+        dnsprovider.upsert_record(domain, "@", "NS", [f"{ns}." for ns in nameservers])
+        return _remove_stale_glue(domain, records, previous, set(nameservers))
+
+
+@dns_operations.serialized
 def set_nameservers(params: dict) -> dict:
     domain = validate_domain(params["domain"])
     raw_nameservers = params["nameservers"]
@@ -103,10 +183,11 @@ def set_nameservers(params: dict) -> dict:
     if len(raw_nameservers) > 8:
         raise ValidationError("at most 8 nameservers are supported")
 
-    nameservers = [validate_domain(ns) for ns in raw_nameservers]
+    nameservers = list(dict.fromkeys(validate_domain(ns) for ns in raw_nameservers))
     glue_in = params.get("glue") or {}
     if not isinstance(glue_in, dict):
         raise ValidationError("glue must be a mapping of nameserver hostname -> IP address")
+    glue_in = {validate_domain(str(host)): ip for host, ip in glue_in.items()}
 
     _require_local_zone(domain, "set custom nameservers")
 
@@ -118,36 +199,30 @@ def set_nameservers(params: dict) -> dict:
                 raise NameserverError(
                     f"'{ns}' is a subdomain of '{domain}' -- a glue A/AAAA record (its own IP address) is required"
                 )
-            resolved_glue[ns] = _validate_glue_ip(ip)
+            resolved_glue[ns] = _validate_glue_ip(str(ip).strip())
 
     if not dnsprovider.zone_exists(domain):
         raise NameserverError(f"no Boron-managed DNS zone for '{domain}' -- create one first")
 
-    for ns, ip in resolved_glue.items():
-        sub = _relative_subdomain(domain, ns)
-        rtype = "AAAA" if ":" in ip else "A"
-        dnsprovider.upsert_record(domain, sub, rtype, [ip])
-
-    dnsprovider.upsert_record(domain, "@", "NS", [f"{ns}." for ns in nameservers])
-
-    return {"domain": domain, "nameservers": nameservers, "glue": resolved_glue}
+    removed, kept = _apply_delegation(domain, nameservers, resolved_glue)
+    return {"domain": domain, "nameservers": nameservers, "glue": resolved_glue, "removed_glue": removed,
+            "kept_glue": kept}
 
 
+@dns_operations.serialized
 def reset_nameservers(params: dict) -> dict:
-    """Reverts to exactly what daemon/handlers_dns.py's create_zone
-    originally seeded for a brand-new zone -- ns1/ns2 pointed at this
-    server's own IP -- rather than merely deleting the NS rrset (PowerDNS
-    zones must always have at least one NS record; leaving the zone with
-    none would break resolution entirely, not just "reset" it)."""
+    """Reverts to exactly the delegation daemon/handlers_dns.py's create_zone
+    seeds for a brand-new zone (default_delegation) rather than merely
+    deleting the NS rrset (PowerDNS zones must always have at least one NS
+    record; leaving the zone with none would break resolution entirely, not
+    just "reset" it). Glue written for the replaced custom nameservers is
+    removed and reported."""
     domain = validate_domain(params["domain"])
     _require_local_zone(domain, "reset nameservers")
     if not dnsprovider.zone_exists(domain):
         raise NameserverError(f"no Boron-managed DNS zone for '{domain}'")
 
-    ip = settings.server_public_ip
-    default_nameservers = [f"ns1.{domain}", f"ns2.{domain}"]
-    if ip:
-        dnsprovider.upsert_record(domain, "ns1", "A", [ip])
-        dnsprovider.upsert_record(domain, "ns2", "A", [ip])
-    dnsprovider.upsert_record(domain, "@", "NS", [f"{ns}." for ns in default_nameservers])
-    return {"domain": domain, "nameservers": default_nameservers, "status": "reset_to_defaults"}
+    default_nameservers, glue = default_delegation(domain)
+    removed, kept = _apply_delegation(domain, default_nameservers, glue)
+    return {"domain": domain, "nameservers": default_nameservers, "status": "reset_to_defaults",
+            "removed_glue": removed, "kept_glue": kept}

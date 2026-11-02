@@ -199,3 +199,26 @@ def test_limit_presets_apply_through_normal_validation(account,stub_ols,stub_rec
     assert result['php_ini']['display_errors'] is False
     assert result['php_versions']
     assert [p['id'] for p in result['limit_presets']]==['lite','moderate','max']
+
+
+def test_effective_config_reports_disable_functions_actually_in_force(account, tmp_path, monkeypatch):
+    """Regression: the effective view echoed the (unenforced) vhost line,
+    and showed nothing when only php.ini's hardened default applied."""
+    from shared.db import write_session
+    from shared.models import Account, Domain, PhpFunctionOverride
+    from sqlalchemy import select
+
+    with write_session() as session:
+        row = session.scalar(select(Account).where(Account.username == "demo1"))
+        session.add(Domain(account_id=row.id, domain="demo1.example", kind="primary", docroot="/home/demo1/public_html"))
+        account_id = row.id
+    vhconf = tmp_path / "vhconf.conf"
+    vhconf.write_text('php_admin_value open_basedir "/home/demo1/public_html:/home/demo1/tmp"\n')
+    monkeypatch.setattr(hpi.ols, "_vhost_conf_path", lambda name: str(vhconf))
+
+    values = hpi.effective_domain_config({"username": "demo1", "domain": "demo1.example"})["values"]
+    assert values["disable_functions"] == ",".join(hpi.phpdirectives.DEFAULT_DISABLE_FUNCTIONS)
+    with write_session() as session:
+        session.add(PhpFunctionOverride(account_id=account_id, domain=None, disable_functions="phpinfo"))
+    values = hpi.effective_domain_config({"username": "demo1", "domain": "demo1.example"})["values"]
+    assert values["disable_functions"] == "phpinfo"

@@ -47,7 +47,10 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, WordPressInstall, WordPressJob, WordPressSiteState, utcnow
-from shared.validation import generate_strong_password, validate_domain, validate_password_strength, validate_username
+from shared.validation import (
+    ValidationError, generate_strong_password, validate_domain, validate_email_address,
+    validate_password_strength, validate_username,
+)
 
 from daemon import account_exec, handlers_database
 from daemon import jobcredentials
@@ -79,6 +82,10 @@ INSTALL_HELPER_PATH = Path(__file__).resolve().parent / "php_helpers" / "wp_inst
 
 class WordPressError(Exception):
     pass
+
+
+class WordPressInputError(WordPressError, ValidationError):
+    """A rejected install request: reported to the caller as a 400."""
 
 
 def _generate_password(length: int = 20) -> str:
@@ -349,6 +356,55 @@ def website_url(domain: str, path: str = '', protocol: str = 'https', use_www: b
     return protocol + '://' + ('www.' if use_www else '') + domain + ('/' + path.strip('/') if path else '')
 
 
+_ADMIN_USER_RE = re.compile(r"\A[A-Za-z0-9 _.@-]{1,60}\Z")
+
+
+def _validated_install_request(params: dict) -> dict:
+    """Every install input check that needs no download or file change.
+
+    Runs at request time (trigger_install) so a bad path, password, email
+    or URL option is a 400 for the caller instead of a queued job that
+    fails later, and again inside install() so both paths share one rule.
+    """
+    username = validate_username(params["username"])
+    domain_name = validate_domain(params["domain"])
+    path = (params.get("path") or "").strip().strip("/")
+    try:
+        site_url = website_url(domain_name, path, params.get("protocol", "https"), params.get("use_www", False))
+    except WordPressError as exc:
+        raise WordPressInputError(str(exc)) from None
+    title = (params.get("title") or domain_name).strip()
+    if not title or len(title) > 200 or any(ord(ch) < 32 or ord(ch) == 127 for ch in title):
+        raise WordPressInputError("Enter a site title of 1 to 200 printable characters")
+    admin_user = (params.get("admin_user") or "admin").strip()
+    if not _ADMIN_USER_RE.match(admin_user):
+        raise WordPressInputError(
+            "The WordPress admin username may use 1 to 60 letters, digits, spaces and . _ @ -"
+        )
+    admin_email = validate_email_address((params.get("admin_email") or f"webmaster@{domain_name}").strip())
+    admin_password = (validate_password_strength(params["admin_password"])
+                      if params.get("admin_password") else None)
+
+    account_id, docroot = _account_and_domain(username, domain_name)
+    try:
+        target_dir = _install_target(docroot, path)
+    except WordPressError as exc:
+        raise WordPressInputError(str(exc)) from None
+    with write_session() as session:
+        existing = session.scalar(
+            select(WordPressInstall).where(WordPressInstall.domain == domain_name, WordPressInstall.path == path)
+        )
+        if existing is not None:
+            where = f"'{domain_name}'" if not path else f"'{domain_name}/{path}'"
+            raise WordPressInputError(f"WordPress is already installed at {where} -- remove it first to reinstall")
+    return {
+        "username": username, "domain": domain_name, "path": path, "site_url": site_url,
+        "title": title, "admin_user": admin_user, "admin_email": admin_email,
+        "admin_password": admin_password, "account_id": account_id, "docroot": docroot,
+        "target_dir": target_dir,
+    }
+
+
 def install(params: dict) -> dict:
     """Synchronous core install -- see trigger_install for the async job
     wrapper the API/UI actually calls. QA round 2, item 3: an optional
@@ -356,25 +412,12 @@ def install(params: dict) -> dict:
     subdirectory instead of the docroot itself, so a domain can host
     multiple independently-tracked WordPress installs (root + any number
     of subdirectories)."""
-    username = validate_username(params["username"])
-    domain_name = validate_domain(params["domain"])
-    path = (params.get("path") or "").strip().strip("/")
-    site_url = website_url(domain_name, path, params.get("protocol", "https"), params.get("use_www", False))
-    title = (params.get("title") or domain_name).strip()
-    admin_user = (params.get("admin_user") or "admin").strip()
-    admin_email = (params.get("admin_email") or f"webmaster@{domain_name}").strip()
-    admin_password = validate_password_strength(params["admin_password"]) if params.get("admin_password") else _generate_password()
-
-    account_id, docroot = _account_and_domain(username, domain_name)
-    target_dir = _install_target(docroot, path)
-
-    with write_session() as session:
-        existing = session.scalar(
-            select(WordPressInstall).where(WordPressInstall.domain == domain_name, WordPressInstall.path == path)
-        )
-        if existing is not None:
-            where = f"'{domain_name}'" if not path else f"'{domain_name}/{path}'"
-            raise WordPressError(f"WordPress is already installed at {where} -- remove it first to reinstall")
+    request = _validated_install_request(params)
+    username, domain_name, path = request["username"], request["domain"], request["path"]
+    site_url, title = request["site_url"], request["title"]
+    admin_user, admin_email = request["admin_user"], request["admin_email"]
+    admin_password = request["admin_password"] or _generate_password()
+    account_id, docroot, target_dir = request["account_id"], request["docroot"], request["target_dir"]
 
     if os.path.exists(os.path.join(target_dir, "wp-config.php")):
         raise WordPressError(f"'{target_dir}' already has a wp-config.php -- refusing to overwrite an existing install")
@@ -481,8 +524,10 @@ def _update_job(job_id: int, **fields) -> None:
 
 
 def _trigger_install(params: dict) -> dict:
-    username = validate_username(params["username"])
-    domain_name = validate_domain(params["domain"])
+    # Validate before queueing: a job that can only fail would still occupy
+    # the account's WordPress operation slot and report the error later.
+    request = _validated_install_request(params)
+    username, domain_name = request["username"], request["domain"]
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))

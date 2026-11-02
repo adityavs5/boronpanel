@@ -312,3 +312,46 @@ def test_set_global_default_threshold_rejects_out_of_range(isolated_db, tmp_path
 
 def test_get_global_default_threshold_defaults_to_five_when_unset(isolated_db):
     assert sf.get_global_default_threshold() == 5.0
+
+
+def test_prefs_path_is_traversable_by_spamd_despite_daemon_umask(fake_virtual_config_base):
+    """Live regression: borond's UMask=0027 left the dirs root-only 0750, so
+    spamd (debian-spamd) could not read user_prefs and used 5.0 for all."""
+    import os
+    import stat
+
+    previous = os.umask(0o027)
+    try:
+        sf.apply_domain_spam_settings("demo.example", True, 3.5)
+    finally:
+        os.umask(previous)
+    domain_dir = fake_virtual_config_base / "demo.example"
+    assert stat.S_IMODE(fake_virtual_config_base.stat().st_mode) == 0o755
+    assert stat.S_IMODE(domain_dir.stat().st_mode) == 0o755
+    assert stat.S_IMODE((domain_dir / "user_prefs").stat().st_mode) == 0o644
+
+
+def test_repair_virtual_config_permissions_fixes_existing_dirs(fake_virtual_config_base):
+    import os
+    import stat
+
+    domain_dir = fake_virtual_config_base / "old.example"
+    domain_dir.mkdir(parents=True)
+    (domain_dir / "user_prefs").write_text("required_score 3.5\n")
+    os.chmod(domain_dir / "user_prefs", 0o600)
+    os.chmod(domain_dir, 0o750)
+    os.chmod(fake_virtual_config_base, 0o750)
+    (fake_virtual_config_base / "not a domain").mkdir()
+
+    assert sf.repair_virtual_config_permissions() == {"repaired": ["old.example"]}
+    assert stat.S_IMODE(fake_virtual_config_base.stat().st_mode) == 0o755
+    assert stat.S_IMODE(domain_dir.stat().st_mode) == 0o755
+    assert stat.S_IMODE((domain_dir / "user_prefs").stat().st_mode) == 0o644
+
+
+def test_user_facing_spam_filter_errors_are_not_internal_failures():
+    from shared.validation import NotFoundError, ValidationError
+
+    assert issubclass(sf.SpamFilterNotFound, NotFoundError)
+    assert issubclass(sf.SpamFilterRequestError, ValidationError)
+    assert issubclass(sf.SpamFilterNotFound, sf.SpamFilterError)

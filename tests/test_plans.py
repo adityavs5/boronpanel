@@ -114,7 +114,19 @@ def test_update_plan_unknown_raises(isolated_db):
         plans.update_plan({"plan_id": 999, "mem_mb": 2048})
 
 
-def test_delete_plan_clears_account_plan_id(isolated_db, stub_sysops, stub_redis):
+def test_delete_plan_in_use_is_refused(isolated_db, stub_sysops, stub_redis):
+    """Deleting the plan silently dropped the assigned accounts to their
+    legacy limits at the next reconcile."""
+    from shared.validation import ConflictError
+    ha.create_account({"username": "demo1"})
+    created = plans.create_plan(dict(BASIC))
+    plans.apply_plan({"username": "demo1", "plan_id": created["id"]})
+    with pytest.raises(ConflictError, match=r"assigned to 1 account\(s\) \(demo1\)"):
+        plans.delete_plan({"plan_id": created["id"]})
+    assert plans.get_plan({"plan_id": created["id"]})["id"] == created["id"]
+
+
+def test_delete_plan_clears_terminated_account_plan_id(isolated_db, stub_sysops, stub_redis):
     ha.create_account({"username": "demo1"})
     created = plans.create_plan(dict(BASIC))
     plans.apply_plan({"username": "demo1", "plan_id": created["id"]})
@@ -122,6 +134,7 @@ def test_delete_plan_clears_account_plan_id(isolated_db, stub_sysops, stub_redis
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == "demo1"))
         assert account.plan_id == created["id"]
+        account.status = "terminated"
 
     plans.delete_plan({"plan_id": created["id"]})
 
@@ -230,3 +243,75 @@ def test_plan_quota_failure_is_not_reported_as_success(isolated_db, stub_sysops,
     monkeypatch.setattr(plans.sysops, 'set_quota', fail)
     with pytest.raises(RuntimeError, match='quota unavailable'):
         plans.apply_plan({'username': 'demo1', 'plan_id': created['id']})
+
+
+# --- plan edits reach assigned accounts --------------------------------------
+
+
+def test_plan_update_propagates_quota_inode_and_usage_limits(isolated_db, stub_sysops, stub_redis, monkeypatch):
+    quotas = []
+    monkeypatch.setattr(plans.sysops, "set_quota", lambda username, soft, hard: quotas.append((username, soft, hard)))
+    ha.create_account({"username": "demo1"})
+    ha.create_account({"username": "demo2"})
+    created = plans.create_plan(dict(BASIC))
+    plans.apply_plan({"username": "demo1", "plan_id": created["id"]})
+    with write_session() as session:
+        enforce_at = session.scalar(select(Account).where(Account.username == "demo1")).inode_enforce_at
+    quotas.clear()
+
+    result = plans.update_plan({"plan_id": created["id"], "quota_soft_mb": 3000, "quota_hard_mb": 3500,
+                                "database_limit": 7})
+
+    assert result["accounts_updated"] == 1 and result["propagation_failures"] == []
+    assert quotas == [("demo1", 3000, 3500)]  # demo2 is not on the plan
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        assert (account.quota_soft_mb, account.quota_hard_mb) == (3000, 3500)
+        # Unchanged inode limits do not restart the customer's warning period.
+        assert account.inode_enforce_at == enforce_at
+        limits = session.scalar(select(AccountResourceLimits).where(AccountResourceLimits.account_id == account.id))
+        assert limits.database_limit == 7
+    # Redis did not change, so no service is restarted.
+    assert stub_redis["enabled"] == [] and stub_redis["disabled"] == []
+
+
+def test_plan_update_reconciles_redis_only_when_it_changes(isolated_db, stub_sysops, stub_redis):
+    ha.create_account({"username": "demo1"})
+    created = plans.create_plan(dict(BASIC))
+    plans.apply_plan({"username": "demo1", "plan_id": created["id"]})
+    plans.update_plan({"plan_id": created["id"], "redis_enabled": True})
+    assert stub_redis["enabled"] == ["demo1"]
+    plans.update_plan({"plan_id": created["id"], "quota_soft_mb": 2000})
+    assert stub_redis["enabled"] == ["demo1"]
+
+
+def test_apply_plan_mirrors_policy_into_account_columns_and_resets_override(isolated_db, stub_sysops, stub_redis, monkeypatch):
+    from shared.models import ResourcePolicy
+    monkeypatch.setattr("daemon.resource_manager.available_cpu_cores", lambda: 4)
+    ha.create_account({"username": "demo1"})
+    created = plans.create_plan({"name": "Pro", "cpu_pct": 25, "mem_mb": 512,
+                                 "cpu_cores": 1.0, "memory_max_mb": 1024, "memory_high_mb": 900})
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        session.add(ResourcePolicy(scope_type="account", scope_id=account.id, cpu_cores=2.0, memory_max_mb=2048))
+
+    result = plans.apply_plan({"username": "demo1", "plan_id": created["id"]})
+
+    assert (result["cpu_pct"], result["mem_mb"], result["limits_source"]) == (100, 1024, "plan")
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        assert (account.cpu_pct, account.mem_mb) == (100, 1024)
+        assert session.scalar(select(ResourcePolicy).where(ResourcePolicy.scope_type == "account")) is None
+
+
+def test_plan_update_keeps_per_account_override(isolated_db, stub_sysops, stub_redis, monkeypatch):
+    from shared.models import ResourcePolicy
+    monkeypatch.setattr("daemon.resource_manager.available_cpu_cores", lambda: 4)
+    ha.create_account({"username": "demo1"})
+    created = plans.create_plan(dict(BASIC))
+    plans.apply_plan({"username": "demo1", "plan_id": created["id"]})
+    ha.set_limits({"username": "demo1", "mem_mb": 768})
+    plans.update_plan({"plan_id": created["id"], "mem_mb": 2048, "memory_max_mb": 2048})
+    assert ha.get_account({"username": "demo1"})["mem_mb"] == 768
+    with write_session() as session:
+        assert session.scalar(select(ResourcePolicy).where(ResourcePolicy.scope_type == "account")) is not None

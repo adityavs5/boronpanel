@@ -48,7 +48,7 @@ def test_add_parked_rejects_used_domain(isolated_db, monkeypatch):
 def test_add_parked_rejects_park_on_park(isolated_db, monkeypatch):
     _setup(monkeypatch)
     parked.add_parked_domain({"username": "demo1", "parked_domain": "alias1.com"})
-    with pytest.raises(RuntimeError, match="onto another parked"):
+    with pytest.raises(parked.ValidationError, match="onto another parked"):
         parked.add_parked_domain({"username": "demo1", "parked_domain": "alias2.com", "target_domain": "alias1.com"})
 
 

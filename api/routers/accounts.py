@@ -45,7 +45,10 @@ def create_account(body: CreateAccountBody, identity: Identity = Depends(get_ide
     plan_id = fields.pop("plan_id", None)
     ip_selection = fields.pop("ip_selection", "automatic")
     server_ip_id = fields.pop("server_ip_id", None)
-    result = call_daemon("account.create", identity, **fields)
+    # plan_id goes to account.create too: the daemon refuses an unknown plan
+    # before it provisions anything and seeds the initial limits from it.
+    result = call_daemon("account.create", identity, **fields,
+                         **({"plan_id": plan_id} if plan_id is not None else {}))
     if plan_id is not None:
         # The account exists at this point even if plan application fails --
         # same "a failed step doesn't silently undo the previous one"
@@ -153,10 +156,12 @@ def set_php_version(username: str, body: SetPhpVersionBody, identity: Identity =
 
 
 class SetLimitsBody(BaseModel):
-    cpu_pct: int
-    mem_mb: int
-    io_mb: int
-    pids_max: int
+    # Omitted/null keeps that limit at its enforced value (which may be
+    # Unlimited under a plan); at least one must be given.
+    cpu_pct: int | None = None
+    mem_mb: int | None = None
+    io_mb: int | None = None
+    pids_max: int | None = None
 
 
 @api_router.patch("/{username}/limits")
@@ -164,7 +169,7 @@ def set_limits(username: str, body: SetLimitsBody, identity: Identity = Depends(
     # Admin-only, unlike php-version: a customer raising their own resource
     # limits would defeat the point of having them.
     require_admin(identity)
-    return call_daemon("account.set_limits", identity, username=username, **body.model_dump())
+    return call_daemon("account.set_limits", identity, username=username, **body.model_dump(exclude_none=True))
 
 
 class SetNamespaceBody(BaseModel):

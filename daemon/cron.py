@@ -22,7 +22,7 @@ import uuid
 
 from croniter import croniter
 
-from shared.validation import validate_cron_mailto, validate_username
+from shared.validation import ValidationError, validate_cron_mailto, validate_username
 
 from daemon.procutil import run
 
@@ -48,8 +48,12 @@ _NICKNAME_DESCRIPTIONS = {
 _STEP_RE = re.compile(r"\*/(\d+)")
 
 
-class CronError(Exception):
-    pass
+class CronError(ValidationError):
+    """An invalid cron request; the message is shown to the caller."""
+
+
+class CrontabCommandError(RuntimeError):
+    """crontab(1) itself failed: an internal failure, reported by reference."""
 
 
 def describe_schedule(schedule: str) -> str:
@@ -124,6 +128,22 @@ def _validate_command(command: str) -> str:
     return command
 
 
+def _crontab_command(command: str) -> str:
+    """The crontab(5) form of a shell command.
+
+    cron turns every unescaped '%' in the command field into a newline and
+    feeds the rest to the command as stdin, so `date +%s` would silently run
+    `date +`. Every '%' is written backslash-escaped, which cron passes to the
+    shell as a literal '%'. `_display_command` is the exact inverse, so the
+    panel always shows and edits the command exactly as it was entered.
+    """
+    return command.replace("%", "\\%")
+
+
+def _display_command(field: str) -> str:
+    return field.replace("\\%", "%")
+
+
 def _validate_label(label: str) -> str:
     label = (label or "").strip()
     if "\n" in label or "\r" in label:
@@ -140,7 +160,7 @@ def _read_raw(username: str) -> list[str]:
         # case, not a real error -- anything else genuinely failed.
         if "no crontab for" in (result.stderr or "").lower():
             return []
-        raise CronError(f"failed to read crontab for '{username}': {result.stderr.strip()}")
+        raise CrontabCommandError(f"failed to read crontab for '{username}': {result.stderr.strip()}")
     return result.stdout.splitlines()
 
 
@@ -150,7 +170,7 @@ def _write_raw(username: str, lines: list[str]) -> None:
         content += "\n"
     result = run(["crontab", "-u", username, "-"], input_text=content, timeout=10)
     if not result.ok:
-        raise CronError(f"failed to write crontab for '{username}': {result.stderr.strip()}")
+        raise CrontabCommandError(f"failed to write crontab for '{username}': {result.stderr.strip()}")
 
 
 def get_mailto(username: str) -> str:
@@ -189,7 +209,7 @@ def parse_jobs(lines: list[str]) -> list[dict]:
             parts = job_line.split(None, 1 if job_line.lstrip().startswith("@") else 5)
             if len(parts) == (2 if job_line.lstrip().startswith("@") else 6):
                 schedule = " ".join(parts[:-1])
-                command = parts[-1]
+                command = _display_command(parts[-1])
                 jobs.append({"id": job_id, "label": label, "schedule": schedule, "command": command, "description": describe_schedule(schedule)})
             i += 2
         else:
@@ -242,7 +262,7 @@ def add_job(username: str, schedule: str, command: str, label: str = "") -> dict
     job_id = str(uuid.uuid4())
     lines = _read_raw(username)
     lines.append(f"# boron:id={job_id} label={label}")
-    lines.append(f"{schedule} {command}")
+    lines.append(f"{schedule} {_crontab_command(command)}")
     _write_raw(username, lines)
     return {"id": job_id, "label": label, "schedule": schedule, "command": command, "description": describe_schedule(schedule)}
 
@@ -260,7 +280,7 @@ def update_job(username: str, job_id: str, schedule: str, command: str, label: s
         m = MARKER_RE.match(lines[i].strip())
         if m and m.group(1) == job_id and i + 1 < len(lines):
             new_lines.append(f"# boron:id={job_id} label={label}")
-            new_lines.append(f"{schedule} {command}")
+            new_lines.append(f"{schedule} {_crontab_command(command)}")
             found = True
             i += 2
             continue
@@ -302,4 +322,4 @@ def delete_all_jobs(username: str) -> None:
     explicit teardown."""
     result = run(["crontab", "-u", username, "-r"], timeout=10)
     if not result.ok and "no crontab for" not in (result.stderr or "").lower():
-        raise CronError(f"failed to remove crontab for '{username}': {result.stderr.strip()}")
+        raise CrontabCommandError(f"failed to remove crontab for '{username}': {result.stderr.strip()}")

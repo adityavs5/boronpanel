@@ -118,6 +118,7 @@ def test_create_zone_rejects_unowned_domain_cleanly(isolated_db):
 
 
 def test_dns_add_preserves_existing_rrset(monkeypatch):
+    monkeypatch.setattr(hdns.dnsprovider, 'zone_exists', lambda zone: True)
     monkeypatch.setattr(hdns.dnsprovider, 'list_records', lambda zone: [{'name': 'example.com.', 'type': 'A', 'values': ['192.0.2.1']}])
     calls = []
     monkeypatch.setattr(hdns.dnsprovider, 'upsert_record', lambda *a, **kw: calls.append((a, kw)))
@@ -136,6 +137,7 @@ def test_dns_invalid_owner_names_are_actionable(name):
 
 @pytest.mark.parametrize('name,existing', [('@', []), ('www', [{'name': 'www.example.com', 'type': 'A', 'values': ['192.0.2.1']}])])
 def test_dns_cname_conflicts_rejected_before_provider_write(monkeypatch, name, existing):
+    monkeypatch.setattr(hdns.dnsprovider, 'zone_exists', lambda zone: True)
     monkeypatch.setattr(hdns.dnsprovider, 'list_records', lambda zone: existing)
     calls = []
     monkeypatch.setattr(hdns.dnsprovider, 'upsert_record', lambda *a, **kw: calls.append(a))

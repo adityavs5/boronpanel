@@ -77,6 +77,7 @@ READ_ONLY_OPERATIONS = frozenset({
     'support_bundle.list',
     'support_bundle.get',
     'hotlink.get',
+    'htaccess.status',
     'imapsync.list',
     'imapsync.status',
     'ipban.list',

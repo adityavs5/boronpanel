@@ -64,7 +64,7 @@ done
 """
 
 
-class GitRepoError(Exception):
+class GitRepoError(ValidationError):
     pass
 
 
@@ -110,7 +110,7 @@ def create_repo(params: dict) -> dict:
         repo_path = _repo_path(username, name)
         result = run(account_exec.wrap(username, ["git", "init", "--bare", repo_path]), timeout=30)
         if not result.ok:
-            raise GitRepoError(f"git init --bare failed: {result.stderr.strip() or result.stdout.strip()}")
+            raise RuntimeError(f"git init --bare failed: {result.stderr.strip() or result.stdout.strip()}")
 
         row = GitRepo(account_id=account.id, name=name, deploy_target=None)
         session.add(row)
@@ -155,7 +155,7 @@ def set_deploy_target(params: dict) -> dict:
     # surface at that point, silently breaking every future deploy.
     check = run(["bash", "-n"], input_text=hook_content, timeout=10)
     if not check.ok:
-        raise GitRepoError(f"generated post-receive hook failed syntax check: {check.stderr.strip()}")
+        raise RuntimeError(f"generated post-receive hook failed syntax check: {check.stderr.strip()}")
     safeio.secure_write_file_beneath(
         home, f"{REPOS_SUBDIR}/{name}.git/hooks/post-receive",
         hook_content.encode(), pw.pw_uid, pw.pw_gid, 0o750,

@@ -34,7 +34,9 @@ def add_key(username: str, body: AddKeyBody, identity: Identity = Depends(get_id
     return call_daemon("sshkeys.add", identity, username=username, key=body.key)
 
 
-@api_router.delete("/{fingerprint}")
+# ":path": about half of SHA256 fingerprints contain "/" (base64), which the
+# SPA sends percent-encoded; the default converter stops at the slash.
+@api_router.delete("/{fingerprint:path}")
 def delete_key(username: str, fingerprint: str, identity: Identity = Depends(get_identity)):
     require_customer_self_access(identity, username)
     return call_daemon("sshkeys.delete", identity, username=username, fingerprint=fingerprint)

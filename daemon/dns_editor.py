@@ -11,7 +11,6 @@ import dns.rdatatype
 import dns.tokenizer
 import dns.zone
 import dns.zonefile
-from dns.rdtypes.ANY.TXT import TXT
 from sqlalchemy import select
 
 from daemon import dns_operations, dnsprovider, handlers_dns, mail_dns
@@ -38,16 +37,10 @@ def _binding(zone):
 
 
 def _txt_bytes(value):
-    tokenizer = dns.tokenizer.Tokenizer(value)
-    chunks = []
-    while True:
-        token = tokenizer.get()
-        if token.is_eof():
-            break
-        if not token.is_quoted_string():
-            raise ValidationError('TXT values must contain quoted character strings')
-        chunks.append(token.unescape_to_bytes().value)
-    return b''.join(chunks)
+    # Lenient for stored content: a legacy row the zone-file grammar cannot
+    # read must still display, otherwise one bad record locks the editor
+    # for the whole zone.
+    return dnsprovider.txt_bytes(value)
 
 
 def _canonical_values(rtype, values):
@@ -125,15 +118,16 @@ def _parse(zone, text):
             rtype = dns.rdatatype.to_text(rrset.rdtype)
             if rtype not in EDITABLE or (rtype == 'NS' and owner == zone):
                 raise ValidationError('SOA, apex NS, DNSSEC and unsupported records are preserved automatically; remove them from editable text')
-            if not 60 <= rrset.ttl <= 2147483647:
-                raise ValidationError('DNS TTL must be between 60 and 2147483647 seconds')
-            values = [handlers_dns.RECORD_VALUE_VALIDATORS[rtype](r.to_text()) for r in rrset]
+            # The simple record editor validates with this same function, so
+            # either editor accepts exactly what the other can read back.
+            try:
+                values = handlers_dns.validate_rrset(label, rtype, [r.to_text() for r in rrset], rrset.ttl)
+            except ValidationError as exc:
+                raise ValidationError(f'{owner} {rtype}: {exc}') from None
             count += len(values)
             if count > 2000:
                 raise ValidationError('At most 2000 editable DNS record values are supported')
-            if rtype == 'CNAME' and (label == '@' or len(values) != 1):
-                raise ValidationError('A CNAME needs one target and cannot replace the zone apex')
-            records.append({'name': owner, 'type': rtype, 'ttl': rrset.ttl, 'values': sorted(set(values))})
+            records.append({'name': owner, 'type': rtype, 'ttl': rrset.ttl, 'values': sorted(values)})
     return records
 
 
@@ -142,12 +136,14 @@ def _text(zone, records):
     for row in sorted(records, key=lambda r: (r['name'], r['type'])):
         if _protected(row, zone):
             continue
+        # A TTL stored outside the RFC 2181 range (possible before the simple
+        # editor capped it) is shown clamped, so an unchanged save repairs it
+        # instead of every preview failing.
+        ttl = min(max(int(row['ttl']), handlers_dns.MIN_TTL), handlers_dns.MAX_TTL)
         for value in row['values']:
             if row['type'] == 'TXT':
-                raw = _txt_bytes(value)
-                chunks = [raw[i:i+255] for i in range(0, len(raw), 255)] or [b'']
-                value = TXT(dns.rdataclass.IN, dns.rdatatype.TXT, chunks).to_text()
-            lines.append(f"{row['name'].rstrip('.')}. {row['ttl']} IN {row['type']} {value}")
+                value = dnsprovider.normalize_txt(value)
+            lines.append(f"{row['name'].rstrip('.')}. {ttl} IN {row['type']} {value}")
     return '\n'.join(lines) + '\n'
 
 

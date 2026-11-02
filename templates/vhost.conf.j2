@@ -1,4 +1,69 @@
 docRoot                   {{ docroot }}
+{# The PHP settings every docroot-serving context carries: the root
+   context below and each per-directory access-control context
+   (OpenLiteSpeed contexts do not inherit them from "/"). #}
+{% macro php_ini_override() %}
+  phpIniOverride  {
+    {# Security fix (Phase 6a research finding): dropped the trailing
+       ":/tmp" -- every account's open_basedir used to include the shared,
+       world-writable-sticky system /tmp, letting one account enumerate
+       every other account's temp/upload-in-progress filenames (content
+       itself is uid-protected, but existence/naming/timing wasn't).
+       "{{ home_dir }}/tmp" (0750, owned by this account -- created by
+       sysops.ensure_tmp_dir at account-creation time, and by this same
+       call from handlers_domain.ensure_docroot at domain-add time) is
+       this account's own private replacement, already referenced here
+       before this fix -- only the shared fallback is newly removed. #}
+    php_admin_value open_basedir "{{ docroot }}:{{ home_dir }}/tmp"
+    {# upload_tmp_dir defaults to empty in this build (confirmed via
+       `lsphp -i`), which falls through to the same system-/tmp default
+       open_basedir just excluded -- without this override, a file upload
+       would immediately fail with an open_basedir violation. #}
+    php_admin_value upload_tmp_dir "{{ home_dir }}/tmp"
+{% if private_session_path %}
+    php_admin_value session.save_path "{{ private_session_path }}"
+{% endif %}
+    {# Phase 3 feature 9: a real, persistent per-account PHP error log --
+       lsphp's own compiled-in php.ini has no error_log path configured
+       at all (confirmed empirically: PHP fatal errors went nowhere
+       durable, not even the vhost's own OLS errorlog file, while
+       diagnosing an unrelated Phase 3 feature 3 bug), so without this
+       PHP errors were simply lost. Unconditional (not gated on a
+       PhpIniOverride row existing) -- every account gets a real error
+       log to view, whether or not it has ever customized its own PHP
+       ini settings. #}
+    php_admin_value log_errors "On"
+    php_admin_value error_log "{{ home_dir }}/logs/php-error.log"
+    php_admin_value mail.log "{{ home_dir }}/logs/php-mail.log"
+{% if php_ini %}
+    {# Phase 3 feature 6: per-account PHP ini overrides, rendered ONLY
+       into this account's own vhost context -- OLS's native per-context
+       mechanism, not a system-wide php.ini edit; no other account's
+       vhost ever references this account's PhpIniOverride row. #}
+    php_admin_value memory_limit "{{ php_ini.memory_limit }}"
+    php_admin_value upload_max_filesize "{{ php_ini.upload_max_filesize }}"
+    php_admin_value post_max_size "{{ php_ini.post_max_size }}"
+    php_admin_value max_execution_time "{{ php_ini.max_execution_time }}"
+    php_admin_value display_errors "{{ "On" if php_ini.display_errors else "Off" }}"
+    php_admin_value error_reporting "{{ php_ini.error_reporting }}"
+{% for e in php_ini.get('extras') or [] %}
+    {# Newer key/value directives (PhpIniDirective rows): names are
+       EXTRA_DIRECTIVES registry keys only, values already validated to
+       their rendered string form by phpdirectives.validate() -- neither
+       side is ever raw user text. #}
+    php_admin_value {{ e.name }} "{{ e.value }}"
+{% endfor %}
+{% endif %}
+  }
+{% endmacro %}
+{% macro access_control(rule) %}
+  accessControl {
+    allow                 {{ rule.allow | join(', ') }}
+{% if rule.deny %}
+    deny                  {{ rule.deny | join(', ') }}
+{% endif %}
+  }
+{% endmacro %}
 {# A real site index always wins. welcome.html is generated only for empty
    new domain roots and retired after an installation or user upload. #}
 index {
@@ -137,7 +202,14 @@ context /.boron-default-errors/ {
 {% endif %}
 
 context / {
-{% if maintenance %}
+{% if suspended %}
+  {# Same placement as maintenance mode's live-verified Retry-After: applies
+     to the forced 503 suspended page (rewrite rules below). #}
+  extraHeaders            <<<END_boron_suspended_headers
+set Retry-After "3600"
+set Cache-Control "no-store"
+END_boron_suspended_headers
+{% elif maintenance %}
   {# Missing-features batch, goal feature 2: Retry-After on every response
      in this context while maintenance is enabled -- applies to the forced
      503 below (extraHeaders is Apache mod_headers-compatible per this
@@ -146,15 +218,13 @@ context / {
 set Retry-After "{{ maintenance.retry_after_seconds }}"
 END_boron_maint_headers
 {% endif %}
-{% if ip_block_list %}
+{% if root_access_control %}
   {# Phase 4 feature 3: IP/CIDR deny list, OLS's own native per-vhost
      access control (VHSecurity_Help.html/rails.conf's shipped example) --
      applies regardless of suspended state, since a blocked IP shouldn't
-     see the suspended page either. #}
-  accessControl {
-    allow                 *
-    deny                  {{ ip_block_list | join(', ') }}
-  }
+     see the suspended page either. Merged with any IP rule translated from
+     the docroot's own .htaccess (daemon/htaccess.py). #}
+{{ access_control(root_access_control) }}
 {% endif %}
 {% if suspended %}
   location                {{ suspended_page_root }}
@@ -174,65 +244,16 @@ END_boron_maint_headers
   addDefaultCharset       off
 {% else %}
   location                {{ docroot }}
-  allowBrowse             1
+  {# allowBrowse 0 is OLS's native "deny every request in this context",
+     used when the docroot's .htaccess denies all access. #}
+  allowBrowse             {{ 0 if root_denied else 1 }}
   rewrite {
     enable                1
     RewriteFile           .htaccess
   }
   addDefaultCharset       off
 
-  phpIniOverride  {
-    {# Security fix (Phase 6a research finding): dropped the trailing
-       ":/tmp" -- every account's open_basedir used to include the shared,
-       world-writable-sticky system /tmp, letting one account enumerate
-       every other account's temp/upload-in-progress filenames (content
-       itself is uid-protected, but existence/naming/timing wasn't).
-       "{{ home_dir }}/tmp" (0750, owned by this account -- created by
-       sysops.ensure_tmp_dir at account-creation time, and by this same
-       call from handlers_domain.ensure_docroot at domain-add time) is
-       this account's own private replacement, already referenced here
-       before this fix -- only the shared fallback is newly removed. #}
-    php_admin_value open_basedir "{{ docroot }}:{{ home_dir }}/tmp"
-    {# upload_tmp_dir defaults to empty in this build (confirmed via
-       `lsphp -i`), which falls through to the same system-/tmp default
-       open_basedir just excluded -- without this override, a file upload
-       would immediately fail with an open_basedir violation. #}
-    php_admin_value upload_tmp_dir "{{ home_dir }}/tmp"
-{% if private_session_path %}
-    php_admin_value session.save_path "{{ private_session_path }}"
-{% endif %}
-    {# Phase 3 feature 9: a real, persistent per-account PHP error log --
-       lsphp's own compiled-in php.ini has no error_log path configured
-       at all (confirmed empirically: PHP fatal errors went nowhere
-       durable, not even the vhost's own OLS errorlog file, while
-       diagnosing an unrelated Phase 3 feature 3 bug), so without this
-       PHP errors were simply lost. Unconditional (not gated on a
-       PhpIniOverride row existing) -- every account gets a real error
-       log to view, whether or not it has ever customized its own PHP
-       ini settings. #}
-    php_admin_value log_errors "On"
-    php_admin_value error_log "{{ home_dir }}/logs/php-error.log"
-    php_admin_value mail.log "{{ home_dir }}/logs/php-mail.log"
-{% if php_ini %}
-    {# Phase 3 feature 6: per-account PHP ini overrides, rendered ONLY
-       into this account's own vhost context -- OLS's native per-context
-       mechanism, not a system-wide php.ini edit; no other account's
-       vhost ever references this account's PhpIniOverride row. #}
-    php_admin_value memory_limit "{{ php_ini.memory_limit }}"
-    php_admin_value upload_max_filesize "{{ php_ini.upload_max_filesize }}"
-    php_admin_value post_max_size "{{ php_ini.post_max_size }}"
-    php_admin_value max_execution_time "{{ php_ini.max_execution_time }}"
-    php_admin_value display_errors "{{ "On" if php_ini.display_errors else "Off" }}"
-    php_admin_value error_reporting "{{ php_ini.error_reporting }}"
-{% for e in php_ini.get('extras') or [] %}
-    {# Newer key/value directives (PhpIniDirective rows): names are
-       EXTRA_DIRECTIVES registry keys only, values already validated to
-       their rendered string form by phpdirectives.validate() -- neither
-       side is ever raw user text. #}
-    php_admin_value {{ e.name }} "{{ e.value }}"
-{% endfor %}
-{% endif %}
-  }
+{{ php_ini_override() }}
 {% endif %}
 }
 
@@ -241,13 +262,41 @@ context /.well-known/acme-challenge/ {
   allowBrowse             1
 }
 
-{% if protected_dirs and not suspended %}
-{% for pd in protected_dirs %}
-context /{{ pd.relative_path }}/ {
-  location                {{ docroot }}/{{ pd.relative_path }}/
+{% if suspended %}
+context /.boron-suspended/ {
+  location                {{ suspended_page_root }}/
   allowBrowse             1
-  realm                   {{ pd.realm_name }}
+}
+{% endif %}
+
+{% if not suspended %}
+{# Phase 4 feature 4 password realms, plus directories whose .htaccess
+   access directives (Require/Order/Allow/Deny, which OLS itself ignores)
+   were translated by daemon/htaccess.py. A directory with both gets one
+   context. Translated contexts repeat the root context's rewrite/PHP
+   settings because OLS contexts do not inherit them. #}
+{% for ctx in directory_contexts %}
+context /{{ ctx.relative_path }}/ {
+  location                {{ docroot }}/{{ ctx.relative_path }}/
+  allowBrowse             {{ 0 if ctx.deny else 1 }}
+{% if ctx.access_control and not ctx.deny %}
+{{ access_control(ctx.access_control) }}
+{% endif %}
+{% if ctx.realm_name %}
+  realm                   {{ ctx.realm_name }}
   authName                "Protected Area"
+{% elif not ctx.deny %}
+  rewrite {
+    enable                1
+    RewriteFile           .htaccess
+  }
+  addDefaultCharset       off
+{% endif %}
+{% if not ctx.deny %}
+  {# Password-protected directories run PHP too: without this block their
+     scripts would run without the account's open_basedir/tmp/log settings. #}
+{{ php_ini_override() }}
+{% endif %}
 }
 {% endfor %}
 {% endif %}
@@ -256,9 +305,16 @@ rewrite {
   enable                  1
   autoLoadHtaccess        {{ 0 if (suspended or maintenance or forwarding) else 1 }}
 {% if suspended %}
+{# The suspended page must not look like healthy content to crawlers and
+   uptime monitors: 503 + Retry-After (temporary, keeps search ranking),
+   using the same live-verified idiom as maintenance mode below -- a real
+   substitution target in its own context plus [R=503], since a bare "-"
+   substitution skips extraHeaders. The page's own context is excluded so
+   the substitution is not rewritten again. #}
   rules                   <<<END_boron_rules
 RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
-RewriteRule ^(.*)$ /index.html [L]
+RewriteCond %{REQUEST_URI} !^/\.boron-suspended/
+RewriteRule ^ /.boron-suspended/index.html [R=503,L]
 END_boron_rules
 {% elif maintenance %}
 {# Missing-features batch, goal feature 2: force every response in this
@@ -337,8 +393,12 @@ END_boron_rules
 
 {# Per-domain log files, not shared per-account: each domain is now its own
    vhost, and OLS logging isn't safe/meaningful to point multiple
-   concurrently-active vhost definitions at the exact same log file. #}
-errorlog {{ home_dir }}/logs/{{ vhost_name }}-error.log {
+   concurrently-active vhost definitions at the exact same log file.
+   They live in a root-owned per-account directory (sysops.ensure_web_logs),
+   never under the tenant's home: OLS opens these as the shared "nobody"
+   user and follows symlinks, so a tenant-writable log directory let one
+   account redirect its log writes into another account's files. #}
+errorlog {{ vhost_log_dir }}/{{ vhost_name }}-error.log {
   useServer               0
   logLevel                {{ domain_log_level }}
   rollingSize             50M
@@ -346,7 +406,7 @@ errorlog {{ home_dir }}/logs/{{ vhost_name }}-error.log {
   compressArchive         1
 }
 
-accessLog {{ home_dir }}/logs/{{ vhost_name }}-access.log {
+accessLog {{ vhost_log_dir }}/{{ vhost_name }}-access.log {
   useServer               0
   rollingSize             50M
   keepDays                90

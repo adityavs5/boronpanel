@@ -185,16 +185,18 @@ def test_dispatch_binds_creator_from_credential_never_from_params(isolated_db, m
         {"type": "session", "value": session_id},
     ))
     assert created["created_by"] == "owner"
-    # A token-minted token inherits the original creator.
-    child = asyncio.run(server.dispatch(
-        "auth.create_api_token", {"label": "child", "role": "admin"}, _proof(created),
-    ))
-    assert child["created_by"] == "owner"
+    # An API token can never mint another token, even naming a creator: a
+    # child would outlive the revocation of a leaked parent.
+    with pytest.raises(ValidationError, match="administrator session"):
+        asyncio.run(server.dispatch(
+            "auth.create_api_token",
+            {"label": "child", "role": "admin", "_creator_panel_user_id": owner},
+            _proof(created),
+        ))
     with write_session() as db:
-        assert db.get(ApiToken, child["id"]).created_by_panel_user_id == owner
+        assert db.scalar(select(ApiToken.id).where(ApiToken.label == "child")) is None
     hauth.set_administrator_status({"username": "owner", "disabled": True, "actor_username": "other"})
     assert not _token_valid_everywhere(created)
-    assert not _token_valid_everywhere(child)
 
 
 def test_migration_revokes_existing_ownerless_tokens(tmp_path):

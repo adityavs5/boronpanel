@@ -155,7 +155,12 @@ def _create_venv(username: str, name: str) -> None:
 def _exec_start(venv_dir: str, app_type: str, entry_point: str, port: int, *, use_socket: bool = True) -> str:
     if app_type == "asgi":
         return f"{venv_dir}/bin/uvicorn {entry_point} --fd 3" if use_socket else f"{venv_dir}/bin/uvicorn {entry_point} --host 127.0.0.1 --port {port}"
-    return f"{venv_dir}/bin/gunicorn --bind fd://3 {entry_point}" if use_socket else f"{venv_dir}/bin/gunicorn --bind 127.0.0.1:{port} {entry_point}"
+    # Socket-activated gunicorn adopts the listener from LISTEN_FDS (set by
+    # systemd for exactly this PID: app_exec.py execs in place). An extra
+    # "--bind fd://3" names the same descriptor a second time; gunicorn
+    # closes it after wrapping the first copy and the second fromfd() fails
+    # with EBADF, so the worker crash-loops.
+    return f"{venv_dir}/bin/gunicorn {entry_point}" if use_socket else f"{venv_dir}/bin/gunicorn --bind 127.0.0.1:{port} {entry_point}"
 
 
 def _write_unit(username: str, app_id: int, name: str, entry_point: str, app_type: str, port: int,
@@ -285,6 +290,7 @@ def update_app(params: dict) -> dict:
     unit = _write_unit(username, app_id, name, entry_point, app_type, port, env_vars, use_socket=use_socket)
     if enabled:
         (appunits.restart_app if use_socket else appunits.restart)(unit)
+        _require_running(username, app_id, name, use_socket)
 
     with write_session() as session:
         row = session.get(PythonApp, app_id)
@@ -306,6 +312,23 @@ def delete_app(params: dict) -> dict:
     return {"id": app_id, "domain": domain_name, "name": name, "status": "deleted"}
 
 
+def _require_running(username: str, app_id: int, name: str, use_socket: bool) -> None:
+    """A start/restart is only reported as successful once the process stays
+    up. A crash-looping app is stopped and marked disabled (so it no longer
+    burns the account's CPU restarting every two seconds) and the caller
+    gets the app's own last log lines."""
+    unit = appunits.unit_name(KIND, username, app_id)
+    try:
+        appunits.wait_until_running(unit, KIND, app_id, _log_path(username, name))
+    except appunits.AppStartError:
+        (appunits.stop_disable_app if use_socket else appunits.stop_disable)(unit)
+        with write_session() as session:
+            row = session.get(PythonApp, app_id)
+            if row is not None:
+                row.enabled = False
+        raise
+
+
 def start_app(params: dict) -> dict:
     username = validate_username(params["username"])
     app_id = int(params["id"])
@@ -313,7 +336,9 @@ def start_app(params: dict) -> dict:
         _account, row = _get_row(session, username, app_id)
         row.enabled = True
         use_socket = row.backend_mode == "socket"
+        name = row.name
     (appunits.enable_start_app if use_socket else appunits.enable_start)(appunits.unit_name(KIND, username, app_id))
+    _require_running(username, app_id, name, use_socket)
     return get_app({"username": username, "id": app_id})
 
 
@@ -334,7 +359,9 @@ def restart_app(params: dict) -> dict:
     with write_session() as session:
         _account, row = _get_row(session, username, app_id)
         use_socket = row.backend_mode == "socket"
+        name = row.name
     (appunits.restart_app if use_socket else appunits.restart)(appunits.unit_name(KIND, username, app_id))
+    _require_running(username, app_id, name, use_socket)
     return get_app({"username": username, "id": app_id})
 
 

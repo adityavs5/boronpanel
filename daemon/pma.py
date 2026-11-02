@@ -42,7 +42,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, DatabaseGrant, Domain, PmaToken, utcnow
-from shared.validation import validate_username, validate_domain, ValidationError
+from shared.validation import NotFoundError, validate_username, validate_domain, ValidationError
 
 from daemon import appcrypto, database_operations, db_governor, mariadb
 from daemon.handlers_database import _resolve_existing_db_name
@@ -57,6 +57,93 @@ PMA_RESOURCE_WINDOW_SECONDS = 60 * 60
 
 class PmaError(Exception):
     pass
+
+
+_EPHEMERAL_USER_RE = re.compile(r"^boronpma_[0-9a-f]+_[0-9a-f]{16}$")
+
+
+def ephemeral_user_name(account_id: int, db_name: str) -> str:
+    """The stable single-database sign-on login for one account/database."""
+    stable_suffix = hashlib.sha256(f"{account_id}:{db_name}".encode()).hexdigest()[:16]
+    return f"boronpma_{account_id:x}_{stable_suffix}"
+
+
+def is_available() -> bool:
+    """True once Server Setup published phpMyAdmin and its sign-on script."""
+    if not settings.pma_hostname:
+        return False
+    try:
+        return (Path(settings.pma_docroot) / "boron_signon.php").is_file()
+    except OSError:
+        return False
+
+
+def revoke_tokens(account_id: int, db_name: str | None = None) -> int:
+    """Drop sign-on logins, token files and rows for an account (or one of
+    its databases). Database deletion and account termination call this so
+    no ephemeral principal keeps native grants on a name that is reused.
+    Raises on the first login that cannot be dropped; its row is retained
+    so a retry (or scripts/pma_token_cleanup.py) can finish revocation."""
+    with write_session() as session:
+        query = select(PmaToken).where(PmaToken.account_id == account_id)
+        if db_name is not None:
+            query = query.where(PmaToken.db_name == db_name)
+        rows = [(row.id, row.token_hash, row.ephemeral_db_user, row.db_name)
+                for row in session.scalars(query).all()]
+    # A principal whose row was lost is retired when its name is reused
+    # (retire_orphaned_principals), so only registered logins are dropped.
+    users = {(user, name) for _id, _hash, user, name in rows}
+    for user, _name in sorted(users):
+        mariadb.drop_db_user(user)
+    try:
+        token_dir = _validate_token_dir_path()
+    except PmaError:
+        token_dir = None
+    for token_id, token_hash, _user, _name in rows:
+        if token_dir is not None:
+            try:
+                _token_file_for_hash(token_hash, token_dir).unlink(missing_ok=True)
+            except (PmaError, OSError):
+                logger.warning("could not remove phpMyAdmin token file for row %s", token_id)
+        with write_session() as session:
+            row = session.get(PmaToken, token_id)
+            if row is not None:
+                session.delete(row)
+    return len(users)
+
+
+def retire_orphaned_principals(db_name: str) -> int:
+    """Drop sign-on logins still granted on an absent database name.
+
+    Only principals that match the reserved sign-on pattern and that no
+    registered customer login or live token references are removed.
+    """
+    from shared.models import DatabaseUser
+    grantees = mariadb.database_grantees(db_name)
+    candidates = [(user, host) for user, host in grantees
+                  if host == "localhost" and _EPHEMERAL_USER_RE.fullmatch(user)]
+    if not candidates:
+        return 0
+    removed = 0
+    with write_session() as session:
+        names = [user for user, _host in candidates]
+        live_tokens = set(session.scalars(select(PmaToken.ephemeral_db_user).where(
+            PmaToken.ephemeral_db_user.in_(names), PmaToken.db_name != db_name)).all())
+        registered = set(session.scalars(select(DatabaseUser.db_user).where(
+            DatabaseUser.db_user.in_(names))).all())
+        stale_rows = [row.id for row in session.scalars(select(PmaToken).where(
+            PmaToken.ephemeral_db_user.in_(names), PmaToken.db_name == db_name)).all()]
+    for user, host in candidates:
+        if user in live_tokens or user in registered:
+            continue
+        mariadb.drop_db_user(user, host)
+        removed += 1
+    with write_session() as session:
+        for row_id in stale_rows:
+            row = session.get(PmaToken, row_id)
+            if row is not None:
+                session.delete(row)
+    return removed
 
 
 def _validate_token_dir_path() -> Path:
@@ -150,13 +237,19 @@ def create_token(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise PmaError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         grant = session.scalar(
             select(DatabaseGrant).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == db_name)
         )
         if grant is None:
-            raise PmaError(f"database '{db_name}' not found for account '{username}'")
+            raise NotFoundError(f"database '{db_name}' not found for account '{username}'")
         account_id = account.id
+    if not pma_hostname or not is_available():
+        # Nothing could redeem a token: never mint a MariaDB login for it.
+        return {"token": None, "db_name": db_name, "pma_url": None, "available": False,
+                "expires_in_seconds": 0}
+
+    with write_session() as session:
         existing_rows = session.scalars(
             select(PmaToken).where(
                 PmaToken.account_id == account_id,
@@ -191,8 +284,7 @@ def create_token(params: dict) -> dict:
             if stale is not None:
                 session.delete(stale)
 
-    stable_suffix = hashlib.sha256(f"{account_id}:{db_name}".encode()).hexdigest()[:16]
-    ephemeral_user = f"boronpma_{account_id:x}_{stable_suffix}"
+    ephemeral_user = ephemeral_user_name(account_id, db_name)
     reuse = bool(
         existing_data
         and existing_data["user"] == ephemeral_user
@@ -264,15 +356,13 @@ def create_token(params: dict) -> dict:
             mariadb.drop_db_user(ephemeral_user)
         raise
 
-    if not pma_hostname:
-        pma_url = None
-    else:
-        pma_url = f"https://{pma_hostname}/boron_signon.php?token={token}"
+    pma_url = f"https://{pma_hostname}/boron_signon.php?token={token}"
 
     return {
         "token": token,
         "db_name": db_name,
         "pma_url": pma_url,
+        "available": True,
         "expires_in_seconds": settings.pma_token_ttl_seconds,
     }
 
@@ -415,3 +505,48 @@ def bootstrap_pma() -> None:
     _prepare_service_root()
     bootstrap_pma_files()
     ols.bootstrap_pma()
+
+
+# The Debian/Ubuntu package is what the vhost template, include_path override
+# and vendor_config.php lookup above are written for. Without recommends it
+# reuses the base php-cli/php-mysql packages and pulls in no web server.
+PMA_PACKAGE = "phpmyadmin"
+PMA_DEBCONF_SELECTIONS = (
+    "phpmyadmin phpmyadmin/dbconfig-install boolean false\n"
+    "phpmyadmin phpmyadmin/reconfigure-webserver multiselect\n"
+)
+
+
+def package_installed() -> bool:
+    return (Path(settings.pma_docroot) / "index.php").is_file()
+
+
+def install_package() -> bool:
+    """Install the distribution phpMyAdmin package (idempotent). Returns
+    whether anything was installed. Never configures a web server or a
+    phpMyAdmin control database; bootstrap_pma owns the configuration."""
+    from daemon.procutil import run
+    if package_installed():
+        return False
+    environment = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+    run(["debconf-set-selections"], input_text=PMA_DEBCONF_SELECTIONS, check=True, env=environment)
+    install = ["apt-get", "install", "-y", "--no-install-recommends", "-o", "DPkg::Lock::Timeout=300", PMA_PACKAGE]
+    if not run(install, timeout=900, env=environment).ok:
+        # Upgraded servers may carry package lists older than the mirror's
+        # current dependency versions (404 on fetch); refresh once and retry.
+        run(["apt-get", "-o", "DPkg::Lock::Timeout=300", "update"], timeout=600, env=environment)
+        run(install, check=True, timeout=900, env=environment)
+    if not package_installed():
+        raise PmaError(f"phpMyAdmin package did not install its document root at {settings.pma_docroot}")
+    return True
+
+
+def provision() -> dict:
+    """Install and, once a phpMyAdmin hostname is configured, publish
+    phpMyAdmin. Used by the installer and by upgrades of servers installed
+    before phpMyAdmin was provisioned automatically; Server Setup publishes
+    it later when an administrator chooses the hostname."""
+    installed = install_package()
+    if settings.pma_hostname:
+        bootstrap_pma()
+    return {"installed": installed, "published": bool(settings.pma_hostname)}

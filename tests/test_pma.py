@@ -10,7 +10,7 @@ from daemon import pma
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, PmaToken, utcnow
-from shared.validation import ValidationError
+from shared.validation import NotFoundError, ValidationError
 
 
 @pytest.fixture()
@@ -61,6 +61,18 @@ def stub_group(monkeypatch):
     monkeypatch.setattr(pma.grp, "getgrnam", fake_getgrnam)
 
 
+@pytest.fixture(autouse=True)
+def published_pma(tmp_path, monkeypatch):
+    """Sign-on tokens are issued only once phpMyAdmin is published; tests that
+    exercise an unconfigured server override the hostname themselves."""
+    docroot = tmp_path / "published-pma"
+    docroot.mkdir()
+    (docroot / "boron_signon.php").write_text("<?php\n")
+    monkeypatch.setattr(settings, "pma_hostname", "pma.example")
+    monkeypatch.setattr(settings, "pma_docroot", str(docroot))
+    return docroot
+
+
 @pytest.fixture()
 def account_with_db(isolated_db, monkeypatch):
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
@@ -72,7 +84,8 @@ def account_with_db(isolated_db, monkeypatch):
 
 def test_create_token_requires_existing_database(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
-    with pytest.raises(pma.PmaError):
+    # A missing database is the caller's error (HTTP 404), not a 502.
+    with pytest.raises(NotFoundError):
         pma.create_token({"username": "demo1", "name": "shop"})
 
 
@@ -116,8 +129,95 @@ def test_create_token_without_pma_hostname_returns_no_url(account_with_db, stub_
     monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
     monkeypatch.setattr(settings, "pma_hostname", "")
     hdb.create_database({"username": "demo1", "name": "shop"})
+    before = set(stub_mariadb)
     result = pma.create_token({"username": "demo1", "name": "shop"})
-    assert result["pma_url"] is None
+    assert result["pma_url"] is None and result["available"] is False
+    # Live 3.3.1: an unredeemable token still minted a MariaDB login whose
+    # grant then blocked reuse of the database name after deletion.
+    assert set(stub_mariadb) == before
+    with write_session() as session:
+        assert session.scalar(select(PmaToken)) is None
+
+
+def test_create_token_before_phpmyadmin_is_published_mints_no_login(
+    account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch, published_pma
+):
+    monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
+    (published_pma / "boron_signon.php").unlink()
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    before = set(stub_mariadb)
+    assert pma.create_token({"username": "demo1", "name": "shop"})["pma_url"] is None
+    assert set(stub_mariadb) == before
+
+
+def test_dropping_database_revokes_its_sign_on_login(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
+    monkeypatch.setattr(hdb.mariadb, "revoke_all", lambda *args, **kwargs: None)
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    hdb.create_database({"username": "demo1", "name": "blog"})
+    pma.create_token({"username": "demo1", "name": "shop"})
+    pma.create_token({"username": "demo1", "name": "blog"})
+    with write_session() as session:
+        users = {row.db_name: row.ephemeral_db_user for row in session.scalars(select(PmaToken)).all()}
+
+    hdb.drop_database({"username": "demo1", "name": "shop"})
+
+    assert users["demo1_shop"] not in stub_mariadb
+    assert users["demo1_blog"] in stub_mariadb  # other databases keep their sign-on
+    with write_session() as session:
+        assert [row.db_name for row in session.scalars(select(PmaToken)).all()] == ["demo1_blog"]
+    assert len(list((tmp_path / "pma-tokens").glob("*.json"))) == 1
+
+
+def test_terminating_account_revokes_every_sign_on_login(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    pma.create_token({"username": "demo1", "name": "shop"})
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        session.expunge(account)
+    hdb.terminate_account_databases(account)
+    assert not any(name.startswith("boronpma_") for name in stub_mariadb)
+    with write_session() as session:
+        assert session.scalar(select(PmaToken)) is None
+    assert list((tmp_path / "pma-tokens").glob("*.json")) == []
+
+
+def test_orphaned_sign_on_grant_from_older_release_does_not_block_name_reuse(
+    account_with_db, stub_mariadb, stub_group, monkeypatch
+):
+    grants = {"demo1_shop": [("boronpma_6_a650659a8bd3f69b", "localhost")]}
+    stub_mariadb["boronpma_6_a650659a8bd3f69b"] = "x"
+
+    def drop(user, host="localhost"):
+        stub_mariadb.pop(user, None)
+        for name in grants:
+            grants[name] = [item for item in grants[name] if item[0] != user]
+
+    def require(name):
+        from daemon.mariadb import ConflictError
+        if grants.get(name):
+            raise ConflictError("still referenced")
+
+    monkeypatch.setattr(hdb.mariadb, "drop_db_user", drop)
+    monkeypatch.setattr(hdb.mariadb, "database_grantees", lambda name: list(grants.get(name, [])))
+    monkeypatch.setattr(hdb.mariadb, "require_ungranted_database_name", require)
+    result = hdb.create_database({"username": "demo1", "name": "shop"})
+    assert result["db_name"] == "demo1_shop"
+    assert "boronpma_6_a650659a8bd3f69b" not in stub_mariadb
+
+
+def test_name_reuse_still_refused_for_non_sign_on_grants(account_with_db, stub_mariadb, monkeypatch):
+    from shared.validation import ConflictError
+    grants = [("other_app", "localhost"), ("boronpma_6_a650659a8bd3f69b", "203.0.113.5")]
+
+    def require(name):
+        raise ConflictError("still referenced")
+
+    monkeypatch.setattr(hdb.mariadb, "database_grantees", lambda name: grants)
+    monkeypatch.setattr(hdb.mariadb, "require_ungranted_database_name", require)
+    with pytest.raises(ConflictError):
+        hdb.create_database({"username": "demo1", "name": "shop"})
 
 
 def test_create_token_validates_pma_hostname_before_temp_user(account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch):
@@ -376,3 +476,96 @@ def test_package_configuration_outside_webroot_is_used(tmp_path, monkeypatch):
     assert "'auth_type'] = 'signon'" in config.read_text()
     assert not (root / 'config.inc.php').exists()
     assert pma.bootstrap_pma_files() == secret
+
+
+def test_renaming_database_revokes_the_old_names_sign_on_login(
+    account_with_db, stub_mariadb, stub_group, tmp_path, monkeypatch
+):
+    """The old name's sign-on login kept native grants on a name that no
+    longer exists, which blocked its reuse exactly like a deleted database."""
+    from daemon import snapshot_databases
+    monkeypatch.setattr(settings, "pma_token_dir", str(tmp_path / "pma-tokens"))
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    pma.create_token({"username": "demo1", "name": "shop"})
+    with write_session() as session:
+        old_login = session.scalar(select(PmaToken.ephemeral_db_user))
+    assert old_login in stub_mariadb
+
+    monkeypatch.setattr(hdb, "_require_safety_capacity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hdb.mariadb, "database_statistics",
+                        lambda names: {name: {"table_count": 1, "size_bytes": 0} for name in names})
+    monkeypatch.setattr(hdb.mariadb, "grant_database_privileges", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hdb.mariadb, "revoke_all", lambda *args, **kwargs: None)
+    monkeypatch.setattr(snapshot_databases, "dump_database",
+                        lambda name, output, work, **kwargs: output.write_text("-- dump"))
+    monkeypatch.setattr(snapshot_databases, "restore_database",
+                        lambda *args, **kwargs: {"database": args[0], "bytes_read": 1})
+
+    result = hdb.rename_database({"username": "demo1", "name": "shop", "new_name": "store"})
+
+    assert result["db_name"] == "demo1_store"
+    assert old_login not in stub_mariadb
+    with write_session() as session:
+        assert session.scalar(select(PmaToken)) is None
+
+
+def test_install_package_refreshes_stale_package_lists_once(tmp_path, monkeypatch):
+    """Upgraded servers can hold package lists older than the mirror."""
+    from types import SimpleNamespace
+    from daemon import procutil
+    docroot = tmp_path / "phpmyadmin"
+    monkeypatch.setattr(settings, "pma_docroot", str(docroot))
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args[:2] if args[0] == "apt-get" else args[:1])
+        if args[:2] == ["apt-get", "install"]:
+            if kwargs.get("check"):
+                docroot.mkdir()
+                (docroot / "index.php").write_text("<?php\n")
+                return SimpleNamespace(ok=True)
+            return SimpleNamespace(ok=False)
+        return SimpleNamespace(ok=True)
+
+    monkeypatch.setattr(procutil, "run", fake_run)
+    assert pma.install_package() is True
+    assert calls == [["debconf-set-selections"], ["apt-get", "install"], ["apt-get", "-o"], ["apt-get", "install"]]
+    calls.clear()
+    assert pma.install_package() is False  # already installed: nothing runs
+    assert calls == []
+
+
+def test_provision_publishes_only_when_a_hostname_is_configured(monkeypatch):
+    published = []
+    monkeypatch.setattr(pma, "install_package", lambda: True)
+    monkeypatch.setattr(pma, "bootstrap_pma", lambda: published.append(True))
+    monkeypatch.setattr(settings, "pma_hostname", "")
+    assert pma.provision() == {"installed": True, "published": False}
+    assert published == []
+    monkeypatch.setattr(settings, "pma_hostname", "phpmyadmin.example.com")
+    assert pma.provision() == {"installed": True, "published": True}
+    assert published == [True]
+
+
+@pytest.mark.parametrize("components,has_mariadb,expected", [
+    (("database", "web"), True, 1),
+    (("web", "mail"), True, 0),       # no database component: never install phpMyAdmin
+    (("database",), False, 0),        # component enabled but MariaDB absent
+])
+def test_upgrade_provisions_phpmyadmin_only_on_database_servers(monkeypatch, components, has_mariadb, expected):
+    from scripts import upgrade_runtime
+    calls = []
+    monkeypatch.setattr(settings, "enabled_components", components)
+    monkeypatch.setattr(pma, "provision", lambda: calls.append(True) or {})
+    monkeypatch.setattr(upgrade_runtime.shutil, "which", lambda name: "/usr/bin/mariadb" if has_mariadb else None)
+    monkeypatch.setattr(upgrade_runtime.Path, "exists", lambda self: False)
+    upgrade_runtime.configure_phpmyadmin()
+    assert len(calls) == expected
+
+
+def test_fresh_install_provisions_phpmyadmin_for_the_database_profile():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "scripts" / "install.sh").read_text()
+    assert 'pma_hostname = "${PMA_DOMAIN}"' in source
+    assert "profile_has database && setup_phpmyadmin" in source
+    assert "from daemon.pma import provision" in source

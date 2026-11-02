@@ -24,7 +24,7 @@ from shared.config import settings
 from shared.db import init_db
 from shared.rpc import RpcProtocolError, encode_response, read_frame, validate_peer_protocol
 from daemon import dns_editor
-from shared.validation import ValidationError
+from shared.validation import ConflictError, NotFoundError, ValidationError
 from shared.request_context import (
     ensure_error_reference,
     normalize_request_id,
@@ -75,6 +75,7 @@ OP_TABLE = {
     "snapshot.destination.inventory": snapshot_jobs.destination_inventory,
     "snapshot.policy.list": snapshot_jobs.policies,
     "snapshot.policy.save": snapshot_jobs.save_policy,
+    "snapshot.policy.delete": snapshot_jobs.delete_policy,
     "snapshot.policy.run": snapshot_jobs.queue_policy,
     "snapshot.run.list": snapshot_jobs.runs,
     "snapshot.run.browse": snapshot_jobs.browse,
@@ -121,6 +122,7 @@ OP_TABLE = {
     "reseller.create": resellers.create_reseller,
     "reseller.list": resellers.list_resellers,
     "reseller.update": resellers.update_reseller,
+    "reseller.delete": resellers.delete_reseller,
     "reseller.account.move": resellers.move_account,
     "reseller.dashboard": resellers.dashboard,
     "reseller.account.create": resellers.create_account,
@@ -148,6 +150,7 @@ OP_TABLE = {
     "domain.set_php_version": handlers_domain.set_domain_php_version,
     "domain.set_suspended": handlers_domain.set_suspended,
     "htaccess.reload": htaccess.reload_domain,
+    "htaccess.status": htaccess.access_status,
     "stack.inventory": stack_manager.inventory,
     "stack.check_updates": stack_manager.check_updates,
     "stack.preview": stack_manager.preview,
@@ -321,6 +324,7 @@ OP_TABLE = {
     "fb.refresh_all": filebrowser.refresh_all_sources,
     "fb.status": filebrowser.status,
     "fb.open": filebrowser.open_access,
+    "fb.chmod": filebrowser.change_permissions,
     "panel_user.create": handlers_auth.create_panel_user,
     "panel_user.set_password": handlers_auth.set_panel_user_password,
     "auth.create_session": handlers_auth.create_session,
@@ -347,6 +351,7 @@ OP_TABLE = {
     "backup.destination.delete": backup.delete_destination,
     "backup.schedule.set": backup.set_schedule,
     "backup.schedule.list": backup.list_schedules,
+    "backup.schedule.delete": backup.delete_schedule,
     "backup.job.trigger": backup.trigger_backup,
     "backup.job.get": backup.get_job,
     "backup.job.list": backup.list_jobs,
@@ -999,6 +1004,14 @@ def _redact_request_secrets(message: str, params: dict) -> str:
     return message[:1000]
 
 
+def _user_error_kind(exc: ValidationError) -> type[ValidationError]:
+    """Keep the 404/409 contract when a message is rebuilt for redaction."""
+    for kind in (NotFoundError, ConflictError):
+        if isinstance(exc, kind):
+            return kind
+    return ValidationError
+
+
 async def dispatch(op: str, params: dict, credential: object = None) -> dict:
     action_started = time.monotonic()
     params.pop("_actor", None)
@@ -1064,12 +1077,13 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
             handler_params["actor_username"] = actor
         elif op == "auth.create_api_token":
             # Bind the new token to the administrator behind the resolved
-            # credential (a token-minted token inherits its own creator).
-            # Always overwritten, so a caller can never name a creator.
+            # session. An API token can never mint tokens: a child would
+            # outlive the revocation of a leaked parent. Always overwritten,
+            # so a caller can never name a creator.
             handler_params["_creator_panel_user_id"] = (
                 None if current is None
                 else current.panel_user_id if current.auth_method == "session"
-                else current.token_creator_id
+                else None
             )
         elif op == "ipban.add":
             handler_params["actor"] = actor
@@ -1132,7 +1146,7 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
                      source_ip=ip, duration_ms=elapsed_ms(), trace=trace)
         finish_trace()
         if detail != str(exc):
-            replacement = ValidationError(detail)
+            replacement = _user_error_kind(exc)(detail)
             replacement.diagnostic = diagnostic
             raise replacement from None
         exc.diagnostic = diagnostic
@@ -1173,6 +1187,25 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
             audit.record_account_event(LIFECYCLE_OPS[op], params["username"], actor=actor, role=role, ip=ip)
         finish_trace()
         return result
+
+
+def rpc_error_code(exc: BaseException) -> str:
+    """Wire error code for an exception that escaped dispatch().
+
+    api/rpc.py turns these into HTTP statuses: user errors keep their
+    message (400/404/409), anything else is an internal failure (502).
+    """
+    if isinstance(exc, AuthenticationError):
+        return "unauthenticated"
+    if isinstance(exc, AuthorizationError):
+        return "forbidden"
+    if isinstance(exc, NotFoundError):
+        return "not_found"
+    if isinstance(exc, ConflictError):
+        return "conflict"
+    if isinstance(exc, (ValidationError, ValueError, LookupError)):
+        return "bad_request"
+    return "internal_error"
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -1236,17 +1269,10 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         try:
             result = await dispatch(op, dict(params), credential)
             writer.write(encode_response(True, result=result))
-        except AuthenticationError as exc:
-            writer.write(encode_response(False, error_code="unauthenticated", error_message=str(exc),
-                                         diagnostic=getattr(exc, 'diagnostic', None)))
-        except AuthorizationError as exc:
-            writer.write(encode_response(False, error_code="forbidden", error_message=str(exc),
-                                         diagnostic=getattr(exc, 'diagnostic', None)))
-        except (ValidationError, ValueError, LookupError) as exc:
-            writer.write(encode_response(False, error_code="bad_request", error_message=str(exc),
-                                         diagnostic=getattr(exc, 'diagnostic', None)))
         except Exception as exc:  # noqa: BLE001
-            writer.write(encode_response(False, error_code="internal_error", error_message=str(exc),
+            # dispatch() has already replaced every non-user error with an
+            # opaque OperationFailure, so str(exc) is safe to return here.
+            writer.write(encode_response(False, error_code=rpc_error_code(exc), error_message=str(exc),
                                          diagnostic=getattr(exc, 'diagnostic', None)))
         finally:
             await writer.drain()

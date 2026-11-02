@@ -12,6 +12,7 @@ from __future__ import annotations
 import grp
 import os
 import pwd
+import re
 import stat
 import subprocess
 
@@ -117,40 +118,187 @@ def ensure_php_session_dir(username: str) -> str:
     return secure_mkdirs(home, "tmp/sessions", pw.pw_uid, pw.pw_gid, 0o700)
 
 
+# Per-vhost OLS access/error logs. OLS opens them as the shared ``nobody``
+# identity and follows symlinks, so they must never live in a directory a
+# tenant can write: under ~/logs a planted ``<vhost>-access.log ->
+# /home/<other>/logs/...`` symlink redirected one account's log lines into
+# another account's files. Each account gets a root-owned directory here
+# that only ``nobody`` may write; the account itself can read it (ACL), and
+# the panel log viewer/downloads (daemon/logs.py) read it on its behalf.
+VHOST_LOG_ROOT = "/var/log/boron-vhosts"
+# <vhost>-access.log / <vhost>-error.log (+ rotations). A vhost name is a
+# domain with dots replaced by "_", so it always contains one ("php-error.log",
+# the account's own PHP log, never matches).
+_VHOST_LOG_NAME_RE = re.compile(r"\A[a-z0-9-]+(?:_[a-z0-9-]+)+-(?:access|error)\.log(?:\.[A-Za-z0-9_.-]{1,64})?\Z")
+
+
+def vhost_log_dir(username: str) -> str:
+    return f"{VHOST_LOG_ROOT}/{_assert_safe_username(username)}"
+
+
+def _vhost_log_root() -> str:
+    """Create and verify the shared root: a real root-owned directory that
+    nobody else can write (0711: accounts cannot list who has logs)."""
+    from daemon.safeio import UnsafePathError, open_dir_beneath
+
+    os.makedirs(VHOST_LOG_ROOT, mode=0o711, exist_ok=True)
+    fd = open_dir_beneath(VHOST_LOG_ROOT)
+    try:
+        info = os.fstat(fd)
+        if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise UnsafePathError(f"'{VHOST_LOG_ROOT}' is not a root-owned private directory")
+        if stat.S_IMODE(info.st_mode) != 0o711:
+            os.fchmod(fd, 0o711)
+    finally:
+        os.close(fd)
+    return VHOST_LOG_ROOT
+
+
+def ensure_vhost_log_dir(username: str) -> str:
+    """Create (idempotently) the account's root-owned vhost log directory:
+    writable by OLS's ``nobody`` worker only, readable by the account."""
+    _assert_safe_username(username)
+    pw = pwd.getpwnam(username)
+    root = _vhost_log_root()
+    directory = f"{root}/{username}"
+    existed = os.path.isdir(directory) and not os.path.islink(directory)
+    # Owned by the daemon's own identity (root in production).
+    secure_mkdirs(root, username, os.geteuid(), os.getegid(), 0o750)
+    if not existed:
+        # The directory and its parent are root-owned and not writable by
+        # anyone else, so this path cannot be swapped under setfacl.
+        run([
+            "setfacl", "-m", f"u:nobody:rwx,u:{pw.pw_uid}:r-x",
+            "-m", f"d:u:nobody:rw-,d:u:{pw.pw_uid}:r--", directory,
+        ], check=True)
+    return directory
+
+
 def ensure_web_logs(username: str) -> str:
-    """Keep tenant logs private while allowing OLS to create/rotate them.
-
-    OLS opens per-vhost access/error logs as ``nobody``.  A 0750 directory
-    owned by the tenant prevents the worker from reopening those logs after a
-    restart, which silently freezes bandwidth accounting.  A named ACL grants
-    only the web-server identity access and a default ACL covers rotations.
-
-    Because the shared ``nobody`` identity can write every tenant's logs and
-    OLS follows symlinks when it (re)opens them, a symlink planted here
-    (``<vhost>-access.log -> /home/<other>/logs/...``) would redirect this
-    tenant's log lines into another tenant's files.  Boron never creates
-    symlinks in this directory, so every top-level symlink is removed
-    (without following it) each time the directory is (re)provisioned, which
-    runs before the OLS apply on account and domain provisioning.
-    """
-    from daemon.safeio import open_dir_beneath
-
+    """Provision both log locations before an OLS apply: the account's own
+    ~/logs (PHP, application and Redis logs, written as the account) and
+    the root-owned vhost log directory OLS writes. Also moves vhost logs
+    from the pre-hardening ~/logs location and withdraws the web server's
+    write access there, so this is the upgrade migration as well
+    (ols.refresh_all_vhosts runs it for every account)."""
     _assert_safe_username(username)
     pw = pwd.getpwnam(username)
     home = f"{settings.home_base}/{username}"
     logs = secure_mkdirs(home, "logs", pw.pw_uid, pw.pw_gid, 0o750)
-    directory_fd = open_dir_beneath(home, "logs")
+    target = ensure_vhost_log_dir(username)
+    _migrate_legacy_vhost_logs(username, home)
+    # Run as the account so a swapped path can only affect its own files.
+    run(["setfacl", "-x", "u:nobody", "-x", "d:u:nobody", logs], uid=pw.pw_uid, gid=pw.pw_gid)
+    return target
+
+
+def _migrate_legacy_vhost_logs(username: str, home: str) -> int:
+    """Move OLS-written vhost logs (regular files owned by ``nobody`` with a
+    single link -- the account can create neither) out of ~/logs. Anything
+    the account created itself stays where it is. Same-filesystem renames
+    keep OLS's open descriptors writing to the moved file until the vhost
+    is re-rendered; across filesystems the file is copied."""
+    import errno
+    import logging
+    import shutil
+
+    from daemon.safeio import UnsafePathError, open_dir_beneath
+
     try:
-        with os.scandir(directory_fd) as entries:
-            planted = [entry.name for entry in entries if entry.is_symlink()]
-        for name in planted:
-            os.unlink(name, dir_fd=directory_fd)
+        nobody_uid = pwd.getpwnam("nobody").pw_uid
+        legacy_fd = open_dir_beneath(home, "logs")
+    except (KeyError, FileNotFoundError, UnsafePathError, OSError):
+        return 0
+    moved = 0
+    try:
+        target_fd = open_dir_beneath(VHOST_LOG_ROOT, username)
+        try:
+            with os.scandir(legacy_fd) as entries:
+                names = [entry.name for entry in entries if _VHOST_LOG_NAME_RE.match(entry.name)]
+            for name in names[:4096]:
+                try:
+                    info = os.stat(name, dir_fd=legacy_fd, follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode) or info.st_uid != nobody_uid or info.st_nlink != 1:
+                        continue
+                    try:
+                        os.stat(name, dir_fd=target_fd, follow_symlinks=False)
+                        continue  # never overwrite a log OLS already writes
+                    except FileNotFoundError:
+                        pass
+                    try:
+                        os.rename(name, name, src_dir_fd=legacy_fd, dst_dir_fd=target_fd)
+                    except OSError as exc:
+                        if exc.errno != errno.EXDEV:
+                            raise
+                        source = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=legacy_fd)
+                        try:
+                            destination = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                                                  | os.O_CLOEXEC, 0o640, dir_fd=target_fd)
+                            try:
+                                with os.fdopen(source, "rb", closefd=False) as reader, \
+                                        os.fdopen(destination, "wb", closefd=False) as writer:
+                                    shutil.copyfileobj(reader, writer)
+                                os.fchown(destination, nobody_uid, -1)
+                            finally:
+                                os.close(destination)
+                        finally:
+                            os.close(source)
+                        os.unlink(name, dir_fd=legacy_fd)
+                    moved += 1
+                except OSError:
+                    logging.getLogger("borond.sysops").exception(
+                        "could not move vhost log '%s' for account '%s'", name, username)
+        finally:
+            os.close(target_fd)
     finally:
-        os.close(directory_fd)
-    run([
-        "setfacl", "-m", "u:nobody:rwx", "-m", "d:u:nobody:rwX", logs,
-    ], uid=pw.pw_uid, gid=pw.pw_gid, check=True)
-    return logs
+        os.close(legacy_fd)
+    return moved
+
+
+def rename_vhost_log_dir(old_username: str, new_username: str) -> None:
+    """Account rename: the vhost log directory lives outside the home, so
+    move it explicitly (DB-independent, so it doubles as its own undo)."""
+    _assert_safe_username(old_username)
+    _assert_safe_username(new_username)
+    if not os.path.isdir(VHOST_LOG_ROOT):
+        return
+    from daemon.safeio import open_dir_beneath
+
+    root_fd = open_dir_beneath(_vhost_log_root())
+    try:
+        try:
+            info = os.stat(old_username, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if stat.S_ISDIR(info.st_mode):
+            os.rename(old_username, new_username, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+    finally:
+        os.close(root_fd)
+    pw = pwd.getpwnam(new_username)
+    run(["setfacl", "-m", f"u:{pw.pw_uid}:r-x", "-m", f"d:u:{pw.pw_uid}:r--", vhost_log_dir(new_username)])
+
+
+def remove_vhost_log_dir(username: str) -> None:
+    """Account termination: the logs used to go with the home directory."""
+    import shutil
+
+    _assert_safe_username(username)
+    if not os.path.isdir(VHOST_LOG_ROOT):
+        return
+    from daemon.safeio import open_dir_beneath
+
+    root_fd = open_dir_beneath(_vhost_log_root())
+    try:
+        try:
+            info = os.stat(username, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if stat.S_ISDIR(info.st_mode) and shutil.rmtree.avoids_symlink_attacks:
+            shutil.rmtree(username, dir_fd=root_fd)
+        elif not stat.S_ISDIR(info.st_mode):
+            os.unlink(username, dir_fd=root_fd)
+    finally:
+        os.close(root_fd)
 
 
 def set_initial_password(username: str, password: str) -> None:

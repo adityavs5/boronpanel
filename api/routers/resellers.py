@@ -96,6 +96,14 @@ def update_reseller(reseller_id: int, body: ResellerUpdateBody, identity: Identi
     return call_daemon("reseller.update", identity, reseller_id=reseller_id, **body.model_dump(exclude_none=True))
 
 
+@admin_router.delete("/{reseller_id}")
+def delete_reseller(reseller_id: int, release_accounts: bool = False, identity: Identity = Depends(get_identity)):
+    # Refused (409) while the reseller owns live accounts unless
+    # ?release_accounts=true returns them to administrator ownership.
+    require_admin(identity)
+    return call_daemon("reseller.delete", identity, reseller_id=reseller_id, release_accounts=release_accounts)
+
+
 @admin_router.patch("/accounts/{username}")
 def move_account(username: str, body: AccountMoveBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)

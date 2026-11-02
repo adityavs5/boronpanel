@@ -13,7 +13,7 @@ import datetime as dt
 import logging
 from typing import Callable
 
-from daemon import account_mutation, audit, database_operations
+from daemon import account_mutation, audit, database_operations, dns_operations, impersonation
 
 from sqlalchemy import select
 
@@ -22,6 +22,8 @@ from shared.db import write_session
 from shared.models import Account, AccountNotificationPrefs, ApiToken, Domain, PanelUser, Session, utcnow
 from shared.passwords import hash_password
 from shared.validation import (
+    ConflictError,
+    NotFoundError,
     ValidationError,
     validate_domain,
     validate_email_address,
@@ -51,9 +53,54 @@ CREATE_HOOKS: list[Callable[[Account], None]] = []
 LIMITS_HOOKS: list[Callable[[Account], None]] = []
 
 
+def _effective_limits(account: Account) -> dict:
+    """The CPU/memory/IO/process limits the account's slice actually enforces.
+
+    The legacy Account columns are only the bottom layer: a server, reseller
+    plan, hosting plan or per-account policy row replaces them completely
+    (resource_manager.effective_for_account). Reporting the columns made the
+    account page show -- and its limits form re-submit -- values that were
+    never applied.
+    """
+    from sqlalchemy.orm import object_session
+    from daemon.resource_manager import available_cpu_cores, effective_for_account
+
+    session = object_session(account)
+    if session is None or account.id is None:
+        configured = account.cpu_pct / 100
+        return {
+            "cpu_pct": account.cpu_pct,
+            "cpu_cores": min(configured, available_cpu_cores()),
+            "configured_cpu_cores": configured,
+            "mem_mb": account.mem_mb,
+            "io_mb": account.io_mb,
+            "pids_max": account.pids_max,
+            "limits_source": "account",
+            "resource_policy": None,
+        }
+    effective = effective_for_account(session, account)
+    values = effective["values"]
+    configured = effective["configured_cpu_cores"]
+    read_bps = values.get("io_read_bps")
+    policy = effective["policy"]
+    return {
+        "cpu_pct": None if configured is None else round(configured * 100),
+        "cpu_cores": values.get("cpu_cores"),
+        "configured_cpu_cores": configured,
+        "mem_mb": values.get("memory_max_mb"),
+        "io_mb": None if read_bps is None else max(1, round(read_bps / 1048576)),
+        "pids_max": values.get("nproc"),
+        # "account" means the legacy columns (or an account override) win;
+        # otherwise the scope whose policy row is enforced.
+        "limits_source": policy["scope_type"] if policy else "account",
+        "resource_policy": values,
+    }
+
+
 def _account_to_dict(account: Account) -> dict:
     from daemon.resource_manager import available_cpu_cores, host_memory_gb
     from daemon.inode_quotas import enforcement_state
+    limits = _effective_limits(account)
     return {
         "id": account.id,
         "username": account.username,
@@ -70,14 +117,9 @@ def _account_to_dict(account: Account) -> dict:
         "inode_enforce_at": account.inode_enforce_at.isoformat() if account.inode_enforce_at else None,
         "inode_enforcement_state": enforcement_state(account),
         "php_private_sessions": account.php_private_sessions,
-        "cpu_pct": account.cpu_pct,
-        "cpu_cores": min(account.cpu_pct / 100, available_cpu_cores()),
-        "configured_cpu_cores": account.cpu_pct / 100,
+        **limits,
         "host_cpu_cores": available_cpu_cores(),
         "host_memory_gb": host_memory_gb(),
-        "mem_mb": account.mem_mb,
-        "io_mb": account.io_mb,
-        "pids_max": account.pids_max,
         "plan_id": account.plan_id,
         "last_error": account.last_error,
         "created_at": account.created_at.isoformat() if account.created_at else None,
@@ -143,9 +185,70 @@ def ensure_customer_login(session, account, password: str) -> PanelUser:
     return user
 
 
+TOMBSTONE_SEPARATOR = "~"
+
+
+def release_terminated_username(session, account: Account) -> str:
+    """Free a terminated account's name for a new account; returns the tombstone.
+
+    Terminated rows are kept: backups, snapshots, tasks, tokens and sessions
+    reference their id, and the account-event log is keyed by name. Reusing
+    the row for a different customer would hand those to the new owner, so
+    the old row and its disabled panel logins are renamed to
+    "<name>~<id>" instead. "~" can never pass validate_username, so no
+    request can address a tombstone by name, while the original name stays
+    readable in every historical listing. The new account gets a new id and
+    therefore none of the old one's history.
+    """
+    from shared.models import LoginAttempt
+
+    if account.status != "terminated":
+        raise ConflictError(f"account '{account.username}' is not terminated")
+    original = account.username
+    suffix = f"{TOMBSTONE_SEPARATOR}{account.id}"
+    for user in session.scalars(select(PanelUser).where(PanelUser.account_id == account.id)).all():
+        user.disabled = True
+        if not user.username.endswith(suffix):
+            user.username = f"{user.username}{suffix}"
+    account.username = f"{original}{suffix}"
+    # Lockout counters belong to the old login, not to the next customer.
+    attempt = session.scalar(select(LoginAttempt).where(LoginAttempt.username == original))
+    if attempt is not None:
+        session.delete(attempt)
+    session.flush()
+    logger.info("released terminated account name %s (kept as %s)", original, account.username)
+    return account.username
+
+
+def plan_seed(plan_id) -> dict:
+    """Initial limits from a requested hosting plan; refuses an unknown plan."""
+    if plan_id is None:
+        return {}
+    from shared.models import Plan
+    try:
+        plan_id = int(plan_id)
+    except (TypeError, ValueError):
+        raise ValidationError("plan_id must be an integer") from None
+    with write_session() as session:
+        plan = session.get(Plan, plan_id)
+        if plan is None:
+            raise NotFoundError(f"plan {plan_id} not found")
+        return {
+            "quota_soft_mb": plan.quota_soft_mb, "quota_hard_mb": plan.quota_hard_mb,
+            "cpu_pct": plan.cpu_pct, "mem_mb": plan.mem_mb,
+            "io_mb": plan.io_mb, "pids_max": plan.pids_max,
+        }
+
+
 @database_operations.serialized
 def create_account(params: dict) -> dict:
     username = validate_username(params["username"])
+    # A requested plan is checked before anything exists: a typo in plan_id
+    # used to leave a fully provisioned account on default limits. The plan
+    # also seeds the initial limits, so the account never runs on defaults;
+    # the caller still applies the plan (usage limits, Redis, plan_id).
+    seed = plan_seed(params.get("plan_id"))
+    params = {**seed, **{key: value for key, value in params.items() if value is not None or key not in seed}}
     php_version = validate_php_version(
         params.get("php_version", settings.default_php_version), settings.php_versions
     )
@@ -181,7 +284,13 @@ def create_account(params: dict) -> dict:
     with write_session() as session:
         existing = session.scalar(select(Account).where(Account.username == username))
         if existing is not None:
-            raise RuntimeError(f"account '{username}' already exists")
+            if existing.status != "terminated":
+                if existing.status == "error":
+                    raise ConflictError(
+                        f"account '{username}' did not finish terminating; retry termination before reusing the name"
+                    )
+                raise ConflictError(f"account '{username}' already exists")
+            release_terminated_username(session, existing)
         if session.scalar(select(PanelUser.id).where(PanelUser.username == username)) is not None:
             raise ValidationError("The panel login name is already used; choose another username")
         if primary_domain is not None:
@@ -189,7 +298,7 @@ def create_account(params: dict) -> dict:
             domain_ownership.require_available(session, primary_domain, None)
             existing_domain = session.scalar(select(Domain).where(Domain.domain == primary_domain))
             if existing_domain is not None:
-                raise RuntimeError(f"domain '{primary_domain}' is already in use")
+                raise ConflictError(f"domain '{primary_domain}' is already in use")
 
     uid, gid = sysops.create_linux_user(username)
 
@@ -325,9 +434,9 @@ def reactivate_account(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found -- use account.create for a genuinely new account")
+            raise NotFoundError(f"account '{username}' not found -- use account.create for a genuinely new account")
         if account.status not in ("terminated", "error"):
-            raise RuntimeError(f"account '{username}' is '{account.status}', not terminated -- nothing to reactivate")
+            raise ConflictError(f"account '{username}' is '{account.status}', not terminated -- nothing to reactivate")
 
     php_version = validate_php_version(params.get("php_version") or settings.default_php_version, settings.php_versions)
     quota_soft_mb = int(params.get("quota_soft_mb") or settings.default_quota_soft_mb)
@@ -373,6 +482,13 @@ def reactivate_account(params: dict) -> dict:
         account.terminated_at = None
         account.suspended_at = None
         account.last_error = None
+        # Termination released the domain rows (another account may own the
+        # name by now); primary_domain was only their historical label. The
+        # restore's domain.add of the primary sets it again.
+        if account.primary_domain and session.scalar(select(Domain.id).where(
+            Domain.account_id == account.id, Domain.domain == account.primary_domain,
+        )) is None:
+            account.primary_domain = None
 
         # Symmetric with terminate_account's F3 fix: reactivation is an
         # explicit, admin-invoked action on this same account_id (not a
@@ -400,25 +516,83 @@ def reactivate_account(params: dict) -> dict:
     return result
 
 
+LIMIT_FIELDS = ("cpu_pct", "mem_mb", "io_mb", "pids_max")
+
+
+def _write_limits_override(session, account: Account, changed: dict) -> None:
+    """Make an explicit per-account limit edit the enforced contract.
+
+    Without a policy row the legacy columns are what the slice enforces, so
+    writing them is enough. Once a server, reseller-plan or hosting-plan
+    policy applies it replaces those columns entirely; an edit is then
+    recorded as the account-scope override (the most specific policy).
+    Only the limits the edit names change: every other field keeps its
+    inherited value -- including Unlimited and separate read/write
+    bandwidths, which the legacy columns cannot express. resources.policy.reset
+    removes the override and returns the account to its plan.
+    """
+    from daemon import resource_manager
+    from shared.models import ResourcePolicy
+
+    override = session.scalar(select(ResourcePolicy).where(
+        ResourcePolicy.scope_type == "account", ResourcePolicy.scope_id == account.id,
+    ))
+    effective = resource_manager.effective_for_account(session, account)
+    if effective["policy"] is None and override is None:
+        return
+    values = dict(effective["values"])
+    # The configured value, not the copy capped to this host's CPU count.
+    values["cpu_cores"] = effective["configured_cpu_cores"]
+    if "cpu_pct" in changed:
+        values["cpu_cores"] = changed["cpu_pct"] / 100
+    if "mem_mb" in changed:
+        values["memory_max_mb"] = changed["mem_mb"]
+        high = values.get("memory_high_mb")
+        if high is not None and high > changed["mem_mb"]:
+            values["memory_high_mb"] = max(64, int(changed["mem_mb"] * .9))
+    if "io_mb" in changed:
+        values["io_read_bps"] = values["io_write_bps"] = changed["io_mb"] * 1024 * 1024
+    if "pids_max" in changed:
+        values["nproc"] = changed["pids_max"]
+    values = resource_manager.validate_policy(values)
+    if override is None:
+        override = ResourcePolicy(scope_type="account", scope_id=account.id)
+        session.add(override)
+    else:
+        override.version += 1
+    for field, value in values.items():
+        setattr(override, field, value)
+    # An expired temporary override must not silently swallow the edit.
+    override.expires_at = None
+
+
 def set_limits(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
-            raise RuntimeError(f"cannot change limits for an account in status '{account.status}'")
+            raise ConflictError(f"cannot change limits for an account in status '{account.status}'")
 
-        cpu_pct = int(params.get("cpu_pct", account.cpu_pct))
-        mem_mb = int(params.get("mem_mb", account.mem_mb))
-        io_mb = int(params.get("io_mb", account.io_mb))
-        pids_max = int(params.get("pids_max", account.pids_max))
-        _validate_limits(cpu_pct, mem_mb, io_mb, pids_max)
+        # A partial edit (omitted or null field) changes only the named
+        # limits; the others keep their *enforced* values, which may be
+        # Unlimited under a policy and so cannot round-trip a legacy column.
+        changed = {}
+        for field in LIMIT_FIELDS:
+            if params.get(field) is not None:
+                try:
+                    changed[field] = int(params[field])
+                except (TypeError, ValueError):
+                    raise ValidationError(f"{field} must be an integer") from None
+        if not changed:
+            raise ValidationError("Provide at least one limit to change")
+        merged = {field: changed.get(field, getattr(account, field)) for field in LIMIT_FIELDS}
+        _validate_limits(**merged)
 
-        account.cpu_pct = cpu_pct
-        account.mem_mb = mem_mb
-        account.io_mb = io_mb
-        account.pids_max = pids_max
+        for field, value in changed.items():
+            setattr(account, field, value)
+        _write_limits_override(session, account, changed)
         session.flush()
         result = _account_to_dict(account)
         account_snapshot = account
@@ -434,7 +608,7 @@ def get_account(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         result = _account_to_dict(account)
         prefs = session.scalar(select(AccountNotificationPrefs).where(AccountNotificationPrefs.account_id == account.id))
         result['email'] = prefs.customer_email if prefs else None
@@ -451,21 +625,84 @@ def list_accounts(params: dict) -> dict:
         return {"accounts": [_account_to_dict(a) for a in accounts]}
 
 
+def customer_login_refusal(session, account_id: int | None) -> str | None:
+    """Why a customer login must not get a session, or None.
+
+    For auth.login.begin, after the password check: the API already rejects
+    a non-active account's session cookie, so admitting the login only
+    produced a session that answered 401 with no explanation.
+    """
+    account = session.get(Account, account_id) if account_id is not None else None
+    if account is None or account.status in ("terminating", "terminated", "error"):
+        return "This hosting account is no longer available."
+    if account.status == "suspended":
+        return "This hosting account is suspended. Contact your hosting provider."
+    return None
+
+
+def block_system_logins(username: str) -> None:
+    """Refuse every Linux login of a suspended account.
+
+    `usermod -L` only invalidates the password hash: sshd still accepts the
+    customer's public keys (SSH, SFTP, git-over-SSH) and cron's pam_unix
+    account check ignores a password lock, so scheduled jobs kept running.
+    An expired account fails the PAM account phase that sshd and cron both
+    run (common-account), whatever the authentication method. runuser, which
+    the panel itself uses for account-scoped jobs, has no account phase and
+    is unaffected. Sessions opened before the suspension are ended too.
+    """
+    sysops.lock_user(username)
+    sysops.run(["usermod", "--expiredate", "1", username], check=True)
+    # The per-connection sshd process runs as the user ("sshd: user@pts/0",
+    # "sshd-session: ..." on OpenSSH 9.8+); its shell/sftp-server/git
+    # children end with it. pkill exits 1 when nothing matched.
+    result = sysops.run(["pkill", "-KILL", "-u", username, "-f", "^sshd"], timeout=15)
+    if result.returncode not in (0, 1):
+        logger.warning("could not end open SSH sessions of suspended account %s", username)
+
+
+def allow_system_logins(username: str) -> None:
+    """Reverse block_system_logins (also clears a resource-quarantine expiry)."""
+    sysops.run(["usermod", "--expiredate", "", username], check=True)
+    sysops.unlock_user(username)
+
+
+def reconcile_suspended_logins() -> int:
+    """Upgrade step: apply block_system_logins to already-suspended accounts.
+
+    Accounts suspended by a release that only locked the password still
+    accept SSH keys and run cron jobs. Idempotent; returns how many accounts
+    were reconciled.
+    """
+    with write_session() as session:
+        usernames = list(session.scalars(
+            select(Account.username).where(Account.status == "suspended", Account.uid.is_not(None))
+        ).all())
+    reconciled = 0
+    for username in usernames:
+        try:
+            block_system_logins(username)
+            reconciled += 1
+        except Exception:  # noqa: BLE001 - one missing identity must not stop the upgrade
+            logger.exception("could not block logins of suspended account %s", username)
+    return reconciled
+
+
 @account_mutation.locked
 def suspend_account(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status == "suspended":
             return _account_to_dict(account)
         if account.status != "active":
-            raise RuntimeError(f"cannot suspend account in status '{account.status}'")
+            raise ConflictError(f"cannot suspend account in status '{account.status}'")
         from daemon.mail_mutation import require_accounts_available
         require_accounts_available(session, {account.id})
 
-        sysops.lock_user(username)
+        block_system_logins(username)
         try:
             for hook in SUSPEND_HOOKS:
                 hook(account)
@@ -475,7 +712,7 @@ def suspend_account(params: dict) -> dict:
                     hook(account)
                 except Exception:
                     pass
-            sysops.unlock_user(username)
+            allow_system_logins(username)
             raise
 
         from shared.models import utcnow
@@ -492,11 +729,11 @@ def unsuspend_account(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status == "active":
             return _account_to_dict(account)
         if account.status != "suspended":
-            raise RuntimeError(f"cannot unsuspend account in status '{account.status}'")
+            raise ConflictError(f"cannot unsuspend account in status '{account.status}'")
 
         from daemon.resource_manager import effective_for_account
         effective = effective_for_account(session, account)
@@ -505,15 +742,14 @@ def unsuspend_account(params: dict) -> dict:
         else:
             cgroups.apply_policy(username, effective["values"], uid=account.uid)
         if (account.last_error or "").startswith("Resource enforcement failed;"):
-            sysops.run(["usermod", "--expiredate", "", username], check=True)
             account.last_error = None
-        sysops.unlock_user(username)
+        allow_system_logins(username)
         try:
             for hook in UNSUSPEND_HOOKS:
                 hook(account)
         except Exception:
             # SQLite will retain "suspended"; restore external enforcement too.
-            sysops.lock_user(username)
+            block_system_logins(username)
             for hook in SUSPEND_HOOKS:
                 try:
                     hook(account)
@@ -533,13 +769,63 @@ def terminate_account(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         account_id = account.id
     try:
         with jobs.lock(f'account-{account_id}', blocking=False):
-            return _terminate_account(params)
+            # Wait for the server-wide mutation locks before any teardown:
+            # hooks that found them busy used to fail mid-termination and
+            # leave databases, zones and the Linux user behind.
+            with database_operations.mutation_lock(), dns_operations.mutation_lock():
+                return _terminate_account(params)
     except BlockingIOError:
         raise ValidationError('A backup or restore is using this account. Wait for it to finish before termination.') from None
+
+
+def _release_domain_rows(session, account: Account) -> list[str]:
+    """Free a fully terminated account's hostnames for other accounts.
+
+    Domain rows are the ownership record every claim path checks
+    (domain_ownership.require_available, the uq_domain constraint), so
+    keeping them on a tombstone blocked the names forever. They are removed
+    only after every teardown hook succeeded: the vhosts, zones, mail and
+    certificates they describe are gone by then. Account.primary_domain
+    stays as the historical label. A restore onto the terminated account
+    re-adds its domains through domain.add, like an archive import.
+    """
+    rows = session.scalars(select(Domain).where(Domain.account_id == account.id)).all()
+    names = [row.domain for row in rows]
+    for row in rows:
+        session.delete(row)
+    return names
+
+
+def release_terminated_domains() -> int:
+    """Upgrade step: free hostnames still held by already-terminated accounts.
+
+    Releases before this one kept the Domain rows of terminated accounts.
+    Idempotent; returns how many names were released.
+    """
+    with write_session() as session:
+        accounts = session.scalars(select(Account).where(Account.status == "terminated")).all()
+        names = [name for account in accounts for name in _release_domain_rows(session, account)]
+    for name in names:
+        _forget_domain_settings(name)
+    return len(names)
+
+
+def _forget_domain_settings(domain_name: str) -> None:
+    """Name-keyed per-domain settings that domain.remove also drops.
+
+    Without this a released name would carry the old owner's forwarding,
+    routing or wildcard configuration to whoever adds it next. Uses the
+    same list as domain.remove, so a setting added there is covered here.
+    """
+    from daemon import handlers_domain
+
+    failed = handlers_domain._purge_domain_settings(domain_name)
+    if failed:  # each step already logged; the account is terminated anyway
+        logger.warning("released domain %s kept settings: %s", domain_name, ", ".join(failed))
 
 
 def _terminate_account(params: dict) -> dict:
@@ -549,7 +835,7 @@ def _terminate_account(params: dict) -> dict:
     with jobs.lock('queue'), write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status == "terminated":
             # A successful retry may have converged after an earlier teardown
             # timeout. Do not keep displaying that obsolete error forever.
@@ -570,6 +856,7 @@ def _terminate_account(params: dict) -> dict:
         account_snapshot = _account_to_dict(account)
 
     errors: list[str] = []
+    released_domains: list[str] = []
     for hook in TERMINATE_HOOKS:
         try:
             hook_name = f"terminate: {hook.__module__}.{hook.__qualname__}"
@@ -603,6 +890,7 @@ def _terminate_account(params: dict) -> dict:
                 account.status = "terminated"
                 account.terminated_at = utcnow()
                 account.last_error = None
+                released_domains = _release_domain_rows(session, account)
             audit.change("status", original_status, account.status)
 
             # Security audit finding F3: every *system* resource above is torn
@@ -632,9 +920,13 @@ def _terminate_account(params: dict) -> dict:
             ).all()
             for token in tokens:
                 token.revoked_at = utcnow()
+            impersonation.end_account_sessions(session, account.id)
 
             session.flush()
-            return _account_to_dict(account)
+            result = _account_to_dict(account)
+    for domain_name in released_domains:
+        _forget_domain_settings(domain_name)
+    return result
 
 
 @account_mutation.locked
@@ -651,9 +943,9 @@ def set_php_version(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
-            raise RuntimeError(f"cannot change PHP version for an account in status '{account.status}'")
+            raise ConflictError(f"cannot change PHP version for an account in status '{account.status}'")
         if account.php_version == new_version:
             return _account_to_dict(account)
 

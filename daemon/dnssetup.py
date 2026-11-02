@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
 from sqlalchemy import func, select
 
@@ -13,6 +14,7 @@ from shared.models import CloudflareAccount, CloudflareZone, DnsClusterOutbox, D
 from shared.validation import ValidationError, validate_domain
 
 MODES = {"cloudflare", "local", "cluster"}
+logger = logging.getLogger("borond.dnssetup")
 
 
 def current_mode() -> str:
@@ -138,11 +140,90 @@ def set_mode(params: dict) -> dict:
 
 
 def _rrset_map(records: list[dict]) -> dict[tuple[str, str], tuple[int, tuple[str, ...]]]:
+    def canonical(rtype: str, value) -> str:
+        # Cloudflare returns a long TXT as one string, PowerDNS as several
+        # 255-octet strings; both are the same record.
+        return dnsprovider.txt_bytes(str(value)).hex() if rtype == "TXT" else str(value)
+
     return {
         (str(row.get("name", "")).rstrip("."), str(row.get("type", ""))):
-        (int(row.get("ttl") or 3600), tuple(sorted(str(v) for v in row.get("values", []))))
+        (int(row.get("ttl") or 3600), tuple(sorted(canonical(str(row.get("type", "")), v) for v in row.get("values", []))))
         for row in records if row.get("type") != "SOA"
     }
+
+
+def _strict_txt(value: str) -> bool:
+    """Whether zone-file grammar (snapshot restore, advanced editor) reads it."""
+    import dns.exception
+    import dns.rdata
+
+    try:
+        dns.rdata.from_text("IN", "TXT", value)
+    except (dns.exception.DNSException, ValueError):
+        return False
+    return True
+
+
+def reconcile_zone_records(_params: dict | None = None) -> dict:
+    """Repair local zones written before the current record rules.
+
+    Run on upgrade (scripts/upgrade_runtime.py). Two repairs, each limited to
+    rrsets that need it: an SOA whose MNAME is still the installer's
+    placeholder gets the zone's primary nameserver, and a TXT value holding
+    a string over 255 octets (or text zone-file grammar cannot read, such as
+    a raw newline) is rewritten in canonical split form -- without that a
+    DKIM key makes the zone unrestorable from snapshots. Best-effort per
+    zone; never raises, so DNS trouble cannot fail an upgrade.
+    """
+    from daemon import dns_operations
+
+    result = {"repaired": [], "failed": [], "skipped": None}
+    try:
+        with dns_operations.mutation_lock(timeout=120):
+            with write_session() as db:
+                zones = db.scalars(select(DnsZone.zone).order_by(DnsZone.zone)).all()
+            for zone in zones:
+                try:
+                    if dnsprovider.provider_for_zone(zone) != "local" or not powerdns.zone_exists(zone):
+                        continue
+                    changes = _zone_repairs(zone, powerdns.get_zone(zone))
+                    if changes:
+                        powerdns.apply_rrset_changes(zone, changes)
+                        dnsprovider._cluster_notify(zone)
+                        result["repaired"].append(zone)
+                except Exception:  # noqa: BLE001 -- one zone must not stop the rest
+                    logger.exception("DNS record reconcile failed for %s", zone)
+                    result["failed"].append(zone)
+    except ValidationError as exc:  # the DNS mutation lock stayed busy
+        result["skipped"] = str(exc)
+    except Exception:  # noqa: BLE001
+        logger.exception("DNS record reconcile could not run")
+        result["skipped"] = "DNS record reconcile could not run"
+    return result
+
+
+def _zone_repairs(zone: str, data: dict) -> list[dict]:
+    rrsets = data.get("rrsets", [])
+    apex = f"{zone}."
+    changes = []
+    for rrset in rrsets:
+        records = rrset.get("records") or []
+        if rrset.get("type") == "SOA" and records:
+            content = records[0]["content"]
+            if content.split()[:1] != [dnsprovider.PLACEHOLDER_SOA_MNAME]:
+                continue
+            apex_ns = next((r for r in rrsets if r.get("type") == "NS" and r.get("name") == apex), None)
+            candidates = [r["content"] for r in (apex_ns or {}).get("records", []) if not r.get("disabled")]
+            primary = candidates[0] if candidates else next(iter(local_nameservers(zone)), None)
+            updated = dnsprovider.soa_with_primary(content, primary) if primary else None
+            if updated:
+                changes.append({"name": rrset["name"], "type": "SOA", "ttl": rrset.get("ttl", 3600),
+                                "changetype": "REPLACE", "records": [{**records[0], "content": updated}]})
+        elif rrset.get("type") == "TXT" and any(not _strict_txt(r["content"]) for r in records):
+            changes.append({"name": rrset["name"], "type": "TXT", "ttl": rrset.get("ttl", 3600),
+                            "changetype": "REPLACE",
+                            "records": [{**r, "content": dnsprovider.normalize_txt(r["content"])} for r in records]})
+    return changes
 
 
 def preview_zone_migration(params: dict) -> dict:

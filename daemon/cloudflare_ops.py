@@ -32,7 +32,7 @@ from shared.db import write_session
 from shared.models import Account, CloudflareAccount, CloudflareSettings, CloudflareZone, DnsZone, Domain
 from shared.validation import validate_domain
 
-from daemon import cloudflare, cloudflare_accounts, events, powerdns
+from daemon import cloudflare, cloudflare_accounts, dnsprovider, events, powerdns
 from daemon.dns_zone_lookup import label_within_zone
 
 logger = logging.getLogger("borond.cloudflare")
@@ -423,7 +423,7 @@ def _resync_powerdns_to_cloudflare(zone: str, cf_zone_id: str) -> int:
             continue
         label = label_within_zone(rrset["name"], zone)
         cloudflare.upsert_record(
-            zone, label, rrset["type"], rrset["values"], ttl=rrset["ttl"], zone_id=cf_zone_id
+            zone, label, rrset["type"], dnsprovider.provider_values(rrset["type"], rrset["values"], cloudflare_zone=True), ttl=rrset["ttl"], zone_id=cf_zone_id
         )
         desired.add((rrset["name"], rrset["type"]))
     for rrset in cloudflare.list_records(zone, zone_id=cf_zone_id):
@@ -446,7 +446,7 @@ def _resync_cloudflare_to_powerdns(zone: str, cf_zone_id: str) -> int:
         if _is_apex_ns(rrset, zone):
             continue
         label = label_within_zone(rrset["name"], zone)
-        powerdns.upsert_record(zone, label, rrset["type"], rrset["values"], ttl=rrset["ttl"])
+        powerdns.upsert_record(zone, label, rrset["type"], dnsprovider.provider_values(rrset["type"], rrset["values"], cloudflare_zone=False), ttl=rrset["ttl"])
         desired.add((rrset["name"], rrset["type"]))
     for rrset in powerdns.list_records(zone):
         if _is_apex_ns(rrset, zone):

@@ -95,7 +95,8 @@ def test_plan_update_cannot_drop_below_current_allocation(isolated_db):
 def test_plan_delete_rejects_assigned_plan(isolated_db):
     plan = make_plan()
     make_profile(plan["id"])
-    with pytest.raises(resellers.ResellerError, match="assigned"):
+    from shared.validation import ConflictError
+    with pytest.raises(ConflictError, match=r"assigned to 1 reseller\(s\)"):
         resellers.delete_plan({"plan_id": plan["id"]})
 
 
@@ -255,3 +256,76 @@ def test_reseller_api_role_boundaries_and_identity_forwarding(isolated_db, monke
     assert calls[-1] == ("reseller.dashboard", {"reseller_username": "seller"})
     with pytest.raises(HTTPException):
         router.plans(reseller_identity)
+
+
+# --- reseller deletion --------------------------------------------------------
+
+
+def test_delete_reseller_refuses_while_it_owns_live_accounts(isolated_db):
+    from shared.validation import ConflictError
+    plan = make_plan()
+    _, profile_id = make_profile(plan["id"])
+    make_owned_account(profile_id, "ownedone")
+    with pytest.raises(ConflictError, match=r"owns 1 account\(s\) \(ownedone\)"):
+        resellers.delete_reseller({"reseller_id": profile_id})
+    with write_session() as session:
+        assert session.get(ResellerProfile, profile_id) is not None
+
+
+def test_delete_reseller_then_its_plan_and_name_are_free(isolated_db):
+    import datetime as dt
+    from shared.models import Session, utcnow
+    plan = make_plan()
+    user_id, profile_id = make_profile(plan["id"])
+    terminated_id = make_owned_account(profile_id, "oldowned")
+    with write_session() as session:
+        session.get(Account, terminated_id).status = "terminated"
+        session.add(Session(panel_user_id=user_id, session_id="s" * 64,
+                            expires_at=utcnow() + dt.timedelta(hours=1)))
+
+    result = resellers.delete_reseller({"reseller_id": profile_id})
+
+    assert result["status"] == "deleted" and result["username"] == "reseller1"
+    with write_session() as session:
+        assert session.get(ResellerProfile, profile_id) is None
+        user = session.get(PanelUser, user_id)
+        assert user.disabled and user.username == f"reseller1~r{profile_id}"
+        assert all(row.revoked for row in session.scalars(select(Session)).all())
+        assert session.scalar(select(ResellerAccount)) is None
+        assert session.get(Account, terminated_id).status == "terminated"
+    assert resellers.delete_plan({"plan_id": plan["id"]})["status"] == "deleted"
+    make_profile(make_plan(name="Second")["id"], username="reseller1")  # login name reusable
+
+
+def test_delete_reseller_can_release_accounts_to_administrator(isolated_db):
+    plan = make_plan()
+    _, profile_id = make_profile(plan["id"])
+    account_id = make_owned_account(profile_id, "ownedone")
+    reconciled = []
+    resellers.RESOURCE_HOOKS.append(reconciled.append)
+    try:
+        result = resellers.delete_reseller({"reseller_id": profile_id, "release_accounts": True})
+    finally:
+        resellers.RESOURCE_HOOKS.remove(reconciled.append)
+    assert result["released_accounts"] == ["ownedone"]
+    assert reconciled == [account_id]
+    with write_session() as session:
+        assert session.get(Account, account_id).status == "active"
+        assert session.scalar(select(ResellerAccount)) is None
+
+
+def test_delete_unknown_reseller_is_not_found(isolated_db):
+    from shared.validation import NotFoundError
+    with pytest.raises(NotFoundError):
+        resellers.delete_reseller({"reseller_id": 99999})
+
+
+def test_delete_reseller_clears_the_lockout_counter_of_its_name(isolated_db):
+    from shared.models import LoginAttempt
+    plan = make_plan()
+    _, profile_id = make_profile(plan["id"])
+    with write_session() as session:
+        session.add(LoginAttempt(username="reseller1", failed_count=4))
+    resellers.delete_reseller({"reseller_id": profile_id})
+    with write_session() as session:
+        assert session.scalar(select(LoginAttempt).where(LoginAttempt.username == "reseller1")) is None

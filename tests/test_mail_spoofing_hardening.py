@@ -264,7 +264,7 @@ def test_sign_filter_cli_forwards_login(monkeypatch):
     monkeypatch.setattr(module.sys, "argv", ["filter", "--sender", "ceo@victim.example",
                                              "--login=demo1@demo.example", "--recipient", "a@b.example"])
     monkeypatch.setattr(module.sys, "stdin", SimpleNamespace(buffer=SimpleNamespace(read=lambda n: b"x")))
-    assert module.main() == 67
+    assert module.main() == 77  # EX_NOPERM: 5.7.0 policy refusal, not 5.1.1 "user unknown"
     assert seen["login"] == "demo1@demo.example"
 
 

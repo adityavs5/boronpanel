@@ -11,6 +11,9 @@ def isolate_mail_runtime_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SSO_SQL_CONFIG', tmp_path / 'sso-sql.conf')
     monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SSO_PASSDB_CONFIG', tmp_path / '09-sso-auth.conf')
     monkeypatch.setattr(upgrade_runtime, 'DOVECOT_QUOTA_CONFIG', tmp_path / '91-quota.conf')
+    monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SIEVE_CONFIG', tmp_path / '92-sieve.conf')
+    monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SIEVE_PLUGIN', tmp_path / 'no-sieve-plugin.so')
+    monkeypatch.setattr(upgrade_runtime, 'POSTFIX_FORWARDS_MAP', tmp_path / 'forwards.cf')
     monkeypatch.setattr(upgrade_runtime, '_app_runtime_records', lambda: [])
 from shared.config import settings
 
@@ -380,3 +383,63 @@ def test_dovecot_quota_wrap_preserves_extra_user_fields_and_existing_rules():
     assert updated==upgrade_runtime._with_mailbox_quota(updated)
     custom="user_query = SELECT uid,home,quota AS quota_rule FROM custom_users\n"
     assert upgrade_runtime._with_mailbox_quota(custom)==custom
+
+
+def test_lmtp_loads_sieve_when_pigeonhole_is_installed(tmp_path, monkeypatch):
+    """Live regression: LMTP never loaded sieve, so autoresponders,
+    spam-to-Junk and blacklist rejects silently did nothing."""
+    monkeypatch.setattr(upgrade_runtime.shutil, 'chown', lambda *a, **kw: None)
+    upgrade_runtime.configure_dovecot_sieve()
+    assert not upgrade_runtime.DOVECOT_SIEVE_CONFIG.exists()  # never load a missing module
+    plugin = tmp_path / 'lib90_sieve_plugin.so'
+    plugin.write_bytes(b'')
+    monkeypatch.setattr(upgrade_runtime, 'DOVECOT_SIEVE_PLUGIN', plugin)
+    upgrade_runtime.configure_dovecot_sieve()
+    content = upgrade_runtime.DOVECOT_SIEVE_CONFIG.read_text()
+    assert 'protocol lmtp {\n  mail_plugins = $mail_plugins sieve\n}' in content
+    # Sorts after 91-boron-quota.conf so $mail_plugins already holds quota.
+    assert upgrade_runtime.DOVECOT_SIEVE_CONFIG.name > '91-boron-quota.conf'
+
+
+def test_forwards_map_keeps_local_delivery_and_is_reconciled(tmp_path, monkeypatch):
+    import os
+    path = upgrade_runtime.POSTFIX_FORWARDS_MAP
+    path.write_text('user = boron_mailro\npassword = test-only-secret\nhosts = 127.0.0.1\n'
+                    'dbname = boron_mail\nquery = SELECT old forward query\n')
+    os.chmod(path, 0o640)
+    upgrade_runtime.configure_postfix_forwards()
+    content = path.read_text()
+    assert upgrade_runtime.FORWARDS_QUERY + '\n' in content
+    assert 'password = test-only-secret' in content and 'old forward query' not in content
+    assert path.stat().st_mode & 0o777 == 0o640
+    before = path.stat().st_mtime_ns
+    upgrade_runtime.configure_postfix_forwards()
+    assert path.stat().st_mtime_ns == before  # idempotent
+    query = upgrade_runtime.FORWARDS_QUERY
+    # The mailbox maps to itself when a forwarder or catch-all exists for it.
+    assert 'EXISTS (SELECT 1 FROM mail_forward f' in query and 'OR EXISTS (SELECT 1 FROM mail_catchall c' in query
+    assert query.count("'%s'") == 3
+
+
+def test_install_writes_the_same_forwards_query_as_upgrade():
+    from pathlib import Path
+    install = (Path(__file__).resolve().parents[1] / 'scripts' / 'install.sh').read_text()
+    assert upgrade_runtime.FORWARDS_QUERY + '\n' in install
+
+
+def test_new_mail_runtime_files_are_in_the_rollback_backup():
+    paths = upgrade_runtime._runtime_paths()
+    assert upgrade_runtime.DOVECOT_SIEVE_CONFIG in paths
+    assert upgrade_runtime.POSTFIX_FORWARDS_MAP in paths
+
+
+def test_upgrade_reconciles_accounts_suspended_or_terminated_by_older_releases(monkeypatch):
+    from daemon import handlers_account
+    calls = []
+    monkeypatch.setattr(handlers_account, "reconcile_suspended_logins", lambda: calls.append("logins") or 0)
+    monkeypatch.setattr(handlers_account, "release_terminated_domains", lambda: calls.append("domains") or 0)
+    upgrade_runtime.configure_account_lifecycle_state()
+    assert calls == ["logins", "domains"]
+    source = upgrade_runtime.Path(upgrade_runtime.__file__).read_text()
+    main_body = source[source.index("def main("):]
+    assert "configure_account_lifecycle_state()" in main_body

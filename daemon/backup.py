@@ -53,7 +53,7 @@ from shared.models import (
     SnapshotRestore,
     utcnow,
 )
-from shared.validation import ValidationError, validate_domain, validate_username, validate_mailbox_local_part
+from shared.validation import NotFoundError, ValidationError, validate_domain, validate_username, validate_mailbox_local_part
 
 from daemon import audit, cron, dnsprovider, events, mariadb, rclone
 from daemon.archive_limits import ArchiveMetadataTooLarge, open_guarded_tar
@@ -73,7 +73,7 @@ MAX_BACKUP_ARCHIVE_PATH_BYTES = 2048
 MAX_BACKUP_ARCHIVE_PATH_DEPTH = 64
 
 
-class BackupError(Exception):
+class BackupError(ValidationError):
     pass
 
 
@@ -249,6 +249,21 @@ def set_schedule(params: dict) -> dict:
         session.add(schedule)
         session.flush()
         return _schedule_to_dict(schedule)
+
+
+def delete_schedule(params: dict) -> dict:
+    """Remove a legacy schedule (server default or per-account override).
+
+    Its BackupJob history is unaffected; only future scheduled runs stop.
+    """
+    schedule_id = int(params["id"])
+    with write_session() as session:
+        schedule = session.get(BackupSchedule, schedule_id)
+        if schedule is None:
+            raise NotFoundError(f"backup schedule {schedule_id} not found")
+        result = _schedule_to_dict(schedule)
+        session.delete(schedule)
+    return {**result, "status": "deleted"}
 
 
 def get_effective_schedule(session, account_id: int) -> BackupSchedule | None:
@@ -583,7 +598,7 @@ def _build_full_backup(username: str, staging_dir: Path, job_id: int) -> Path:
     _update_job(job_id, progress_message="backing up cron jobs")
     try:
         manifest["cron_jobs"] = cron.list_jobs(username)
-    except cron.CronError:
+    except (cron.CronError, cron.CrontabCommandError):
         manifest["cron_jobs"] = []
 
     if zone_name:
@@ -1156,6 +1171,143 @@ def _restore_database_dump(db_name: str, dump_path: Path) -> None:
         mariadb.drop_db_user(restore_user)
 
 
+def _full_artifact_content(username: str, local_artifact: str, tmp_dir: str) -> tuple[Path, dict]:
+    """Extract a full backup's outer tar; return its content dir and manifest.
+
+    The outer archive holds one `job-N/` directory with manifest.json,
+    home.tar.gz, databases/*.sql.gz and mail/<domain>.tar.gz. A full restore
+    and a single-item restore from a full backup both start here.
+    """
+    extract_dir = Path(tmp_dir) / "extracted"
+    extract_dir.mkdir()
+    _safe_extract_tar(local_artifact, extract_dir)
+
+    inner_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
+    if len(inner_dirs) != 1:
+        raise BackupError("unexpected full backup artifact layout")
+    content_dir = inner_dirs[0]
+
+    manifest_path = content_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise BackupError("backup artifact has no manifest.json")
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except ValueError:
+        raise BackupError("backup artifact has an unreadable manifest.json") from None
+    if not isinstance(manifest, dict) or manifest.get("username") != username:
+        raise BackupError("backup manifest belongs to another account")
+    return content_dir, manifest
+
+
+def _normalized_item_path(item_ref: str) -> str:
+    path = Path(item_ref)
+    parts = [part for part in path.parts if part not in ("", ".")]
+    if not parts or path.is_absolute() or ".." in parts:
+        raise BackupError("file path must stay inside the account home")
+    return Path(*parts).as_posix()
+
+
+def _restore_item_from_full(
+    username: str, kind: str, item_ref: str | None, local_artifact: str, tmp_dir: str, restore_job_id: int,
+) -> None:
+    """Restore exactly one item (a file or directory, one database, every
+    database, or one mailbox) from a full backup artifact.
+
+    The single-item restorers expect that item's own artifact. Handing them
+    the outer full .tar extracted the whole job directory into the home
+    (file) or failed (database, databases, mailbox).
+    """
+    _update_restore(restore_job_id, progress_message="extracting backup")
+    content_dir, _manifest = _full_artifact_content(username, local_artifact, tmp_dir)
+    if kind == "file":
+        relative = _normalized_item_path(item_ref)
+        home_tar = content_dir / "home.tar.gz"
+        if not home_tar.is_file():
+            raise BackupError("this backup contains no home directory files")
+        home_dir = Path(settings.home_base) / username
+        if not home_dir.exists():
+            raise BackupError(f"account '{username}' has no home directory to restore into")
+        _update_restore(restore_job_id, progress_message=f"restoring {relative}")
+        _restore_tree(home_tar, home_dir, _pwnam(username), prefix=username, select=relative)
+    elif kind == "database":
+        dump = content_dir / "databases" / f"{item_ref}.sql.gz"
+        if "/" in item_ref or not dump.is_file():
+            raise BackupError(f"database '{item_ref}' is not in this backup")
+        _update_restore(restore_job_id, progress_message=f"restoring database {item_ref}")
+        _restore_database_dump(item_ref, dump)
+    elif kind == "databases":
+        _restore_database_dumps(username, content_dir / "databases", restore_job_id)
+    elif kind == "mailbox":
+        local_part, _separator, domain = item_ref.partition("@")
+        validate_mailbox_local_part(local_part)
+        validate_domain(domain)
+        tarball = content_dir / "mail" / f"{domain}.tar.gz"
+        if not tarball.is_file():
+            raise BackupError(f"mailbox '{item_ref}' is not in this backup")
+        mail_dir = Path(settings.mail_base) / domain
+        if not mail_dir.exists():
+            raise BackupError(f"mail domain '{domain}' does not exist -- create it before restoring a mailbox into it")
+        _update_restore(restore_job_id, progress_message=f"restoring mailbox {item_ref}")
+        # Members are `<domain>/<local_part>/...`: strip the domain and
+        # extract only this mailbox.
+        _restore_tree(tarball, mail_dir, _pwnam('vmail'), prefix=domain, select=local_part)
+    else:
+        raise BackupError(f"unknown restore kind '{kind}'")
+
+
+def _reactivate_for_restore(username: str, params: dict) -> dict:
+    """Recreate a terminated account's Linux identity for a restore/import.
+
+    Termination released the account's uid, so the uid still stored on the
+    terminated row is stale (and may already belong to another tenant).
+    Left in place, the new identity never matched it and cgroup setup
+    refused the restore. Clear it first so the new uid becomes the account's
+    identity; then remap anything in a surviving home that the stale uid
+    owns. If recreation fails, a home this call created is removed, so no
+    directory is left owned by an unassigned uid that useradd will recycle.
+    """
+    from daemon import handlers_account, sysops
+
+    home = Path(settings.home_base) / username
+    home_existed = home.exists()
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == username))
+        stale_uid, stale_gid = account.uid, account.gid
+        account.uid = None
+        account.gid = None
+    try:
+        recreated = handlers_account.reactivate_account(params)
+    except Exception:
+        # Keep the released identity on record: a retry against a surviving
+        # home still needs it to remap the files that identity owns.
+        with write_session() as session:
+            account = session.scalar(select(Account).where(Account.username == username))
+            if account is not None and account.status == "terminated" and account.uid is None:
+                account.uid, account.gid = stale_uid, stale_gid
+        if not home_existed and not sysops.user_exists(username):
+            try:
+                # The user is already gone, so this only removes the
+                # orphaned home, without following links or crossing mounts.
+                sysops.delete_linux_user(username, remove_home=True)
+            except Exception:  # noqa: BLE001
+                logger.exception("could not remove the orphaned home of '%s' after a failed restore", username)
+        raise
+    if home_existed:
+        pw = _pwnam(username)
+        remaps = []
+        if stale_uid is not None and stale_uid != pw.pw_uid:
+            remaps.append((f"--from={stale_uid}", str(pw.pw_uid)))
+        if stale_gid is not None and stale_gid != pw.pw_gid:
+            remaps.append((f"--from=:{stale_gid}", f":{pw.pw_gid}"))
+        for selector, owner in remaps:
+            # -R without -L/-H never follows links; --from limits the change
+            # to entries the released identity still owns.
+            result = run(["chown", "-R", "--no-dereference", selector, owner, "--", str(home)], timeout=1800)
+            if not result.ok:
+                raise BackupError("could not reassign the restored home directory to the recreated account")
+    return recreated
+
+
 @serialized_worker
 def _restore_full(
     username: str,
@@ -1173,21 +1325,7 @@ def _restore_full(
 
     summary = {"initial_password": None, "mailboxes_requiring_password_reset": []}
     report("extracting backup")
-    extract_dir = Path(tmp_dir) / "extracted"
-    extract_dir.mkdir()
-    _safe_extract_tar(local_artifact, extract_dir)
-
-    inner_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
-    if len(inner_dirs) != 1:
-        raise BackupError("unexpected full backup artifact layout")
-    content_dir = inner_dirs[0]
-
-    manifest_path = content_dir / "manifest.json"
-    if not manifest_path.exists():
-        raise BackupError("backup artifact has no manifest.json")
-    manifest = json.loads(manifest_path.read_text())
-    if manifest.get("username") != username:
-        raise BackupError("backup manifest belongs to another account")
+    content_dir, manifest = _full_artifact_content(username, local_artifact, tmp_dir)
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         names = [entry['domain'] for entry in manifest.get('domains', [])]
@@ -1214,18 +1352,16 @@ def _restore_full(
         # restore failed several steps later trying to chown files to a
         # uid that no longer existed.
         report("recreating account")
-        recreated = handlers_account.reactivate_account(
-            {
-                "username": username,
-                "php_version": manifest.get("php_version"),
-                "quota_soft_mb": manifest.get("quota_soft_mb"),
-                "quota_hard_mb": manifest.get("quota_hard_mb"),
-                "cpu_pct": manifest.get("cpu_pct"),
-                "mem_mb": manifest.get("mem_mb"),
-                "io_mb": manifest.get("io_mb"),
-                "pids_max": manifest.get("pids_max"),
-            }
-        )
+        recreated = _reactivate_for_restore(username, {
+            "username": username,
+            "php_version": manifest.get("php_version"),
+            "quota_soft_mb": manifest.get("quota_soft_mb"),
+            "quota_hard_mb": manifest.get("quota_hard_mb"),
+            "cpu_pct": manifest.get("cpu_pct"),
+            "mem_mb": manifest.get("mem_mb"),
+            "io_mb": manifest.get("io_mb"),
+            "pids_max": manifest.get("pids_max"),
+        })
         summary["initial_password"] = recreated.get("initial_password")
 
         report("recreating domains")
@@ -1397,8 +1533,12 @@ def _trusted_python_interpreter_link(member, destination: Path) -> bool:
     return member.issym() and standard_python_venv_link(member.name, member.linkname, destination)
 
 
-def _restore_tree(artifact, destination, owner, prefix=None):
-    """Validate a private archive copy, then extract with destination privileges."""
+def _restore_tree(artifact, destination, owner, prefix=None, select=None):
+    """Validate a private archive copy, then extract with destination privileges.
+
+    `select`, a relative path after `prefix` is stripped, extracts only that
+    file or directory subtree. Every member is still validated.
+    """
     if owner.pw_uid <= 0 or owner.pw_gid <= 0:
         raise BackupError("refusing restore as root")
     with tempfile.TemporaryDirectory(prefix="boron-tree-restore-") as scratch:
@@ -1417,6 +1557,7 @@ def _restore_tree(artifact, destination, owner, prefix=None):
         finally:
             os.close(fd)
         expanded = 0
+        selected = 0
         with tarfile.open(private) as archive:
             for count, member in enumerate(archive, 1):
                 parts = Path(member.name).parts
@@ -1440,14 +1581,25 @@ def _restore_tree(artifact, destination, owner, prefix=None):
                 except (tarfile.FilterError, OSError) as exc:
                     if not _trusted_python_interpreter_link(checked, Path(destination)):
                         raise BackupError("unsafe restore archive path or link") from exc
+                if select is not None:
+                    name = Path(checked.name).as_posix()
+                    if name != select and not name.startswith(select + "/"):
+                        continue
+                    selected += 1
                 expanded += member.size if member.isreg() else 0
                 if expanded > settings.cpanel_import_max_extracted_bytes:
                     raise BackupError("restore archive exceeds the expansion limit")
+        if select is not None and not selected:
+            raise BackupError(f"'{select}' is not in this backup")
         with private.open('rb') as stream:
             compressed = stream.read(2) == b'\x1f\x8b'
         argv = ['tar', '-xz' if compressed else '-x', '-f', '-', '--no-same-owner', '--no-same-permissions', '-C', str(destination)]
         if prefix is not None:
             argv.append('--strip-components=1')
+        if select is not None:
+            # tar matches member names before stripping components, and
+            # literally: a path containing *, ? or [ is never a pattern.
+            argv += ['--no-wildcards', '--', f"{prefix}/{select}" if prefix else select]
         result = run(argv, input_path=str(private), uid=owner.pw_uid, gid=owner.pw_gid, timeout=600)
         if not result.ok:
             raise BackupError("account-privileged archive extraction failed")
@@ -1459,13 +1611,17 @@ def _restore_database(item_ref: str, local_artifact: str, restore_job_id: int) -
 
 
 def _restore_databases(username: str, local_artifact: str, tmp_dir: str, restore_job_id: int) -> None:
-    account_id = _resolve_account_id(username)
-    with write_session() as session:
-        owned = set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id == account_id)).all())
     extract_dir = Path(tmp_dir) / "database-set"
     extract_dir.mkdir()
     _safe_extract_tar(local_artifact, extract_dir)
-    dumps = sorted((extract_dir / "databases").glob("*.sql.gz"))
+    _restore_database_dumps(username, extract_dir / "databases", restore_job_id)
+
+
+def _restore_database_dumps(username: str, dump_dir: Path, restore_job_id: int) -> None:
+    account_id = _resolve_account_id(username)
+    with write_session() as session:
+        owned = set(session.scalars(select(DatabaseGrant.db_name).where(DatabaseGrant.account_id == account_id)).all())
+    dumps = sorted(dump_dir.glob("*.sql.gz")) if dump_dir.is_dir() else []
     if not dumps:
         raise BackupError("database archive contains no database dumps")
     for index, dump in enumerate(dumps, start=1):
@@ -1506,6 +1662,7 @@ def _run_restore_job(restore_job_id: int) -> None:
             account_status = account.status
             kind = restore_job.kind
             item_ref = restore_job.item_ref
+            backup_kind = backup_job.kind
             _authorize_item(session, account, kind, item_ref)
             artifact_path = backup_job.artifact_path
             dest_kind = destination.kind
@@ -1524,6 +1681,8 @@ def _run_restore_job(restore_job_id: int) -> None:
 
         if kind == "full":
             _restore_full(username, account_status, local_artifact, tmp_dir, restore_job_id)
+        elif backup_kind == "full":
+            _restore_item_from_full(username, kind, item_ref, local_artifact, tmp_dir, restore_job_id)
         elif kind == "file":
             _restore_file(username, item_ref, local_artifact, restore_job_id)
         elif kind == "database":

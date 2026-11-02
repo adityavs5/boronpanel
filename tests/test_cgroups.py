@@ -58,9 +58,12 @@ def test_apply_limits_targets_canonical_user_slice(isolated_db, fake_systemctl, 
     assert "MemoryMax=1024M" in command
     assert "MemorySwapMax=0" in command
     assert "TasksMax=75" in command
-    assert command.index("IOReadBandwidthMax=") < command.index("IOReadBandwidthMax=/dev/vda 100M")
-    assert command.index("IOWriteBandwidthMax=") < command.index("IOWriteBandwidthMax=/dev/vda 100M")
-    assert "IOReadBandwidthMax=/dev/vda 100M" in command
+    # Exact bytes: systemd reads an "M" bandwidth suffix as 10**6, so "100M"
+    # enforced 100,000,000 B/s for a requested 100 MiB/s.
+    assert command.index("IOReadBandwidthMax=") < command.index("IOReadBandwidthMax=/dev/vda 104857600")
+    assert command.index("IOWriteBandwidthMax=") < command.index("IOWriteBandwidthMax=/dev/vda 104857600")
+    assert "IOReadBandwidthMax=/dev/vda 104857600" in command
+    assert not any(arg.endswith("100M") for arg in command if "Bandwidth" in arg)
     assert "CPUAccounting=yes" in command
 
 

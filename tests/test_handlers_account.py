@@ -51,6 +51,15 @@ def stub_sysops(monkeypatch):
     monkeypatch.setattr(ha.sysops, "unlock_user", unlock_user)
     monkeypatch.setattr(ha.sysops, "delete_linux_user", delete_linux_user)
     monkeypatch.setattr(ha.sysops, "remove_quota", remove_quota)
+
+    class _Result:
+        returncode, ok, stdout, stderr = 0, True, "", ""
+
+    def run(args, **kwargs):
+        calls.append(("run", tuple(args)))
+        return _Result()
+
+    monkeypatch.setattr(ha.sysops, "run", run)
     monkeypatch.setattr(ha.sysops, "ensure_web_logs", lambda username: calls.append(("ensure_web_logs", username)))
     monkeypatch.setattr(ha.handlers_domain, "ensure_docroot", lambda username, docroot, domain_name=None, **kwargs: None)
     monkeypatch.setattr(ha.ols, "provision_vhost", lambda account: None)
@@ -710,3 +719,233 @@ def test_mandatory_cgroup_failure_never_activates_identity(isolated_db, stub_sys
     assert not any(call[0] == "set_initial_password" for call in stub_sysops)
     assert ("lock_user", "demo1") in stub_sysops
     assert ("delete_linux_user", "demo1") in stub_sysops
+
+
+# --- live-test regressions: suspension, name reuse, plans, limits ------------
+
+
+def _runs(calls):
+    return [call[1] for call in calls if call[0] == "run"]
+
+
+def _raise(message):
+    def hook(account):
+        raise RuntimeError(message)
+    return hook
+
+
+def test_suspend_expires_login_so_ssh_keys_and_cron_stop(isolated_db, stub_sysops):
+    """usermod -L left public-key SSH/SFTP/git and cron working."""
+    ha.create_account({"username": "demo1"})
+    ha.suspend_account({"username": "demo1"})
+    runs = _runs(stub_sysops)
+    assert ("lock_user", "demo1") in stub_sysops
+    assert ("usermod", "--expiredate", "1", "demo1") in runs
+    assert ("pkill", "-KILL", "-u", "demo1", "-f", "^sshd") in runs
+
+    stub_sysops.clear()
+    ha.unsuspend_account({"username": "demo1"})
+    assert ("usermod", "--expiredate", "", "demo1") in _runs(stub_sysops)
+    assert ("unlock_user", "demo1") in stub_sysops
+
+
+def test_failed_suspend_hook_restores_login(isolated_db, stub_sysops, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    monkeypatch.setattr(ha, "SUSPEND_HOOKS", [_raise("ols down")])
+    with pytest.raises(RuntimeError, match="ols down"):
+        ha.suspend_account({"username": "demo1"})
+    assert ("usermod", "--expiredate", "", "demo1") in _runs(stub_sysops)
+    assert ha.get_account({"username": "demo1"})["status"] == "active"
+
+
+def test_reconcile_suspended_logins_covers_accounts_suspended_before_upgrade(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    ha.create_account({"username": "demo2"})
+    with write_session() as session:
+        session.scalar(select(Account).where(Account.username == "demo1")).status = "suspended"
+    stub_sysops.clear()
+    assert ha.reconcile_suspended_logins() == 1
+    assert ("usermod", "--expiredate", "1", "demo1") in _runs(stub_sysops)
+    assert not any("demo2" in run for run in _runs(stub_sysops))
+
+
+def test_terminated_username_and_domain_are_reusable(isolated_db, stub_sysops):
+    from shared.models import PanelUser
+    first = ha.create_account({"username": "demo1", "primary_domain": "reuse.example"})
+    ha.terminate_account({"username": "demo1"})
+    with write_session() as session:
+        assert session.scalar(select(Domain).where(Domain.domain == "reuse.example")) is None
+
+    # Another customer can take the freed domain, and the name can be reused.
+    other = ha.create_account({"username": "demo2", "primary_domain": "reuse.example"})
+    assert other["primary_domain"] == "reuse.example"
+    second = ha.create_account({"username": "demo1"})
+    assert second["id"] != first["id"] and second["status"] == "active"
+
+    with write_session() as session:
+        tombstone = session.get(Account, first["id"])
+        assert tombstone.status == "terminated"
+        assert tombstone.username == f"demo1~{first['id']}"
+        assert tombstone.primary_domain == "reuse.example"  # historical label kept
+        old_login = session.scalar(select(PanelUser).where(PanelUser.account_id == first["id"]))
+        assert old_login.username == f"demo1~{first['id']}" and old_login.disabled
+        new_login = session.scalar(select(PanelUser).where(PanelUser.username == "demo1"))
+        assert new_login.account_id == second["id"] and not new_login.disabled
+
+
+def test_half_terminated_username_is_not_reused(isolated_db, stub_sysops):
+    from shared.validation import ConflictError
+    ha.create_account({"username": "demo1"})
+    with write_session() as session:
+        session.scalar(select(Account).where(Account.username == "demo1")).status = "error"
+    with pytest.raises(ConflictError, match="did not finish terminating"):
+        ha.create_account({"username": "demo1"})
+
+
+def test_failed_termination_keeps_domain_reserved(isolated_db, stub_sysops, monkeypatch):
+    ha.create_account({"username": "demo1", "primary_domain": "kept.example"})
+    monkeypatch.setattr(ha, "TERMINATE_HOOKS", [_raise("dns down")])
+    assert ha.terminate_account({"username": "demo1"})["status"] == "error"
+    with write_session() as session:
+        assert session.scalar(select(Domain).where(Domain.domain == "kept.example")) is not None
+
+
+def test_release_terminated_domains_frees_names_held_by_old_tombstones(isolated_db):
+    with write_session() as session:
+        old = Account(username="gone1", status="terminated")
+        session.add(old)
+        session.flush()
+        session.add(Domain(account_id=old.id, domain="legacy.example", kind="primary", docroot="/home/gone1/public_html"))
+    assert ha.release_terminated_domains() == 1
+    with write_session() as session:
+        assert session.scalar(select(Domain).where(Domain.domain == "legacy.example")) is None
+
+
+def test_create_with_unknown_plan_is_refused_before_provisioning(isolated_db, stub_sysops):
+    from shared.validation import NotFoundError
+    with pytest.raises(NotFoundError, match="plan 999999 not found"):
+        ha.create_account({"username": "demo9", "plan_id": 999999})
+    assert not any(call[0] == "create_linux_user" for call in stub_sysops)
+    with write_session() as session:
+        assert session.scalar(select(Account).where(Account.username == "demo9")) is None
+
+
+def test_create_with_plan_starts_on_the_plan_quota(isolated_db, stub_sysops):
+    from daemon import plans
+    plan = plans.create_plan({"name": "Seed", "quota_soft_mb": 2048, "quota_hard_mb": 2560})
+    ha.create_account({"username": "demo1", "plan_id": plan["id"]})
+    assert ("set_quota", "demo1", 2048, 2560) in stub_sysops
+
+
+def _put_on_plan(username="demo1"):
+    from daemon import plans
+    plan = plans.create_plan({"name": "Pro", "cpu_pct": 25, "mem_mb": 512,
+                              "cpu_cores": 1.0, "memory_max_mb": 1024, "memory_high_mb": 900})
+    with write_session() as session:
+        session.scalar(select(Account).where(Account.username == username)).plan_id = plan["id"]
+    return plan
+
+
+def test_account_dict_reports_the_enforced_plan_limits(isolated_db, stub_sysops, monkeypatch):
+    monkeypatch.setattr("daemon.resource_manager.available_cpu_cores", lambda: 4)
+    ha.create_account({"username": "demo1"})
+    _put_on_plan()
+    result = ha.get_account({"username": "demo1"})
+    # Legacy columns say 25% / 512 MB; the slice enforces the plan policy.
+    assert result["cpu_cores"] == 1.0 and result["cpu_pct"] == 100
+    assert result["mem_mb"] == 1024
+    assert result["limits_source"] == "plan"
+
+
+def test_set_limits_on_plan_account_becomes_an_enforced_override(isolated_db, stub_sysops, monkeypatch):
+    from daemon import resource_manager
+    from shared.models import ResourcePolicy
+    monkeypatch.setattr("daemon.resource_manager.available_cpu_cores", lambda: 4)
+    ha.create_account({"username": "demo1"})
+    _put_on_plan()
+    applied = []
+    monkeypatch.setattr(ha, "LIMITS_HOOKS", [lambda account: applied.append(account.id)])
+
+    result = ha.set_limits({"username": "demo1", "cpu_pct": 75, "mem_mb": 768, "io_mb": 30, "pids_max": 70})
+
+    assert result["limits_source"] == "account"
+    assert (result["cpu_pct"], result["mem_mb"], result["io_mb"], result["pids_max"]) == (75, 768, 30, 70)
+    assert applied == [result["id"]]
+    with write_session() as session:
+        account = session.get(Account, result["id"])
+        effective = resource_manager.effective_for_account(session, account)["values"]
+        assert effective["cpu_cores"] == 0.75 and effective["memory_max_mb"] == 768
+        assert effective["memory_high_mb"] <= 768
+        assert effective["io_read_bps"] == 30 * 1048576 and effective["nproc"] == 70
+        assert session.scalar(select(ResourcePolicy).where(
+            ResourcePolicy.scope_type == "account", ResourcePolicy.scope_id == account.id)) is not None
+
+
+def test_set_limits_without_any_policy_keeps_using_account_columns(isolated_db, stub_sysops):
+    from shared.models import ResourcePolicy
+    ha.create_account({"username": "demo1"})
+    ha.set_limits({"username": "demo1", "mem_mb": 768})
+    with write_session() as session:
+        assert session.scalar(select(ResourcePolicy)) is None
+        assert session.scalar(select(Account).where(Account.username == "demo1")).mem_mb == 768
+
+
+def test_customer_login_refusal_names_suspension(isolated_db):
+    with write_session() as session:
+        active = Account(username="demo1", status="active")
+        suspended = Account(username="demo2", status="suspended")
+        gone = Account(username="demo3", status="terminated")
+        session.add_all([active, suspended, gone])
+        session.flush()
+        assert ha.customer_login_refusal(session, active.id) is None
+        assert "suspended" in ha.customer_login_refusal(session, suspended.id)
+        assert "no longer available" in ha.customer_login_refusal(session, gone.id)
+        assert "no longer available" in ha.customer_login_refusal(session, None)
+
+
+def test_partial_limit_edit_keeps_unlimited_and_split_plan_values(isolated_db, stub_sysops, monkeypatch):
+    """Editing only memory must not cap a plan's Unlimited CPU/processes or
+    flatten its separate read/write bandwidths into the legacy columns."""
+    from daemon import plans, resource_manager
+    monkeypatch.setattr("daemon.resource_manager.available_cpu_cores", lambda: 4)
+    monkeypatch.setattr(ha, "LIMITS_HOOKS", [])
+    ha.create_account({"username": "demo1"})
+    plan = plans.create_plan({"name": "Open", "cpu_cores": None, "nproc": None, "memory_high_mb": None,
+                              "io_read_bps": 40 * 1048576, "io_write_bps": 10 * 1048576})
+    with write_session() as session:
+        session.scalar(select(Account).where(Account.username == "demo1")).plan_id = plan["id"]
+
+    result = ha.set_limits({"username": "demo1", "mem_mb": 768, "cpu_pct": None})
+
+    assert result["limits_source"] == "account" and result["mem_mb"] == 768
+    assert result["cpu_pct"] is None and result["pids_max"] is None
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        values = resource_manager.effective_for_account(session, account)["values"]
+        assert values["cpu_cores"] is None and values["nproc"] is None
+        assert (values["io_read_bps"], values["io_write_bps"]) == (40 * 1048576, 10 * 1048576)
+        assert values["memory_max_mb"] == 768
+
+
+def test_set_limits_without_any_field_is_refused(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1"})
+    with pytest.raises(ValidationError, match="at least one limit"):
+        ha.set_limits({"username": "demo1", "cpu_pct": None})
+
+
+def test_termination_drops_settings_through_the_domain_removal_list(isolated_db, stub_sysops, monkeypatch):
+    """One list (domain.remove's) covers every name-keyed setting, staging included."""
+    from daemon import handlers_domain
+    purged = []
+    monkeypatch.setattr(handlers_domain, "_purge_domain_settings", lambda name: purged.append(name) or [])
+    ha.create_account({"username": "demo1", "primary_domain": "purge.example"})
+    ha.terminate_account({"username": "demo1"})
+    assert purged == ["purge.example"]
+
+
+def test_reactivation_drops_the_released_primary_domain_label(isolated_db, stub_sysops):
+    ha.create_account({"username": "demo1", "primary_domain": "label.example"})
+    ha.terminate_account({"username": "demo1"})
+    ha.create_account({"username": "demo2", "primary_domain": "label.example"})
+    result = ha.reactivate_account({"username": "demo1"})
+    assert result["status"] == "active" and result["primary_domain"] is None

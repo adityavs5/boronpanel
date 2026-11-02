@@ -47,6 +47,29 @@ class ValidationError(ValueError):
     pass
 
 
+# User-error contract for daemon operations. Raise one of these (never a bare
+# RuntimeError) when the caller asked for something the current state does
+# not allow; the message is returned to the API caller verbatim, so it must
+# never carry command output, paths or credentials. Anything else that
+# escapes a handler is an internal failure: 502 with only a reference.
+#
+# NotFoundError and ConflictError also subclass RuntimeError because these
+# conditions were historically raised as RuntimeError and in-daemon callers
+# still catch that (e.g. restore paths that tolerate "already exists").
+class NotFoundError(ValidationError, RuntimeError):
+    """The named resource does not exist (HTTP 404)."""
+
+
+class ConflictError(ValidationError, RuntimeError):
+    """The request conflicts with current state: the resource already
+    exists, is in use, or is in the wrong state (HTTP 409)."""
+
+
+class BusyError(ConflictError):
+    """A shared mutation lock stayed busy for longer than the bounded wait
+    (HTTP 409; retrying later is expected to succeed)."""
+
+
 def validate_username(username: str) -> str:
     if not isinstance(username, str) or not USERNAME_RE.match(username):
         raise ValidationError(

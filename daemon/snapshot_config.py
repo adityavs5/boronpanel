@@ -45,7 +45,7 @@ def export_configuration(params=None):
 
     with write_session() as session:
         destinations=session.scalars(select(SnapshotDestination).where(SnapshotDestination.status!='deleted')).all()
-        policies=session.scalars(select(SnapshotPolicy)).all()
+        policies=[row for row in session.scalars(select(SnapshotPolicy)).all() if not jobs.policy_deleted(row)]
         runs=session.scalars(select(SnapshotRun).where(SnapshotRun.status.in_(['completed','expired']))).all()
         accounts={row.id:row.username for row in session.scalars(select(Account)).all()}
         telegram=session.get(BackupTelegramSettings,1)

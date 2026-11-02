@@ -5,4 +5,4 @@
 # Twice a day, with up to 30 minutes of random delay, refresh the signed
 # license document. A panel keeps working for 14 days without a successful
 # check, so a short license-server outage is harmless.
-7 1,13 * * * root /opt/boron/scripts/license_check.py --jitter >> /var/log/boron/license-check.log 2>&1
+7 1,13 * * * root /opt/boron/.venv/bin/python /opt/boron/scripts/license_check.py --jitter >> /var/log/boron/license-check.log 2>&1

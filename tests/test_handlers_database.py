@@ -294,3 +294,81 @@ def test_renamed_account_retains_owned_database_and_user_identifiers(isolated_db
     assert handlers._resolve_existing_db_name('newname','oldname_site')=='oldname_site'
     assert handlers._resolve_existing_db_name('newname','oldname_editor')=='oldname_editor'
     assert handlers._resolve_existing_db_name('newname','foreign_site')=='newname_foreign_site'
+
+
+class _ListenerCursor:
+    def __init__(self, row):
+        self.row = row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def execute(self, query, params=None):
+        self.query = query
+
+    def fetchone(self):
+        return self.row
+
+
+def _listener(monkeypatch, row):
+    class Connection:
+        def cursor(self):
+            return _ListenerCursor(row)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hdb.mariadb, "_connect", Connection)
+
+
+@pytest.mark.parametrize("row,available", [
+    (("127.0.0.1", 0, 3306), False),
+    (("::1", 0, 3306), False),
+    (("0.0.0.0", 1, 3306), False),
+    (("0.0.0.0", 0, 3306), True),
+    (("", 0, 3306), True),
+    (("127.0.0.1,203.0.113.10", 0, 3307), True),
+])
+def test_remote_access_status_reflects_mariadb_listener(monkeypatch, row, available):
+    _listener(monkeypatch, row)
+    assert hdb.mariadb.remote_access_status()["available"] is available
+
+
+def test_remote_database_login_refused_while_mariadb_listens_locally(isolated_db, stub_sysops, stub_mariadb, monkeypatch):
+    # Live 3.3.1: a 203.0.113.5 login was created although MariaDB was bound
+    # to 127.0.0.1, so it could never connect.
+    from shared.validation import ConflictError
+    ha.create_account({"username": "demo1"})
+    _listener(monkeypatch, ("127.0.0.1", 0, 3306))
+    with pytest.raises(ConflictError, match="Remote database access is not enabled"):
+        hdb.create_user({"username": "demo1", "name": "remote", "host": "203.0.113.5"})
+    assert ("create_db_user", "demo1_remote") not in stub_mariadb
+    monkeypatch.setattr(hdb.db_governor, "apply_new_user", lambda *args: None)
+    created = hdb.create_user({"username": "demo1", "name": "local"})
+    assert created["host"] == "localhost"
+    listing = hdb.list_users({"username": "demo1"})
+    assert listing["remote_access"]["available"] is False
+
+
+def test_remote_database_login_allowed_when_mariadb_listens_on_network(isolated_db, stub_sysops, stub_mariadb, monkeypatch):
+    ha.create_account({"username": "demo1"})
+    _listener(monkeypatch, ("0.0.0.0", 0, 3306))
+    monkeypatch.setattr(hdb.db_governor, "apply_new_user", lambda *args: None)
+    created = hdb.create_user({"username": "demo1", "name": "remote", "host": "203.0.113.5"})
+    assert created["host"] == "203.0.113.5"
+
+
+def test_missing_and_duplicate_databases_are_caller_errors(isolated_db, stub_sysops, stub_mariadb):
+    # Live 3.3.1: these surfaced as 502 "internal operation failure".
+    from shared.validation import ConflictError, NotFoundError
+    ha.create_account({"username": "demo1"})
+    hdb.create_database({"username": "demo1", "name": "shop"})
+    with pytest.raises(ConflictError):
+        hdb.create_database({"username": "demo1", "name": "shop"})
+    with pytest.raises(NotFoundError):
+        hdb.drop_database({"username": "demo1", "name": "nosuch"})
+    with pytest.raises(NotFoundError):
+        hdb.change_user_password({"username": "demo1", "user": "demo1_nosuch"})

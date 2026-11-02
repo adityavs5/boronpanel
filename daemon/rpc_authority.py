@@ -11,7 +11,7 @@ from shared.db import write_session
 from shared.models import Account, ApiToken, DnsClusterPeer, Domain, ImpersonationSession, MailDomain, PanelUser, ResellerAccount, ResellerProfile, RestoreJob, Session, TotpCredential, UpdateJob
 from shared.session_ids import session_digest
 from shared.passwords import verify_password
-from shared.validation import ValidationError, validate_domain
+from shared.validation import validate_domain
 
 from daemon.rpc_policy import POLICY_BY_OPERATION
 
@@ -159,10 +159,9 @@ def _target_account_id(db, params: dict, *, allow_new_domain: bool = False) -> i
         if from_username is None:
             raise AuthorizationError("account target unavailable")
     if isinstance(domain, str) and domain:
-        try:
-            domain = validate_domain(domain)
-        except ValidationError as exc:
-            raise AuthorizationError("domain target unavailable") from exc
+        # A malformed name is a 400 for everyone: syntax reveals nothing
+        # about other tenants, and "not authorized" misdirected users.
+        domain = validate_domain(domain)
         from_domain = db.scalar(select(Domain.account_id).where(Domain.domain == domain))
         mail_owner = db.scalar(select(MailDomain.account_id).where(MailDomain.domain == domain))
         target_owner = from_domain if from_domain is not None else from_username
@@ -308,7 +307,7 @@ def authorize(op: str, params: dict, principal: Principal | None) -> None:
             return
         with write_session() as db:
             account_id = _target_account_id(db, params,
-                                            allow_new_domain=op in ("domain.add", "mail.create_domain"))
+                                            allow_new_domain=op in ("domain.add", "taskops.domain.add", "mail.create_domain"))
             if account_id is None or not _owns_account(db, principal, account_id):
                 raise AuthorizationError("account ownership required")
         return

@@ -1,7 +1,14 @@
-#!/usr/bin/env python3
+#!/opt/boron/.venv/bin/python
 """Apply hosting-account inode limits after their warning window."""
-from daemon.inode_quotas import enforce_due
-from shared.db import init_db
+import sys
+from pathlib import Path
+
+# cron runs this as `/opt/boron/.venv/bin/python /opt/boron/scripts/...`,
+# which puts scripts/ (not the release root) on sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from daemon.inode_quotas import enforce_due  # noqa: E402
+from shared.db import init_db  # noqa: E402
 
 
 def main() -> int:

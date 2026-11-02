@@ -298,12 +298,40 @@ def _temporary_ban_comment(ban_id: int) -> str:
     return f"{TEMP_BAN_COMMENT}-{ban_id}"
 
 
+def _aware_utc(value: dt.datetime) -> dt.datetime:
+    # SQLite returns DateTime(timezone=True) columns as naive UTC values.
+    return value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+
+
+def server_wide_deny_owned_elsewhere(session, value: str, *, owner: str) -> bool:
+    """True when the other ban feature still enforces `deny from value`.
+
+    Temporary bans and permanent IP bans both enforce the identical UFW
+    spec `deny from <value>`. UFW keeps only one such rule (the second
+    insert is skipped as existing, and a comment-less delete removes it
+    whatever its comment), so the rule is shared: it is removed only when
+    neither feature still holds a ban for that exact value.
+    """
+    if owner == "temporary":
+        return session.scalar(
+            select(PermanentIpBan.id).where(PermanentIpBan.value == value)
+        ) is not None
+    return session.scalar(
+        select(FirewallTemporaryBan.id).where(FirewallTemporaryBan.value == value)
+    ) is not None
+
+
 def add_temporary_ban(params: dict) -> dict:
     value = validate_ip_or_cidr(params["value"])
     actor = str(params.get("actor") or "admin")[:64]
     reason = str(params.get("reason") or "").strip()[:200]
+    raw_duration = params.get("duration_minutes")
+    if raw_duration is None or raw_duration == "":
+        raw_duration = 60
     try:
-        duration_minutes = int(params.get("duration_minutes") or 60)
+        if isinstance(raw_duration, bool):
+            raise TypeError
+        duration_minutes = int(raw_duration)
     except (TypeError, ValueError):
         raise ValidationError("duration_minutes must be an integer") from None
     if not 1 <= duration_minutes <= 30 * 24 * 60:
@@ -340,13 +368,13 @@ def delete_temporary_ban(params: dict) -> dict:
         if row is None:
             raise ValidationError(f"no temporary ban with id {ban_id}")
         value = row.value
-        result = run(
-            ["ufw", "--force", "delete", "deny", "from", value, "comment", _temporary_ban_comment(ban_id)],
-            timeout=20,
-        )
-        combined = (result.stderr or result.stdout or "").lower()
-        if not result.ok and "could not find" not in combined and "non-existent" not in combined:
-            raise RuntimeError("ufw temporary unban failed: " + (result.stderr.strip() or result.stdout.strip()))
+        if not server_wide_deny_owned_elsewhere(session, value, owner="temporary"):
+            # Comment-less delete: a permanent ban added first owns an
+            # uncommented rule that this ban's insert was skipped against.
+            result = run(["ufw", "--force", "delete", "deny", "from", value], timeout=20)
+            combined = (result.stderr or result.stdout or "").lower()
+            if not result.ok and "could not find" not in combined and "non-existent" not in combined:
+                raise RuntimeError("ufw temporary unban failed: " + (result.stderr.strip() or result.stdout.strip()))
         session.delete(row)
     return {"id": ban_id, "value": value, "status": "unbanned"}
 
@@ -794,13 +822,36 @@ def _undo_one(step: dict) -> None:
     raise RuntimeError(f"unsupported firewall rollback step: {kind!r}")
 
 
-def _rollback_state(state: dict, *, reason: str) -> dict:
+def _record_rollback(state: dict, reason: str, errors: list[str]) -> None:
+    """Audit a rollback that no administrator request asked for.
+
+    Expiry, startup and console recovery run outside borond's audited RPC
+    dispatch, so without this the change history would show the change and
+    never its reversal. Auditing must never block the rollback itself.
+    """
+    try:
+        audit.record(
+            "system", "system", "firewall.auto_rollback", state.get("change_id"),
+            {"operation": state.get("operation"), "summary": state.get("summary"),
+             "reason": reason},
+            "failed" if errors else "ok",
+            detail="; ".join(errors)[:4000] if errors else str(state.get("summary") or ""),
+            # Its own row: never inherit the steps of a request it runs inside.
+            trace=audit.ActionTrace(op="firewall.auto_rollback"),
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _rollback_state(state: dict, *, reason: str, audited: bool = True) -> dict:
     errors: list[str] = []
     for step in state["undo"]:
         try:
             _undo_one(step)
         except Exception as exc:  # retain the journal for direct-console recovery
             errors.append(str(exc))
+    if audited:
+        _record_rollback(state, reason, errors)
     if errors:
         state["stage"] = "rollback_failed"
         state["rollback_reason"] = reason
@@ -905,7 +956,8 @@ def _start_change(operation: str, summary: str, undo: list[dict], apply) -> dict
             _write_pending(state)
             _arm_rollback(state)
         except Exception:
-            _rollback_state(state, reason="change or verification failed")
+            # The failing request itself is audited by the dispatcher.
+            _rollback_state(state, reason="change or verification failed", audited=False)
             raise
         response = dict(result)
         response["pending_change"] = _public_pending(state, token=token)
@@ -991,7 +1043,7 @@ def transactional_delete_temporary_ban(params: dict) -> dict:
         row = session.get(FirewallTemporaryBan, ban_id)
         if row is None:
             raise ValidationError(f"no temporary ban with id {ban_id}")
-        remaining = max(1, int((row.expires_at - utcnow()).total_seconds() // 60) + 1)
+        remaining = max(1, int((_aware_utc(row.expires_at) - utcnow()).total_seconds() // 60) + 1)
         restore = {
             "value": row.value, "reason": row.reason or "", "banned_by": row.banned_by,
             "actor": row.banned_by, "duration_minutes": remaining,
@@ -1238,7 +1290,9 @@ def rollback_change(params: dict) -> dict:
         state = _read_pending()
         if state is None:
             return {"status": "no_pending_change"}
-        return _rollback_state(state, reason=str(params.get("reason") or "reverted by administrator"))
+        # firewall.rollback is an administrator RPC and is audited as such.
+        return _rollback_state(state, reason=str(params.get("reason") or "reverted by administrator"),
+                               audited=False)
 
 
 def recover_pending_changes() -> dict:

@@ -191,3 +191,61 @@ def test_local_external_edit_between_validation_and_capture_never_writes(local, 
     with pytest.raises(ValidationError, match='changed'):
         editor.apply({'domain': ZONE, **view, 'text': view['text'].replace('192.0.2.1', '192.0.2.20'), 'confirmation': ZONE})
     assert calls == 2 and local['writes'] == []
+
+
+# --- Live-test regressions: both editors share one validation ------------
+
+
+def test_legacy_txt_with_raw_newline_does_not_lock_the_advanced_editor(local):
+    """A raw newline stored by the old simple editor made GET .../advanced
+    raise a dnspython SyntaxError (HTTP 502) for the whole zone."""
+    local['records'].append({'name': 'qtxtn.'+ZONE+'.', 'type': 'TXT', 'ttl': 3600,
+                             'records': [{'content': '"line1\nline2"', 'disabled': False}]})
+    view = editor.get({'domain': ZONE})
+    assert 'qtxtn.alpha.test. 3600 IN TXT "line1\\010line2"' in view['text']
+    assert editor.preview({'domain': ZONE, **view})['changes'] == []
+
+
+def test_legacy_out_of_range_ttl_is_shown_clamped_so_unchanged_save_repairs_it(local):
+    local['records'].append({'name': 'qttl.'+ZONE+'.', 'type': 'A', 'ttl': 2147483648,
+                             'records': [{'content': '192.0.2.1', 'disabled': False}]})
+    view = editor.get({'domain': ZONE})
+    changes = editor.preview({'domain': ZONE, **view})['changes']
+    assert changes == [{'name': 'qttl.'+ZONE, 'type': 'A', 'action': 'replace', 'before': ['192.0.2.1'],
+                        'after': ['192.0.2.1'], 'ttl': 2147483647}]
+
+
+@pytest.mark.parametrize('rtype,values', [
+    ('TXT', ['line1\nline2']), ('TXT', ['x' * 600]), ('TXT', ['say "hi" \\ bye']),
+    ('MX', ['0 .']), ('MX', ['10 MAIL.Example.com', '20 mx2.example.com.']),
+    ('SRV', ['0 0 0 .']), ('CAA', ['0 ISSUE letsencrypt.org']), ('AAAA', ['2001:DB8::1']),
+])
+def test_values_the_simple_editor_stores_round_trip_through_the_advanced_editor(local, rtype, values):
+    from daemon import handlers_dns
+    stored = handlers_dns.validate_rrset('parity', rtype, values, 3600)
+    local['records'].append({'name': 'parity.'+ZONE+'.', 'type': rtype, 'ttl': 3600,
+                             'records': [{'content': v, 'disabled': False} for v in stored]})
+    view = editor.get({'domain': ZONE})
+    assert editor.preview({'domain': ZONE, **view})['changes'] == []
+    parsed = {(r['name'], r['type']): r for r in editor._parse(ZONE, view['text'])}
+    assert parsed[('parity.'+ZONE, rtype)]['values'] == sorted(stored)
+
+
+@pytest.mark.parametrize('line,match', [
+    ('mx 3600 IN MX 10 1.2.3.4.', 'IP address'),
+    ('mx 3600 IN MX 10 .', 'null MX'),
+    ('mx 3600 IN MX 0 .\nmx 3600 IN MX 10 mail.alpha.test.', 'only MX'),
+    ('srv 3600 IN SRV 0 0 80 192.0.2.1.', 'IP address'),
+])
+def test_advanced_editor_applies_the_simple_editor_rules(local, line, match):
+    view = editor.get({'domain': ZONE})
+    with pytest.raises(ValidationError, match=match):
+        editor.preview({'domain': ZONE, 'text': view['text'] + line + '\n', 'fingerprint': view['fingerprint']})
+
+
+def test_advanced_editor_caps_values_per_record_set(local):
+    view = editor.get({'domain': ZONE})
+    text = view['text'] + ''.join(f'big 300 IN A 192.0.2.{i % 250}\n' for i in range(250)) \
+        + ''.join(f'big 300 IN A 198.51.100.{i}\n' for i in range(1, 3))
+    with pytest.raises(ValidationError, match='at most 100'):
+        editor.preview({'domain': ZONE, 'text': text, 'fingerprint': view['fingerprint']})

@@ -303,6 +303,13 @@ def get_status(params: dict) -> dict:
 
 def get_connection_info(params: dict) -> dict:
     username = validate_username(params["username"])
+    with write_session() as session:
+        account = _get_account(session, username)
+        row = session.scalar(select(RedisInstance).where(RedisInstance.account_id == account.id))
+        # The socket exists only while the instance runs; never hand out a
+        # path that nothing listens on (same rule as flush).
+        if row is None or not row.enabled:
+            raise ValidationError('Enable Redis before requesting its connection details')
     path = socket_path(username)
     return {
         "username": username,

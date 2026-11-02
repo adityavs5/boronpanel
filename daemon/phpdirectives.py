@@ -25,6 +25,7 @@ is the injection defense for its value.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 
 from shared.config import settings
@@ -98,6 +99,32 @@ def php_scan_dir(username: str, php_version: str) -> str:
     root-owned and outside the account's writable tree, so the account can
     read it and can neither write nor rename-and-replace it."""
     return f"{PHP_SCAN_ROOT}/{username}/{php_version.replace('.', '')}/conf.d"
+
+
+# disable_functions is only enforced when PHP reads it at engine startup
+# (php.ini or a scan-dir ini). A per-vhost php_admin_value changes what
+# ini_get() reports but never removes the functions, so admin overrides are
+# materialized (daemon/phpext.py) as one root-owned ini per distinct value
+# and appended to the extProcessor's PHP_INI_SCAN_DIR (daemon/ols.py). Same
+# placement rules as PHP_SCAN_ROOT; a separate root so resetting extension
+# overrides never removes a directory a function override still uses.
+PHP_FUNCTIONS_ROOT = "/usr/local/lib/boron/php-functions"
+DISABLE_FUNCTIONS_INI = "99-boron-disable-functions.ini"
+
+
+def disable_functions_scan_dir(username: str, disable_functions: str) -> str:
+    """Directory holding the ini for one canonical disable_functions value
+    (validate_disable_functions output). Keyed by content so every
+    extProcessor with the same value shares it and a changed value always
+    gets a fresh path (no in-place rewrite under running workers)."""
+    digest = hashlib.sha256(disable_functions.encode()).hexdigest()[:16]
+    return f"{PHP_FUNCTIONS_ROOT}/{username}/{digest}"
+
+
+def disable_functions_ini(disable_functions: str) -> bytes:
+    # Values are validated function names joined by commas: no quotes,
+    # whitespace or ini metacharacters can reach this line.
+    return f'disable_functions = "{disable_functions}"\n'.encode()
 
 DEFAULTS = {
     "memory_limit": "128M",

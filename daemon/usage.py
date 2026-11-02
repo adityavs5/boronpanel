@@ -29,7 +29,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, AccountResourceLimits, BandwidthDaily, BandwidthDailyDomain, DatabaseGrant, Domain, FtpAccount, MailDomain, MailUser, UsageSnapshot, utcnow
 
-from daemon import cgroups, mariadb, ols, safeio
+from daemon import cgroups, mariadb, ols, safeio, sysops
 from daemon.procutil import run
 
 SNAPSHOT_MAX_AGE_SECONDS = 15 * 60
@@ -115,8 +115,10 @@ def compute_live_usage(account: Account) -> dict:
     }
 
 
-def _all_access_log_files(home_dir: str, vhost_name: str) -> list[Path]:
-    logs_dir = Path(home_dir) / "logs"
+def _all_access_log_files(log_dir: str, vhost_name: str) -> list[Path]:
+    """Active and rotated access logs of one vhost in the account's
+    root-owned OLS log directory (sysops.vhost_log_dir)."""
+    logs_dir = Path(log_dir)
     try:
         directory = safeio.open_dir_beneath(str(logs_dir))
     except FileNotFoundError:
@@ -207,7 +209,7 @@ def _parse_access_log(path: Path) -> dict[str, int]:
 
 
 def refresh_bandwidth(account: Account) -> None:
-    home_dir = _account_home(account.username)
+    log_dir = sysops.vhost_log_dir(account.username)
     deadline = time.monotonic() + 30
     aggregate: dict[str, int] = defaultdict(int)
     # Phase 7b feature 2: bandwidth graphs need "top 5 domains by bandwidth"
@@ -217,7 +219,7 @@ def refresh_bandwidth(account: Account) -> None:
     per_domain: dict[tuple[str, str], int] = defaultdict(int)
     for domain_name in _domains_for_account(account.id):
         vhost_name = ols._vhost_name(domain_name)
-        for log_file in _all_access_log_files(home_dir, vhost_name):
+        for log_file in _all_access_log_files(log_dir, vhost_name):
             if time.monotonic() > deadline:
                 raise ValueError('Account access log scan exceeded its resource budget')
             for date_key, byte_count in _parse_access_log(log_file).items():

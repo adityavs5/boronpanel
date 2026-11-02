@@ -20,11 +20,37 @@ class RequestBodyBudget:
         self.stream_endpoints = frozenset(stream_endpoints)
         self.maximum = maximum
 
+    @staticmethod
+    def _dispatched_route(route, scope):
+        """Return the leaf route the router will dispatch ``scope`` to.
+
+        FastAPI >= 0.13x registers ``include_router`` as one wrapper route
+        whose ``matches`` covers the whole included router. Treating that
+        wrapper as the endpoint hid every BoundedUploadRoute behind it, so
+        documented 2 GiB uploads were cut at the ordinary 4 MiB budget.
+        Descend through wrappers with the router's own selection logic.
+        """
+        match, _ = route.matches(scope)
+        if match != Match.FULL:
+            return None
+        while hasattr(route, "original_router") and callable(getattr(route, "_match", None)):
+            match, child_scope, route, _context = route._match(scope)
+            if match != Match.FULL or route is None:
+                return None
+            scope = {**scope, **child_scope}
+        return route
+
     def _matched_upload_guard(self, scope):
-        for route in self.routes:
-            match, _ = route.matches(scope)
+        for candidate in self.routes:
+            # Route matching may record router context in the scope; probe a
+            # copy so the application receives the request scope unchanged.
+            probe = dict(scope)
+            match, _ = candidate.matches(probe)
             if match != Match.FULL:
                 continue
+            route = self._dispatched_route(candidate, probe)
+            if route is None:
+                return False
             if getattr(route, "endpoint", None) in self.stream_endpoints:
                 return True
             return (isinstance(route, BoundedUploadRoute) and route.body_field is not None

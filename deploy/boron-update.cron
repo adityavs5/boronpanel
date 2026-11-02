@@ -5,4 +5,4 @@
 # Once a day: force-refresh the GitHub releases check, email the admin if a
 # new release appeared (once per release, not once per day), and prune
 # /opt/boron-X.Y.Z version dirs older than the rollback window (3 days).
-25 5 * * * root /opt/boron/scripts/update_check.py >> /var/log/boron/update-check.log 2>&1
+25 5 * * * root /opt/boron/.venv/bin/python /opt/boron/scripts/update_check.py >> /var/log/boron/update-check.log 2>&1

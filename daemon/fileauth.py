@@ -53,7 +53,7 @@ HTPASSWD_FILENAME = ".htpasswd"
 HTPASSWD_BIN = "/usr/bin/htpasswd"
 
 
-class FileAuthError(Exception):
+class FileAuthError(ValidationError):
     pass
 
 
@@ -160,7 +160,7 @@ def _write_htpasswd_beneath(home: str, relative_path: str, content: str, uid: in
 def _hash_htpasswd_user(htuser: str, password: str) -> str:
     result = run([HTPASSWD_BIN, "-n", "-i", "-B", htuser], input_text=f"{password}\n", timeout=15)
     if not result.ok:
-        raise FileAuthError(f"htpasswd failed: {result.stderr.strip() or result.stdout.strip()}")
+        raise RuntimeError(f"htpasswd failed: {result.stderr.strip() or result.stdout.strip()}")
     line = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
     if not line.startswith(f"{htuser}:"):
         raise FileAuthError("htpasswd returned an unexpected user record")

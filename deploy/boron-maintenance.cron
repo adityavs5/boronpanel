@@ -5,4 +5,4 @@
 # Every 5 minutes: disable any domain's maintenance mode whose auto-disable
 # timer (1h/4h/24h preset) has passed, and refresh its vhost immediately.
 # Manual-mode domains (no timer) are never touched by this sweep.
-*/5 * * * * root /opt/boron/scripts/maintenance_autodisable.py >> /var/log/boron/maintenance-autodisable.log 2>&1
+*/5 * * * * root /opt/boron/.venv/bin/python /opt/boron/scripts/maintenance_autodisable.py >> /var/log/boron/maintenance-autodisable.log 2>&1

@@ -72,10 +72,11 @@ class Account(Base):
     terminated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Run A feature 1 (plan templates): which named preset (if any) this
     # account currently sits on -- NULL means "custom" (never had a plan
-    # applied, or its limits were hand-edited since). Purely informational
-    # (the UI's "current plan" label); the actual enforced state always
-    # lives on the columns a plan writes to (cpu_pct/mem_mb/... above,
-    # AccountResourceLimits, RedisInstance), never read back from here.
+    # applied). Not just a label: resource_manager.effective_for_account
+    # enforces the plan's ResourcePolicy through it (an account-scope policy
+    # row, written by account.set_limits, overrides it), and plan.update
+    # propagates quota/inode/usage limits to every account carrying it. A
+    # plan that live accounts carry therefore cannot be deleted.
     plan_id: Mapped[int | None] = mapped_column(ForeignKey("plans.id"), nullable=True)
 
     domains: Mapped[list["Domain"]] = relationship(back_populates="account", cascade="all, delete-orphan")

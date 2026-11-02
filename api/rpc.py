@@ -14,6 +14,26 @@ if TYPE_CHECKING:
 
 _client = RpcClient(settings.rpc_socket, timeout=200.0)
 _python_provision_client = RpcClient(settings.rpc_socket, timeout=450.0)
+# A 2 GiB SQL import runs a safety dump, the import and, on failure, an
+# automatic rollback (each bounded to 1800 s by the daemon) in one request.
+_database_import_client = RpcClient(settings.rpc_socket, timeout=3 * 1800.0 + 300.0)
+
+
+# Daemon error codes that carry a caller-facing message. Every other code
+# (notably "internal_error") is an internal failure: 502, and the daemon has
+# already replaced its message with an opaque reference.
+RPC_ERROR_STATUS = {
+    "bad_request": 400,
+    "unauthenticated": 401,
+    "forbidden": 403,
+    "not_found": 404,
+    "conflict": 409,
+    "incompatible_protocol": 503,
+}
+
+
+def http_status_for_rpc_error(code: str) -> int:
+    return RPC_ERROR_STATUS.get(code, 502)
 
 
 def _request_kwargs() -> dict:
@@ -34,14 +54,12 @@ def call_daemon(op: str, identity: "Identity", **params) -> dict:
     """
     try:
         credential = {"type": identity.auth_method, "value": identity.rpc_credential or ""}
-        client = _python_provision_client if op == 'apps.python.create' else _client
+        client = (_python_provision_client if op == "apps.python.create"
+                  else _database_import_client if op == "db.import" else _client)
         return client.call(op, rpc_credential=credential, **_request_kwargs(),
                            _ip=getattr(identity, "ip", None), **params)
     except RpcError as exc:
-        status = {
-            "bad_request": 400, "forbidden": 403, "unauthenticated": 401,
-            "incompatible_protocol": 503,
-        }.get(exc.code, 502)
+        status = http_status_for_rpc_error(exc.code)
         headers = None
         if exc.diagnostic:
             from api.logsetup import record_operation_error
@@ -60,10 +78,7 @@ def call_daemon_anonymous(op: str, **params) -> dict:
     try:
         return _client.call(op, **_request_kwargs(), **params)
     except RpcError as exc:
-        status = {
-            "bad_request": 400, "forbidden": 403, "unauthenticated": 401,
-            "incompatible_protocol": 503,
-        }.get(exc.code, 502)
+        status = http_status_for_rpc_error(exc.code)
         headers = ({'X-Boron-Error-Reference': exc.diagnostic['reference']}
                    if exc.diagnostic and exc.diagnostic.get('reference') else None)
         raise HTTPException(status_code=status, detail=exc.message, headers=headers) from exc
@@ -79,10 +94,7 @@ def call_daemon_cluster(op: str, token: str, **params) -> dict:
         return _client.call(op, rpc_credential={"type": "cluster", "value": token},
                             **_request_kwargs(), **params)
     except RpcError as exc:
-        status = {
-            "bad_request": 400, "forbidden": 403, "unauthenticated": 401,
-            "incompatible_protocol": 503,
-        }.get(exc.code, 502)
+        status = http_status_for_rpc_error(exc.code)
         headers = ({'X-Boron-Error-Reference': exc.diagnostic['reference']}
                    if exc.diagnostic and exc.diagnostic.get('reference') else None)
         raise HTTPException(status_code=status, detail=exc.message, headers=headers) from exc

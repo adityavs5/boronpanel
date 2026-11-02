@@ -115,3 +115,46 @@ def test_guarded_upload_slash_redirect_keeps_large_request():
 
     status, consumed = _request(app, "/branding/upload/", [b'x' * 64], [(b"content-length", b"64")])
     assert status == 307 and not consumed
+
+
+def test_upload_guard_is_found_behind_included_router():
+    # Live 3.3.1 regression: FastAPI wraps include_router() in one route, so
+    # the middleware saw the wrapper instead of the BoundedUploadRoute and a
+    # 4.9 MB SQL import received the 4 MiB ordinary-body 413.
+    from fastapi import APIRouter
+    app = FastAPI()
+    app.add_middleware(RequestBodyBudget, routes=app.router.routes, maximum=32)
+    router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/accounts/{username}/databases")
+
+    @router.post("/{name}/import")
+    async def upload(username: str, name: str, file: UploadFile = File(...)):
+        return {"size": len(await file.read())}
+
+    @router.post("/{name}/ordinary")
+    async def ordinary(username: str, name: str, request: Request):
+        return {"size": len(await request.body())}
+
+    app.include_router(router)
+    prefix = b'--test\r\nContent-Disposition: form-data; name="file"; filename="x.sql"\r\n\r\n'
+    suffix = b'\r\n--test--\r\n'
+    headers = [(b"content-type", b"multipart/form-data; boundary=test")]
+    body = prefix + b'x' * 4096 + suffix
+    status, consumed = _request(app, "/api/v1/accounts/alpha/databases/alpha_db/import", [body],
+                                headers + [(b"content-length", str(len(body)).encode())])
+    # The upload guard (not the 32-byte ordinary budget) handled the request:
+    # it authenticates before reading any of the body.
+    assert status == 401 and not consumed
+    # Ordinary routes in the same included router keep the small budget.
+    status, consumed = _request(app, "/api/v1/accounts/alpha/databases/alpha_db/ordinary", [b'x' * 64],
+                                [(b"content-length", b"64")])
+    assert status == 413 and not consumed
+
+
+def test_panel_sql_import_route_is_exempt_from_ordinary_budget():
+    import api.main as main
+    budget = RequestBodyBudget(None, routes=main.app.router.routes)
+    scope = {"type": "http", "method": "POST", "path": "/api/v1/accounts/alpha/databases/alpha_db/import",
+             "root_path": "", "headers": [], "query_string": b""}
+    assert budget._has_upload_guard(scope) is True
+    scope = {**scope, "path": "/api/v1/accounts/alpha/databases"}
+    assert budget._has_upload_guard(scope) is False

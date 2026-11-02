@@ -30,7 +30,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, DatabaseGrant, Domain, StagingEnvironment, utcnow
-from shared.validation import validate_domain, validate_username
+from shared.validation import ValidationError, validate_domain, validate_username
 
 from daemon import backup, handlers_database, handlers_domain, mariadb, safeio, ssl
 from daemon.procutil import run
@@ -39,7 +39,7 @@ from daemon.wordpress import _php_str
 logger = logging.getLogger("borond.staging")
 
 
-class StagingError(Exception):
+class StagingError(ValidationError):
     pass
 
 
@@ -203,12 +203,46 @@ def _copy_files(source_docroot: str, staging_docroot: str, username: str) -> Non
     result = run(["cp", "-a", "--no-preserve=ownership", "--", f"{source_docroot}/.", staging_docroot],
                  timeout=600, uid=pw.pw_uid, gid=pw.pw_gid)
     if not result.ok:
-        raise StagingError(f"failed to copy files to the staging docroot: {result.stderr.strip()}")
+        raise RuntimeError(f"failed to copy files to the staging docroot: {result.stderr.strip()}")
     # Same real bug as daemon/cpanel_import.py's own docroot-permission fix
     # (found reviewing that module, confirmed with a real copytree call):
     # a recursive copy can reset the target directory's own mode away from
     # the required 0750 -- reassert mode + the "nobody" ACL grant rather
     # than trust the copy to have preserved Boron's permission model.
+    handlers_domain.ensure_docroot(username, staging_docroot)
+
+
+def _replace_files(source_docroot: str, staging_docroot: str, username: str) -> None:
+    """Sync: make the staging docroot an exact copy of production, so files
+    that exist only in staging disappear too (a plain copy over the old tree
+    only overwrites). The copy is built in a sibling directory and swapped
+    in, so a failed copy leaves the previous staging site untouched. Every
+    filesystem step runs as the account itself, inside its own home."""
+    pw = pwd.getpwnam(username)
+    if pw.pw_uid < 1000 or pw.pw_gid <= 0:
+        raise StagingError("refusing staging copy with a system identity")
+    staging_docroot = staging_docroot.rstrip("/")
+    fresh = f"{staging_docroot}.boron-sync"
+    retired = f"{staging_docroot}.boron-retired"
+
+    def as_account(argv: list[str]):
+        return run(argv, timeout=600, uid=pw.pw_uid, gid=pw.pw_gid)
+
+    for leftover in (fresh, retired):
+        as_account(["rm", "-rf", "--one-file-system", "--", leftover])
+    result = as_account(["cp", "-a", "--no-preserve=ownership", "--", f"{source_docroot}/.", fresh])
+    if not result.ok:
+        as_account(["rm", "-rf", "--one-file-system", "--", fresh])
+        raise RuntimeError(f"failed to copy files to the staging docroot: {result.stderr.strip()}")
+    if not as_account(["mv", "-T", "--", staging_docroot, retired]).ok:
+        as_account(["rm", "-rf", "--one-file-system", "--", fresh])
+        raise RuntimeError("failed to retire the previous staging files")
+    if not as_account(["mv", "-T", "--", fresh, staging_docroot]).ok:
+        as_account(["mv", "-T", "--", retired, staging_docroot])
+        raise RuntimeError("failed to swap in the synced staging files")
+    as_account(["rm", "-rf", "--one-file-system", "--", retired])
+    # Reassert mode, the web-server ACL and the ACME challenge directory on
+    # the new tree, exactly as after the initial copy.
     handlers_domain.ensure_docroot(username, staging_docroot)
 
 
@@ -259,6 +293,11 @@ def create_staging(params: dict) -> dict:
     account, source_docroot = _account_and_domain(username, source_domain)
 
     with write_session() as session:
+        source_kind = session.scalar(select(Domain.kind).where(Domain.domain == source_domain))
+        if source_kind == "parked":
+            raise StagingError("a parked domain serves another domain's site -- stage that domain instead")
+        if session.scalar(select(StagingEnvironment.id).where(StagingEnvironment.staging_domain == source_domain)) is not None:
+            raise StagingError(f"'{source_domain}' is itself a staging environment")
         existing = session.scalar(select(StagingEnvironment).where(StagingEnvironment.source_domain == source_domain))
         if existing is not None:
             raise StagingError(
@@ -344,7 +383,7 @@ def sync_staging(params: dict) -> dict:
             if grant is None:
                 raise StagingError("staging database no longer belongs to this account")
 
-    _copy_files(source_docroot, staging_docroot, username)
+    _replace_files(source_docroot, staging_docroot, username)
 
     if is_wp and db_name and db_user:
         source_db_name = _source_db_name(source_docroot)

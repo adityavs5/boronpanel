@@ -96,8 +96,11 @@ def test_only_real_credentials_count():
 # --- evaluate (end-to-end decision) -------------------------------------------
 
 
-def test_login_limit_11th_attempt_rejected():
-    for _ in range(10):
+IP_CEILING = ratelimit.LOGIN_IP_LIMIT[0]
+
+
+def test_login_limit_attempt_past_ip_ceiling_rejected():
+    for _ in range(IP_CEILING):
         d = evaluate("/login", "POST", "203.0.113.5", None, None)
         assert d.allowed
     d = evaluate("/login", "POST", "203.0.113.5", None, None)
@@ -107,7 +110,7 @@ def test_login_limit_11th_attempt_rejected():
 
 
 def test_login_limit_is_per_ip():
-    for _ in range(10):
+    for _ in range(IP_CEILING):
         assert evaluate("/login", "POST", "203.0.113.5", None, None).allowed
     assert not evaluate("/login", "POST", "203.0.113.5", None, None).allowed
     assert evaluate("/login", "POST", "203.0.113.6", None, None).allowed
@@ -119,7 +122,7 @@ def test_login_limit_ipv6_same_64_prefix_shares_bucket():
     # bucket on every request just by incrementing the host portion of the
     # address -- confirm two distinct addresses in the same /64 share one
     # bucket.
-    for i in range(10):
+    for i in range(IP_CEILING):
         addr = f"2001:db8:1234:5678::{i:x}"
         assert evaluate("/login", "POST", addr, None, None).allowed
     d = evaluate("/login", "POST", "2001:db8:1234:5678::ffff", None, None)
@@ -127,7 +130,7 @@ def test_login_limit_ipv6_same_64_prefix_shares_bucket():
 
 
 def test_login_limit_ipv6_different_64_prefix_is_independent():
-    for _ in range(10):
+    for _ in range(IP_CEILING):
         assert evaluate("/login", "POST", "2001:db8:1111::1", None, None).allowed
     assert not evaluate("/login", "POST", "2001:db8:1111::2", None, None).allowed
     # A genuinely different /64 prefix is a different (legitimate) client.
@@ -136,9 +139,54 @@ def test_login_limit_ipv6_different_64_prefix_is_independent():
 
 def test_login_limit_applies_even_with_session_cookie():
     """A valid session must not buy extra brute-force attempts."""
-    for _ in range(10):
+    for _ in range(IP_CEILING):
         assert evaluate("/login", "POST", "203.0.113.5", "some-cookie", None).allowed
     assert not evaluate("/login", "POST", "203.0.113.5", "other-cookie", None).allowed
+
+
+# --- per (IP, username) login budget -------------------------------------------
+
+
+def test_login_identity_limit_is_per_ip_and_username():
+    for _ in range(ratelimit.LOGIN_LIMIT[0]):
+        assert ratelimit.check_login_identity("203.0.113.5", "alice").allowed
+    blocked = ratelimit.check_login_identity("203.0.113.5", "alice")
+    assert not blocked.allowed and blocked.retry_after > 0
+    # Live finding: colleagues behind the same office/NAT address were
+    # locked out by one user's attempts. Other names on that IP still work,
+    # and so does the same name from elsewhere.
+    assert ratelimit.check_login_identity("203.0.113.5", "bob").allowed
+    assert ratelimit.check_login_identity("203.0.113.6", "alice").allowed
+    # Case and surrounding space do not mint a fresh budget.
+    assert not ratelimit.check_login_identity("203.0.113.5", " ALICE ").allowed
+
+
+def test_successful_logins_do_not_consume_the_shared_ip_budget():
+    for _ in range(IP_CEILING * 2):
+        assert evaluate("/login", "POST", "198.51.100.7", None, None).allowed
+        ratelimit.login_succeeded("198.51.100.7", "staff")
+    assert evaluate("/login", "POST", "198.51.100.7", None, None).allowed
+
+
+def test_success_clears_that_users_failures_only():
+    for _ in range(ratelimit.LOGIN_LIMIT[0]):
+        ratelimit.check_login_identity("203.0.113.5", "alice")
+        ratelimit.check_login_identity("203.0.113.5", "mallory")
+    ratelimit.login_succeeded("203.0.113.5", "alice")
+    assert ratelimit.check_login_identity("203.0.113.5", "alice").allowed
+    assert not ratelimit.check_login_identity("203.0.113.5", "mallory").allowed
+
+
+def test_identity_key_never_contains_the_submitted_name(caplog):
+    import logging
+
+    for _ in range(ratelimit.LOGIN_LIMIT[0]):
+        ratelimit.check_login_identity("203.0.113.5", "secret-name")
+    with caplog.at_level(logging.WARNING, logger="boron.ratelimit"):
+        ratelimit.check_login_identity("203.0.113.5", "secret-name")
+    assert "rate limit hit" in caplog.text
+    assert "secret-name" not in caplog.text
+    assert all("secret-name" not in key for key in ratelimit.limiter._buckets)
 
 
 def test_password_reset_limit_5_per_hour():
@@ -199,7 +247,7 @@ def test_exempt_paths_never_limited():
 def test_rejection_logged(caplog):
     import logging
 
-    for _ in range(10):
+    for _ in range(IP_CEILING):
         evaluate("/login", "POST", "203.0.113.5", None, None)
     with caplog.at_level(logging.WARNING, logger="boron.ratelimit"):
         evaluate("/login", "POST", "203.0.113.5", None, None)
@@ -230,3 +278,21 @@ def test_middleware_returns_429_with_retry_after(isolated_db):
     # Rejections still carry the security headers (the headers middleware
     # wraps the rate limiter, not the other way around).
     assert last.headers.get("x-content-type-options") == "nosniff"
+
+
+def test_login_route_throttles_one_username_without_blocking_colleagues(isolated_db):
+    import warnings
+
+    warnings.filterwarnings("ignore")
+    from testsupport.sync_asgi import SyncASGIClient as TestClient
+
+    import api.main as main
+
+    client = TestClient(main.app)
+    for _ in range(ratelimit.LOGIN_LIMIT[0]):
+        assert client.post("/login", data={"username": "alice", "password": "wrong"}).status_code != 429
+    blocked = client.post("/login", data={"username": "alice", "password": "wrong"})
+    assert blocked.status_code == 429
+    assert int(blocked.headers["retry-after"]) >= 1
+    # Same source address, different panel user: not throttled.
+    assert client.post("/login", data={"username": "bob", "password": "pw"}).status_code != 429

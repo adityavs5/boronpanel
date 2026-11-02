@@ -1,48 +1,22 @@
 """Serialize SQL ownership mutations and restore decisions across processes."""
-from contextlib import contextmanager
-from functools import wraps
-import threading
+from daemon.mutation_locks import MutationLock
 
-from shared.validation import ValidationError
-
-_local = threading.RLock()
-_state = threading.local()
+_LOCK = MutationLock(
+    'database-mutations',
+    'A database backup or management operation is in progress. Try again shortly.',
+)
 
 
-@contextmanager
-def mutation_lock(*, blocking=False):
-    if not _local.acquire(blocking=blocking):
-        raise ValidationError('A database backup or management operation is in progress. Try again shortly.')
-    try:
-        if getattr(_state, 'active', False):
-            yield
-            return
-        from daemon.snapshot_jobs import lock
-        try:
-            with lock('database-mutations', blocking=blocking):
-                _state.active = True
-                try:
-                    yield
-                finally:
-                    _state.active = False
-        except BlockingIOError:
-            raise ValidationError('A database backup or management operation is in progress. Try again shortly.') from None
-    finally:
-        _local.release()
+def mutation_lock(*, blocking=False, timeout=None):
+    """Wait for the lock (bounded unless ``blocking``); see daemon.mutation_locks."""
+    return _LOCK.hold(blocking=blocking, timeout=timeout)
 
 
 def serialized(function):
-    @wraps(function)
-    def wrapped(*args, **kwargs):
-        with mutation_lock():
-            return function(*args, **kwargs)
-    return wrapped
+    """Request handlers wait a bounded time, then fail with BusyError."""
+    return _LOCK.serialized(function)
 
 
 def serialized_worker(function):
     """Background jobs wait without holding an API request open."""
-    @wraps(function)
-    def wrapped(*args, **kwargs):
-        with mutation_lock(blocking=True):
-            return function(*args, **kwargs)
-    return wrapped
+    return _LOCK.serialized_worker(function)

@@ -25,6 +25,7 @@ from sqlalchemy import select, text
 
 from shared.db import write_session
 from shared.session_ids import session_digest
+from shared.validation import ConflictError, NotFoundError, ValidationError
 from daemon.appcrypto import decrypt_secret, encrypt_secret
 from shared.models import (
     Account,
@@ -64,9 +65,9 @@ def create_token(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
-            raise RuntimeError(
+            raise ConflictError(
                 f"cannot impersonate an account in status '{account.status}' -- only active/suspended accounts"
             )
         raw, token_hash = _generate_token()
@@ -103,22 +104,22 @@ def redeem_token(params: dict) -> dict:
         session.execute(text("BEGIN IMMEDIATE"))
         row = session.scalar(select(ImpersonationToken).where(ImpersonationToken.token_hash == token_hash))
         if row is None:
-            raise RuntimeError("impersonation token is invalid")
+            raise ValidationError("impersonation token is invalid")
         if row.used_at is not None:
-            raise RuntimeError("impersonation token has already been used")
+            raise ConflictError("impersonation token has already been used")
         expires_at = row.expires_at
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=dt.timezone.utc)
         if expires_at <= now:
-            raise RuntimeError("impersonation token has expired")
+            raise ValidationError("impersonation token has expired")
         if row.admin_username != admin_username:
             # Only the issuing admin can redeem -- a token leaked to another
             # admin (or captured) is useless without also being that admin.
-            raise RuntimeError("impersonation token was issued to a different admin")
+            raise ValidationError("impersonation token was issued to a different admin")
 
         account = session.get(Account, row.account_id)
         if account is None or account.status not in ("active", "suspended"):
-            raise RuntimeError("target account is no longer impersonatable")
+            raise ValidationError("target account is no longer impersonatable")
 
         # Mark used FIRST (single-use), inside the same transaction that
         # creates the session -- so a crash between the two can never leave a
@@ -198,3 +199,33 @@ def end(params: dict) -> dict:
             scoped.revoked = True
         return {'restored': restored,
                 'account_username': account.username if account else None, 'status': 'ended'}
+
+
+def end_account_sessions(session, account_id: int) -> int:
+    """End every live impersonation of `account_id` inside `session`.
+
+    Called from account termination. An impersonation session is backed by
+    the administrator's own Session row, so revoking the customer's panel
+    users never reaches it; without this a dropped impersonation cookie kept
+    customer-scoped access to a terminated account until its 2 hour expiry.
+    Returns the number of impersonation sessions ended.
+    """
+    rows = session.scalars(select(ImpersonationSession).where(
+        ImpersonationSession.account_id == account_id,
+        ImpersonationSession.ended_at.is_(None),
+    )).all()
+    now = utcnow()
+    for imp in rows:
+        imp.ended_at = now
+        imp.admin_session_enc = None
+        imp.admin_session_id = None
+        scoped = session.scalar(select(Session).where(Session.session_id == imp.session_id))
+        if scoped is not None:
+            scoped.revoked = True
+    # Unredeemed tokens for the account must not open a new session either.
+    for token in session.scalars(select(ImpersonationToken).where(
+        ImpersonationToken.account_id == account_id,
+        ImpersonationToken.used_at.is_(None),
+    )).all():
+        token.used_at = now
+    return len(rows)

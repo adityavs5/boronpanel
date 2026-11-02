@@ -16,6 +16,7 @@ from daemon import (
     jobcredentials,
     plans,
 )
+from daemon import mutation_locks
 from shared.db import write_session
 from shared.failures import describe_failure
 from shared.models import Account, ControlTask, utcnow
@@ -87,6 +88,8 @@ def start_account_create(params: dict) -> dict:
     params["username"] = validate_username(params.get("username"))
     if params.get("primary_domain"):
         params["primary_domain"] = validate_domain(params["primary_domain"])
+    if params.get("plan_id") is not None:
+        handlers_account.plan_seed(params["plan_id"])  # refuse an unknown plan before queuing
     return _start("account.create", params)
 
 
@@ -146,7 +149,7 @@ def _execute(row: ControlTask, params: dict) -> tuple[dict, str | None, int | No
     operation = row.operation
     username = str(params.get("username") or row.username or "")
     if operation == "account.create":
-        plan_id = params.pop("plan_id", None)
+        plan_id = params.get("plan_id")  # create_account refuses an unknown plan first
         ip_selection = params.pop("ip_selection", "automatic")
         server_ip_id = params.pop("server_ip_id", None)
         _set(row.id, progress_pct=10, progress_message=f"Creating account {username}")
@@ -192,6 +195,24 @@ def _execute(row: ControlTask, params: dict) -> tuple[dict, str | None, int | No
     raise ValidationError("Unsupported control task")
 
 
+def _failure_message(exc: Exception, params: dict) -> str:
+    """What the task page shows for a failed task.
+
+    A ValidationError (incl. NotFound/Conflict/Busy) is a user error whose
+    message the synchronous RPC already returns verbatim -- "account already
+    exists", "plan 7 not found", "lock busy" -- so the task reports it too
+    instead of a bare "Operation failed". Anything else stays opaque and is
+    traced through error_reference. The submitted password is never echoed.
+    """
+    if not isinstance(exc, ValidationError):
+        return "Operation failed"
+    message = str(exc).strip() or "Operation failed"
+    password = params.get("password")
+    if isinstance(password, str) and password and password in message:
+        return "Operation failed"
+    return message[:256]
+
+
 def _run(task_id: int) -> None:
     with write_session() as db:
         row = db.get(ControlTask, task_id)
@@ -213,7 +234,7 @@ def _run(task_id: int) -> None:
         }
     trace, token = audit.begin_action_trace(snapshot["operation"], safe_params, enabled=True)
     try:
-        with write_session() as db:
+        with write_session() as db, mutation_locks.background_wait():
             row = db.get(ControlTask, task_id)
             result, one_time_secret, account_id, username = _execute(row, safe_params)
         safe_result = dict(result or {})
@@ -242,7 +263,7 @@ def _run(task_id: int) -> None:
             task_id,
             status="failed",
             progress_pct=100,
-            progress_message="Operation failed",
+            progress_message=_failure_message(exc, safe_params),
             secret_params_enc=None,
             error_reference=diagnostic["reference"],
             completed_at=utcnow(),

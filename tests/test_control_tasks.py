@@ -145,3 +145,38 @@ def test_control_task_audit_never_stores_input_password(isolated_db, monkeypatch
         serialized = json.dumps({"params": row.params, "changes": row.changes})
         assert row.params["password"] == "***"
         assert secret not in serialized
+
+
+def test_failed_account_create_task_reports_the_user_error(isolated_db, monkeypatch):
+    """A bare "Operation failed" hid "already exists"/"plan not found"/"busy"."""
+    from shared.validation import ConflictError
+    submitted = []
+    monkeypatch.setattr(control_tasks._executor, "submit", lambda fn, task_id: submitted.append((fn, task_id)))
+    monkeypatch.setattr(control_tasks.events, "emit", lambda *args, **kwargs: None)
+    _quiet_audit(monkeypatch)
+
+    def execute(*_args):
+        raise ConflictError("account 'dupacct' already exists")
+
+    monkeypatch.setattr(control_tasks, "_execute", execute)
+    started = control_tasks.start_account_create(_identity_params(username="dupacct"))
+    submitted[0][0](submitted[0][1])
+    status = control_tasks.get_task({"task_id": started["id"]})
+    assert status["status"] == "failed"
+    assert status["progress_message"] == "account 'dupacct' already exists"
+    assert len(status["error_reference"]) == 16
+
+
+def test_failure_message_never_echoes_the_password():
+    from shared.validation import ValidationError
+    secret = "".join(("Echoed", "-pass-42!"))
+    assert control_tasks._failure_message(ValidationError(f"bad {secret}"), {"password": secret}) == "Operation failed"
+    assert control_tasks._failure_message(RuntimeError("vendor detail"), {}) == "Operation failed"
+
+
+def test_account_create_task_refuses_unknown_plan_before_queuing(isolated_db, monkeypatch):
+    import pytest
+    from shared.validation import NotFoundError
+    monkeypatch.setattr(control_tasks._executor, "submit", lambda *_args: pytest.fail("must not queue"))
+    with pytest.raises(NotFoundError, match="plan 424242 not found"):
+        control_tasks.start_account_create(_identity_params(username="planacct", plan_id=424242))

@@ -25,6 +25,33 @@ DOVECOT_SQL_CONFIG = Path('/etc/dovecot/dovecot-sql.conf.ext')
 DOVECOT_SSO_SQL_CONFIG = Path('/etc/dovecot/boron-sso-sql.conf.ext')
 DOVECOT_SSO_PASSDB_CONFIG = Path('/etc/dovecot/conf.d/09-boron-sso-auth.conf')
 DOVECOT_QUOTA_CONFIG = Path('/etc/dovecot/conf.d/91-boron-quota.conf')
+DOVECOT_SIEVE_CONFIG = Path('/etc/dovecot/conf.d/92-boron-sieve.conf')
+DOVECOT_SIEVE_PLUGIN = Path('/usr/lib/dovecot/modules/lib90_sieve_plugin.so')
+# Pigeonhole runs only where a protocol loads it; autoresponders (personal
+# ~/.dovecot.sieve), spam-to-Junk and per-mailbox blacklists (sieve_before)
+# all execute at LMTP delivery.
+DOVECOT_SIEVE_CONTENT = """# Managed Boron mail filtering: run Sieve at LMTP delivery.
+protocol lmtp {
+  mail_plugins = $mail_plugins sieve
+}
+"""
+POSTFIX_FORWARDS_MAP = Path('/etc/postfix/boron/mysql-virtual-forwards.cf')
+# virtual_alias_maps wins over virtual_mailbox_maps, so an address that is
+# both a mailbox and a forwarder (or a mailbox under a catch-all) must also
+# map to itself, or the forward silently replaces local delivery. Kept
+# identical to the map scripts/install.sh writes on fresh servers.
+FORWARDS_QUERY = (
+    "query = SELECT GROUP_CONCAT(destination SEPARATOR ',') FROM ( "
+    "SELECT f.destination AS destination FROM mail_forward f JOIN mail_domain d ON f.domain_id = d.id "
+    "WHERE CONCAT(f.source_local_part, '@', d.domain) = '%s' AND f.active = 1 AND d.active = 1 "
+    "UNION SELECT CONCAT(m.local_part, '@', d.domain) AS destination FROM mail_user m "
+    "JOIN mail_domain d ON m.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%s' "
+    "AND m.active = 1 AND d.active = 1 AND (EXISTS (SELECT 1 FROM mail_forward f "
+    "WHERE f.domain_id = d.id AND f.source_local_part = m.local_part AND f.active = 1) "
+    "OR EXISTS (SELECT 1 FROM mail_catchall c WHERE c.domain_id = d.id AND c.active = 1)) "
+    "UNION SELECT c.destination AS destination FROM mail_catchall c JOIN mail_domain d ON c.domain_id = d.id "
+    "WHERE CONCAT('@', d.domain) = '%s' AND c.active = 1 AND d.active = 1 ) combined"
+)
 
 SSL_DIR = Path("/etc/boron/ssl")
 DOVECOT_BORON_CONFIG = Path("/etc/dovecot/conf.d/90-boron.conf")
@@ -41,6 +68,14 @@ RUNTIME_BACKUP = Path("/var/lib/boron/update-runtime-backup.json")
 FIREWALL_RECOVER_COMMAND = Path("/usr/local/sbin/boron-firewall-recover")
 LICENSE_CRON = Path("/etc/cron.d/boron-license")
 MAIL_ROUTING_CRON = Path("/etc/cron.d/boron-mail-routing")
+CRON_DIR = Path("/etc/cron.d")
+# deploy/<name>.cron -> /etc/cron.d/<name>. install.sh installs the core set on
+# every profile; the optional set exists only where the installer profile (dns)
+# or the operator (GeoIP key) enabled it, so an upgrade refreshes it in place
+# but never adds it.
+CORE_CRON_JOBS = ("boron-jobs", "boron-monitoring", "boron-update", "boron-maintenance",
+                  "boron-sitestats", "boron-certbot-renew")
+OPTIONAL_CRON_JOBS = ("boron-cloudflare", "boron-geoip")
 OLS_LIFECYCLE_CONFIG = Path("/etc/systemd/system/lshttpd.service.d/boron-lifecycle.conf")
 MAIL_SUBMIT_SOCKET_UNIT = Path("/etc/systemd/system/boron-mail-submit.socket")
 MAIL_SUBMIT_SERVICE_UNIT = Path("/etc/systemd/system/boron-mail-submit@.service")
@@ -120,10 +155,12 @@ def command(args: list[str], timeout: int = 900) -> None:
 def _runtime_paths() -> list[Path]:
     paths = [MSMTP_CONFIG, APPARMOR_BWRAP_PROFILE, OLS_CONFIG, OLS_NAMESPACE_POLICY, OLS_WAF_RUNTIME, FIREWALL_RECOVER_COMMAND, OLS_LIFECYCLE_CONFIG,
              LICENSE_CRON, MAIL_ROUTING_CRON,
+             *(CRON_DIR / name for name in (*CORE_CRON_JOBS, *OPTIONAL_CRON_JOBS)),
              DOVECOT_BORON_CONFIG, POSTFIX_MAIN_CONFIG, SSL_DIR / 'mail.crt', SSL_DIR / 'mail.key',
              POSTFIX_MASTER_CONFIG, POSTFIX_SENDER_LOGIN,
              MAIL_SUBMIT_SOCKET_UNIT, MAIL_SUBMIT_SERVICE_UNIT, MAIL_EGRESS_UNIT,
-             DOVECOT_SQL_CONFIG, DOVECOT_SSO_SQL_CONFIG, DOVECOT_SSO_PASSDB_CONFIG, DOVECOT_QUOTA_CONFIG]
+             DOVECOT_SQL_CONFIG, DOVECOT_SSO_SQL_CONFIG, DOVECOT_SSO_PASSDB_CONFIG, DOVECOT_QUOTA_CONFIG,
+             DOVECOT_SIEVE_CONFIG, POSTFIX_FORWARDS_MAP]
     if OLS_VHOST_ROOT.exists():
         paths.extend(sorted(OLS_VHOST_ROOT.glob("*/vhconf.conf")))
     for pattern in ("boron-node-*.service", "boron-node-*.socket",
@@ -390,6 +427,23 @@ def configure_license_cron() -> None:
     _atomic_copy(ROOT / "deploy" / "boron-license.cron", LICENSE_CRON, 0o644)
 
 
+def configure_scheduled_jobs() -> None:
+    """Reconcile the scheduled jobs with this release.
+
+    Releases up to 3.3.1 ran most scripts directly (`root /opt/boron/scripts/x.py`),
+    which depends on an exec bit those files never had in the release
+    archive: cron logged "Permission denied" and scheduled backups, usage
+    snapshots/alerts, inode reconciliation, phpMyAdmin token cleanup and
+    SSL-expiry warnings never ran. Every entry now names the venv
+    interpreter explicitly, so the installed copies must be refreshed.
+    """
+    for name in CORE_CRON_JOBS:
+        _atomic_copy(ROOT / "deploy" / f"{name}.cron", CRON_DIR / name, 0o644)
+    for name in OPTIONAL_CRON_JOBS:
+        if (CRON_DIR / name).exists():
+            _atomic_copy(ROOT / "deploy" / f"{name}.cron", CRON_DIR / name, 0o644)
+
+
 def configure_mail_routing_cron() -> None:
     """Mail domains wait for their public MX before local delivery starts;
     the sweep that starts it must exist on upgraded mail servers too."""
@@ -494,6 +548,37 @@ plugin {
   quota_rule = *:storage=0
 }
 """, 0o644)
+    configure_dovecot_sieve()
+
+
+def configure_dovecot_sieve() -> None:
+    """Load Pigeonhole for LMTP delivery (dovecot-sieve provides the module).
+
+    Without it every user and global Sieve script is ignored. Loading a
+    plugin whose module is missing would stop Dovecot, so the managed file
+    is only present while the module is; main() installs dovecot-sieve first.
+    """
+    if DOVECOT_SIEVE_PLUGIN.is_file():
+        _write_dovecot_config(DOVECOT_SIEVE_CONFIG, DOVECOT_SIEVE_CONTENT, 0o644)
+    else:
+        DOVECOT_SIEVE_CONFIG.unlink(missing_ok=True)
+
+
+def configure_postfix_forwards() -> None:
+    """Reconcile the virtual alias query so forwarders keep local delivery."""
+    path = POSTFIX_FORWARDS_MAP
+    if not path.exists():
+        return
+    content = path.read_text()
+    updated, count = re.subn(r'(?m)^query\s*=.*$', lambda _match: FORWARDS_QUERY, content, count=1)
+    if count != 1:
+        raise RuntimeError('Postfix forwarder map query was not found')
+    if updated == content:
+        return
+    # The map holds the read-only MariaDB password: keep its root:postfix
+    # ownership and 0640 mode.
+    stat_result = path.stat()
+    _write_private_atomic(path, updated.encode(), 0o640, stat_result.st_uid, stat_result.st_gid)
 
 
 def _atomic_copy(source: Path, target: Path, mode: int) -> None:
@@ -575,6 +660,20 @@ def configure_roundcube() -> None:
         config.write_text(content)
 
 
+def configure_phpmyadmin() -> None:
+    """Servers installed before phpMyAdmin was provisioned have no package,
+    so Server Setup could never publish it and every sign-on was dead.
+    Install it on database servers and republish it when a hostname is set."""
+    from shared.config import settings
+    from shared.install_profiles import component_enabled
+    from daemon import pma
+    components = settings.enabled_components or ()
+    database = ("database" in components) if components else component_enabled(settings.install_profile, "database")
+    if not database or shutil.which("mariadb") is None and not Path("/usr/sbin/mariadbd").exists():
+        return
+    pma.provision()
+
+
 def configure_account_resource_parent() -> None:
     """Enable accounting on the common ancestor used by OLS and logind."""
     if not Path("/sys/fs/cgroup/cgroup.controllers").exists():
@@ -650,6 +749,19 @@ def configure_bubblewrap_apparmor() -> None:
     command(["apparmor_parser", "-r", str(APPARMOR_BWRAP_PROFILE)], timeout=30)
 
 
+def configure_account_lifecycle_state() -> None:
+    """Bring accounts suspended/terminated by older releases to current rules.
+
+    Suspension now also expires the Linux login (SSH keys, SFTP, git and cron
+    were still accepted), and termination frees the account's hostnames.
+    Fresh installs have no accounts, so install.sh needs no counterpart.
+    """
+    from daemon import handlers_account
+
+    handlers_account.reconcile_suspended_logins()
+    handlers_account.release_terminated_domains()
+
+
 def _arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group()
@@ -683,6 +795,8 @@ def main(argv: list[str] | None = None) -> int:
         missing_packages.append("msmtp")
     if shutil.which("apparmor_parser") is None:
         missing_packages.append("apparmor")
+    if Path("/etc/dovecot/dovecot.conf").exists() and not DOVECOT_SIEVE_PLUGIN.is_file():
+        missing_packages.append("dovecot-sieve")
     if missing_packages:
         command(["apt-get", "update"])
         command(["apt-get", "install", "-y", *missing_packages])
@@ -690,23 +804,28 @@ def main(argv: list[str] | None = None) -> int:
     command([sys.executable, str(ROOT / 'scripts/reconcile_powerdns_credentials.py'),
              '--defer-panel-restart'], timeout=180)
     from shared.db import init_db
-    from daemon import dkim, ols, webmail_sso
+    from daemon import dkim, ols, spamfilter, webmail_sso
 
     init_db()
     create_runtime_backup()
     configure_firewall_recovery()
     configure_license_cron()
+    configure_scheduled_jobs()
     configure_mail_routing_cron()
     configure_ols_lifecycle()
     configure_ols_namespace_policy()
     webmail_sso.ensure_schema()
     configure_dovecot()
+    configure_postfix_forwards()
+    spamfilter.repair_virtual_config_permissions()
     configure_mail_tls()
     configure_roundcube()
+    configure_phpmyadmin()
     configure_account_resource_parent()
     configure_bubblewrap_mail()
     configure_mail_egress()
     configure_bubblewrap_apparmor()
+    configure_account_lifecycle_state()
     # Server policy is Off-by-default; refreshing main first keeps every
     # existing vhost on the native namespace until its own atomic refresh
     # enables Bubblewrap. A mid-migration failure therefore degrades to the
@@ -714,6 +833,10 @@ def main(argv: list[str] | None = None) -> int:
     ols.refresh_main_config()
     ols.refresh_all_vhosts()
     dkim.configure_signer()
+    # Placeholder SOA MNAME and unsplit >255-octet TXT (DKIM) in existing
+    # zones; best-effort, never fails the upgrade.
+    from daemon import dnssetup
+    dnssetup.reconcile_zone_records()
     if Path("/etc/dovecot/dovecot.conf").exists():
         command(["doveconf", "-n"], timeout=30)
         command(["systemctl", "reload", "dovecot"], timeout=60)

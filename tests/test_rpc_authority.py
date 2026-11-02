@@ -574,3 +574,40 @@ def test_administrator_self_guard_uses_verified_actor_not_request_label(isolated
     from shared.validation import ValidationError
     with pytest.raises(ValidationError,match='own administrator'):
         asyncio.run(server.dispatch('admin_user.set_status', {'username':'administrator','actor_username':'someoneelse','disabled':True}, _credential(admin_session)))
+
+
+def test_customer_malformed_domain_is_a_validation_error_not_403(isolated_db):
+    """Regression: a customer's syntax error came back as 403 "domain target
+    unavailable" while administrators saw the real 400."""
+    from daemon import rpc_authority
+    from shared.db import write_session
+    from shared.models import Account
+    from shared.validation import ValidationError
+
+    with write_session() as session:
+        account = Account(username="cust1", status="active")
+        session.add(account)
+        session.flush()
+        account_id = account.id
+    principal = rpc_authority.Principal("customer", "cust1", account_id, None, "session")
+    with pytest.raises(ValidationError):
+        rpc_authority.authorize("domain.add", {"username": "cust1", "domain": "bad_domain..com"}, principal)
+
+
+def test_customer_can_add_a_new_domain_through_the_task_flow(isolated_db):
+    """Regression: the SPA's task route (taskops.domain.add) rejected every
+    not-yet-existing domain for customers with 403."""
+    from daemon import rpc_authority
+    from shared.db import write_session
+    from shared.models import Account
+
+    with write_session() as session:
+        mine = Account(username="cust1", status="active")
+        other = Account(username="cust2", status="active")
+        session.add_all([mine, other])
+        session.flush()
+        mine_id = mine.id
+    principal = rpc_authority.Principal("customer", "cust1", mine_id, None, "session")
+    rpc_authority.authorize("taskops.domain.add", {"username": "cust1", "domain": "new-site.example"}, principal)
+    with pytest.raises(rpc_authority.AuthorizationError):
+        rpc_authority.authorize("taskops.domain.add", {"username": "cust2", "domain": "new-site.example"}, principal)

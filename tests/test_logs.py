@@ -23,6 +23,15 @@ def fake_account_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def vhost_logs(tmp_path, monkeypatch):
+    """The root-owned per-account OLS log directory (sysops.vhost_log_dir)."""
+    root = tmp_path / "vhost-logs"
+    (root / "demo1").mkdir(parents=True)
+    monkeypatch.setattr(logs.sysops, "VHOST_LOG_ROOT", str(root))
+    return root / "demo1"
+
+
+@pytest.fixture()
 def account_with_domain(isolated_db, monkeypatch):
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
@@ -49,17 +58,17 @@ def test_get_log_php_reads_shared_file(account_with_domain, fake_account_home):
     assert result["domain"] is None
 
 
-def test_get_log_ols_reads_primary_domain_by_default(account_with_domain, fake_account_home):
-    (fake_account_home / "logs" / "demo1_example-error.log").write_text("primary log line\n")
-    (fake_account_home / "logs" / "addon_demo1_example-error.log").write_text("addon log line\n")
+def test_get_log_ols_reads_primary_domain_by_default(account_with_domain, fake_account_home, vhost_logs):
+    (vhost_logs / "demo1_example-error.log").write_text("primary log line\n")
+    (vhost_logs / "addon_demo1_example-error.log").write_text("addon log line\n")
 
     result = logs.get_log({"username": "demo1", "type": "ols"})
     assert result["lines"] == ["primary log line"]
 
 
-def test_get_log_ols_reads_specified_domain(account_with_domain, fake_account_home):
-    (fake_account_home / "logs" / "demo1_example-error.log").write_text("primary log line\n")
-    (fake_account_home / "logs" / "addon_demo1_example-error.log").write_text("addon log line\n")
+def test_get_log_ols_reads_specified_domain(account_with_domain, fake_account_home, vhost_logs):
+    (vhost_logs / "demo1_example-error.log").write_text("primary log line\n")
+    (vhost_logs / "addon_demo1_example-error.log").write_text("addon log line\n")
 
     result = logs.get_log({"username": "demo1", "type": "ols", "domain": "addon.demo1.example"})
     assert result["lines"] == ["addon log line"]
@@ -108,7 +117,7 @@ def test_get_log_requested_lines_cannot_exceed_max(account_with_domain, fake_acc
 
 def test_jailed_log_path_rejects_traversal_attempt(fake_account_home):
     with pytest.raises(logs.LogsError):
-        logs._jailed_log_path("demo1", "../../../etc/passwd")
+        logs._check_segment_name("../../../etc/passwd")
 
 
 def test_get_log_requires_existing_account(isolated_db):
@@ -121,16 +130,16 @@ def test_log_swap_after_resolution_cannot_read_other_account(account_with_domain
     private = tmp_path / 'private'
     private.mkdir()
     (private / 'php-error.log').write_text('PROTECTED CANARY')
-    original = logs._jailed_log_path
-    def swap(username, filename):
-        path = original(username, filename)
+    original = logs._log_location
+    def swap(username, log_type):
+        location = original(username, log_type)
         if replace_parent:
             (fake_account_home / 'logs').rmdir()
             (fake_account_home / 'logs').symlink_to(private, target_is_directory=True)
         else:
-            (fake_account_home / 'logs' / filename).symlink_to(private / filename)
-        return path
-    monkeypatch.setattr(logs, '_jailed_log_path', swap)
+            (fake_account_home / 'logs' / 'php-error.log').symlink_to(private / 'php-error.log')
+        return location
+    monkeypatch.setattr(logs, '_log_location', swap)
     with pytest.raises(logs.LogsError):
         logs.get_log({'username': 'demo1', 'type': 'php'})
 
@@ -142,10 +151,10 @@ def test_large_log_read_is_bounded(account_with_domain, fake_account_home):
     assert result['lines'] == ['last line']
 
 
-def test_access_log_and_compressed_history_are_selectable(account_with_domain, fake_account_home):
-    active = fake_account_home / 'logs' / 'demo1_example-access.log'
+def test_access_log_and_compressed_history_are_selectable(account_with_domain, fake_account_home, vhost_logs):
+    active = vhost_logs / 'demo1_example-access.log'
     active.write_text('198.51.100.1 - - [25/Sep/2026:12:00:00 +0000] "GET / HTTP/1.1" 200 12\n')
-    rotated = fake_account_home / 'logs' / 'demo1_example-access.log.09_24_2026.gz'
+    rotated = vhost_logs / 'demo1_example-access.log.09_24_2026.gz'
     rotated.write_bytes(gzip.compress(b'198.51.100.2 - - [24/Sep/2026:12:00:00 +0000] "GET /old HTTP/1.1" 200 10\n'))
     current = logs.get_log({'username': 'demo1', 'type': 'access'})
     assert current['state'] == 'available'
@@ -154,8 +163,8 @@ def test_access_log_and_compressed_history_are_selectable(account_with_domain, f
     assert '/old' in history['lines'][0]
 
 
-def test_log_date_filter_and_bounded_download(account_with_domain, fake_account_home):
-    path = fake_account_home / 'logs' / 'demo1_example-access.log'
+def test_log_date_filter_and_bounded_download(account_with_domain, fake_account_home, vhost_logs):
+    path = vhost_logs / 'demo1_example-access.log'
     path.write_text(
         '198.51.100.1 - - [24/Sep/2026:12:00:00 +0000] "GET /old HTTP/1.1" 200 10\n'
         '198.51.100.1 - - [25/Sep/2026:12:00:00 +0000] "GET /new HTTP/1.1" 200 10\n'
@@ -164,3 +173,21 @@ def test_log_date_filter_and_bounded_download(account_with_domain, fake_account_
     assert len(result['lines']) == 1 and '/new' in result['lines'][0]
     download = logs.download_log({'username': 'demo1', 'type': 'access'})
     assert base64.b64decode(download['content_base64']) == path.read_bytes()
+
+
+def test_vhost_logs_are_read_from_root_owned_directory_not_tenant_home(account_with_domain, fake_account_home, vhost_logs):
+    """Regression: OLS logs moved out of ~/logs (a tenant-planted symlink
+    there redirected OLS's writes into another tenant's logs). A file the
+    tenant leaves at the old path is never served as the vhost log."""
+    (fake_account_home / "logs" / "demo1_example-access.log").write_text("FORGED BY TENANT\n")
+    (vhost_logs / "demo1_example-access.log").write_text("written by ols\n")
+    result = logs.get_log({"username": "demo1", "type": "access"})
+    assert result["lines"] == ["written by ols"]
+    download = logs.download_log({"username": "demo1", "type": "access"})
+    assert base64.b64decode(download["content_base64"]) == b"written by ols\n"
+
+
+def test_php_log_stays_in_tenant_home(account_with_domain, fake_account_home, vhost_logs):
+    (vhost_logs / "php-error.log").write_text("not this one\n")
+    (fake_account_home / "logs" / "php-error.log").write_text("php line\n")
+    assert logs.get_log({"username": "demo1", "type": "php"})["lines"] == ["php line"]

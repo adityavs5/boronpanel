@@ -63,7 +63,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, AppInstall, AppInstallJob, Domain, utcnow
-from shared.validation import generate_strong_password, validate_domain, validate_password_strength, validate_username
+from shared.validation import ValidationError, generate_strong_password, validate_domain, validate_password_strength, validate_username
 
 from daemon import account_exec, handlers_database, wordpress
 from daemon import jobcredentials
@@ -82,7 +82,7 @@ APP_TEMPLATES_DIR = Path(__file__).resolve().parent / "app_templates"
 PRESTASHOP_CLI_HELPER = Path(__file__).resolve().parent / "php_helpers" / "prestashop_cli_helper.php"
 
 
-class AppInstallError(Exception):
+class AppInstallError(ValidationError):
     pass
 
 
@@ -385,6 +385,29 @@ def _write_joomla_configuration(docroot: str, db_name: str, db_user: str, db_pas
         "    public $list_limit = 20;\n"
         "    public $access = 1;\n"
         "    public $debug = false;\n"
+        "    public $debug_lang = false;\n"
+        # includes/framework.php reads these as plain properties before any
+        # defaulting; a missing one prints an "Undefined property" warning
+        # with the site's absolute path on every page. 'none' also keeps
+        # PHP notices (and the paths they carry) off the live site.
+        "    public $error_reporting = 'none';\n"
+        "    public $behind_loadbalancer = false;\n"
+        "    public $force_ssl = 0;\n"
+        "    public $lifetime = 15;\n"
+        "    public $gzip = false;\n"
+        "    public $helpurl = 'https://help.joomla.org/proxy?keyref=Help{major}{minor}:{keyref}&lang={langcode}';\n"
+        "    public $cors = false;\n"
+        "    public $display_offline_message = 1;\n"
+        "    public $offline_message = 'This site is down for maintenance.<br>Please check back again soon.';\n"
+        "    public $offline_image = '';\n"
+        "    public $captcha = '0';\n"
+        "    public $frontediting = 1;\n"
+        "    public $massmailoff = false;\n"
+        "    public $replyto = '';\n"
+        "    public $replytoname = '';\n"
+        "    public $cookie_domain = '';\n"
+        "    public $cookie_path = '';\n"
+        "    public $asset_id = 1;\n"
         "    public $offset = 'UTC';\n"
         "    public $mailonline = true;\n"
         "    public $mailer = 'mail';\n"

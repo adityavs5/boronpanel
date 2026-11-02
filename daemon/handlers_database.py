@@ -1,6 +1,7 @@
 """Per-account MariaDB database/user CRUD (Phase d)."""
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -16,26 +17,80 @@ from shared.config import settings
 from shared.db import write_session
 from shared.database_uploads import database_upload_directory, MAX_SQL_UPLOAD_BYTES, SQL_UPLOAD_PREFIX
 from shared.models import Account, DatabaseGrant, DatabaseUser, DatabaseUserGrant
-from shared.validation import ValidationError, validate_db_identifier, validate_password_strength, validate_username
+from shared.validation import (ConflictError, NotFoundError, ValidationError, validate_db_identifier,
+                               validate_password_strength, validate_username)
 
 from daemon.database_operations import serialized
 from daemon import db_governor, mariadb, resource_limits
 
+logger = logging.getLogger("borond.databases")
+
 SAFETY_MIN_FREE_BYTES = 512 * 1024 * 1024
 SAFETY_RETAIN_FAILED = 1
+IMPORT_SAFETY_KIND = "database-import-safety"
+RENAME_SAFETY_KIND = "database-rename-safety"
+SAFETY_KINDS = (IMPORT_SAFETY_KIND, RENAME_SAFETY_KIND)
+# An import whose automatic rollback also failed keeps its pre-import dump:
+# it may be the only copy of the customer's last good data. Such copies are
+# never pruned automatically; past this many, imports wait for an operator.
+IMPORT_RECOVERY_MAX = 3
+RECOVERY_MARKER = "RECOVERY-REQUIRED"
+IMPORT_ERROR_MAX_CHARS = 600
+
+
+def _account_safety_entries(kind: str, account_id: int) -> list[Path]:
+    from daemon.snapshot_jobs import private_directory
+    root = private_directory(kind)
+    prefix = f"account-{account_id}-"
+    return sorted(
+        (path for path in root.iterdir() if path.is_dir() and not path.is_symlink() and path.name.startswith(prefix)),
+        key=lambda path: path.stat().st_mtime_ns, reverse=True,
+    )
 
 
 def _safety_directory(kind: str, account_id: int) -> Path:
     from daemon.snapshot_jobs import private_directory
-    root = private_directory(kind)
     prefix = f"account-{account_id}-"
-    existing = sorted(
-        (path for path in root.iterdir() if path.is_dir() and not path.is_symlink() and path.name.startswith(prefix)),
-        key=lambda path: path.stat().st_mtime_ns, reverse=True,
-    )
-    for stale in existing[SAFETY_RETAIN_FAILED:]:
-        shutil.rmtree(stale, ignore_errors=True)
+    existing = _account_safety_entries(kind, account_id)
+    if kind == IMPORT_SAFETY_KIND:
+        # A leftover import copy means a rollback failed or the helper was
+        # interrupted mid-import; either way it may hold the last known-good
+        # contents, so it is kept until an operator resolves it.
+        if len(existing) >= IMPORT_RECOVERY_MAX:
+            raise ConflictError(
+                "Earlier SQL imports for this account left recovery copies that need administrator "
+                "review. Ask an administrator to restore or release them before importing again"
+            )
+    else:
+        # A rename never changes the original database before it succeeds,
+        # so its leftovers are disposable.
+        for stale in existing[SAFETY_RETAIN_FAILED:]:
+            shutil.rmtree(stale, ignore_errors=True)
     return private_directory(kind, prefix + uuid.uuid4().hex)
+
+
+def purge_account_safety_copies(account_id: int) -> int:
+    """Remove every import/rename safety copy of a terminated account."""
+    removed = 0
+    for kind in SAFETY_KINDS:
+        for path in _account_safety_entries(kind, account_id):
+            shutil.rmtree(path)
+            removed += 1
+    return removed
+
+
+def _mariadb_error_line(error: Exception) -> str:
+    """The customer-facing part of a failed import: MariaDB's own message.
+
+    restore_database reports "Database restore failed for <db>: <stderr>";
+    the mariadb client's stderr is the diagnostics for the customer's SQL.
+    """
+    text = str(error)
+    if text.startswith("Database restore failed for ") and ": " in text:
+        text = text.split(": ", 1)[1]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    message = lines[0] if lines else type(error).__name__
+    return message[:IMPORT_ERROR_MAX_CHARS]
 
 
 def _require_safety_capacity(work: Path, db_name: str, *, extra_bytes: int = 0) -> None:
@@ -226,20 +281,20 @@ def create_database(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
-            raise RuntimeError(f"cannot add a database to an account in status '{account.status}'")
+            raise ConflictError(f"cannot add a database to an account in status '{account.status}'")
         existing = session.scalar(select(DatabaseGrant).where(DatabaseGrant.db_name == db_name))
         if existing is not None:
-            raise RuntimeError(f"database '{db_name}' already exists")
+            raise ConflictError(f"database '{db_name}' already exists")
         resource_limits.require_capacity(session, account.id, "database")
         account_id = account.id
 
     if mariadb.database_exists(db_name):
-        raise RuntimeError(f"database '{db_name}' already exists in MariaDB")
-    mariadb.require_ungranted_database_name(db_name)
+        raise ConflictError(f"database '{db_name}' already exists in MariaDB")
+    _require_reusable_database_name(db_name)
     if mariadb.user_exists(db_user):
-        raise RuntimeError(f"database user '{db_user}' already exists in MariaDB; create the database with another name")
+        raise ConflictError(f"database user '{db_user}' already exists in MariaDB; create the database with another name")
 
     password = validate_password_strength(params["password"]) if params.get("password") else mariadb.generate_password()
 
@@ -274,12 +329,25 @@ def create_database(params: dict) -> dict:
     return result
 
 
+def _require_reusable_database_name(db_name: str) -> None:
+    """Refuse a name that still carries native grants, after first retiring
+    phpMyAdmin sign-on logins left behind by earlier releases (which never
+    revoked them when the database was deleted or the account terminated)."""
+    try:
+        mariadb.require_ungranted_database_name(db_name)
+    except ConflictError:
+        from daemon import pma
+        if not pma.retire_orphaned_principals(db_name):
+            raise
+        mariadb.require_ungranted_database_name(db_name)
+
+
 def list_databases(params: dict) -> dict:
     username = validate_username(params["username"])
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         _ensure_user_rows(session, account.id)
         session.flush()
         grants = session.scalars(select(DatabaseGrant).where(DatabaseGrant.account_id == account.id)).all()
@@ -301,7 +369,8 @@ def list_databases(params: dict) -> dict:
                     "privileges": _privilege_values(link), "original": user.db_user == grant.db_user and user.host == "localhost",
                 } for user, link in assignments],
             })
-        return {"databases": result}
+    from daemon import pma
+    return {"databases": result, "pma_available": pma.is_available()}
 
 
 def list_users(params: dict) -> dict:
@@ -309,13 +378,19 @@ def list_users(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         _ensure_user_rows(session, account.id)
         session.flush()
         users = session.scalars(select(DatabaseUser).where(
             DatabaseUser.account_id == account.id,
         ).order_by(DatabaseUser.db_user)).all()
-        return {"users": [_user_dict(session, user) for user in users]}
+        result = [_user_dict(session, user) for user in users]
+    try:
+        remote = mariadb.remote_access_status()
+    except Exception:  # noqa: BLE001 - listing logins must not depend on it
+        logger.warning("could not read the MariaDB network listener settings", exc_info=True)
+        remote = {"available": None}
+    return {"users": result, "remote_access": remote}
 
 
 @serialized
@@ -324,16 +399,19 @@ def create_user(params: dict) -> dict:
     db_user = _scoped_name(username, params["name"])
     host = mariadb.validate_database_host(params.get("host", "localhost"))
     password = validate_password_strength(params["password"]) if params.get("password") else mariadb.generate_password()
+    # A login for a remote host can never connect while MariaDB listens on
+    # loopback only; say so instead of creating a credential that cannot work.
+    mariadb.require_remote_access(host)
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         _ensure_user_rows(session, account.id)
         if session.scalar(select(DatabaseUser).where(DatabaseUser.db_user == db_user, DatabaseUser.host == host)):
-            raise RuntimeError(f"database user '{db_user}' already exists")
+            raise ConflictError(f"database user '{db_user}' already exists")
         account_id = account.id
     if mariadb.user_exists(db_user, host):
-        raise RuntimeError(f"database user '{db_user}' already exists in MariaDB")
+        raise ConflictError(f"database user '{db_user}' already exists in MariaDB")
     mariadb.create_db_user(db_user, password, host)
     try:
         db_governor.apply_new_user(account_id, db_user, host)
@@ -351,7 +429,7 @@ def create_user(params: dict) -> dict:
 def _owned_user_and_database(session, username: str, db_user_name: str, db_name: str, host: str = "localhost"):
     account = session.scalar(select(Account).where(Account.username == username))
     if account is None:
-        raise RuntimeError(f"account '{username}' not found")
+        raise NotFoundError(f"account '{username}' not found")
     _ensure_user_rows(session, account.id)
     user_name = _resolve_existing_db_name(username, db_user_name)
     database_name = _resolve_existing_db_name(username, db_name)
@@ -364,9 +442,9 @@ def _owned_user_and_database(session, username: str, db_user_name: str, db_name:
         DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == database_name,
     ))
     if user is None:
-        raise RuntimeError(f"database user '{user_name}' not found")
+        raise NotFoundError(f"database user '{user_name}' not found")
     if database is None:
-        raise RuntimeError(f"database '{database_name}' not found")
+        raise NotFoundError(f"database '{database_name}' not found")
     return user, database
 
 
@@ -409,7 +487,7 @@ def revoke_user(params: dict) -> dict:
             DatabaseUserGrant.database_user_id == user.id,
         ))
         if link is None:
-            raise RuntimeError("database user is not assigned to this database")
+            raise ValidationError("database user is not assigned to this database")
         link_id, db_user, db_name = link.id, user.db_user, database.db_name
     mariadb.revoke_all(db_name, db_user, host)
     with write_session() as session:
@@ -427,12 +505,12 @@ def change_user_password(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         _ensure_user_rows(session, account.id)
         name = _resolve_existing_db_name(username, params["user"])
         user = session.scalar(select(DatabaseUser).where(DatabaseUser.account_id == account.id, DatabaseUser.db_user == name, DatabaseUser.host == host))
         if user is None:
-            raise RuntimeError(f"database user '{name}' not found")
+            raise NotFoundError(f"database user '{name}' not found")
         db_user = user.db_user
     mariadb.set_password(db_user, password, host)
     return {"db_user": db_user, "host": host, "password": password}
@@ -445,12 +523,12 @@ def drop_user(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         _ensure_user_rows(session, account.id)
         name = _resolve_existing_db_name(username, params["user"])
         user = session.scalar(select(DatabaseUser).where(DatabaseUser.account_id == account.id, DatabaseUser.db_user == name, DatabaseUser.host == host))
         if user is None:
-            raise RuntimeError(f"database user '{name}' not found")
+            raise NotFoundError(f"database user '{name}' not found")
         if host == "localhost" and session.scalar(select(DatabaseGrant.id).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_user == name)):
             raise ValidationError("The database's original application user is removed when its database is deleted")
         user_id, db_user = user.id, user.db_user
@@ -474,12 +552,12 @@ def rename_user(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         _ensure_user_rows(session, account.id)
         old_name = _resolve_existing_db_name(username, params["user"])
         user = session.scalar(select(DatabaseUser).where(DatabaseUser.account_id == account.id, DatabaseUser.db_user == old_name, DatabaseUser.host == host))
         if user is None:
-            raise RuntimeError(f"database user '{old_name}' not found")
+            raise NotFoundError(f"database user '{old_name}' not found")
         if host == "localhost" and session.scalar(select(DatabaseGrant.id).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_user == old_name)):
             raise ValidationError("Rename the database's original application login by updating the application and database together")
         if session.scalar(select(DatabaseUser.id).where(DatabaseUser.db_user == new_name, DatabaseUser.host == host)) or mariadb.user_exists(new_name, host):
@@ -504,7 +582,7 @@ def database_health(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None or not session.scalar(select(DatabaseGrant.id).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == name)):
-            raise RuntimeError(f"database '{name}' not found for account '{username}'")
+            raise NotFoundError(f"database '{name}' not found for account '{username}'")
     return mariadb.check_database(name, repair=bool(params.get("repair", False)))
 
 
@@ -515,7 +593,7 @@ def _owned_database(username: str, supplied_name: str):
         row = None if account is None else session.scalar(select(DatabaseGrant).where(
             DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == name))
         if row is None:
-            raise RuntimeError(f"database '{name}' not found for account '{username}'")
+            raise NotFoundError(f"database '{name}' not found for account '{username}'")
         return account.id, row.id, name
 
 
@@ -641,22 +719,43 @@ def import_database(params: dict) -> dict:
     _account_id, _grant_id, name = _owned_database(username, params["name"])
     source = _verified_import(params["path"])
     from daemon.snapshot_databases import dump_database, restore_database
-    safety = _safety_directory("database-import-safety", _account_id)
-    _require_safety_capacity(safety, name, extra_bytes=source.stat().st_size)
-    private_source = _copy_import_source(source, safety)
-    saved = safety / f"{name}.sql"
+    safety = _safety_directory(IMPORT_SAFETY_KIND, _account_id)
     try:
+        _require_safety_capacity(safety, name, extra_bytes=source.stat().st_size)
+        private_source = _copy_import_source(source, safety)
+        saved = safety / f"{name}.sql"
         dump_database(name, saved, safety)
     except Exception:
         shutil.rmtree(safety, ignore_errors=True)
         raise
     try:
-        result = restore_database(name, private_source, safety, replace_tables=True)
-    except Exception:
-        # The pre-import copy remains root-private for manual or automated
-        # recovery; never delete the only known-good state on failure.
+        # Apply the dump as written, like phpMyAdmin or the mariadb client:
+        # tables the dump does not mention are left untouched, and a dump
+        # that replaces a table says so itself (DROP TABLE IF EXISTS).
+        result = restore_database(name, private_source, safety, replace_tables=False)
+    except Exception as import_error:
         private_source.unlink(missing_ok=True)
-        raise
+        reason = _mariadb_error_line(import_error)
+        try:
+            # Statements before the failing one have already run. Put the
+            # database back exactly as it was before this import.
+            restore_database(name, saved, safety, replace_tables=True)
+        except Exception as rollback_error:
+            try:
+                (safety / RECOVERY_MARKER).write_text(
+                    f"database={name}\nimport_error={reason}\nrollback_error={rollback_error}\n")
+            except OSError:
+                pass
+            logger.error("SQL import into %s failed and its automatic rollback failed; "
+                         "pre-import copy kept at %s: %s", name, saved, rollback_error)
+            raise RuntimeError(
+                f"SQL import into {name} failed ({reason}) and the automatic rollback also failed; "
+                "the pre-import copy was kept for administrator recovery"
+            ) from rollback_error
+        shutil.rmtree(safety, ignore_errors=True)
+        raise ValidationError(
+            f"SQL import failed; the database was restored to its previous contents. MariaDB reported: {reason}"
+        ) from import_error
     shutil.rmtree(safety, ignore_errors=True)
     return {**result, "status": "imported", "safety_copy": False}
 
@@ -674,9 +773,9 @@ def rename_database(params: dict) -> dict:
         assignments = _database_assignments(session, account_id, grant_id)
     if mariadb.database_exists(new_name):
         raise ValidationError(f"database '{new_name}' already exists in MariaDB")
-    mariadb.require_ungranted_database_name(new_name)
+    _require_reusable_database_name(new_name)
     from daemon.snapshot_databases import dump_database, restore_database
-    work = _safety_directory("database-rename-safety", account_id)
+    work = _safety_directory(RENAME_SAFETY_KIND, account_id)
     _require_safety_capacity(work, old_name)
     saved = work / f"{old_name}.sql"
     dump_database(old_name, saved, work)
@@ -725,10 +824,19 @@ def rename_database(params: dict) -> dict:
             mariadb.drop_database(new_name)
         except Exception as exc:
             failures.append(f"remove replacement database: {exc}")
+        if not failures:
+            # The original database was never modified; its dump is spare.
+            shutil.rmtree(work, ignore_errors=True)
         _raise_with_cleanup("Database rename", operation_error, failures)
     shutil.rmtree(work, ignore_errors=True)
+    # The old name's sign-on login keeps native grants on a name that no
+    # longer exists; revoke it like a delete so the old name stays reusable.
+    pma_error = _revoke_pma_logins(account_id, old_name)
+    warning = "Update application configuration files that still reference the previous database name."
+    if pma_error:
+        warning += " Its previous phpMyAdmin sign-on login will be removed by the next cleanup run."
     return {"old_name": old_name, "db_name": new_name, "status": "renamed", "safety_copy": False,
-            "warning": "Update application configuration files that still reference the previous database name."}
+            "warning": warning}
 
 
 @serialized
@@ -739,12 +847,13 @@ def drop_database(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         grant = session.scalar(
             select(DatabaseGrant).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == db_name)
         )
         if grant is None:
-            raise RuntimeError(f"database '{db_name}' not found for account '{username}'")
+            raise NotFoundError(f"database '{db_name}' not found for account '{username}'")
+        account_id = account.id
         db_user = grant.db_user
         grant_id = grant.id
         assignments = _database_assignments(session, account.id, grant_id)
@@ -775,6 +884,7 @@ def drop_database(params: dict) -> dict:
             except Exception as exc:
                 failures.append(f"restore grant for {assignment['user']}@{assignment['host']}: {exc}")
         _raise_with_cleanup("Database deletion", operation_error, failures)
+    pma_error = _revoke_pma_logins(account_id, db_name)
     user_drop_error = None
     user_dropped = False
     if not has_other_assignments:
@@ -802,11 +912,27 @@ def drop_database(params: dict) -> dict:
                 if user is not None and user.db_user == db_user and user_dropped:
                     session.delete(user)
     result = {"db_name": db_name, "status": "dropped"}
+    warnings = []
     if user_drop_error:
-        result["warning"] = (
-            f"Database deleted, but its unassigned login could not be removed: {user_drop_error}"
-        )
+        warnings.append(f"Database deleted, but its unassigned login could not be removed: {user_drop_error}")
+    if pma_error:
+        warnings.append("Its phpMyAdmin sign-on login will be removed by the next cleanup run.")
+    if warnings:
+        result["warning"] = " ".join(warnings)
     return result
+
+
+def _revoke_pma_logins(account_id: int, db_name: str) -> str | None:
+    """Revoke phpMyAdmin sign-on logins for a deleted database. Reports
+    instead of raising: the caller already completed an irreversible step,
+    and the retained token row lets scripts/pma_token_cleanup.py retry."""
+    from daemon import pma
+    try:
+        pma.revoke_tokens(account_id, db_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("could not revoke phpMyAdmin sign-on logins for %s", db_name)
+        return str(exc)
+    return None
 
 
 @serialized
@@ -818,12 +944,12 @@ def change_password(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         grant = session.scalar(
             select(DatabaseGrant).where(DatabaseGrant.account_id == account.id, DatabaseGrant.db_name == db_name)
         )
         if grant is None:
-            raise RuntimeError(f"database '{db_name}' not found for account '{username}'")
+            raise NotFoundError(f"database '{db_name}' not found for account '{username}'")
         db_user = grant.db_user
 
     mariadb.set_password(db_user, new_password)
@@ -833,12 +959,24 @@ def change_password(params: dict) -> dict:
 @serialized
 def terminate_account_databases(account: Account) -> None:
     """TERMINATE_HOOKS entry: drop every DB + DB user this account owns.
-    Idempotent -- safe even if the account never had a database."""
+    Idempotent -- safe even if the account never had a database.
+
+    Waits for a concurrent database operation instead of failing at once
+    (a termination that skipped this hook left databases and logins
+    behind). The wait is bounded: termination runs as a control task inside
+    mutation_locks.background_wait(), so it waits up to
+    BACKGROUND_WAIT_SECONDS and stays retryable rather than hanging behind
+    a stuck backup with no limit."""
+    from daemon import pma
     with write_session() as session:
         grants = session.scalars(select(DatabaseGrant).where(DatabaseGrant.account_id == account.id)).all()
         grant_data = [(g.db_name, g.db_user, g.id) for g in grants]
         all_users = [(row.db_user, row.host, row.id) for row in session.scalars(
             select(DatabaseUser).where(DatabaseUser.account_id == account.id)).all()]
+
+    # Sign-on logins hold grants on these names; revoke them first so a
+    # failure keeps the hook retryable instead of leaving names unusable.
+    pma.revoke_tokens(account.id)
 
     for db_name, db_user, grant_id in grant_data:
         mariadb.drop_database(db_name)
@@ -868,3 +1006,7 @@ def terminate_account_databases(account: Account) -> None:
                     session.delete(link)
                 session.flush()
                 session.delete(row)
+    # Import/rename safety dumps hold the customer's data. Nothing can use
+    # them once the databases are gone, and no later import of this account
+    # would ever prune them.
+    purge_account_safety_copies(account.id)

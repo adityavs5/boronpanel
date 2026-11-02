@@ -115,6 +115,17 @@ def _inline_anyio_sync_calls(monkeypatch):
     monkeypatch.setattr(anyio.to_thread, "run_sync", run_sync_inline)
 
 
+@pytest.fixture(autouse=True)
+def _short_mutation_lock_waits(monkeypatch):
+    """Request handlers wait up to 30 s for a busy mutation lock in
+    production. Tests that hold the lock to prove rejection need that
+    bounded wait to expire quickly; tests of the wait itself set their own."""
+    from daemon import mutation_locks
+
+    monkeypatch.setattr(mutation_locks, "REQUEST_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(mutation_locks, "BACKGROUND_WAIT_SECONDS", 5.0)
+
+
 @pytest.fixture
 def immediate_asyncio_executor(monkeypatch):
     """Execute direct daemon-dispatch calls without a sandbox worker thread.
@@ -182,6 +193,9 @@ def _isolate_privileged_account_side_effects(monkeypatch, request):
     if filename != "test_sysops.py":
         monkeypatch.setattr(
             sysops, "ensure_web_logs", lambda username: f"/home/{username}/logs"
+        )
+        monkeypatch.setattr(
+            sysops, "ensure_vhost_log_dir", lambda username: sysops.vhost_log_dir(username)
         )
     if filename not in {"test_cgroups.py", "test_resource_manager.py", "test_resource_limits.py"}:
         monkeypatch.setattr(cgroups, "apply_limits", lambda *args, **kwargs: None)

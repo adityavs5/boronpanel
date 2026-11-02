@@ -14,7 +14,7 @@ from sqlalchemy import select
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, FtpAccount
-from shared.validation import ValidationError, validate_db_identifier, validate_password_strength, validate_username
+from shared.validation import ConflictError, NotFoundError, ValidationError, validate_db_identifier, validate_password_strength, validate_username
 
 from daemon import account_mutation, ftp, resource_limits
 from daemon.safeio import secure_mkdirs
@@ -85,12 +85,12 @@ def create_ftp_account(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status != "active":
-            raise RuntimeError(f"cannot add an FTP account to an account in status '{account.status}'")
+            raise ConflictError(f"cannot add an FTP account to an account in status '{account.status}'")
         existing = session.scalar(select(FtpAccount).where(FtpAccount.ftp_login == ftp_login))
         if existing is not None:
-            raise RuntimeError(f"FTP account '{ftp_login}' already exists")
+            raise ConflictError(f"FTP account '{ftp_login}' already exists")
         resource_limits.require_capacity(session, account.id, "ftp")
         account_id = account.id
 
@@ -116,7 +116,7 @@ def list_ftp_accounts(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         rows = session.scalars(select(FtpAccount).where(FtpAccount.account_id == account.id)).all()
         return {"ftp_accounts": [_row_to_dict(r, username) for r in rows]}
 
@@ -124,11 +124,11 @@ def list_ftp_accounts(params: dict) -> dict:
 def _get_owned_ftp_account(session, username: str, label: str) -> FtpAccount:
     account = session.scalar(select(Account).where(Account.username == username))
     if account is None:
-        raise RuntimeError(f"account '{username}' not found")
+        raise NotFoundError(f"account '{username}' not found")
     ftp_login = _ftp_login(username, label)
     row = session.scalar(select(FtpAccount).where(FtpAccount.ftp_login == ftp_login, FtpAccount.account_id == account.id))
     if row is None:
-        raise RuntimeError(f"FTP account '{ftp_login}' not found for '{username}'")
+        raise NotFoundError(f"FTP account '{ftp_login}' not found for '{username}'")
     return row
 
 

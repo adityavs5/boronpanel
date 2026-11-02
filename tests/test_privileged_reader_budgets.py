@@ -20,7 +20,7 @@ def test_inventory_supports_multiple_rotations_per_day_and_keeps_active_first(te
     for day in range(90):
         for rotation in range(3):
             (tenant_logs / f"php-error.log.{day}-{rotation}").write_text("rotated\n")
-    rows = logs._safe_segments("demo1", "php-error.log")
+    rows = logs._safe_segments(logs._log_location("demo1", "php"), "php-error.log")
     assert len(rows) == 271 and rows[0]["active"]
 
 
@@ -49,7 +49,7 @@ def test_inventory_limits_unrelated_entries_lazily_and_closes_iterator(tenant_lo
             lambda *_: (_ for _ in ()).throw(AssertionError("eager listdir")),
         )
         with pytest.raises(logs.LogsError, match="too large"):
-            logs._safe_segments("demo1", "php-error.log")
+            logs._safe_segments(logs._log_location("demo1", "php"), "php-error.log")
     assert len(scanned) == 4 and closed == [True]
 
 
@@ -57,10 +57,10 @@ def test_segment_limit_rejects_incomplete_inventory(tenant_logs, monkeypatch):
     monkeypatch.setattr(logs, "MAX_LOG_SEGMENTS", 2)
     for name in ["php-error.log", "php-error.log.1"]:
         (tenant_logs / name).write_text("log\n")
-    assert len(logs._safe_segments("demo1", "php-error.log")) == 2
+    assert len(logs._safe_segments(logs._log_location("demo1", "php"), "php-error.log")) == 2
     (tenant_logs / "php-error.log.2").write_text("log\n")
     with pytest.raises(logs.LogsError, match="too many log segments"):
-        logs._safe_segments("demo1", "php-error.log")
+        logs._safe_segments(logs._log_location("demo1", "php"), "php-error.log")
 
 
 @pytest.mark.parametrize("kind", ["symlink", "fifo", "directory"])

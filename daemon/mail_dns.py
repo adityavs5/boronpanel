@@ -78,7 +78,7 @@ def _canonical_values(rtype: str, values: list[str] | tuple[str, ...]) -> tuple[
     for value in values:
         clean = value.strip()
         if rtype == "TXT":
-            clean = _unquote(clean)
+            clean = dnsprovider.txt_text(clean)
         elif rtype in {"MX", "CNAME", "NS"}:
             clean = clean.lower().rstrip(".")
         result.append(clean)

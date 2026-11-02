@@ -54,13 +54,16 @@ def stub_mail(monkeypatch):
 
     def delete_mailbox(domain, local_part):
         calls.append(("delete_mailbox", domain, local_part))
+        existed = (domain, local_part) in state["mailboxes"]
         state["mailboxes"].discard((domain, local_part))
+        return existed
 
     def list_mailboxes(domain):
         return [{"local_part": lp} for d, lp in state["mailboxes"] if d == domain]
 
     def change_mailbox_password(domain, local_part, new_password):
         calls.append(("change_mailbox_password", domain, local_part))
+        return (domain, local_part) in state["mailboxes"]
 
     def set_mailbox_active(domain, local_part, active):
         calls.append(("set_mailbox_active", domain, local_part, active))
@@ -88,7 +91,9 @@ def stub_mail(monkeypatch):
         return {"id": 1, "domain": domain, "local_part": local_part, "destination": destination}
 
     def delete_forward(domain, local_part, destination):
-        forwards[domain] = [f for f in forwards.get(domain, []) if f != (local_part, destination)]
+        before = forwards.get(domain, [])
+        forwards[domain] = [f for f in before if f != (local_part, destination)]
+        return len(forwards[domain]) != len(before)
 
     def list_forwards(domain):
         return [{"local_part": lp, "destination": d, "active": 1} for lp, d in forwards.get(domain, [])]
@@ -191,7 +196,7 @@ def test_create_mail_domain_without_username_uses_hosting_domain_owner(isolated_
 
 
 def test_create_mail_domain_without_owner_fails_before_external_create(isolated_db, stub_mail):
-    with pytest.raises(RuntimeError, match="requires an owning hosting account"):
+    with pytest.raises(ValidationError, match="requires an owning hosting account"):
         hm.create_mail_domain({"domain": "orphan.example"})
 
     assert ("create_mail_domain", "orphan.example") not in stub_mail
@@ -767,3 +772,188 @@ def test_mailbox_quota_edit_updates_cache_after_external_success(isolated_db, st
         hm.set_mailbox_quota({'domain':'demo1.example','local_part':'john','quota_mb':4096})
     with write_session() as db:
         assert db.scalar(select(MailUser).where(MailUser.local_part=='john')).quota_mb == 2048
+
+
+# --- live end-to-end regressions (mail group) ---------------------------------
+
+
+def test_duplicate_mailbox_and_domain_are_conflicts_not_internal_failures(isolated_db, stub_sysops, stub_mail):
+    from shared.validation import ConflictError
+
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    with pytest.raises(ConflictError, match="already provisioned"):
+        hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
+    with pytest.raises(ConflictError, match="already exists"):
+        hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret456!Pass"})
+
+
+class _FakeCursor:
+    def __init__(self, conn):
+        self.conn = conn
+        self.rowcount = 0
+        self.lastrowid = 7
+        self._row = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=()):
+        self.conn.statements.append(sql)
+        result = self.conn.respond(sql, params)
+        if isinstance(result, Exception):
+            raise result
+        self._row, self.rowcount = result
+
+    def fetchone(self):
+        return self._row
+
+
+class _FakeConnection:
+    def __init__(self, respond):
+        self.respond = respond
+        self.statements = []
+
+    def cursor(self):
+        return _FakeCursor(self)
+
+    def close(self):
+        pass
+
+
+def _fake_mariadb(monkeypatch, respond):
+    conn = _FakeConnection(respond)
+    monkeypatch.setattr(hm.mail, "_connect", lambda: conn)
+    monkeypatch.setattr(hm.mail, "_domain_id", lambda domain: 1)
+    return conn
+
+
+def test_duplicate_forwarder_is_a_conflict(isolated_db, monkeypatch):
+    import pymysql
+
+    from shared.validation import ConflictError
+
+    _fake_mariadb(monkeypatch, lambda sql, params: pymysql.err.IntegrityError(1062, "Duplicate entry"))
+    with pytest.raises(ConflictError, match="already exists"):
+        hm.mail.create_forward("demo1.example", "alice", "carol@demo1.example")
+
+
+def test_password_change_on_missing_mailbox_changes_nothing(isolated_db, monkeypatch):
+    conn = _fake_mariadb(monkeypatch, lambda sql, params: (None, 0))
+    monkeypatch.setattr(hm.mail, "hash_password", lambda password: pytest.fail("no hash for a missing mailbox"))
+    assert hm.mail.change_mailbox_password("demo1.example", "nobody", "Secret123!Pass") is False
+    assert not any(sql.startswith("UPDATE") for sql in conn.statements)
+
+
+def test_delete_forward_reports_whether_a_row_existed(isolated_db, monkeypatch):
+    _fake_mariadb(monkeypatch, lambda sql, params: (None, 0))
+    assert hm.mail.delete_forward("demo1.example", "zz", "carol@demo1.example") is False
+    _fake_mariadb(monkeypatch, lambda sql, params: (None, 1))
+    assert hm.mail.delete_forward("demo1.example", "zz", "carol@demo1.example") is True
+
+
+def test_missing_mailbox_password_delete_and_forward_fail(isolated_db, stub_sysops, stub_mail):
+    from shared.validation import NotFoundError
+
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    with pytest.raises(NotFoundError, match="does not exist"):
+        hm.change_mailbox_password({"domain": "demo1.example", "local_part": "nobody",
+                                    "password": "Secret123!Pass"})
+    with pytest.raises(NotFoundError, match="does not exist"):
+        hm.delete_mailbox({"domain": "demo1.example", "local_part": "nobody"})
+    with pytest.raises(NotFoundError, match="does not exist"):
+        hm.delete_forward({"domain": "demo1.example", "local_part": "zz", "destination": "carol@demo1.example"})
+    hm.create_mailbox({"domain": "demo1.example", "local_part": "john", "password": "Secret123!Pass"})
+    assert hm.change_mailbox_password({"domain": "demo1.example", "local_part": "john",
+                                       "password": "Secret456!Pass"})["status"] == "password_changed"
+
+
+@pytest.mark.parametrize("override,message", [
+    ({"subject": ""}, "subject must be 1-255 characters"),
+    ({"body": "x" * 10_001}, "body must be 1-10000 characters"),
+    ({"start_date": "2026-07-15", "end_date": "2026-07-01"}, "end_date must not be before start_date"),
+    ({"subject": None}, "subject and body must be text"),
+])
+def test_autoresponder_validation_messages_reach_the_caller(isolated_db, stub_mail, override, message):
+    params = {"domain": "demo1.example", "local_part": "john", "subject": "Away", "body": "Back soon"}
+    with pytest.raises(ValidationError, match=message):
+        hm.set_autoresponder({**params, **override})
+
+
+def test_termination_removes_routing_rows(isolated_db, stub_sysops, stub_mail, monkeypatch):
+    from sqlalchemy import select
+
+    from shared.db import write_session
+    from shared.models import Account, EmailRouting
+
+    ha.create_account({"username": "demo1"})
+    hm.create_mail_domain({"username": "demo1", "domain": "demo1.example"})
+    with write_session() as session:
+        session.add(EmailRouting(domain="demo1.example", mode="local"))
+        session.add(EmailRouting(domain="other.example", mode="local"))
+    reloads = []
+    monkeypatch.setattr(hm.handlers_email_routing, "regenerate_relay_domains_map", lambda: reloads.append(1))
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        hm.terminate_account_mail(account)
+    with write_session() as session:
+        remaining = set(session.scalars(select(EmailRouting.domain)).all())
+    assert remaining == {"other.example"}
+    assert reloads == []  # no backup-mode domain left the relay map
+
+
+def test_new_mail_domain_publishes_default_dmarc_once(isolated_db, monkeypatch, tmp_path):
+    records = {}
+    monkeypatch.setattr(hm.dkim, "find_managed_zone", lambda domain: "demo1.example")
+    monkeypatch.setattr(hm.dkim.dnsprovider, "list_records", lambda zone: [
+        {"name": f"{label}.{zone}" if label != "@" else zone, "type": rtype, "values": values}
+        for (label, rtype), values in records.items()])
+    monkeypatch.setattr(hm.dkim.dnsprovider, "upsert_record",
+                        lambda zone, label, rtype, values, **kw: records.__setitem__((label, rtype), values))
+    monkeypatch.setattr(hm.dkim.dnsprovider, "delete_record",
+                        lambda zone, label, rtype: records.pop((label, rtype), None))
+    monkeypatch.setattr(hm.dkim.shutil, "which", lambda name: None)
+    result = hm.dkim.setup_dns_signing("demo1.example")
+    assert result["dmarc_published"] is True
+    assert records[("_dmarc", "TXT")] == ['"v=DMARC1; p=none"']
+    records[("_dmarc", "TXT")] = ['"v=DMARC1; p=reject; rua=mailto:dmarc@demo1.example"']
+    assert hm.dkim.setup_dns_signing("demo1.example")["dmarc_published"] is False
+    assert "p=reject" in records[("_dmarc", "TXT")][0]
+    hm.dkim.teardown_dns_signing("demo1.example")
+    assert ("_dmarc", "TXT") in records  # a customer policy is never removed
+    records[("_dmarc", "TXT")] = ['"v=DMARC1; p=none"']
+    hm.dkim.teardown_dns_signing("demo1.example")
+    assert ("_dmarc", "TXT") not in records
+
+
+def test_default_dmarc_never_shadows_a_parent_policy(isolated_db, monkeypatch):
+    # RFC 7489: _dmarc.<sub> overrides the organizational domain's p/sp, so a
+    # default p=none under a parent p=reject would weaken it.
+    records = {("_dmarc", "TXT"): ['"v=DMARC1; p=reject"']}
+    monkeypatch.setattr(hm.dkim.dnsprovider, "list_records", lambda zone: [
+        {"name": f"{label}.{zone}" if label != "@" else zone, "type": rtype, "values": values}
+        for (label, rtype), values in records.items()])
+    upserts = []
+    monkeypatch.setattr(hm.dkim.dnsprovider, "upsert_record",
+                        lambda zone, label, rtype, values, **kw: upserts.append(label))
+    assert hm.dkim._ensure_default_dmarc("shop.demo1.example", "demo1.example") is False
+    records.clear()
+    assert hm.dkim._ensure_default_dmarc("shop.demo1.example", "demo1.example") is True
+    assert upserts == ["_dmarc.shop"]
+
+    # Delegated sub-zone: the parent lives outside this server, so public DNS
+    # decides, and an unanswered lookup publishes nothing.
+    upserts.clear()
+    answers = {"demo1.example": True}
+    monkeypatch.setattr(hm.dkim, "_public_dmarc_exists", lambda name: answers.get(name, False))
+    assert hm.dkim._ensure_default_dmarc("shop.demo1.example", "shop.demo1.example") is False
+    answers["demo1.example"] = None
+    assert hm.dkim._ensure_default_dmarc("shop.demo1.example", "shop.demo1.example") is False
+    answers["demo1.example"] = False
+    assert hm.dkim._ensure_default_dmarc("shop.demo1.example", "shop.demo1.example") is True
+    assert upserts == ["_dmarc"]

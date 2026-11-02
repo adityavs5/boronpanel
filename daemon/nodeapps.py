@@ -31,6 +31,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, NodeApp, PythonApp
 from shared.validation import (
+    NotFoundError,
     ValidationError,
     validate_app_entry_point,
     validate_app_name,
@@ -71,14 +72,14 @@ def _validate_node_version(version: str) -> str:
 def _get_account(session, username: str) -> Account:
     account = session.scalar(select(Account).where(Account.username == username))
     if account is None:
-        raise RuntimeError(f"account '{username}' not found")
+        raise NotFoundError(f"account '{username}' not found")
     return account
 
 
 def _get_domain_for_account(session, account: Account, domain_name: str) -> Domain:
     domain_row = session.scalar(select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id))
     if domain_row is None:
-        raise RuntimeError(f"domain '{domain_name}' not found for account '{account.username}'")
+        raise NotFoundError(f"domain '{domain_name}' not found for account '{account.username}'")
     return domain_row
 
 
@@ -96,7 +97,7 @@ def _get_row(session, username: str, app_id: int) -> tuple[Account, NodeApp]:
     account = _get_account(session, username)
     row = session.scalar(select(NodeApp).where(NodeApp.id == app_id, NodeApp.account_id == account.id))
     if row is None:
-        raise RuntimeError(f"NodeJS app {app_id} not found for account '{username}'")
+        raise NotFoundError(f"NodeJS app {app_id} not found for account '{username}'")
     return account, row
 
 
@@ -279,6 +280,7 @@ def update_app(params: dict) -> dict:
         # deliberately stopped their app shouldn't have an unrelated env
         # var edit silently start it back up.
         (appunits.restart_app if use_socket else appunits.restart)(unit)
+        _require_running(username, app_id, name, use_socket)
 
     with write_session() as session:
         row = session.get(NodeApp, app_id)
@@ -303,6 +305,21 @@ def delete_app(params: dict) -> dict:
     return {"id": app_id, "domain": domain_name, "name": name, "status": "deleted"}
 
 
+def _require_running(username: str, app_id: int, name: str, use_socket: bool) -> None:
+    """Same contract as pythonapps._require_running: success means the
+    process stayed up; a crash-looping app is stopped and disabled."""
+    unit = appunits.unit_name(KIND, username, app_id)
+    try:
+        appunits.wait_until_running(unit, KIND, app_id, _log_path(username, name))
+    except appunits.AppStartError:
+        (appunits.stop_disable_app if use_socket else appunits.stop_disable)(unit)
+        with write_session() as session:
+            row = session.get(NodeApp, app_id)
+            if row is not None:
+                row.enabled = False
+        raise
+
+
 def start_app(params: dict) -> dict:
     username = validate_username(params["username"])
     app_id = int(params["id"])
@@ -310,7 +327,9 @@ def start_app(params: dict) -> dict:
         _account, row = _get_row(session, username, app_id)
         row.enabled = True
         use_socket = row.backend_mode == "socket"
+        name = row.name
     (appunits.enable_start_app if use_socket else appunits.enable_start)(appunits.unit_name(KIND, username, app_id))
+    _require_running(username, app_id, name, use_socket)
     return get_app({"username": username, "id": app_id})
 
 
@@ -331,7 +350,9 @@ def restart_app(params: dict) -> dict:
     with write_session() as session:
         _account, row = _get_row(session, username, app_id)
         use_socket = row.backend_mode == "socket"
+        name = row.name
     (appunits.restart_app if use_socket else appunits.restart)(appunits.unit_name(KIND, username, app_id))
+    _require_running(username, app_id, name, use_socket)
     return get_app({"username": username, "id": app_id})
 
 

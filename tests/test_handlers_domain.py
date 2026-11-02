@@ -316,7 +316,7 @@ def test_remove_domain_restores_row_when_ols_apply_fails(isolated_db, stub_sysop
 def test_remove_domain_refuses_primary(isolated_db, stub_sysops, stub_filesystem, stub_ols):
     ha.create_account({"username": "demo1"})
     hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
-    with pytest.raises(RuntimeError):
+    with pytest.raises(hd.ValidationError, match="primary domain"):
         hd.remove_domain({"username": "demo1", "domain": "demo1.example"})
 
 
@@ -489,3 +489,102 @@ def test_nested_docroot_is_readable_by_webserver_not_other_accounts(monkeypatch)
         assert run(['setpriv','--reuid=65534','--regid=65534','--clear-groups','cat',str(target)]).stdout=='Independent site'
         assert not run(['setpriv','--reuid=65532','--regid=65532','--clear-groups','cat',str(target)]).ok
         assert docroot.stat().st_uid==65533
+
+
+# --- removal is atomic with respect to the DNS lock and cleans up fully -----
+
+
+def test_remove_domain_busy_dns_lock_changes_nothing(isolated_db, stub_sysops, stub_filesystem, stub_ols, monkeypatch):
+    """Regression: the Domain row and vhost were deleted first, then the
+    zone deletion hit the busy DNS lock and the request "failed" -- leaving
+    the zone, redirects and LSCache rows orphaned and the retry 403/502."""
+    from contextlib import contextmanager
+    from shared.validation import BusyError
+
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "addon.example", "kind": "addon"})
+
+    @contextmanager
+    def busy(**kwargs):
+        raise BusyError("A DNS backup, restore or management operation is in progress. Try again shortly.")
+        yield
+
+    monkeypatch.setattr(hd.dns_operations, "mutation_lock", busy)
+    with pytest.raises(BusyError):
+        hd.remove_domain({"username": "demo1", "domain": "addon.example"})
+    assert stub_ols["remove"] == []
+    with write_session() as session:
+        assert session.scalar(select(Domain).where(Domain.domain == "addon.example")) is not None
+
+
+def test_remove_domain_cleanup_continues_past_a_failing_step(isolated_db, stub_sysops, stub_filesystem, stub_ols,
+                                                             stub_zone_lifecycle, monkeypatch):
+    from shared.models import LscacheSettings, Redirect
+
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "addon.example", "kind": "addon"})
+    _add_zone_owned_by("demo1", "addon.example")
+    with write_session() as session:
+        session.add(Redirect(domain="addon.example", path="/old", target_url="https://example.org/updated", status_code=301))
+        session.add(LscacheSettings(domain="addon.example", enabled=True))
+
+    def broken(domain_name):
+        raise RuntimeError("relay map unavailable")
+
+    monkeypatch.setattr(hd.lscache, "delete_settings_for_domain", broken)
+    result = hd.remove_domain({"username": "demo1", "domain": "addon.example"})
+    assert result["status"] == "removed"
+    assert result["cleanup_failed"] == ["LSCache settings"]
+    assert stub_zone_lifecycle["delete"] == ["addon.example"]
+    with write_session() as session:
+        assert session.scalars(select(Redirect).where(Redirect.domain == "addon.example")).all() == []
+
+
+def test_readding_a_domain_does_not_inherit_orphaned_settings(isolated_db, stub_sysops, stub_filesystem, stub_ols):
+    """Regression: re-adding a removed domain brought back its old redirects
+    (rows are keyed by the domain name only)."""
+    from shared.models import Redirect
+
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    with write_session() as session:
+        session.add(Redirect(domain="orphan.example", path="/old", target_url="https://example.org/updated", status_code=301))
+    hd.add_domain({"username": "demo1", "domain": "orphan.example", "kind": "addon"})
+    with write_session() as session:
+        assert session.scalars(select(Redirect).where(Redirect.domain == "orphan.example")).all() == []
+
+
+def test_remove_domain_drops_staging_bookkeeping(isolated_db, stub_sysops, stub_filesystem, stub_ols):
+    from shared.models import StagingEnvironment
+
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "shop.example", "kind": "addon"})
+    with write_session() as session:
+        account = session.scalar(select(ha.Account).where(ha.Account.username == "demo1"))
+        session.add(StagingEnvironment(account_id=account.id, source_domain="shop.example",
+                                       staging_domain="staging.shop.example", is_wordpress=False))
+    hd.remove_domain({"username": "demo1", "domain": "shop.example"})
+    with write_session() as session:
+        assert session.scalars(select(StagingEnvironment)).all() == []
+
+
+def test_remove_domain_reports_dns_lookup_failure_after_vhost_removal(isolated_db, stub_sysops, stub_filesystem,
+                                                                      stub_ols, monkeypatch):
+    """Regression (review): the parent-zone lookup moved after the vhost
+    removal; an exception there failed a removal that had already happened."""
+    ha.create_account({"username": "demo1"})
+    hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
+    hd.add_domain({"username": "demo1", "domain": "blog.demo1.example", "kind": "subdomain"})
+
+    def broken(domain_name):
+        raise RuntimeError("zone lookup failed")
+
+    monkeypatch.setattr(hd, "_find_parent_zone", broken)
+    result = hd.remove_domain({"username": "demo1", "domain": "blog.demo1.example"})
+    assert result["status"] == "removed"
+    assert result["cleanup_failed"] == ["DNS records"]
+    with write_session() as session:
+        assert session.scalar(select(Domain).where(Domain.domain == "blog.demo1.example")) is None

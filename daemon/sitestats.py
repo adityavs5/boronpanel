@@ -24,16 +24,14 @@ import logging
 import time
 import re
 from collections import Counter
-from pathlib import Path
 
 from sqlalchemy import select
 
-from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, SiteStatsDaily, utcnow
 from shared.validation import validate_domain
 
-from daemon import geoip, ols, safeio
+from daemon import geoip, ols, safeio, sysops
 from daemon.usage import _all_access_log_files, access_log_lines  # reuse the exact log-file-glob convention
 
 # IP - - [01/Jul/2026:06:35:50 +0000] "METHOD /path HTTP/1.1" status bytes "referer" "user-agent"
@@ -146,14 +144,14 @@ def _compute_domain_day_stats(lines: list[dict], domain_name: str) -> dict:
     return stats.result()
 
 
-def _parse_domain_logs(home_dir: str, domain_name: str) -> dict[str, _DayStats]:
+def _parse_domain_logs(log_dir: str, domain_name: str) -> dict[str, _DayStats]:
     vhost_name = ols._vhost_name(domain_name)
     by_date = {}
     budget = [0, 0]
     deadline = time.monotonic() + 30
     oldest = (utcnow().date() - dt.timedelta(days=366)).isoformat()
     newest = (utcnow().date() + dt.timedelta(days=1)).isoformat()
-    for log_file in _all_access_log_files(home_dir, vhost_name):
+    for log_file in _all_access_log_files(log_dir, vhost_name):
         for line in access_log_lines(log_file):
             if time.monotonic() > deadline:
                 raise ValueError('Site statistics scan exceeded its resource budget')
@@ -177,8 +175,7 @@ def refresh_domain(domain_name: str) -> dict:
             raise RuntimeError(f"domain '{domain_name}' has no owning account")
         account_id, username = account.id, account.username
 
-    home_dir = str(Path(settings.home_base) / username)
-    by_date = _parse_domain_logs(home_dir, domain_name)
+    by_date = _parse_domain_logs(sysops.vhost_log_dir(username), domain_name)
     if not by_date:
         return {"domain": domain_name, "days_updated": 0}
 

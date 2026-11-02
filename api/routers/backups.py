@@ -70,6 +70,12 @@ def set_schedule(body: SetScheduleBody, identity: Identity = Depends(get_identit
     return call_daemon("backup.schedule.set", identity, **body.model_dump())
 
 
+@api_router.delete("/schedules/{schedule_id}")
+def delete_schedule(schedule_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon("backup.schedule.delete", identity, id=schedule_id)
+
+
 @api_router.get("/jobs")
 def list_all_jobs(username: str | None = None, identity: Identity = Depends(get_identity)):
     require_admin(identity)
@@ -340,6 +346,12 @@ def snapshot_create_policy(body: SnapshotPolicyBody, identity: Identity = Depend
 def snapshot_update_policy(policy_id: int, body: SnapshotPolicyBody, identity: Identity = Depends(get_identity)):
     require_admin(identity)
     return call_daemon('snapshot.policy.save', identity, id=policy_id, **body.model_dump())
+
+
+@api_router.delete('/snapshots/policies/{policy_id}')
+def snapshot_delete_policy(policy_id: int, identity: Identity = Depends(get_identity)):
+    require_admin(identity)
+    return call_daemon('snapshot.policy.delete', identity, id=policy_id)
 
 
 @api_router.post('/snapshots/policies/{policy_id}/run')

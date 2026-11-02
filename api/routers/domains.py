@@ -70,6 +70,15 @@ def reload_htaccess(username: str, domain: str, identity: Identity = Depends(get
     return call_daemon("htaccess.reload", identity, username=username, domain=domain)
 
 
+@api_router.get("/{domain}/htaccess-status")
+def htaccess_status(username: str, domain: str, identity: Identity = Depends(get_identity)):
+    """Which .htaccess access directives (Require/Order/Allow/Deny) are
+    enforced natively and which OpenLiteSpeed cannot honour."""
+    require_account_access(identity, username)
+    require_domain_access(identity, domain)
+    return call_daemon("htaccess.status", identity, username=username, domain=domain)
+
+
 @ui_router.post("")
 def ui_add_domain(
     username: str,

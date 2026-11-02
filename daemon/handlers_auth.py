@@ -20,7 +20,7 @@ from shared.db import write_session
 from shared.config import settings
 from shared.models import Account, ApiToken, ImpersonationSession, LoginAttempt, LoginChallenge, LoginFailureEvent, PanelUser, SecurityPolicySettings, Session, TotpCredential, TotpRecoveryCode, utcnow
 from shared.passwords import hash_password, verify_password
-from shared.validation import ValidationError, generate_strong_password, validate_password_strength, validate_username
+from shared.validation import ConflictError, NotFoundError, ValidationError, generate_strong_password, validate_password_strength, validate_username
 from shared.session_ids import session_digest
 
 from daemon import events
@@ -207,7 +207,7 @@ def create_panel_user(params: dict) -> dict:
     with write_session() as session:
         existing = session.scalar(select(PanelUser).where(PanelUser.username == username))
         if existing is not None:
-            raise RuntimeError(f"panel user '{username}' already exists")
+            raise ConflictError(f"panel user '{username}' already exists")
         user = PanelUser(
             username=username,
             password_hash=hash_password(password),
@@ -257,7 +257,7 @@ def set_administrator_status(params: dict) -> dict:
     with write_session() as session:
         user = session.scalar(select(PanelUser).where(PanelUser.username == username, PanelUser.role == "admin"))
         if user is None:
-            raise RuntimeError(f"administrator '{username}' not found")
+            raise NotFoundError(f"administrator '{username}' not found")
         if disabled and username == actor_username:
             raise ValidationError("you cannot disable your own administrator login")
         if disabled and not user.disabled:
@@ -297,7 +297,7 @@ def set_panel_user_password(params: dict) -> dict:
     with write_session() as session:
         user = session.scalar(select(PanelUser).where(PanelUser.username == username))
         if user is None:
-            raise RuntimeError(f"panel user '{username}' not found")
+            raise NotFoundError(f"panel user '{username}' not found")
         user.password_hash = hash_password(new_password)
         session.flush()
         # Security audit finding F11: a password change is frequently
@@ -831,15 +831,17 @@ def create_api_token(params: dict) -> dict:
         raise ValidationError('Token expiry must be between 1 and 90 days')
     expires = utcnow() + dt.timedelta(days=days)
 
-    # Set by borond's dispatcher from the root-resolved credential (the
-    # session's administrator, or a token's own creator); never client input.
+    # Set by borond's dispatcher from the root-resolved credential: the
+    # session's administrator, and None for an API token, because a token
+    # that could mint tokens would leave descendants alive after the leaked
+    # parent is revoked. Never client input.
     creator_id = params.get("_creator_panel_user_id")
     raw_token, token_hash = _generate_token(role)
     with write_session() as db:
         creator = (db.get(PanelUser, creator_id)
                    if isinstance(creator_id, int) and not isinstance(creator_id, bool) else None)
         if creator is None or creator.disabled or creator.role != 'admin':
-            raise ValidationError('API tokens can only be created by an active administrator')
+            raise ValidationError('API tokens can only be created from an active administrator session')
         if role == 'customer':
             account = db.get(Account, account_id) if account_id is not None else None
             if account is None or account.status != 'active':
@@ -869,7 +871,7 @@ def revoke_api_token(params: dict) -> dict:
     with write_session() as db:
         row = db.get(ApiToken, token_id)
         if row is None:
-            raise RuntimeError("token not found")
+            raise NotFoundError("token not found")
         from shared.models import utcnow
 
         row.revoked_at = utcnow()

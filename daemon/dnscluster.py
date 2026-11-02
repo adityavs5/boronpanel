@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from sqlalchemy import select
 
-from daemon import appcrypto, powerdns
+from daemon import appcrypto, dnsprovider, powerdns
 from shared.db import write_session
 from shared.models import (
     CloudflareZone,
@@ -404,7 +404,7 @@ def _cpanel_record_params(zone: str, rr: dict, value: str) -> dict:
     elif rtype == "CNAME": params["cname"] = value
     elif rtype == "NS": params["nsdname"] = value
     elif rtype == "PTR": params["ptrdname"] = value
-    elif rtype == "TXT": params["txtdata"] = value.strip('"')
+    elif rtype == "TXT": params["txtdata"] = dnsprovider.txt_text(value)  # joins 255-octet strings
     elif rtype == "MX":
         preference, exchange = value.split(maxsplit=1)
         params.update(preference=preference, exchange=exchange)

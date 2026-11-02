@@ -22,7 +22,7 @@ import pwd
 import pymysql
 
 from shared.config import settings
-from shared.validation import ValidationError, validate_domain, validate_mailbox_local_part
+from shared.validation import ConflictError, ValidationError, validate_domain, validate_mailbox_local_part
 
 from daemon.procutil import run
 from daemon.mail_mutation import serialized
@@ -196,7 +196,8 @@ def create_mailbox(domain: str, local_part: str, password: str, quota_mb: int = 
 
 
 @serialized
-def delete_mailbox(domain: str, local_part: str) -> None:
+def delete_mailbox(domain: str, local_part: str) -> bool:
+    """Returns True when a mail_user row existed and was deleted."""
     validate_domain(domain)
     validate_mailbox_local_part(local_part)
     domain_id = _domain_id(domain)
@@ -204,11 +205,13 @@ def delete_mailbox(domain: str, local_part: str) -> None:
     try:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM mail_user WHERE domain_id = %s AND local_part = %s", (domain_id, local_part))
+            deleted = cur.rowcount > 0
     finally:
         conn.close()
 
     maildir = f"{VMAIL_BASE}/{domain}/{local_part}"
     run(["rm", "-rf", "--", maildir], check=False)
+    return deleted
 
 
 def list_mailboxes(domain: str) -> list[dict]:
@@ -249,18 +252,28 @@ def set_mailbox_active(domain: str, local_part: str, active: bool) -> bool:
 
 
 @serialized
-def change_mailbox_password(domain: str, local_part: str, new_password: str) -> None:
+def change_mailbox_password(domain: str, local_part: str, new_password: str) -> bool:
+    """Returns False when no such mailbox exists (nothing is changed).
+
+    The row is looked up first: MariaDB's rowcount counts *changed* rows, so
+    an UPDATE alone cannot tell "missing" from "same value".
+    """
     validate_domain(domain)
     validate_mailbox_local_part(local_part)
     domain_id = _domain_id(domain)
-    password_hash = hash_password(new_password)
     conn = _connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE mail_user SET password = %s WHERE domain_id = %s AND local_part = %s",
-                (password_hash, domain_id, local_part),
+                "SELECT id FROM mail_user WHERE domain_id = %s AND local_part = %s",
+                (domain_id, local_part),
             )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            cur.execute("UPDATE mail_user SET password = %s WHERE id = %s",
+                        (hash_password(new_password), row["id"]))
+            return True
     finally:
         conn.close()
 
@@ -299,11 +312,12 @@ def _mail_user_id(domain_id: int, local_part: str) -> int:
 # as mailbox CRUD -- it's a live SQL lookup, not a static config file.
 #
 # A forwarder does not require (or preclude) a real mailbox at the same
-# address -- Postfix's virtual_alias_maps is consulted BEFORE
-# virtual_mailbox_maps, so if both exist for one address the forward
-# wins and the real mailbox never receives that mail. This matches the
-# goal's literal ask ("forward to any external address"), not a "forward
-# and also keep a copy" model, which was not requested.
+# address. Postfix's virtual_alias_maps is consulted BEFORE
+# virtual_mailbox_maps, so the forwards query (mysql-virtual-forwards.cf,
+# scripts/upgrade_runtime.FORWARDS_QUERY) also maps an existing active
+# mailbox to itself: the mailbox keeps its copy and the forward target gets
+# another, the cPanel behaviour users expect. Without that self-mapping the
+# forward silently replaced local delivery.
 
 
 @serialized
@@ -314,10 +328,15 @@ def create_forward(domain: str, local_part: str, destination: str) -> dict:
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO mail_forward (domain_id, source_local_part, destination, active) VALUES (%s, %s, %s, 1)",
-                (domain_id, local_part, destination),
-            )
+            try:
+                cur.execute(
+                    "INSERT INTO mail_forward (domain_id, source_local_part, destination, active) VALUES (%s, %s, %s, 1)",
+                    (domain_id, local_part, destination),
+                )
+            except pymysql.err.IntegrityError as exc:
+                # uq_forward (domain_id, source_local_part, destination)
+                raise ConflictError(
+                    f"forwarder '{local_part}@{domain}' -> '{destination}' already exists") from exc
             forward_id = cur.lastrowid
     finally:
         conn.close()
@@ -325,7 +344,7 @@ def create_forward(domain: str, local_part: str, destination: str) -> dict:
 
 
 @serialized
-def delete_forward(domain: str, local_part: str, destination: str) -> None:
+def delete_forward(domain: str, local_part: str, destination: str) -> bool:
     validate_domain(domain)
     domain_id = _domain_id(domain)
     conn = _connect()
@@ -335,6 +354,7 @@ def delete_forward(domain: str, local_part: str, destination: str) -> None:
                 "DELETE FROM mail_forward WHERE domain_id = %s AND source_local_part = %s AND destination = %s",
                 (domain_id, local_part, destination),
             )
+            return cur.rowcount > 0
     finally:
         conn.close()
 

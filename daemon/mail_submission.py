@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from email import policy
 from email.parser import BytesParser
-from email.utils import getaddresses, parseaddr
+from email.utils import formatdate, getaddresses, make_msgid, parseaddr
 import os
 from pathlib import Path
 import subprocess
@@ -18,6 +18,7 @@ import subprocess
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from daemon import mail_dkim_signer
 from daemon.mail_hardening import postfix_sendmail
 from shared.config import settings
 from shared.db import make_engine
@@ -27,11 +28,15 @@ from shared.validation import validate_email_address
 MAX_MESSAGE_BYTES = 25 * 1024 * 1024
 MAX_HEADER_BYTES = 256 * 1024
 MAX_RECIPIENTS = 100
-SIGN_TIMEOUT_SECONDS = 30
+MAX_KEY_BYTES = 64 * 1024
 
 
 class MailSubmissionError(ValueError):
-    pass
+    """The message itself is not acceptable (a permanent policy refusal)."""
+
+
+class MailSubmissionUnavailable(MailSubmissionError):
+    """Signing or queueing infrastructure failed; the sender should retry."""
 
 
 def _session() -> Session:
@@ -173,6 +178,12 @@ def authorize_message(raw: bytes, envelope_sender: str | None, *, username: str,
                 raise MailSubmissionError(f"{name} must use a domain owned by this account")
     if envelope_domain != from_domain:
         raise MailSubmissionError("envelope sender and From header must use the same hosted domain")
+    # Postfix would add these after signing, leaving them outside the
+    # signature; RFC 5322 requires both, so add them before the DKIM hash.
+    if "Date" not in message:
+        message["Date"] = formatdate(localtime=True)
+    if "Message-ID" not in message:
+        message["Message-ID"] = make_msgid(domain=from_domain)
     return message.as_bytes(policy=policy.SMTP), envelope_address, from_domain
 
 
@@ -188,20 +199,23 @@ def sign_if_configured(raw: bytes, domain: str) -> bytes:
 
 
 def _sign(raw: bytes, domain: str, selector: str, key_path: Path) -> bytes:
-    if not key_path.is_file():
-        raise MailSubmissionError("DKIM signing key is unavailable")
+    """rsa-sha256 relaxed/relaxed, in-process (daemon/mail_dkim_signer.py).
+
+    Signing never depends on PATH or an external test utility, so it works
+    the same in the Postfix pipe(8) filter, the sendmail socket service and
+    borond notifications.
+    """
     try:
-        result = subprocess.run(
-            ["opendkim-testmsg", "-C", "-d", domain, "-s", selector, "-k", str(key_path)],
-            input=raw, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=SIGN_TIMEOUT_SECONDS, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise MailSubmissionError("DKIM signing service is unavailable") from exc
-    if result.returncode != 0 or len(result.stdout) > MAX_MESSAGE_BYTES + MAX_HEADER_BYTES:
-        detail = result.stderr.decode(errors="replace").strip()[:300]
-        raise MailSubmissionError(f"DKIM signing failed{': ' + detail if detail else ''}")
-    return result.stdout
+        with key_path.open("rb") as handle:
+            pem = handle.read(MAX_KEY_BYTES + 1)
+    except OSError as exc:
+        raise MailSubmissionUnavailable("DKIM signing key is unavailable") from exc
+    if len(pem) > MAX_KEY_BYTES:
+        raise MailSubmissionUnavailable("DKIM signing key exceeds its safety limit")
+    try:
+        return mail_dkim_signer.sign(raw, domain=domain, selector=selector, private_key_pem=pem)
+    except mail_dkim_signer.DkimSigningError as exc:
+        raise MailSubmissionUnavailable(f"DKIM signing failed: {exc}") from exc
 
 
 def sign_from_opendkim_table(raw: bytes, domain: str) -> bytes:
@@ -213,10 +227,10 @@ def sign_from_opendkim_table(raw: bytes, domain: str) -> bytes:
     table = Path("/etc/opendkim/boron/KeyTable")
     try:
         if table.stat().st_size > 1024 * 1024:
-            raise MailSubmissionError("DKIM key table exceeds its safety limit")
+            raise MailSubmissionUnavailable("DKIM key table exceeds its safety limit")
         lines = table.read_text().splitlines()
     except OSError as exc:
-        raise MailSubmissionError("DKIM signing table is unavailable") from exc
+        raise MailSubmissionUnavailable("DKIM signing table is unavailable") from exc
     suffix = f"._domainkey.{domain}"
     for line in lines:
         fields = line.split()
@@ -229,7 +243,7 @@ def sign_from_opendkim_table(raw: bytes, domain: str) -> bytes:
         key_path = Path(raw_path)
         expected = (Path(settings.dkim_base_dir) / domain / f"{selector}.private").resolve()
         if key_path.resolve() != expected:
-            raise MailSubmissionError("DKIM key path failed validation")
+            raise MailSubmissionUnavailable("DKIM key path failed validation")
         return _sign(raw, domain, selector, expected)
     return raw
 
@@ -237,7 +251,12 @@ def sign_from_opendkim_table(raw: bytes, domain: str) -> bytes:
 def submit_via_postfix(raw: bytes, envelope_sender: str, recipients: list[str]) -> None:
     if not recipients or len(recipients) > MAX_RECIPIENTS:
         raise MailSubmissionError("message must have between 1 and 100 recipients")
-    clean_recipients = [validate_email_address(item) for item in recipients]
+    try:
+        clean_recipients = [validate_email_address(item) for item in recipients]
+    except ValueError as exc:
+        # A recipient this queue cannot accept is a permanent refusal; left
+        # unwrapped it reached the filter's crash handler and was retried.
+        raise MailSubmissionError("message has an invalid recipient address") from exc
     try:
         result = subprocess.run(
             [postfix_sendmail(), "-G", "-i", "-f", envelope_sender, "--", *clean_recipients],
@@ -245,9 +264,9 @@ def submit_via_postfix(raw: bytes, envelope_sender: str, recipients: list[str]) 
             timeout=30, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise MailSubmissionError("local mail queue is unavailable") from exc
+        raise MailSubmissionUnavailable("local mail queue is unavailable") from exc
     if result.returncode != 0:
-        raise MailSubmissionError("local mail queue rejected the message")
+        raise MailSubmissionUnavailable("local mail queue rejected the message")
 
 
 def prepare_account_message(uid: int, raw: bytes, envelope_sender: str | None) -> tuple[bytes, str]:

@@ -93,7 +93,7 @@ def set_override(params: dict) -> dict:
 
     from daemon import ols
 
-    ols.refresh_vhost(account_snapshot)
+    ols.refresh_vhost(account_snapshot, recycle_php=True)
     return result
 
 
@@ -113,7 +113,7 @@ def delete_override(params: dict) -> dict:
 
     from daemon import ols
 
-    ols.refresh_vhost(account_snapshot)
+    ols.refresh_vhost(account_snapshot, recycle_php=True)
     return {"domain": domain, "status": "deleted"}
 
 

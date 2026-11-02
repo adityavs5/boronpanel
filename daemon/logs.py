@@ -1,12 +1,16 @@
 """Per-account error log viewer (Phase 3 feature 9).
 
 Strictly scoped to the requesting account's own log files -- every path
-is built from known-safe components (the account's own home dir, plus a
-vhost name derived from a domain already confirmed to belong to that
-account) and then re-verified with the same os.path.realpath jail check
-daemon/filemanager.py uses, so even a bug in the "safe components" logic
-above it can't actually escape the account's own logs directory. No raw
+is built from known-safe components (the account's own log directory, plus
+a vhost name derived from a domain already confirmed to belong to that
+account) and opened through no-follow directory descriptors. No raw
 user-supplied path segment ever reaches the filesystem here.
+
+Two locations: the PHP error log is written by the account's own PHP
+workers into ~/logs; the per-vhost OLS access/error logs are written by
+the web server into the root-owned sysops.vhost_log_dir(), which the
+account cannot write. This viewer and download_log are the account's
+read-only window onto the latter.
 """
 from __future__ import annotations
 
@@ -25,7 +29,7 @@ from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain
 from shared.validation import ValidationError, validate_domain, validate_username
-from daemon import appunits, safeio
+from daemon import safeio, sysops
 
 MAX_LINES = 500
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
@@ -40,21 +44,20 @@ class LogsError(Exception):
     pass
 
 
-def _account_log_dir(username: str) -> str:
-    home = os.path.realpath(f"{settings.home_base}/{username}")
-    return os.path.join(home, "logs")
+def _log_location(username: str, log_type: str) -> tuple[str, str]:
+    """(trusted root, relative directory) holding one log type."""
+    if log_type == "php":
+        return settings.home_base, f"{username}/logs"
+    root, _, name = sysops.vhost_log_dir(username).rpartition("/")
+    return root, name
 
 
-def _jailed_log_path(username: str, filename: str) -> str:
-    """filename is always derived from validated, known-safe inputs by
-    the callers below -- this re-verification is defense in depth, not
-    the primary defense (there is no user-supplied path segment to
-    defend against in the first place)."""
-    log_dir = _account_log_dir(username)
-    candidate = os.path.realpath(os.path.join(log_dir, filename))
-    if candidate != log_dir and not candidate.startswith(log_dir + os.sep):
-        raise LogsError("resolved log path escapes the account's own log directory")
-    return candidate
+def _check_segment_name(filename: str) -> str:
+    """filename is always derived from validated, known-safe inputs by the
+    callers below -- defense in depth, not the primary defense."""
+    if not filename or "/" in filename or filename in (".", ".."):
+        raise LogsError("log segment name is not a single file name")
+    return filename
 
 
 def _primary_domain(username: str, account_id: int) -> str:
@@ -81,13 +84,37 @@ def _vhost_name(domain: str) -> str:
     return domain.replace(".", "_")
 
 
-def _tail_lines(path: str, max_lines: int) -> list[str]:
+def _tail_lines(location: tuple[str, str], name: str, max_lines: int) -> list[str]:
     # Open through anchored directory descriptors, never follow a path that a
     # tenant can replace between validation and reading, and bound bytes.
     try:
-        return appunits.tail_log_file(path, max_lines)
-    except (safeio.UnsafePathError, OSError, ValueError) as exc:
-        raise LogsError("log path is not a safe regular file") from exc
+        directory = safeio.open_dir_beneath(*location)
+    except FileNotFoundError:
+        return []
+    except (safeio.UnsafePathError, OSError) as exc:
+        raise LogsError("log directory is inaccessible or unsafe") from exc
+    try:
+        try:
+            fd = os.open(_check_segment_name(name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=directory)
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            raise LogsError("log path is not a safe regular file") from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise LogsError("log path is not a safe regular file")
+            start = max(0, info.st_size - 256 * 1024)
+            os.lseek(fd, start, os.SEEK_SET)
+            content = os.read(fd, 256 * 1024).decode("utf-8", errors="replace").splitlines()
+            if start and content:
+                content.pop(0)
+            return content[-max(1, min(int(max_lines), 1000)):]
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory)
 
 
 def _base_filename(log_type: str, domain_name: str | None) -> str:
@@ -97,10 +124,9 @@ def _base_filename(log_type: str, domain_name: str | None) -> str:
     return f"{_vhost_name(domain_name)}-{suffix}.log"
 
 
-def _safe_segments(username: str, base_name: str) -> list[dict]:
-    log_dir = _account_log_dir(username)
+def _safe_segments(location: tuple[str, str], base_name: str) -> list[dict]:
     try:
-        directory = safeio.open_dir_beneath(settings.home_base, f"{username}/logs")
+        directory = safeio.open_dir_beneath(*location)
     except FileNotFoundError:
         return []
     except (safeio.UnsafePathError, OSError) as exc:
@@ -138,14 +164,14 @@ def _safe_segments(username: str, base_name: str) -> list[dict]:
     return active + rotated
 
 
-def _safe_read_segment(username: str, name: str, *, max_bytes: int) -> bytes:
+def _safe_read_segment(location: tuple[str, str], name: str, *, max_bytes: int) -> bytes:
     try:
-        directory = safeio.open_dir_beneath(settings.home_base, f"{username}/logs")
+        directory = safeio.open_dir_beneath(*location)
     except (FileNotFoundError, safeio.UnsafePathError, OSError) as exc:
         raise LogsError("log directory is missing or inaccessible") from exc
     try:
         try:
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+            fd = os.open(_check_segment_name(name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
         except OSError as exc:
             raise LogsError("log segment is missing or inaccessible") from exc
         try:
@@ -170,8 +196,8 @@ def _safe_read_segment(username: str, name: str, *, max_bytes: int) -> bytes:
         os.close(directory)
 
 
-def _segment_lines(username: str, name: str, lines: int) -> list[str]:
-    raw = _safe_read_segment(username, name, max_bytes=MAX_VIEW_BYTES)
+def _segment_lines(location: tuple[str, str], name: str, lines: int) -> list[str]:
+    raw = _safe_read_segment(location, name, max_bytes=MAX_VIEW_BYTES)
     if name.endswith(".gz"):
         try:
             with gzip.GzipFile(fileobj=io.BytesIO(raw)) as archive:
@@ -248,9 +274,9 @@ def get_log(params: dict) -> dict:
         else:
             domain_name = _primary_domain(username, account_id)
         domain_used = domain_name
-    base_name = _base_filename(log_type, domain_used)
-    _jailed_log_path(username, base_name)
-    segments = _safe_segments(username, base_name)
+    base_name = _check_segment_name(_base_filename(log_type, domain_used))
+    location = _log_location(username, log_type)
+    segments = _safe_segments(location, base_name)
     requested_segment = str(params.get("segment") or base_name)
     if requested_segment not in {row["name"] for row in segments}:
         if requested_segment != base_name:
@@ -263,9 +289,9 @@ def get_log(params: dict) -> dict:
         if params.get("_metadata_only"):
             all_lines = []
         elif selected["active"] and not selected["compressed"]:
-            all_lines = _tail_lines(_jailed_log_path(username, requested_segment), lines_requested)
+            all_lines = _tail_lines(location, requested_segment, lines_requested)
         else:
-            all_lines = _segment_lines(username, requested_segment, lines_requested)
+            all_lines = _segment_lines(location, requested_segment, lines_requested)
     filtered = []
     for line in all_lines:
         if not _matches_severity(line, severity):
@@ -296,7 +322,7 @@ def download_log(params: dict) -> dict:
     name = listing["segment"]
     if listing["state"] == "missing":
         raise LogsError("log segment does not exist")
-    raw = _safe_read_segment(listing["username"], name, max_bytes=MAX_DOWNLOAD_BYTES)
+    raw = _safe_read_segment(_log_location(listing["username"], listing["type"]), name, max_bytes=MAX_DOWNLOAD_BYTES)
     return {
         "filename": name,
         "content_type": "application/gzip" if name.endswith(".gz") else "text/plain; charset=utf-8",

@@ -28,11 +28,13 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import re
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from itsdangerous import BadSignature, URLSafeTimedSerializer
+from pydantic import BaseModel
 from sqlalchemy import select
 from starlette.background import BackgroundTask
 from starlette.requests import Request
@@ -167,6 +169,19 @@ def _self_username(identity: Identity) -> str | None:
         return acc.username if acc else None
 
 
+class ChangePermissionsBody(BaseModel):
+    paths: list[str]
+    mode: str
+
+
+@api_router.post("/permissions")
+def change_permissions(username: str, body: ChangePermissionsBody, identity: Identity = Depends(get_identity)):
+    """Change Permissions for one or more File Manager entries (home-relative
+    paths as FileBrowser shows them, e.g. /public_html/index.php)."""
+    require_account_access(identity, username)
+    return call_daemon("fb.chmod", identity, username=username, paths=body.paths, mode=body.mode)
+
+
 @api_router.get("/launch")
 def launch(username: str, identity: Identity = Depends(get_identity)):
     """Authorize + audit + set the target cookie, then redirect into FB Quantum.
@@ -290,6 +305,67 @@ def _is_spa_shell(request: Request, upstream: httpx.Response) -> bool:
 _ACTIVE_DOCUMENT_TYPES = {"image/svg+xml", "application/xhtml+xml", "application/xml", "text/xml"}
 
 
+logger = logging.getLogger(__name__)
+
+# FileBrowser Quantum reports many ordinary user mistakes (a missing path, a
+# traversal attempt, a link that resolves outside the home) as HTTP 500 with
+# its Go error text, which carries absolute host paths such as
+# /home/<user>/... or a symlink target outside the home. Data API errors are
+# re-issued as a 4xx with a fixed message; the original text is only logged.
+_FB_ERROR_RULES = (
+    (re.compile(r"traversal|invalid entry path|outside|not allowed|illegal|forbidden", re.I),
+     400, "That path is not allowed."),
+    (re.compile(r"permission denied|operation not permitted|read-only", re.I),
+     403, "You do not have permission to change that file or folder."),
+    (re.compile(r"no such file|not exist|not found|could not resolve", re.I),
+     404, "That file or folder does not exist."),
+    (re.compile(r"already exists|file exists", re.I),
+     409, "A file or folder with that name already exists."),
+    (re.compile(r"quota|no space left|too large", re.I),
+     413, "The operation would exceed the available disk space or size limit."),
+)
+_FB_STATUS_MESSAGES = {
+    400: "The file operation was rejected.",
+    401: "Your file manager session has ended; open Files from the panel again.",
+    403: "You do not have permission to change that file or folder.",
+    404: "That file or folder does not exist.",
+    405: "That file operation is not supported.",
+    409: "A file or folder with that name already exists.",
+    413: "The upload is too large.",
+    415: "That file type is not supported for this operation.",
+    422: "The file operation was rejected.",
+}
+MAX_FB_ERROR_BODY = 64 * 1024
+
+
+def fb_error_response(status_code: int, body: bytes) -> JSONResponse:
+    """A path-free client error for a failed FileBrowser data API call."""
+    text = body[:MAX_FB_ERROR_BODY].decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict) and isinstance(payload.get("message"), str):
+            text = payload["message"]
+    except ValueError:
+        pass
+    rule = next(((rule_status, rule_message) for pattern, rule_status, rule_message in _FB_ERROR_RULES
+                 if pattern.search(text)), None)
+    if 400 <= status_code < 500:
+        # A 4xx is already the right class (the SPA reacts to 401/404/409
+        # itself); only its text is replaced. A rule's message is used only
+        # when it describes the same status, so "method not allowed" on a
+        # 405 never turns into a path error.
+        status = status_code
+        message = (rule[1] if rule is not None and rule[0] == status_code
+                   else _FB_STATUS_MESSAGES.get(status_code, "The file operation was rejected."))
+    elif rule is not None:
+        status, message = rule
+    else:
+        status, message = 502, "The file manager could not complete that operation."
+    logger.info("file manager upstream error %s mapped to %s: %s", status_code, status, text[:500])
+    return JSONResponse({"status": status, "message": message, "detail": message}, status_code=status,
+                        headers={"Cache-Control": "no-store"})
+
+
 def _is_active_document(upstream: httpx.Response) -> bool:
     media_type = upstream.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     return media_type in _ACTIVE_DOCUMENT_TYPES
@@ -386,7 +462,6 @@ async def _proxy_content(request: Request, path: str, target: str, client):
                                  headers={'Cache-Control': 'no-store'})
 
     if request.method == 'GET' and path.rstrip('/') == 'api/settings/sources' and upstream.status_code == 200:
-        import asyncio
         try:
             body = bytearray()
             async with asyncio.timeout(15):
@@ -411,7 +486,6 @@ async def _proxy_content(request: Request, path: str, target: str, client):
     # rest.
     is_html = upstream.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "text/html"
     if is_html and not is_data_api and _is_spa_shell(request, upstream):
-        import asyncio
         try:
             body = bytearray()
             async with asyncio.timeout(30):
@@ -428,6 +502,20 @@ async def _proxy_content(request: Request, path: str, target: str, client):
         body = accessible_spa_shell(bytes(body))
         headers["content-security-policy"] = html_csp(body)
         return Response(content=body, status_code=upstream.status_code, headers=headers)
+
+    if is_data_api and upstream.status_code >= 400:
+        try:
+            body = bytearray()
+            async with asyncio.timeout(15):
+                async for chunk in upstream.aiter_bytes(chunk_size=65536):
+                    body.extend(chunk[:MAX_FB_ERROR_BODY - len(body)])
+                    if len(body) >= MAX_FB_ERROR_BODY:
+                        break
+        except (TimeoutError, httpx.HTTPError):
+            pass
+        finally:
+            await upstream.aclose()
+        return fb_error_response(upstream.status_code, bytes(body))
 
     headers = dict(_build_response_headers(upstream))
     if is_html:

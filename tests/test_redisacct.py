@@ -247,3 +247,15 @@ def test_failed_redis_teardown_retains_recovery_metadata(account_with_home, monk
     with write_session() as session:
         assert session.get(RedisInstance, created["id"]) is not None
     assert redisacct._conf_path(created["unit"]).exists()
+
+
+def test_connection_info_refused_while_redis_is_disabled(account_with_home, fake_systemctl):
+    # Live 3.3.1: a disabled instance still returned 200 with a socket path
+    # that no longer existed, while flush correctly refused.
+    with pytest.raises(ValidationError, match="Enable Redis"):
+        redisacct.get_connection_info({"username": "demo1"})
+    redisacct.enable_redis({"username": "demo1"})
+    assert redisacct.get_connection_info({"username": "demo1"})["socket_path"] == redisacct.socket_path("demo1")
+    redisacct.disable_redis({"username": "demo1"})
+    with pytest.raises(ValidationError, match="Enable Redis"):
+        redisacct.get_connection_info({"username": "demo1"})

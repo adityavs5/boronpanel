@@ -24,6 +24,11 @@ def fixed_app_env_key(monkeypatch, tmp_path):
     units = tmp_path / "units"
     units.mkdir()
     monkeypatch.setattr(nodeapps.appunits, "UNITS_DIR", units)
+    # Start-health polling: no real waiting in unit tests.
+    monkeypatch.setattr(nodeapps.appunits, "START_SETTLE_SECONDS", 0)
+    monkeypatch.setattr(nodeapps.appunits, "START_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(nodeapps.appunits, "START_POLL_SECONDS", 0)
+    monkeypatch.setattr(nodeapps.appunits, "private_socket_ready", lambda *args: True)
 
 
 @pytest.fixture()
@@ -41,6 +46,9 @@ def fake_systemctl(monkeypatch):
         calls.append(args)
         if args[0] == "systemctl" and args[1] in ("is-active", "is-enabled"):
             return ProcResult(args=args, returncode=0, stdout="active\n" if args[1] == "is-active" else "enabled\n", stderr="")
+        if args[:2] == ["systemctl", "show"]:
+            return ProcResult(args=args, returncode=0,
+                              stdout="ActiveState=active\nSubState=running\nNRestarts=0\nMainPID=4242\n", stderr="")
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(nodeapps.appunits, "run", fake_run)
@@ -374,3 +382,24 @@ def test_app_retires_welcome_only_after_route_provisioning(account_with_domain, 
     else:
         nodeapps.create_app(params)
         assert not (docroot / 'welcome.html').exists()
+
+
+def test_update_of_running_app_reports_crash_loop(account_with_domain, monkeypatch):
+    """Regression (review): an edit that restarts the app reported success
+    while the new entry point crash-looped (start/restart already checked)."""
+    created = nodeapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "server.js"})
+    nodeapps.start_app({"username": "demo1", "id": created["id"]})
+    restarts = iter(range(1000))
+
+    def crash_looping(args, timeout=30, **kwargs):
+        if args[:2] == ["systemctl", "show"]:
+            return ProcResult(args=args, returncode=0,
+                              stdout=f"ActiveState=active\nSubState=running\nNRestarts={next(restarts)}\nMainPID=1\n", stderr="")
+        return ProcResult(args=args, returncode=0, stdout="active\n", stderr="")
+
+    monkeypatch.setattr(nodeapps.appunits, "run", crash_looping)
+    with pytest.raises(nodeapps.appunits.AppStartError):
+        nodeapps.update_app({"username": "demo1", "id": created["id"], "entry_point": "index.js"})
+    with write_session() as session:
+        row = session.get(NodeApp, created["id"])
+        assert row.enabled is False and row.entry_point == "index.js"

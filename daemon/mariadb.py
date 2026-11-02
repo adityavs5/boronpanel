@@ -14,11 +14,14 @@ exists with the necessary CREATE/DROP/GRANT privileges.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 import pymysql
 
 from shared.config import settings
-from shared.validation import ValidationError, generate_strong_password, validate_db_identifier
+from shared.validation import ConflictError, ValidationError, generate_strong_password, validate_db_identifier
+
+logger = logging.getLogger("borond.mariadb")
 
 
 class MariaDbError(Exception):
@@ -93,11 +96,46 @@ def database_grantees(db_name: str) -> list[tuple[str, str]]:
 def require_ungranted_database_name(db_name: str) -> None:
     grantees = database_grantees(db_name)
     if grantees:
+        # Principals are internal (other tenants' or service logins); keep
+        # them in the daemon log for the administrator, never in the reply.
         principals = ", ".join(f"{user}@{host}" for user, host in grantees[:5])
-        raise ValidationError(
-            f"database name '{db_name}' still has native grants ({principals}); "
-            "remove or reconcile those grants before reusing the name"
+        logger.warning("database name %s still has native grants: %s", db_name, principals)
+        raise ConflictError(
+            f"The database name '{db_name}' is still referenced by existing MariaDB privileges. "
+            "Choose another name, or ask an administrator to reconcile the leftover privileges"
         )
+
+
+_LOOPBACK_BIND = {"127.0.0.1", "::1", "localhost"}
+
+
+def remote_access_status() -> dict:
+    """Whether a non-localhost database login can ever reach this server.
+
+    The panel never changes MariaDB's listener: a server bound to loopback
+    (the installed default) or with skip_networking accepts no remote client,
+    whatever host a login is registered for.
+    """
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT @@GLOBAL.bind_address, @@GLOBAL.skip_networking, @@GLOBAL.port")
+            bind_address, skip_networking, port = cur.fetchone()
+    finally:
+        conn.close()
+    addresses = {item.strip().lower() for item in str(bind_address or "").split(",") if item.strip()}
+    listening = not int(skip_networking or 0) and (not addresses or bool(addresses - _LOOPBACK_BIND))
+    return {"available": listening, "bind_address": str(bind_address or ""), "port": int(port or 3306)}
+
+
+def require_remote_access(host: str) -> None:
+    if host == "localhost" or remote_access_status()["available"]:
+        return
+    raise ConflictError(
+        "Remote database access is not enabled on this server: MariaDB accepts local "
+        "connections only. An administrator must enable MariaDB network listening and "
+        "open port 3306 in the firewall before remote hosts can be added"
+    )
 
 
 def user_exists(db_user: str, host: str = "localhost") -> bool:

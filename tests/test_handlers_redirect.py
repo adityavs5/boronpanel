@@ -59,15 +59,43 @@ def test_create_redirect_rejects_bad_status_code(account_with_domain, stub_ols):
         hr.create_redirect({"domain": "demo1.example", "path": "/old", "target_url": "https://example.com/new", "status_code": 307})
 
 
-def test_create_redirect_upserts_existing_path(account_with_domain, stub_ols):
+def test_create_redirect_rejects_existing_path_without_overwriting(account_with_domain, stub_ols):
+    """Regression: a second POST for the same path silently replaced it."""
+    from shared.validation import ConflictError
+
     hr.create_redirect({"domain": "demo1.example", "path": "/old", "target_url": "https://example.com/first", "status_code": 301})
-    result = hr.create_redirect({"domain": "demo1.example", "path": "/old", "target_url": "https://example.com/second", "status_code": 302})
-    assert result["target_url"] == "https://example.com/second"
-    assert result["status_code"] == 302
+    with pytest.raises(ConflictError):
+        hr.create_redirect({"domain": "demo1.example", "path": "/old", "target_url": "https://example.com/second", "status_code": 302})
 
     with write_session() as session:
         rows = session.scalars(select(Redirect).where(Redirect.domain == "demo1.example")).all()
-        assert len(rows) == 1  # upsert, not a duplicate row
+        assert [(r.target_url, r.status_code) for r in rows] == [("https://example.com/first", 301)]
+
+
+def test_update_redirect_of_missing_path_is_not_found(account_with_domain, stub_ols):
+    """Regression: PUT on a path that did not exist created it."""
+    from shared.validation import NotFoundError
+
+    with pytest.raises(NotFoundError):
+        hr.update_redirect({"domain": "demo1.example", "path": "/nosuch", "target_url": "https://example.com/x"})
+    with write_session() as session:
+        assert session.scalars(select(Redirect)).all() == []
+
+
+def test_delete_redirect_of_missing_path_is_not_found(account_with_domain, stub_ols):
+    from shared.validation import NotFoundError
+
+    with pytest.raises(NotFoundError):
+        hr.delete_redirect({"domain": "demo1.example", "path": "/nosuch"})
+
+
+@pytest.mark.parametrize("target", ["https://example.com/%{HTTP_COOKIE}", "https://example.com/$0", "https://example.com/%{ENV:SECRET}"])
+def test_redirect_target_cannot_carry_rewrite_variables(account_with_domain, stub_ols, target):
+    """Regression: %{HTTP_COOKIE} copied visitors' cookies into the Location
+    of a redirect to an external site."""
+    with pytest.raises(ValidationError, match="rewrite variables"):
+        hr.create_redirect({"domain": "demo1.example", "path": "/var", "target_url": target, "status_code": 302})
+    assert stub_ols == []
 
 
 def test_update_redirect_via_put_semantics(account_with_domain, stub_ols):

@@ -333,3 +333,40 @@ def test_terminate_removes_scan_dirs(account, stub_apply):
         acct = session.scalar(select(Account).where(Account.username == "demo1"))
         phpext.terminate_account_php_extensions(acct)
     assert not _scan("demo1").exists()
+
+
+# --- admin disable_functions overrides (enforced at PHP startup) ------------
+
+
+@pytest.fixture()
+def functions_root(tmp_path, monkeypatch):
+    """Root ownership is verified in production; unit tests run unprivileged."""
+    import os as _os
+
+    root = tmp_path / "php-functions"
+    monkeypatch.setattr(phpext.phpdirectives, "PHP_FUNCTIONS_ROOT", str(root))
+    monkeypatch.setattr(phpext, "_private_root", lambda path: (_os.makedirs(path, exist_ok=True), path)[1])
+    monkeypatch.setattr(phpext, "secure_mkdirs", lambda base, rel, uid, gid, mode: _os.makedirs(_os.path.join(base, rel), exist_ok=True))
+
+    def write(directory_fd, name, data, uid, gid, mode):
+        fd = _os.open(name, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, mode, dir_fd=directory_fd)
+        with _os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+
+    monkeypatch.setattr(phpext, "_replace_file_at_fd", write)
+    return root
+
+
+def test_disable_functions_ini_is_materialized_and_pruned(functions_root):
+    phpext.materialize_disable_functions({"demo1": {"exec,phpinfo"}, "demo2": {""}})
+    first = Path(phpext.phpdirectives.disable_functions_scan_dir("demo1", "exec,phpinfo"))
+    ini = first / phpext.phpdirectives.DISABLE_FUNCTIONS_INI
+    assert ini.read_text() == 'disable_functions = "exec,phpinfo"\n'
+    empty = Path(phpext.phpdirectives.disable_functions_scan_dir("demo2", "")) / phpext.phpdirectives.DISABLE_FUNCTIONS_INI
+    assert empty.read_text() == 'disable_functions = ""\n'  # "re-enable everything" override
+
+    phpext.materialize_disable_functions({"demo1": {"phpinfo"}})
+    phpext.prune_disable_functions({"demo1": {"phpinfo"}})
+    assert not first.exists()
+    assert Path(phpext.phpdirectives.disable_functions_scan_dir("demo1", "phpinfo")).is_dir()
+    assert sorted(p.name for p in functions_root.iterdir()) == ["demo1"]

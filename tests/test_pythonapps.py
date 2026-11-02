@@ -19,6 +19,11 @@ def fixed_app_env_key(monkeypatch, tmp_path):
     units = tmp_path / "units"
     units.mkdir()
     monkeypatch.setattr(pythonapps.appunits, "UNITS_DIR", units)
+    # Start-health polling: no real waiting in unit tests.
+    monkeypatch.setattr(pythonapps.appunits, "START_SETTLE_SECONDS", 0)
+    monkeypatch.setattr(pythonapps.appunits, "START_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(pythonapps.appunits, "START_POLL_SECONDS", 0)
+    monkeypatch.setattr(pythonapps.appunits, "private_socket_ready", lambda *args: True)
 
 
 @pytest.fixture()
@@ -36,6 +41,9 @@ def fake_systemctl(monkeypatch):
         calls.append(args)
         if args[0] == "systemctl" and args[1] in ("is-active", "is-enabled"):
             return ProcResult(args=args, returncode=0, stdout="active\n" if args[1] == "is-active" else "enabled\n", stderr="")
+        if args[:2] == ["systemctl", "show"]:
+            return ProcResult(args=args, returncode=0,
+                              stdout="ActiveState=active\nSubState=running\nNRestarts=0\nMainPID=4242\n", stderr="")
         return ProcResult(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(pythonapps.appunits, "run", fake_run)
@@ -163,8 +171,11 @@ def test_unit_execstart_uses_gunicorn_for_wsgi(account_with_domain):
         "username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "app:app", "app_type": "wsgi",
     })
     content = pythonapps.appunits.unit_path(result["unit"]).read_text()
-    assert "gunicorn --bind fd://3" in content
-    assert "app:app" in content
+    # Regression: "--bind fd://3" duplicated the LISTEN_FDS listener gunicorn
+    # already adopts; it closed fd 3 after the first copy and crash-looped
+    # with EBADF. The socket-activated unit must not name the fd again.
+    assert "--bind" not in content
+    assert "bin/gunicorn app:app" in content
 
 
 def test_unit_execstart_uses_uvicorn_for_asgi(account_with_domain):
@@ -302,3 +313,40 @@ def test_app_retires_welcome_only_after_route_provisioning(account_with_domain, 
     else:
         pythonapps.create_app(params)
         assert not (docroot / 'welcome.html').exists()
+
+
+def test_start_reports_crash_looping_app_as_failed_and_stops_it(account_with_domain, monkeypatch):
+    """Regression: start returned 200 active:'active' while systemd was
+    restarting the app every two seconds."""
+    created = pythonapps.create_app({"username": "demo1", "domain": "demo1.example", "name": "my-api", "entry_point": "app:app"})
+    log = pythonapps._log_path("demo1", "my-api")
+    with open(log, "w") as handle:
+        handle.write("OSError: [Errno 9] Bad file descriptor\n")
+    restarts = iter(range(1000))
+    calls = []
+
+    def crash_looping(args, timeout=30, **kwargs):
+        calls.append(args)
+        if args[:2] == ["systemctl", "show"]:
+            return ProcResult(args=args, returncode=0,
+                              stdout=f"ActiveState=active\nSubState=running\nNRestarts={next(restarts)}\nMainPID=1\n", stderr="")
+        return ProcResult(args=args, returncode=0, stdout="active\n", stderr="")
+
+    monkeypatch.setattr(pythonapps.appunits, "run", crash_looping)
+    monkeypatch.setattr(pythonapps.appunits, "tail_log_file", lambda path, lines=10: open(path).read().splitlines())
+    with pytest.raises(pythonapps.appunits.AppStartError, match="Bad file descriptor"):
+        pythonapps.start_app({"username": "demo1", "id": created["id"]})
+    assert any(c[:3] == ["systemctl", "disable", "--now"] for c in calls)
+    with write_session() as session:
+        assert session.get(PythonApp, created["id"]).enabled is False
+
+
+def test_wait_until_running_requires_a_stable_main_process(monkeypatch):
+    states = iter([
+        "ActiveState=activating\nSubState=auto-restart\nNRestarts=3\nMainPID=0\n",
+        "ActiveState=active\nSubState=running\nNRestarts=4\nMainPID=10\n",
+        "ActiveState=active\nSubState=running\nNRestarts=4\nMainPID=10\n",
+    ])
+    monkeypatch.setattr(pythonapps.appunits, "run", lambda args, timeout=30, **kwargs: ProcResult(
+        args=args, returncode=0, stdout=next(states), stderr=""))
+    assert pythonapps.appunits.wait_until_running("boron-python-demo1-1.service", "python", 1)["active"] == "active"

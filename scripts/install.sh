@@ -12,7 +12,7 @@
 #
 # Non-interactive install: preseed the prompts with env vars --
 #   FH_PANEL_DOMAIN, FH_LE_EMAIL, FH_ADMIN_USER, FH_ADMIN_PASSWORD,
-#   FH_SERVER_IP, FH_WEBMAIL_DOMAIN, FH_NONINTERACTIVE=1,
+#   FH_SERVER_IP, FH_WEBMAIL_DOMAIN, FH_PMA_DOMAIN, FH_NONINTERACTIVE=1,
 #   FH_MAXMIND_LICENSE_KEY (optional,
 #   see README.md "GeoLite2 setup")
 #
@@ -68,6 +68,7 @@ ADMIN_PASSWORD="${FH_ADMIN_PASSWORD:-}"
 unset FH_ADMIN_PASSWORD
 SERVER_IP="${FH_SERVER_IP:-}"
 WEBMAIL_DOMAIN="${FH_WEBMAIL_DOMAIN:-}"
+PMA_DOMAIN="${FH_PMA_DOMAIN:-}"
 # Boron license key (BRN-XXXX-XXXX-XXXX-XXXX). Optional at install time: the
 # administrator area stays locked until one is activated on the License page.
 LICENSE_KEY="${FH_LICENSE_KEY:-}"
@@ -799,6 +800,11 @@ deploy_app() {
     run find "$LOG_DIR" -type f -exec chmod 0640 {} +
     run install -m 0755 "${DEST}/scripts/firewall_recover.py" /usr/local/sbin/boron-firewall-recover
     ok "log dir ${LOG_DIR} restricted to root and boron-api"
+    # Per-vhost OLS logs: root-owned, outside every tenant home (OLS writes
+    # them as nobody and follows symlinks). Per-account subdirectories are
+    # created by daemon/sysops.ensure_web_logs (sysops.VHOST_LOG_ROOT).
+    run install -d -o root -g root -m 0711 /var/log/boron-vhosts
+    ok "vhost log root /var/log/boron-vhosts created"
 }
 
 # --- 5. secrets + config -----------------------------------------------------
@@ -835,6 +841,9 @@ setup_config() {
     if [[ -z "$WEBMAIL_DOMAIN" && -n "$PANEL_DOMAIN" ]]; then
         WEBMAIL_DOMAIN="webmail.${PANEL_DOMAIN}"
     fi
+    if [[ -z "$PMA_DOMAIN" && -n "$PANEL_DOMAIN" ]] && profile_has database; then
+        PMA_DOMAIN="phpmyadmin.${PANEL_DOMAIN}"
+    fi
 
     if [[ -f "${CONF_DIR}/boron.toml" ]]; then
         skip "existing boron.toml retained (profile and host settings are changed from Server Setup)"
@@ -850,6 +859,7 @@ webmail_hostname = "${WEBMAIL_DOMAIN}"
 webmail_url = "${WEBMAIL_DOMAIN:+https://${WEBMAIL_DOMAIN}}"
 mail_hostname = "${WEBMAIL_DOMAIN}"
 webmail_docroot = "/var/www/roundcube/public_html"
+pma_hostname = "${PMA_DOMAIN}"
 EOF
         ok "boron.toml written"
     fi
@@ -1107,7 +1117,7 @@ user = boron_mailro
 password = ${mailro_pass}
 hosts = 127.0.0.1
 dbname = boron_mail
-query = SELECT GROUP_CONCAT(destination SEPARATOR ',') FROM ( SELECT f.destination AS destination FROM mail_forward f JOIN mail_domain d ON f.domain_id = d.id WHERE CONCAT(f.source_local_part, '@', d.domain) = '%s' AND f.active = 1 AND d.active = 1 UNION ALL SELECT CONCAT(m.local_part, '@', d.domain) AS destination FROM mail_user m JOIN mail_domain d ON m.domain_id = d.id JOIN mail_catchall c ON c.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%s' AND m.active = 1 AND d.active = 1 AND c.active = 1 UNION ALL SELECT c.destination AS destination FROM mail_catchall c JOIN mail_domain d ON c.domain_id = d.id WHERE CONCAT('@', d.domain) = '%s' AND c.active = 1 AND d.active = 1 ) combined
+query = SELECT GROUP_CONCAT(destination SEPARATOR ',') FROM ( SELECT f.destination AS destination FROM mail_forward f JOIN mail_domain d ON f.domain_id = d.id WHERE CONCAT(f.source_local_part, '@', d.domain) = '%s' AND f.active = 1 AND d.active = 1 UNION SELECT CONCAT(m.local_part, '@', d.domain) AS destination FROM mail_user m JOIN mail_domain d ON m.domain_id = d.id WHERE CONCAT(m.local_part, '@', d.domain) = '%s' AND m.active = 1 AND d.active = 1 AND (EXISTS (SELECT 1 FROM mail_forward f WHERE f.domain_id = d.id AND f.source_local_part = m.local_part AND f.active = 1) OR EXISTS (SELECT 1 FROM mail_catchall c WHERE c.domain_id = d.id AND c.active = 1)) UNION SELECT c.destination AS destination FROM mail_catchall c JOIN mail_domain d ON c.domain_id = d.id WHERE CONCAT('@', d.domain) = '%s' AND c.active = 1 AND d.active = 1 ) combined
 EOF
     chmod 0640 /etc/postfix/boron/*.cf
     chown root:postfix /etc/postfix/boron/*.cf
@@ -1299,6 +1309,22 @@ EOF
 
     run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from daemon.ols import bootstrap_webmail; bootstrap_webmail()\""
     ok "Roundcube installed and published at https://${WEBMAIL_DOMAIN}"
+}
+
+# --- 5.7 phpMyAdmin single sign-on -------------------------------------------
+
+setup_phpmyadmin() {
+    # daemon/pma.py installs the distribution package without recommends (no
+    # web server, no phpMyAdmin control database) and, when a phpMyAdmin
+    # hostname is configured, renders its signon config and OLS vhost. Server
+    # Setup publishes it later when the hostname is chosen there instead.
+    if [[ -n "$PMA_DOMAIN" ]]; then
+        info "Installing phpMyAdmin at ${PMA_DOMAIN}"
+    else
+        info "Installing phpMyAdmin (publish it by choosing a phpMyAdmin hostname in Server Setup)"
+    fi
+    run_sh "'${VENV}/bin/python' -c \"import sys; sys.path.insert(0, '${DEST}'); from daemon.pma import provision; print('phpMyAdmin:', provision())\""
+    ok "phpMyAdmin provisioned"
 }
 
 # --- 6. systemd services + cron + logrotate ----------------------------------
@@ -1880,6 +1906,7 @@ main() {
     start_services
     apply_initial_resource_tuning
     profile_has mail && setup_webmail
+    profile_has database && setup_phpmyadmin
     profile_has fail2ban && bootstrap_security_services
     create_admin
     activate_license

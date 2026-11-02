@@ -183,8 +183,10 @@ def apply_policy(username: str, policy: dict, *, uid: int | None = None) -> None
     def bandwidth(value):
         if value is None:
             return "infinity"
-        value = int(value)
-        return f"{value // 1048576}M" if value % 1048576 == 0 else str(value)
+        # Always plain bytes: systemd parses the K/M/G suffixes of
+        # IO*BandwidthMax= to the base of 1000, so "20M" enforced 20,000,000
+        # B/s for a requested 20 MiB/s (20,971,520).
+        return str(int(value))
 
     cpu = policy.get("cpu_cores")
     if cpu is not None:

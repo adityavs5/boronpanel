@@ -64,6 +64,7 @@ from daemon import (  # noqa: E402
     notifications,
     ols,
     staging,
+    sysops,
     usage,
     usage_alerts,
     webhooks,
@@ -195,7 +196,7 @@ def verify_bandwidth() -> None:
             _curl(f"http://{domain}/")
 
         vhost_name = ols._vhost_name(domain)
-        log_path = Path(settings.home_base) / username / "logs" / f"{vhost_name}-access.log"
+        log_path = Path(sysops.vhost_log_dir(username)) / f"{vhost_name}-access.log"
         time.sleep(1)  # let OLS flush the access log
         independent_total = 0
         if log_path.exists():

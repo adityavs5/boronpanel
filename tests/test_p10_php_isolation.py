@@ -83,7 +83,10 @@ def test_effective_php_config_reads_rendered_vhost(isolated_db, monkeypatch, tmp
     result = handlers_php_ini.effective_domain_config({"username": "demo1", "domain": "example.test"})
     assert result["source"] == "rendered_vhost"
     assert result["values"]["session.save_path"] == "/home/demo1/tmp/sessions"
-    assert result["values"]["disable_functions"] == "exec,system"
+    # disable_functions is enforced at PHP startup, never by the vhost line,
+    # so the effective view reports the list actually in force (php.ini's
+    # hardened default here, no admin override).
+    assert result["values"]["disable_functions"] == ",".join(handlers_php_ini.phpdirectives.DEFAULT_DISABLE_FUNCTIONS)
 
 
 def test_inode_quota_warning_then_enforcement(isolated_db, monkeypatch):

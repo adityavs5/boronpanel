@@ -115,11 +115,12 @@ def test_refresh_bandwidth_upserts_not_duplicates(isolated_db, stub_sysops, stub
     hd.add_domain({"username": "demo1", "domain": "demo1.example", "kind": "primary"})
     account = _account()
 
-    home_dir = tmp_path / "demo1"
-    (home_dir / "logs").mkdir(parents=True)
-    monkeypatch.setattr(usage.settings, "home_base", str(tmp_path))
+    # OLS vhost logs live in the root-owned sysops.vhost_log_dir().
+    log_dir = tmp_path / "vhost-logs" / "demo1"
+    log_dir.mkdir(parents=True)
+    monkeypatch.setattr(usage.sysops, "VHOST_LOG_ROOT", str(tmp_path / "vhost-logs"))
 
-    log = home_dir / "logs" / "demo1_example-access.log"
+    log = log_dir / "demo1_example-access.log"
     log.write_text('1.2.3.4 - - [01/Jul/2026:06:35:50 +0000] "GET / HTTP/1.1" 200 1000 "-" "curl"\n')
 
     usage.refresh_bandwidth(account)
@@ -234,14 +235,15 @@ def test_refresh_bandwidth_populates_per_domain_breakdown(isolated_db, stub_syso
     hd.add_domain({"username": "demo1", "domain": "blog.example", "kind": "addon"})
     account = _account()
 
-    home_dir = tmp_path / "demo1"
-    (home_dir / "logs").mkdir(parents=True)
-    monkeypatch.setattr(usage.settings, "home_base", str(tmp_path))
+    # OLS vhost logs live in the root-owned sysops.vhost_log_dir().
+    log_dir = tmp_path / "vhost-logs" / "demo1"
+    log_dir.mkdir(parents=True)
+    monkeypatch.setattr(usage.sysops, "VHOST_LOG_ROOT", str(tmp_path / "vhost-logs"))
 
-    (home_dir / "logs" / "shop_example-access.log").write_text(
+    (log_dir / "shop_example-access.log").write_text(
         '1.2.3.4 - - [01/Jul/2026:06:35:50 +0000] "GET / HTTP/1.1" 200 3000 "-" "curl"\n'
     )
-    (home_dir / "logs" / "blog_example-access.log").write_text(
+    (log_dir / "blog_example-access.log").write_text(
         '1.2.3.4 - - [01/Jul/2026:06:35:50 +0000] "GET / HTTP/1.1" 200 1000 "-" "curl"\n'
     )
 
@@ -262,7 +264,7 @@ def test_refresh_bandwidth_populates_per_domain_breakdown(isolated_db, stub_syso
         assert total_row.bytes_served == 4000
 
     # Re-running must UPDATE the per-domain rows too, not duplicate them.
-    (home_dir / "logs" / "shop_example-access.log").write_text(
+    (log_dir / "shop_example-access.log").write_text(
         '1.2.3.4 - - [01/Jul/2026:06:35:50 +0000] "GET / HTTP/1.1" 200 3000 "-" "curl"\n'
         '1.2.3.4 - - [01/Jul/2026:07:00:00 +0000] "GET /a HTTP/1.1" 200 500 "-" "curl"\n'
     )

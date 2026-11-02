@@ -173,7 +173,7 @@ def test_real_indexes_have_priority_and_directory_listing_stays_off():
     assert 'indexFiles              index.html, index.php, welcome.html' in content
     assert 'autoIndex               0' in content
     suspended = ols.render_vhost_conf(account, domain, suspended=True)
-    assert 'RewriteRule ^(.*)$ /index.html [L]' in suspended
+    assert 'RewriteRule ^ /.boron-suspended/index.html [R=503,L]' in suspended
 
 
 def test_reconcile_is_bounded_and_round_robin(site):

@@ -67,7 +67,7 @@ def get_redis_connection_info(username: str, identity: Identity = Depends(get_id
 def ui_redis_home(request: Request, username: str, identity: Identity = Depends(get_identity)):
     require_account_access(identity, username)
     status = call_daemon("redis.status", identity, username=username)
-    connection_info = call_daemon("redis.connection_info", identity, username=username) if status.get("provisioned") else None
+    connection_info = call_daemon("redis.connection_info", identity, username=username) if status.get("enabled") else None
     return templates.TemplateResponse(
         request, "redis_detail.html", {"identity": identity, "username": username, "status": status, "connection_info": connection_info},
     )

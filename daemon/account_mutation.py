@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from shared.db import write_session
 from shared.models import Account
-from shared.validation import ValidationError, validate_username
+from shared.validation import NotFoundError, ValidationError, validate_username
 
 
 def locked(function):
@@ -16,7 +16,7 @@ def locked(function):
         with write_session() as session:
             account = session.scalar(select(Account).where(Account.username == username))
             if account is None:
-                raise RuntimeError(f"account '{username}' not found")
+                raise NotFoundError(f"account '{username}' not found")
             account_id = account.id
         try:
             with lock(f'account-{account_id}', blocking=False):

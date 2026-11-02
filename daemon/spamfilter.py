@@ -44,6 +44,7 @@ from sqlalchemy import func, select
 from shared.db import write_session
 from shared.models import MailDomain, MailUser, SpamFilterEntry, SpamGlobalSettings
 from shared.validation import (
+    NotFoundError,
     ValidationError,
     validate_domain,
     validate_mailbox_local_part,
@@ -83,6 +84,14 @@ class SpamFilterError(Exception):
     pass
 
 
+class SpamFilterRequestError(SpamFilterError, ValidationError):
+    """A caller-correctable refusal (limits), returned as 400, not 502."""
+
+
+class SpamFilterNotFound(SpamFilterError, NotFoundError):
+    """The mailbox a rule targets does not exist (404)."""
+
+
 # --- per-domain settings (no service reload needed -- spamd reads a
 # virtual-config-dir prefs file fresh per scan, same "no reload for
 # routine mail CRUD" property Phase e's SQL-backed mailboxes already
@@ -107,11 +116,49 @@ def apply_domain_spam_settings(domain: str, enabled: bool, threshold: float | No
 
     score = threshold if enabled else DISABLED_THRESHOLD
     content = f"required_score {score}\n"
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    _ensure_virtual_config_dir(path.parent)
     tmp_path = path.with_suffix(f".tmp.{os.getpid()}")
     tmp_path.write_text(content)
     os.chmod(tmp_path, 0o644)
     os.replace(tmp_path, path)
+
+
+# spamd drops to debian-spamd before reading <base>/<domain>/user_prefs, so
+# every directory on that path must be traversable by it. mkdir's mode is
+# filtered by borond's UMask=0027, which used to leave them root-only 0750:
+# spamd silently fell back to the global threshold for every domain. The
+# files only hold a score, so world-readable is the intended mode.
+VIRTUAL_CONFIG_DIR_MODE = 0o755
+VIRTUAL_CONFIG_FILE_MODE = 0o644
+
+
+def _ensure_virtual_config_dir(domain_dir: Path) -> None:
+    base = Path(VIRTUAL_CONFIG_BASE)
+    for directory in (base, domain_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory, VIRTUAL_CONFIG_DIR_MODE)
+
+
+def repair_virtual_config_permissions() -> dict:
+    """Upgrade/bootstrap repair for prefs written by earlier releases."""
+    base = Path(VIRTUAL_CONFIG_BASE)
+    repaired = []
+    if not base.is_dir() or base.is_symlink():
+        return {"repaired": repaired}
+    os.chmod(base, VIRTUAL_CONFIG_DIR_MODE)
+    for domain_dir in sorted(base.iterdir()):
+        if domain_dir.is_symlink() or not domain_dir.is_dir():
+            continue
+        try:
+            validate_domain(domain_dir.name)
+        except ValidationError:
+            continue
+        os.chmod(domain_dir, VIRTUAL_CONFIG_DIR_MODE)
+        prefs = domain_dir / "user_prefs"
+        if prefs.is_file() and not prefs.is_symlink():
+            os.chmod(prefs, VIRTUAL_CONFIG_FILE_MODE)
+        repaired.append(domain_dir.name)
+    return {"repaired": repaired}
 
 
 def remove_domain_spam_settings(domain: str) -> None:
@@ -217,6 +264,7 @@ def bootstrap_spamassassin() -> dict:
     default_threshold = get_global_default_threshold()
     _write_local_cf(default_threshold)
     _write_spamd_defaults()
+    repair_virtual_config_permissions()
     _restart_spamd()
     postfix_result = _ensure_postfix_wiring()
     sieve_result = _ensure_dovecot_sieve_wiring()
@@ -584,7 +632,7 @@ def _mailbox_owner(session, domain: str, local_part: str) -> MailDomain:
         MailUser.local_part == local_part,
     ))
     if mailbox is None:
-        raise SpamFilterError(f"mailbox '{local_part}@{domain}' does not exist")
+        raise SpamFilterNotFound(f"mailbox '{local_part}@{domain}' does not exist")
     return mail_domain
 
 
@@ -608,10 +656,10 @@ def _require_rule_capacity(session, mail_domain: MailDomain) -> None:
             select(func.count()).select_from(SpamFilterEntry).where(SpamFilterEntry.domain.in_(account_domains))
         ) or 0
         if account_count >= MAX_SPAM_FILTER_ENTRIES_PER_ACCOUNT:
-            raise SpamFilterError(
+            raise SpamFilterRequestError(
                 f"account already has the maximum of {MAX_SPAM_FILTER_ENTRIES_PER_ACCOUNT} spam filter entries"
             )
-        raise SpamFilterError(
+        raise SpamFilterRequestError(
             "The server spam-filter rule capacity has been reached"
         )
 
@@ -644,7 +692,7 @@ def add_entry(params: dict) -> dict:
             select(SpamFilterEntry.id).where(SpamFilterEntry.domain == domain, SpamFilterEntry.local_part == local_part)
         ).all())
         if count >= MAX_SPAM_FILTER_ENTRIES_PER_MAILBOX:
-            raise SpamFilterError(f"mailbox already has the maximum of {MAX_SPAM_FILTER_ENTRIES_PER_MAILBOX} spam filter entries")
+            raise SpamFilterRequestError(f"mailbox already has the maximum of {MAX_SPAM_FILTER_ENTRIES_PER_MAILBOX} spam filter entries")
         existing = session.scalar(
             select(SpamFilterEntry).where(
                 SpamFilterEntry.domain == domain,
@@ -691,7 +739,7 @@ def delete_entry(params: dict) -> dict:
         # found" on mismatch as a genuinely missing row, not a
         # distinguishable permission error.
         if row is None or row.domain != domain:
-            raise RuntimeError(f"spam filter entry {params['id']} not found")
+            raise NotFoundError(f"spam filter entry {params['id']} not found")
         deleted = _entry_to_dict(row)
         snapshot = _entry_snapshot(row)
         session.delete(row)
@@ -721,7 +769,7 @@ def import_entries(params: dict) -> dict:
     raw_lines = [line.strip() for line in str(params.get("text", "")).splitlines()]
     lines = [line for line in raw_lines if line and not line.startswith("#")]
     if len(lines) > MAX_IMPORT_LINES:
-        raise SpamFilterError(f"import list must have at most {MAX_IMPORT_LINES} entries")
+        raise SpamFilterRequestError(f"import list must have at most {MAX_IMPORT_LINES} entries")
 
     added: list[dict] = []
     errors: list[dict] = []

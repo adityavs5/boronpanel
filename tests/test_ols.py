@@ -161,44 +161,101 @@ def test_render_vhost_conf_php_ini_display_errors_off():
     assert 'php_admin_value display_errors "Off"' in content
 
 
-def test_with_disable_functions_returns_php_ini_unchanged_when_none():
-    """No admin override at any scope -- absence means default (the
-    system php.ini's own hardened disable_functions applies, nothing
-    rendered here)."""
-    assert ols._with_disable_functions(None, None) is None
-    php_ini = {"memory_limit": "256M", "extras": []}
-    assert ols._with_disable_functions(php_ini, None) is php_ini
-
-
-def test_with_disable_functions_builds_minimal_php_ini_when_none_existed():
-    """An account/domain with zero other PHP customization can still get
-    a disable_functions override rendered -- must not require some other
-    php_ini row to already exist first."""
-    result = ols._with_disable_functions(None, "exec,system")
-    assert result["memory_limit"] == ols.phpdirectives.DEFAULTS["memory_limit"]
-    assert {"name": "disable_functions", "value": "exec,system"} in result["extras"]
-
-
-def test_with_disable_functions_appends_to_existing_extras():
-    php_ini = {"memory_limit": "256M", "extras": [{"name": "max_input_vars", "value": "2000"}]}
-    result = ols._with_disable_functions(php_ini, "exec")
-    names = {e["name"] for e in result["extras"]}
-    assert names == {"max_input_vars", "disable_functions"}
-
-
-def test_with_disable_functions_replaces_not_duplicates():
-    php_ini = {"extras": [{"name": "disable_functions", "value": "exec"}]}
-    result = ols._with_disable_functions(php_ini, "exec,system")
-    matching = [e for e in result["extras"] if e["name"] == "disable_functions"]
-    assert matching == [{"name": "disable_functions", "value": "exec,system"}]
-
-
-def test_render_vhost_conf_renders_disable_functions_extra():
+def test_render_vhost_conf_never_renders_unenforced_disable_functions():
+    """Regression: php_admin_value disable_functions in the vhost is only
+    cosmetic (ini_get shows it, the functions stay callable), so admin
+    overrides are applied through the extProcessor instead."""
     account = make_account()
-    domain = make_domain()
-    php_ini = ols._with_disable_functions(None, "exec,shell_exec")
-    content = ols.render_vhost_conf(account, domain, suspended=False, php_ini=php_ini)
-    assert 'php_admin_value disable_functions "exec,shell_exec"' in content
+    content = ols.render_vhost_conf(account, make_domain(), suspended=False,
+                                    php_ini={**ols.phpdirectives.DEFAULTS, "extras": []})
+    assert "disable_functions" not in content
+
+
+def _function_override_fixture(isolated_db, account_value=None, domain_value=None):
+    from shared.db import write_session
+    from shared.models import Account as AccountModel
+    from shared.models import Domain as DomainModel
+    from shared.models import PhpFunctionOverride
+
+    with write_session() as session:
+        account = AccountModel(username="demo1", uid=5001, gid=5001, status="active", php_version="8.3")
+        session.add(account)
+        session.flush()
+        session.add(DomainModel(account_id=account.id, domain="demo1.example", docroot="/home/demo1/public_html", ssl_status="none"))
+        session.add(DomainModel(account_id=account.id, domain="shop.example", docroot="/home/demo1/shop", ssl_status="none"))
+        if account_value is not None:
+            session.add(PhpFunctionOverride(account_id=account.id, domain=None, disable_functions=account_value))
+        if domain_value is not None:
+            session.add(PhpFunctionOverride(account_id=account.id, domain="shop.example", disable_functions=domain_value))
+
+
+def test_account_disable_functions_override_is_applied_at_php_startup(isolated_db):
+    """The override reaches the pool's PHP_INI_SCAN_DIR (read at engine
+    startup, where disable_functions is enforced); the leading empty
+    element keeps the compiled-in scan dir so stock extensions still load."""
+    from shared.db import write_session
+
+    _function_override_fixture(isolated_db, account_value="exec,phpinfo")
+    with write_session() as session:
+        vhosts, procs = ols._all_active_vhosts(session)
+    assert len(procs) == 1
+    directory = ols.phpdirectives.disable_functions_scan_dir("demo1", "exec,phpinfo")
+    assert directory.startswith(ols.phpdirectives.PHP_FUNCTIONS_ROOT + "/demo1/")
+    assert procs[0]["php_scan_dir"] == ":" + directory
+    assert procs[0]["disable_functions"] == "exec,phpinfo"
+    assert {vhost["php_app_name"] for vhost in vhosts} == {"demo1_php83"}
+    rendered = ols.render_httpd_config(vhosts, procs)
+    assert f"PHP_INI_SCAN_DIR=:{directory}" in rendered
+
+
+def test_domain_disable_functions_override_gets_its_own_php_pool(isolated_db):
+    from shared.db import write_session
+
+    _function_override_fixture(isolated_db, domain_value="phpinfo")
+    with write_session() as session:
+        vhosts, procs = ols._all_active_vhosts(session)
+    names = {vhost["domain"]: vhost["php_app_name"] for vhost in vhosts}
+    assert names["demo1.example"] == "demo1_php83"
+    assert names["shop.example"].startswith("demo1_php83_f")
+    by_name = {proc["php_app_name"]: proc for proc in procs}
+    assert by_name["demo1_php83"]["php_scan_dir"] is None
+    assert by_name[names["shop.example"]]["php_scan_dir"] == ":" + ols.phpdirectives.disable_functions_scan_dir("demo1", "phpinfo")
+    content = ols.render_vhost_conf(make_account(), make_domain(domain="shop.example"), suspended=False,
+                                    php_app_name=names["shop.example"])
+    assert f"lsapi:{names['shop.example']} php" in content
+
+
+def test_disable_functions_combines_with_extension_scan_dir():
+    assert ols._php_scan_dir_value("/ext", "/fn") == "/ext:/fn"
+    assert ols._php_scan_dir_value(None, "/fn") == ":/fn"
+    assert ols._php_scan_dir_value("/ext", None) == "/ext"
+    assert ols._php_scan_dir_value(None, None) is None
+
+
+def test_disable_functions_ini_content_and_directory_are_content_addressed():
+    assert ols.phpdirectives.disable_functions_ini("exec,phpinfo") == b'disable_functions = "exec,phpinfo"\n'
+    assert (ols.phpdirectives.disable_functions_scan_dir("demo1", "exec")
+            != ols.phpdirectives.disable_functions_scan_dir("demo1", "exec,phpinfo"))
+
+
+def test_function_dirs_are_materialized_before_apply_and_pruned_after(monkeypatch):
+    events = []
+    from daemon import phpext
+    monkeypatch.setattr(phpext, "materialize_disable_functions", lambda values: events.append(("materialize", values)))
+    monkeypatch.setattr(phpext, "prune_disable_functions", lambda values: events.append(("prune", values)))
+
+    class Writer:
+        def __init__(self, **kwargs):
+            pass
+
+        def apply(self, contents):
+            events.append(("apply", sorted(contents)))
+            return type("R", (), {"ok": True, "summary": lambda self: ""})()
+
+    monkeypatch.setattr(ols, "ConfigWriterMulti", Writer)
+    procs = [{"username": "demo1", "disable_functions": "exec"}, {"username": "demo1", "disable_functions": None}]
+    ols._apply_with_php_function_dirs({"main": "x"}, {"main": "y"}, procs, "test")
+    assert events == [("materialize", {"demo1": {"exec"}}), ("apply", ["main"]), ("prune", {"demo1": {"exec"}})]
 
 
 def test_render_vhost_conf_omits_redirect_rules_when_none():
@@ -386,7 +443,13 @@ def test_render_vhost_conf_suspended_points_at_suspended_page():
     domain = make_domain()
     content = ols.render_vhost_conf(account, domain, suspended=True)
     assert ols.settings.suspended_page_root in content
-    assert "RewriteRule ^(.*)$ /index.html [L]" in content
+    # 503 + Retry-After, not a 200 that monitors and crawlers treat as healthy.
+    assert "RewriteRule ^ /.boron-suspended/index.html [R=503,L]" in content
+    assert "RewriteCond %{REQUEST_URI} !^/\\.boron-suspended/" in content
+    assert f"context /.boron-suspended/ {{\n  location                {ols.settings.suspended_page_root}/" in content
+    assert 'set Retry-After "3600"' in content
+    unsuspended = ols.render_vhost_conf(account, domain, suspended=False)
+    assert ".boron-suspended" not in unsuspended and "R=503" not in unsuspended
     # scripthandler stays defined even while suspended -- unsuspend must be
     # a pure metadata flip, not a config rebuild from scratch.
     assert "lsapi:demo1_php83 php" in content
@@ -818,6 +881,8 @@ def test_all_active_vhosts_account_procs_includes_home_dir(isolated_db):
         # None (no PhpExtensionSet row) means no PHP_INI_SCAN_DIR env line
         # is rendered -- stock compiled-in extension behavior.
         "php_scan_dir": None,
+        # No admin disable_functions override: php.ini's default applies.
+        "disable_functions": None,
     }]
 
 
@@ -840,7 +905,7 @@ def test_refresh_all_vhosts_bootstraps_tmp_dir_and_refreshes_active_accounts(iso
     refresh_calls = []
     monkeypatch.setattr(ols.sysops, "ensure_tmp_dir", lambda username: tmp_dir_calls.append(username))
     monkeypatch.setattr(ols.sysops, "ensure_web_logs", lambda username: log_dir_calls.append(username))
-    monkeypatch.setattr(ols, "refresh_vhost", lambda account: refresh_calls.append(account.username))
+    monkeypatch.setattr(ols, "refresh_vhost", lambda account, recycle_php=False: refresh_calls.append(account.username))
 
     ols.refresh_all_vhosts()
 
@@ -1209,3 +1274,122 @@ def test_error_page_migration_rejects_symlink(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match='symlink'):
         ols.migrate_error_page_paths()
     assert outside.read_text() == 'do not touch'
+
+
+# --- .htaccess access directives (Require/Order/Allow/Deny) -----------------
+
+
+def test_htaccess_deny_all_directory_becomes_a_closed_context():
+    """Regression: OLS ignores Apache access directives, so a protected
+    directory was served. A deny-all now renders allowBrowse 0."""
+    content = ols.render_vhost_conf(make_account(), make_domain(), suspended=False,
+                                    access_rules=[{"relative_path": "private", "mode": "deny"}])
+    block = content.split("context /private/ {", 1)[1].split("\n}", 1)[0]
+    assert "location                /home/demo1/public_html/private/" in block
+    assert "allowBrowse             0" in block
+    assert "phpIniOverride" not in block
+
+
+def test_htaccess_ip_rule_context_keeps_php_settings_and_ip_blocks():
+    content = ols.render_vhost_conf(
+        make_account(), make_domain(ip_block_list=["203.0.113.7"]), suspended=False,
+        access_rules=[{"relative_path": "admin", "mode": "ip", "allow": ["198.51.100.4"], "deny": ["*"]}])
+    block = content.split("context /admin/ {", 1)[1].split("\n}\n", 1)[0]
+    assert "allowBrowse             1" in block
+    assert "allow                 198.51.100.4" in block
+    assert "deny                  *, 203.0.113.7" in block
+    assert 'php_admin_value open_basedir "/home/demo1/public_html:/home/demo1/tmp"' in block
+    assert "RewriteFile           .htaccess" in block
+
+
+def test_htaccess_root_deny_closes_root_context():
+    content = ols.render_vhost_conf(make_account(), make_domain(), suspended=False,
+                                    access_rules=[{"relative_path": "", "mode": "deny"}])
+    root = content.split("context / {", 1)[1].split("\n}\n", 1)[0]
+    assert "allowBrowse             0" in root
+
+
+def test_htaccess_rules_not_rendered_when_suspended_or_proxied():
+    rules = [{"relative_path": "private", "mode": "deny"}]
+    suspended = ols.render_vhost_conf(make_account(), make_domain(), suspended=True, access_rules=rules)
+    proxied = ols.render_vhost_conf(make_account(), make_domain(), suspended=False, access_rules=rules,
+                                    app_proxy={"handler_name": "app1"})
+    assert "context /private/" not in suspended
+    assert "context /private/" not in proxied
+
+
+def test_htaccess_rule_merges_with_password_realm_on_same_directory():
+    protected = [{"realm_name": "demo1_members", "relative_path": "members", "htpasswd_path": "/x/.htpasswd"}]
+    auth_only = [{"relative_path": "members", "mode": "deny", "authentication": True}]
+    content = ols.render_vhost_conf(make_account(), make_domain(), suspended=False,
+                                    protected_dirs=protected, access_rules=auth_only)
+    assert content.count("context /members/ {") == 1
+    block = content.split("context /members/ {", 1)[1].split("\n}", 1)[0]
+    assert "realm                   demo1_members" in block
+    assert "allowBrowse             1" in block
+    ip_rule = [{"relative_path": "members", "mode": "ip", "allow": ["10.0.0.0/8"], "deny": ["*"]}]
+    content = ols.render_vhost_conf(make_account(), make_domain(), suspended=False,
+                                    protected_dirs=protected, access_rules=ip_rule)
+    block = content.split("context /members/ {", 1)[1].split("\n}", 1)[0]
+    assert "realm                   demo1_members" in block and "allow                 10.0.0.0/8" in block
+
+
+# --- vhost log location -------------------------------------------------------
+
+
+def test_vhost_logs_are_written_outside_the_tenant_home():
+    """Regression: OLS (as nobody, following symlinks) wrote logs into
+    ~/logs, where a tenant could plant a symlink into another tenant's
+    logs. They now go to the root-owned per-account directory."""
+    content = ols.render_vhost_conf(make_account(), make_domain(), suspended=False)
+    assert "errorlog /var/log/boron-vhosts/demo1/demo1_example-error.log {" in content
+    assert "accessLog /var/log/boron-vhosts/demo1/demo1_example-access.log {" in content
+    assert "/home/demo1/logs/demo1_example" not in content
+    # PHP's own logs are written by the account itself and stay in its home.
+    assert 'php_admin_value error_log "/home/demo1/logs/php-error.log"' in content
+
+
+# --- redirect targets ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("target", [
+    "https://example.com/%{HTTP_COOKIE}", "https://example.com/$0", "https://example.com/${map:x}",
+    "https://example.com/%1", "https://example.com/a%20b", "https://example.com/a\\b",
+])
+def test_redirect_target_with_rewrite_expansion_is_rejected(target):
+    with pytest.raises(ols.ValidationError):
+        ols.literal_rewrite_target(target)
+
+
+def test_redirect_target_literal_text_is_accepted():
+    assert ols.literal_rewrite_target("https://example.com/caf%C3%A9?x=1&y=2#top") == "https://example.com/caf%C3%A9?x=1&y=2#top"
+
+
+def test_stored_rewrite_variable_redirects_and_forwarding_are_not_rendered(isolated_db):
+    """Rows stored by older releases are re-checked at render time, so an
+    upgrade's vhost refresh neutralises an existing cookie-exfiltration rule."""
+    from shared.db import write_session
+    from shared.models import DomainForwarding, Redirect
+
+    with write_session() as session:
+        session.add(Redirect(domain="demo1.example", path="/leak", target_url="https://evil.example/%{HTTP_COOKIE}", status_code=302))
+        session.add(Redirect(domain="demo1.example", path="/ok", target_url="https://example.com/new", status_code=301))
+        session.add(DomainForwarding(domain="demo1.example", target_url="https://evil.example/$1", status_code=301, keep_path=False))
+    with write_session() as session:
+        redirects = ols._redirects_for_domain(session, "demo1.example")
+        forwarding = ols._forwarding_for_domain(session, "demo1.example")
+    assert [r["target_url"] for r in redirects] == ["https://example.com/new"]
+    assert forwarding is None
+
+
+def test_password_protected_directory_context_keeps_php_confinement():
+    """Regression (review): OLS contexts do not inherit the root context's
+    phpIniOverride, so PHP in a password-protected directory ran without the
+    account's open_basedir."""
+    account = make_account()
+    domain = make_domain()
+    protected_dirs = [{"realm_name": "demo1_members", "relative_path": "members", "htpasswd_path": "/x/.htpasswd"}]
+    content = ols.render_vhost_conf(account, domain, suspended=False, protected_dirs=protected_dirs)
+    context = content.split("context /members/ {", 1)[1].split("\n}\n", 1)[0]
+    assert "realm                   demo1_members" in context
+    assert 'php_admin_value open_basedir "/home/demo1/public_html:/home/demo1/tmp"' in context

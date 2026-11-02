@@ -11,17 +11,21 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
-from daemon import account_mutation, audit, database_operations, domain_ownership
+import logging
+
+from daemon import account_mutation, audit, database_operations, dns_operations, domain_ownership
 
 from sqlalchemy import select
 
 from shared.config import settings
 from shared.db import write_session
 from shared.models import Account, Domain, DnsZone
-from shared.validation import ValidationError, validate_domain, validate_php_version, validate_protected_dir_relative_path, validate_username
+from shared.validation import ConflictError, NotFoundError, ValidationError, validate_domain, validate_php_version, validate_protected_dir_relative_path, validate_username
 
 from daemon import dnsprovider, handlers_redirect, lscache, ols, resource_limits, sysops
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
+
+logger = logging.getLogger("borond.handlers_domain")
 
 
 def _domain_to_dict(domain: Domain) -> dict:
@@ -84,14 +88,14 @@ def add_domain(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
-            raise RuntimeError(f"cannot add a domain to an account in status '{account.status}'")
+            raise ConflictError(f"cannot add a domain to an account in status '{account.status}'")
         domain_ownership.require_available(session, domain_name, account.id)
 
         existing = session.scalar(select(Domain).where(Domain.domain == domain_name))
         if existing is not None:
-            raise RuntimeError(f"domain '{domain_name}' is already in use")
+            raise ConflictError(f"domain '{domain_name}' is already in use")
         if kind == "subdomain":
             resource_limits.require_capacity(session, account.id, "subdomain")
 
@@ -165,6 +169,10 @@ def add_domain(params: dict) -> dict:
     dns_label = None
     dns_record_created = False
     dns_zone_created = False
+    # The name had no Domain row, so any settings rows still keyed by it are
+    # leftovers of an earlier removal (older releases could abort before
+    # cleaning them up) and must not be inherited by this new domain.
+    _purge_domain_settings(domain_name)
     try:
         # These lookups can touch the database too; keep them inside the same
         # compensation boundary as docroot/DNS/OLS so an exception here cannot
@@ -226,6 +234,89 @@ def add_domain(params: dict) -> dict:
     return domain_dict
 
 
+def _purge_domain_settings(domain_name: str) -> list[str]:
+    """Drop every per-domain settings row keyed only by the domain NAME
+    (redirects, LSCache, forwarding, email routing, maintenance, wildcard,
+    staging bookkeeping). Each step runs even if an earlier one failed, so
+    a removed domain never leaves rows that a later re-add of the same name
+    -- by this or another account -- would silently inherit. Returns the
+    steps that failed."""
+    from daemon import forwarding, handlers_email_routing, handlers_maintenance, handlers_wildcard
+
+    steps = (
+        ("redirects", handlers_redirect.delete_redirects_for_domain),
+        ("LSCache settings", lscache.delete_settings_for_domain),
+        # Phase 8 feature 4: whole-domain forwarding.
+        ("domain forwarding", forwarding.delete_forwarding_for_domain),
+        # Phase 8 feature 6: email routing (the relay map is only rewritten
+        # when a backup-mode row actually goes away).
+        ("email routing", lambda name: handlers_email_routing.delete_routing_for_domains([name])),
+        # Missing-features batch, goal features 2/3.
+        ("maintenance mode", handlers_maintenance.delete_maintenance_for_domain),
+        ("wildcard routing", handlers_wildcard.delete_wildcard_for_domain),
+        ("staging bookkeeping", _delete_staging_rows_for_domain),
+    )
+    failed = []
+    for label, step in steps:
+        try:
+            step(domain_name)
+        except Exception:
+            logger.exception("could not remove %s for domain '%s'", label, domain_name)
+            failed.append(label)
+    return failed
+
+
+def _delete_staging_rows_for_domain(domain_name: str) -> None:
+    """A staging environment whose source or staging domain is gone can no
+    longer be synced or deleted through the staging API; the remaining
+    domain/database stay as ordinary account resources."""
+    from shared.models import StagingEnvironment
+
+    with write_session() as session:
+        rows = session.scalars(select(StagingEnvironment).where(
+            (StagingEnvironment.source_domain == domain_name) | (StagingEnvironment.staging_domain == domain_name)
+        )).all()
+        for row in rows:
+            session.delete(row)
+
+
+def remove_domain_dns(account_id: int, domain_name: str) -> list[str]:
+    """Remove what Boron published for a domain: the account's own zone when
+    the domain is its apex, otherwise its address records in the managed
+    parent zone. Caller holds the DNS mutation lock. Returns failures.
+    Shared with parked-domain removal, which publishes DNS the same way."""
+    with write_session() as session:
+        own_zone = session.scalar(
+            select(DnsZone).where(DnsZone.zone == domain_name, DnsZone.account_id == account_id)
+        ) is not None
+    if own_zone:
+        try:
+            _delete_managed_zone(domain_name)
+        except Exception:
+            logger.exception("could not delete DNS zone '%s'", domain_name)
+            return ["DNS zone"]
+        return []
+    try:
+        parent_zone = _find_parent_zone(domain_name)
+    except Exception:
+        # Runs after the vhost is gone: report, never fail the removal.
+        logger.exception("could not look up the DNS zone for '%s'", domain_name)
+        return ["DNS records"]
+    if parent_zone:
+        label = _subdomain_label(domain_name, parent_zone)
+        # Remove either family: older domains used A only; newer accounts may
+        # have been assigned an IPv6 address.
+        for record_type in ("A", "AAAA"):
+            try:
+                dnsprovider.delete_record(parent_zone, label, record_type)
+            except dnsprovider.DnsError:
+                pass  # already gone or zone unreachable -- vhost removal is authoritative
+            except Exception:
+                logger.exception("could not remove %s record '%s' from zone '%s'", record_type, label, parent_zone)
+                return ["DNS records"]
+    return []
+
+
 @account_mutation.locked
 def remove_domain(params: dict) -> dict:
     """Subdomain/addon delete (Phase 2 feature 4). Deliberately refuses to
@@ -235,26 +326,32 @@ def remove_domain(params: dict) -> dict:
 
     Files (docroot, logs) are deliberately left on disk: removing a domain
     is a routing change, not a request to destroy the customer's content.
-    Only the OLS vhost/serving path (and, if this add created one, the
-    subdomain's DNS A record) is torn down."""
+    The OLS vhost, the DNS Boron published for the domain and every
+    per-domain settings row are torn down.
+
+    The DNS mutation lock is taken before anything changes, so "busy" means
+    nothing was removed. Once the vhost is gone the removal has happened:
+    later cleanup failures are reported in ``cleanup_failed`` instead of
+    failing a request whose retry would no longer find the domain."""
     username = validate_username(params["username"])
     domain_name = validate_domain(params["domain"])
+    with dns_operations.mutation_lock():
+        return _remove_domain_locked(username, domain_name)
 
+
+def _remove_domain_locked(username: str, domain_name: str) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         domain = session.scalar(
             select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id)
         )
         if domain is None:
-            raise RuntimeError(f"domain '{domain_name}' not found for account '{username}'")
+            raise NotFoundError(f"domain '{domain_name}' not found for account '{username}'")
         if domain.kind == "primary":
-            raise RuntimeError("cannot remove an account's primary domain -- terminate or reassign the account instead")
+            raise ValidationError("cannot remove an account's primary domain -- terminate or reassign the account instead")
         kind = domain.kind
-        own_zone = session.scalar(
-            select(DnsZone).where(DnsZone.zone == domain_name, DnsZone.account_id == account.id)
-        ) is not None
         account_snapshot = account
         # Keep every persisted value so an OLS failure can restore the exact
         # row that ownership checks rely on. The row must be deleted before
@@ -272,7 +369,6 @@ def remove_domain(params: dict) -> dict:
     # the error. Otherwise a retry would be rejected by require_domain_access
     # even though OLS still serves the old vhost.
     try:
-        parent_zone = _find_parent_zone(domain_name)
         ols.remove_domain_vhost(account_snapshot, domain_name)
     except Exception:
         with write_session() as session:
@@ -284,36 +380,12 @@ def remove_domain(params: dict) -> dict:
                     setattr(restored, name, value)
         raise
 
-    if own_zone:
-        _delete_managed_zone(domain_name)
-    elif parent_zone:
-        label = _subdomain_label(domain_name, parent_zone)
-        # Remove either family: older domains used A only; newer accounts may
-        # have been assigned an IPv6 address.
-        for record_type in ("A", "AAAA"):
-            try:
-                dnsprovider.delete_record(parent_zone, label, record_type)
-            except dnsprovider.DnsError:
-                pass  # already gone or zone unreachable -- vhost removal is authoritative
-
-    handlers_redirect.delete_redirects_for_domain(domain_name)
-    lscache.delete_settings_for_domain(domain_name)
-    # Phase 8 feature 4: drop any whole-domain forwarding row for this domain.
-    from daemon import forwarding
-
-    forwarding.delete_forwarding_for_domain(domain_name)
-    # Phase 8 feature 6: drop any email-routing row (refreshes the relay map).
-    from daemon import handlers_email_routing
-
-    handlers_email_routing.delete_routing_for_domain(domain_name)
-    # Missing-features batch, goal features 2/3: drop any maintenance-mode /
-    # wildcard-domain bookkeeping row for this domain (the vhost itself is
-    # already gone, ols.remove_domain_vhost above).
-    from daemon import handlers_maintenance, handlers_wildcard
-
-    handlers_maintenance.delete_maintenance_for_domain(domain_name)
-    handlers_wildcard.delete_wildcard_for_domain(domain_name)
-    return {"domain": domain_name, "kind": kind, "status": "removed"}
+    failed = remove_domain_dns(account_snapshot.id, domain_name)
+    failed += _purge_domain_settings(domain_name)
+    result = {"domain": domain_name, "kind": kind, "status": "removed"}
+    if failed:
+        result["cleanup_failed"] = failed
+    return result
 
 
 @database_operations.serialized
@@ -333,14 +405,14 @@ def set_suspended(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
-            raise RuntimeError(f"cannot change a domain for an account in status '{account.status}'")
+            raise ConflictError(f"cannot change a domain for an account in status '{account.status}'")
         domain = session.scalar(select(Domain).where(
             Domain.account_id == account.id, Domain.domain == domain_name,
         ))
         if domain is None:
-            raise RuntimeError(f"domain '{domain_name}' not found for account '{username}'")
+            raise NotFoundError(f"domain '{domain_name}' not found for account '{username}'")
         previous = (bool(domain.suspended), domain.suspension_reason)
         domain.suspended = suspended
         domain.suspension_reason = reason if suspended else None
@@ -367,7 +439,7 @@ def list_domains(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         domains = session.scalars(select(Domain).where(Domain.account_id == account.id)).all()
         return {"domains": [_domain_to_dict(d) for d in domains]}
 
@@ -399,10 +471,10 @@ def set_domain_php_version(params: dict) -> dict:
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         domain = session.scalar(select(Domain).where(Domain.domain == domain_name, Domain.account_id == account.id))
         if domain is None:
-            raise RuntimeError(f"domain '{domain_name}' not found for account '{username}'")
+            raise NotFoundError(f"domain '{domain_name}' not found for account '{username}'")
         domain.php_version = version
         session.flush()
         result = _domain_to_dict(domain)

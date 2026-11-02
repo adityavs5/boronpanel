@@ -11,6 +11,8 @@ from sqlalchemy import select
 from shared.db import write_session
 from shared.models import Account, Domain, Redirect
 from shared.validation import (
+    ConflictError,
+    NotFoundError,
     ValidationError,
     validate_domain,
     validate_redirect_path,
@@ -35,24 +37,21 @@ def _row_to_dict(row: Redirect) -> dict:
 def _domain_account(session, domain_name: str) -> tuple[Domain, Account]:
     domain_row = session.scalar(select(Domain).where(Domain.domain == domain_name))
     if domain_row is None:
-        raise RuntimeError(f"domain '{domain_name}' not found")
+        raise NotFoundError(f"domain '{domain_name}' not found")
     account = session.get(Account, domain_row.account_id)
     if account is None:
         raise RuntimeError(f"domain '{domain_name}' has no owning account")
     return domain_row, account
 
 
-def _set_redirect(params: dict) -> dict:
-    """Create-or-replace (upsert) by (domain, path) -- matches this
-    project's existing DNS-record-editor UX ("add/replace a record",
-    daemon/handlers_dns.py's set_record), used by both create_redirect
-    (POST) and update_redirect (PUT): a customer editing an existing
-    redirect's target/code and one adding a brand new path are the same
-    operation from the UI's point of view (one form, no separate
-    add-vs-edit mode to track)."""
+def _set_redirect(params: dict, *, create: bool) -> dict:
+    """create_redirect (POST) adds a path that must not exist yet (409
+    otherwise, instead of silently overwriting another redirect);
+    update_redirect (PUT) changes an existing path (404 when there is none,
+    instead of creating one). Keyed by (domain, path)."""
     domain_name = validate_domain(params["domain"])
     path = validate_redirect_path(params["path"])
-    target_url = validate_redirect_target(params["target_url"])
+    target_url = ols.literal_rewrite_target(validate_redirect_target(params["target_url"]))
     status_code = validate_redirect_status_code(params.get("status_code", 301))
     from urllib.parse import urlsplit, unquote
     target = urlsplit(target_url)
@@ -64,9 +63,13 @@ def _set_redirect(params: dict) -> dict:
     with write_session() as session:
         _domain_row, account = _domain_account(session, domain_name)
         row = session.scalar(select(Redirect).where(Redirect.domain == domain_name, Redirect.path == path))
-        if row is None:
+        if create:
+            if row is not None:
+                raise ConflictError(f"a redirect for path '{path}' already exists on '{domain_name}'; edit it instead")
             row = Redirect(domain=domain_name, path=path)
             session.add(row)
+        elif row is None:
+            raise NotFoundError(f"no redirect for path '{path}' on '{domain_name}'")
         row.target_url = target_url
         row.status_code = status_code
         session.flush()
@@ -78,11 +81,11 @@ def _set_redirect(params: dict) -> dict:
 
 
 def create_redirect(params: dict) -> dict:
-    return _set_redirect(params)
+    return _set_redirect(params, create=True)
 
 
 def update_redirect(params: dict) -> dict:
-    return _set_redirect(params)
+    return _set_redirect(params, create=False)
 
 
 def delete_redirect(params: dict) -> dict:
@@ -93,7 +96,7 @@ def delete_redirect(params: dict) -> dict:
         _domain_row, account = _domain_account(session, domain_name)
         row = session.scalar(select(Redirect).where(Redirect.domain == domain_name, Redirect.path == path))
         if row is None:
-            raise RuntimeError(f"no redirect for path '{path}' on '{domain_name}'")
+            raise NotFoundError(f"no redirect for path '{path}' on '{domain_name}'")
         session.delete(row)
         account_snapshot = account
 

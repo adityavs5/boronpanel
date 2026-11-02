@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from shared.db import write_session
 from shared.models import Account, Plan, ResourcePolicy
-from shared.validation import ValidationError, validate_resource_limit, validate_username
+from shared.validation import ConflictError, NotFoundError, ValidationError, validate_resource_limit, validate_username
 
 from daemon import handlers_account, inode_quotas, redisacct, resource_manager, sysops, usage_alerts
 from daemon.database_operations import serialized
@@ -146,17 +146,18 @@ def get_plan(params: dict) -> dict:
     with write_session() as session:
         plan = session.get(Plan, plan_id)
         if plan is None:
-            raise RuntimeError(f"plan {plan_id} not found")
+            raise NotFoundError(f"plan {plan_id} not found")
         policy = session.scalar(select(ResourcePolicy).where(ResourcePolicy.scope_type == "plan", ResourcePolicy.scope_id == plan.id))
         return _plan_to_dict(plan, policy)
 
 
+@serialized
 def update_plan(params: dict) -> dict:
     plan_id = int(params["plan_id"])
     with write_session() as session:
         plan = session.get(Plan, plan_id)
         if plan is None:
-            raise RuntimeError(f"plan {plan_id} not found")
+            raise NotFoundError(f"plan {plan_id} not found")
 
         if "name" in params:
             new_name = _validate_name(params["name"])
@@ -185,6 +186,7 @@ def update_plan(params: dict) -> dict:
             if field in params:
                 setattr(plan, field, validate_resource_limit(params[field], field))
 
+        redis_changed = "redis_enabled" in params and bool(params["redis_enabled"]) != bool(plan.redis_enabled)
         if "redis_enabled" in params:
             plan.redis_enabled = bool(params["redis_enabled"])
 
@@ -205,7 +207,23 @@ def update_plan(params: dict) -> dict:
 
         session.flush()
         result = _plan_to_dict(plan, policy)
-    resource_manager._reconcile_scope("plan", plan_id)
+        assigned = list(session.scalars(select(Account.username).where(
+            Account.plan_id == plan_id, Account.status.in_(["active", "suspended"]),
+        ).order_by(Account.username)).all())
+    # cPanel package semantics: an edit reaches every assigned account, not
+    # only the cgroup policy. Quota, inode, usage and Redis settings used to
+    # stay at the values copied when the plan was first applied. Per-account
+    # limit overrides (account.set_limits) are kept.
+    failures = []
+    for username in assigned:
+        try:
+            _apply_to_account(username, plan_id, redis=redis_changed)
+        except Exception as exc:  # noqa: BLE001 - report, keep updating the other accounts
+            logger.exception("could not propagate plan %s to %s", plan_id, username)
+            failures.append({"username": username, "error": str(exc) if isinstance(exc, ValidationError)
+                             else "internal failure; see the daemon log"})
+    result["accounts_updated"] = len(assigned) - len(failures)
+    result["propagation_failures"] = failures
     return result
 
 
@@ -214,11 +232,23 @@ def delete_plan(params: dict) -> dict:
     with write_session() as session:
         plan = session.get(Plan, plan_id)
         if plan is None:
-            raise RuntimeError(f"plan {plan_id} not found")
-        # plan_id is an informational label on Account (see Account.plan_id's
-        # docstring), never re-read to re-derive enforced state -- so clearing
-        # it on delete is safe and avoids a raw FK-constraint IntegrityError
-        # (the same class of bug already fixed once for Webhook deletion).
+            raise NotFoundError(f"plan {plan_id} not found")
+        # A plan's policy row is what live accounts enforce
+        # (resource_manager.effective_for_account reads Account.plan_id).
+        # Deleting it under them silently fell back to their legacy limits at
+        # the next suspend/unsuspend or limits change, so an assigned plan is
+        # refused; move the accounts to another plan first.
+        in_use = session.scalars(select(Account.username).where(
+            Account.plan_id == plan_id, Account.status != "terminated",
+        ).order_by(Account.username)).all()
+        if in_use:
+            shown = ", ".join(in_use[:5]) + (f" and {len(in_use) - 5} more" if len(in_use) > 5 else "")
+            raise ConflictError(
+                f"plan '{plan.name}' is assigned to {len(in_use)} account(s) ({shown}); "
+                "apply another plan to them before deleting it"
+            )
+        # Terminated tombstones only keep the label; clear it so the
+        # foreign key does not block the delete.
         for account in session.scalars(select(Account).where(Account.plan_id == plan_id)).all():
             account.plan_id = None
         policy = session.scalar(select(ResourcePolicy).where(
@@ -242,29 +272,84 @@ def apply_plan(params: dict) -> dict:
     """
     username = validate_username(params["username"])
     plan_id = int(params["plan_id"])
+    return _apply_to_account(username, plan_id, reset_override=True, redis=True)
 
+
+def _legacy_limits(plan_values: dict) -> tuple[int, int, int, int]:
+    """Account columns that mirror what the plan's policy enforces.
+
+    Backups, restores and the no-policy fallback read these columns, so they
+    should describe the enforced cpu/memory/IO/process values (the policy),
+    not the plan's separate legacy defaults (25%/512 MB unless edited).
+    Values a column cannot express (Unlimited, out of range) keep the plan's
+    legacy value.
+    """
+    legacy = (plan_values["cpu_pct"], plan_values["mem_mb"], plan_values["io_mb"], plan_values["pids_max"])
+    cpu, memory, read_bps, nproc = (plan_values.get(field) for field in
+                                    ("cpu_cores", "memory_max_mb", "io_read_bps", "nproc"))
+    candidate = (
+        legacy[0] if cpu is None else round(cpu * 100),
+        legacy[1] if memory is None else int(memory),
+        legacy[2] if read_bps is None else max(1, round(read_bps / 1048576)),
+        legacy[3] if nproc is None else int(nproc),
+    )
+    try:
+        handlers_account._validate_limits(*candidate)
+    except ValidationError:
+        return legacy
+    return candidate
+
+
+def _sync_redis(username: str, enabled: bool) -> None:
+    status = redisacct.get_status({"username": username})
+    if enabled:
+        if not status.get("enabled"):
+            redisacct.enable_redis({"username": username})
+    elif status.get("provisioned"):
+        # disable_redis() raises if Redis was never enabled for this account --
+        # a plan with redis off applied to an account that never had it on
+        # must stay a no-op, not an error.
+        redisacct.disable_redis({"username": username})
+
+
+def _apply_to_account(username: str, plan_id: int, *, reset_override: bool = False, redis: bool = True) -> dict:
+    """Make one account match a plan (plan.apply, and every plan.update).
+
+    reset_override: an explicit plan.apply resets the account to the
+    package, dropping a per-account limits override; propagation of a plan
+    edit keeps it. redis: whether to reconcile Redis (propagation does so
+    only when the plan's Redis setting changed, to avoid restarts).
+    """
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
         if account is None:
-            raise RuntimeError(f"account '{username}' not found")
+            raise NotFoundError(f"account '{username}' not found")
         if account.status not in ("active", "suspended"):
-            raise RuntimeError(f"cannot apply a plan to an account in status '{account.status}'")
+            raise ConflictError(f"cannot apply a plan to an account in status '{account.status}'")
         plan = session.get(Plan, plan_id)
         if plan is None:
-            raise RuntimeError(f"plan {plan_id} not found")
+            raise NotFoundError(f"plan {plan_id} not found")
         policy = session.scalar(select(ResourcePolicy).where(ResourcePolicy.scope_type == "plan", ResourcePolicy.scope_id == plan.id))
         plan_values = _plan_to_dict(plan, policy)
 
-        account.cpu_pct = plan_values["cpu_pct"]
-        account.mem_mb = plan_values["mem_mb"]
-        account.io_mb = plan_values["io_mb"]
-        account.pids_max = plan_values["pids_max"]
+        account.cpu_pct, account.mem_mb, account.io_mb, account.pids_max = _legacy_limits(plan_values)
         account.quota_soft_mb = plan_values["quota_soft_mb"]
         account.quota_hard_mb = plan_values["quota_hard_mb"]
-        inode_quotas.schedule(
-            account, plan_values["inode_soft_limit"], plan_values["inode_hard_limit"]
-        )
+        # Re-applying unchanged inode limits must not restart the warning
+        # period the customer was already given.
+        if (account.inode_soft_limit, account.inode_hard_limit) != (
+            plan_values["inode_soft_limit"], plan_values["inode_hard_limit"]
+        ):
+            inode_quotas.schedule(
+                account, plan_values["inode_soft_limit"], plan_values["inode_hard_limit"]
+            )
         account.plan_id = plan_values["id"]
+        if reset_override:
+            override = session.scalar(select(ResourcePolicy).where(
+                ResourcePolicy.scope_type == "account", ResourcePolicy.scope_id == account.id,
+            ))
+            if override is not None:
+                session.delete(override)
         session.flush()
         account_snapshot = account
 
@@ -280,15 +365,8 @@ def apply_plan(params: dict) -> dict:
         hook(account_snapshot)
     sysops.set_quota(username, plan_values["quota_soft_mb"], plan_values["quota_hard_mb"])
 
-    if plan_values["redis_enabled"]:
-        redisacct.enable_redis({"username": username})
-    else:
-        # disable_redis() raises if Redis was never enabled for this account --
-        # a plan with redis off applied to an account that never had it on
-        # must stay a no-op, not an error.
-        status = redisacct.get_status({"username": username})
-        if status.get("provisioned"):
-            redisacct.disable_redis({"username": username})
+    if redis:
+        _sync_redis(username, bool(plan_values["redis_enabled"]))
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))

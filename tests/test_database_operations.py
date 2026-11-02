@@ -14,7 +14,10 @@ from pathlib import Path
 from shared.config import settings
 from shared.validation import ValidationError
 from daemon.database_operations import serialized
+from daemon import mutation_locks
 settings.snapshot_private_dir=sys.argv[1]
+# Requests wait a bounded time for the holder, then report it as busy.
+mutation_locks.REQUEST_WAIT_SECONDS = 0.3
 @serialized
 def mutate():
     Path(sys.argv[2]).write_text('changed')

@@ -11,6 +11,7 @@ from shared.passwords import verify_password
 from shared.config import settings
 from shared.install_profiles import capabilities_for_profile, validate_profile
 
+from api import ratelimit
 from api.rpc import call_daemon, call_daemon_anonymous
 from api.security import (
     COOKIE_MAX_AGE_SECONDS,
@@ -49,6 +50,7 @@ def login_form():
 @router.post("/login")
 def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
     _reject_cross_origin_form(request)
+    ratelimit.enforce_login_identity(request.client.host if request.client else None, username)
     result = call_daemon_anonymous(
         "auth.login.begin", username=username, password=password,
         source_ip=request.client.host if request.client else None,
@@ -71,6 +73,7 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
     login_identity = Identity(result.get("panel_user_id", -1), username, result["role"],
                               result.get("account_id"), "session")
     enforce_listener_role(login_identity, request)
+    ratelimit.login_succeeded(request.client.host if request.client else None, username)
     if result.get("needs_2fa"):
         return JSONResponse({"needs_2fa": True, "pending_token": result["pending_token"]})
     return _complete_login(result["session_id"])
@@ -133,6 +136,7 @@ def login_2fa_submit(request: Request, pending_token: str = Form(...), code: str
         return JSONResponse({"detail": "invalid code"}, status_code=401)
     from api.security import enforce_listener_role
     enforce_listener_role(Identity(-1, "", result["role"], result.get("account_id"), "session"), request)
+    ratelimit.login_succeeded(request.client.host if request.client else None)
     return _complete_login(result["session_id"])
 
 

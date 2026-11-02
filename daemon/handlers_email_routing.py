@@ -130,3 +130,21 @@ def delete_routing_for_domain(domain_name: str) -> None:
         if row is not None:
             session.delete(row)
     regenerate_relay_domains_map()
+
+
+def delete_routing_for_domains(domain_names) -> list[str]:
+    """Account termination: drop every routing row at once. The relay map is
+    rewritten (and Postfix reloaded) only when a backup-mode domain left it."""
+    # Names come from the account's own rows; a legacy name the current
+    # validator rejects must not abort the rest of account termination.
+    names = sorted({str(name).strip().lower().rstrip(".") for name in domain_names if name})
+    if not names:
+        return []
+    with write_session() as session:
+        rows = session.scalars(select(EmailRouting).where(EmailRouting.domain.in_(names))).all()
+        removed = [(row.domain, row.mode) for row in rows]
+        for row in rows:
+            session.delete(row)
+    if any(mode == "backup" for _domain, mode in removed):
+        regenerate_relay_domains_map()
+    return [domain for domain, _mode in removed]

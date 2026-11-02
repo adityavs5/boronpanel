@@ -10,12 +10,13 @@ from __future__ import annotations
 import logging
 import os
 import pwd
+import re
 from pathlib import Path
 
 import yaml
 
 from shared.config import settings
-from shared.validation import validate_username
+from shared.validation import ValidationError, validate_username
 
 from daemon.procutil import run
 
@@ -336,6 +337,57 @@ def open_access(params: dict) -> dict:
     from daemon import filebrowser_accounts
     filebrowser_accounts.start(username, home)
     return {"username": username, "scope": f"/{username}", "path": home}
+
+
+_MODE_RE = re.compile(r"\A0?[0-7]{3}\Z")
+MAX_CHMOD_PATHS = 500
+
+
+def change_permissions(params: dict) -> dict:
+    """File Manager "Change Permissions": chmod paths inside the home.
+
+    FileBrowser Quantum has no permission editor and creates files 0660 and
+    directories 0770, so this is the panel's replacement. Only the nine
+    rwx bits are accepted (never setuid, setgid or sticky). Every path is
+    realpath-jailed to the home, and chmod itself runs as the account inside
+    its slice, so it can only ever touch files the account already owns.
+    The home directory itself keeps the panel-managed 0711.
+    """
+    from daemon import account_exec, filemanager
+    from daemon.procutil import run as run_command
+
+    username = validate_username(params["username"])
+    mode = params.get("mode")
+    if not isinstance(mode, str) or not _MODE_RE.match(mode.strip()):
+        raise ValidationError("Enter the permissions as three octal digits, for example 644 or 755")
+    mode = mode.strip()[-3:]
+    paths = params.get("paths")
+    if isinstance(paths, str):
+        paths = [paths]
+    if not isinstance(paths, list) or not paths or len(paths) > MAX_CHMOD_PATHS:
+        raise ValidationError(f"Choose between 1 and {MAX_CHMOD_PATHS} files or folders")
+    targets = []
+    for raw in paths:
+        if not isinstance(raw, str) or not raw.strip() or "\0" in raw or len(raw) > 4096:
+            raise ValidationError("Each path must be a file or folder inside the home directory")
+        relative = "/" + raw.strip().lstrip("/")
+        try:
+            resolved, home = filemanager._resolve(username, relative)
+        except filemanager.FileManagerError:
+            raise ValidationError(f"'{relative}' is outside the home directory") from None
+        if resolved == home:
+            raise ValidationError("The home directory's own permissions are managed by the panel")
+        if not os.path.lexists(resolved):
+            raise ValidationError(f"'{relative}' does not exist")
+        targets.append((relative, resolved))
+    changed = []
+    for relative, resolved in targets:
+        result = run_command(account_exec.wrap(username, ["chmod", mode, "--", resolved]), timeout=30)
+        if not result.ok:
+            # stderr names the absolute path; report the home-relative one.
+            raise ValidationError(f"Could not change the permissions of '{relative}'")
+        changed.append({"path": relative, "mode": mode})
+    return {"mode": mode, "changed": changed}
 
 
 # --- lifecycle hook wrappers (registered in server.py) ---------------------

@@ -35,7 +35,7 @@ from shared.validation import ValidationError, validate_ip_or_cidr
 from daemon.procutil import run
 
 
-class IpBanError(Exception):
+class IpBanError(ValidationError):
     pass
 
 
@@ -120,8 +120,14 @@ def unban_ip(params: dict) -> dict:
         if row is None:
             raise IpBanError(f"no permanent ban with id {ban_id}")
         value = row.value
-        result = run(["ufw", "--force", "delete"] + _ufw_deny_args(value), timeout=20)
-        if not result.ok and "could not find" not in (result.stderr or result.stdout or "").lower():
-            raise RuntimeError(f"ufw delete deny from {value} failed: {result.stderr.strip() or result.stdout.strip()}")
+        from daemon.firewall import server_wide_deny_owned_elsewhere
+        # An active temporary ban for the same value enforces the identical
+        # `deny from` rule (UFW keeps one); deleting it here would unblock an
+        # address the panel still reports as banned.
+        if not server_wide_deny_owned_elsewhere(session, value, owner="permanent"):
+            result = run(["ufw", "--force", "delete"] + _ufw_deny_args(value), timeout=20)
+            combined = (result.stderr or result.stdout or "").lower()
+            if not result.ok and "could not find" not in combined and "non-existent" not in combined:
+                raise RuntimeError(f"ufw delete deny from {value} failed: {result.stderr.strip() or result.stdout.strip()}")
         session.delete(row)
     return {"id": ban_id, "value": value, "status": "unbanned"}

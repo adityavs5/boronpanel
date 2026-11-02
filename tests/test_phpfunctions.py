@@ -12,7 +12,7 @@ from shared.models import Account, Domain
 @pytest.fixture()
 def stub_ols(monkeypatch):
     calls = []
-    monkeypatch.setattr(ols, "refresh_vhost", lambda account: calls.append(account.username))
+    monkeypatch.setattr(ols, "refresh_vhost", lambda account, recycle_php=False: calls.append((account.username, recycle_php)) or None)
     return calls
 
 
@@ -40,7 +40,9 @@ def test_set_account_wide_override(account_with_domains, stub_ols):
     result = phpfunctions.set_override({"username": "demo1", "domain": None, "disable_functions": ["exec"]})
     assert result["domain"] is None
     assert result["disable_functions"] == ["exec"]
-    assert "demo1" in stub_ols  # refresh_vhost called
+    # refresh_vhost called, and warm PHP workers recycled: the override is
+    # applied at PHP startup (PHP_INI_SCAN_DIR), not per request.
+    assert ("demo1", True) in stub_ols
 
     overrides = phpfunctions.get_overrides({"username": "demo1"})
     assert overrides["account_override"]["disable_functions"] == ["exec"]
