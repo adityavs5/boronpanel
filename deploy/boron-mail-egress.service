@@ -1,0 +1,23 @@
+[Unit]
+Description=Boron SMTP restriction (only Postfix and root may open TCP port 25, local or remote)
+# UFW installs its OUTPUT jumps first; this unit then inserts ahead of them.
+After=ufw.service netfilter-persistent.service
+Before=lshttpd.service cron.service ssh.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/boron
+Environment=PYTHONPATH=/opt/boron
+ExecStart=/opt/boron/.venv/bin/python -m daemon.mail_egress apply
+ExecStop=/opt/boron/.venv/bin/python -m daemon.mail_egress remove
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# iptables-legacy serialises through /run/xtables.lock.
+ReadWritePaths=/run
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -568,6 +568,8 @@ OP_TABLE = {
     "cpanel_import.trigger": cpanel_import.trigger_import,
     "cpanel_import.get": cpanel_import.get_job,
     "cpanel_import.list": cpanel_import.list_jobs,
+    "cpanel_import.upload.reserve": cpanel_import.reserve_upload,
+    "cpanel_import.upload.cleanup": cpanel_import.cleanup_upload,
     # Phase 7b feature 3: email notifications
     "notifications.settings.get": notifications.get_settings,
     "notifications.settings.set": notifications.set_settings,
@@ -752,6 +754,7 @@ REPORTING_OPS = {
     "diagnostics.run", "support_bundle.consume",
     "ipmanager.list",
     "portable.import.get", "portable.import.list", "portable.import.upload.reserve", "portable.import.upload.cleanup",
+    "cpanel_import.upload.reserve", "cpanel_import.upload.cleanup",
     "portable.export.prepare", "portable.export.cleanup",
     # Run A feature 5: history is dashboard-polled; check shells out 7x
     # systemctl -- same isolation reasoning as health/services below.
@@ -1059,6 +1062,15 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
             handler_params["author"] = actor
         elif op in ("admin_user.set_status", "admin_user.manage"):
             handler_params["actor_username"] = actor
+        elif op == "auth.create_api_token":
+            # Bind the new token to the administrator behind the resolved
+            # credential (a token-minted token inherits its own creator).
+            # Always overwritten, so a caller can never name a creator.
+            handler_params["_creator_panel_user_id"] = (
+                None if current is None
+                else current.panel_user_id if current.auth_method == "session"
+                else current.token_creator_id
+            )
         elif op == "ipban.add":
             handler_params["actor"] = actor
             handler_params["actor_ip"] = ip
@@ -1087,7 +1099,10 @@ async def dispatch(op: str, params: dict, credential: object = None) -> dict:
         if op in CUSTOMER_SCOPE_OPERATIONS:
             # Visibility/retention policy is credential-derived. A caller may
             # not omit or forge this transport hint to widen customer access.
-            handler_params["customer_scope"] = current is not None and current.role == "customer"
+            # Every non-admin principal (customers *and* resellers acting on
+            # owned accounts) is held to the admin's customer_visible
+            # destination policy; only administrators see hidden storage.
+            handler_params["customer_scope"] = current is not None and current.role != "admin"
         return handler(handler_params)
 
     try:

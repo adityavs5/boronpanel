@@ -75,9 +75,7 @@ def _delete_managed_zone(domain_name: str) -> dict:
 @account_mutation.locked
 def add_domain(params: dict) -> dict:
     username = validate_username(params["username"])
-    domain_name = validate_domain(params["domain"])
-    if domain_name in (settings.panel_hostname,settings.webmail_hostname,settings.pma_hostname):
-        raise ValidationError("This hostname is reserved for a panel service")
+    domain_name = domain_ownership.require_not_reserved(params["domain"])
     kind = params.get("kind", "addon")
     if kind not in ("primary", "addon", "subdomain"):
         raise ValueError("kind must be primary, addon, or subdomain")

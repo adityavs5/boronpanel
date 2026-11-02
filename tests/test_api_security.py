@@ -12,6 +12,7 @@ pytest.importorskip("fastapi")
 from api import security as sec  # noqa: E402
 from daemon import handlers_account as ha  # noqa: E402
 from daemon import handlers_auth as hauth  # noqa: E402
+from tests.token_support import mint_token  # noqa: E402
 from shared.db import write_session  # noqa: E402
 from shared.models import Account, ApiToken, PanelUser, Session  # noqa: E402
 
@@ -154,7 +155,7 @@ def test_identity_from_disabled_user_is_none(isolated_db):
 
 
 def test_identity_from_bearer_token(isolated_db):
-    result = hauth.create_api_token({"label": "test-integration", "role": "admin"})
+    result = mint_token({"label": "test-integration", "role": "admin"})
     identity = sec._identity_from_bearer_token(result["token"])
     assert identity is not None
     assert identity.role == "admin"
@@ -163,7 +164,7 @@ def test_identity_from_bearer_token(isolated_db):
 
 
 def test_identity_from_revoked_token_is_none(isolated_db):
-    result = hauth.create_api_token({"label": "test-integration", "role": "admin"})
+    result = mint_token({"label": "test-integration", "role": "admin"})
     hauth.revoke_api_token({"token_id": result["id"]})
     assert sec._identity_from_bearer_token(result["token"]) is None
 

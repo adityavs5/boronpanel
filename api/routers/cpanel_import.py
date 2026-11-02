@@ -2,17 +2,18 @@
 (it always creates a brand-new Boron account, never touches an existing
 customer's own account, so there is no customer-self-service angle at all).
 
-An uploaded file is spooled to a plain temp file this process (boron-api,
-unprivileged) can write -- borond (root) can read it regardless of which
-uid wrote it, so no new shared-directory permission scheme is needed
-(ARCHITECTURE.md SS2's privilege split is unaffected: boron-api still
-never touches account-owned files or privileged state itself, it only hands
-borond a path to a file it just wrote in the OS's own shared temp area).
+An uploaded file is streamed into a spool file borond reserves for this
+process (``cpanel_import.upload.reserve``: root-prepared upload directory,
+boron-api-owned 0600 file). borond only ever reads -- and later deletes --
+a path that passes that spool validation, so this unprivileged process
+cannot point root at an arbitrary file (and boron-api's PrivateTmp /tmp
+is not visible to borond anyway).
 """
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
-import tempfile
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
@@ -29,18 +30,28 @@ from shared.config import settings
 api_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/admin/import/cpanel", tags=["cpanel-import"])
 accounts_api_router = APIRouter(route_class=BoundedUploadRoute, prefix="/api/v1/admin/import/accounts", tags=["account-imports"])
 ui_router = APIRouter(route_class=BoundedUploadRoute, prefix="/ui/admin/import/cpanel", tags=["ui:cpanel-import"])
+logger = logging.getLogger(__name__)
 
 
-def _spool_upload(file: UploadFile) -> str:
+def _cleanup_upload(identity: Identity, upload_id: str) -> None:
+    try:
+        call_daemon("cpanel_import.upload.cleanup", identity, upload_id=upload_id)
+    except Exception:
+        logger.exception("Could not clean backup upload %s", upload_id)
+
+
+def _spool_upload(file: UploadFile, identity: Identity) -> str:
     """Streams the upload to disk in chunks (never reads the whole file into
     memory) and enforces the same size ceiling borond's own URL-download
     path uses, so an oversized upload is rejected here instead of only after
     boron-api has already buffered gigabytes of it."""
     max_bytes = settings.cpanel_import_max_upload_bytes
-    fd, tmp_path = tempfile.mkstemp(suffix=".tar.gz", prefix="cpanel-import-")
+    reserved = call_daemon("cpanel_import.upload.reserve", identity)
+    tmp_path = reserved["path"]
     written = 0
     try:
-        with open(fd, "wb") as out:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW)
+        with os.fdopen(fd, "wb") as out:
             while True:
                 chunk = file.file.read(1024 * 1024)
                 if not chunk:
@@ -50,14 +61,14 @@ def _spool_upload(file: UploadFile) -> str:
                     raise HTTPException(status_code=413, detail=f"upload exceeds the {max_bytes} byte limit")
                 out.write(chunk)
     except Exception:
-        Path(tmp_path).unlink(missing_ok=True)
+        _cleanup_upload(identity, reserved["upload_id"])
         raise
     return tmp_path
 
 
 def _trigger(identity: Identity, username: str, url: str | None, file: UploadFile | None, panel: str = "cpanel") -> dict:
     if file is not None and file.filename:
-        tmp_path = _spool_upload(file)
+        tmp_path = _spool_upload(file, identity)
         try:
             return call_daemon("cpanel_import.trigger", identity, username=username, panel=panel, source="upload", source_ref=tmp_path)
         except Exception:
@@ -65,9 +76,9 @@ def _trigger(identity: Identity, username: str, url: str | None, file: UploadFil
             # job -- a rejected request here (bad username, account already
             # exists, another import already running) means the daemon will
             # never read this file, so it must be cleaned up here instead of
-            # leaking until borond's own post-extraction unlink (which
+            # leaking until borond's own post-extraction cleanup (which
             # only runs for a job that actually started).
-            Path(tmp_path).unlink(missing_ok=True)
+            _cleanup_upload(identity, Path(tmp_path).name)
             raise
     if url:
         return call_daemon("cpanel_import.trigger", identity, username=username, panel=panel, source="url", source_ref=url)

@@ -127,6 +127,25 @@ def test_ensure_web_logs_grants_only_ols_named_acl(account_with_home, monkeypatc
                       {"uid": os.getuid(), "gid": os.getgid(), "check": True})]
 
 
+def test_ensure_web_logs_removes_planted_log_symlinks(account_with_home, monkeypatch, tmp_path):
+    """Regression: a tenant could swap its vhost log for a symlink into
+    another tenant's ~/logs, and OLS (writing every tenant's logs as nobody)
+    followed it on the next reopen."""
+    monkeypatch.setattr(sysops, "run", lambda args, **kwargs: None)
+    logs = account_with_home / "logs"
+    logs.mkdir()
+    victim = tmp_path / "other-tenant-access.log"
+    victim.write_text("victim lines")
+    (logs / "example_com-access.log").symlink_to(victim)
+    (logs / "dangling-error.log").symlink_to(tmp_path / "missing")
+    (logs / "real-access.log").write_text("kept")
+    (logs / "node").mkdir()
+    sysops.ensure_web_logs("demo1")
+    assert sorted(p.name for p in logs.iterdir()) == ["node", "real-access.log"]
+    assert victim.read_text() == "victim lines"
+    assert (logs / "real-access.log").read_text() == "kept"
+
+
 def test_new_account_has_private_default_backup_folder(account_with_home, monkeypatch):
     monkeypatch.setattr(sysops, 'user_exists', lambda _: False)
     monkeypatch.setattr(sysops, 'run', lambda *a, **kw: None)

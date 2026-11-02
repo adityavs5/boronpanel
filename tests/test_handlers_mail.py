@@ -37,8 +37,9 @@ def stub_mail(monkeypatch):
     def domain_exists(domain):
         return domain in state["domains"]
 
-    def create_mail_domain(domain):
+    def create_mail_domain(domain, active=True):
         calls.append(("create_mail_domain", domain))
+        state.setdefault("active", {})[domain] = active
         state["domains"].add(domain)
         return 1
 

@@ -494,7 +494,6 @@ class Finalizer:
         if not self.args.alert_sender or not self.args.alert_recipient:
             return
         try:
-            import smtplib
             from email.message import EmailMessage
 
             msg = EmailMessage()
@@ -502,9 +501,18 @@ class Finalizer:
             msg["From"] = self.args.alert_sender
             msg["To"] = self.args.alert_recipient
             msg.set_content(body)
-            with smtplib.SMTP("127.0.0.1", 25, timeout=10) as smtp:
-                smtp.send_message(msg)
-        except OSError:
+            # Loopback port 25 no longer relays; the root finalizer queues
+            # directly with Postfix's own sendmail (bypassing the dispatcher).
+            sendmail = next((path for path in ("/usr/sbin/sendmail.postfix", "/usr/sbin/sendmail")
+                             if os.path.isfile(path)), "/usr/sbin/sendmail")
+            result = subprocess.run(
+                [sendmail, "-G", "-i", "-f", self.args.alert_sender, "--", self.args.alert_recipient],
+                input=msg.as_bytes(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=30, check=False,
+            )
+            if result.returncode != 0:
+                self.log("alert", "failed", f"could not email admin (sendmail rc={result.returncode})")
+        except (OSError, subprocess.TimeoutExpired):
             self.log("alert", "failed", "could not email admin (SMTP unavailable)")
 
     # --- main flow --------------------------------------------------------------

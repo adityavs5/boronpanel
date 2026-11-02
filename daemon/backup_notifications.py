@@ -1,6 +1,7 @@
 """Backup-specific notification status and Telegram delivery."""
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import time
@@ -21,6 +22,56 @@ EVENTS=('backup.completed','backup.failed','backup.partial','backup.overdue',
     'host.disk','host.inodes','host.memory','host.load','host.login_burst',
     'host.service_down','host.service_recovered','task.failed')
 _transport=None
+_BOT_TOKEN_RE=re.compile(r'bot[0-9]{5,20}:[A-Za-z0-9_-]{20,200}')
+
+
+def _redact(text,token=''):
+    """Remove a Telegram bot token from free text (exception messages)."""
+    text=str(text)
+    if token:text=text.replace(token,'[redacted]')
+    return _BOT_TOKEN_RE.sub('bot[redacted]',text)
+
+
+class _RedactRequestUrlFilter(logging.Filter):
+    """Keep secrets in request URLs out of httpx's per-request INFO lines.
+
+    httpx logs "HTTP Request: POST <url>" for every request. The Telegram
+    Bot API carries the bot token in the URL path (/bot<token>/sendMessage)
+    and operator-supplied webhook targets often carry their secret in the
+    path (/services/T/B/<secret>). Webhook (and other operator-supplied)
+    destinations are always requested through a pinned IP literal
+    (webhooks._pinned_post), so for those and for api.telegram.org only
+    scheme://host[:port] is logged; every query string is dropped.
+    daemon.log is readable by boron-api and copied into support bundles,
+    and the journal cannot be redacted afterwards.
+    """
+
+    def filter(self,record):
+        if isinstance(record.args,tuple) and record.args:
+            record.args=tuple(self._clean(arg) for arg in record.args)
+        elif isinstance(record.msg,str):
+            record.msg=_redact(record.msg)
+        return True
+
+    @staticmethod
+    def _clean(arg):
+        if isinstance(arg,httpx.URL):
+            host=arg.host or ''
+            secret_path=host=='api.telegram.org' or _is_ip_literal(host)
+            path='/[redacted]' if secret_path and arg.path not in ('','/') else arg.path
+            return arg.copy_with(path=path,query=None,fragment=None)
+        if isinstance(arg,str):return _redact(arg)
+        return arg
+
+
+def _is_ip_literal(host):
+    try:ipaddress.ip_address(host.strip('[]'))
+    except ValueError:return False
+    return True
+
+
+_HTTPX_URL_FILTER=_RedactRequestUrlFilter()
+logging.getLogger('httpx').addFilter(_HTTPX_URL_FILTER)
 
 
 def _settings(session):
@@ -88,8 +139,13 @@ def _finish(ident,status_value,detail):
 
 def _send(token,chat_id,text):
     url=f'https://api.telegram.org/bot{token}/sendMessage'
-    with httpx.Client(timeout=10,trust_env=False,follow_redirects=False,transport=_transport) as client:
-        response=client.post(url,json={'chat_id':chat_id,'text':text,'disable_web_page_preview':True})
+    try:
+        with httpx.Client(timeout=10,trust_env=False,follow_redirects=False,transport=_transport) as client:
+            response=client.post(url,json={'chat_id':chat_id,'text':text,'disable_web_page_preview':True})
+    except httpx.HTTPError as exc:
+        # httpx errors can embed the request URL (and so the token); drop
+        # the chained exception so tracebacks cannot leak it either.
+        raise RuntimeError(f'Telegram request failed: {_redact(exc,token)}') from None
     if response.status_code<200 or response.status_code>=300:
         raise RuntimeError(f'Telegram returned HTTP {response.status_code}')
 
@@ -175,7 +231,7 @@ def flush_digests(now=None):
                 else:detail='Telegram is no longer configured'
             else:detail='Unsupported digest channel'
         except Exception as exc:
-            detail=str(exc)[:1000];logger.exception('Backup digest delivery failed')
+            detail=_redact(exc)[:1000];logger.exception('Backup digest delivery failed')
         with write_session() as session:
             row=session.get(BackupNotificationDigest,ident)
             row.status='completed' if ok else 'failed';row.error=None if ok else detail
@@ -205,7 +261,8 @@ def send_telegram(event,account=None,**context):
             _send(token,chat_id,text);_finish(delivery_id,'success',f'Delivered on attempt {attempt+1}');return True
         except (httpx.HTTPError,RuntimeError) as exc:
             if attempt==2:
-                _finish(delivery_id,'failed',exc);logger.warning('Telegram backup notification failed: %s',exc);return False
+                detail=_redact(exc,token);_finish(delivery_id,'failed',detail)
+                logger.warning('Telegram backup notification failed: %s',detail);return False
             time.sleep((.5,1.5)[attempt])
     return False
 
@@ -258,7 +315,9 @@ def test_telegram(params=None):
         token=decrypt_env(row.token_enc).get('token','');chat_id=row.chat_id
     delivery_id=_record('backup.test',None)
     try:_send(token,chat_id,'Boron backup notifications are connected.');_finish(delivery_id,'success','Test delivered')
-    except Exception as exc:_finish(delivery_id,'failed',exc);raise ValidationError(f'Telegram test failed: {exc}') from None
+    except Exception as exc:
+        detail=_redact(exc,token);_finish(delivery_id,'failed',detail)
+        raise ValidationError(f'Telegram test failed: {detail}') from None
     return {'status':'delivered'}
 
 

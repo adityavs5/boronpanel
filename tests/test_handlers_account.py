@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import select
 
 from daemon import handlers_account as ha
+from tests.token_support import mint_token
 from shared.db import write_session
 from shared.models import Account, Domain
 from shared.validation import ValidationError
@@ -272,7 +273,7 @@ def _setup_panel_access_for(username: str) -> dict:
         {"username": f"{username}-login", "password": "SuperSecret123!", "role": "customer", "account_id": account_id}
     )
     session_result = hauth.create_session({"panel_user_id": panel_user["id"]})
-    token_result = hauth.create_api_token({"label": f"{username}-token", "role": "customer", "account_id": account_id})
+    token_result = mint_token({"label": f"{username}-token", "role": "customer", "account_id": account_id})
     return {"panel_user": panel_user, "session": session_result, "token": token_result}
 
 

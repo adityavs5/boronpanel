@@ -37,10 +37,31 @@ class Principal:
     reseller_id: int | None = None
     impersonating: bool = False
     token_scope: str = 'full'
+    # API-token principals only: the token row and the administrator who
+    # minted it. panel_user_id stays None for tokens so session-only
+    # dispositions keep refusing them.
+    token_id: int | None = None
+    token_creator_id: int | None = None
 
 
 def _utc(value: dt.datetime) -> dt.datetime:
     return value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+
+
+def token_creator(db, token: ApiToken) -> PanelUser | None:
+    """The token's creator if it may still exercise authority, else None.
+
+    Shared by both credential resolvers (borond and boron-api): a token is
+    refused once its creator is missing, disabled or no longer an
+    administrator, and a token without a recorded creator is never valid.
+    """
+    creator_id = getattr(token, "created_by_panel_user_id", None)
+    if creator_id is None:
+        return None
+    creator = db.get(PanelUser, creator_id)
+    if creator is None or creator.disabled or creator.role != "admin":
+        return None
+    return creator
 
 
 def resolve_principal(credential: object) -> Principal:
@@ -118,7 +139,14 @@ def resolve_principal(credential: object) -> Principal:
                 raise AuthenticationError("API token account unavailable")
         if token.scope not in ('full', 'read-only'):
             raise AuthenticationError('invalid API token scope')
-        return Principal(token.role, token.label, token.account_id, None, "token", token_scope=token.scope)
+        creator = token_creator(db, token)
+        if creator is None:
+            raise AuthenticationError("API token creator unavailable")
+        # The creator's login name is the principal and audit actor; the
+        # free-text label is metadata only and can never impersonate anyone.
+        return Principal(token.role, creator.username, token.account_id, None, "token",
+                         token_scope=token.scope, token_id=token.id,
+                         token_creator_id=creator.id)
 
 
 def _target_account_id(db, params: dict, *, allow_new_domain: bool = False) -> int | None:

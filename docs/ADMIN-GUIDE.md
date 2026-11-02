@@ -38,6 +38,67 @@ application, and Redis limits. Apply a plan from the account editor or create
 an account with a plan selected. Check the resulting limits on the account
 detail page; changing a plan does not silently terminate existing resources.
 
+## Domain ownership and mail delivery
+
+Boron does not ask a customer to prove they own a domain before they add
+it, so it limits what an added name can do.
+
+**Names an account cannot add.** Adding a domain fails when:
+
+- it is one of this server's own names (panel, webmail, phpMyAdmin or mail
+  hostname, or a configured local nameserver), or a name under one;
+- it is a public suffix such as `co.uk` or `github.io`;
+- it is, or is under, a large public mail provider such as `gmail.com`,
+  `outlook.com`, `yahoo.com`, `icloud.com` or `proton.me` (the full list
+  is in `daemon/domain_ownership.py`). To refuse more names, list them in
+  `reserved_domains` in `/etc/boron/boron.toml`;
+- another account already holds the same name, a parent of it, or a
+  subdomain of it. For example, if account A holds `www.example.com`,
+  account B cannot add `example.com`. The error tells the customer to
+  contact you. Check who holds the conflicting name before you remove or
+  transfer it: a customer may have added a subdomain of a domain they do
+  not own, to block or take over its real owner.
+
+**When local mail delivery starts.** Postfix treats a mail domain as local
+for every sender on the server. That includes other accounts' PHP `mail()`,
+forwarders and cron mail, and the panel's own notifications. To stop an
+account that adds someone else's domain from receiving that mail, a new mail
+domain starts with local delivery **pending**. Until then, mail to it goes to
+the MX the rest of the internet uses, and its mailboxes cannot sign in to
+IMAP, POP3, webmail or SMTP submission yet. Local delivery turns on once the
+domain's most-preferred public MX resolves to one of this server's public
+addresses. Boron checks this with public resolvers (`mail_mx_check_resolvers`,
+default `1.1.1.1` and `8.8.8.8`), never with its own PowerDNS copy.
+
+- Boron checks when the mail domain is created and when the customer picks
+  **Local** email routing. After that, `/etc/cron.d/boron-mail-routing`
+  checks again every 5 minutes. While a domain is pending, Postfix's
+  default `defer_unauth_destination` gives a temporary error, so senders
+  retry and do not bounce mail sent right after the MX change.
+- To move mailboxes in before the DNS cut-over, for example with an IMAP
+  sync, add the domain to `mail_local_delivery_trusted_domains` in
+  `boron.toml`. Remove it after the MX change. Trust only a domain whose
+  owner you have checked yourself.
+- A domain whose MX points at an inbound filtering or backup MX service
+  that then forwards to this server never passes the check, because its
+  most-preferred MX is that service. After checking the owner, list the
+  domain in `mail_local_delivery_trusted_domains` and leave it there.
+- If outbound DNS to the public resolvers is blocked, set
+  `mail_mx_check_resolvers` to resolvers this server can reach. Do not use
+  a resolver that answers from this server's own PowerDNS zones. If the
+  server's public IP is not on an interface (NAT), set `server_public_ip`.
+  `mail_local_delivery_requires_mx = false` turns the check off and restores
+  the old behaviour of always delivering locally. Only do this on a server
+  where every account is trusted.
+- Mail domains created before this check existed keep their state. To audit
+  them, run
+  `/opt/boron/.venv/bin/python /opt/boron/scripts/mail_local_delivery_reconcile.py --recheck-active`
+  as root. It turns off local delivery for active domains whose public MX
+  definitively points elsewhere. A DNS lookup error never changes a domain.
+  Every run, including the cron one, turns off any mail domain on the
+  public-provider list. Results are logged to
+  `/var/log/boron/mail-local-delivery.log`.
+
 ## Monitoring and operations
 
 - **Server Health**: inspect service status, resource health, and monitoring

@@ -19,6 +19,9 @@ from daemon import mail_submission  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sender", required=True)
+    # Postfix passes ${sasl_username}; absent only on a master.cf written by
+    # an older release, which the upgrade reconciles before reloading Postfix.
+    parser.add_argument("--login")
     parser.add_argument("--recipient", action="append", required=True)
     args = parser.parse_args()
     raw = sys.stdin.buffer.read(mail_submission.MAX_MESSAGE_BYTES + 1)
@@ -26,7 +29,7 @@ def main() -> int:
         print("message exceeds 25 MB", file=sys.stderr)
         return 69
     try:
-        prepared, envelope = mail_submission.prepare_submission_filter(raw, args.sender)
+        prepared, envelope = mail_submission.prepare_submission_filter(raw, args.sender, login=args.login)
         mail_submission.submit_via_postfix(prepared, envelope, args.recipient)
     except mail_submission.MailSubmissionError as exc:
         print(str(exc), file=sys.stderr)

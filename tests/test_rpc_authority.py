@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from daemon import handlers_auth, jobcredentials, server
+from tests.token_support import mint_token
 from daemon.rpc_authority import AuthenticationError, AuthorizationError
 from daemon.rpc_policy import POLICY_BY_OPERATION
 from shared.db import write_session
@@ -222,6 +223,30 @@ def test_reseller_scope_tracks_current_owner_and_profile_status(isolated_db, mon
     assert seen == ["alice"]
 
 
+def test_reseller_backup_scope_is_restricted_like_customer(isolated_db, monkeypatch):
+    _setup_users()
+    reseller = handlers_auth.create_panel_user({
+        "username": "seller2", "password": "ResellerPass123!", "role": "reseller",
+    })
+    with write_session() as db:
+        plan = ResellerPlan(name="reseller-plan-2")
+        db.add(plan)
+        db.flush()
+        profile = ResellerProfile(panel_user_id=reseller["id"], plan_id=plan.id)
+        db.add(profile)
+        db.flush()
+        alice_id = db.scalar(select(Account.id).where(Account.username == "alice"))
+        db.add(ResellerAccount(reseller_id=profile.id, account_id=alice_id))
+    seller_session = handlers_auth.create_session({"panel_user_id": reseller["id"]})["session_id"]
+    seen = []
+    monkeypatch.setitem(server.OP_TABLE, "backup.job.trigger", lambda params: seen.append(params) or {"ok": True})
+    asyncio.run(server.dispatch(
+        "backup.job.trigger", {"username": "alice", "customer_scope": False},
+        _credential(seller_session),
+    ))
+    assert seen[0]["customer_scope"] is True
+
+
 def test_revoked_and_expired_sessions_rejected_before_handler(isolated_db, monkeypatch):
     admin_session, _ = _setup_users()
     seen = []
@@ -241,7 +266,7 @@ def test_revoked_and_expired_sessions_rejected_before_handler(isolated_db, monke
 
 
 def test_revoked_and_expired_api_tokens_rejected(isolated_db, monkeypatch):
-    token = handlers_auth.create_api_token({"label": "integration", "role": "admin"})
+    token = mint_token({"label": "integration", "role": "admin"})
     seen = []
     monkeypatch.setitem(server.OP_TABLE, "account.create", lambda _: seen.append(True) or {"ok": True})
     proof = {"type": "token", "value": token["token"]}
@@ -436,7 +461,7 @@ def test_update_requires_root_confirmed_admin_session_and_second_factor(isolated
     base = {"initiated_by": "administrator"}
     with pytest.raises(AuthorizationError):
         asyncio.run(server.dispatch("update.start", base, _credential(admin_session)))
-    admin_token = handlers_auth.create_api_token({"label": "automation", "role": "admin"})["token"]
+    admin_token = mint_token({"label": "automation", "role": "admin"})["token"]
     with pytest.raises(AuthorizationError):
         asyncio.run(server.dispatch("update.start", {**base, "confirm": True},
                                     {"type": "token", "value": admin_token}))
@@ -508,7 +533,7 @@ def test_all_account_policies_reject_missing_foreign_and_mismatched_targets(isol
 
 
 def test_read_only_token_cannot_mutate_even_when_calling_root_rpc(isolated_db, monkeypatch):
-    token = handlers_auth.create_api_token({"label": "monitor", "role": "admin", "scope": "read-only", "expires_in_days": 1})
+    token = mint_token({"label": "monitor", "role": "admin", "scope": "read-only", "expires_in_days": 1})
     proof = {"type": "token", "value": token["token"]}
     monkeypatch.setitem(server.OP_TABLE, "account.list", lambda _: {"accounts": []})
     assert asyncio.run(server.dispatch("account.list", {}, proof)) == {"accounts": []}
@@ -528,11 +553,11 @@ def test_customer_token_requires_active_account_and_cannot_cross_scope(isolated_
     from shared.validation import ValidationError
     _setup_users()
     with pytest.raises(ValidationError, match="active hosting account"):
-        handlers_auth.create_api_token({"label": "bad", "role": "customer"})
+        mint_token({"label": "bad", "role": "customer"})
     with write_session() as db:
         alice = db.scalar(select(Account).where(Account.username == "alice"))
         account_id = alice.id
-    token = handlers_auth.create_api_token({"label": "alice", "role": "customer", "account_id": account_id, "scope": "read-only"})
+    token = mint_token({"label": "alice", "role": "customer", "account_id": account_id, "scope": "read-only"})
     proof = {"type": "token", "value": token["token"]}
     monkeypatch.setitem(server.OP_TABLE, "account.get", lambda params: {"username": params["username"]})
     assert asyncio.run(server.dispatch("account.get", {"username": "alice"}, proof))["username"] == "alice"

@@ -69,6 +69,10 @@ class Identity:
     # can record where lifecycle actions came from.
     ip: str | None = None
     token_scope: str = 'full'
+    # Bearer identities only: the token row and its free-text label, kept as
+    # metadata. `username` is the creating administrator, never the label.
+    token_id: int | None = None
+    token_label: str | None = None
 
     @property
     def is_impersonating(self) -> bool:
@@ -140,8 +144,16 @@ def _identity_from_bearer_token(token: str) -> Identity | None:
             account = db.get(Account, row.account_id) if row.account_id is not None else None
             if account is None or account.status != "active":
                 return None
-        return Identity(panel_user_id=-1, username=row.label, role=row.role, account_id=row.account_id,
-                        auth_method="token", rpc_credential=token, token_scope=row.scope)
+        # Same creator rule as daemon.rpc_authority.token_creator: a token is
+        # refused once its creator is gone, disabled or no longer an
+        # administrator, and it acts (and is audited) as that creator.
+        creator_id = row.created_by_panel_user_id
+        creator = db.get(PanelUser, creator_id) if creator_id is not None else None
+        if creator is None or creator.disabled or creator.role != "admin":
+            return None
+        return Identity(panel_user_id=-1, username=creator.username, role=row.role, account_id=row.account_id,
+                        auth_method="token", rpc_credential=token, token_scope=row.scope,
+                        token_id=row.id, token_label=row.label)
 
 
 def enforce_listener_role(identity,connection):

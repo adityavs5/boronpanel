@@ -40,9 +40,11 @@ OLS_WAF_RUNTIME = Path("/etc/modsecurity/boron-runtime.conf")
 RUNTIME_BACKUP = Path("/var/lib/boron/update-runtime-backup.json")
 FIREWALL_RECOVER_COMMAND = Path("/usr/local/sbin/boron-firewall-recover")
 LICENSE_CRON = Path("/etc/cron.d/boron-license")
+MAIL_ROUTING_CRON = Path("/etc/cron.d/boron-mail-routing")
 OLS_LIFECYCLE_CONFIG = Path("/etc/systemd/system/lshttpd.service.d/boron-lifecycle.conf")
 MAIL_SUBMIT_SOCKET_UNIT = Path("/etc/systemd/system/boron-mail-submit.socket")
 MAIL_SUBMIT_SERVICE_UNIT = Path("/etc/systemd/system/boron-mail-submit@.service")
+MAIL_EGRESS_UNIT = Path("/etc/systemd/system/boron-mail-egress.service")
 SYSTEMD_UNIT_DIR = Path("/etc/systemd/system")
 DEFAULT_APP_ENV_DIR = Path("/etc/boron/app-env")
 
@@ -117,10 +119,10 @@ def command(args: list[str], timeout: int = 900) -> None:
 
 def _runtime_paths() -> list[Path]:
     paths = [MSMTP_CONFIG, APPARMOR_BWRAP_PROFILE, OLS_CONFIG, OLS_NAMESPACE_POLICY, OLS_WAF_RUNTIME, FIREWALL_RECOVER_COMMAND, OLS_LIFECYCLE_CONFIG,
-             LICENSE_CRON,
+             LICENSE_CRON, MAIL_ROUTING_CRON,
              DOVECOT_BORON_CONFIG, POSTFIX_MAIN_CONFIG, SSL_DIR / 'mail.crt', SSL_DIR / 'mail.key',
              POSTFIX_MASTER_CONFIG, POSTFIX_SENDER_LOGIN,
-             MAIL_SUBMIT_SOCKET_UNIT, MAIL_SUBMIT_SERVICE_UNIT,
+             MAIL_SUBMIT_SOCKET_UNIT, MAIL_SUBMIT_SERVICE_UNIT, MAIL_EGRESS_UNIT,
              DOVECOT_SQL_CONFIG, DOVECOT_SSO_SQL_CONFIG, DOVECOT_SSO_PASSDB_CONFIG, DOVECOT_QUOTA_CONFIG]
     if OLS_VHOST_ROOT.exists():
         paths.extend(sorted(OLS_VHOST_ROOT.glob("*/vhconf.conf")))
@@ -220,6 +222,10 @@ def restore_runtime_backup() -> None:
         raise RuntimeError("runtime migration backup has invalid application state")
     for app in applications:
         subprocess.run(["systemctl", "stop", str(app["socket"])], check=False, timeout=30)
+    egress_record = next((row for row in records if row["path"] == str(MAIL_EGRESS_UNIT)), None)
+    if egress_record and not egress_record["exists"]:
+        # Stop while the unit file (and its ExecStop rule removal) still exists.
+        subprocess.run(["systemctl", "disable", "--now", MAIL_EGRESS_UNIT.name], check=False, timeout=30)
     apparmor_record = next((row for row in records if row["path"] == str(APPARMOR_BWRAP_PROFILE)), None)
     if apparmor_record and not apparmor_record["exists"] and APPARMOR_BWRAP_PROFILE.exists():
         command(["apparmor_parser", "-R", str(APPARMOR_BWRAP_PROFILE)], timeout=30)
@@ -243,8 +249,10 @@ def restore_runtime_backup() -> None:
                 row = session.get(model, int(app["id"])) if model else None
                 if row is not None:
                     row.backend_mode = app["backend_mode"]
-    if applications or any(row["path"] in {str(OLS_LIFECYCLE_CONFIG), str(MAIL_SUBMIT_SOCKET_UNIT), str(MAIL_SUBMIT_SERVICE_UNIT)} for row in records):
+    if applications or any(row["path"] in {str(OLS_LIFECYCLE_CONFIG), str(MAIL_SUBMIT_SOCKET_UNIT), str(MAIL_SUBMIT_SERVICE_UNIT), str(MAIL_EGRESS_UNIT)} for row in records):
         command(["systemctl", "daemon-reload"], timeout=30)
+        if egress_record and egress_record["exists"]:
+            command(["systemctl", "restart", MAIL_EGRESS_UNIT.name], timeout=30)
         socket_record = next((row for row in records if row["path"] == str(MAIL_SUBMIT_SOCKET_UNIT)), None)
         if socket_record and not socket_record["exists"]:
             subprocess.run(["systemctl", "disable", "--now", "boron-mail-submit.socket"], check=False, timeout=30)
@@ -380,6 +388,14 @@ def configure_firewall_recovery() -> None:
 def configure_license_cron() -> None:
     """Panels updated from releases without licensing need its periodic refresh."""
     _atomic_copy(ROOT / "deploy" / "boron-license.cron", LICENSE_CRON, 0o644)
+
+
+def configure_mail_routing_cron() -> None:
+    """Mail domains wait for their public MX before local delivery starts;
+    the sweep that starts it must exist on upgraded mail servers too."""
+    if not POSTFIX_MAIN_CONFIG.exists():
+        return
+    _atomic_copy(ROOT / "deploy" / "boron-mail-routing.cron", MAIL_ROUTING_CRON, 0o644)
 
 
 def configure_ols_lifecycle() -> None:
@@ -605,6 +621,23 @@ def configure_bubblewrap_mail() -> None:
     command(["systemctl", "restart", "boron-mail-submit.socket"], timeout=30)
 
 
+def configure_mail_egress() -> None:
+    """Only Postfix and root may open TCP/25, local or remote (tenant spoofing guard)."""
+    source = ROOT / "deploy" / MAIL_EGRESS_UNIT.name
+    MAIL_EGRESS_UNIT.parent.mkdir(parents=True, exist_ok=True)
+    temporary = MAIL_EGRESS_UNIT.with_name(f".{MAIL_EGRESS_UNIT.name}.boron-upgrade")
+    try:
+        temporary.write_bytes(source.read_bytes())
+        temporary.chmod(0o644)
+        temporary.replace(MAIL_EGRESS_UNIT)
+    finally:
+        temporary.unlink(missing_ok=True)
+    command(["systemctl", "daemon-reload"], timeout=30)
+    command(["systemctl", "enable", MAIL_EGRESS_UNIT.name], timeout=30)
+    # restart (not start) re-runs ExecStart on an already-active oneshot.
+    command(["systemctl", "restart", MAIL_EGRESS_UNIT.name], timeout=60)
+
+
 def configure_bubblewrap_apparmor() -> None:
     """Allow only Bubblewrap through Ubuntu 24.04's userns AppArmor gate."""
     source = ROOT / "deploy" / "boron-bwrap.apparmor"
@@ -663,6 +696,7 @@ def main(argv: list[str] | None = None) -> int:
     create_runtime_backup()
     configure_firewall_recovery()
     configure_license_cron()
+    configure_mail_routing_cron()
     configure_ols_lifecycle()
     configure_ols_namespace_policy()
     webmail_sso.ensure_schema()
@@ -671,6 +705,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_roundcube()
     configure_account_resource_parent()
     configure_bubblewrap_mail()
+    configure_mail_egress()
     configure_bubblewrap_apparmor()
     # Server policy is Off-by-default; refreshing main first keeps every
     # existing vhost on the native namespace until its own atomic refresh

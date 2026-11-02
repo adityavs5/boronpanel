@@ -531,6 +531,9 @@ EOF
     else
         skip "OpenLiteSpeed namespace denylist already configured"
     fi
+    # Native-namespace PHP runs /usr/sbin/sendmail on the host as the account.
+    # That path is Boron's dispatcher (daemon/mail_hardening.py): hosting
+    # users go to the identity-bound socket, never to Postfix's queue.
     if $DRY_RUN || [[ ! -e /usr/local/lsws/lsns/conf/hostexec.conf ]]; then
         write_file /usr/local/lsws/lsns/conf/hostexec.conf 0644 <<'EOF'
 /usr/sbin/sendmail
@@ -1124,6 +1127,12 @@ EOF
     postconf -e "smtpd_tls_key_file = ${CONF_DIR}/ssl/mail.key"
     postconf -e "smtpd_tls_security_level = may"
     postconf -e "smtpd_tls_auth_only = yes"
+    # Port 25 is receive-only for hosted domains: loopback is shared by every
+    # tenant and never relays. Authenticated relay exists only on submission.
+    # configure_signer (below) also narrows authorized_submit_users once the
+    # identity-routing sendmail dispatcher is in place.
+    postconf -e "mynetworks = 127.0.0.1/32 [::1]/128"
+    postconf -e "smtpd_relay_restrictions = reject_unauth_destination"
     postconf -e "milter_default_action = accept"
     postconf -e "milter_protocol = 6"
     postconf -e "smtpd_milters ="
@@ -1139,7 +1148,7 @@ EOF
     postconf -P 'submission/inet/content_filter=boron-sign:'
     postconf -P 'submission/inet/smtpd_relay_restrictions=permit_sasl_authenticated,reject'
     postconf -P 'smtp/inet/smtpd_sasl_auth_enable=no'
-    postconf -Me "boron-sign/unix=boron-sign unix - n n - 4 pipe flags=Rq user=opendkim argv=/opt/boron/.venv/bin/python /opt/boron/scripts/mail_sign_filter.py --sender \${sender} --recipient \${recipient}"
+    postconf -Me "boron-sign/unix=boron-sign unix - n n - 4 pipe flags=Rq user=opendkim argv=/opt/boron/.venv/bin/python /opt/boron/scripts/mail_sign_filter.py --sender \${sender} --login=\${sasl_username} --recipient \${recipient}"
 
     cat >/etc/dovecot/dovecot-sql.conf.ext <<EOF
 driver = mysql
@@ -1299,6 +1308,9 @@ install_systemd_units() {
     run install -m 644 "${DEST}/deploy/boron-provisiond.service" /etc/systemd/system/
     run install -m 644 "${DEST}/deploy/boron-api.service" /etc/systemd/system/
     run install -m 644 "${DEST}/deploy/boron-filebrowser@.service" /etc/systemd/system/
+    # Every profile: only Postfix and root may open TCP/25 (remote or local), so a
+    # tenant cannot send SPF-aligned mail as another tenant's domain.
+    run install -m 644 "${DEST}/deploy/boron-mail-egress.service" /etc/systemd/system/
     if profile_has mail; then
         run install -m 644 "${DEST}/deploy/boron-mail-submit.socket" /etc/systemd/system/
         run install -m 644 "${DEST}/deploy/boron-mail-submit@.service" /etc/systemd/system/
@@ -1306,6 +1318,7 @@ install_systemd_units() {
     run systemctl daemon-reload
     run systemctl enable boron-provisiond
     profile_has mail && run systemctl enable --now boron-mail-submit.socket
+    run systemctl enable --now boron-mail-egress.service
     ok "systemd units installed + provisiond enabled"
 }
 
@@ -1329,6 +1342,8 @@ install_cron_and_logrotate() {
     run install -m 644 "${DEST}/deploy/boron-maintenance.cron" /etc/cron.d/boron-maintenance
     run install -m 644 "${DEST}/deploy/boron-sitestats.cron" /etc/cron.d/boron-sitestats
     run install -m 644 "${DEST}/deploy/boron-certbot-renew.cron" /etc/cron.d/boron-certbot-renew
+    # Mail domains start local delivery once their public MX points here.
+    profile_has mail && run install -m 644 "${DEST}/deploy/boron-mail-routing.cron" /etc/cron.d/boron-mail-routing
     ok "logrotate + cron jobs installed"
 }
 
@@ -1755,7 +1770,7 @@ uninstall() {
     run_sh "systemctl disable --now boron-api boron-provisiond boron-filebrowser 2>/dev/null || true"
     run_sh "rm -f /etc/systemd/system/boron-api.service /etc/systemd/system/boron-provisiond.service /etc/systemd/system/boron-filebrowser.service"
     run systemctl daemon-reload
-    run_sh "rm -f /etc/cron.d/boron-monitoring /etc/cron.d/boron-cloudflare /etc/cron.d/boron-update /etc/cron.d/boron-jobs /etc/cron.d/boron-maintenance /etc/cron.d/boron-sitestats /etc/cron.d/boron-certbot-renew /etc/cron.d/boron-geoip /etc/boron/maxmind-license"
+    run_sh "rm -f /etc/cron.d/boron-monitoring /etc/cron.d/boron-cloudflare /etc/cron.d/boron-update /etc/cron.d/boron-jobs /etc/cron.d/boron-maintenance /etc/cron.d/boron-sitestats /etc/cron.d/boron-certbot-renew /etc/cron.d/boron-mail-routing /etc/cron.d/boron-geoip /etc/boron/maxmind-license"
     run_sh "rm -f /etc/logrotate.d/boron-api"
     run_sh "rm -rf '${DEST}'"
     run_sh "rm -rf '${CONF_DIR}'"

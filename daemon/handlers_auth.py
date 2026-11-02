@@ -14,7 +14,7 @@ import re
 import secrets
 import string
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 
 from shared.db import write_session
 from shared.config import settings
@@ -39,10 +39,41 @@ TOKEN_PREFIX_LEN = 8
 # self-inflicted-lockout annoyance of a third party repeatedly failing
 # against a known username, while still meaningfully slowing automated
 # guessing.
+#
+# That per-username hard lock let any anonymous client keep a known
+# administrator locked out indefinitely (six bad passwords every 15 minutes).
+# The gate now has two layers (see _reserve_login_attempt):
+#   * the hard lock above is keyed per (login, client source), where a source
+#     is the IPv4 address or the IPv6 /64 that boron-api saw as the socket
+#     peer (uvicorn runs with proxy_headers=False, so it cannot be forged by
+#     a header). One client can only lock itself out;
+#   * a per-login global counter across every source. Past
+#     GLOBAL_LOCKOUT_THRESHOLD failures in a quiet-reset window it "guards"
+#     the login for LOCKOUT_DURATION_SECONDS: sources that have never signed
+#     in as that user are refused before any password check, which stops a
+#     distributed guess campaign, while sources with a recent successful
+#     session for that user are never refused by it -- so a flood cannot lock
+#     the real owner out from where they normally sign in.
 LOCKOUT_THRESHOLD = 5
 LOCKOUT_DURATION_SECONDS = 15 * 60
+GLOBAL_LOCKOUT_THRESHOLD = 30
+TRUSTED_SOURCE_DAYS = 90
+SOURCE_ATTEMPT_RETENTION_SECONDS = 24 * 3600
 MAX_LOGIN_USERNAME_LENGTH = 256
 LOGIN_BUCKET_COUNT = 1024
+SOURCE_KEY_PREFIX = "$login-pair-"
+
+# Verified for unknown or disabled logins so every attempt costs one bcrypt
+# check (same library default cost as hash_password) and response timing does
+# not reveal which login names exist. Generated once per process.
+_DUMMY_PASSWORD_HASH: str | None = None
+
+
+def _dummy_password_hash() -> str:
+    global _DUMMY_PASSWORD_HASH
+    if _DUMMY_PASSWORD_HASH is None:
+        _DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(24))
+    return _DUMMY_PASSWORD_HASH
 
 
 def _panel_username(value: object) -> str:
@@ -63,20 +94,91 @@ def _login_bucket(username: str, *, known_user: bool = False) -> str:
     return f"$login-bucket-{int.from_bytes(digest[:4], 'big') % LOGIN_BUCKET_COUNT:04x}$"
 
 
+def _source_network(value: object) -> str:
+    """The client source a hard lock is scoped to: IPv4 address or IPv6 /64."""
+    ip = _source_ip(value)
+    if ip is None:
+        return "unknown"
+    address = ipaddress.ip_address(ip)
+    if address.version == 6:
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return ip
+
+
+def _login_source_key(bucket: str, source_ip: object) -> str:
+    """Keyed (login bucket, client source) lockout row name, 61 characters."""
+    material = f"source\0{bucket}\0{_source_network(source_ip)}".encode("utf-8")
+    digest = hmac.new(settings.session_secret.encode("utf-8"), material, hashlib.sha256).hexdigest()
+    return f"{SOURCE_KEY_PREFIX}{digest[:48]}$"
+
+
+def _aware(value: dt.datetime | None) -> dt.datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=dt.timezone.utc)
+    return value
+
+
+def _is_trusted_source(panel_user_id: int | None, source_ip: object) -> bool:
+    """True when this client source recently held a session for the user."""
+    network = _source_network(source_ip)
+    if panel_user_id is None or network == "unknown":
+        return False
+    cutoff = utcnow() - dt.timedelta(days=TRUSTED_SOURCE_DAYS)
+    with write_session() as db:
+        addresses = db.scalars(select(Session.ip_address).where(
+            Session.panel_user_id == panel_user_id,
+            Session.ip_address.is_not(None),
+            (Session.created_at >= cutoff) | (Session.last_seen_at >= cutoff),
+        )).all()
+    return any(_source_network(address) == network for address in addresses)
+
+
+def _prune_source_attempts(session, now: dt.datetime) -> None:
+    """Per-source rows are unbounded by design; expire idle, unlocked ones."""
+    cutoff = now - dt.timedelta(seconds=SOURCE_ATTEMPT_RETENTION_SECONDS)
+    session.execute(delete(LoginAttempt).where(
+        LoginAttempt.username.like(f"{SOURCE_KEY_PREFIX}%"),
+        LoginAttempt.updated_at < cutoff,
+        (LoginAttempt.locked_until.is_(None)) | (LoginAttempt.locked_until < now),
+    ))
+
+
 def reconcile_login_attempt_keys() -> dict:
     """Remove legacy/unreachable lockout rows after upgrades or key rotation."""
     anonymous = {f"$login-bucket-{index:04x}$" for index in range(LOGIN_BUCKET_COUNT)}
+    now = dt.datetime.now(dt.timezone.utc)
     with write_session() as db:
+        _prune_source_attempts(db, now)
         known = {
             _login_bucket(username, known_user=True)
             for username in db.scalars(select(PanelUser.username)).all()
         }
         allowed = anonymous | known
         rows = db.scalars(select(LoginAttempt)).all()
-        stale = [row for row in rows if row.username not in allowed]
+        stale = [
+            row for row in rows
+            if row.username not in allowed and not row.username.startswith(SOURCE_KEY_PREFIX)
+        ]
         for row in stale:
             db.delete(row)
     return {"removed": len(stale)}
+
+
+def _revoke_api_tokens_created_by(db, panel_user_id: int, *, detach: bool = False) -> None:
+    """Revoke every live API token this panel user minted.
+
+    ``detach`` also clears the creator link (revoked rows included) so the
+    user row itself can be deleted; the label keeps the token identifiable.
+    """
+    db.execute(update(ApiToken).where(
+        ApiToken.created_by_panel_user_id == panel_user_id, ApiToken.revoked_at.is_(None),
+    ).values(revoked_at=utcnow()))
+    if detach:
+        db.execute(update(ApiToken).where(
+            ApiToken.created_by_panel_user_id == panel_user_id,
+        ).values(created_by_panel_user_id=None))
 
 
 def _panel_user_dict(user: PanelUser) -> dict:
@@ -182,6 +284,9 @@ def set_administrator_status(params: dict) -> dict:
                 Session.panel_user_id == user.id, Session.revoked.is_(False)
             )).all():
                 row.revoked = True
+            # Re-enabling must not resurrect them, so revoke rather than rely
+            # on the resolvers' disabled-creator check alone.
+            _revoke_api_tokens_created_by(session, user.id)
         session.flush()
         return _panel_user_dict(user)
 
@@ -208,6 +313,8 @@ def set_panel_user_password(params: dict) -> dict:
         ).all()
         for row in active_sessions:
             row.revoked = True
+        # Same reasoning for bearer credentials the user minted.
+        _revoke_api_tokens_created_by(session, user.id)
         return {"username": username, "status": "password_changed"}
 
 
@@ -231,6 +338,7 @@ def manage_administrator(params: dict) -> dict:
             raise ValidationError('This administrator has impersonation history. Disable the login to retain that history.')
         for row in db.scalars(select(Session).where(Session.panel_user_id == user.id)).all():
             row.revoked = True
+        _revoke_api_tokens_created_by(db, user.id, detach=action == 'delete')
         db.execute(delete(LoginChallenge).where(LoginChallenge.panel_user_id == user.id))
         if action in ('reset_2fa', 'delete'):
             policy = db.get(SecurityPolicySettings, 1)
@@ -268,9 +376,12 @@ def check_login_lockout(params: dict) -> dict:
     refused *before* boron-api spends a bcrypt/TOTP verify on it. A
     subsequent successful verification calls record_login_result(success=True)
     to clear the counter; a failed one leaves the reservation counted (no
-    second increment needed -- and no double count). Called before password
-    verification AND before the 2FA-code check, so both steps are throttled by
-    the same per-username budget."""
+    second increment needed -- and no double count).
+
+    This single-key primitive is the hard lock. The login protocol applies it
+    per (login, client source) through _reserve_login_attempt, before password
+    verification AND before the 2FA-code check, alongside the per-login global
+    guard described at LOCKOUT_THRESHOLD."""
     username = params["username"]
     now = dt.datetime.now(dt.timezone.utc)
     with write_session() as session:
@@ -278,26 +389,77 @@ def check_login_lockout(params: dict) -> dict:
         # transaction before reading so parallel attempts cannot lose counts
         # or race the initial unique username insert.
         session.execute(text("BEGIN IMMEDIATE"))
-        row = session.scalar(select(LoginAttempt).where(LoginAttempt.username == username))
-        if row is not None and row.locked_until is not None:
-            locked_until = row.locked_until
-            if locked_until.tzinfo is None:
-                locked_until = locked_until.replace(tzinfo=dt.timezone.utc)
-            if locked_until > now:
-                return {"locked": True, "retry_after_seconds": int((locked_until - now).total_seconds())}
-            # Lock expired -- start a fresh window.
-            row.locked_until = None
-            row.failed_count = 0
-        if row is None:
-            row = LoginAttempt(username=username, failed_count=0)
-            session.add(row)
-            session.flush()
-        row.failed_count += 1
-        if row.failed_count > LOCKOUT_THRESHOLD:
-            row.locked_until = now + dt.timedelta(seconds=LOCKOUT_DURATION_SECONDS)
-            row.failed_count = 0
-            return {"locked": True, "retry_after_seconds": LOCKOUT_DURATION_SECONDS}
-        return {"locked": False}
+        return _reserve_attempt_row(session, username, now)
+
+
+def _attempt_row(session, key: str) -> LoginAttempt:
+    row = session.scalar(select(LoginAttempt).where(LoginAttempt.username == key))
+    if row is None:
+        row = LoginAttempt(username=key, failed_count=0)
+        session.add(row)
+        session.flush()
+    return row
+
+
+def _active_lock(row: LoginAttempt, now: dt.datetime) -> dict | None:
+    """The lock still in force on ``row``, or None (clearing an expired one)."""
+    locked_until = _aware(row.locked_until)
+    if locked_until is None:
+        return None
+    if locked_until > now:
+        return {"locked": True, "retry_after_seconds": int((locked_until - now).total_seconds())}
+    # Lock expired -- start a fresh window.
+    row.locked_until = None
+    row.failed_count = 0
+    return None
+
+
+def _reserve_attempt_row(session, key: str, now: dt.datetime) -> dict:
+    """Hard per-key lock; the caller holds a BEGIN IMMEDIATE transaction."""
+    row = _attempt_row(session, key)
+    lock = _active_lock(row, now)
+    if lock is not None:
+        return lock
+    row.failed_count += 1
+    if row.failed_count > LOCKOUT_THRESHOLD:
+        row.locked_until = now + dt.timedelta(seconds=LOCKOUT_DURATION_SECONDS)
+        row.failed_count = 0
+        return {"locked": True, "retry_after_seconds": LOCKOUT_DURATION_SECONDS}
+    return {"locked": False}
+
+
+def _reserve_login_attempt(bucket: str, source_ip: object, *, trusted: bool) -> dict:
+    """Reserve one password/second-factor attempt for ``bucket`` from a source.
+
+    Returns ``{"locked": False, "source_key": ...}`` when the attempt may be
+    verified; the caller clears ``source_key`` on success. The global row is
+    deliberately not cleared on success, so an attacker cannot reset the
+    campaign counter by waiting for the owner to sign in.
+    """
+    source_key = _login_source_key(bucket, source_ip)
+    now = dt.datetime.now(dt.timezone.utc)
+    with write_session() as session:
+        session.execute(text("BEGIN IMMEDIATE"))
+        _prune_source_attempts(session, now)
+        global_row = _attempt_row(session, bucket)
+        guard = _active_lock(global_row, now)
+        if guard is not None and not trusted:
+            return guard
+        if guard is None:
+            updated = _aware(global_row.updated_at)
+            if updated is not None and now - updated > dt.timedelta(seconds=LOCKOUT_DURATION_SECONDS):
+                global_row.failed_count = 0  # quiet period: new window
+        source = _reserve_attempt_row(session, source_key, now)
+        if source["locked"]:
+            return source
+        global_row.failed_count += 1
+        global_row.updated_at = now
+        if guard is None and global_row.failed_count > GLOBAL_LOCKOUT_THRESHOLD:
+            global_row.locked_until = now + dt.timedelta(seconds=LOCKOUT_DURATION_SECONDS)
+            global_row.failed_count = 0
+            if not trusted:
+                return {"locked": True, "retry_after_seconds": LOCKOUT_DURATION_SECONDS}
+        return {"locked": False, "source_key": source_key}
 
 
 def record_login_result(params: dict) -> dict:
@@ -431,13 +593,24 @@ def login_begin(params: dict) -> dict:
     with write_session() as db:
         user = db.scalar(select(PanelUser).where(PanelUser.username == username))
         known_user = user is not None
+        known_user_id = user.id if user is not None else None
     login_bucket = _login_bucket(username, known_user=known_user)
-    gate = check_login_lockout({"username": login_bucket})
+    gate = _reserve_login_attempt(
+        login_bucket, params.get("source_ip"),
+        trusted=_is_trusted_source(known_user_id, params.get("source_ip")),
+    )
     if gate["locked"]:
         return {"locked": True, "retry_after_seconds": gate["retry_after_seconds"]}
+    source_key = gate["source_key"]
     with write_session() as db:
         user = db.scalar(select(PanelUser).where(PanelUser.username == username))
-        valid = user is not None and not user.disabled and verify_password(password, user.password_hash)
+        if user is None or user.disabled:
+            # Spend the same bcrypt work as a real check so latency does not
+            # tell an attacker which login names exist or are enabled.
+            verify_password(password, _dummy_password_hash())
+            valid = False
+        else:
+            valid = verify_password(password, user.password_hash)
         if not valid:
             db.add(LoginFailureEvent(
                 bucket=login_bucket, source_ip=_source_ip(params.get("source_ip"))
@@ -465,9 +638,9 @@ def login_begin(params: dict) -> dict:
         return {"needs_2fa": True, "pending_token": raw,
                 "role": role, "account_id": account_id, "panel_user_id": user_id}
     if admin_setup_required and policy_deadline and utcnow() >= policy_deadline:
-        record_login_result({"username": login_bucket, "success": True})
+        record_login_result({"username": source_key, "success": True})
         return {"valid": False, "two_factor_setup_required": True}
-    record_login_result({"username": login_bucket, "success": True})
+    record_login_result({"username": source_key, "success": True})
     result = create_session({
         "panel_user_id": user_id, "source_ip": params.get("source_ip"),
         "user_agent": params.get("user_agent"),
@@ -497,9 +670,13 @@ def login_finish(params: dict) -> dict:
             return {"valid": False}
         username, user_id, role, account_id = user.username, user.id, user.role, user.account_id
     login_bucket = _login_bucket(username, known_user=True)
-    gate = check_login_lockout({"username": login_bucket})
+    gate = _reserve_login_attempt(
+        login_bucket, params.get("source_ip"),
+        trusted=_is_trusted_source(user_id, params.get("source_ip")),
+    )
     if gate["locked"]:
         return {"locked": True, "retry_after_seconds": gate["retry_after_seconds"]}
+    source_key = gate["source_key"]
     from daemon.totp import check_login_code
 
     if not check_login_code({"panel_user_id": user_id, "code": code})["valid"]:
@@ -513,7 +690,7 @@ def login_finish(params: dict) -> dict:
         ).values(used_at=utcnow()))
         if consumed.rowcount != 1:
             return {"valid": False}
-    record_login_result({"username": login_bucket, "success": True})
+    record_login_result({"username": source_key, "success": True})
     result = create_session({
         "panel_user_id": user_id, "source_ip": params.get("source_ip"),
         "user_agent": params.get("user_agent"),
@@ -654,21 +831,31 @@ def create_api_token(params: dict) -> dict:
         raise ValidationError('Token expiry must be between 1 and 90 days')
     expires = utcnow() + dt.timedelta(days=days)
 
+    # Set by borond's dispatcher from the root-resolved credential (the
+    # session's administrator, or a token's own creator); never client input.
+    creator_id = params.get("_creator_panel_user_id")
     raw_token, token_hash = _generate_token(role)
     with write_session() as db:
+        creator = (db.get(PanelUser, creator_id)
+                   if isinstance(creator_id, int) and not isinstance(creator_id, bool) else None)
+        if creator is None or creator.disabled or creator.role != 'admin':
+            raise ValidationError('API tokens can only be created by an active administrator')
         if role == 'customer':
             account = db.get(Account, account_id) if account_id is not None else None
             if account is None or account.status != 'active':
                 raise ValidationError('Choose an active hosting account for a customer token')
         elif account_id is not None:
             raise ValidationError('Administrator tokens are server-wide; use a customer token for one account')
-        row = ApiToken(token_hash=token_hash, label=label, role=role, account_id=account_id, scope=scope, expires_at=expires)
+        row = ApiToken(token_hash=token_hash, label=label, role=role, account_id=account_id, scope=scope,
+                       expires_at=expires, created_by_panel_user_id=creator.id)
         db.add(row)
         db.flush()
         token_id = row.id
+        created_by = creator.username
     return {
         "id": token_id,
         "label": label,
+        "created_by": created_by,
         "role": role,
         "account_id": account_id,
         "token": raw_token,

@@ -76,14 +76,28 @@ def validate_disable_functions(value) -> str:
     return ",".join(sorted(set(names)))
 
 
+# Root of every account's PHP_INI_SCAN_DIR. It sits under /usr because both
+# jail flavours (OLS native namespace and Bubblewrap) ro-bind /usr, while
+# /etc/boron and /var/lib are invisible inside them. It must NOT live under
+# the account HOME: the home is owned by the account without a sticky bit,
+# so a root-owned ~/.php could be renamed away and replaced with
+# account-written ini files that lsphp then loads as system configuration.
+PHP_SCAN_ROOT = "/usr/local/lib/boron/php-scan"
+
+
+def legacy_php_scan_root(username: str) -> str:
+    """Pre-hardening location (~/.php) -- only used to migrate it away."""
+    return f"{settings.home_base}/{username}/.php"
+
+
 def php_scan_dir(username: str, php_version: str) -> str:
     """Per-account, per-version PHP_INI_SCAN_DIR (daemon/phpext.py
     materializes it; ols.py renders it into the account's extProcessor).
     Defined here because both need it and phpext imports ols -- same
-    circularity reason this whole module exists. Under the account HOME
-    (not /etc/boron, confirmed invisible inside a live nsisolation
-    jail) but root-owned, so the account can read it and cannot write it."""
-    return f"{settings.home_base}/{username}/.php/{php_version.replace('.', '')}/conf.d"
+    circularity reason this whole module exists. Every component is
+    root-owned and outside the account's writable tree, so the account can
+    read it and can neither write nor rename-and-replace it."""
+    return f"{PHP_SCAN_ROOT}/{username}/{php_version.replace('.', '')}/conf.d"
 
 DEFAULTS = {
     "memory_limit": "128M",

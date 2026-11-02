@@ -204,6 +204,23 @@ def _isolate_privileged_account_side_effects(monkeypatch, request):
         )
 
 
+@pytest.fixture(autouse=True)
+def _offline_mail_mx_check(monkeypatch, request):
+    """Never query public DNS from unit tests.
+
+    New mail domains wait for their public MX to point at this server
+    (daemon/mail_local_delivery.py). Unrelated suites keep the established
+    "provisioned means accepted locally" behaviour by reporting the MX as
+    local; tests/test_mail_local_delivery.py exercises the real check.
+    """
+    if request.node.path.name == "test_mail_local_delivery.py":
+        return
+    from daemon import mail_local_delivery
+
+    monkeypatch.setattr(mail_local_delivery, "public_mx_status",
+                        lambda domain, local_addresses=None: mail_local_delivery.HERE)
+
+
 @pytest.fixture()
 def isolated_db(tmp_path, monkeypatch):
     """Point the control-plane DB at a throwaway SQLite file for this test

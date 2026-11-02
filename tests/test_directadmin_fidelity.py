@@ -180,6 +180,13 @@ def test_da_preflight_never_creates_account_for_analysis_or_blockers(isolated_db
     with tarfile.open(archive,'w:gz') as tf:
         for path in source.iterdir():tf.add(path,arcname=path.name)
     monkeypatch.setattr(ci.settings,'cpanel_import_staging_dir',str(tmp_path/'staging'))
+    import os,pwd
+    fake_api=pwd.struct_passwd(('boron-api','x',os.geteuid(),os.getegid(),'','/','/usr/sbin/nologin'))
+    real_getpwnam=pwd.getpwnam
+    monkeypatch.setattr(pwd,'getpwnam',lambda name:fake_api if name=='boron-api' else real_getpwnam(name))
+    spooled=ci.reserve_upload({})['path']
+    with open(archive,'rb') as src,open(spooled,'r+b') as dst:dst.write(src.read())
+    archive=spooled
     monkeypatch.setattr(ci.handlers_account,'create_account',lambda p:pytest.fail('preflight must never create an account'))
     monkeypatch.setattr(import_compat,'preflight_dumps',lambda *args:[])
     with write_session() as db:

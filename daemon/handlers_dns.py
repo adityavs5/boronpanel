@@ -134,6 +134,11 @@ def create_zone(params: dict) -> dict:
         existing = session.scalar(select(DnsZone).where(DnsZone.zone == domain_name))
         if existing is not None:
             raise RuntimeError(f"zone '{domain_name}' already managed by Boron")
+        # A zone answers for every name beneath it that has no more specific
+        # zone, and a child zone overrides its parent. Neither may span a
+        # name another account holds.
+        from daemon import domain_ownership
+        domain_ownership.require_no_foreign_overlap(session, domain_name, account.id)
 
     if dnsprovider.zone_exists(domain_name):
         raise RuntimeError(f"zone '{domain_name}' already exists in PowerDNS")

@@ -1,0 +1,7 @@
+# Boron mail local-delivery sweep.
+# Install to /etc/cron.d/boron-mail-routing (root:root, 0644):
+#   install -m 0644 deploy/boron-mail-routing.cron /etc/cron.d/boron-mail-routing
+#
+# Every 5 minutes: start local delivery for mail domains whose public MX now
+# points at this server, and stop it for public mail provider domains.
+*/5 * * * * root /opt/boron/.venv/bin/python /opt/boron/scripts/mail_local_delivery_reconcile.py >> /var/log/boron/mail-local-delivery.log 2>&1

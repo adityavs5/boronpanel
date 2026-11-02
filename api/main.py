@@ -367,18 +367,52 @@ async def _access_log(request, call_next):
         reset_request_id(request_token)
 
 
+# Largest JSON error body the access-log middleware will buffer to add the
+# ``reference`` field.  Panel error payloads are a few hundred bytes; anything
+# bigger (or of unknown length that keeps streaming) is passed through
+# untouched with only the X-Boron-Error-Reference header.  Without this cap a
+# proxied upstream (e.g. a tenant-controlled FileBrowser socket) could answer
+# 4xx with an endless application/json body and exhaust boron-api memory.
+_JSON_ERROR_REWRITE_LIMIT = 64 * 1024
+
+
 async def _add_reference_to_json_error(response, reference: str):
     """Add one field to direct JSON error responses without changing detail.
 
     Exception handlers already produce the field.  This fallback covers
     legacy endpoints that return a JSONResponse directly instead of raising.
+    Streaming bodies are read only up to ``_JSON_ERROR_REWRITE_LIMIT``.
     """
     content_type = response.headers.get("content-type", "")
     if "application/json" not in content_type:
         return response
     if hasattr(response, "body_iterator"):
-        chunks = [chunk async for chunk in response.body_iterator]
-        body = b"".join(chunk.encode() if isinstance(chunk, str) else chunk for chunk in chunks)
+        declared = response.headers.get("content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > _JSON_ERROR_REWRITE_LIMIT):
+            return response
+        iterator = response.body_iterator.__aiter__()
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            try:
+                chunk = await iterator.__anext__()
+            except StopAsyncIteration:
+                break
+            chunk = chunk.encode() if isinstance(chunk, str) else chunk
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > _JSON_ERROR_REWRITE_LIMIT:
+                prefix = chunks
+
+                async def passthrough():
+                    for buffered in prefix:
+                        yield buffered
+                    async for rest in iterator:
+                        yield rest
+
+                response.body_iterator = passthrough()
+                return response
+        body = b"".join(chunks)
     else:
         body = getattr(response, "body", b"")
     try:

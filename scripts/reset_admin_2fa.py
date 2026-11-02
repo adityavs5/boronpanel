@@ -9,10 +9,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import delete, func, select  # noqa: E402
+from sqlalchemy import delete, func, select, update  # noqa: E402
 
 from shared.db import init_db, write_session  # noqa: E402
-from shared.models import LoginChallenge, PanelUser, SecurityPolicySettings, Session, TotpCredential, TotpRecoveryCode  # noqa: E402
+from shared.models import ApiToken, LoginChallenge, PanelUser, SecurityPolicySettings, Session, TotpCredential, TotpRecoveryCode, utcnow  # noqa: E402
 
 
 def main() -> int:
@@ -51,8 +51,14 @@ def main() -> int:
         db.execute(delete(LoginChallenge).where(LoginChallenge.panel_user_id == user.id))
         for session in db.scalars(select(Session).where(Session.panel_user_id == user.id)).all():
             session.revoked = True
+        # Same rule as admin_user.manage reset_2fa: a 2FA reset assumes the
+        # login may be compromised, so bearer tokens this administrator
+        # minted (which act as them) are revoked as well.
+        db.execute(update(ApiToken).where(
+            ApiToken.created_by_panel_user_id == user.id, ApiToken.revoked_at.is_(None),
+        ).values(revoked_at=utcnow()))
     suffix = "; administrator 2FA policy was disabled to prevent lockout" if policy_disabled else ""
-    print(f"2FA reset for administrator {args.username}; existing sessions were revoked{suffix}")
+    print(f"2FA reset for administrator {args.username}; existing sessions and API tokens were revoked{suffix}")
     return 0
 
 

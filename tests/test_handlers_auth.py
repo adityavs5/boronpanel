@@ -1,6 +1,7 @@
 import pytest
 
 from daemon import handlers_auth as hauth
+from tests.token_support import mint_token
 from shared.passwords import verify_password
 from shared.validation import ValidationError
 
@@ -166,7 +167,7 @@ def test_create_session_does_not_emit_login_event_for_admin(isolated_db, monkeyp
 
 
 def test_create_api_token_returns_raw_token_once(isolated_db):
-    result = hauth.create_api_token({"label": "billing-system", "role": "admin"})
+    result = mint_token({"label": "billing-system", "role": "admin"})
     assert result["token"].startswith("fh_admin_")
 
     from sqlalchemy import select
@@ -181,7 +182,7 @@ def test_create_api_token_returns_raw_token_once(isolated_db):
 
 
 def test_revoke_api_token(isolated_db):
-    result = hauth.create_api_token({"label": "billing-system", "role": "admin"})
+    result = mint_token({"label": "billing-system", "role": "admin"})
     hauth.revoke_api_token({"token_id": result["id"]})
 
     from sqlalchemy import select
@@ -314,8 +315,13 @@ def test_login_names_use_only_bounded_keyed_lockout_rows(isolated_db, monkeypatc
         hauth.login_begin({"username": f"invented-{index}", "password": "wrong"})
     with write_session() as db:
         rows = db.scalars(select(LoginAttempt)).all()
-        assert 1 <= len(rows) <= 4
-        assert all(row.username.startswith("$login-bucket-") for row in rows)
+        # Global rows stay bounded by the anonymous bucket space; per-source
+        # rows add at most one per (bucket, client source) -- one source here.
+        buckets = [row for row in rows if row.username.startswith("$login-bucket-")]
+        sources = [row for row in rows if row.username.startswith(hauth.SOURCE_KEY_PREFIX)]
+        assert 1 <= len(buckets) <= 4
+        assert 1 <= len(sources) <= 4
+        assert len(buckets) + len(sources) == len(rows)
 
 
 def test_oversized_login_name_is_uniformly_invalid_without_state(isolated_db):

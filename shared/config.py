@@ -155,6 +155,20 @@ class Settings:
     # Canonical MX/IMAP/SMTP hostname.  Blank keeps upgrades compatible and
     # resolves to webmail_hostname, then panel_hostname at runtime.
     mail_hostname: str = ""
+    # Extra names (and their subdomains) no hosting account may claim, on
+    # top of the built-in public mail provider list in
+    # daemon/domain_ownership.py.
+    reserved_domains: tuple[str, ...] = ()
+    # A newly provisioned mail domain is only accepted for local delivery
+    # once its public MX points at this server (daemon/mail_local_delivery.py).
+    # Until then Postfix routes mail for it, including mail from local
+    # senders, to the domain's real MX. Domains listed as trusted skip the
+    # check; turning the check off restores the old always-local behaviour.
+    mail_local_delivery_requires_mx: bool = True
+    mail_local_delivery_trusted_domains: tuple[str, ...] = ()
+    # Public recursive resolvers used for that check, so the server's own
+    # PowerDNS zone copy cannot vouch for itself.
+    mail_mx_check_resolvers: tuple[str, ...] = ("1.1.1.1", "8.8.8.8")
 
     # Phase 2 feature 6: cgroups v2 I/O limits. "auto" resolves the
     # major:minor backing home_base with findmnt, including minimal VPS /dev

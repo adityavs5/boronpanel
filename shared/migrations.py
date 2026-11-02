@@ -22,7 +22,7 @@ from version import BORON_VERSION
 
 Compatibility = Literal["additive", "breaking"]
 BASELINE_REVISION = 0
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 SCHEMA_MANIFEST = "schema-compat.json"
 
 
@@ -348,12 +348,46 @@ def _upgrade_php_lifecycle_isolation_schema(conn) -> None:
     )
 
 
+def _upgrade_api_token_creator_schema(conn) -> None:
+    """Bind API tokens to the administrator who created them.
+
+    Rows written before this revision have no recorded creator, so nothing can
+    tell which administrator a token belongs to or revoke it when that
+    administrator is removed.  They are revoked here (fail closed); the
+    resolvers also refuse any token without a valid creator.  Additive: older
+    releases ignore the column and the revoked rows remain revoked.
+    """
+    tables = set(inspect(conn).get_table_names())
+    if "api_tokens" not in tables:
+        return
+    present = {item["name"] for item in inspect(conn).get_columns("api_tokens")}
+    if "created_by_panel_user_id" not in present:
+        conn.exec_driver_sql(
+            'ALTER TABLE "api_tokens" ADD COLUMN "created_by_panel_user_id" '
+            "INTEGER REFERENCES panel_users(id)"
+        )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_api_tokens_created_by_panel_user_id "
+        "ON api_tokens(created_by_panel_user_id)"
+    )
+    # SQLAlchemy's SQLite DateTime storage format, so the ORM reads it back.
+    revoked_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+    conn.execute(
+        text(
+            "UPDATE api_tokens SET revoked_at = :revoked_at "
+            "WHERE created_by_panel_user_id IS NULL AND revoked_at IS NULL"
+        ),
+        {"revoked_at": revoked_at},
+    )
+
+
 REVISIONS: tuple[Revision, ...] = (
     Revision(1, "adopt_preledger_additive_schema", "additive", _upgrade_legacy_additive_schema),
     Revision(2, "update_safety_evidence", "additive", _upgrade_update_safety_schema),
     Revision(3, "control_tasks", "additive", _upgrade_control_tasks_schema),
     Revision(4, "retention_alerts_sessions", "additive", _upgrade_retention_alerts_sessions_schema),
     Revision(5, "php_lifecycle_isolation", "additive", _upgrade_php_lifecycle_isolation_schema),
+    Revision(6, "api_token_creator", "additive", _upgrade_api_token_creator_schema),
 )
 
 

@@ -84,13 +84,28 @@ def domain_exists(domain: str) -> bool:
         conn.close()
 
 
+def domain_active(domain: str) -> bool | None:
+    """Postfix's acceptance flag for ``domain``; None when no row exists."""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT active FROM mail_domain WHERE domain = %s", (domain,))
+            row = cur.fetchone()
+            return None if row is None else bool(row["active"])
+    finally:
+        conn.close()
+
+
 @serialized
-def create_mail_domain(domain: str) -> int:
+def create_mail_domain(domain: str, active: bool = True) -> int:
+    """Insert the routing row. ``active`` is Postfix's local-acceptance
+    switch; callers pass False until daemon/mail_local_delivery.py has
+    confirmed the domain's public MX points here."""
     validate_domain(domain)
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO mail_domain (domain, active) VALUES (%s, 1)", (domain,))
+            cur.execute("INSERT INTO mail_domain (domain, active) VALUES (%s, %s)", (domain, 1 if active else 0))
             domain_id = cur.lastrowid
     finally:
         conn.close()

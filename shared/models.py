@@ -544,6 +544,14 @@ class ApiToken(Base):
     revoked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     scope: Mapped[str] = mapped_column(String(16), default='full')
     expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The administrator whose root-resolved credential minted this token. A
+    # token is only as good as its creator: both resolvers refuse it once the
+    # creator is gone, disabled or no longer an administrator, and the
+    # creator's username (never the free-text label) is the audit actor.
+    # NULL only on rows written before schema revision 6, which revoked them.
+    created_by_panel_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("panel_users.id"), nullable=True, index=True
+    )
 
 
 class AuditLog(Base):

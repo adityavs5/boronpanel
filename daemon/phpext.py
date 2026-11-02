@@ -13,15 +13,18 @@ the account's own extProcessor gets `env PHP_INI_SCAN_DIR=<that dir>`
 with no PhpExtensionSet row keeps the stock compiled-in behavior entirely.
 
 Placement and ownership are both load-bearing:
-- The scan dir lives under the account's HOME (~/.php/<ver>/conf.d), not
-  /etc or /run -- namespaced accounts (nsisolation, the default) only see
-  their own home tree inside the jail. /etc/boron was confirmed
-  invisible from a live jailed lsphp (nsenter) before choosing this; the
-  symlink TARGETS under /usr/local/lsws ARE visible in the jail (that's
-  where lsphp itself runs from).
-- Everything under ~/.php is root-owned (0755 dirs) -- the account can
-  read but never write it, so it cannot inject arbitrary ini directives
-  (which load at PHP startup as system-level config) into its own pool.
+- The scan dir lives at phpdirectives.PHP_SCAN_ROOT/<user>/<ver>/conf.d
+  (/usr/local/lib/boron/php-scan/...). Namespaced accounts only see their
+  own home plus a few ro-bound system trees inside the jail; /etc/boron was
+  confirmed invisible from a live jailed lsphp, but /usr is ro-bound by both
+  the native OLS namespace and Bubblewrap (the symlink TARGETS under
+  /usr/local/lsws live there too).
+- Every component is root-owned and outside the account's writable tree.
+  The previous location (~/.php under the HOME) was root-owned too, but the
+  home itself belongs to the account (no sticky bit), so the account could
+  rename ~/.php away and recreate it with its own ini files -- which lsphp
+  loads at startup as system-level config (bypassing disable_functions and
+  the extension policy). bootstrap_all_php_extensions migrates old trees.
 
 Extension inventory is discovered from disk per version, never hardcoded:
 the installed .so files differ between lsphp builds (8.1 ships only four,
@@ -48,7 +51,7 @@ from shared.db import write_session
 from shared.models import Account, PhpExtensionSet, utcnow
 from shared.validation import ValidationError, validate_username
 
-from daemon import ols, sysops
+from daemon import ols, phpdirectives, sysops
 from daemon.phpdirectives import php_scan_dir
 
 logger = logging.getLogger("borond.phpext")
@@ -143,13 +146,14 @@ def _materialize(username: str) -> None:
     if enabled is None:
         return
 
-    home = str(Path(settings.home_base) / validate_username(username))
+    root = _scan_root()
+    username = validate_username(username)
     for version in settings.php_versions:
-        relative = f".php/{version.replace('.', '')}/conf.d"
+        relative = f"{username}/{version.replace('.', '')}/conf.d"
         stock = _stock_inis(version)
         so_names = _so_names(version)
-        secure_mkdirs(home, relative, 0, 0, 0o755)
-        directory_fd = open_dir_beneath(home, relative)
+        secure_mkdirs(root, relative, 0, 0, 0o755)
+        directory_fd = open_dir_beneath(root, relative)
         try:
             # This directory contains only snippets. Never recursively walk
             # attacker-supplied subdirectories or follow any path component.
@@ -176,25 +180,105 @@ def _materialize(username: str) -> None:
             os.close(directory_fd)
 
 
-def _remove_scan_dirs(username: str) -> None:
-    home = str(Path(settings.home_base) / validate_username(username))
+def _scan_root() -> str:
+    """Create (if needed) and verify the shared root-owned scan root.
+
+    It and its parent must be real directories owned by root and not
+    writable by group/other; otherwise someone other than root could swap
+    an account's scan directory. Mode 0711 stops accounts listing which
+    other accounts have an override while still letting lsphp traverse."""
+    root = phpdirectives.PHP_SCAN_ROOT
+    os.makedirs(root, mode=0o755, exist_ok=True)
+    # Explicit modes: borond runs with UMask=0027, which would otherwise
+    # leave the parent untraversable for the account-uid lsphp workers.
+    for path, mode in ((os.path.dirname(root), 0o755), (root, 0o711)):
+        try:
+            fd = open_dir_beneath(path)
+        except OSError as exc:
+            raise UnsafePathError(f"PHP scan root component '{path}' is not a real directory") from exc
+        try:
+            info = os.fstat(fd)
+            if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                raise UnsafePathError(f"PHP scan root component '{path}' is not root-owned and private")
+            if mode is not None and stat.S_IMODE(info.st_mode) != mode:
+                os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
+    return root
+
+
+def _remove_entry_at(parent: str, name: str, *, root_owned_only: bool) -> bool:
+    """Remove ``parent/name`` without following symlinks. Returns whether
+    something was removed. ``root_owned_only`` leaves an entry the account
+    itself created alone (it is no longer referenced by any config)."""
     try:
-        home_fd = open_dir_beneath(home)
-    except FileNotFoundError:
-        return
+        parent_fd = open_dir_beneath(parent)
+    except (FileNotFoundError, UnsafePathError):
+        return False
     try:
         try:
-            info = os.stat('.php', dir_fd=home_fd, follow_symlinks=False)
+            info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
-            return
+            return False
+        if root_owned_only and info.st_uid != 0:
+            logger.warning("leaving account-owned '%s/%s' in place", parent, name)
+            return False
         if stat.S_ISDIR(info.st_mode):
             if not shutil.rmtree.avoids_symlink_attacks:
                 raise UnsafePathError("safe recursive removal is unavailable")
-            shutil.rmtree('.php', dir_fd=home_fd)
+            shutil.rmtree(name, dir_fd=parent_fd)
         else:
-            os.unlink('.php', dir_fd=home_fd)
+            os.unlink(name, dir_fd=parent_fd)
+        return True
     finally:
-        os.close(home_fd)
+        os.close(parent_fd)
+
+
+def _legacy_scan_tree_present(username: str) -> bool:
+    """A root-owned pre-hardening ~/.php tree still exists for this account."""
+    legacy = phpdirectives.legacy_php_scan_root(validate_username(username))
+    try:
+        info = os.lstat(legacy)
+    except FileNotFoundError:
+        return False
+    return info.st_uid == 0
+
+
+def _remove_legacy_scan_dirs(username: str) -> None:
+    home = str(Path(settings.home_base) / validate_username(username))
+    _remove_entry_at(home, '.php', root_owned_only=True)
+
+
+def _remove_scan_dirs(username: str) -> None:
+    username = validate_username(username)
+    if os.path.isdir(phpdirectives.PHP_SCAN_ROOT):
+        _remove_entry_at(_scan_root(), username, root_owned_only=False)
+    _remove_legacy_scan_dirs(username)
+
+
+def rename_scan_dirs(old: str, new: str) -> None:
+    """Account rename: the scan dir no longer moves with the home, so move
+    it explicitly (DB-independent, so it doubles as its own undo)."""
+    old, new = validate_username(old), validate_username(new)
+    if not os.path.isdir(phpdirectives.PHP_SCAN_ROOT):
+        return
+    root = _scan_root()
+    root_fd = open_dir_beneath(root)
+    try:
+        try:
+            info = os.stat(old, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(info.st_mode):
+            raise UnsafePathError("PHP scan directory is not a real directory")
+    finally:
+        os.close(root_fd)
+    _remove_entry_at(root, new, root_owned_only=False)
+    root_fd = open_dir_beneath(root)
+    try:
+        os.rename(old, new, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+    finally:
+        os.close(root_fd)
 
 
 def _status(session, account: Account) -> dict:
@@ -300,12 +384,17 @@ def reset_extensions(params: dict) -> dict:
 
 
 def terminate_account_php_extensions(account: Account) -> None:
-    """TERMINATE_HOOKS entry: drop the row; the ~/.php tree goes with the
-    home dir removal that termination already performs. Idempotent."""
+    """TERMINATE_HOOKS entry: drop the row and the account's scan dirs
+    (they live outside the home, so home removal no longer takes them).
+    Idempotent."""
     with write_session() as session:
         row = session.scalar(select(PhpExtensionSet).where(PhpExtensionSet.account_id == account.id))
         if row is not None:
             session.delete(row)
+    try:
+        _remove_scan_dirs(account.username)
+    except Exception:
+        logger.exception("failed to remove PHP scan dirs for account '%s'", account.username)
 
 
 def bootstrap_all_php_extensions() -> None:
@@ -322,8 +411,56 @@ def bootstrap_all_php_extensions() -> None:
             ).all()
             if account.status in ("active", "suspended")
         ]
+    materialized = []
     for username in usernames:
         try:
             _materialize(username)
+            materialized.append(username)
         except Exception:
             logger.exception("failed to materialize PHP scan dirs for account '%s'", username)
+    _migrate_legacy_scan_dirs(materialized)
+
+
+def _migrate_legacy_scan_dirs(usernames: list[str]) -> None:
+    """Upgrade path for the old ~/.php location. The new dirs already exist
+    (materialized above); re-render httpd_config so every extProcessor's
+    PHP_INI_SCAN_DIR points at them, restart the warm workers that still
+    carry the old env, and only then delete the old root-owned trees. If
+    the re-render fails the old trees stay, so PHP keeps its extensions.
+
+    The trigger is the live httpd_config, not only the root-owned tree: an
+    account that already swapped ~/.php for its own (the attack being
+    closed) leaves no root-owned tree behind, yet its extProcessor would
+    keep loading that account-written dir until some unrelated re-render."""
+    legacy = [username for username in usernames if _legacy_scan_tree_present(username)]
+    stale = _accounts_with_legacy_scan_env()
+    if not legacy and not stale:
+        return
+    try:
+        ols.refresh_main_config()
+    except Exception:
+        logger.exception("could not repoint PHP_INI_SCAN_DIR; legacy ~/.php trees kept")
+        return
+    for username in sorted(set(legacy) | stale):
+        try:
+            sysops.recycle_php_workers(username)
+        except Exception:
+            logger.exception("failed to recycle PHP workers for account '%s'", username)
+    for username in legacy:
+        try:
+            _remove_legacy_scan_dirs(username)
+        except Exception:
+            logger.exception("failed to remove legacy ~/.php for account '%s'", username)
+
+
+def _accounts_with_legacy_scan_env() -> set[str]:
+    """Usernames whose rendered extProcessor still sets PHP_INI_SCAN_DIR to
+    the pre-hardening ~/.php location in the live httpd_config.conf."""
+    try:
+        text = Path(ols.HTTPD_CONFIG_PATH).read_text(errors="replace")
+    except OSError:
+        return set()
+    pattern = re.compile(
+        r"PHP_INI_SCAN_DIR=" + re.escape(settings.home_base.rstrip("/")) + r"/([a-z0-9_-]+)/\.php/"
+    )
+    return set(pattern.findall(text))

@@ -41,7 +41,7 @@ from shared.validation import (
     validate_username,
 )
 
-from daemon import account_mutation, appunits, audit, cgroups, ols, sysops
+from daemon import account_mutation, appunits, audit, cgroups, ols, phpext, sysops
 
 logger = logging.getLogger("borond.identity_admin")
 
@@ -276,6 +276,12 @@ def rename_account(params: dict) -> dict:
         with audit.step("rename: update panel records"):
             _rewrite_db_username(old, new, old_home, new_home)
         undo.append(("rename: restore panel records", lambda: _rewrite_db_username(new, old, new_home, old_home)))
+
+        # PHP extension scan dirs live outside the home (root-owned), so the
+        # home move above does not carry them; ols renders the new path.
+        with audit.step("rename: move PHP extension scan dirs"):
+            phpext.rename_scan_dirs(old, new)
+        undo.append(("rename: restore PHP extension scan dirs", lambda: phpext.rename_scan_dirs(new, old)))
 
         # The native slice is keyed by UID, which rename preserves. Removing
         # it would stop the account and erase its aggregate limits.

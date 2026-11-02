@@ -28,8 +28,12 @@ def test_account_state_gates_credentials_and_reactivation(isolated_db, kind, sta
             db.add(Session(session_id=session_digest(raw), panel_user_id=user.id,
                            expires_at=utcnow() + dt.timedelta(hours=1)))
         else:
+            creator = PanelUser(username='state-admin', password_hash='unused', role='admin')
+            db.add(creator)
+            db.flush()
             db.add(ApiToken(token_hash=hashlib.sha256(raw.encode()).hexdigest(),
-                            label='state-test', role='customer', account_id=account.id))
+                            label='state-test', role='customer', account_id=account.id,
+                            created_by_panel_user_id=creator.id))
 
     def http_identity():
         if kind == 'session':

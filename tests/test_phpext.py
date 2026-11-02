@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from daemon import handlers_account as ha
-from daemon import phpext
+from daemon import phpdirectives, phpext
 from shared.config import settings
 from shared.validation import ValidationError
 
@@ -45,9 +45,15 @@ def fake_lsws(tmp_path, monkeypatch):
     return base
 
 
+def _scan(*parts):
+    return Path(phpdirectives.PHP_SCAN_ROOT, *parts)
+
+
 @pytest.fixture()
 def account(isolated_db, tmp_path, monkeypatch, fake_lsws):
     monkeypatch.setattr(settings, "home_base", str(tmp_path / "home"))
+    (tmp_path / "usr-local-lib").mkdir(mode=0o755)
+    monkeypatch.setattr(phpdirectives, "PHP_SCAN_ROOT", str(tmp_path / "usr-local-lib" / "php-scan"))
     (tmp_path / "home" / "demo1").mkdir(parents=True)
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
@@ -83,7 +89,7 @@ def test_set_extensions_materializes_scan_dirs(account, stub_apply):
     assert result["overridden"] is True
     assert result["enabled"] == ["mysqli", "pgsql"]
 
-    scan_83 = Path(f"{settings.home_base}/demo1/.php/83/conf.d")
+    scan_83 = _scan("demo1/83/conf.d")
     # stock snippet -> symlink preserving the packaged filename/load order
     assert (scan_83 / "mysqli.ini").is_symlink()
     # .so without a stock snippet -> generated one-liner
@@ -91,7 +97,7 @@ def test_set_extensions_materializes_scan_dirs(account, stub_apply):
     # disabled extension's snippet must NOT be present
     assert not (scan_83 / "50-redis.ini").exists()
     # pgsql isn't built for 8.1 -- skipped there, mysqli still linked
-    scan_81 = Path(f"{settings.home_base}/demo1/.php/81/conf.d")
+    scan_81 = _scan("demo1/81/conf.d")
     assert (scan_81 / "mysqli.ini").is_symlink()
     assert not (scan_81 / "pgsql.ini").exists()
     # the account must be able to read but never write these dirs
@@ -105,7 +111,7 @@ def test_set_extensions_materializes_scan_dirs(account, stub_apply):
 def test_set_extensions_rewrites_stale_snippets(account, stub_apply):
     phpext.set_extensions({"username": "demo1", "enabled": ["mysqli", "redis"]})
     phpext.set_extensions({"username": "demo1", "enabled": ["mysqli"]})
-    scan_83 = Path(f"{settings.home_base}/demo1/.php/83/conf.d")
+    scan_83 = _scan("demo1/83/conf.d")
     assert not (scan_83 / "50-redis.ini").exists()
 
 
@@ -131,6 +137,7 @@ def test_reset_extensions_removes_override_and_dirs(account, stub_apply):
     result = phpext.reset_extensions({"username": "demo1"})
     assert result["overridden"] is False
     assert result["enabled"] == ["mysqli", "redis"]  # back to stock
+    assert not _scan("demo1").exists()
     assert not Path(f"{settings.home_base}/demo1/.php").exists()
 
 
@@ -157,14 +164,15 @@ def test_bootstrap_rematerializes_missing_dirs(account, stub_apply):
     phpext.set_extensions({"username": "demo1", "enabled": ["mysqli"]})
     import shutil
 
-    shutil.rmtree(f"{settings.home_base}/demo1/.php")
+    shutil.rmtree(_scan("demo1"))
     phpext.bootstrap_all_php_extensions()
-    assert Path(f"{settings.home_base}/demo1/.php/83/conf.d/mysqli.ini").is_symlink()
+    assert _scan("demo1/83/conf.d/mysqli.ini").is_symlink()
 
 
-@pytest.mark.parametrize('component', ['.php', '.php/81', '.php/81/conf.d'])
+@pytest.mark.parametrize('component', ['demo1', 'demo1/81', 'demo1/81/conf.d'])
 def test_extension_materialization_rejects_symlink_ancestors(account, stub_apply, tmp_path, component):
-    home=Path(settings.home_base)/'demo1'
+    home=_scan()
+    home.mkdir(mode=0o711, exist_ok=True)
     outside=tmp_path/'protected'
     (outside/'81/conf.d').mkdir(parents=True)
     marker=outside/'81/conf.d/keep.ini'
@@ -191,7 +199,7 @@ def test_reset_unlinks_scan_root_symlink_without_following(account, stub_apply, 
 
 
 def test_extension_writes_stay_on_open_directory_after_swap(account, stub_apply, monkeypatch, tmp_path):
-    home=Path(settings.home_base)/'demo1'
+    home=_scan('demo1')
     outside=tmp_path/'protected';outside.mkdir()
     marker=outside/'keep.ini';marker.write_text('protected canary')
     original=phpext.open_dir_beneath
@@ -209,4 +217,119 @@ def test_extension_writes_stay_on_open_directory_after_swap(account, stub_apply,
     phpext.set_extensions({'username':'demo1','enabled':['mysqli','pgsql']})
     assert swapped and marker.read_text()=='protected canary'
     assert sorted(p.name for p in outside.iterdir())==['keep.ini']
-    assert (home/'.php/83/conf.retained/pgsql.ini').read_text()=='extension=pgsql.so\n'
+    assert (home/'83/conf.retained/pgsql.ini').read_text()=='extension=pgsql.so\n'
+
+
+def test_scan_dir_is_outside_the_account_home(account, stub_apply):
+    """Regression: the scan dir used to be ~/.php under the account-owned
+    home, which the account could rename away and recreate with its own
+    ini files (disable_functions=, extension=/home/u/x.so)."""
+    phpext.set_extensions({"username": "demo1", "enabled": ["mysqli"]})
+    rendered = phpdirectives.php_scan_dir("demo1", "8.3")
+    assert rendered == str(_scan("demo1/83/conf.d"))
+    assert not rendered.startswith(settings.home_base.rstrip("/") + "/")
+    assert not Path(f"{settings.home_base}/demo1/.php").exists()
+    # An account-planted ~/.php is never what PHP_INI_SCAN_DIR points at.
+    planted = Path(f"{settings.home_base}/demo1/.php/83/conf.d")
+    planted.mkdir(parents=True)
+    (planted / "evil.ini").write_text("disable_functions=\n")
+    phpext.set_extensions({"username": "demo1", "enabled": ["mysqli", "pgsql"]})
+    assert sorted(p.name for p in _scan("demo1/83/conf.d").iterdir()) == ["mysqli.ini", "pgsql.ini"]
+    assert (os.stat(_scan()).st_mode & 0o777) == 0o711
+
+
+def test_scan_root_must_not_be_group_or_world_writable(account, stub_apply):
+    _scan().mkdir(mode=0o711)
+    os.chmod(_scan(), 0o777)
+    with pytest.raises(phpext.UnsafePathError):
+        phpext.set_extensions({"username": "demo1", "enabled": ["mysqli"]})
+
+
+def test_scan_root_rejects_symlinked_root(account, stub_apply, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _scan().symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(phpext.UnsafePathError):
+        phpext.set_extensions({"username": "demo1", "enabled": ["mysqli"]})
+    assert list(elsewhere.iterdir()) == []
+
+
+def _legacy_tree():
+    legacy = Path(f"{settings.home_base}/demo1/.php/83/conf.d")
+    legacy.mkdir(parents=True)
+    (legacy / "mysqli.ini").write_text("extension=mysqli.so\n")
+    return legacy.parent.parent
+
+
+def test_bootstrap_migrates_legacy_home_scan_dirs(account, stub_apply, monkeypatch):
+    phpext.set_extensions({"username": "demo1", "enabled": ["mysqli"]})
+    legacy = _legacy_tree()
+    import shutil
+    shutil.rmtree(_scan("demo1"))
+    order = []
+    monkeypatch.setattr(phpext.ols, "refresh_main_config",
+                        lambda: order.append(("refresh", _scan("demo1/83/conf.d/mysqli.ini").is_symlink(), legacy.exists())))
+    monkeypatch.setattr(phpext.sysops, "recycle_php_workers", lambda username: order.append(("recycle", username)))
+    phpext.bootstrap_all_php_extensions()
+    # new dir exists before the config is repointed; old one survives until after
+    assert order == [("refresh", True, True), ("recycle", "demo1")]
+    assert not legacy.exists()
+    assert _scan("demo1/83/conf.d/mysqli.ini").is_symlink()
+    # second boot: nothing legacy left, so no extra OLS reload
+    order.clear()
+    phpext.bootstrap_all_php_extensions()
+    assert order == []
+
+
+def test_bootstrap_repoints_config_even_without_root_owned_legacy_tree(account, stub_apply, monkeypatch, tmp_path):
+    """An account that already swapped ~/.php for its own leaves no root-owned
+    tree, but the live httpd_config still points PHP at it: still refresh."""
+    phpext.set_extensions({"username": "demo1", "enabled": ["mysqli"]})
+    config = tmp_path / "httpd_config.conf"
+    config.write_text(f"    env PHP_INI_SCAN_DIR={settings.home_base}/demo1/.php/83/conf.d\n")
+    monkeypatch.setattr(phpext.ols, "HTTPD_CONFIG_PATH", str(config))
+    monkeypatch.setattr(phpext, "_legacy_scan_tree_present", lambda username: False)
+    order = []
+    monkeypatch.setattr(phpext.ols, "refresh_main_config", lambda: order.append("refresh"))
+    monkeypatch.setattr(phpext.sysops, "recycle_php_workers", lambda username: order.append(("recycle", username)))
+    phpext.bootstrap_all_php_extensions()
+    assert order == ["refresh", ("recycle", "demo1")]
+    config.write_text(f"    env PHP_INI_SCAN_DIR={phpdirectives.PHP_SCAN_ROOT}/demo1/83/conf.d\n")
+    order.clear()
+    phpext.bootstrap_all_php_extensions()
+    assert order == []
+
+
+def test_bootstrap_keeps_legacy_tree_when_config_refresh_fails(account, stub_apply, monkeypatch):
+    phpext.set_extensions({"username": "demo1", "enabled": ["mysqli"]})
+    legacy = _legacy_tree()
+
+    def fail():
+        raise RuntimeError("ols validate failed")
+
+    monkeypatch.setattr(phpext.ols, "refresh_main_config", fail)
+    phpext.bootstrap_all_php_extensions()
+    assert legacy.exists()
+
+
+def test_rename_moves_scan_dirs(account, stub_apply):
+    phpext.set_extensions({"username": "demo1", "enabled": ["mysqli"]})
+    phpext.rename_scan_dirs("demo1", "demo2")
+    assert not _scan("demo1").exists()
+    assert _scan("demo2/83/conf.d/mysqli.ini").is_symlink()
+    phpext.rename_scan_dirs("demo2", "demo1")
+    assert _scan("demo1/83/conf.d/mysqli.ini").is_symlink()
+    phpext.rename_scan_dirs("nobodyhere", "demo3")  # no override: no-op
+
+
+def test_terminate_removes_scan_dirs(account, stub_apply):
+    phpext.set_extensions({"username": "demo1", "enabled": ["mysqli"]})
+    from sqlalchemy import select
+
+    from shared.db import write_session
+    from shared.models import Account
+
+    with write_session() as session:
+        acct = session.scalar(select(Account).where(Account.username == "demo1"))
+        phpext.terminate_account_php_extensions(acct)
+    assert not _scan("demo1").exists()

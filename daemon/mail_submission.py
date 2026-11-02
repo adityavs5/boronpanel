@@ -18,6 +18,7 @@ import subprocess
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from daemon.mail_hardening import postfix_sendmail
 from shared.config import settings
 from shared.db import make_engine
 from shared.models import Account, DkimKey, Domain, MailDomain, MailUser
@@ -141,6 +142,16 @@ def authorize_message(raw: bytes, envelope_sender: str | None, *, username: str,
         else:
             raise MailSubmissionError("envelope sender must use a domain owned by this account")
 
+    if allow_local_placeholder:
+        # cron and mail(1) write a bare login ("From: root (Cron Daemon)")
+        # that Postfix used to qualify. Qualifying it with this account's own
+        # canonical address grants nothing beyond that account's identity.
+        raw_from = message.get_all("From", [])
+        if len(raw_from) == 1:
+            pairs = getaddresses([str(raw_from[0])])
+            if (len(pairs) == 1 and pairs[0][1] and "@" not in pairs[0][1]
+                    and pairs[0][1].lower() in {username.lower(), "root"}):
+                message.replace_header("From", canonical)
     from_values = _header_addresses(message, "From")
     if not from_values:
         if not allow_local_placeholder:
@@ -229,7 +240,7 @@ def submit_via_postfix(raw: bytes, envelope_sender: str, recipients: list[str]) 
     clean_recipients = [validate_email_address(item) for item in recipients]
     try:
         result = subprocess.run(
-            ["/usr/sbin/sendmail", "-G", "-i", "-f", envelope_sender, "--", *clean_recipients],
+            [postfix_sendmail(), "-G", "-i", "-f", envelope_sender, "--", *clean_recipients],
             input=raw, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             timeout=30, check=False,
         )
@@ -259,9 +270,18 @@ def prepare_mailbox_message(mailbox: str, raw: bytes, envelope_sender: str) -> t
     return sign_if_configured(normalized, domain), envelope
 
 
-def prepare_submission_filter(raw: bytes, envelope_sender: str) -> tuple[bytes, str]:
-    """Validate a sender-login-authorized submission, then sign its domain."""
+def prepare_submission_filter(raw: bytes, envelope_sender: str,
+                              login: str | None = None) -> tuple[bytes, str]:
+    """Validate a sender-login-authorized submission, then sign its domain.
+
+    ``login`` is Postfix's ${sasl_username}. Postfix's sender-login check
+    skips the null sender, and a misconfigured submission service could
+    skip it entirely, so the filter repeats it: the authenticated mailbox
+    must be the envelope sender, and the From header must use its domain.
+    """
     mailbox = _address(envelope_sender, "Envelope sender")
+    if login is not None and (login or "").strip().lower() != mailbox:
+        raise MailSubmissionError("authenticated mailbox must match the envelope sender")
     username, domain = mailbox.rsplit("@", 1)
     normalized, envelope, signed_domain = authorize_message(
         raw, mailbox, username=username, primary_domain=domain,

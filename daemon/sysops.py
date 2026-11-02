@@ -124,11 +124,29 @@ def ensure_web_logs(username: str) -> str:
     owned by the tenant prevents the worker from reopening those logs after a
     restart, which silently freezes bandwidth accounting.  A named ACL grants
     only the web-server identity access and a default ACL covers rotations.
+
+    Because the shared ``nobody`` identity can write every tenant's logs and
+    OLS follows symlinks when it (re)opens them, a symlink planted here
+    (``<vhost>-access.log -> /home/<other>/logs/...``) would redirect this
+    tenant's log lines into another tenant's files.  Boron never creates
+    symlinks in this directory, so every top-level symlink is removed
+    (without following it) each time the directory is (re)provisioned, which
+    runs before the OLS apply on account and domain provisioning.
     """
+    from daemon.safeio import open_dir_beneath
+
     _assert_safe_username(username)
     pw = pwd.getpwnam(username)
     home = f"{settings.home_base}/{username}"
     logs = secure_mkdirs(home, "logs", pw.pw_uid, pw.pw_gid, 0o750)
+    directory_fd = open_dir_beneath(home, "logs")
+    try:
+        with os.scandir(directory_fd) as entries:
+            planted = [entry.name for entry in entries if entry.is_symlink()]
+        for name in planted:
+            os.unlink(name, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
     run([
         "setfacl", "-m", "u:nobody:rwx", "-m", "d:u:nobody:rwX", logs,
     ], uid=pw.pw_uid, gid=pw.pw_gid, check=True)

@@ -574,13 +574,33 @@ def test_reassert_docroot_perms_restores_mode_after_simulated_widening(isolated_
 # --- trigger_import / get_job guards ----------------------------------------
 
 
-def test_trigger_import_rejects_existing_account(isolated_db, monkeypatch):
+@pytest.fixture()
+def spool(tmp_path, monkeypatch):
+    """Root-prepared upload spool under tmp, with boron-api faked as the
+    test runner so reserved files pass the owner check."""
+    from shared.config import settings
+
+    staging = tmp_path / "staging"
+    monkeypatch.setattr(settings, "cpanel_import_staging_dir", str(staging))
+    fake_api = real_pwd.struct_passwd(("boron-api", "x", os.geteuid(), os.getegid(), "", "/", "/usr/sbin/nologin"))
+    original = real_pwd.getpwnam
+    monkeypatch.setattr(real_pwd, "getpwnam", lambda name: fake_api if name == "boron-api" else original(name))
+
+    def reserve(content: bytes = b"backup") -> str:
+        path = ci.reserve_upload({})["path"]
+        Path(path).write_bytes(content)
+        return path
+
+    return reserve
+
+
+def test_trigger_import_rejects_existing_account(isolated_db, monkeypatch, spool):
     monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
     monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
     monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
     ha.create_account({"username": "existing1"})
     with pytest.raises(ci.CpanelImportError):
-        ci.trigger_import({"username": "existing1", "source": "upload", "source_ref": "/tmp/whatever.tar.gz"})
+        ci.trigger_import({"username": "existing1", "source": "upload", "source_ref": spool()})
 
 
 def test_trigger_import_requires_source_ref(isolated_db):
@@ -588,7 +608,7 @@ def test_trigger_import_requires_source_ref(isolated_db):
         ci.trigger_import({"username": "newacct1", "source": "upload"})
 
 
-def test_trigger_import_rejects_second_concurrent_job(isolated_db, tmp_path, monkeypatch):
+def test_trigger_import_rejects_second_concurrent_job(isolated_db, tmp_path, monkeypatch, spool):
     monkeypatch.setattr(ci, "_executor", ci._executor)  # no-op, keep real executor but we won't let jobs actually run
 
     def never_runs(job_id, params):
@@ -598,17 +618,17 @@ def test_trigger_import_rejects_second_concurrent_job(isolated_db, tmp_path, mon
         time.sleep(2)
 
     monkeypatch.setattr(ci, "_run_import_job", never_runs)
-    ci.trigger_import({"username": "newacct2", "source": "upload", "source_ref": str(tmp_path / "x.tar.gz")})
+    ci.trigger_import({"username": "newacct2", "source": "upload", "source_ref": spool()})
     with pytest.raises(ci.CpanelImportError):
-        ci.trigger_import({"username": "newacct2", "source": "upload", "source_ref": str(tmp_path / "y.tar.gz")})
+        ci.trigger_import({"username": "newacct2", "source": "upload", "source_ref": spool()})
 
 
-def test_get_job_wrong_username_not_found(isolated_db, tmp_path, monkeypatch):
+def test_get_job_wrong_username_not_found(isolated_db, tmp_path, monkeypatch, spool):
     def never_runs(job_id, params):
         time.sleep(2)
 
     monkeypatch.setattr(ci, "_run_import_job", never_runs)
-    result = ci.trigger_import({"username": "newacct3", "source": "upload", "source_ref": str(tmp_path / "x.tar.gz")})
+    result = ci.trigger_import({"username": "newacct3", "source": "upload", "source_ref": spool()})
     with pytest.raises(ci.CpanelImportError):
         ci.get_job({"job_id": result["id"], "username": "otheruser1"})
     # The real owner can still read it.
@@ -644,6 +664,132 @@ def test_import_worker_rechecks_target_account_before_fetch(isolated_db, tmp_pat
         row = session.get(CpanelImportJob, job_id)
         assert row.status == "failed"
         assert "already exists" in row.error
+
+
+@pytest.mark.parametrize("where", ["outside", "symlink", "wrong_name", "group_readable"])
+def test_trigger_upload_source_must_be_a_spooled_upload(isolated_db, tmp_path, monkeypatch, spool, where):
+    """Regression: source_ref was used as-is, so root read -- and in the
+    job's finally block deleted -- any path, e.g. /etc/shadow."""
+    from shared.config import settings
+    from shared.validation import ValidationError
+
+    victim = tmp_path / "victim-root-file"
+    victim.write_bytes(b"protected")
+    base = Path(settings.cpanel_import_staging_dir) / "uploads"
+    spool()  # prepares the spool directory
+    if where == "outside":
+        source_ref = str(victim)
+    elif where == "symlink":
+        source_ref = str(base / "cpanel-import-abcdef12.tar.gz")
+        os.symlink(victim, source_ref)
+    elif where == "wrong_name":
+        source_ref = str(base / "shadow")
+        Path(source_ref).write_bytes(b"x")
+        os.chmod(source_ref, 0o600)
+    else:
+        source_ref = spool()
+        os.chmod(source_ref, 0o640)
+    monkeypatch.setattr(ci, "_run_import_job", lambda *a: pytest.fail("must not start"))
+    with pytest.raises(ValidationError):
+        ci.trigger_import({"username": "newacct9", "source": "upload", "source_ref": source_ref})
+    assert victim.read_bytes() == b"protected"
+
+
+def test_import_worker_never_deletes_an_unvalidated_upload_path(isolated_db, tmp_path, monkeypatch, spool):
+    spool()
+    victim = tmp_path / "victim-root-file"
+    victim.write_bytes(b"protected")
+    with write_session() as session:
+        job = CpanelImportJob(username="newacct5", panel="cpanel", source="upload",
+                              source_ref=str(victim), status="pending", progress_message="queued")
+        session.add(job)
+        session.flush()
+        job_id = job.id
+    ci._run_import_job(job_id, {"username": "newacct5", "source": "upload", "source_ref": str(victim)})
+    with write_session() as session:
+        row = session.get(CpanelImportJob, job_id)
+        assert row.status == "failed"
+    assert victim.read_bytes() == b"protected"
+
+
+def test_obtain_archive_moves_validated_upload_into_private_work_dir(tmp_path, spool):
+    source_ref = spool(b"archive-bytes")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir(mode=0o700)
+    archive = ci._obtain_archive(1, "upload", source_ref, work_dir)
+    assert archive.parent == work_dir
+    assert archive.read_bytes() == b"archive-bytes"
+    assert not Path(source_ref).exists()
+    assert os.stat(archive).st_mode & 0o777 == 0o600
+
+
+def test_upload_cleanup_only_accepts_reserved_identifiers(spool):
+    from shared.validation import ValidationError
+
+    path = spool()
+    with pytest.raises(ValidationError):
+        ci.cleanup_upload({"upload_id": "../../etc/shadow"})
+    assert ci.cleanup_upload({"upload_id": Path(path).name}) == {"removed": True}
+
+
+def _cert_fixture(tmp_path, domain):
+    cert_bytes, key_bytes, _ = _make_self_signed_cert(domain)
+    cert_path = tmp_path / f"{domain}.crt"
+    key_path = tmp_path / f"{domain}.key"
+    cert_path.write_bytes(cert_bytes)
+    key_path.write_bytes(key_bytes)
+    return cert_path, key_path
+
+
+def _account_with_domain(tmp_path, monkeypatch, domain):
+    monkeypatch.setattr(ha.sysops, "create_linux_user", lambda username: (5001, 5001))
+    monkeypatch.setattr(ha.sysops, "set_initial_password", lambda username, password: None)
+    monkeypatch.setattr(ha.sysops, "set_quota", lambda username, soft, hard: None)
+    ha.create_account({"username": "demo1"})
+    with write_session() as session:
+        account = session.scalar(select(Account).where(Account.username == "demo1"))
+        session.add(Domain(account_id=account.id, domain=domain, kind="addon", docroot=str(tmp_path)))
+
+
+def test_import_ssl_cert_never_replaces_an_existing_lineage(isolated_db, tmp_path, monkeypatch, stub_ols_refresh):
+    """Regression: an existing certbot lineage (live/ files are symlinks into
+    archive/) was overwritten through its symlinks with the backup's pair."""
+    monkeypatch.setattr(ci, "IMPORTED_CERT_ROOT", tmp_path / "live")
+    _account_with_domain(tmp_path, monkeypatch, "example.com")
+    archive = tmp_path / "archive" / "example.com"
+    archive.mkdir(parents=True)
+    (archive / "privkey1.pem").write_bytes(b"real key")
+    lineage = ci.IMPORTED_CERT_ROOT / "example.com"
+    lineage.mkdir(parents=True)
+    (lineage / "privkey.pem").symlink_to(archive / "privkey1.pem")
+    cert_path, key_path = _cert_fixture(tmp_path, "example.com")
+    with pytest.raises(ci._Skip, match="already installed"):
+        ci._import_ssl_cert("demo1", "example.com", cert_path, key_path)
+    assert (archive / "privkey1.pem").read_bytes() == b"real key"
+    with write_session() as session:
+        assert session.scalar(select(Domain).where(Domain.domain == "example.com")).ssl_status != "active"
+
+
+@pytest.mark.parametrize("setting", ["mail_hostname", "panel_hostname", "webmail_hostname", "pma_hostname"])
+def test_import_ssl_cert_refuses_server_service_hostnames(isolated_db, tmp_path, monkeypatch, stub_ols_refresh, setting):
+    from shared.config import settings
+
+    monkeypatch.setattr(ci, "IMPORTED_CERT_ROOT", tmp_path / "live")
+    monkeypatch.setattr(settings, setting, "mail.host.example")
+    cert_path, key_path = _cert_fixture(tmp_path, "mail.host.example")
+    with pytest.raises(ci._Skip, match="server service hostname"):
+        ci._import_ssl_cert("demo1", "mail.host.example", cert_path, key_path)
+    assert not (ci.IMPORTED_CERT_ROOT / "mail.host.example").exists()
+
+
+def test_import_ssl_cert_writes_new_lineage_privately(isolated_db, tmp_path, monkeypatch, stub_ols_refresh):
+    monkeypatch.setattr(ci, "IMPORTED_CERT_ROOT", tmp_path / "live")
+    _account_with_domain(tmp_path, monkeypatch, "fresh.example")
+    cert_path, key_path = _cert_fixture(tmp_path, "fresh.example")
+    ci._import_ssl_cert("demo1", "fresh.example", cert_path, key_path)
+    lineage = ci.IMPORTED_CERT_ROOT / "fresh.example"
+    assert os.stat(lineage / "privkey.pem").st_mode & 0o777 == 0o600
+    assert (lineage / "fullchain.pem").read_bytes() == cert_path.read_bytes()
 
 
 # --- archive extraction safety -----------------------------------------------

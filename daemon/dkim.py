@@ -11,7 +11,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from daemon import dnsprovider
+from daemon import dnsprovider, mail_hardening
 from daemon.dns_zone_lookup import find_managed_zone, label_within_zone
 from daemon.procutil import run
 from shared.config import settings
@@ -28,6 +28,13 @@ TRUSTED_HOSTS = Path("/etc/opendkim/boron/TrustedHosts")
 SOCKET_PATH = Path("/var/spool/postfix/opendkim/opendkim.sock")
 POSTFIX_BORON_DIR = Path("/etc/postfix/boron")
 SENDER_LOGIN_MAP = POSTFIX_BORON_DIR / "mysql-sender-login.cf"
+# The SASL login travels with the message so the filter re-checks that the
+# authenticated mailbox is the envelope sender before any key is used.
+SIGN_SERVICE = (
+    "boron-sign/unix=boron-sign unix - n n - 4 pipe flags=Rq user=opendkim "
+    "argv=/opt/boron/.venv/bin/python /opt/boron/scripts/mail_sign_filter.py "
+    "--sender ${sender} --login=${sasl_username} --recipient ${recipient}"
+)
 
 
 class DkimError(Exception):
@@ -188,11 +195,14 @@ def _configure_postfix_milter() -> None:
     }
     for name, value in values.items():
         run(["postconf", "-e", f"{name}={value}"], timeout=15, check=True)
-    run(["postconf", "-Me", (
-        "boron-sign/unix=boron-sign unix - n n - 4 pipe flags=Rq user=opendkim "
-        "argv=/opt/boron/.venv/bin/python /opt/boron/scripts/mail_sign_filter.py "
-        "--sender ${sender} --recipient ${recipient}"
-    )], timeout=15, check=True)
+    # Loopback relay, tenant use of Postfix's sendmail/postdrop and the
+    # resulting unsigned-but-SPF-aligned spoofing are closed here, so every
+    # install, upgrade and DKIM refresh reconciles the same policy.
+    try:
+        mail_hardening.configure_postfix_policy(run)
+    except mail_hardening.MailHardeningError as exc:
+        raise DkimError(str(exc)) from exc
+    run(["postconf", "-Me", SIGN_SERVICE], timeout=15, check=True)
     submission_overrides = {
         "content_filter": "boron-sign:",
         "smtpd_sender_login_maps": f"mysql:{SENDER_LOGIN_MAP}",

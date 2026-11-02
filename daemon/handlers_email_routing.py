@@ -76,10 +76,17 @@ def set_routing(params: dict) -> dict:
     # Toggle Postfix acceptance for the domain (no reload -- Postfix reads the
     # virtual_mailbox_domains SQL map live). Only meaningful if the domain has
     # mail provisioned; otherwise remote/backup are already the effective state.
+    # 'local' is a request, not proof of ownership: Postfix only accepts the
+    # domain once its public MX points here (daemon/mail_local_delivery.py),
+    # otherwise a customer could capture other senders' mail to a domain
+    # they merely added. The reconcile cron activates it after the MX change.
     mail_domain_affected = False
+    accepting_locally = False
     try:
         if mail.domain_exists(domain_name):
-            mail_domain_affected = mail.set_domain_active(domain_name, _ACTIVE_FOR_MODE[mode])
+            from daemon import mail_local_delivery
+            accepting_locally = _ACTIVE_FOR_MODE[mode] and mail_local_delivery.local_delivery_allowed(domain_name)
+            mail_domain_affected = mail.set_domain_active(domain_name, accepting_locally)
     except Exception:
         # A MariaDB error here must not lose the recorded mode -- surface it,
         # but the SQLite mode change already committed above.
@@ -89,7 +96,9 @@ def set_routing(params: dict) -> dict:
     # Regenerate the relay_domains map from ALL backup-mode domains (idempotent).
     regenerate_relay_domains_map()
 
-    return {"domain": domain_name, "mode": mode, "accepting_locally": mode == "local", "mail_domain_affected": mail_domain_affected}
+    return {"domain": domain_name, "mode": mode, "accepting_locally": accepting_locally,
+            "pending_mx": mode == "local" and mail_domain_affected and not accepting_locally,
+            "mail_domain_affected": mail_domain_affected}
 
 
 def regenerate_relay_domains_map() -> list[str]:

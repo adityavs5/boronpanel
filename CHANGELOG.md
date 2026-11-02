@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.3.2 (unreleased)
+
+### Security
+
+- API tokens now belong to the administrator who created them. A token stops
+  working as soon as that administrator is disabled, deleted or no longer an
+  administrator. Disabling or deleting an administrator, changing their
+  password or resetting their 2FA also revokes every token they created. A
+  token now acts, and is recorded in the audit log, under its creator's login
+  name. The label is only a description, so it can no longer make actions look
+  like they came from someone else. The token list shows who created each
+  token. The same rule applies to customer tokens, which administrators
+  create too.
+- Login lockout can no longer be used to keep an administrator out. After
+  repeated failures, only the client address that failed (the IPv4 address or
+  IPv6 /64) is locked for 15 minutes. If a login name gets more failures from
+  many addresses than the guard limit allows, sign-ins from addresses that
+  have never signed in as that user are refused for 15 minutes. Addresses with
+  a successful sign-in in the last 90 days can still sign in.
+- Sign-in attempts for login names that do not exist or are disabled now take
+  as long as attempts for real accounts, so response time no longer shows
+  which login names exist.
+
+### Upgrade notes
+
+- Database schema revision 6 (additive) adds the token creator. **Existing API
+  tokens have no recorded creator, so the upgrade revokes all of them, both
+  administrator and customer tokens.** After updating, create new tokens under
+  Admin > API tokens and update any integrations that use them.
+
 ## 3.3.1 — Stable
 
 ### Fixed

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from starlette.requests import Request
 
 from shared.db import read_session
-from shared.models import ApiToken
+from shared.models import ApiToken, PanelUser
 
 from api.rpc import call_daemon
 from api.security import API_TOKEN_MAX_AGE_SECONDS, Identity, get_identity, require_admin
@@ -30,8 +30,12 @@ def list_tokens(identity: Identity = Depends(get_identity)):
     require_admin(identity)
     with read_session() as db:
         rows = db.scalars(select(ApiToken)).all()
+        creators = dict(db.execute(select(PanelUser.id, PanelUser.username)).all())
         return [
             {"id": r.id, "label": r.label, "role": r.role, "account_id": r.account_id,
+             # Who minted it -- the identity the token acts as. The label is
+             # free text and must not be read as an owner.
+             "created_by": creators.get(r.created_by_panel_user_id),
              "revoked": r.revoked_at is not None,
              "scope": r.scope,
              "expires_at": (r.expires_at or (r.created_at + __import__("datetime").timedelta(seconds=API_TOKEN_MAX_AGE_SECONDS))).isoformat()}

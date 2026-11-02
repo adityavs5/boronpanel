@@ -311,6 +311,8 @@ POLICY_BY_OPERATION: dict[str, str] = {
     'cpanel_import.get': 'global_admin',
     'cpanel_import.list': 'global_admin',
     'cpanel_import.trigger': 'global_admin',
+    'cpanel_import.upload.reserve': 'global_admin',
+    'cpanel_import.upload.cleanup': 'global_admin',
     'dbmonitor.bootstrap_kill_privilege': 'global_admin',
     'dbmonitor.connections': 'global_admin',
     'dbmonitor.db_sizes': 'global_admin',

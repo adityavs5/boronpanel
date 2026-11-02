@@ -40,6 +40,10 @@ logger = logging.getLogger("borond.mail")
 def create_mail_domain(params: dict) -> dict:
     username = params.get("username")
     domain_name = validate_domain(params["domain"])
+    from daemon import domain_ownership, mail_local_delivery
+    reason = domain_ownership.reserved_reason(domain_name, include_infrastructure=False)
+    if reason:
+        raise ValidationError(reason)
 
     with write_session() as session:
         account_id = None
@@ -57,6 +61,11 @@ def create_mail_domain(params: dict) -> dict:
         hosting_domain = session.scalar(select(Domain).where(Domain.domain == domain_name))
         if hosting_domain is not None and hosting_domain.account_id != account_id:
             raise ValidationError("mail and hosting domain ownership must match")
+        if hosting_domain is None:
+            # A mail-only domain (admin call or archive restore) never went
+            # through domain_ownership.require_available, so apply the same
+            # ancestor/descendant rule here.
+            domain_ownership.require_no_foreign_overlap(session, domain_name, account_id)
         existing = session.scalar(select(MailDomain).where(MailDomain.domain == domain_name))
         if existing is not None:
             raise RuntimeError(f"mail domain '{domain_name}' already provisioned")
@@ -64,14 +73,21 @@ def create_mail_domain(params: dict) -> dict:
     if mail.domain_exists(domain_name):
         raise RuntimeError(f"mail domain '{domain_name}' already exists")
 
-    mail.create_mail_domain(domain_name)
+    # Local acceptance starts only once the public MX points here (or the
+    # operator trusts the domain), so a claimed external domain never
+    # captures mail other senders on this server address to it.
+    routing_local = mail_local_delivery.routing_mode(domain_name) == "local"
+    accept_locally = routing_local and mail_local_delivery.local_delivery_allowed(domain_name)
+    local_delivery = "active" if accept_locally else ("pending_mx" if routing_local else "off")
+    mail.create_mail_domain(domain_name, active=accept_locally)
 
     try:
         with write_session() as session:
             row = MailDomain(account_id=account_id, domain=domain_name)
             session.add(row)
             session.flush()
-            result = {"id": row.id, "domain": row.domain, "account_id": row.account_id}
+            result = {"id": row.id, "domain": row.domain, "account_id": row.account_id,
+                      "local_delivery": local_delivery}
     except Exception:
         try:
             mail.delete_mail_domain(domain_name)

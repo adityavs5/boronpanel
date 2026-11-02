@@ -48,6 +48,7 @@ import os
 import pwd
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -88,6 +89,15 @@ from daemon.wordpress import _php_str
 
 logger = logging.getLogger("borond.cpanel_import")
 IMPORTED_CERT_ROOT = Path("/etc/letsencrypt/live")
+
+# Uploaded backups are handed over through the root-prepared, PrivateTmp-
+# independent spool shared with portable archive imports
+# (<cpanel_import_staging_dir>/uploads, root:boron-api 0710). boron-api can
+# write the file borond reserved for it but cannot create, rename or swap
+# entries there, so a validated name stays bound to that file.
+UPLOAD_PREFIX = "cpanel-import-"
+UPLOAD_SUFFIX = ".tar.gz"
+_UPLOAD_NAME_RE = re.compile(r"\Acpanel-import-[A-Za-z0-9_-]{6,80}\.tar\.gz\Z")
 
 _executor = ThreadPoolExecutor(max_workers=settings.cpanel_import_concurrency, thread_name_prefix="cpanel-import")
 
@@ -169,6 +179,72 @@ class _Skip(Exception):
     per-item report."""
 
 
+def _upload_base() -> Path:
+    from daemon.portable_archive import _upload_base as shared_upload_base
+    return shared_upload_base()
+
+
+def reserve_upload(_params: dict | None = None) -> dict:
+    """Create the empty spool file boron-api streams an uploaded backup into."""
+    base = _upload_base()
+    fd, name = tempfile.mkstemp(prefix=UPLOAD_PREFIX, suffix=UPLOAD_SUFFIX, dir=base)
+    try:
+        api_user = pwd.getpwnam("boron-api")
+        os.fchmod(fd, 0o600)
+        os.fchown(fd, api_user.pw_uid, api_user.pw_gid)
+    finally:
+        os.close(fd)
+    path = Path(name)
+    return {"path": str(path), "upload_id": path.name}
+
+
+def cleanup_upload(params: dict) -> dict:
+    upload_id = str(params.get("upload_id") or "")
+    if not _UPLOAD_NAME_RE.match(upload_id):
+        raise ValidationError("Invalid backup upload identifier")
+    target = _upload_base() / upload_id
+    if target.is_symlink():
+        raise ValidationError("Invalid backup upload identifier")
+    target.unlink(missing_ok=True)
+    return {"removed": not target.exists()}
+
+
+def _validated_upload(source_ref: str) -> Path:
+    """The only path root will read (and later delete) for source=upload:
+    a regular, non-symlink, boron-api-owned 0600 file directly inside the
+    upload spool with the reserved name shape. Anything else -- /etc/shadow,
+    a symlink, a file elsewhere -- is refused before it is touched."""
+    source_path = Path(str(source_ref or ""))
+    if not source_path.is_absolute() or not _UPLOAD_NAME_RE.match(source_path.name):
+        raise ValidationError("The backup upload staging path is invalid")
+    expected_parent = Path(settings.cpanel_import_staging_dir) / "uploads"
+    if source_path.parent != expected_parent or source_path.parent != _upload_base():
+        raise ValidationError("The backup upload staging path is invalid")
+    try:
+        info = source_path.lstat()
+        api_user = pwd.getpwnam("boron-api")
+    except (FileNotFoundError, KeyError) as exc:
+        raise ValidationError("The backup upload staging path is invalid") from exc
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid != api_user.pw_uid
+        or info.st_mode & 0o077
+    ):
+        raise ValidationError("The backup upload staging path is invalid")
+    return source_path
+
+
+def _discard_upload(source_ref: str) -> None:
+    """Delete a spooled upload, but only one that is still a valid spool
+    entry -- never an arbitrary caller-supplied path."""
+    try:
+        path = _validated_upload(source_ref)
+    except ValidationError:
+        return
+    path.unlink(missing_ok=True)
+
+
 def trigger_import(params: dict) -> dict:
     username = validate_username(params["username"])
     panel = str(params.get("panel") or "cpanel").lower()
@@ -189,6 +265,8 @@ def trigger_import(params: dict) -> dict:
         raise ValidationError("Choose strict or adapt database compatibility")
     if not source_ref:
         raise ValidationError("source_ref (uploaded file path or URL) is required")
+    if source == "upload":
+        source_ref = str(_validated_upload(source_ref))
 
     with write_session() as session:
         if session.scalar(select(Account).where(Account.username == username)) is not None:
@@ -251,10 +329,24 @@ def list_jobs(params: dict | None = None) -> dict:
 
 def _obtain_archive(job_id: int, source: str, source_ref: str, work_dir: Path) -> Path:
     if source == "upload":
-        upload_path = Path(source_ref)
-        if not upload_path.is_file():
-            raise CpanelImportError(f"uploaded file '{source_ref}' not found")
-        return upload_path
+        # Re-validate at use time and move the file into the root-only work
+        # dir (same filesystem, so no copy) before anything reads it.
+        try:
+            upload_path = _validated_upload(source_ref)
+        except ValidationError as exc:
+            raise CpanelImportError("uploaded backup is missing or is not a valid spooled upload") from exc
+        dest = work_dir / "upload.tar.gz"
+        fd = os.open(upload_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise CpanelImportError("uploaded backup is not a regular file")
+            os.fchown(fd, 0, 0)
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+        os.rename(upload_path, dest)
+        return dest
 
     _update_job(job_id, progress_message=f"downloading backup from {source_ref}")
     dest = work_dir / "download.tar.gz"
@@ -913,12 +1005,10 @@ def _import_ssl_cert(username: str, domain: str, cert_path: Path, key_path: Path
     if cert_public_numbers != key_public_numbers:
         raise _Skip("certificate and private key do not match -- not imported")
 
+    if _is_server_hostname(domain):
+        raise _Skip(f"'{domain}' is a server service hostname -- its certificate is never replaced by an import")
     _domain_docroot(username, domain)  # authorize before any certificate write
-    cert_dir = IMPORTED_CERT_ROOT / domain
-    cert_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
-    (cert_dir / "fullchain.pem").write_bytes(cert_bytes)
-    (cert_dir / "privkey.pem").write_bytes(key_bytes)
-    os.chmod(cert_dir / "privkey.pem", 0o600)
+    _write_imported_cert(domain, cert_bytes, key_bytes)
 
     with write_session() as session:
         account = session.scalar(select(Account).where(Account.username == username))
@@ -932,6 +1022,51 @@ def _import_ssl_cert(username: str, domain: str, cert_path: Path, key_path: Path
 
     ols.refresh_vhost(account_snapshot)
     return f"installed imported certificate for '{domain}' (expires {cert.not_valid_after_utc.date()})"
+
+
+def _is_server_hostname(domain: str) -> bool:
+    """Panel/webmail/phpMyAdmin/mail hostnames (and names beneath them)
+    belong to the server, whatever account a crafted backup assigns them to."""
+    for configured in (settings.panel_hostname, settings.webmail_hostname,
+                       settings.pma_hostname, settings.mail_hostname):
+        name = (configured or "").strip().lower().rstrip(".")
+        if name and (domain == name or domain.endswith("." + name)):
+            return True
+    return False
+
+
+def _write_imported_cert(domain: str, cert_bytes: bytes, key_bytes: bytes) -> None:
+    """Install into a NEW lineage directory only. The importing account is
+    brand-new, so an existing /etc/letsencrypt/live/<domain> belongs to
+    certbot or another tenant; its files are symlinks into archive/, and
+    writing through them would replace that lineage's real key. Every
+    component is created exclusively and never followed."""
+    os.makedirs(IMPORTED_CERT_ROOT, mode=0o755, exist_ok=True)
+    root_fd = os.open(IMPORTED_CERT_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        try:
+            os.mkdir(domain, 0o755, dir_fd=root_fd)
+        except FileExistsError:
+            raise _Skip(f"a certificate for '{domain}' is already installed on this server -- not replaced")
+        dir_fd = os.open(domain, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root_fd)
+        try:
+            os.fchmod(dir_fd, 0o755)
+            for name, data, mode in (("fullchain.pem", cert_bytes, 0o644), ("privkey.pem", key_bytes, 0o600)):
+                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=dir_fd)
+                try:
+                    os.fchmod(fd, mode)
+                    view = memoryview(data)
+                    while view:
+                        written = os.write(fd, view)
+                        if written <= 0:
+                            raise OSError("certificate write made no progress")
+                        view = view[written:]
+                finally:
+                    os.close(fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        os.close(root_fd)
 
 
 # --- mailboxes --------------------------------------------------------------
@@ -1494,7 +1629,7 @@ def _run_import_job(job_id: int, params: dict) -> None:
             # reading it, success or failure, rather than left sitting in
             # /tmp indefinitely.
             if source == "upload":
-                Path(source_ref).unlink(missing_ok=True)
+                _discard_upload(source_ref)
 
         if params.get('preflight_only'):
             _update_job(job_id, status='completed', progress_message='compatibility analysis completed — no destination account created', completed_at=utcnow())

@@ -56,3 +56,50 @@ def test_daily_digest_is_durable_and_delivered_once(isolated_db,monkeypatch):
     assert flushed=={'delivered':1,'failed':0}
     assert len(sent)==1 and '1-event summary' in sent[0][2]
     assert notifications.flush_digests(utcnow()+dt.timedelta(days=2))=={'delivered':0,'failed':0}
+
+
+def test_httpx_request_log_never_contains_bot_token_or_url_path(isolated_db,caplog):
+    """Regression: httpx logs 'HTTP Request: POST <url>' at INFO, and the
+    Telegram URL path carries the bot token (webhook paths carry secrets)."""
+    import httpx
+    import logging
+    token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcd'
+    notifications.save_telegram({'enabled':True,'chat_id':'12345','token':token,'events':['backup.completed']})
+    original=notifications._transport
+    notifications._transport=httpx.MockTransport(lambda request:httpx.Response(200,json={'ok':True}))
+    try:
+        with caplog.at_level(logging.INFO,logger='httpx'):
+            assert notifications.send_telegram('backup.completed',None,job_id=11) is True
+            with httpx.Client(transport=httpx.MockTransport(lambda r:httpx.Response(204))) as client:
+                # webhooks._pinned_post always requests the pinned IP literal
+                client.post('https://203.0.113.9:443/services/T000/B000/webhooksecretvalue?sig=abc',
+                            headers={'Host':'hooks.example.test'})
+    finally:
+        notifications._transport=original
+    rendered='\n'.join(record.getMessage() for record in caplog.records)
+    assert 'HTTP Request' in rendered and 'api.telegram.org' in rendered and '203.0.113.9' in rendered
+    assert token not in rendered and 'ABCDEFGHIJ' not in rendered
+    assert 'webhooksecretvalue' not in rendered and 'sig=abc' not in rendered
+
+
+def test_telegram_failure_detail_and_log_redact_token(isolated_db,monkeypatch,caplog):
+    import httpx
+    token='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcd'
+    notifications.save_telegram({'enabled':True,'chat_id':'12345','token':token,'events':['backup.failed']})
+
+    def boom(request):
+        raise httpx.ConnectError(f'cannot reach {request.url}',request=request)
+
+    original=notifications._transport
+    notifications._transport=httpx.MockTransport(boom)
+    monkeypatch.setattr(notifications.time,'sleep',lambda *_:None)
+    try:
+        assert notifications.send_telegram('backup.failed',None,job_id=12) is False
+    finally:
+        notifications._transport=original
+    with write_session() as session:
+        row=session.query(BackupNotificationDelivery).one()
+        assert row.status=='failed' and token not in row.detail and 'redacted' in row.detail
+    assert token not in caplog.text
+    assert notifications._redact('GET https://api.telegram.org/bot123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcd/x')==\
+        'GET https://api.telegram.org/bot[redacted]/x'
