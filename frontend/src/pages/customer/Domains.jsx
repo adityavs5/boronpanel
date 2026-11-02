@@ -76,9 +76,9 @@ function ParkedDomainsCard({ username, domains }) {
           <CardTitle className="flex items-center gap-2"><Copy className="h-4 w-4" /> Parked (alias) domains</CardTitle>
           <CardDescription>Extra domains that serve the same site as one of your existing domains.</CardDescription>
         </div>
-        <Button size="sm" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Park a domain</Button>
+        <Button variant="secondary" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> Park a domain</Button>
       </CardHeader>
-      <CardContent>
+      <CardContent className="card-body-flush">
         <DataTable
           columns={columns}
           data={data?.parked_domains}

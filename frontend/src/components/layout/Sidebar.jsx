@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { ChevronDown, PanelLeftClose, PanelLeftOpen, Search, LayoutDashboard, ListChecks, X, Boxes, GitBranch, Code, Braces, Database } from 'lucide-react'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
-import { getToolGroups } from '@/config/toolGroups'
+import { getToolGroups, TASKS_GROUP } from '@/config/toolGroups'
 import { resellerNav } from '@/config/nav'
 import { filterNavigation } from '@/config/capabilities'
 import { searchEntries } from '@/config/search'
@@ -19,7 +19,7 @@ export function Sidebar({ mobile = false, onNavigate }) {
   const groups=useMemo(()=>{
     if(role==='reseller')return [{title:'Reseller',items:filterNavigation(resellerNav,capabilities).filter(item=>item.to)}]
     const items=getToolGroups(role,skin,capabilities)
-    const target=items.find(g=>g.title===(role==='admin'?'Metrics, Logs & Integrations':'Advanced Tools'))
+    const target=items.find(g=>g.title===(role==='admin'?TASKS_GROUP.admin:TASKS_GROUP.customer))
     target?.items.unshift({label:'Tasks',to:'/tasks',icon:ListChecks})
     return items
   },[role,skin,capabilities])
@@ -37,14 +37,14 @@ export function Sidebar({ mobile = false, onNavigate }) {
   const key=title=>`${role}:${skin}:${title}`
   const home=role==='admin'?'/overview':role==='reseller'?'/reseller':'/dashboard'
   const isClosed=group=>closed[key(group.title)] ?? !group.items.some(item=>item.to===active)
-  return <aside className="hosting-sidebar" data-collapsed={collapsed} data-mobile={mobile||undefined} aria-label={mobile?'Mobile tools':'Tools sidebar'}>
+  return <aside className="hosting-sidebar" data-tone={skin==='evolution'&&role==='admin'?'navy':'rail'} data-collapsed={collapsed} data-mobile={mobile||undefined} aria-label={mobile?'Mobile tools':'Tools sidebar'}>
     <div className="sidebar-toolbar">
       {!collapsed&&<strong>{role==='admin'?'Administration':role==='reseller'?'Reseller panel':'Hosting tools'}</strong>}
       {mobile?<button type="button" aria-label="Close navigation" onClick={onNavigate}><X/></button>:<button type="button" aria-label={collapsed?'Expand sidebar':'Collapse sidebar'} aria-expanded={!collapsed} onClick={toggle}>{collapsed?<PanelLeftOpen/>:<PanelLeftClose/>}</button>}
     </div>
     {!collapsed&&<div className="sidebar-search"><Search aria-hidden="true"/><input aria-label="Search navigation" placeholder="Search tools…" value={query} onChange={e=>setQuery(e.target.value)}/></div>}
     <nav aria-label="Primary navigation">
-      <Link to={home} className="sidebar-tool sidebar-home" onClick={onNavigate} aria-label="Dashboard"><LayoutDashboard aria-hidden="true"/>{!collapsed&&<span>Dashboard</span>}</Link>
+      {role!=='reseller'&&<Link to={home} className="sidebar-tool sidebar-home" onClick={onNavigate} aria-label="Dashboard" aria-current={location.pathname===home?'page':undefined}><LayoutDashboard aria-hidden="true"/>{!collapsed&&<span>Dashboard</span>}</Link>}
       {groups.map((group,index)=>{
         const items=query.trim()?searchEntries(group.items.map(item=>({...item,section:group.title})),query):group.items
         if(!items.length)return null

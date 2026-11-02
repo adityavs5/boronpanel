@@ -7,6 +7,8 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
+import { StatusBadge } from '@/components/ui/StatusBadge'
+import { formatDate } from '@/lib/utils'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter,
   ConfirmDialog,
@@ -113,7 +115,7 @@ export default function Fail2ban() {
             <Eye className="h-4 w-4" /> View IPs
           </Button>
           <Button
-            variant="danger"
+            variant="danger-ghost"
             size="sm"
             disabled={!r.currently_banned}
             onClick={() => setUnbanAllJail(r.jail)}
@@ -130,14 +132,14 @@ export default function Fail2ban() {
       key: 'timestamp',
       header: 'Time',
       sortable: true,
-      render: (r) => <span className="font-mono text-xs text-muted-foreground">{r.timestamp || '—'}</span>,
+      render: (r) => <span className="whitespace-nowrap tabular-nums text-muted-foreground">{r.timestamp ? formatDate(r.timestamp) : '—'}</span>,
     },
     { key: 'jail', header: 'Jail', sortable: true, searchable: true, render: (r) => r.jail || '—' },
     {
       key: 'action',
       header: 'Action',
       sortable: true,
-      render: (r) => <Badge variant={r.action === 'ban' ? 'danger' : 'neutral'}>{r.action || '—'}</Badge>,
+      render: (r) => r.action ? <StatusBadge status={r.action} label={r.action === 'ban' ? 'Banned' : r.action === 'unban' ? 'Unbanned' : undefined} /> : '—',
     },
     {
       key: 'ip',

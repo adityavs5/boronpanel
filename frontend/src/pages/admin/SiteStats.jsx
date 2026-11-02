@@ -34,7 +34,7 @@ export default function SiteStats() {
 
   return (
     <div>
-      <PageHeader title="Site Statistics" description="Server-wide pageviews and bandwidth, ranked per domain." icon={BarChart3}>
+      <PageHeader title="Site statistics" description="Server-wide pageviews and bandwidth, ranked per domain." icon={BarChart3}>
         <FormField label="Period" htmlFor="stats-period" className="w-40">
           <Select id="stats-period" value={period} onChange={(e) => setPeriod(e.target.value)}>
             {PERIODS.map((p) => <option key={p} value={p}>{titleCase(p)}</option>)}

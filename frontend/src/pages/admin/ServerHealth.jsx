@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts'
-import { AlertTriangle, CheckCircle2, Cpu, MemoryStick, HardDrive, Activity, ArrowDownUp, Clock, Cloud, BellRing, RefreshCw, Save } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Cpu, MemoryStick, HardDrive, Activity, ArrowDownUp, Clock, Cloud, BellRing, RefreshCw, Save, LineChart as LineChartIcon } from 'lucide-react'
 import { get, patch } from '@/lib/api'
 import { formatBytes, formatDuration, formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { Switch } from '@/components/ui/Toggle'
 import { CardSkeleton } from '@/components/ui/Skeleton'
-import { ErrorState } from '@/components/ui/States'
+import { ErrorState, EmptyState } from '@/components/ui/States'
 import { toast } from '@/components/ui/Toast'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
 
@@ -44,7 +44,7 @@ function ChartCard({ title, data, dataKey, color, formatY }) {
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="h-56 w-full">
+        {!data?.length ? <EmptyState icon={LineChartIcon} title="No samples yet" description="Charts fill in after the first 5-minute check." className="h-56 py-6" /> : <div className="h-56 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <defs>
@@ -64,7 +64,7 @@ function ChartCard({ title, data, dataKey, color, formatY }) {
               <Area type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} fill={`url(#g-${dataKey})`} />
             </AreaChart>
           </ResponsiveContainer>
-        </div>
+        </div>}
       </CardContent>
     </Card>
   )
@@ -134,7 +134,7 @@ function UptimeSparkline({ series }) {
   const points = series.map(([, up], i) => `${(i * step).toFixed(1)},${up ? 3 : hgt - 3}`).join(' ')
   return (
     <svg width={w} height={hgt} className="shrink-0" aria-hidden>
-      <polyline points={points} fill="none" stroke="#1FBED6" strokeWidth="1.5" />
+      <polyline points={points} fill="none" stroke="rgb(var(--link))" strokeWidth="1.5" />
     </svg>
   )
 }
@@ -301,7 +301,7 @@ export default function ServerHealth() {
 
   return (
     <div>
-      <PageHeader title="Server Health" description={health.dataUpdatedAt ? `Live resources and 24-hour trends. Updated ${new Date(health.dataUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.` : 'Live resource utilisation and 24-hour trends.'} icon={Activity}>
+      <PageHeader title="Server health" description={health.dataUpdatedAt ? `Live resources and 24-hour trends. Updated ${new Date(health.dataUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.` : 'Live resource utilisation and 24-hour trends.'} icon={Activity}>
         <Button variant="secondary" onClick={() => Promise.all([health.refetch(), history.refetch()])} loading={health.isFetching || history.isFetching}><RefreshCw className="h-4 w-4" /> Refresh</Button>
       </PageHeader>
 
@@ -373,7 +373,7 @@ export default function ServerHealth() {
 
       <MonitoringCard />
 
-      <Card id="clock-health" className="mb-6"><CardHeader><div><CardTitle>Clock &amp; 2FA health</CardTitle><CardDescription>Accurate server time keeps authenticator codes working.</CardDescription></div><Badge variant={h?.clock?.status==='healthy'?'success':h?.clock?.status==='critical'?'danger':'warning'}>{h?.clock?.status||'Unknown'}</Badge></CardHeader><CardContent><p className="text-sm">{h?.clock?.message||'Clock synchronization has not been verified.'}</p>{h?.clock?.source&&<dl className="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-3"><div><dt className="text-muted-foreground">Time source</dt><dd>{h.clock.source}</dd></div><div><dt className="text-muted-foreground">Clock offset</dt><dd>{(h.clock.offset_seconds*1000).toFixed(2)} ms</dd></div><div><dt className="text-muted-foreground">Estimated error bound</dt><dd>{(h.clock.error_bound_seconds*1000).toFixed(2)} ms</dd></div></dl>}<p className="mt-3 text-xs text-muted-foreground">Chrony corrects time continuously. Monitoring tracks clock failures and recovery; configure alert delivery in Service monitoring. Keep your 2FA recovery codes available.</p></CardContent></Card>
+      <Card id="clock-health" className="my-6"><CardHeader><div><CardTitle>Clock &amp; 2FA health</CardTitle><CardDescription>Accurate server time keeps authenticator codes working.</CardDescription></div><Badge variant={h?.clock?.status==='healthy'?'success':h?.clock?.status==='critical'?'danger':'warning'}>{h?.clock?.status||'Unknown'}</Badge></CardHeader><CardContent><p className="text-sm">{h?.clock?.message||'Clock synchronization has not been verified.'}</p>{h?.clock?.source&&<dl className="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-3"><div><dt className="text-muted-foreground">Time source</dt><dd>{h.clock.source}</dd></div><div><dt className="text-muted-foreground">Clock offset</dt><dd>{(h.clock.offset_seconds*1000).toFixed(2)} ms</dd></div><div><dt className="text-muted-foreground">Estimated error bound</dt><dd>{(h.clock.error_bound_seconds*1000).toFixed(2)} ms</dd></div></dl>}<p className="mt-3 text-xs text-muted-foreground">Chrony corrects time continuously. Monitoring tracks clock failures and recovery; configure alert delivery in Service monitoring. Keep your 2FA recovery codes available.</p></CardContent></Card>
       <CloudflareCard />
 
       {/* 24h charts */}
@@ -384,9 +384,9 @@ export default function ServerHealth() {
           <ErrorState error={history.error} onRetry={history.refetch} className="lg:col-span-2" />
         ) : (
           <>
-            <ChartCard title="CPU usage (24h)" data={points} dataKey="cpu" color="#1FBED6" formatY={(v) => `${v}%`} />
-            <ChartCard title="Memory usage (24h)" data={points} dataKey="mem" color="#10B981" formatY={(v) => `${v}%`} />
-            <ChartCard title="Network throughput (24h)" data={points} dataKey="net" color="#F59E0B" formatY={(v) => formatBytes(v)} />
+            <ChartCard title="CPU usage (24h)" data={points} dataKey="cpu" color="rgb(var(--link))" formatY={(v) => `${v}%`} />
+            <ChartCard title="Memory usage (24h)" data={points} dataKey="mem" color="rgb(var(--success))" formatY={(v) => `${v}%`} />
+            <ChartCard title="Network throughput (24h)" data={points} dataKey="net" color="rgb(var(--warning))" formatY={(v) => formatBytes(v)} />
           </>
         )}
       </div>

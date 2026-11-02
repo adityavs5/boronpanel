@@ -22,14 +22,14 @@ export function LicenseBanner() {
   if (!isAdmin || !data || data.state === 'active') return null
   const locked = !data.usable
   return (
-    <div role="status" className={`impersonation-banner text-sm font-medium ${locked ? 'bg-red-600 text-white' : 'bg-amber-500 text-amber-950'}`}>
+    <div role="status" className="impersonation-banner" data-tone={locked ? 'danger' : 'warning'}>
       <span className="impersonation-context">
-        <BadgeAlert className="h-4 w-4 shrink-0" />
+        <BadgeAlert aria-hidden="true" />
         <span>{data.message}{locked ? ' Administration is limited until the license is fixed.' : ''}</span>
       </span>
       {!pathname.endsWith('/license') && (
-        <Link to="/license" className={`impersonation-return ${locked ? 'bg-white/90 text-red-700 hover:bg-white' : 'bg-amber-950/90 text-amber-50 hover:bg-amber-950'}`}>
-          Open License
+        <Link to="/license" className="impersonation-return">
+          Open license
         </Link>
       )}
     </div>

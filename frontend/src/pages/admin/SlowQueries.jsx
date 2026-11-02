@@ -168,18 +168,18 @@ export default function SlowQueries() {
                 <div className="flex items-start gap-3">
                   <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                   <div>
-                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Threshold</div>
+                    <div className="text-[13px] font-medium text-muted-foreground">Threshold</div>
                     <div className="mt-0.5 text-sm font-semibold text-foreground tabular-nums">
                       {status?.long_query_time != null ? `${status.long_query_time}s` : '—'}
                     </div>
                   </div>
                 </div>
                 <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Log output</div>
+                  <div className="text-[13px] font-medium text-muted-foreground">Log output</div>
                   <div className="mt-0.5 text-sm font-semibold text-foreground">{status?.log_output || '—'}</div>
                 </div>
                 <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Config</div>
+                  <div className="text-[13px] font-medium text-muted-foreground">Config</div>
                   <div className="mt-0.5">
                     <Badge variant={status?.config_managed ? 'success' : 'warning'}>
                       {status?.config_managed ? 'Managed' : 'Unmanaged'}
@@ -292,7 +292,7 @@ export default function SlowQueries() {
               />
             </div>
             <div>
-              <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">SQL</div>
+              <div className="mb-1.5 text-[13px] font-medium text-muted-foreground">SQL</div>
               <pre className="max-h-80 overflow-auto rounded-btn border border-border bg-muted/40 p-3 font-mono text-xs text-foreground whitespace-pre-wrap break-words">
                 {selected?.sql_text || '—'}
               </pre>
@@ -322,7 +322,7 @@ export default function SlowQueries() {
 function Detail({ label, value, mono }) {
   return (
     <div>
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-[13px] font-medium text-muted-foreground">{label}</div>
       <div className={`mt-0.5 text-sm font-medium text-foreground ${mono ? 'font-mono break-all' : ''}`}>{value}</div>
     </div>
   )

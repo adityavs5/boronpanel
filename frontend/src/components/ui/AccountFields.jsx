@@ -22,7 +22,8 @@ export function generateAccountPassword() {
   return chars.join('')
 }
 
-export const AccountPasswordInput = forwardRef(function AccountPasswordInput({ value, onChange, id, invalid, ...props }, ref) {
+export const AccountPasswordInput = forwardRef(function AccountPasswordInput({ value, onChange, id, invalid: invalidProp, ...props }, ref) {
+  const invalid = !!(invalidProp || props['aria-invalid'])
   const [visible, setVisible] = useState(false)
   const meetsRules = /^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}$/.test(value)
   const level = !value ? 0 : !meetsRules ? 1 : value.length < 16 ? 2 : 3
@@ -42,7 +43,9 @@ export const AccountPasswordInput = forwardRef(function AccountPasswordInput({ v
   </div>
 })
 
-export const AccountUsernameInput = forwardRef(function AccountUsernameInput({ value, invalid, id, ...props }, ref) {
+export const AccountUsernameInput = forwardRef(function AccountUsernameInput({ value, invalid: invalidProp, id, ...props }, ref) {
+  // FormField marks its control with aria-invalid; honour that as well as the prop.
+  const invalid = !!(invalidProp || props['aria-invalid'])
   const feedbackId = `${id}-feedback`
   return <div>
     <Input {...props} ref={ref} id={id} value={value} invalid={invalid} aria-describedby={[props['aria-describedby'], feedbackId].filter(Boolean).join(' ')} />

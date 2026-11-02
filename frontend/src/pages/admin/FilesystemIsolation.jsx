@@ -60,7 +60,7 @@ export default function FilesystemIsolation() {
     { key: 'actions', header: '', align: 'right', render: r => <div className="flex justify-end gap-2"><Button variant="ghost" size="sm" loading={running === `${r.username}:self-test`} onClick={() => action.mutate({ username: r.username, type: 'self-test' })}><FlaskConical className="h-4 w-4" />Test</Button><Button variant="secondary" size="sm" loading={running === `${r.username}:rebuild`} onClick={() => setRebuildTarget(r.username)}><RefreshCw className="h-4 w-4" />Rebuild</Button></div> },
   ]
   return <div>
-    <PageHeader title="Filesystem Isolation" description="OpenLiteSpeed mount namespaces and hardened application services by account." icon={Box} />
+    <PageHeader title="Filesystem isolation" description="OpenLiteSpeed mount namespaces and hardened application services by account." icon={Box} />
     <Card className="mb-5 border-info/40 bg-info/10"><CardContent className="flex gap-3 py-4" role="status"><Info className="h-6 w-6 shrink-0 text-info" /><div><p className="font-medium">About isolation status</p><p className="text-sm text-muted-foreground">{data.warning}</p></div></CardContent></Card>
     <div className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <Capability label="Private account filesystem" value={data.capabilities.mount_namespace} />

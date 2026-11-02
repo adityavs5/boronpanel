@@ -16,7 +16,7 @@ export function DropdownMenuContent({ className, align = 'end', sideOffset = 6, 
         align={align}
         sideOffset={sideOffset}
         className={cn(
-          'z-50 min-w-[10rem] overflow-hidden rounded-card border border-border bg-card p-1 shadow-dropdown data-[state=open]:animate-scale-in',
+          'z-50 min-w-[11rem] overflow-hidden rounded-card border border-border bg-card p-1 text-foreground shadow-dropdown data-[state=open]:animate-scale-in',
           className,
         )}
         {...props}
@@ -29,8 +29,8 @@ export function DropdownMenuItem({ className, inset, destructive, ...props }) {
   return (
     <DM.Item
       className={cn(
-        'relative flex cursor-pointer select-none items-center gap-2 rounded-btn px-2.5 py-1.5 text-sm text-foreground outline-none transition-colors focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
-        destructive && 'text-danger focus:bg-danger/10',
+        'relative flex min-h-[34px] cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-foreground outline-none transition-colors focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&>svg]:text-muted-foreground',
+        destructive && 'text-danger focus:bg-danger/10 [&>svg]:text-danger',
         inset && 'pl-8',
         className,
       )}

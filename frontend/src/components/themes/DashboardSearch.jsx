@@ -5,14 +5,24 @@ import { useAuth } from '@/store/auth'
 import { adminNav, customerNav, resellerNav } from '@/config/nav'
 import { searchEntries } from '@/config/search'
 import { filterNavigation } from '@/config/capabilities'
+import { navigationEntries } from '@/config/toolGroups'
 
 function entriesFor(role, capabilities) {
   const nav = filterNavigation(role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav, capabilities)
-  let section = 'Tools'
-  return nav.flatMap((item) => {
-    if (item.section) { section = item.section; return [] }
-    return [{ ...item, section }]
-  })
+  return navigationEntries(role, nav, capabilities)
+}
+
+function useNarrow() {
+  const query = '(max-width: 639px)'
+  const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.matchMedia?.(query).matches)
+  useEffect(() => {
+    const media = window.matchMedia?.(query)
+    if (!media) return undefined
+    const update = () => setNarrow(media.matches)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  return narrow
 }
 
 export function DashboardSearch() {
@@ -26,6 +36,7 @@ export function DashboardSearch() {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState(0)
+  const narrow = useNarrow()
   const entries = useMemo(() => entriesFor(role, capabilities), [role, capabilities])
   const results = useMemo(() => query.trim() ? searchEntries(entries, query).slice(0, 9) : [], [entries, query])
 
@@ -68,7 +79,7 @@ export function DashboardSearch() {
           aria-activedescendant={open && query.trim() && results[selected] ? `${listId}-${selected}` : undefined}
           autoComplete="off"
           spellCheck="false"
-          placeholder="Search hosting tools — try DNS editor, WordPress, redirects…"
+          placeholder={narrow ? 'Search tools…' : 'Search hosting tools — try DNS editor, WordPress, redirects…'}
           value={query}
           onFocus={() => setOpen(true)}
           onChange={(event) => { setQuery(event.target.value); setSelected(0); setOpen(true) }}

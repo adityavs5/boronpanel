@@ -23,7 +23,7 @@ export default function Terminal() {
       cursorBlink: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
-      theme: { background: '#0b1120', foreground: '#e5e7eb', cursor: '#1FBED6' },
+      theme: { background: '#0b1120', foreground: '#e5e7eb', cursor: '#5B8DEF' },
     })
     const fit = new FitAddon()
     term.loadAddon(fit)

@@ -67,7 +67,7 @@ export default function DbMonitor() {
   ]
 
   return <div>
-    <PageHeader title="Database Monitor" description="Live queries, account activity, and safe native MariaDB limits." icon={Database}>
+    <PageHeader title="Database monitor" description="Live queries, account activity, and safe native MariaDB limits." icon={Database}>
       <Button variant="secondary" onClick={refresh} loading={(monitorTab && monitor.isFetching) || (governorTab && governor.isFetching)}><RefreshCw className="h-4 w-4" />Refresh</Button>
     </PageHeader>
     <Tabs value={tab} onValueChange={setTab}>

@@ -81,14 +81,14 @@ export default function Services() {
       header: 'Active',
       sortable: true,
       sortValue: (r) => (r.active === 'active' ? 0 : 1),
-      render: (r) => <StatusBadge status={r.active === 'active' ? 'active' : 'stopped'} />,
+      render: (r) => <StatusBadge status={r.active === 'active' ? 'running' : r.active === 'failed' ? 'failed' : 'stopped'} label={r.active === 'active' ? 'Running' : r.active === 'failed' ? 'Failed' : 'Stopped'} />,
     },
     {
       key: 'enabled',
       header: 'Enabled',
       sortable: true,
       render: (r) => (
-        <Badge variant={r.enabled === 'enabled' ? 'success' : 'neutral'} className="capitalize">
+        <Badge variant={r.enabled === 'enabled' ? 'success' : 'neutral'}>
           {({ enabled: 'Starts at boot', 'enabled-runtime': 'Enabled for this boot', disabled: 'Manual start', static: 'Started by dependency', masked: 'Blocked' })[r.enabled] || r.enabled}
         </Badge>
       ),
@@ -161,7 +161,7 @@ export default function Services() {
         title={confirm ? `${confirm.action === 'stop' ? 'Stop' : 'Restart'} ${confirm.service}?` : 'Confirm action'}
         description={confirm ? CONFIRM_COPY[confirm.action]?.(confirm.service) : undefined}
         confirmLabel={confirm?.action === 'stop' ? 'Stop service' : 'Restart service'}
-        variant={confirm?.action === 'stop' ? 'danger' : 'warning'}
+        variant={confirm?.action === 'stop' ? 'danger' : 'primary'}
         loading={actionMut.isPending}
         onConfirm={() => confirm && actionMut.mutate(confirm)}
       />

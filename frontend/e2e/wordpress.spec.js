@@ -29,7 +29,7 @@ for (const skin of ['evolution','paper-lantern']) {
     await expect(page.getByRole('option').filter({hasText:'DNS Management'})).toBeVisible()
     await search.fill('softaculous')
     await page.getByRole('option').filter({hasText:'WordPress'}).click()
-    await expect(page.getByRole('heading',{name:'WordPress Manager',exact:true})).toBeVisible()
+    await expect(page.getByRole('heading',{name:'WordPress manager',exact:true})).toBeVisible()
     await page.getByRole('button',{name:'More',exact:true}).click()
     await page.getByRole('menuitem',{name:'Scan for installations',exact:true}).click()
     await expect(page.getByText('Scan complete. 1 WordPress installation refreshed.')).toBeVisible()

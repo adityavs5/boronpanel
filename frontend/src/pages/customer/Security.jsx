@@ -223,7 +223,7 @@ export default function Security() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex items-start gap-2 rounded-btn border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-[#B45309] dark:text-warning">
+            <div className="flex items-start gap-2 rounded-btn border border-warning/20 bg-warning/10 px-3 py-2 text-sm text-warning">
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
               <span>Store these somewhere safe before continuing. You will not be able to see them again.</span>
             </div>
@@ -294,7 +294,7 @@ export default function Security() {
               )}
               <div className="min-w-0 flex-1 space-y-4">
                 <div>
-                  <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  <div className="mb-1 text-[13px] font-medium text-muted-foreground">
                     Manual entry secret
                   </div>
                   <div className="flex items-center gap-2">
@@ -307,7 +307,7 @@ export default function Security() {
                   </div>
                 </div>
                 <div>
-                  <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  <div className="mb-1 text-[13px] font-medium text-muted-foreground">
                     otpauth URI
                   </div>
                   <div className="flex items-center gap-2">

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Pause, Play, Trash2, Save, UserCog, FolderOpen, Ban, ChevronDown } from 'lucide-react'
+import { AlertTriangle, Pause, Play, Trash2, Save, UserCog, FolderOpen, Ban, MoreHorizontal, UserRound } from 'lucide-react'
 import { get, post, put, patch, del, impersonate as apiImpersonate } from '@/lib/api'
 import { formatBytes, formatDate } from '@/lib/utils'
 import { useAccountUsername } from '@/hooks/useAccount'
@@ -91,7 +91,7 @@ function AdminActions({ username, account, danger = false }) {
           <UserCog className="h-4 w-4" /> Login as user
         </Button>
         <DropdownMenu>
-          <DropdownMenuTrigger asChild><Button variant="secondary">More <ChevronDown className="h-4 w-4" /></Button></DropdownMenuTrigger>
+          <DropdownMenuTrigger asChild><Button variant="secondary"><MoreHorizontal className="h-4 w-4" />More</Button></DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuItem disabled={account.status !== 'active'} onSelect={() => window.open(`/api/v1/accounts/${username}/files/launch`, '_blank', 'noopener')}><FolderOpen className="h-4 w-4" /> File Manager</DropdownMenuItem>
             {account.status === 'active' && <DropdownMenuItem onSelect={() => setConfirm('suspend')}><Pause className="h-4 w-4" /> Suspend</DropdownMenuItem>}
@@ -457,7 +457,7 @@ function AccountSummary({username,account}) {
   const plan=(plans?.plans||[]).find(row=>row.id===account.plan_id)
   const summary = `${plan?.name||account.plan_name||'Custom plan'} · ${account.primary_domain||'No primary domain'} · UID ${account.uid??'n/a'} · PHP ${account.php_version||'n/a'}`
   return <section className="account-summary" aria-label="Account summary">
-    <PageHeader title={username} titleMeta={<StatusBadge status={account.status}/>} description={summary}><AdminActions username={username} account={account}/></PageHeader>
+    <PageHeader icon={UserRound} title={username} titleMeta={<StatusBadge status={account.status}/>} description={summary}><AdminActions username={username} account={account}/></PageHeader>
   </section>
 }
 

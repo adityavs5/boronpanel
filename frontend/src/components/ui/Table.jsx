@@ -16,20 +16,20 @@ export function Table({ className, scrollLabel = 'Scrollable table', ...props })
   )
 }
 export const THead = (p) => (
-  <thead className={cn('[&_th]:border-b [&_th]:border-border [&_tr]:bg-muted/40', p.className)} {...p} />
+  <thead className={cn('[&_th]:border-b [&_th]:border-border [&_tr]:bg-muted', p.className)} {...p} />
 )
 export const TBody = (p) => <tbody className={cn('divide-y divide-border', p.className)} {...p} />
 export const TR = ({ className, clickable, ...p }) => (
   <tr
-    className={cn('transition-colors hover:bg-muted/40', clickable && 'cursor-pointer hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring', className)}
+    className={cn('transition-colors duration-150 hover:bg-[rgb(var(--hover))]', clickable && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring', className)}
     tabIndex={clickable ? 0 : undefined}
     {...p}
   />
 )
 export const TH = ({ className, ...p }) => (
-  <th className={cn('px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground', className)} {...p} />
+  <th className={cn('h-10 px-4 py-2 text-left text-[13px] font-semibold text-muted-foreground', className)} {...p} />
 )
-export const TD = ({ className, ...p }) => <td className={cn('px-4 py-3 text-foreground align-middle', className)} {...p} />
+export const TD = ({ className, ...p }) => <td className={cn('h-12 px-4 py-2 text-foreground align-middle', className)} {...p} />
 
 /**
  * DataTable — sortable + filterable + paginated table with loading/empty/error
@@ -186,26 +186,32 @@ export function DataTable({
         <>
           <div className="divide-y divide-border sm:hidden">
             {pageRows.map((row, i) => {
+              // Phone cards: the first column is the card title, with the
+              // selection checkbox before it and row actions after it.
               const selectColumn = columns.find((col) => col.key === 'select')
+              const body = displayedColumns.filter((col) => col.key !== 'select')
+              const titleColumn = body.find((col) => col.key !== 'actions')
+              const actionsColumn = body.find((col) => col.key === 'actions')
+              const rest = body.filter((col) => col !== titleColumn && col !== actionsColumn)
               return (
                 <div
                   key={getRowKey(row, i)}
-                  className={cn('space-y-2.5 p-4', onRowClick && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring')}
+                  className={cn('table-card space-y-2.5 p-4', onRowClick && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring')}
                   tabIndex={onRowClick ? 0 : undefined}
                   role={onRowClick ? 'link' : undefined}
                   onClick={onRowClick ? (event) => activateRow(event, row) : undefined}
                   onKeyDown={onRowClick ? (event) => activateRow(event, row) : undefined}
                 >
-                  {selectColumn && (
-                    <div className="flex justify-end" onClick={(event) => event.stopPropagation()}>
-                      {renderCell(selectColumn, row)}
-                    </div>
-                  )}
-                  {displayedColumns.filter((col) => col.key !== 'select').map((col) => {
+                  <div className="table-card-title flex items-center gap-3">
+                    {selectColumn && <div className="flex shrink-0 items-center" onClick={(event) => event.stopPropagation()}>{renderCell(selectColumn, row)}</div>}
+                    {titleColumn && <div className={cn('min-w-0 flex-1 text-[15px] font-semibold text-foreground', titleColumn.cellClassName)}>{renderCell(titleColumn, row)}</div>}
+                    {actionsColumn && <div className="ml-auto flex shrink-0 items-center gap-2" onClick={(event) => event.stopPropagation()}>{renderCell(actionsColumn, row)}</div>}
+                  </div>
+                  {rest.map((col) => {
                   const hasLabel = typeof col.header === 'string' && col.header.trim()
                   return (
                     <div key={col.key} className={cn(hasLabel ? 'flex items-start justify-between gap-4' : 'flex justify-end', col.cellClassName)} onClick={!hasLabel ? (e) => e.stopPropagation() : undefined}>
-                      {hasLabel && <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{col.header}</span>}
+                      {hasLabel && <span className="text-[13px] font-medium text-muted-foreground">{col.header}</span>}
                       <div className={cn('min-w-0 text-right text-sm text-foreground', hasLabel ? '' : 'w-full')}>{renderCell(col, row)}</div>
                     </div>
                   )
@@ -224,7 +230,7 @@ export function DataTable({
                 return (
                   <TH
                     key={col.key}
-                    className={cn(col.align === 'right' && 'text-right', col.key === 'actions' && 'table-actions-cell', col.headerClassName)}
+                    className={cn(col.align === 'right' && 'text-right', col.key === 'actions' && 'table-actions-cell', col.key === 'select' && 'table-select-cell', col.headerClassName)}
                     aria-sort={col.sortable && active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
                   >
                     {col.sortable ? (
@@ -249,7 +255,7 @@ export function DataTable({
             {pageRows.map((row, i) => (
               <TR key={getRowKey(row, i)} clickable={!!onRowClick} onClick={onRowClick ? (event) => activateRow(event, row) : undefined} onKeyDown={onRowClick ? (event) => activateRow(event, row) : undefined}>
                 {displayedColumns.map((col) => (
-                  <TD key={col.key} className={cn(col.align === 'right' && 'text-right', col.key === 'actions' && 'table-actions-cell', col.cellClassName)}>
+                  <TD key={col.key} className={cn(col.align === 'right' && 'text-right', col.key === 'actions' && 'table-actions-cell', col.key === 'select' && 'table-select-cell', col.cellClassName)}>
                     {renderCell(col, row)}
                   </TD>
                 ))}

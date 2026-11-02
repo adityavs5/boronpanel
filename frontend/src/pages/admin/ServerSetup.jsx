@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { toast } from '@/components/ui/Toast'
-import '@/operations-polish.css'
 
 const selectClass = 'flex h-9 w-full rounded-btn border border-input bg-input-surface px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:border-accent focus-visible:ring-[3px] focus-visible:ring-ring/25'
 const lines = value => value.split(/[\s,]+/).map(item => item.trim()).filter(Boolean)
@@ -82,7 +81,7 @@ export default function ServerSetup() {
   if (query.error) return <div className="rounded-card border border-danger/30 bg-danger/5 p-5"><p className="font-semibold">Could not load server setup</p><p className="text-sm text-muted-foreground">{query.error.message}</p><Button className="mt-3" onClick={() => query.refetch()}>Retry</Button></div>
 
   return <div>
-    <PageHeader title="Server Setup" description="A resumable setup for identity, DNS authority, service records, certificates, GeoLite2, and the hosting stack." icon={ServerCog}><StatusBadge status={data.completed ? 'completed' : 'pending'} label={data.completed ? 'Setup complete' : `Next required: step ${data.current_step} · ${data.completed_steps || 0} completed`} /></PageHeader>
+    <PageHeader title="Server setup" description="A resumable setup for identity, DNS authority, service records, certificates, GeoLite2, and the hosting stack." icon={ServerCog}><StatusBadge status={data.completed ? 'completed' : 'pending'} label={data.completed ? 'Setup complete' : `Next required: step ${data.current_step} · ${data.completed_steps || 0} completed`} /></PageHeader>
     <div className="setup-step-picker mb-4 items-center justify-between gap-3 rounded-btn border border-border p-3">
       <div className="min-w-0"><p className="text-xs text-muted-foreground">Step {step} of {steps.length}</p><p className="text-sm font-semibold">{selectedStep?.title}</p></div>
       <Button ref={stepPickerRef} variant="secondary" size="sm" aria-expanded={stepsExpanded} aria-controls="setup-steps" onClick={() => setStepsExpanded(value => !value)}>{stepsExpanded ? 'Hide steps' : 'All steps'}</Button>

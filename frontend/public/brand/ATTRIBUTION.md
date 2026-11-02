@@ -8,7 +8,6 @@ Any rights therein are reserved to Redis Ltd.
 
 Sources: wordpress.org/about/logos, redis.io/brand, nodejs.org/about/branding, python.org/community/logos, and git-scm.com/downloads/logos.
 
-The Evo dashboard's generic duotone interface icons come from Phosphor Icons
-through the `react-icons` package. Phosphor Icons is distributed under the MIT
-license; its license notice is included with the installed `react-icons`
-dependency.
+Home-screen tool icons use the ISC-licensed lucide icon set (`lucide-react`).
+The Boron wordmark ships in navy (`boron-logo-navy.svg`, light chrome) and white
+(`boron-logo-white.svg`, navy or dark chrome) variants of the same artwork.

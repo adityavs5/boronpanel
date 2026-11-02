@@ -1,4 +1,3 @@
-import '@/customer-polish.css'
 import { SnapshotRunDialog } from '@/components/backups/SnapshotHistory'
 import { SnapshotRestoreHistory } from '@/components/backups/SnapshotRestore'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
@@ -57,8 +56,8 @@ function ProgressCell({ row }) {
 
 function KindCell({ row }) {
   return (
-    <span className="font-medium capitalize text-foreground">
-      {row.kind}
+    <span className="font-medium text-foreground">
+      <span className="capitalize">{row.kind}</span>
       {row.item_ref ? <span className="ml-1 font-normal text-muted-foreground">({row.item_ref})</span> : null}
     </span>
   )
@@ -265,7 +264,7 @@ export default function Backups() {
       sortValue: (r) => (r._source === 'snapshot' ? r.summary?.total_bytes_processed : r.size_bytes) ?? 0,
       render: (r) => <span className="tabular-nums">{(r._source === 'snapshot' ? r.summary?.total_bytes_processed : r.size_bytes) != null ? formatBytes(r._source === 'snapshot' ? r.summary.total_bytes_processed : r.size_bytes) : '—'}</span>,
     },
-    { key: 'started_at', header: 'Started', sortable: true, render: (r) => formatDate(r.started_at) },
+    { key: 'started_at', header: 'Started', sortable: true, cellClassName: 'min-w-[11rem]', render: (r) => <span className="whitespace-nowrap tabular-nums">{formatDate(r.started_at)}</span> },
     { key: 'progress_message', header: 'Progress', render: (r) => <ProgressCell row={r} /> },
     {
       key: 'actions',

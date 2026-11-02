@@ -186,7 +186,7 @@ function NotificationSettingsForm() {
                 <CardDescription>Choose which events trigger a notification email.</CardDescription>
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent className="card-body-flush">
               <DataTable
                 columns={columns}
                 data={eventRows}

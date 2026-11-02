@@ -27,7 +27,7 @@ export default function ImapMigrations() {
 
   return (
     <div>
-      <PageHeader title="IMAP Migrations" description="Every active customer-initiated email migration, across every account." icon={ArrowRightLeft} />
+      <PageHeader title="IMAP migrations" description="Every active customer-initiated email migration, across every account." icon={ArrowRightLeft} />
       <DataTable
         columns={columns}
         data={data?.jobs || []}

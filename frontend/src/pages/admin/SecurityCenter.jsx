@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
+import { StatusBadge, sentence } from '@/components/ui/StatusBadge'
 import { CardSkeleton } from '@/components/ui/Skeleton'
 import { ErrorState } from '@/components/ui/States'
 import { toast } from '@/components/ui/Toast'
@@ -24,7 +25,7 @@ export default function SecurityCenter() {
   const { firewall, waf, ols } = query.data
   const throttle = ols.settings?.throttle_preset || 'disabled'
   return <div>
-    <PageHeader title="Security Center" description="Firewall, web application protection, and OpenLiteSpeed request controls in one place." icon={ShieldCheck} />
+    <PageHeader title="Security center" description="Firewall, web application protection, and OpenLiteSpeed request controls in one place." icon={ShieldCheck} />
     <div className="grid gap-4 lg:grid-cols-3">
       <Summary icon={Flame} title="Server firewall" status={firewall.active ? 'Active' : 'Disabled'} good={firewall.active} description={`${firewall.rule_count ?? 0} configured firewall rules · WAF configured separately`} to="/firewall" />
       <Summary icon={ShieldHalf} title="Web application firewall" status={waf.mode} good={waf.mode === 'protect'} description={`${waf.exceptions?.filter(item => item.active).length || 0} active exceptions`} to="/waf" />
@@ -37,4 +38,4 @@ export default function SecurityCenter() {
   </div>
 }
 
-function Summary({ icon: Icon, title, status, good, description, to }) { return <Card><CardHeader><div className="flex items-start justify-between"><Icon className="h-7 w-7 text-accent" /><Badge variant={good ? 'success' : 'outline'}>{String(status).replaceAll('_', ' ')}</Badge></div><CardTitle>{title}</CardTitle><CardDescription>{description}</CardDescription></CardHeader><CardContent><Button asChild variant="secondary" className="w-full"><Link to={to}>Open settings <ArrowRight className="h-4 w-4" /></Link></Button></CardContent></Card> }
+function Summary({ icon: Icon, title, status, good, description, to }) { return <Card><CardHeader><div className="flex items-start justify-between"><Icon className="h-7 w-7 text-accent" /><StatusBadge status={status == null ? 'unknown' : good ? 'active' : String(status)} label={status == null ? 'Unknown' : sentence(String(status).replaceAll('_', ' '))} /></div><CardTitle>{title}</CardTitle><CardDescription>{description}</CardDescription></CardHeader><CardContent><Button asChild variant="secondary" className="w-full"><Link to={to}>Open settings <ArrowRight className="h-4 w-4" /></Link></Button></CardContent></Card> }

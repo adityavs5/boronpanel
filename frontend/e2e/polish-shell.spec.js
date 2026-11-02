@@ -45,7 +45,8 @@ for(const skin of ['evolution','paper-lantern']) for(const theme of ['light','da
         window.BoronAppearance.apply({colors:{[skin]:color}},skin,theme==='dark')
         const css=getComputedStyle(document.documentElement), token=k=>css.getPropertyValue('--pref-'+k).trim().split(' ').map(Number)
         checks.push(window.BoronAppearance.contrast(token('group'),[255,255,255]))
-        for(const bg of theme==='dark'?[[30,38,49],[37,47,60]]:[[255,255,255],[244,246,249]])checks.push(window.BoronAppearance.contrast(token('link'),bg))
+        // DESIGN.md page, card and muted surfaces.
+        for(const bg of theme==='dark'?[[11,17,32],[18,26,43],[26,35,54]]:[[255,255,255],[244,246,250],[238,241,246]])checks.push(window.BoronAppearance.contrast(token('link'),bg))
       }
       window.BoronAppearance.apply({},skin,theme==='dark');return checks
     },{skin,theme})

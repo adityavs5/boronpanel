@@ -5,7 +5,7 @@ import { get, patch, post, del } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
-import { Input, FormField } from '@/components/ui/Input'
+import { Input, Textarea, FormField } from '@/components/ui/Input'
 import { toast } from '@/components/ui/Toast'
 import { CenteredSpinner } from '@/components/ui/Spinner'
 
@@ -108,7 +108,7 @@ export default function Branding() {
     <div>
       <PageHeader
         title="Branding"
-        description="Customize the panel name, logo, favicon and support contact -- applied to the sidebar, login page, browser tab and email notifications."
+        description="Customise the panel name, logo, favicon and support contact. They appear in the top bar, login page, browser tab and email notifications."
         icon={Palette}
       />
 
@@ -116,7 +116,7 @@ export default function Branding() {
         <Card>
           <CardHeader>
             <CardTitle>Panel name &amp; support</CardTitle>
-            <CardDescription>Shown in the sidebar, login page, browser tab title, and appended to outbound emails.</CardDescription>
+            <CardDescription>Shown in the top bar, login page, browser tab title, and appended to outbound emails.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <FormField label="Panel name" required>
@@ -127,7 +127,7 @@ export default function Branding() {
                 placeholder="Boron"
               />
             </FormField>
-            <FormField label="Support email" hint="Optional -- shown to customers who need help.">
+            <FormField label="Support email" hint="Optional. Shown to customers who need help.">
               <Input
                 type="email"
                 value={active.support_email}
@@ -135,7 +135,7 @@ export default function Branding() {
                 placeholder="support@example.com"
               />
             </FormField>
-            <FormField label="Support URL" hint="Optional -- e.g. a help center or ticket system.">
+            <FormField label="Support URL" hint="Optional, for example a help centre or ticket system.">
               <Input
                 value={active.support_url}
                 onChange={(e) => setForm({ ...active, support_url: e.target.value })}
@@ -151,7 +151,7 @@ export default function Branding() {
         <div className="space-y-6">
           <AssetCard
             title="Logo"
-            description="PNG or SVG. Shown in the sidebar and on the login page."
+            description="PNG or SVG. Shown in the top bar and on the login page."
             url={data?.logo_url}
             kindLabel="logo"
             onUpload={(f) => uploadLogoMut.mutate(f)}
@@ -188,7 +188,7 @@ function TerminalBannerCard() {
   const save=useMutation({mutationFn:banner=>patch('/api/v1/admin/branding',{terminal_banner:banner}),onSuccess:()=>{setDraft(null);qc.invalidateQueries({queryKey:['admin-branding']});toast.success('Terminal welcome updated','Applies to new admin terminal sessions.')},onError:e=>toast.error('Could not update terminal welcome',e.message)})
   return <Card><CardHeader><div><CardTitle>Admin terminal welcome</CardTitle><CardDescription>Show your ASCII artwork when opening a terminal as an admin. Customer terminals retain their normal login information.</CardDescription></div></CardHeader><CardContent>
     {settings.error?<p role="alert" className="text-sm text-danger">{settings.error.message}</p>:settings.isLoading?<p>Loading terminal welcome…</p>:<form className="space-y-4" onSubmit={e=>{e.preventDefault();save.mutate(value)}}>
-      <FormField label="Terminal banner" htmlFor="terminal-banner" hint="Plain ASCII text, up to 30 lines and 4000 characters. Leave empty for no banner."><textarea id="terminal-banner" value={value} maxLength={4000} rows={7} spellCheck={false} onChange={e=>setDraft(e.target.value)} className="w-full rounded-btn border border-border bg-background p-3 font-mono text-sm"/></FormField>
+      <FormField label="Terminal banner" htmlFor="terminal-banner" hint="Plain ASCII text, up to 30 lines and 4000 characters. Leave empty for no banner."><Textarea id="terminal-banner" value={value} maxLength={4000} rows={7} spellCheck={false} onChange={e=>setDraft(e.target.value)} className="text-sm"/></FormField>
       <div><p className="mb-2 text-sm font-medium">Preview</p><pre aria-label="Terminal banner preview" className="overflow-x-auto rounded-btn bg-slate-950 p-4 font-mono text-xs text-slate-100">{value||'(No banner)'}</pre></div>
       <div className="flex flex-wrap gap-2"><Button type="submit" loading={save.isPending} disabled={draft===null}>Save terminal welcome</Button><Button type="button" variant="secondary" disabled={save.isPending} onClick={()=>save.mutate(null)}>Reset to BORON</Button></div>
     </form>}

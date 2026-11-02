@@ -5,25 +5,29 @@ import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 
 export const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-btn text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70 focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 select-none',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-btn text-sm font-medium transition-[background-color,border-color,color,box-shadow] duration-150 ease-out focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/30 disabled:pointer-events-none disabled:opacity-60 select-none [&_svg]:shrink-0',
   {
     variants: {
       variant: {
-        primary: 'bg-accent text-accent-foreground hover:bg-accent-600 active:bg-accent-700 shadow-sm',
-        secondary: 'bg-surface text-foreground border border-border hover:bg-muted active:bg-muted/80',
-        outline: 'border border-border bg-transparent text-foreground hover:bg-muted active:bg-muted/80',
-        ghost: 'bg-transparent text-foreground hover:bg-muted active:bg-muted/80',
-        danger: 'bg-danger text-danger-foreground hover:bg-danger/90 active:bg-danger/80 shadow-sm',
-        success: 'bg-success text-success-foreground hover:bg-success/90 active:bg-success/80 shadow-sm',
-        warning: 'bg-warning text-warning-foreground hover:bg-warning/90 active:bg-warning/80 shadow-sm',
-        link: 'bg-transparent text-accent-600 dark:text-accent-400 underline-offset-4 hover:underline p-0 h-auto',
+        primary: 'bg-accent text-accent-foreground hover:bg-accent-hover active:bg-accent-hover disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100',
+        secondary: 'bg-surface text-foreground border border-input hover:bg-muted active:bg-muted',
+        outline: 'bg-surface text-foreground border border-input hover:bg-muted active:bg-muted',
+        ghost: 'bg-transparent text-foreground hover:bg-muted active:bg-muted',
+        danger: 'bg-danger-solid text-danger-foreground hover:bg-danger-solid/90 active:bg-danger-solid/80 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100',
+        // Quiet destructive action for table rows: danger text, no fill.
+        'danger-ghost': 'border border-input bg-surface text-danger hover:bg-danger/10 hover:border-danger/40 active:bg-danger/15',
+        // DESIGN.md allows primary, secondary, ghost and danger only. The old
+        // success/warning fills are kept as aliases so call sites keep working.
+        success: 'bg-accent text-accent-foreground hover:bg-accent-hover active:bg-accent-hover disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100',
+        warning: 'bg-accent text-accent-foreground hover:bg-accent-hover active:bg-accent-hover disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100',
+        link: 'bg-transparent text-link underline-offset-4 hover:underline p-0 h-auto',
       },
       size: {
-        sm: 'h-8 px-3 text-xs',
-        md: 'h-9 px-4',
-        lg: 'h-10 px-6',
-        icon: 'h-9 w-9 p-0',
-        'icon-sm': 'h-8 w-8 p-0',
+        sm: 'h-[var(--control-h-sm)] px-3 text-[13px]',
+        md: 'h-[var(--control-h)] px-4',
+        lg: 'h-[var(--control-h-lg)] px-5',
+        icon: 'h-[var(--control-h)] w-[var(--control-h)] p-0',
+        'icon-sm': 'h-[var(--control-h-sm)] w-[var(--control-h-sm)] p-0',
       },
     },
     defaultVariants: { variant: 'primary', size: 'md' },

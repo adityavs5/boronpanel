@@ -23,10 +23,11 @@ export default function License(){
  const activate=useMutation({mutationFn:()=>post('/api/v1/admin/license',{license_key:key.trim()}),onSuccess:data=>{done(data);setKey('');setTouched(false);data.usable?toast.success('License activated'):toast.error('License saved but not usable',data.message)},onError:error=>toast.error('Could not activate license',error.message)})
  const refresh=useMutation({mutationFn:()=>post('/api/v1/admin/license/refresh'),onSuccess:data=>{done(data);data.last_error?toast.error('License check failed',data.last_error):toast.success('License checked')},onError:error=>toast.error('Could not check license',error.message)})
  if(query.isLoading)return <CenteredSpinner/>
- if(query.error)return <ErrorState error={query.error} onRetry={query.refetch}/>
+ const header=<PageHeader title="License" description="This server's Boron license. Hosted websites, mail and DNS keep running whatever its state." icon={BadgeCheck}/>
+ if(query.error)return <div className="reference-page">{header}<ErrorState error={query.error} onRetry={query.refetch}/></div>
  const data=query.data,lic=data.license,normalized=key.replace(/\s+/g,'').toUpperCase(),valid=KEY_PATTERN.test(normalized)
  return <div className="reference-page">
-  <PageHeader title="License" description="This server's Boron license. Hosted websites, mail and DNS keep running whatever its state." icon={BadgeCheck}/>
+  {header}
   <Section title="Status" status={<StatusBadge status={badge[data.state]??'warning'} label={stateLabel[data.state]}/>}>
    {data.message&&<p role="status" className="settings-notice">{data.message}{!data.usable&&' Administration is limited to this page until the license is usable.'}</p>}
    {lic&&<><SettingRow label="License"><span>{`…${lic.key_hint} · ${lic.tier}`}</span></SettingRow>

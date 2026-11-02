@@ -32,11 +32,11 @@ export default function ChangePassword() {
   }
 
   return (
-    <div className="mx-auto max-w-lg">
-      <PageHeader title="Change password" description="Update your control panel password." icon={KeyRound} />
+    <div className="password-page">
+      <PageHeader title="Change password" description="Use a long, unique password. You stay signed in on this device after the change." icon={KeyRound} />
       <Card>
         <CardContent>
-          <form onSubmit={submit} className="space-y-4">
+          <form onSubmit={submit}>
             <FormField label="Current password" required>
               <Input type="password" autoComplete="current-password" value={form.current} onChange={(e) => setForm((f) => ({ ...f, current: e.target.value }))} required />
             </FormField>

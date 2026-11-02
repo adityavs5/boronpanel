@@ -6,6 +6,7 @@ import { MobileBottomNav } from './MobileBottomNav'
 import { ImpersonationBanner } from './ImpersonationBanner'
 import { LicenseBanner } from './LicenseBanner'
 import { useAuth } from '@/store/auth'
+import { useUI } from '@/store/ui'
 import { Sidebar } from './Sidebar'
 import { MobileNavDrawer } from './MobileNavDrawer'
 import { CommandPalette } from './CommandPalette'
@@ -37,8 +38,12 @@ export function AppShell() {
   const role = useAuth((s) => s.role)
   const { panelName } = useBranding()
   const { pathname, search } = useLocation()
-  const inner = !['/overview', '/dashboard', '/reseller'].includes(pathname)
-  const persistentNavigation = inner
+  const skin = useUI((s) => s.skin)
+  // The reseller landing page is a list page, not a tool home, so it keeps
+  // the sidebar. Evo administrators keep the navy sidebar on home too, so the
+  // shell does not jump between home and inner pages.
+  const inner = !['/overview', '/dashboard'].includes(pathname)
+  const persistentNavigation = inner || (skin === 'evolution' && role === 'admin' && pathname === '/overview')
   useLayoutEffect(() => {
     document.documentElement.dataset.innerPage = String(inner)
     return () => { delete document.documentElement.dataset.innerPage }
@@ -73,7 +78,7 @@ export function AppShell() {
         </div>
         <MobileBottomNav />
       </div>
-      {inner && <MobileNavDrawer />}
+      <MobileNavDrawer />
       <CommandPalette />
     </div>
   )

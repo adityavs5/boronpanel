@@ -43,9 +43,9 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
     })
 
     await page.goto('/app/overview')
-    const serverGroup = page.getByRole('region', { name: skin === 'evolution' ? 'Server Manager' : 'Server & Databases' })
+    const serverGroup = page.getByRole('region', { name: 'Server & databases' })
     for (const label of ['Resource Manager', 'Filesystem Isolation', 'Security Center', 'Stack Manager']) {
-      await expect(serverGroup.getByRole('link', { name: new RegExp(label) })).toBeVisible()
+      await expect(serverGroup.getByRole('link', { name: new RegExp(label, 'i') })).toBeVisible()
     }
 
     await page.goto('/app/resource-manager')

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { FolderOpen } from 'lucide-react'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { api } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -38,7 +39,7 @@ export default function Files() {
   }, [username, attempt])
 
   return <div className="reference-page">
-    <PageHeader title="File Manager" description="Browse, upload and edit files in your hosting account." />
+    <PageHeader title="File manager" description="Browse, upload and edit files in your hosting account." icon={FolderOpen} />
     {error
       ? <ErrorState error={error} onRetry={() => setAttempt(value => value + 1)} />
       : <CenteredSpinner label="Opening file manager…" />}

@@ -9,7 +9,7 @@ export const Select = forwardRef(function Select({ className, invalid, children,
       ref={ref}
       aria-invalid={invalid || undefined}
       className={cn(
-        'h-9 w-full rounded-btn border border-input bg-input-surface pl-3 text-sm text-foreground shadow-sm transition-[border-color,box-shadow] focus-visible:outline-none focus-visible:border-accent focus-visible:ring-[3px] focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50',
+        'h-[var(--control-h)] w-full rounded-btn border border-input bg-input-surface pl-3 text-sm text-foreground transition-[border-color] duration-150 focus-visible:outline-none focus-visible:border-accent focus-visible:ring-[3px] focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50',
         invalid && 'border-danger focus-visible:border-danger focus-visible:ring-danger/20',
         className,
       )}

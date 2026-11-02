@@ -13,7 +13,6 @@ import { TemplatePreview } from '@/components/ui/TemplatePreview'
 import { toast } from '@/components/ui/Toast'
 import { CenteredSpinner } from '@/components/ui/Spinner'
 import { ErrorState } from '@/components/ui/States'
-import '@/templates.css'
 
 function PageTemplateEditor({ welcome = false }) {
   const { panelName } = useBranding()

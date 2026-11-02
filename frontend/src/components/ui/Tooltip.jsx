@@ -13,15 +13,14 @@ export function Tooltip({ content, children, side = 'top', className }) {
           side={side}
           sideOffset={6}
           className={cn(
-            // Run A feature 2: shadow-dropdown is neutralized in dark mode
-            // (index.css) — this tooltip is always dark regardless of theme,
-            // so it needs its own border for definition once the shadow is gone.
-            'z-50 max-w-xs rounded-btn border border-gray-700 bg-gray-900 px-2.5 py-1.5 text-xs text-white shadow-dropdown data-[state=delayed-open]:animate-fade-in',
+            // Always navy so it reads the same in both modes; the white
+            // hairline keeps it defined against dark surfaces.
+            'z-50 max-w-xs rounded-md bg-navy px-2.5 py-1.5 text-xs font-medium text-white shadow-dropdown ring-1 ring-white/10 data-[state=delayed-open]:animate-fade-in',
             className,
           )}
         >
           {content}
-          <TooltipPrimitive.Arrow className="fill-gray-900" />
+          <TooltipPrimitive.Arrow className="fill-navy" />
         </TooltipPrimitive.Content>
       </TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>

@@ -24,21 +24,21 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
         }
       })
     }
-    await page.getByRole('button', { name: 'Blue', exact: true }).click()
-    await expect(other.locator('#accent-color')).toHaveValue('#076fd5')
+    await page.getByRole('button', { name: 'Teal', exact: true }).click()
+    await expect(other.locator('#accent-color')).toHaveValue('#0f766e')
     expect(await other.evaluate(() => window.preferenceWrites)).toBe(0)
     // A delayed old event must not undo the latest value in shared storage.
     await other.evaluate(() => window.dispatchEvent(new StorageEvent('storage', {
       key: 'boron.ui', storageArea: localStorage,
       newValue: JSON.stringify({ state: { appearance: { colors: { evolution: '#bc942c', 'paper-lantern': '#bc942c' } } } }),
     })))
-    await expect(other.locator('#accent-color')).toHaveValue('#076fd5')
+    await expect(other.locator('#accent-color')).toHaveValue('#0f766e')
     expect(await other.evaluate(() => window.preferenceWrites)).toBe(0)
-    await other.getByRole('button', { name: 'Gold', exact: true }).click()
-    await expect(page.locator('#accent-color')).toHaveValue('#bc942c')
+    await other.getByRole('button', { name: 'Rose', exact: true }).click()
+    await expect(page.locator('#accent-color')).toHaveValue('#be123c')
     await page.waitForTimeout(500)
     for (const tab of [page, other]) expect(await tab.evaluate(() => window.preferenceWrites)).toBe(1)
     await page.reload()
-    await expect(page.locator('#accent-color')).toHaveValue('#bc942c')
+    await expect(page.locator('#accent-color')).toHaveValue('#be123c')
   })
 }

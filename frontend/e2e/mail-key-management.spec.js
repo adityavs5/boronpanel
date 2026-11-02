@@ -26,7 +26,7 @@ for (const skin of ['evolution','paper-lantern']) for (const theme of ['light','
       await route.fulfill({json:data})
     })
     await page.goto('/app/email')
-    await expect(page.getByRole('heading',{name:'Email Accounts',exact:true})).toBeVisible()
+    await expect(page.getByRole('heading',{name:'Email accounts',exact:true})).toBeVisible()
     await expect(page.getByRole('tab')).toHaveCount(0)
     await page.getByRole('button',{name:'Log in',exact:true}).click()
     await expect.poll(()=>page.evaluate(()=>window.__webmailSubmit)).toBeTruthy()

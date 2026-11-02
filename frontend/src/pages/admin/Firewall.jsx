@@ -199,7 +199,7 @@ export default function Firewall() {
         r.protected ? (
           <Badge variant="neutral">Protected</Badge>
         ) : (
-          <Button variant="danger" size="sm" onClick={() => setDeleteRule(r)}>
+          <Button variant="danger-ghost" size="sm" onClick={() => setDeleteRule(r)}>
             <Trash2 className="h-4 w-4" /> Delete
           </Button>
         ),
@@ -240,18 +240,18 @@ export default function Firewall() {
         </Card>
       )}
 
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-6 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Inbound rules</div><div className="mt-1 text-2xl font-semibold">{data ? (data.rules || []).filter((row) => row.direction !== 'out').length : unknownLabel}</div></CardContent></Card>
         <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Outbound rules</div><div className="mt-1 text-2xl font-semibold">{data ? (data.rules || []).filter((row) => row.direction === 'out').length : unknownLabel}</div></CardContent></Card>
         <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Trusted networks</div><div className="mt-1 text-2xl font-semibold">{data ? (data.bypass || []).length : unknownLabel}</div></CardContent></Card>
         <Card><CardContent className="pt-5"><div className="text-sm text-muted-foreground">Network policy</div><div className="mt-2 flex flex-wrap gap-2">{data ? <><Badge variant="success">IPv4</Badge><Badge variant={data.ipv6 ? 'success' : 'neutral'}>IPv6 {data.ipv6 ? 'on' : 'off'}</Badge><Badge variant={data.outbound_default === 'accept' ? 'success' : 'warning'}>Outbound {data.outbound_default || 'unknown'}</Badge></> : <span className="text-sm text-muted-foreground">{unknownLabel}</span>}</div></CardContent></Card>
       </div>
 
-      <Card className="mb-6"><CardHeader><CardTitle>Service presets</CardTitle><CardDescription>Add the complete rule set for a common service. The same connectivity confirmation and automatic rollback apply.</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-[1fr_160px_1fr_auto] md:items-end">
+      <Card className="mb-6"><CardHeader><CardTitle>Service presets</CardTitle><CardDescription>Add the complete rule set for a common service. The same connectivity confirmation and automatic rollback apply.</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-[1fr_160px_1fr_auto] md:items-start">
         <FormField label="Service"><Select value={preset.preset_id} onChange={(event) => setPreset((value) => ({ ...value, preset_id: event.target.value }))}><option value="">Select preset</option>{(data?.presets || []).map((item) => <option key={item.id} value={item.id}>{item.label} · {item.direction === 'out' ? 'outbound' : 'inbound'}</option>)}</Select></FormField>
         <FormField label="Action"><Select value={preset.action} onChange={(event) => setPreset((value) => ({ ...value, action: event.target.value }))}><option value="allow">Allow</option><option value="deny">Block</option></Select></FormField>
         <FormField label="Address" hint="Optional source for inbound or destination for outbound."><Input value={preset.address} onChange={(event) => setPreset((value) => ({ ...value, address: event.target.value }))} placeholder="any" /></FormField>
-        <Button disabled={!preset.preset_id} loading={presetMut.isPending} onClick={() => presetMut.mutate()}>Apply preset</Button>
+        <Button className="md:mt-[22px]" disabled={!preset.preset_id} loading={presetMut.isPending} onClick={() => presetMut.mutate()}>Apply preset</Button>
       </CardContent></Card>
 
       <DataTable
@@ -280,7 +280,7 @@ export default function Firewall() {
           {(data?.bypass || []).length ? <div className="divide-y divide-border rounded-panel border border-border">
             {data.bypass.map((entry) => <div key={entry.bypass_id} className="flex flex-wrap items-center justify-between gap-3 p-4">
               <div><div className="font-mono text-sm font-medium">{entry.address}</div><div className="text-xs text-muted-foreground">{entry.label || 'Trusted administrator address'}</div></div>
-              <Button variant="danger" size="sm" onClick={() => setDeleteBypass(entry)}><Trash2 className="h-4 w-4" /> Remove</Button>
+              <Button variant="danger-ghost" size="sm" onClick={() => setDeleteBypass(entry)}><Trash2 className="h-4 w-4" /> Remove</Button>
             </div>)}
           </div> : <div className="rounded-panel border border-dashed border-border p-6 text-center text-sm text-muted-foreground">{data ? 'No full-access IPs configured.' : unknownLabel}</div>}
         </CardContent>
@@ -288,7 +288,7 @@ export default function Firewall() {
 
       <Card className="mt-6">
         <CardHeader className="flex-row items-start justify-between gap-4"><div><CardTitle>Temporary IP blocks</CardTitle><CardDescription>Time-bounded server-wide blocks expire automatically. Boron refuses the current administrator address and any network covered by a full-access bypass.</CardDescription></div><Button variant="outline" onClick={() => setBanOpen(true)}><Ban className="h-4 w-4" /> Block address</Button></CardHeader>
-        <CardContent>{(data?.temporary_bans || []).length ? <div className="divide-y divide-border rounded-panel border border-border">{data.temporary_bans.map((entry) => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 p-4"><div><div className="font-mono text-sm font-medium">{entry.value}</div><div className="text-xs text-muted-foreground">Until {new Date(entry.expires_at).toLocaleString()} · {entry.reason || 'No reason supplied'}</div></div><Button size="sm" variant="danger" onClick={() => setDeleteBan(entry)}>Unblock</Button></div>)}</div> : <div className="rounded-panel border border-dashed border-border p-6 text-center text-sm text-muted-foreground">{data ? 'No temporary blocks are active.' : unknownLabel}</div>}</CardContent>
+        <CardContent>{(data?.temporary_bans || []).length ? <div className="divide-y divide-border rounded-panel border border-border">{data.temporary_bans.map((entry) => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 p-4"><div><div className="font-mono text-sm font-medium">{entry.value}</div><div className="text-xs text-muted-foreground">Until {new Date(entry.expires_at).toLocaleString()} · {entry.reason || 'No reason supplied'}</div></div><Button size="sm" variant="danger-ghost" onClick={() => setDeleteBan(entry)}>Unblock</Button></div>)}</div> : <div className="rounded-panel border border-dashed border-border p-6 text-center text-sm text-muted-foreground">{data ? 'No temporary blocks are active.' : unknownLabel}</div>}</CardContent>
       </Card>
 
       <Card className="mt-6"><CardHeader><CardTitle><History className="h-5 w-5" /> Recent firewall changes</CardTitle><CardDescription>The complete request and result trail remains available in Audit Log.</CardDescription></CardHeader><CardContent>{(data?.recent_changes || []).length ? <div className="divide-y divide-border rounded-panel border border-border">{data.recent_changes.slice(0, 10).map((entry) => <div key={entry.id} className="grid gap-1 p-3 text-sm sm:grid-cols-[180px_1fr_auto]"><span className="text-muted-foreground">{new Date(entry.created_at).toLocaleString()}</span><span>{entry.operation} · {entry.actor}</span><Badge variant={entry.result === 'ok' ? 'success' : 'danger'}>{entry.result}</Badge></div>)}</div> : <p className="text-sm text-muted-foreground">{data ? 'No recorded firewall changes yet.' : unknownLabel}</p>}</CardContent></Card>

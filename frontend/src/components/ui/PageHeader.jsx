@@ -17,19 +17,19 @@ export function PageHeader({ title, titleMeta, description, primaryAction, moreA
     }
   }, [title, panelName])
   return (
-    <div className={cn('panel-page-heading flex flex-wrap items-start justify-between gap-4 mb-6', className)}>
+    <div className={cn('panel-page-heading flex flex-wrap items-start justify-between gap-4', className)}>
       <div className="flex items-start gap-3 min-w-0">
         {Icon && (
-          <div className="page-heading-icon mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-btn bg-accent-50 text-accent-600 dark:bg-accent-950 dark:text-accent-300">
-            <Icon className="h-5 w-5" />
+          <div className="page-heading-icon" aria-hidden="true">
+            <Icon />
           </div>
         )}
         <div className="min-w-0">
           <div className="page-heading-title-line">
-            <h1 className="break-words text-xl font-semibold text-foreground">{title}</h1>
+            <h1 className="break-words">{title}</h1>
             {titleMeta}
           </div>
-          {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
+          {description && <p>{description}</p>}
         </div>
       </div>
       {(children || primaryAction || moreActions.length > 0) && <div className="page-heading-actions flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0">

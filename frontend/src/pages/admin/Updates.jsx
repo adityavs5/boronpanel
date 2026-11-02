@@ -394,11 +394,11 @@ export default function Updates() {
           ) : error ? (
             <div className="text-sm text-danger">Could not load update status: {error.message}</div>
           ) : !status?.configured ? (
-            <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="panel-alert flex flex-wrap items-center justify-between gap-4" data-tone="warning" role="status">
               <div className="text-sm text-muted-foreground">
                 <div className="mb-1 font-medium text-foreground">Updates require an active license.</div>
                 {status?.message || 'Panel updates require an active Boron license.'}{' '}
-                Hosted sites and services keep running either way; you are on v{status?.current_version}.
+                Hosted sites and services keep running either way; {status?.current_version ? `you are on v${status.current_version}` : 'your current version is unknown'}.
               </div>
               <Button asChild>
                 <Link to="/license"><BadgeCheck className="h-4 w-4" /> Add a license</Link>
@@ -408,11 +408,11 @@ export default function Updates() {
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex flex-wrap items-center gap-8">
                 <div>
-                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Current version</div>
+                  <div className="text-[13px] font-medium text-muted-foreground">Current version</div>
                   <div className="text-2xl font-semibold text-foreground">v{status.current_version}</div>
                 </div>
                 <div>
-                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Latest release</div>
+                  <div className="text-[13px] font-medium text-muted-foreground">Latest release</div>
                   <div className="flex items-center gap-2 text-2xl font-semibold text-foreground">
                     {status.latest_version ? `v${status.latest_version}` : '—'}
                     {status.update_available ? (
@@ -424,7 +424,7 @@ export default function Updates() {
                 </div>
                 {status.checked_at && (
                   <div>
-                    <div className="text-xs uppercase tracking-wide text-muted-foreground">Last checked</div>
+                    <div className="text-[13px] font-medium text-muted-foreground">Last checked</div>
                     <div className="text-sm text-foreground">{formatDate(status.checked_at)}</div>
                   </div>
                 )}
@@ -456,7 +456,7 @@ export default function Updates() {
           )}
           {status?.configured && status?.latest_version && status?.changelog && (
             <div className="mt-4">
-              <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">
+              <div className="mb-1 text-[13px] font-medium text-muted-foreground">
                 What's new in v{status.latest_version}
                 {status.published_at && <> · published {formatDate(status.published_at)}</>}
               </div>

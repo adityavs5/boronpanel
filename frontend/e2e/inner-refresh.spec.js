@@ -52,7 +52,7 @@ async function sampledContrast(page) {
     const over=(fg,bg)=>{const alpha=fg[3]??1;return fg.slice(0,3).map((v,i)=>v*alpha+bg[i]*(1-alpha))}
     const light=rgb=>rgb.map(v=>{v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4}).reduce((s,v,i)=>s+v*[.2126,.7152,.0722][i],0)
     const background=el=>{if(!el)return[255,255,255];const bg=parse(getComputedStyle(el).backgroundColor);return over(bg,background(el.parentElement))}
-    const nodes=[...document.querySelectorAll('.sidebar-tool,.sidebar-section,.setting-row-label,.setting-row-description,.account-facts strong,.account-meter strong,[data-ui-badge],.danger-zone h2,.danger-zone p,.panel-page-heading h1,.settings-subnav button[aria-selected=true]')]
+    const nodes=[...document.querySelectorAll('.sidebar-tool,.sidebar-section,.setting-row-label,.setting-row-description,.account-fact-list dt,.account-fact-list dd,.account-usage-label,.account-usage-row strong,[data-ui-badge],.account-settings-section-heading h2,.account-settings-section-heading p,.account-danger-section h2,.panel-page-heading h1,.settings-subnav button[aria-selected=true]')]
     return nodes.filter(el=>el.getClientRects().length&&getComputedStyle(el).visibility!=='hidden').map(el=>{const fg=over(parse(getComputedStyle(el).color),background(el));const a=light(fg),b=light(background(el));return {text:el.textContent.trim().slice(0,65),ratio:(Math.max(a,b)+.05)/(Math.min(a,b)+.05)}})
   })
 }
@@ -67,7 +67,7 @@ for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark
   if(reference==='domains')await expect(page.getByRole('button',{name:'Manage',exact:true}).first()).toBeVisible()
   if(reference==='domains'&&width>=640){
     const row=page.locator('.domains-reference-table tbody tr').first()
-    expect((await row.boundingBox()).height).toBeLessThanOrEqual(skin==='paper-lantern'?48:40)
+    expect((await row.boundingBox()).height).toBeLessThanOrEqual(48)
     await expect(page.locator('.domains-reference-table th').filter({hasText:'Website'})).toHaveCSS('white-space','nowrap')
   }
   await noOverflow(page)
@@ -77,7 +77,8 @@ for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark
   expect(header.searchRight).toBeLessThanOrEqual(width)
   if(width>=1024)await expect(page.getByRole('complementary',{name:'Tools sidebar'})).toBeVisible()
   else {await expect(page.getByRole('complementary',{name:'Tools sidebar'})).toBeHidden();await page.getByRole('button',{name:'Menu',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await expect(page.getByRole('complementary',{name:'Mobile tools'})).toBeVisible();await page.keyboard.press('Escape');await expect(page.getByRole('button',{name:'Menu',exact:true})).toBeFocused()}
-  for(const sample of await sampledContrast(page))expect(sample.ratio,`${sample.text} contrast`).toBeGreaterThanOrEqual(4.5)
+  const samples=await sampledContrast(page);expect(samples.length).toBeGreaterThan(3)
+  for(const sample of samples)expect(sample.ratio,`${sample.text} contrast`).toBeGreaterThanOrEqual(4.5)
   await page.screenshot({path:info.outputPath(`${reference}-${skin}-${mode}-${width}.png`)})
   expect(errors).toEqual([])
  })

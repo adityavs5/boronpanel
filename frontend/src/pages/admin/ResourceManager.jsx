@@ -36,6 +36,8 @@ function editValues(row) {
   }
 }
 
+const cores = (n) => Number(n) === 1 ? 'core' : 'cores'
+
 export default function ResourceManager() {
   const qc = useQueryClient()
   const [edit, setEdit] = useState(null)
@@ -61,17 +63,17 @@ export default function ResourceManager() {
   const byId = Object.fromEntries(users.map(user => [user.account_id, user.username]))
   const userColumns = [
     { key: 'username', header: 'Account', sortable: true, searchable: true, render: row => <button className="font-medium text-accent hover:underline" onClick={() => setEdit({ ...row, form: editValues(row) })}>{row.username}</button> },
-    { key: 'cpu', header: 'CPU', render: row => <span>{row.usage ? `${row.usage.cpu_pct.toFixed(1)}%` : '—'} / {row.values.cpu_cores == null ? 'Unlimited' : `${row.values.cpu_cores} cores`}{row.capacity_adjusted && <span className="block text-xs text-info">Stored {row.configured_cpu_cores} cores; capped to host capacity</span>}</span> },
+    { key: 'cpu', header: 'CPU', render: row => <span>{row.usage ? `${row.usage.cpu_pct.toFixed(1)}%` : '—'} / {row.values.cpu_cores == null ? 'Unlimited' : `${row.values.cpu_cores} ${cores(row.values.cpu_cores)}`}{row.capacity_adjusted && <span className="block text-xs text-muted-foreground">Stored {row.configured_cpu_cores} {cores(row.configured_cpu_cores)}; capped to host capacity</span>}</span> },
     { key: 'memory', header: 'Memory', render: row => <span>{row.usage ? formatBytes(row.usage.memory_bytes) : '—'} / {row.values.memory_max_mb == null ? 'Unlimited' : `${(row.values.memory_max_mb / 1024).toLocaleString(undefined, { maximumFractionDigits: 2 })} GB`}</span> },
     { key: 'pids', header: 'Processes', render: row => `${row.usage?.pids ?? '—'} / ${row.values.nproc ?? 'Unlimited'}` },
-    { key: 'source', header: 'Policy source', render: row => <Badge variant={row.policy?.scope_type === 'account' ? 'warning' : 'neutral'}>{row.policy ? `${row.policy.scope_type}:${row.policy.scope_id}` : 'Legacy limits'}</Badge> },
+    { key: 'source', header: 'Policy source', render: row => <Badge variant={row.policy?.scope_type === 'account' ? 'warning' : 'neutral'} dot={false}>{row.policy ? `${({ plan: 'Plan', account: 'Account override', reseller: 'Reseller plan' })[row.policy.scope_type] || row.policy.scope_type}: ${row.policy.scope_id}` : 'Legacy limits'}</Badge> },
     { key: 'faults', header: 'Recent faults', align: 'right', render: row => row.recent_faults.reduce((sum, fault) => sum + fault.count, 0) || '—' },
     { key: 'actions', header: '', align: 'right', render: row => <Button size="sm" variant="secondary" onClick={() => setEdit({ ...row, form: editValues(row) })}>Manage</Button> },
   ]
   const policyColumns = [
     { key: 'scope_type', header: 'Scope', render: row => <Badge variant="neutral">{row.scope_type}</Badge> },
     { key: 'scope_id', header: 'ID' }, { key: 'version', header: 'Version' },
-    { key: 'cpu_cores', header: 'CPU', render: row => row.cpu_cores == null ? 'Unlimited' : `${row.cpu_cores} cores` },
+    { key: 'cpu_cores', header: 'CPU', render: row => row.cpu_cores == null ? 'Unlimited' : `${row.cpu_cores} ${cores(row.cpu_cores)}` },
     { key: 'memory_max_mb', header: 'Memory', render: row => row.memory_max_mb == null ? 'Unlimited' : `${(row.memory_max_mb / 1024).toLocaleString(undefined, { maximumFractionDigits: 2 })} GB` },
     { key: 'last_apply_status', header: 'Last apply', render: row => <Badge variant={row.last_apply_status === 'failed' ? 'danger' : 'success'}>{row.last_apply_status || 'Not applied'}</Badge> },
   ]
@@ -88,7 +90,7 @@ export default function ResourceManager() {
     { key: 'resource', header: 'Limit', render: row => <Badge variant="warning">{row.resource}</Badge> },
     { key: 'count', header: 'Events' }, { key: 'detail', header: 'Detail' },
   ]
-  return <div><PageHeader title="Resource Manager" description="Native cgroup and OpenLiteSpeed limits, effective policy sources, usage and faults." icon={Cpu} />
+  return <div><PageHeader title="Resource manager" description="Native cgroup and OpenLiteSpeed limits, effective policy sources, usage and faults." icon={Cpu} />
     <Tabs defaultValue="users"><TabsList><TabsTrigger value="users"><Gauge className="h-4 w-4" /> Users</TabsTrigger><TabsTrigger value="plans"><Cpu className="h-4 w-4" /> Plans</TabsTrigger><TabsTrigger value="history"><History className="h-4 w-4" /> History</TabsTrigger><TabsTrigger value="faults"><AlertTriangle className="h-4 w-4" /> Faults</TabsTrigger></TabsList>
       <TabsContent value="users"><DataTable columns={userColumns} data={users} loading={query.isLoading} error={query.error} onRetry={query.refetch} filterable searchPlaceholder="Search accounts…" getRowKey={row => row.account_id} emptyTitle="No hosting accounts" /></TabsContent>
       <TabsContent value="plans"><DataTable columns={policyColumns} data={query.data?.policies || []} loading={query.isLoading} getRowKey={row => row.id} emptyTitle="No resource policies" /></TabsContent>

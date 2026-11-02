@@ -1,5 +1,6 @@
 import { Link, useRouteError } from 'react-router-dom'
 import { ServerCrash, Compass, AlertTriangle } from 'lucide-react'
+import { EmptyState } from '@/components/ui/States'
 import { Button } from '@/components/ui/Button'
 
 // Route-level error boundary: a crash in one page renders here while the
@@ -39,13 +40,11 @@ export function Maintenance() {
 
 export function NotFound() {
   return (
-    <div className="flex min-h-full flex-col items-center justify-center gap-4 p-6 text-center">
-      <Compass className="h-14 w-14 text-muted-foreground" />
-      <h1 className="text-2xl font-semibold text-foreground">Page not found</h1>
-      <p className="text-sm text-muted-foreground">The page you're looking for doesn't exist.</p>
-      <Button asChild variant="secondary">
-        <Link to="/">Back to panel</Link>
-      </Button>
-    </div>
+    <EmptyState
+      icon={Compass}
+      title="Page not found"
+      description="The page you're looking for doesn't exist."
+      action={<Button asChild variant="secondary"><Link to="/">Back to panel</Link></Button>}
+    />
   )
 }

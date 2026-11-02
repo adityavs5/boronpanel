@@ -6,7 +6,7 @@ import { StyledSelect } from './StyledSelect'
 import { Checkbox, Switch } from './Toggle'
 
 const baseField =
-  'flex w-full rounded-btn border border-input bg-input-surface px-3 text-sm text-foreground shadow-sm placeholder:text-muted-foreground/70 transition-[border-color,box-shadow] focus-visible:outline-none focus-visible:border-accent focus-visible:ring-[3px] focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50'
+  'flex w-full rounded-btn border border-input bg-input-surface px-3 text-sm text-foreground placeholder:text-muted-foreground transition-[border-color] duration-150 focus-visible:outline-none focus-visible:border-accent focus-visible:ring-[3px] focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50'
 
 export const Input = forwardRef(function Input({ className, invalid, type = 'text', ...props }, ref) {
   return (
@@ -14,7 +14,7 @@ export const Input = forwardRef(function Input({ className, invalid, type = 'tex
       ref={ref}
       type={type}
       aria-invalid={invalid || undefined}
-      className={cn(baseField, 'h-9', invalid && 'border-danger focus-visible:border-danger focus-visible:ring-danger/20', className)}
+      className={cn(baseField, 'h-[var(--control-h)]', invalid && 'border-danger focus-visible:border-danger focus-visible:ring-danger/20', className)}
       {...props}
     />
   )
@@ -36,7 +36,7 @@ export const Label = forwardRef(function Label({ className, required, ...props }
   return (
     <LabelPrimitive.Root
       ref={ref}
-      className={cn('text-sm font-medium text-foreground leading-none flex items-center gap-1', className)}
+      className={cn('text-[13px] font-medium text-foreground leading-tight flex items-center gap-1', className)}
       {...props}
     >
       {props.children}

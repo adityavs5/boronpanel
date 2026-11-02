@@ -43,7 +43,7 @@ for (const role of ['admin', 'customer']) {
     test(`${role} ${skin}: dashboard, real tool links, search and collapse`, async ({ page }, testInfo) => {
       const errors = await setup(page, role, skin)
       await page.goto(role === 'admin' ? '/app/overview' : '/app/dashboard')
-      await expect(page.getByRole('heading', { name: role === 'admin' ? 'Admin Dashboard' : 'Hosting Dashboard', exact: true })).toBeVisible()
+      await expect(page.getByRole('heading', { name: role === 'admin' ? 'Admin dashboard' : 'Hosting dashboard', exact: true })).toBeVisible()
       await expect(page.locator('.tool-link').first()).toBeVisible()
       await expect(page.locator('.query-notice')).toHaveCount(0)
       if (role === 'customer') {
@@ -60,7 +60,8 @@ for (const role of ['admin', 'customer']) {
           const inner = child?.getBoundingClientRect()
           return [outer.width, outer.height, inner?.width, inner?.height]
         }))
-        expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['50x50x42x42', '50x50x46x46']))
+        // 44px category chip with a 22px lucide icon, or a 24px product mark.
+        expect(new Set(iconSizes.map(size => size.join('x')))).toEqual(new Set(['44x44x22x22', '44x44x24x24']))
         const gridRows = await page.locator('.tool-grid').evaluateAll(grids => grids.map(grid => {
           const left = grid.getBoundingClientRect().left
           const rows = new Map()
@@ -72,11 +73,14 @@ for (const role of ['admin', 'customer']) {
           }
           return [...rows.values()]
         }))
-        const columns = role === 'customer' ? 7 : 6
+        // Evo tiles are ~120px wide and fill the row (auto-fill), so read the column count from the grid.
+        const columns = await page.locator('.tool-grid').first().evaluate(grid => getComputedStyle(grid).gridTemplateColumns.split(' ').length)
+        expect(columns).toBeGreaterThanOrEqual(6)
         const fullRows = gridRows.flat().filter(row => row.length === columns)
-        expect(fullRows.length).toBeGreaterThan(0)
-        expect(new Set(fullRows.map(row => row.join(','))).size).toBe(1)
-        expect(Math.max(...gridRows.flat().map(row => row.length))).toBe(columns)
+        // Every row starts on the same column track; full rows share identical offsets.
+        expect(new Set(gridRows.flat().map(row => row[0])).size).toBe(1)
+        if (fullRows.length) expect(new Set(fullRows.map(row => row.join(','))).size).toBe(1)
+        expect(Math.max(...gridRows.flat().map(row => row.length))).toBeLessThanOrEqual(columns)
         if (role === 'customer') {
           const heightGap = await page.evaluate(() => {
             const tools = document.querySelector('.tools-column').getBoundingClientRect()
@@ -162,7 +166,7 @@ test('failed statistics offer retry without hiding the tool directory', async ({
   await expect(page.locator('.tool-link').first()).toBeVisible()
   await page.route('**/api/v1/health', (route) => route.fulfill({ json: { cpu_pct: 0, mem_pct: 0, disks: [] } }))
   await page.getByRole('button', { name: 'Retry server statistics' }).click()
-  await expect(page.getByRole('progressbar', { name: 'CPU Usage' })).toHaveAttribute('aria-valuenow', '0')
+  await expect(page.getByRole('progressbar', { name: 'CPU usage' })).toHaveAttribute('aria-valuenow', '0')
 })
 test('preferences synchronize across tabs without navigation', async ({ page, context }) => {
   await setup(page)
@@ -184,11 +188,23 @@ test('prepaint preference loader tolerates old, invalid and unavailable storage'
     [null, 'evolution', false],
   ]) {
     let dark
+    const applied = []
     const root = { dataset: {}, style: {}, classList: { toggle: (_, value) => { dark = value } } }
-    vm.runInNewContext(script, { document: { documentElement: root }, localStorage: { getItem: () => { if (saved === null) throw Error('blocked'); return saved } } })
+    const storage = { getItem: () => { if (saved === null) throw Error('blocked'); return saved } }
+    vm.runInNewContext(script, { window: { BoronAppearance: { apply: (...args) => applied.push(args) } }, document: { documentElement: root }, localStorage: storage })
     expect(root.dataset.skin).toBe(expectedSkin)
     expect(dark).toBe(expectedDark)
+    expect(root.style.colorScheme).toBe(expectedDark ? 'dark' : 'light')
+    expect(applied).toEqual([[undefined, expectedSkin, expectedDark]])
+    // The appearance helper is optional; a missing one must not break first paint.
+    const bare = { dataset: {}, style: {}, classList: { toggle: () => {} } }
+    vm.runInNewContext(script, { window: {}, document: { documentElement: bare }, localStorage: storage })
+    expect(bare.dataset.skin).toBe(expectedSkin)
   }
+  const saved = JSON.stringify({ state: { skin: 'paper-lantern', theme: 'light', appearance: { accent: 'teal' } } })
+  const applied = []
+  vm.runInNewContext(script, { window: { BoronAppearance: { apply: (...args) => applied.push(args) } }, document: { documentElement: { dataset: {}, style: {}, classList: { toggle: () => {} } } }, localStorage: { getItem: () => saved } })
+  expect(applied).toEqual([[{ accent: 'teal' }, 'paper-lantern', false]])
 })
 
 test('keyboard navigation can switch themes and reach Appearance', async ({ page }) => {

@@ -6,7 +6,17 @@ import { Badge } from './Badge'
 const STATUS_MAP = {
   // account / generic lifecycle
   active: { variant: 'success', dot: 'bg-success' },
-  running: { variant: 'success', dot: 'bg-success' },
+  running: { variant: 'info', dot: 'bg-info' },
+  allow: { variant: 'success', dot: 'bg-success' },
+  allowed: { variant: 'success', dot: 'bg-success' },
+  deny: { variant: 'danger', dot: 'bg-danger' },
+  denied: { variant: 'danger', dot: 'bg-danger' },
+  ban: { variant: 'danger', dot: 'bg-danger' },
+  unban: { variant: 'neutral', dot: 'bg-muted-foreground' },
+  online: { variant: 'success', dot: 'bg-success' },
+  offline: { variant: 'danger', dot: 'bg-danger' },
+  degraded: { variant: 'warning', dot: 'bg-warning' },
+  unknown: { variant: 'neutral', dot: 'bg-muted-foreground' },
   installed: { variant: 'success', dot: 'bg-success' },
   issued: { variant: 'success', dot: 'bg-success' },
   valid: { variant: 'success', dot: 'bg-success' },
@@ -26,24 +36,31 @@ const STATUS_MAP = {
   warning: { variant: 'warning', dot: 'bg-warning' },
   healthy: { variant: 'success', dot: 'bg-success' },
   running_job: { variant: 'info', dot: 'bg-info' },
-  terminated: { variant: 'neutral', dot: 'bg-gray-400' },
-  stopped: { variant: 'neutral', dot: 'bg-gray-400' },
-  inactive: { variant: 'neutral', dot: 'bg-gray-400' },
-  disabled: { variant: 'neutral', dot: 'bg-gray-400' },
-  none: { variant: 'neutral', dot: 'bg-gray-400' },
+  terminated: { variant: 'neutral', dot: 'bg-muted-foreground' },
+  stopped: { variant: 'neutral', dot: 'bg-muted-foreground' },
+  inactive: { variant: 'neutral', dot: 'bg-muted-foreground' },
+  disabled: { variant: 'neutral', dot: 'bg-muted-foreground' },
+  none: { variant: 'neutral', dot: 'bg-muted-foreground' },
   error: { variant: 'danger', dot: 'bg-danger' },
   failed: { variant: 'danger', dot: 'bg-danger' },
   expired: { variant: 'danger', dot: 'bg-danger' },
   banned: { variant: 'danger', dot: 'bg-danger' },
 }
 
+// Sentence case: first letter up, the rest as sent (keeps acronyms such as SSL).
+export function sentence(text) {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text
+}
+
 export function StatusBadge({ status, label, className }) {
   const key = String(status ?? '').toLowerCase()
-  const cfg = STATUS_MAP[key] || { variant: 'neutral', dot: 'bg-gray-400' }
+  const cfg = STATUS_MAP[key] || { variant: 'neutral', dot: 'bg-muted-foreground' }
+  if ((status === null || status === undefined || status === '') && label == null) return <span className="text-muted-foreground">—</span>
+  const text = label ?? sentence(String(status ?? '—').replace(/[_-]/g, ' '))
   return (
-    <Badge variant={cfg.variant} className={cn('capitalize', className)}>
-      <span className={cn('h-1.5 w-1.5 rounded-full', cfg.dot)} />
-      {label ?? String(status ?? '—').replace(/_/g, ' ')}
+    <Badge variant={cfg.variant} dot={false} className={className}>
+      <span aria-hidden="true" className={cn('h-1.5 w-1.5 shrink-0 rounded-full', cfg.dot)} />
+      {text}
     </Badge>
   )
 }

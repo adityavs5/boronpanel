@@ -29,7 +29,7 @@ for(const role of ['admin','customer']) for(const skin of ['evolution','paper-la
     sizes:[...document.querySelectorAll('.tool-label')].map(el=>parseFloat(getComputedStyle(el).fontSize)),
     fonts:performance.getEntriesByType('resource').filter(r=>r.name.includes('.woff2')).map(r=>({url:r.name,bytes:r.encodedBodySize}))}
   })
-  expect(metrics.family).toContain('Open Sans')
+  expect(metrics.family).toContain('Inter')
   expect(metrics.sizes.every(size=>size>=(skin==='evolution'?13.5:14))).toBe(true)
   expect(metrics.fonts.length).toBeGreaterThan(0)
   expect(metrics.fonts.length).toBeLessThanOrEqual(4)

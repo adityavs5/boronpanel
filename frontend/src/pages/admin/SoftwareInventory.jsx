@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Boxes, FileCode2 } from 'lucide-react'
+import { NodeIcon, PythonIcon } from '@/components/icons/BrandIcons'
 import { Link } from 'react-router-dom'
 import { get } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/Button'
 export default function SoftwareInventory({ type }) {
   const node = type === 'node'
   const title = node ? 'Node.js Applications' : 'Python Applications'
-  const Icon = node ? Boxes : FileCode2
+  const Icon = node ? NodeIcon : PythonIcon
   const query = useQuery({
     queryKey: ['admin-software', type],
     queryFn: () => get(`/api/v1/admin/software/${node ? 'node-apps' : 'python-apps'}`),

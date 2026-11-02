@@ -12,7 +12,7 @@ test('real login, account navigation, impersonation and File Manager entry', asy
   await page.locator('input#password').fill(adminPassword)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
   await expect(page).toHaveURL(/\/app\/overview$/)
-  await expect(page.getByRole('heading', { name: 'Admin Dashboard', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Admin dashboard', exact: true })).toBeVisible()
 
   await page.goto('/app/accounts')
   await expect(page.getByRole('heading', { name: 'Accounts', exact: true })).toBeVisible()
@@ -29,11 +29,11 @@ test('real login, account navigation, impersonation and File Manager entry', asy
 
   await page.getByRole('button', { name: 'Login as user', exact: true }).click()
   await expect(page).toHaveURL(/\/app\/dashboard$/, { timeout: 30_000 })
-  await expect(page.getByRole('heading', { name: 'Hosting Dashboard', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Hosting dashboard', exact: true })).toBeVisible()
 
-  const fileManager = page.getByText('File Manager', { exact: true }).first()
+  const fileManager = page.getByText('File manager', { exact: true }).first()
   await expect(fileManager).toBeVisible()
   await fileManager.click()
   await expect(page).toHaveURL(/\/app\/files$/)
-  await expect(page.getByRole('heading', { name: 'File Manager', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'File manager', exact: true })).toBeVisible()
 })

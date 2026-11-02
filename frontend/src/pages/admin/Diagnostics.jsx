@@ -71,8 +71,8 @@ export default function Diagnostics() {
         primaryAction={<Button loading={run.isPending} onClick={() => run.mutate()}><RefreshCw className="h-4 w-4" />Run diagnostics</Button>}
       />
 
-      <section className="border-t border-border py-6" aria-labelledby="diagnostic-results-title">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <section className="panel-card mb-6" aria-labelledby="diagnostic-results-title">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
           <div>
             <h2 id="diagnostic-results-title" className="text-base font-semibold text-foreground">Diagnostic results</h2>
             <p className="mt-1 text-sm text-muted-foreground">Checks time out independently and never restart services or test remote backup writes.</p>
@@ -82,12 +82,12 @@ export default function Diagnostics() {
         {run.isError && !result ? <ErrorState error={run.error} onRetry={() => run.mutate()} /> : !result ? (
           <EmptyState icon={Stethoscope} title="No diagnostic run yet" description="Run diagnostics to inspect the database, helper, services, storage, DNS, certificates, isolation, backups, and notifications." />
         ) : (
-          <div className="divide-y divide-border border-y border-border">
+          <div className="divide-y divide-border">
             {result.checks.map((check) => {
               const meta = statusMeta[check.status] || statusMeta.unknown
               const Icon = meta.icon
               return (
-                <div key={check.id} className="grid gap-2 py-3 sm:grid-cols-[minmax(180px,0.8fr)_minmax(0,2fr)_auto] sm:items-start">
+                <div key={check.id} className="grid gap-2 px-5 py-3 sm:grid-cols-[minmax(180px,0.8fr)_minmax(0,2fr)_auto] sm:items-start">
                   <div className="flex items-center gap-2 text-sm font-medium text-foreground"><Icon className="h-4 w-4" />{check.label}</div>
                   <div>
                     <p className="text-sm text-foreground">{check.explanation}</p>
@@ -101,7 +101,7 @@ export default function Diagnostics() {
         )}
       </section>
 
-      <section className="border-t border-border py-6" aria-labelledby="support-bundle-title">
+      <section className="panel-card p-5" aria-labelledby="support-bundle-title">
         <h2 id="support-bundle-title" className="text-base font-semibold text-foreground">Support bundle</h2>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Includes allowlisted build/configuration metadata, service states, diagnostics, bounded Boron log tails, failed action traces, error references, and update history. Secrets, keys, mail, and customer files are excluded. The archive expires after seven days and is removed after its first download.</p>
         <label className="mt-4 flex max-w-xl items-start gap-3 text-sm text-foreground">
@@ -110,7 +110,7 @@ export default function Diagnostics() {
         </label>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Button variant="secondary" loading={createBundle.isPending} onClick={() => createBundle.mutate()}><Download className="h-4 w-4" />Download support bundle</Button>
-          {latest && <span className="text-sm text-muted-foreground">Latest: {latest.progress_message}{latest.file_size ? ` · ${formatBytes(latest.file_size)}` : ''} · expires {formatDate(latest.expires_at)}</span>}
+          {latest?.progress_message && <span className="text-sm text-muted-foreground">Latest: {latest.progress_message}{latest.file_size ? ` · ${formatBytes(latest.file_size)}` : ''} {latest.expires_at ? ` · expires ${formatDate(latest.expires_at)}` : ''}</span>}
           {latest?.download_available && <Button loading={downloadBundle.isPending} onClick={() => downloadBundle.mutate(latest)}><Download className="h-4 w-4" />Download once</Button>}
         </div>
         {latest?.error && <p className="mt-3 text-sm text-danger">{latest.error}</p>}

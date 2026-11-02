@@ -14,7 +14,7 @@ export default function MailTracking() {
   const query = useQuery({ queryKey: ['admin-mail-tracking'], queryFn: () => get('/api/v1/admin/mail/tracking'), staleTime: 60_000 })
   const data = query.data || { summary: {}, by_account: [], by_sender: [], by_domain: [], scripts: [], entries: [] }
   return <div>
-    <PageHeader title="Email Tracking" description="On-demand Postfix delivery and PHP mail activity. Data is parsed only when this page is opened, so monitoring adds no continuous database load." icon={Mail}>
+    <PageHeader title="Email tracking" description="On-demand Postfix delivery and PHP mail activity. Data is parsed only when this page is opened, so monitoring adds no continuous database load." icon={Mail}>
       <Button variant="secondary" loading={query.isFetching} onClick={() => query.refetch()}><RefreshCw className="h-4 w-4" />Refresh</Button>
     </PageHeader>
     <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{[

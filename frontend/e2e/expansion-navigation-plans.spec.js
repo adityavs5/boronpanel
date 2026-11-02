@@ -59,16 +59,16 @@ for (const skin of ['evolution', 'paper-lantern']) {
     await expect(page.getByRole('heading', { name: 'Advanced settings', exact: true })).toBeVisible()
 
     await page.goto('/app/redirects')
-    await expect(page.getByRole('heading', { name: 'Site Redirection', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Redirects', exact: true })).toBeVisible()
     await expect(page.getByRole('combobox', { name: 'Choose domain' })).toHaveValue('example.test')
 
     await page.goto('/app/email/settings')
-    await expect(page.getByRole('heading', { name: 'Email Settings', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Email settings', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: /Forwarders/ })).toHaveAttribute('aria-pressed', 'true')
     await expect(page.getByRole('tab')).toHaveCount(0)
 
     await page.goto('/app/email/dns')
-    await expect(page.getByRole('heading', { name: 'Email DNS Records', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Email DNS records', exact: true })).toBeVisible()
     await expect(page.getByRole('table').getByText('MX', { exact: true })).toBeVisible()
     await expect(page.getByRole('table').getByText('A', { exact: true })).toHaveCount(0)
   })

@@ -1,15 +1,15 @@
 import { cn } from '@/lib/cn'
 import { percent as pct } from '@/lib/utils'
 
-// Usage/progress bar. Auto-colors by fill (accent → warning ≥80% → danger ≥95%)
+// Usage/progress bar. Auto-colors by fill (accent → warning ≥70% → danger ≥90%)
 // unless an explicit `color` is given.
 export function ProgressBar({ value, max = 100, color, className, size = 'md', showTrack = true }) {
   const p = max === 100 ? Math.min(100, Math.max(0, value ?? 0)) : pct(value, max)
-  const auto = p >= 95 ? 'bg-danger' : p >= 80 ? 'bg-warning' : 'bg-accent'
-  const heights = { sm: 'h-1.5', md: 'h-2', lg: 'h-2.5' }
+  const auto = p >= 90 ? 'bg-danger-solid' : p >= 70 ? 'bg-warning-solid' : 'bg-accent'
+  const heights = { sm: 'h-1', md: 'h-1.5', lg: 'h-2' }
   return (
-    <div className={cn('w-full overflow-hidden rounded-full', showTrack && 'bg-muted', heights[size], className)}>
-      <div className={cn('h-full rounded-full transition-all duration-500', color || auto)} style={{ width: `${p}%` }} />
+    <div className={cn('w-full overflow-hidden rounded-[3px]', showTrack && 'bg-muted dark:bg-[rgb(var(--border-strong))]', heights[size], className)}>
+      <div className={cn('h-full transition-[width] duration-300', color || auto)} style={{ width: `${p}%` }} />
     </div>
   )
 }

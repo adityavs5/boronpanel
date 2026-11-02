@@ -97,7 +97,7 @@ export default function CreateAccount() {
           <div className="account-create-fields">
             <FormField label="Username" required error={usernameError}><AccountUsernameInput autoFocus required pattern="[a-z][a-z0-9]{0,15}" placeholder="acme1" value={form.username} onChange={e => update('username', e.target.value)} /></FormField>
             <FormField error={emailError} label="Contact email" optional hint="For account notifications."><Input type="email" placeholder="owner@example.com" value={form.email} onChange={e => update('email', e.target.value)} /></FormField>
-            <FormField className="account-create-wide" label="Initial password" optional hint="12+ characters with upper/lowercase, a number and a symbol." error={passwordError}><AccountPasswordInput type="password" autoComplete="new-password" placeholder="Automatically generated if blank" value={form.password} onChange={e => update('password', e.target.value)} pattern={form.password ? '(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}' : undefined} /></FormField>
+            <FormField className="account-create-wide" label="Initial password" optional hint="12+ characters with upper/lowercase, a number and a symbol." error={passwordError}><AccountPasswordInput type="password" autoComplete="new-password" placeholder="Generated if left blank" value={form.password} onChange={e => update('password', e.target.value)} pattern={form.password ? '(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9]).{12,}' : undefined} /></FormField>
           </div>
         </section>
         <section className="account-create-section">

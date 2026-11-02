@@ -197,7 +197,7 @@ export default function DevTools() {
   const username = useAccountUsername()
   return (
     <div>
-      <PageHeader title="Dev Tools" description="WP-CLI and Composer, run asynchronously as your own account user." icon={Wrench} />
+      <PageHeader title="Developer tools" description="WP-CLI and Composer, run asynchronously as your own account user." icon={Wrench} />
       <Tabs defaultValue="wpcli">
         <TabsList>
           <TabsTrigger value="wpcli"><WordpressIcon className="h-4 w-4" /> WP-CLI</TabsTrigger>

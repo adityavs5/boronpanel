@@ -1,4 +1,3 @@
-import '@/customer-polish.css'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Network, Plus, Pencil, Trash2, Cloud, CheckCircle2, AlertTriangle, Wand2, FileCode2 } from 'lucide-react'
@@ -163,14 +162,14 @@ export default function Dns({ emailOnly = false }) {
         </DialogContent>
       </Dialog>
 
-      <PageHeader title={emailOnly ? 'Email DNS Records' : 'DNS'} description={emailOnly ? 'Manage MX, SPF, DKIM, DMARC, webmail, and automatic-client records.' : 'Manage the DNS zone records for your domains.'} icon={Network} primaryAction={<Button
+      <PageHeader title={emailOnly ? 'Email DNS records' : 'DNS'} description={emailOnly ? 'Manage MX, SPF, DKIM, DMARC, webmail, and automatic-client records.' : 'Manage the DNS zone records for your domains.'} icon={Network} primaryAction={<Button
           onClick={() => setDialog({ mode: 'add', subdomain: '@', type: emailOnly ? 'MX' : 'A', ttl: '3600', values: '' })}
           disabled={!domain || unmanaged}
         >
           <Plus className="h-4 w-4" /> Add record
         </Button>} />
 
-      <div className="customer-domain-toolbar mb-4 flex flex-wrap items-end gap-3">
+      <div className="customer-domain-toolbar mb-4 flex flex-wrap items-start gap-3">
         <div className="customer-domain-field">
           <FormField label="Domain" hint="Choose which zone to manage.">
             <Select
@@ -184,16 +183,15 @@ export default function Dns({ emailOnly = false }) {
               ))}
             </Select>
           </FormField>
-          {domain && <p className="customer-domain-context">{domain}</p>}
         </div>
         {!emailOnly && <Button variant="secondary" disabled={!domain || unmanaged} loading={advancedLoad.isPending} onClick={() => advancedLoad.mutate()}><FileCode2 className="h-4 w-4" /> Zone editor and templates</Button>}
         {/* Provider badge (docs/PLAN-cloudflare.md Phase 1); enable/revert lives in the domain's DNS tab. */}
         {data?.cloudflare ? (
-          <Badge variant={data.cloudflare.status === 'active' ? 'accent' : 'warning'} className="mb-7">
+          <Badge variant={data.cloudflare.status === 'active' ? 'accent' : 'warning'}>
             <Cloud className="h-3 w-3" /> Cloudflare{data.cloudflare.status === 'pending' ? ' · pending' : ''}
           </Badge>
         ) : data && !unmanaged ? (
-          <Badge variant="neutral" className="mb-7">Local DNS</Badge>
+          <Badge variant="neutral">Local DNS</Badge>
         ) : null}
       </div>
 

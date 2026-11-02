@@ -40,7 +40,7 @@ function StatCard({ icon: Icon, label, value, sub }) {
           <Icon className="h-5 w-5" />
         </div>
         <div className="min-w-0">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+          <div className="text-[13px] font-medium text-muted-foreground">{label}</div>
           <div className="mt-0.5 truncate text-lg font-semibold text-foreground">{value}</div>
           {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
         </div>

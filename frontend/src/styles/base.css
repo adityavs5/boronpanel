@@ -1,0 +1,105 @@
+/* Element defaults. Self-hosted fonts only (CSP: no remote font requests). */
+@import '@fontsource/open-sans/latin-400.css';
+@import '@fontsource/open-sans/latin-500.css';
+@import '@fontsource/open-sans/latin-600.css';
+@import '@fontsource/open-sans/latin-700.css';
+@import '@fontsource/inter/latin-400.css';
+@import '@fontsource/inter/latin-500.css';
+@import '@fontsource/inter/latin-600.css';
+@import '@fontsource/inter/latin-700.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { border-color: rgb(var(--border)); }
+
+  html, body, #root { height: 100%; }
+
+  body {
+    background: rgb(var(--bg));
+    color: rgb(var(--fg));
+    font-family: var(--font-ui);
+    font-size: var(--text-body);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+
+  h1, h2, h3, h4 {
+    font-weight: 600;
+    color: rgb(var(--heading));
+    letter-spacing: -0.01em;
+  }
+
+  button, a, input, select { -webkit-tap-highlight-color: transparent; }
+
+  :where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid rgb(var(--ring));
+    outline-offset: 2px;
+  }
+
+  ::placeholder { color: rgb(var(--muted-fg)); opacity: 1; }
+
+  /* One native-select arrow contract for every page, theme and dialog.
+     Reserve the arrow gutter even when a page sets a padding shorthand. */
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: rgb(var(--input-surface));
+    background-image: var(--select-chevron);
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    background-size: 1rem 1rem;
+    padding-right: 2.25rem !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  select[multiple], select[size]:not([size="1"]) {
+    background-image: none;
+    padding-right: 0.75rem !important;
+  }
+  select:disabled { cursor: not-allowed; opacity: 0.5; }
+
+  input[type=checkbox], input[type=radio] { accent-color: rgb(var(--accent)); }
+
+  code, kbd, pre, samp { font-family: var(--font-mono); }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { border-radius: 999px; background: rgb(var(--border-strong)); border: 2px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @media (prefers-reduced-motion: reduce) {
+    html[data-motion=system] *, html[data-motion=system] *::before, html[data-motion=system] *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+  html[data-motion=reduced] *, html[data-motion=reduced] *::before, html[data-motion=reduced] *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@layer utilities {
+  .tabular-nums { font-variant-numeric: tabular-nums; }
+
+  /* Skeleton shimmer used by the Skeleton component. */
+  .shimmer { position: relative; overflow: hidden; }
+  .shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.45), transparent);
+    animation: shimmer 1.4s infinite;
+  }
+  .dark .shimmer::after { background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.06), transparent); }
+  @keyframes shimmer { 100% { transform: translateX(100%); } }
+}

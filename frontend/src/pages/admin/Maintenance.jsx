@@ -19,7 +19,7 @@ export default function Maintenance() {
 
   return (
     <div>
-      <PageHeader title="Maintenance Mode" description="Every domain currently showing a maintenance page." icon={Construction} />
+      <PageHeader title="Maintenance mode" description="Every domain currently showing a maintenance page." icon={Construction} />
       {isLoading ? <CardSkeleton /> : error ? <ErrorState error={error} onRetry={refetch} /> : !data.domains.length ? (
         <EmptyState icon={Construction} title="No domains in maintenance" description="Nothing is currently showing a maintenance page." />
       ) : (

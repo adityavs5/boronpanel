@@ -289,7 +289,7 @@ export default function Cron() {
       />
 
       {/* Cron output email (MAILTO) */}
-      <Card className="mt-6 max-w-xl">
+      <Card className="mt-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-sm">
             <Mail className="h-4 w-4 text-muted-foreground" /> Cron output email
@@ -306,7 +306,7 @@ export default function Cron() {
               mailtoMut.mutate(mailto.trim())
             }}
           >
-            <FormField label="MAILTO" htmlFor="cron-mailto" className="flex-1">
+            <FormField label="Send output to" htmlFor="cron-mailto" className="flex-1">
               <Input
                 id="cron-mailto"
                 type="email"
@@ -317,7 +317,7 @@ export default function Cron() {
               />
             </FormField>
             <Button type="submit" loading={mailtoMut.isPending} disabled={mailtoQuery.isLoading}>
-              <Save className="h-4 w-4" /> Save
+              Save
             </Button>
           </form>
         </CardContent>

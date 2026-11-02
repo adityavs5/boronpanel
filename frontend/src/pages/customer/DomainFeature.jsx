@@ -11,13 +11,13 @@ import { ErrorState, EmptyState } from '@/components/ui/States'
 import { RedirectsTab, ForwardingTab, CacheTab, SecurityTab, MaintenanceTab, ErrorPagesTab, StatsTab } from './DomainDetail'
 
 const features = {
-  redirects: { title: 'Site Redirection', description: 'Redirect individual paths to new web addresses.', icon: ExternalLink, view: RedirectsTab },
-  forwarding: { title: 'Domain Forwarding', description: 'Forward an entire domain while preserving optional URL paths.', icon: ArrowRightLeft, view: ForwardingTab },
-  cache: { title: 'LiteSpeed Cache', description: 'Configure and purge the server-side cache for a website.', icon: Zap, view: CacheTab },
-  security: { title: 'Website Security', description: 'Manage directory privacy, hotlink protection, and blocked visitors.', icon: Shield, view: SecurityTab },
-  maintenance: { title: 'Website Maintenance', description: 'Publish a maintenance page while work is in progress.', icon: Construction, view: MaintenanceTab },
-  errors: { title: 'Custom Error Pages', description: 'Create branded pages for common website errors.', icon: FileWarning, view: ErrorPagesTab },
-  statistics: { title: 'Website Statistics', description: 'Review traffic, visitors, referrers, and bandwidth for a domain.', icon: Gauge, view: StatsTab },
+  redirects: { title: 'Redirects', description: 'Redirect individual paths to new web addresses.', icon: ExternalLink, view: RedirectsTab },
+  forwarding: { title: 'Domain forwarding', description: 'Forward an entire domain while preserving optional URL paths.', icon: ArrowRightLeft, view: ForwardingTab },
+  cache: { title: 'LiteSpeed cache', description: 'Configure and purge the server-side cache for a website.', icon: Zap, view: CacheTab },
+  security: { title: 'Website security', description: 'Manage directory privacy, hotlink protection, and blocked visitors.', icon: Shield, view: SecurityTab },
+  maintenance: { title: 'Website maintenance', description: 'Publish a maintenance page while work is in progress.', icon: Construction, view: MaintenanceTab },
+  errors: { title: 'Custom error pages', description: 'Create branded pages for common website errors.', icon: FileWarning, view: ErrorPagesTab },
+  statistics: { title: 'Website statistics', description: 'Review traffic, visitors, referrers, and bandwidth for a domain.', icon: Gauge, view: StatsTab },
 }
 
 export default function DomainFeature({ feature }) {

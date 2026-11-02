@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy, MoreHorizontal, Network, Plus, RefreshCw, Trash2, Zap } from 'lucide-react'
 import { del, get, patch, post } from '@/lib/api'
+import { formatDate } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import { DataTable } from '@/components/ui/Table'
@@ -66,20 +67,20 @@ export default function DnsCluster() {
       : 'Leave the key empty to generate a shared Boron cluster key, then configure that same key on the other node.'
 
   return <div>
-    <PageHeader title="DNS Cluster" description="Replicate complete PowerDNS zones to Boron, DirectAdmin, or cPanel/WHM while keeping your current authoritative nameservers." icon={Network} primaryAction={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />Add peer</Button>} moreActions={[{label:sync.isPending?'Syncing all zones…':'Sync all zones',icon:<RefreshCw className="h-4 w-4"/>,disabled:sync.isPending||!peers.length,onSelect:()=>sync.mutate()}]} />
+    <PageHeader title="DNS cluster" description="Replicate complete PowerDNS zones to Boron, DirectAdmin, or cPanel/WHM while keeping your current authoritative nameservers." icon={Network} primaryAction={<Button onClick={() => setOpen(true)}><Plus className="h-4 w-4" />Add peer</Button>} moreActions={[{label:sync.isPending?'Syncing all zones…':'Sync all zones',icon:<RefreshCw className="h-4 w-4"/>,disabled:sync.isPending||!peers.length,onSelect:()=>sync.mutate()}]} />
 
-    <Card className="mb-5"><CardHeader><div><CardTitle>Authoritative peers</CardTitle><CardDescription>Credentials are encrypted at rest and never displayed again. Failed deliveries retry automatically with backoff.</CardDescription></div></CardHeader><CardContent>
+    <Card className="mb-5"><CardHeader><div><CardTitle>Authoritative peers</CardTitle><CardDescription>Credentials are encrypted at rest and never displayed again. Failed deliveries retry automatically with backoff.</CardDescription></div></CardHeader><CardContent className="card-body-flush">
       <DataTable data={peers} loading={query.isLoading} error={query.error} onRetry={query.refetch} filterable searchPlaceholder="Search DNS peers…" columns={[
         { key: 'name', header: 'Peer', sortable: true, render: row => <div><div className="font-semibold">{row.name}</div><div className="text-xs text-muted-foreground">{row.endpoint}</div></div> },
         { key: 'peer_type', header: 'Type', sortable: true, render: row => ({ directadmin: 'DirectAdmin', cpanel: 'cPanel / WHM', boron: 'Boron' }[row.peer_type] || row.peer_type) },
-        { key: 'direction', header: 'Direction', render: row => <div><span className="capitalize">{row.direction}</span><div className="text-xs text-muted-foreground">{row.zones?.length ? `${row.zones.length} owned zone(s)` : 'All local zones'}</div></div> },
+        { key: 'direction', header: 'Direction', render: row => <div><span>{row.direction ? row.direction.charAt(0).toUpperCase() + row.direction.slice(1) : '—'}</span><div className="text-xs text-muted-foreground">{row.zones?.length ? `${row.zones.length} owned zone(s)` : 'All local zones'}</div></div> },
         { key: 'status', header: 'Health', render: row => <StatusBadge status={!row.enabled ? 'disabled' : row.status} /> },
-        { key: 'last_success_at', header: 'Last success', sortable: true, render: row => row.last_success_at ? new Date(row.last_success_at).toLocaleString() : 'Not synced yet' },
+        { key: 'last_success_at', header: 'Last success', sortable: true, render: row => row.last_success_at ? <span className="whitespace-nowrap tabular-nums">{formatDate(row.last_success_at)}</span> : 'Not synced yet' },
         { key: 'actions', header: '', searchable: false, render: row => <div className="flex justify-end gap-1"><Button size="sm" variant="secondary" onClick={() => test.mutate(row.id)} loading={test.isPending && test.variables === row.id}><Zap className="h-3.5 w-3.5" />Test</Button><DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-sm" variant="ghost" aria-label={`Actions for ${row.name}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem disabled={toggle.isPending} onSelect={() => setTogglePeer(row)}>{row.enabled ? 'Disable' : 'Enable'}</DropdownMenuItem><DropdownMenuSeparator/><DropdownMenuItem className="text-danger" onSelect={() => setRemovePeer(row)}><Trash2 className="h-4 w-4"/>Remove peer</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div> },
       ]} emptyTitle="No DNS peers" emptyDescription="Add a peer to keep its authoritative copy of every local zone synchronized." emptyIcon={Network} />
     </CardContent></Card>
 
-    <Card><CardHeader><div><CardTitle>Delivery queue</CardTitle><CardDescription>Only pending and failed work remains here; completed deliveries are removed automatically.</CardDescription></div></CardHeader><CardContent>
+    <Card><CardHeader><div><CardTitle>Delivery queue</CardTitle><CardDescription>Only pending and failed work remains here; completed deliveries are removed automatically.</CardDescription></div></CardHeader><CardContent className="card-body-flush">
       <DataTable data={jobs} columns={[
         { key: 'zone', header: 'Zone', searchable: true, render: row => <span className="font-medium">{row.zone}</span> },
         { key: 'action', header: 'Action' },

@@ -24,7 +24,7 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
    await route.fulfill({json:data})
   })
   await page.goto('/app/backup-jobs')
-  await expect(page.getByRole('heading',{name:'Backup Manager',exact:true})).toBeVisible()
+  await expect(page.getByRole('heading',{name:'Backup manager',exact:true})).toBeVisible()
   await page.getByRole('button',{name:'Create job',exact:true}).first().click()
   const dialog=page.getByRole('dialog')
   await dialog.getByLabel('Job name',{exact:true}).fill('Daily WordPress')

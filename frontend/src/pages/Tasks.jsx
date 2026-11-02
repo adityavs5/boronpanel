@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Clock3, ExternalLink, RotateCcw, Square, ListChecks } from 'lucide-react'
+import { Clock3, ExternalLink, RotateCcw, XCircle, ListChecks } from 'lucide-react'
 import { get, post } from '@/lib/api'
 import { useAuth } from '@/store/auth'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -12,7 +12,6 @@ import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { toast } from '@/components/ui/Toast'
-import '@/operations-polish.css'
 
 function when(value) {
   if (!value) return '—'
@@ -68,17 +67,17 @@ export default function Tasks() {
     { key: 'progress', header: 'Progress', render: (row) => <div className="min-w-28"><span>{row.progress == null ? 'Progress unavailable' : `${row.progress}%`}</span>{row.progress != null && <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-accent" style={{ width: `${row.progress}%` }} /></div>}</div> },
     { key: 'started_at', header: 'Started', sortable: true, render: (row) => when(row.started_at) },
     { key: 'duration_seconds', header: 'Duration', sortable: true, render: (row) => elapsed(row.duration_seconds) },
-    { key: 'actions', header: '', render: (row) => <div className="flex justify-end gap-2"><Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); setSelected(row) }}>Details</Button>{row.can_retry && <Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); setAction({ task: row, action: 'retry' }) }}><RotateCcw className="h-4 w-4" />Retry</Button>}{row.can_cancel && <Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); setAction({ task: row, action: 'cancel' }) }}><Square className="h-4 w-4" />Cancel</Button>}</div> },
+    { key: 'actions', header: '', render: (row) => <div className="flex justify-end gap-2"><Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); setSelected(row) }}>Details</Button>{row.can_retry && <Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); setAction({ task: row, action: 'retry' }) }}><RotateCcw className="h-4 w-4" />Retry</Button>}{row.can_cancel && <Button size="sm" variant="secondary" onClick={(event) => { event.stopPropagation(); setAction({ task: row, action: 'cancel' }) }}><XCircle className="h-4 w-4" />Cancel</Button>}</div> },
   ]
   const extraFilterCount = ['account', 'date_from', 'date_to'].filter(key => filters[key]).length
   const toolbar = <div className="task-filters">
     <div className="task-filters__row">
       <FormField label="Search tasks"><Input placeholder="Name, ID or detail" value={filters.query} onChange={(event) => update('query', event.target.value)} /></FormField>
-      <FormField label="Status"><Select value={filters.status} onChange={(event) => update('status', event.target.value)}><option value="">All statuses</option>{['queued', 'running', 'completed', 'failed', 'cancelled'].map((value) => <option key={value} value={value}>{value}</option>)}</Select></FormField>
+      <FormField label="Status"><Select value={filters.status} onChange={(event) => update('status', event.target.value)}><option value="">All statuses</option>{['queued', 'running', 'completed', 'failed', 'cancelled'].map((value) => <option key={value} value={value}>{value.charAt(0).toUpperCase() + value.slice(1)}</option>)}</Select></FormField>
       <FormField label="Task type"><Select value={filters.kind} onChange={(event) => update('kind', event.target.value)}><option value="">All task types</option>{kinds.map((item) => <option key={item.kind} value={item.kind}>{item.label}</option>)}</Select></FormField>
     </div>
     <details className="mt-2">
-      <summary className="cursor-pointer text-xs text-muted-foreground">Date{role === 'admin' ? ' and account' : ''} filters{extraFilterCount ? ` (${extraFilterCount} active)` : ''}</summary>
+      <summary>Date{role === 'admin' ? ' and account' : ''} filters{extraFilterCount ? ` (${extraFilterCount} active)` : ''}</summary>
       <div className="task-filters__row mt-3">
         {role === 'admin' && <FormField label="Account"><Select value={filters.account} onChange={(event) => update('account', event.target.value)}><option value="">All accounts</option>{accounts.map((account) => <option key={account} value={account}>{account}</option>)}</Select></FormField>}
         <FormField label="From"><Input type="date" value={filters.date_from} onChange={(event) => update('date_from', event.target.value)} /></FormField>
@@ -98,7 +97,7 @@ export default function Tasks() {
         <DialogBody className="space-y-5">
           {detailsQuery.isLoading ? <p role="status" className="text-sm text-muted-foreground">Loading task details…</p> : detailsQuery.error ? <p role="alert" className="text-sm text-danger">{detailsQuery.error.message}</p> : detail && <>
             <dl className="grid gap-3 text-sm sm:grid-cols-2">
-              {[['Status', <StatusBadge status={detail.status} />], ['Account', detail.account || 'Server'], ['Started', when(detail.started_at)], ['Duration', elapsed(detail.duration_seconds)], ['Request ID', detail.request_id || '—'], ['Error reference', detail.error_reference || '—']].map(([label, value]) => <div key={label}><dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</dt><dd className="mt-1 break-all text-foreground">{value}</dd></div>)}
+              {[['Status', <StatusBadge status={detail.status} />], ['Account', detail.account || 'Server'], ['Started', when(detail.started_at)], ['Duration', elapsed(detail.duration_seconds)], ['Request ID', detail.request_id || '—'], ['Error reference', detail.error_reference || '—']].map(([label, value]) => <div key={label}><dt className="text-[13px] font-medium text-muted-foreground">{label}</dt><dd className="mt-1 break-all text-foreground">{value}</dd></div>)}
             </dl>
             <div><h3 className="text-sm font-semibold">Current detail</h3><p className="mt-1 text-sm text-muted-foreground">{detail.detail}</p></div>
             <div><h3 className="text-sm font-semibold">Action timeline</h3>{detail.timeline?.length ? <ol className="mt-2 divide-y divide-border border-y border-border">{detail.timeline.map((step, index) => <li key={`${step.name}-${index}`} className="py-3"><div className="flex items-center justify-between gap-3"><span className="text-sm font-medium">{step.name}</span><StatusBadge status={step.result} /></div><p className="mt-1 text-xs text-muted-foreground">{step.duration_ms} ms{step.exit_code == null ? '' : ` · exit ${step.exit_code}`}</p>{(step.stdout || step.stderr) && <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-control bg-muted p-3 text-xs">{[step.stdout, step.stderr].filter(Boolean).join('\n')}</pre>}</li>)}</ol> : <p className="mt-1 text-sm text-muted-foreground">No step timeline was recorded for this task.</p>}</div>

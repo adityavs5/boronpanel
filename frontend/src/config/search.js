@@ -17,12 +17,16 @@ const synonyms = {
   '/backups': 'backup restore recovery snapshots archive',
   '/php': 'php version extensions settings configuration ini memory upload limit',
   '/ftp': 'ftp sftp file transfer accounts', '/cron': 'cron scheduled task jobs automation',
-  '/security': 'security two factor 2fa totp authenticator', '/appearance': 'theme style skin appearance evolution paper lantern dark light',
+  '/security': 'security two factor 2fa totp authenticator', '/appearance': 'theme style change style skin appearance evolution paper lantern dark light colour color accent',
   '/accounts': 'hosting users customers accounts domains management', '/updates': 'panel upgrade update version release',
   '/logs': 'logs errors access debug troubleshooting', '/disk-usage': 'disk storage space quota usage',
   '/ssh': 'ssh keys secure shell', '/devtools': 'developer composer wpcli tools',
   '/malware': 'malware virus scanner scan wordpress hack compromise webshell clamav quarantine restore security files scripts',
   '/openlitespeed': 'openlitespeed ols web server webadmin 7080 connections timeout gzip brotli quic http3 password reload',
+  '/services': 'service monitor services systemd restart start stop daemon',
+  '/health': 'server information health cpu memory load uptime status',
+  '/waf': 'waf web application firewall modsecurity owasp rules',
+  '/accounts/new': 'create account new hosting account add user',
   '/ip-management': 'server ip address addresses multiple dedicated shared allocation pool network interface new account default random',
 }
 export function normalize(text) { return String(text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() }

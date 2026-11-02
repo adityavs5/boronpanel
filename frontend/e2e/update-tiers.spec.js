@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light', 'dark']) {
-  test(`update tiers and gold wordmark ${skin} ${theme}`, async ({ page }) => {
+  test(`update tiers and wordmark ${skin} ${theme}`, async ({ page }) => {
     await page.addInitScript(({ skin, theme }) => {
       localStorage.setItem('boron.auth', JSON.stringify({ state: { role: 'admin', username: 'preview' }, version: 0 }))
       localStorage.setItem('boron.ui', JSON.stringify({ state: { skin, theme }, version: 0 }))
@@ -17,7 +17,7 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
         channel = route.request().postDataJSON().channel
         changes.push(channel)
         data = { channel }
-      } else if ((path.endsWith('/update/status') || path.endsWith('/update/check'))) data = { configured: true, channel, current_version: '3.2.1', latest_version: channel === 'stable' ? '3.2.1' : null, release_availability: channel === 'stable' ? null : 'unpublished', error: null, active_job: null }
+      } else if ((path.endsWith('/update/status') || path.endsWith('/update/check'))) data = { configured: true, channel, release_channel: channel === 'development' ? 'beta' : channel, current_version: '3.2.1', latest_version: channel === 'stable' ? '3.2.1' : null, release_availability: channel === 'stable' ? null : 'unpublished', error: null, active_job: null }
       else if (path.endsWith('/update/history')) data = { jobs: [] }
       await route.fulfill({ json: data })
     })
@@ -26,17 +26,25 @@ for (const skin of ['evolution', 'paper-lantern']) for (const theme of ['light',
     await expect(selector).toHaveValue('stable')
     await selector.selectOption('beta')
     await expect(selector).toHaveValue('beta')
-    await selector.selectOption('development')
-    await expect(selector).toHaveValue('development')
-    expect(changes).toEqual(['beta', 'development'])
+    // Development is a legacy tier: it is offered only to servers already on it.
+    await expect(selector.locator('option[value="development"]')).toHaveCount(0)
+    expect(changes).toEqual(['beta'])
     await page.reload()
-    await expect(selector).toHaveValue('development')
-    await expect(page.getByText('No Development release published yet.', { exact: false })).toBeVisible()
+    await expect(selector).toHaveValue('beta')
+    await expect(page.getByText('No Beta release published yet.', { exact: false })).toBeVisible()
     await expect(page.getByText('Last check error:', { exact: false })).toHaveCount(0)
     await page.getByRole('button', { name: 'Check now', exact: true }).click()
     await expect(page.getByRole('button', { name: 'No release published yet', exact: true })).toBeDisabled()
+    channel = 'development'
+    await page.reload()
+    await expect(selector).toHaveValue('development')
+    await expect(selector.locator('option[value="development"]')).toHaveCount(1)
+    await selector.selectOption('stable')
+    await expect(selector).toHaveValue('stable')
+    expect(changes).toEqual(['beta', 'stable'])
+    await expect(selector.locator('option[value="development"]')).toHaveCount(0)
     const logo = page.locator('.boron-brand-logo img').first()
-    await expect(logo).toHaveAttribute('src', '/static/dist/brand/boron-logo-gold.svg')
+    await expect(logo).toHaveAttribute('src', skin === 'evolution' && theme === 'light' ? '/static/dist/brand/boron-logo-navy.svg' : '/static/dist/brand/boron-logo-white.svg')
     await expect(logo).toHaveCSS('filter', 'none')
     expect(await logo.evaluate(img => img.complete && img.naturalWidth > 0)).toBeTruthy()
     for (const width of [1440, 768, 375]) {

@@ -5,9 +5,11 @@ import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { copyToClipboard } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { RedisIcon } from '@/components/icons/BrandIcons'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
+import { StatCard, StatGrid } from '@/components/ui/StatCard'
 import { Input, FormField } from '@/components/ui/Input'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter,
@@ -92,7 +94,7 @@ export default function Redis() {
 
   return (
     <div>
-      <PageHeader title="Redis" description="Per-account in-memory data store for caching and sessions." icon={Server} primaryAction={provisioned ? (enabled ? <Button variant="danger" onClick={() => setDisableOpen(true)}><Power className="h-4 w-4" /> Disable</Button> : <Button loading={enableMut.isPending} onClick={() => enableMut.mutate({ mem_mb: status.mem_mb })}><Zap className="h-4 w-4" /> Enable Redis</Button>) : null} moreActions={provisioned ? [{label:'Connection info',icon:<Plug className="h-4 w-4"/>,onSelect:()=>setConnOpen(true)}] : []} />
+      <PageHeader title="Redis" description="Per-account in-memory data store for caching and sessions." icon={RedisIcon} primaryAction={provisioned ? (enabled ? <Button variant="secondary" onClick={() => setDisableOpen(true)}><Power className="h-4 w-4" /> Disable</Button> : <Button loading={enableMut.isPending} onClick={() => enableMut.mutate({ mem_mb: status.mem_mb })}><Zap className="h-4 w-4" /> Enable Redis</Button>) : null} moreActions={provisioned ? [{label:'Connection info',icon:<Plug className="h-4 w-4"/>,onSelect:()=>setConnOpen(true)}] : []} />
 
       {isLoading ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -101,7 +103,7 @@ export default function Redis() {
       ) : error ? (
         <ErrorState error={error} onRetry={refetch} />
       ) : !provisioned ? (
-        <EmptyState
+        <Card><EmptyState
           icon={Server}
           title="Redis is not enabled"
           description="Enable a private Redis instance for this account. It runs over a Unix socket with no network exposure."
@@ -110,15 +112,15 @@ export default function Redis() {
               <Zap className="h-4 w-4" /> Enable Redis
             </Button>
           )}
-        />
+        /></Card>
       ) : (
         <div className="space-y-6">
           {!enabled && <p role="status" className="settings-notice">Redis is disabled. Its saved memory limit and files are retained. Enable Redis to resume service; applications must use the current socket path shown below.</p>}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <StatGrid>
             <StatCard icon={Activity} label="Status" value={<StatusBadge status={status.active} />} />
             <StatCard icon={MemoryStick} label="Memory used" value={status.used_memory_human || 'unknown'} />
             <StatCard icon={Gauge} label="Memory limit" value={`${status.mem_mb} MB`} />
-          </div>
+          </StatGrid>
 
           <Card>
             <CardHeader>
@@ -151,7 +153,7 @@ export default function Redis() {
               </form>
 
               <div className="border-t border-border pt-4">
-                <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Socket path</div>
+                <div className="mb-1 text-[13px] font-medium text-muted-foreground">Socket path</div>
                 <div className="flex items-center gap-2">
                   <code className="flex-1 truncate rounded-btn border border-border bg-muted px-3 py-2 font-mono text-sm text-foreground">{status.socket_path}</code>
                   <Button variant="outline" size="icon" aria-label="Copy socket path" onClick={() => copyValue(status.socket_path, 'Socket path')}>
@@ -165,7 +167,7 @@ export default function Redis() {
                   <div className="text-sm font-medium text-foreground">Flush all keys</div>
                   <div className="text-sm text-muted-foreground">Permanently delete every key in this instance. This cannot be undone.</div>
                 </div>
-                <Button variant="warning" disabled={!running} onClick={() => setFlushOpen(true)}>
+                <Button variant="danger-ghost" disabled={!running} onClick={() => setFlushOpen(true)}>
                   <Zap className="h-4 w-4" /> Flush
                 </Button>
               </div>
@@ -200,22 +202,6 @@ export default function Redis() {
         onConfirm={() => disableMut.mutate()}
       />
     </div>
-  )
-}
-
-function StatCard({ icon: Icon, label, value }) {
-  return (
-    <Card>
-      <CardContent className="flex items-center gap-4 py-5">
-        <div className="flex h-11 w-11 items-center justify-center rounded-btn bg-accent-50 text-accent-600 dark:bg-accent-950 dark:text-accent-300">
-          <Icon className="h-5 w-5" />
-        </div>
-        <div className="min-w-0">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
-          <div className="mt-0.5 truncate text-lg font-semibold text-foreground">{value}</div>
-        </div>
-      </CardContent>
-    </Card>
   )
 }
 
@@ -266,7 +252,7 @@ function ConnectionDialog({ open, onOpenChange, username, onCopy }) {
 function CredRow({ label, value, onCopy }) {
   return (
     <div>
-      <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mb-1 text-[13px] font-medium text-muted-foreground">{label}</div>
       <div className="flex items-center gap-2">
         <code className="flex-1 truncate rounded-btn border border-border bg-muted px-3 py-2 font-mono text-sm text-foreground">{value}</code>
         <Button variant="outline" size="icon" aria-label={`Copy ${label.toLowerCase()}`} onClick={onCopy}>
@@ -281,7 +267,7 @@ function CodeBlock({ label, code, onCopy }) {
   return (
     <div>
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+        <span className="text-[13px] font-medium text-muted-foreground">{label}</span>
         <Button variant="ghost" size="sm" onClick={onCopy}>
           <Copy className="h-3.5 w-3.5" /> Copy
         </Button>

@@ -64,7 +64,7 @@ export default function IpBans() {
       align: 'right',
       searchable: false,
       render: (r) => (
-        <Button variant="danger" size="sm" onClick={() => setToRemove(r)}>
+        <Button variant="danger-ghost" size="sm" onClick={() => setToRemove(r)}>
           <Trash2 className="h-4 w-4" /> Remove
         </Button>
       ),
@@ -73,7 +73,7 @@ export default function IpBans() {
 
   return (
     <div>
-      <PageHeader title="IP Bans" description="Permanently block an IP address or CIDR range from the entire server (all ports, all services)." icon={Ban}>
+      <PageHeader title="IP bans" description="Permanently block an IP address or CIDR range from the entire server (all ports, all services)." icon={Ban}>
         <Button onClick={() => setAddOpen(true)}>
           <Plus className="h-4 w-4" /> Ban IP
         </Button>

@@ -18,6 +18,11 @@ for(const skin of ['evolution','paper-lantern']) for(const mode of ['light','dar
    await route.fulfill({json:data})
   })
   await page.goto('/app/branding')
+  // The terminal welcome is an advanced setting inside a collapsed disclosure.
+  const advanced=page.getByText('Advanced: admin terminal welcome',{exact:true})
+  await expect(page.getByLabel('Terminal banner',{exact:true})).toBeHidden()
+  await advanced.click()
+  await expect(page.getByLabel('Terminal banner',{exact:true})).toHaveCSS('border-top-left-radius','8px')
   await page.getByLabel('Terminal banner',{exact:true}).fill('BORON TEST\n$(literal text)')
   await expect(page.getByLabel('Terminal banner preview')).toHaveText('BORON TEST\n$(literal text)')
   await page.getByRole('button',{name:'Save terminal welcome',exact:true}).click()

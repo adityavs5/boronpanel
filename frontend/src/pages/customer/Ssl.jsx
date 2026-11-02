@@ -13,6 +13,7 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
+import { StatCard, StatGrid } from '@/components/ui/StatCard'
 import { Badge } from '@/components/ui/Badge'
 import { ConfirmDialog, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter } from '@/components/ui/Dialog'
 import {
@@ -155,7 +156,7 @@ export default function Ssl() {
 
   return (
     <div className="ssl-page">
-      <PageHeader title={serverWide ? 'SSL Certificates' : 'SSL/TLS'} description={serverWide ? "Issue and renew Let's Encrypt certificates across every hosted account." : "Manage Let's Encrypt certificates for your domains."} icon={ShieldCheck}>
+      <PageHeader title={serverWide ? 'SSL certificates' : 'SSL/TLS'} description={serverWide ? "Issue and renew Let's Encrypt certificates across every hosted account." : "Manage Let's Encrypt certificates for your domains."} icon={ShieldCheck}>
         {timerActive === undefined ? null : timerActive ? (
           <Badge variant="success">
             <ShieldCheck className="h-3.5 w-3.5" /> Auto-renew on
@@ -169,13 +170,13 @@ export default function Ssl() {
 
       {serverWide && serviceDomains.length > 0 && <section className="mb-6"><div className="ssl-section-title"><div><h2>Service certificates</h2><p>Panel services use dedicated hostnames and are verified from DNS through the presented SNI certificate.</p></div></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{serviceDomains.map(row => <div key={row.domain} className="rounded-lg border border-border bg-card p-4"><div className="flex items-start justify-between gap-3"><div className="flex min-w-0 items-center gap-3"><div className="rounded-md bg-muted p-2 text-accent"><Server className="h-5 w-5" /></div><div className="min-w-0"><h3 className="font-semibold text-foreground">{row.username}</h3><p className="truncate font-mono text-xs text-muted-foreground">{row.domain}</p></div></div><StatusBadge status={row.cert_status} /></div><dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm"><dt className="text-muted-foreground">Expires</dt><dd>{row.expiry_date ? `${formatDateShort(row.expiry_date)} (${row.days_remaining} days)` : 'No certificate'}</dd><dt className="text-muted-foreground">Renewal</dt><dd>{row.auto_renew ? 'Automatic' : 'Not configured'}</dd><dt className="text-muted-foreground">Deployment</dt><dd className="capitalize">{row.deployment_status || '—'}</dd></dl><div className="mt-4 flex gap-2"><Button size="sm" onClick={() => setConfirm({ action: 'issue', row })}>{row.cert_status === 'missing' ? 'Issue certificate' : 'Renew'}</Button><Button size="sm" variant="secondary" loading={diagnosticsMut.isPending && diagnosticsMut.variables?.domain === row.domain} onClick={() => diagnosticsMut.mutate(row)}><Stethoscope className="h-4 w-4" /> Diagnostics</Button></div></div>)}</div></section>}
 
-      <div className="ssl-summary" aria-label="Certificate summary">
-        <div><ShieldCheck /><span><strong>{secured}</strong>Secured domains</span></div>
-        <div><ShieldOff /><span><strong>{unsecured}</strong>Need a certificate</span></div>
-        <div><Clock /><span><strong>{expiring}</strong>Expire within 30 days</span></div>
-      </div>
+      <StatGrid className="mb-6" aria-label="Certificate summary">
+        <StatCard icon={ShieldCheck} label="Secured domains" value={secured} />
+        <StatCard icon={ShieldOff} label="Need a certificate" value={unsecured} />
+        <StatCard icon={Clock} label="Expire within 30 days" value={expiring} />
+      </StatGrid>
 
-      <div className="ssl-section-title"><div><h2>Certificate status</h2><p>Select a domain to view its certificate or request a free automatic certificate.</p></div><span>Let&apos;s Encrypt · Auto renewal</span></div>
+      <div className="ssl-section-title"><div><h2>Certificate status</h2><p>Select a domain to view its certificate or request a free automatic certificate.</p></div></div>
 
       <DataTable
         columns={columns}

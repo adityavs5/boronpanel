@@ -5,11 +5,11 @@ export function Card({ className, ...props }) {
 }
 
 export function CardHeader({ className, ...props }) {
-  return <div className={cn('panel-card-header flex items-start justify-between gap-4 px-6 pt-5 pb-3', className)} {...props} />
+  return <div className={cn('panel-card-header flex items-center justify-between gap-4', className)} {...props} />
 }
 
 export function CardTitle({ className, ...props }) {
-  return <h3 className={cn('text-base font-semibold text-foreground', className)} {...props} />
+  return <h3 className={cn('text-[15px] font-semibold text-heading', className)} {...props} />
 }
 
 export function CardDescription({ className, ...props }) {
@@ -17,9 +17,9 @@ export function CardDescription({ className, ...props }) {
 }
 
 export function CardContent({ className, ...props }) {
-  return <div className={cn('panel-card-content px-6 py-4', className)} {...props} />
+  return <div className={cn('panel-card-content', className)} {...props} />
 }
 
 export function CardFooter({ className, ...props }) {
-  return <div className={cn('panel-card-footer flex items-center gap-3 px-6 py-4 border-t border-border', className)} {...props} />
+  return <div className={cn('panel-card-footer flex items-center gap-3', className)} {...props} />
 }

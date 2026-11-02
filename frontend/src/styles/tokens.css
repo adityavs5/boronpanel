@@ -1,0 +1,220 @@
+/*
+ * Boron design tokens (see frontend/DESIGN.md). Colours are RGB triplets so
+ * Tailwind's `/<alpha>` modifier works. Both skins share every token; skins
+ * only change layout. Accent tokens come from public/appearance-preferences.js
+ * (--pref-*), which keeps any user accent readable in both colour modes.
+ */
+:root {
+  color-scheme: light;
+
+  /* Brand */
+  --navy: 11 31 69;
+
+  /* Surfaces and text */
+  --bg: 244 246 250;
+  --surface: 255 255 255;
+  --card: 255 255 255;
+  --muted: 238 241 246;
+  --hover: 244 246 250;
+  --border: 225 230 238;
+  --border-strong: 203 211 223;
+  /* Control boundaries need 3:1 against their surface (WCAG 1.4.11). */
+  --input: 135 146 164;
+  --input-surface: 255 255 255;
+  --fg: 15 27 45;
+  --heading: 11 31 69;
+  --muted-fg: 90 103 121;
+
+  /* Chrome: Paper top bar and the Evo admin sidebar */
+  --chrome-bg: 11 31 69;
+  --chrome-fg: 255 255 255;
+  --chrome-hover: 255 255 255 / 0.1;
+  --chrome-border: 255 255 255 / 0.14;
+
+  /* Light navigation rail (Paper and non-admin Evo) */
+  --rail-bg: 255 255 255;
+  --rail-fg: 15 27 45;
+  --rail-muted: 90 103 121;
+
+  /* Accent (user customisable, defaults to #2563EB) */
+  --accent: var(--pref-accent, 37 99 235);
+  --accent-fg: var(--pref-ink, 255 255 255);
+  --accent-foreground: var(--accent-fg);
+  --accent-hover: var(--pref-hover, 29 78 216);
+  --accent-soft: var(--pref-soft, 235 241 253);
+  --accent-soft-strong: var(--pref-softStrong, 211 224 251);
+  --link: var(--pref-link, 37 99 235);
+  --ring: var(--link);
+  /* Modal and drawer backdrop: neutral so it still dims navy chrome. */
+  --scrim: 15 23 42 / 0.45;
+  /* Mode-aware ramp used by existing utility classes: low steps are tints,
+     high steps are readable text shades in both modes. */
+  --accent-50: var(--accent-soft);
+  --accent-100: var(--accent-soft);
+  --accent-200: var(--accent-soft-strong);
+  --accent-300: var(--link);
+  --accent-400: var(--link);
+  --accent-500: var(--accent);
+  --accent-600: var(--link);
+  --accent-700: var(--link);
+  --accent-800: var(--link);
+  --accent-900: var(--accent-soft-strong);
+  --accent-950: var(--accent-soft);
+
+  /* Semantic colours: text shades stay AA on their own 10% tint (badges,
+     alerts); the solid fills are the brand values used behind white text. */
+  --success: 4 108 78;
+  --warning: 154 70 8;
+  --danger: 185 28 28;
+  --info: 29 78 216;
+  --success-solid: 4 120 87;
+  --warning-solid: 180 83 9;
+  --danger-solid: 185 28 28;
+  --info-solid: 37 99 235;
+  /* Calm amber band for warning banners (about 8% warning over surface). */
+  --warning-soft: 255 247 237;
+
+  /* Category hues for icon chips (stroke colour; tint is the same at low alpha) */
+  --hue-blue: 29 78 216;
+  --hue-violet: 109 40 217;
+  --hue-teal: 15 118 110;
+  --hue-amber: 180 83 9;
+  --hue-rose: 190 18 60;
+  --hue-sky: 3 105 161;
+  --hue-emerald: 4 120 87;
+  --hue-slate: 71 85 105;
+  --hue-indigo: 67 56 202;
+  --hue-orange: 194 65 12;
+  --chip-alpha: 0.1;
+
+  /* Shape, depth, motion */
+  --radius-card: 10px;
+  --radius-btn: 8px;
+  --radius-badge: 6px;
+  --radius-chip: 12px;
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.05);
+  --shadow-pop: 0 12px 32px -8px rgb(16 24 40 / 0.2), 0 4px 10px -4px rgb(16 24 40 / 0.08);
+  --focus-ring: 0 0 0 3px rgb(var(--ring) / 0.3);
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur: 140ms;
+
+  /* Type */
+  --font-ui: var(--pref-font, 'Inter', Arial, sans-serif);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-body: 14px;
+  --text-label: 15px;
+  --text-title: 22px;
+
+  /* Spacing and geometry */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --control-h-sm: 32px;
+  --control-h: 36px;
+  --control-h-lg: 40px;
+  --row-h: 48px;
+  --page-pad: 24px;
+  --topbar-h: 60px;
+  --nav-width: 248px;
+  --nav-collapsed: 60px;
+  --nav-row: 36px;
+  --nav-icon: 18px;
+
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235A6779' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+html.dark {
+  color-scheme: dark;
+  --bg: 11 17 32;
+  --surface: 18 26 43;
+  --card: 18 26 43;
+  --muted: 26 35 54;
+  --hover: 23 32 50;
+  --border: 36 48 73;
+  --border-strong: 51 64 90;
+  --input: 91 106 134;
+  --input-surface: 14 22 38;
+  --fg: 229 234 242;
+  --heading: 241 244 249;
+  --muted-fg: 147 161 184;
+
+  --chrome-bg: 10 21 48;
+  --chrome-border: 255 255 255 / 0.1;
+  --rail-bg: 18 26 43;
+  --rail-fg: 229 234 242;
+  --rail-muted: 147 161 184;
+
+  --accent-soft: var(--pref-soft, 22 41 78);
+  --accent-soft-strong: var(--pref-softStrong, 30 56 108);
+  --link: var(--pref-link, 107 149 240);
+  --scrim: 0 0 0 / 0.65;
+
+  --success: 52 211 153;
+  --warning: 251 191 36;
+  --danger: 248 113 113;
+  --info: 125 168 245;
+  --warning-soft: 41 35 32;
+
+  --hue-blue: 147 180 251;
+  --hue-violet: 196 181 253;
+  --hue-teal: 94 234 212;
+  --hue-amber: 252 211 77;
+  --hue-rose: 253 164 175;
+  --hue-sky: 125 211 252;
+  --hue-emerald: 110 231 183;
+  --hue-slate: 203 213 225;
+  --hue-indigo: 165 180 252;
+  --hue-orange: 253 186 116;
+  --chip-alpha: 0.14;
+
+  --shadow-card: none;
+  --shadow-pop: 0 0 0 1px rgb(var(--border));
+
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2393A1B8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+/* Personal preferences (Appearance page) */
+html[data-text-size=large] {
+  --text-xs: 13px;
+  --text-sm: 14px;
+  --text-body: 16px;
+  --text-label: 17px;
+  --text-title: 24px;
+}
+html[data-density=compact] {
+  --control-h-sm: 28px;
+  --control-h: 32px;
+  --control-h-lg: 36px;
+  --row-h: 40px;
+  --page-pad: 16px;
+  --nav-row: 32px;
+}
+html[data-density=comfortable] {
+  --control-h-sm: 36px;
+  --control-h: 40px;
+  --control-h-lg: 44px;
+  --row-h: 56px;
+  --page-pad: 32px;
+  --nav-row: 40px;
+}
+@media (max-width: 639px) {
+  :root { --page-pad: 16px; --topbar-h: 56px; }
+}
+
+/* Category hue helpers for icon chips */
+.hue-blue { --hue: var(--hue-blue); }
+.hue-violet { --hue: var(--hue-violet); }
+.hue-teal { --hue: var(--hue-teal); }
+.hue-amber { --hue: var(--hue-amber); }
+.hue-rose { --hue: var(--hue-rose); }
+.hue-sky { --hue: var(--hue-sky); }
+.hue-emerald { --hue: var(--hue-emerald); }
+.hue-slate { --hue: var(--hue-slate); }
+.hue-indigo { --hue: var(--hue-indigo); }
+.hue-orange { --hue: var(--hue-orange); }

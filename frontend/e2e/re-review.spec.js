@@ -60,9 +60,15 @@ for(const skin of ['evolution','paper-lantern'])for(const mode of ['light','dark
  test(`${skin} ${mode}: Accounts reseller uses a styled select and row menu retains scope`,async({page})=>{
   const {writes}=await fixture(page,{skin,mode})
   await page.goto('/app/accounts')
-  const reseller=page.getByRole('combobox',{name:'Reseller for alpha',exact:true})
+  // Reseller assignment lives behind the row menu in a "Change reseller" dialog.
+  await page.getByRole('button',{name:'Actions for alpha',exact:true}).click();await page.getByRole('menuitem',{name:'Change reseller',exact:true}).click()
+  const dialog=page.getByRole('dialog',{name:'Change reseller'});await expect(dialog).toBeVisible()
+  const reseller=dialog.getByRole('combobox',{name:'Reseller for alpha',exact:true})
   await expect(reseller).toBeVisible();expect(await reseller.evaluate(el=>el.tagName)).toBe('BUTTON')
+  await expect(dialog.getByRole('button',{name:'Save',exact:true})).toBeDisabled()
   await reseller.click();await page.getByRole('option',{name:'reseller42',exact:true}).click()
+  await dialog.getByRole('button',{name:'Save',exact:true}).click()
+  await expect(dialog).toBeHidden()
   expect(writes.find(x=>x.path.endsWith('/resellers/accounts/alpha')).body).toEqual({reseller_id:42})
   await page.getByRole('button',{name:'Actions for alpha',exact:true}).click();await page.getByRole('menuitem',{name:'Backups',exact:true}).click()
   await expect(page).toHaveURL(/accounts\/alpha\?tab=backups$/)

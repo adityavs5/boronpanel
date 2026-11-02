@@ -1,4 +1,3 @@
-import '@/customer-polish.css'
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -17,6 +16,7 @@ import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Switch, Checkbox } from '@/components/ui/Toggle'
+import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Badge } from '@/components/ui/Badge'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter, ConfirmDialog,
@@ -31,7 +31,7 @@ const formatQuotaGb = value => value == null ? '—' : `${Number(value) / 1024} 
 
 const EMAIL_MODES = {
   accounts: {
-    title: 'Email Accounts',
+    title: 'Email accounts',
     description: 'Create mailboxes and manage login, passwords, quotas, and account access.',
     sections: [['mailboxes', 'Email accounts', Inbox]],
   },
@@ -41,7 +41,7 @@ const EMAIL_MODES = {
     sections: [['webmail', 'Webmail login', LogIn]],
   },
   settings: {
-    title: 'Email Settings',
+    title: 'Email settings',
     description: 'Configure forwarding and delivery behavior for the selected domain.',
     sections: [
       ['forwarders', 'Forwarders', Forward],
@@ -51,7 +51,7 @@ const EMAIL_MODES = {
     ],
   },
   spam: {
-    title: 'Spam Filters',
+    title: 'Spam filters',
     description: 'Control spam scoring and mailbox-level allow and block lists.',
     sections: [
       ['spam', 'Spam scoring', ShieldAlert],
@@ -59,7 +59,7 @@ const EMAIL_MODES = {
     ],
   },
   migration: {
-    title: 'IMAP Migration',
+    title: 'IMAP migration',
     description: 'Copy messages from an existing mail server into a Boron mailbox.',
     sections: [['imap-migrate', 'IMAP migration', ArrowRightLeft]],
   },
@@ -168,7 +168,7 @@ function MailboxesTab({ domain, createOpen, setCreateOpen }) {
   })
 
   const columns = [
-    { key: 'select', header: '', searchable: false, render: r => <Checkbox aria-label={`Select ${r.local_part}@${domain}`} checked={selectedMailboxes.has(r.local_part)} onCheckedChange={checked => setSelectedMailboxes(current => { const next = new Set(current); checked ? next.add(r.local_part) : next.delete(r.local_part); return next })}/> },
+    { key: 'select', header: (() => { const all = (data?.mailboxes || []).map(r => r.local_part); const count = all.filter(n => selectedMailboxes.has(n)).length; return <Checkbox aria-label="Select all mailboxes" checked={count && count === all.length ? true : count ? 'indeterminate' : false} onCheckedChange={checked => setSelectedMailboxes(checked ? new Set(all) : new Set())} /> })(), searchable: false, render: r => <Checkbox aria-label={`Select ${r.local_part}@${domain}`} checked={selectedMailboxes.has(r.local_part)} onCheckedChange={checked => setSelectedMailboxes(current => { const next = new Set(current); checked ? next.add(r.local_part) : next.delete(r.local_part); return next })}/> },
     {
       key: 'local_part',
       header: 'Mailbox',
@@ -186,7 +186,7 @@ function MailboxesTab({ domain, createOpen, setCreateOpen }) {
     {
       key: 'active',
       header: 'Status',
-      render: (r) => (r.active ? <Badge variant="success">Active</Badge> : <Badge variant="neutral">Inactive</Badge>),
+      render: (r) => <StatusBadge status={r.active ? 'active' : 'inactive'} />,
     },
     {
       key: 'actions',
@@ -194,7 +194,7 @@ function MailboxesTab({ domain, createOpen, setCreateOpen }) {
       align: 'right',
       render: (r) => (
         <div className="flex items-center justify-end gap-1">
-          <Button variant="primary" size="sm" disabled={!r.active} loading={launching === `${r.local_part}@${domain}`} onClick={event => { event.stopPropagation(); openWebmail(r) }}><ExternalLink className="h-4 w-4" /> Log in</Button>
+          <Button variant="secondary" size="sm" disabled={!r.active} loading={launching === `${r.local_part}@${domain}`} onClick={event => { event.stopPropagation(); openWebmail(r) }}><ExternalLink className="h-4 w-4" /> Log in</Button>
           <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={`Actions for ${r.local_part}@${domain}`}><MoreHorizontal className="h-4 w-4"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => setSelected(r)}><Settings2 className="h-4 w-4"/>Manage</DropdownMenuItem><DropdownMenuItem disabled={activeMut.isPending} onSelect={() => activeMut.mutate(r)}>{r.active ? <CirclePause className="h-4 w-4"/> : <CirclePlay className="h-4 w-4"/>}{r.active ? 'Suspend' : 'Unsuspend'}</DropdownMenuItem><DropdownMenuSeparator/><DropdownMenuItem className="text-danger" onSelect={() => setToDelete(r.local_part)}><Trash2 className="h-4 w-4"/>Delete</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
         </div>
       ),
@@ -1100,11 +1100,11 @@ function WebmailTab({ username, domain }) {
     },
     {
       key: 'active', header: 'Status',
-      render: row => row.active ? <Badge variant="success">Active</Badge> : <Badge variant="neutral">Suspended</Badge>,
+      render: row => <StatusBadge status={row.active ? 'active' : 'suspended'} />,
     },
     {
       key: 'actions', header: '', align: 'right',
-      render: row => <Button size="sm" disabled={!row.active} loading={launching === `${row.local_part}@${domain}`} onClick={() => openWebmail(row)}><LogIn className="h-4 w-4" /> Log in to webmail</Button>,
+      render: row => <Button size="sm" variant="secondary" disabled={!row.active} loading={launching === `${row.local_part}@${domain}`} onClick={() => openWebmail(row)}><LogIn className="h-4 w-4" /> Log in to webmail</Button>,
     },
   ]
   return <DataTable columns={columns} data={mailboxes.data?.mailboxes} loading={mailboxes.isLoading} error={mailboxes.error} onRetry={mailboxes.refetch} filterable searchPlaceholder="Search email accounts…" pageSize={10} getRowKey={row => row.local_part} emptyTitle="No email accounts yet" emptyDescription="Create an email account before opening webmail." emptyIcon={Inbox} />
@@ -1113,10 +1113,10 @@ function WebmailTab({ username, domain }) {
 function EmailSectionPicker({ sections, active, onChange }) {
   if (sections.length < 2) return null
   return (
-    <div className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Email tools">
-      {sections.map(([value, label, Icon], index) => (
-        <button key={value} type="button" aria-pressed={active === value} onClick={() => onChange(value)} className={`flex min-h-20 items-center gap-3 rounded-btn border px-4 py-3 text-left transition-colors ${active === value ? 'border-accent bg-accent-50 text-accent-700 dark:bg-accent-950 dark:text-accent-200' : 'border-border bg-surface text-foreground hover:bg-muted'}`}>
-          <span className={`tool-icon tone-${['sky', 'green', 'violet', 'amber'][index % 4]}`}><Icon className="h-6 w-6" /></span>
+    <div className="email-section-picker" aria-label="Email tools">
+      {sections.map(([value, label, Icon]) => (
+        <button key={value} type="button" aria-pressed={active === value} onClick={() => onChange(value)} className="email-section-card">
+          <span className="email-section-chip" aria-hidden="true"><Icon /></span>
           <span><strong className="block text-sm">{label}</strong><small className="text-xs text-muted-foreground">Open settings</small></span>
         </button>
       ))}
@@ -1173,15 +1173,12 @@ export default function Email({ mode = 'accounts' }) {
 
   return (
     <div>
-      <PageHeader title={config.title} description={config.description} icon={config.sections[0][2] || Mail} primaryAction={activeSection === 'mailboxes' && domains.length > 0 ? <Button disabled={!domain} onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create mailbox</Button> : null} />
-      {domains.length > 0 && <div className="customer-domain-toolbar mb-4">
-        <div className="customer-domain-field">
-          <FormField label="Domain" htmlFor="email-domain"><Select id="email-domain" value={domain} onChange={(e) => { setCreateOpen(false); setDomain(e.target.value) }}>
-            {domains.map((d) => <option key={d.domain} value={d.domain}>{d.domain}</option>)}
-          </Select></FormField>
-          {domain && <p className="customer-domain-context">{domain}</p>}
-        </div>
-      </div>}
+      {/* Same placement as the other domain-scoped pages: picker top right of the header. */}
+      <PageHeader title={config.title} description={config.description} icon={config.sections[0][2] || Mail} primaryAction={activeSection === 'mailboxes' && domains.length > 0 ? <Button disabled={!domain} onClick={() => setCreateOpen(true)}><Plus className="h-4 w-4" /> Create mailbox</Button> : null}>
+        {domains.length > 0 && <label className="domain-picker" htmlFor="email-domain"><span>Domain</span><Select id="email-domain" value={domain} onChange={(e) => { setCreateOpen(false); setDomain(e.target.value) }}>
+          {domains.map((d) => <option key={d.domain} value={d.domain}>{d.domain}</option>)}
+        </Select></label>}
+      </PageHeader>
 
       {domainsQ.isLoading ? (
         <CenteredSpinner />

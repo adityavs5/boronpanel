@@ -1,4 +1,3 @@
-import '@/customer-polish.css'
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FileCode2, Puzzle, RotateCcw, SlidersHorizontal, TriangleAlert } from 'lucide-react'
@@ -154,7 +153,7 @@ function SiteVersionRow({ username, site, defaultVersion, versions, lifecycle })
   useEffect(()=>setVersion(site.php_version||''),[site.php_version])
   const save=useMutation({mutationFn:()=>patch(`/api/v1/accounts/${username}/domains/${encodeURIComponent(site.domain)}/php-version`,{php_version:version||null}),onSuccess:()=>{toast.success('Site PHP version updated',site.domain);qc.invalidateQueries({queryKey:['domains',username]})},onError:e=>toast.error('Could not change site PHP version',e.message)})
   const effective = site.php_version || defaultVersion
-  return <div className="flex flex-wrap items-center justify-between gap-3 py-4 first:pt-0 last:pb-0"><div className="min-w-0"><p className="break-all font-medium">{site.domain}</p><p className="text-xs text-muted-foreground">Currently PHP {effective||'…'} · {site.php_version?'Site override':'Account default'}{lifecycle?.[effective]?.is_eol ? ` · EOL since ${lifecycle[effective].eol_date}` : ''}</p></div><div className="flex max-w-full flex-wrap gap-2"><Select aria-label={`PHP version for ${site.domain}`} value={version} onChange={e=>setVersion(e.target.value)} className="max-w-[20rem]" disabled={save.isPending}><option value="">Account default{defaultVersion?` (PHP ${defaultVersion}${lifecycle?.[defaultVersion]?.is_eol ? ', EOL' : ''})`:''}</option>{versions.map(v=><option key={v} value={v}>PHP {v}{lifecycle?.[v]?.is_eol ? ` — EOL ${lifecycle[v].eol_date}` : lifecycle?.[v]?.eol_date ? ` — supported to ${lifecycle[v].eol_date}` : ''}</option>)}</Select><Button variant="secondary" disabled={version===(site.php_version||'')} loading={save.isPending} aria-label={`Save PHP version for ${site.domain}`} onClick={()=>save.mutate()}>Save</Button></div></div>
+  return <div className="flex flex-wrap items-center justify-between gap-3 py-4 first:pt-0 last:pb-0 md:flex-nowrap"><div className="min-w-0"><p className="font-medium [overflow-wrap:anywhere]">{site.domain}</p><p className="text-xs text-muted-foreground">Currently PHP {effective||'…'} · {site.php_version?'Site override':'Account default'}{lifecycle?.[effective]?.is_eol ? ` · EOL since ${lifecycle[effective].eol_date}` : ''}</p></div><div className="flex max-w-full flex-nowrap items-center gap-2"><Select aria-label={`PHP version for ${site.domain}`} value={version} onChange={e=>setVersion(e.target.value)} className="w-[16rem] min-w-0 max-w-full" disabled={save.isPending}><option value="">Account default{defaultVersion?` (PHP ${defaultVersion}${lifecycle?.[defaultVersion]?.is_eol ? ', EOL' : ''})`:''}</option>{versions.map(v=><option key={v} value={v}>PHP {v}{lifecycle?.[v]?.is_eol ? ` — EOL ${lifecycle[v].eol_date}` : lifecycle?.[v]?.eol_date ? ` — supported to ${lifecycle[v].eol_date}` : ''}</option>)}</Select><Button variant="secondary" disabled={version===(site.php_version||'')} loading={save.isPending} aria-label={`Save PHP version for ${site.domain}`} onClick={()=>save.mutate()}>Save</Button></div></div>
 }
 
 function EffectiveConfigCard({ username }) {
@@ -452,7 +451,7 @@ function ExtensionsCard({ username }) {
                     {ext.requires?.length > 0 && ` Requires ${ext.requires.join(', ')}.`}
                   </p>
                   {ext.enabled && RISKY_TO_DISABLE[ext.name] && (
-                    <p className="mt-1 flex items-center gap-1 text-xs text-[#B45309] dark:text-warning">
+                    <p className="mt-1 flex items-center gap-1 text-xs text-warning">
                       <TriangleAlert className="h-3 w-3 shrink-0" /> {RISKY_TO_DISABLE[ext.name]}
                     </p>
                   )}

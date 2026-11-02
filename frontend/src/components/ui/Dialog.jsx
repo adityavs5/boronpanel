@@ -16,7 +16,7 @@ export function DialogContent({ className, children, size = 'md', showClose = tr
     <DialogPrimitive.Portal>
       {/* Run A feature 2: no backdrop-blur (goal: remove all blur/glass) —
           the dim scrim alone is enough to focus the modal. */}
-      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-fade-in" />
+      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-scrim data-[state=open]:animate-fade-in" />
       <DialogPrimitive.Content
         className={cn(
           'panel-dialog fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-card border border-border bg-card shadow-dropdown focus:outline-none data-[state=open]:animate-scale-in [&>form]:flex [&>form]:min-h-0 [&>form]:flex-col [&>form]:overflow-hidden',
@@ -27,7 +27,7 @@ export function DialogContent({ className, children, size = 'md', showClose = tr
       >
         {children}
         {showClose && (
-          <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm p-1 text-muted-foreground opacity-70 transition-opacity hover:opacity-100 hover:bg-muted focus:outline-none focus:ring-2 focus:ring-ring">
+          <DialogPrimitive.Close className="absolute right-4 top-4 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/30">
             <X className="h-4 w-4" />
             <span className="sr-only">Close</span>
           </DialogPrimitive.Close>
@@ -38,19 +38,19 @@ export function DialogContent({ className, children, size = 'md', showClose = tr
 }
 
 export function DialogHeader({ className, ...props }) {
-  return <div className={cn('panel-dialog-header shrink-0 px-6 pt-5 pb-2', className)} {...props} />
+  return <div className={cn('panel-dialog-header shrink-0', className)} {...props} />
 }
 export function DialogTitle({ className, ...props }) {
-  return <DialogPrimitive.Title className={cn('text-base font-semibold text-foreground pr-6', className)} {...props} />
+  return <DialogPrimitive.Title className={cn('text-base font-semibold text-heading pr-6', className)} {...props} />
 }
 export function DialogDescription({ className, ...props }) {
   return <DialogPrimitive.Description className={cn('text-sm text-muted-foreground mt-1', className)} {...props} />
 }
 export function DialogBody({ className, ...props }) {
-  return <div className={cn('panel-dialog-body min-h-0 flex-1 overflow-y-auto px-6 py-3', className)} {...props} />
+  return <div className={cn('panel-dialog-body min-h-0 flex-1 overflow-y-auto', className)} {...props} />
 }
 export function DialogFooter({ className, ...props }) {
-  return <div className={cn('panel-dialog-footer flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-border px-6 py-4', className)} {...props} />
+  return <div className={cn('panel-dialog-footer flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-border', className)} {...props} />
 }
 
 // Confirmation dialog for destructive actions (goal: "confirmation modals on

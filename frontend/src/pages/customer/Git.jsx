@@ -5,6 +5,7 @@ import { get, post, patch, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { formatDate, copyToClipboard } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { GitIcon } from '@/components/icons/BrandIcons'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { Input, FormField } from '@/components/ui/Input'
@@ -149,7 +150,7 @@ export default function Git() {
       <PageHeader
         title="Git version control"
         description="Each repository is a bare git repo under ~/repos. Push over SSH and, if a deploy target is set, pushes to main/master check out into that directory."
-        icon={GitBranch}
+        icon={GitIcon}
       >
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4" /> Create repository

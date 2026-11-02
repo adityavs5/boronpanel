@@ -9,7 +9,7 @@ http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost')
   const relative = url.pathname.startsWith('/app') ? 'index.html' : decodeURIComponent(url.pathname.replace(/^\/static\/dist\//, ''))
   const file = path.resolve(root, relative)
-  if (!file.startsWith(root + '/') || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); res.end('Not found'); return }
+  if (!file.startsWith(root + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); res.end('Not found'); return }
   res.setHeader('Content-Type', types[path.extname(file)] || 'application/octet-stream')
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:")
   fs.createReadStream(file).pipe(res)

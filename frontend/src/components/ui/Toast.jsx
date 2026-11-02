@@ -65,7 +65,7 @@ export function Toaster() {
             duration={t.duration}
             onOpenChange={(open) => !open && dismiss(t.id)}
             className={cn(
-              'pointer-events-auto flex w-full items-start gap-3 rounded-card border border-border border-l-2 bg-card p-4 shadow-dropdown data-[state=open]:animate-slide-in-right data-[swipe=end]:animate-fade-in',
+              'pointer-events-auto flex w-full items-start gap-3 rounded-card border border-border border-l-[3px] bg-card p-4 shadow-dropdown data-[state=open]:animate-slide-in-right data-[swipe=end]:animate-fade-in',
               rail,
             )}
           >
@@ -82,13 +82,13 @@ export function Toaster() {
                   <code className="text-muted-foreground">{reference}</code>
                   <button
                     type="button"
-                    className="inline-flex items-center gap-1 text-accent underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                    className="inline-flex items-center gap-1 text-link underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => navigator.clipboard?.writeText(reference)}
                     aria-label="Copy error reference"
                   >
                     <Copy className="h-3.5 w-3.5" /> Copy
                   </button>
-                  {admin && <a className="text-accent underline" href={`/app/error-log?reference=${reference}`}>View error details</a>}
+                  {admin && <a className="text-link underline" href={`/app/error-log?reference=${reference}`}>View error details</a>}
                 </div>
               )}
             </div>

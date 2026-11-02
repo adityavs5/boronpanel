@@ -15,9 +15,9 @@ export function ImpersonationBanner() {
   if (!impersonating) return null
 
   return (
-    <div className="impersonation-banner bg-amber-500 text-sm font-medium text-amber-950">
+    <div className="impersonation-banner" data-tone="warning">
       <span className="impersonation-context">
-        <UserCog className="h-4 w-4 shrink-0" />
+        <UserCog aria-hidden="true" />
         <span>You are viewing this panel as <strong>{username}</strong>
           {impersonator ? <span className="impersonation-actor"> (impersonated by {impersonator})</span> : null}
         </span>
@@ -26,9 +26,9 @@ export function ImpersonationBanner() {
         type="button"
         disabled={leaving}
         onClick={() => { setLeaving(true); returnToAdmin() }}
-        className="impersonation-return bg-amber-950/90 text-amber-50 hover:bg-amber-950 disabled:opacity-60"
+        className="impersonation-return"
       >
-        <LogOut className="h-3.5 w-3.5" /> {leaving ? 'Returning…' : 'Return to admin'}
+        <LogOut aria-hidden="true" /> {leaving ? 'Returning…' : 'Return to admin'}
       </button>
     </div>
   )

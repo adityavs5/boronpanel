@@ -7,6 +7,7 @@ import { get, post, del } from '@/lib/api'
 import { useAccountUsername } from '@/hooks/useAccount'
 import { useDomainContext } from '@/hooks/useDomainContext'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { NodeIcon, PythonIcon } from '@/components/icons/BrandIcons'
 import { DataTable } from '@/components/ui/Table'
 import { Button } from '@/components/ui/Button'
 import { StatusBadge } from '@/components/ui/StatusBadge'
@@ -381,9 +382,9 @@ export default function Apps({ type }) {
   return (
     <div>
       <PageHeader
-        title={type === "python" ? "Python App" : type === "node" ? "Node.js App" : "Applications"}
+        title={type === "python" ? "Python apps" : type === "node" ? "Node.js apps" : "Applications"}
         description={type ? `Create and manage ${type === "node" ? "Node.js" : "Python"} applications on your domains.` : "Run Node.js and Python applications behind your domains."}
-        icon={Boxes}
+        icon={type === "python" ? PythonIcon : type === "node" ? NodeIcon : Boxes}
       />
 
       {type ? <AppsPanel key={type} username={username} type={type}/> : <Tabs defaultValue="node">

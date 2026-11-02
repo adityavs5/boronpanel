@@ -751,8 +751,8 @@ export function ForwardingTab({ username, domain }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2"><ExternalLink className="h-4 w-4" /> Domain forwarding</CardTitle>
           <CardDescription>
-            Redirect this ENTIRE domain to another URL. Replaces normal serving (the ACME challenge path is kept, so
-            SSL still works). For redirecting a single path, use the Redirects tab instead.
+            Redirect the whole domain to another URL. Replaces normal serving (the ACME challenge path is kept, so
+            SSL still works). To redirect a single path, use Redirects instead.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -2015,7 +2015,7 @@ export function StatsTab({ username, domain }) {
       )}
 
       <div className="grid gap-4 md:grid-cols-2">
-        <StatsChartCard title="Pageviews" data={buckets} dataKey="pageviews" color="#1FBED6" formatY={(v) => v} />
+        <StatsChartCard title="Pageviews" data={buckets} dataKey="pageviews" color="#3B82F6" formatY={(v) => v} />
         <StatsChartCard title="Bandwidth" data={buckets} dataKey="bytes_served" color="#10B981" formatY={(v) => formatBytes(v)} />
       </div>
       <div className="grid gap-4 md:grid-cols-3">

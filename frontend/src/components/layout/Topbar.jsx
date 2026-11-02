@@ -1,13 +1,13 @@
 import { useState } from 'react'
-import { useNavigate, useLocation, Link, useParams } from 'react-router-dom'
+import { useNavigate, useLocation, Link, useParams, useMatches } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Palette, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck, Globe2, Search, Menu, ArrowLeft } from 'lucide-react'
+import { Palette, Home, Sun, Moon, LogOut, ChevronDown, User, KeyRound, Check, ChevronsUpDown, ShieldCheck, Globe2, Search, Menu, ArrowLeft, ChevronRight } from 'lucide-react'
 import { ThemeSelector } from '@/components/themes/ThemeSelector'
 import { useBranding } from '@/hooks/useBranding'
 import { get } from '@/lib/api'
 import { useUI } from '@/store/ui'
 import { useAuth } from '@/store/auth'
-import { titleCase } from '@/lib/utils'
+import { routeTitle } from '@/lib/route-title'
 import { adminNav, customerNav, resellerNav } from '@/config/nav'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -18,32 +18,54 @@ import {
   DropdownMenuLabel, DropdownMenuSeparator,
 } from '@/components/ui/DropdownMenu'
 
-function Breadcrumb() {
+const SEGMENT_LABELS = { plans: 'Plans', import: 'Import', software: 'Software', new: 'New', edit: 'Edit', email: 'Email', accounts: 'Accounts', domains: 'Domains' }
+const EXACT_LABELS = { '/plans/new': 'New plan', '/import/accounts': 'Account migrations', '/accounts/new': 'Create account' }
+const sentence = (text) => { const words = text.replace(/[-_]+/g, ' '); return words.charAt(0).toUpperCase() + words.slice(1) }
+
+// Crumb labels come from the page names (route-title / navigation), not the
+// URL slug, so the trail matches the page heading.
+function crumbLabel(to, part, role, notFound, last) {
+  if (last && notFound) return 'Not found'
+  if (EXACT_LABELS[to]) return EXACT_LABELS[to]
+  if (/^\/accounts\/[^/]+$/.test(to) || /\/domains\/[^/]+$/.test(to)) return decodeURIComponent(part)
+  const title = routeTitle(to, '', role)
+  if (title !== 'Boron Panel') return title
+  return SEGMENT_LABELS[part] || sentence(decodeURIComponent(part))
+}
+
+function useCrumbs() {
   const { pathname } = useLocation()
   const role = useAuth(state => state.role)
+  const matches = useMatches()
+  const notFound = matches.length > 0 && matches[matches.length - 1].params?.['*'] !== undefined
   const nav = role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav
   const reachable = new Set(nav.filter(item => !item.external && item.to).map(item => item.to.split('?')[0]))
   const parts = pathname.split('/').filter(Boolean)
-  return (
-    <nav className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex" aria-label="Breadcrumb">
-      {parts.map((part, i) => {
-        const to = '/' + parts.slice(0, i + 1).join('/')
-        const last = i === parts.length - 1
-        return (
-          <span key={to} className="flex items-center gap-1.5">
-            {i > 0 && <span className="text-border">/</span>}
-            {last ? (
-              <span className="font-medium text-foreground">{(pathname === '/accounts/new' && last ? 'Create account' : null) || ({wordpress:'WordPress',dns:'DNS',ssl:'SSL',php:'PHP',ftp:'FTP',ssh:'SSH'})[part] || titleCase(part)}</span>
-            ) : reachable.has(to) || (role === 'admin' && /^\/accounts\/[^/]+$/.test(to)) ? (
-              <Link to={to} className="hover:text-foreground transition-colors">
-                {({wordpress:'WordPress',dns:'DNS',ssl:'SSL',php:'PHP',ftp:'FTP',ssh:'SSH'})[part] || titleCase(part)}
-              </Link>
-            ) : <span>{titleCase(part)}</span>}
-          </span>
-        )
-      })}
+  return parts.map((part, i) => {
+    const to = '/' + parts.slice(0, i + 1).join('/')
+    const last = i === parts.length - 1
+    const linkable = !last && (reachable.has(to) || (role === 'admin' && /^\/accounts\/[^/]+$/.test(to)))
+    return { to, last, linkable, label: crumbLabel(to, part, role, notFound, last) }
+  })
+}
+
+function Breadcrumb() {
+  const crumbs = useCrumbs()
+  // Phones: a compact link back to the nearest reachable parent.
+  const parent = [...crumbs].reverse().find((crumb) => crumb.linkable)
+  return <>
+    {parent && <Link to={parent.to} className="breadcrumb-back sm:hidden"><ArrowLeft size={15} aria-hidden="true" /> {parent.label}</Link>}
+    <nav className="breadcrumb-trail hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex" aria-label="Breadcrumb">
+      {crumbs.map((crumb) => (
+        <span key={crumb.to} className="flex items-center gap-1.5">
+          <ChevronRight className="breadcrumb-separator" aria-hidden="true" />
+          {crumb.last ? <span className="font-medium text-foreground" aria-current="page">{crumb.label}</span>
+            : crumb.linkable ? <Link to={crumb.to}>{crumb.label}</Link>
+            : <span>{crumb.label}</span>}
+        </span>
+      ))}
     </nav>
-  )
+  </>
 }
 
 function AccountSwitcher() {
@@ -135,6 +157,9 @@ export function Topbar({ inner = false }) {
   const isReseller = identitySynced && role === 'reseller'
   const home = isAdmin ? '/overview' : isReseller ? '/reseller' : '/dashboard'
   const { brandingReady, panelName, logoUrl } = useBranding()
+  const skin = useUI((s) => s.skin)
+  // Navy wordmark on light chrome, white wordmark on navy or dark chrome.
+  const wordmark = skin === 'evolution' && theme !== 'dark' ? 'boron-logo-navy.svg' : 'boron-logo-white.svg'
   const setPaletteOpen = useUI(s => s.setPaletteOpen)
   const setMobileNavOpen = useUI(s => s.setMobileNavOpen)
 
@@ -152,7 +177,7 @@ export function Topbar({ inner = false }) {
             ? <span className="brand-loading-placeholder" aria-hidden="true" />
             : logoUrl
             ? <img className="custom-brand-logo" src={logoUrl} alt={panelName} />
-            : <span className="boron-brand-logo"><img src="/static/dist/brand/boron-logo-gold.svg" alt="Boron" /></span>}
+            : <span className="boron-brand-logo"><img src={`/static/dist/brand/${wordmark}`} alt="Boron" /></span>}
         </Link>
       </div>
 
@@ -164,27 +189,27 @@ export function Topbar({ inner = false }) {
 
         <button
           onClick={toggleTheme}
-          className="rounded-btn p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="topbar-icon-button topbar-theme-toggle"
           title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
           aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
         >
-          {theme === 'dark' ? <Sun className="h-[18px] w-[18px]" /> : <Moon className="h-[18px] w-[18px]" />}
+          {theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
         </button>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="flex items-center gap-2 rounded-btn px-2 py-1.5 transition-colors hover:bg-muted" aria-label="Open account menu">
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
+            <button type="button" className="topbar-account" aria-label="Open account menu">
+              <span className="topbar-avatar" aria-hidden="true">
                 {(username || role || '?').slice(0, 2).toUpperCase()}
-              </div>
-              <span className="hidden text-sm font-medium text-foreground sm:inline">{username || role}</span>
-              <ChevronDown className="hidden h-4 w-4 text-muted-foreground sm:inline" />
+              </span>
+              <span className="topbar-account-name">{username || role}</span>
+              <ChevronDown aria-hidden="true" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuLabel>
               <div className="font-medium text-foreground">{username || 'Account'}</div>
-              <div className="text-xs capitalize">Access level: {role}</div>
+              <div className="text-xs">{role === 'admin' ? 'Administrator' : role === 'reseller' ? 'Reseller' : 'User account'}</div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => navigate('/change-password')}>
@@ -214,12 +239,13 @@ export function Topbar({ inner = false }) {
 export function PageNavigation() {
   const role = useAuth((s) => s.role)
   const identitySynced = useAuth((s) => s.identitySynced)
-  const skin = useUI((s) => s.skin)
   const { pathname } = useLocation()
   const isAdmin = identitySynced && role === 'admin'
+  const home = isAdmin ? '/overview' : role === 'reseller' ? '/reseller' : '/dashboard'
+  const atHome = pathname === home
   const accountDetail = isAdmin && pathname !== '/accounts/new' && /^\/accounts\/[^/]+\/?$/.test(pathname)
-  return <div className="page-navigation">
-    {accountDetail ? <Link to="/accounts" className="home-link"><ArrowLeft size={15} /> Accounts</Link> : <><Link to={isAdmin ? '/overview' : role === 'reseller' ? '/reseller' : '/dashboard'} className="home-link"><Home size={15} /> Home</Link><Breadcrumb /></>}
-    <div className="ml-auto">{isAdmin && skin === 'paper-lantern' && !accountDetail && <AccountSwitcher />}</div>
+  return <div className="page-navigation" data-home={atHome || undefined}>
+    {accountDetail ? <Link to="/accounts" className="home-link"><ArrowLeft size={15} /> Accounts</Link> : <><Link to={home} className="home-link" data-has-parent={!atHome || undefined}><Home size={15} /> Home</Link>{!atHome && <Breadcrumb />}</>}
+    <div className="ml-auto">{isAdmin && !accountDetail && <AccountSwitcher />}</div>
   </div>
 }

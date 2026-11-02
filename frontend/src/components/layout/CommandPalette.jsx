@@ -8,16 +8,11 @@ import { useAuth } from '@/store/auth'
 import { searchEntries } from '@/config/search'
 import { customerNav, adminNav, resellerNav } from '@/config/nav'
 import { filterNavigation } from '@/config/capabilities'
+import { navigationEntries } from '@/config/toolGroups'
 
-// Flattens the role-aware nav into palette entries, keeping section names.
-function buildEntries(nav) {
-  const out = []
-  let section = 'Pages'
-  for (const item of nav) {
-    if (item.section) section = item.section
-    else out.push({ type: 'page', section, label: item.label, to: item.to, icon: item.icon, external: item.external })
-  }
-  return out
+// Palette entries share the home screen's group names (see navigationEntries).
+function buildEntries(role, nav, capabilities) {
+  return navigationEntries(role, nav, capabilities).map((item) => ({ type: 'page', section: item.section, label: item.label, to: item.to, icon: item.icon, external: item.external }))
 }
 
 // Ctrl/Cmd+K quick navigation: jump to any page or common action.
@@ -52,7 +47,7 @@ export function CommandPalette() {
   }, [setOpen, setMobileNavOpen])
 
   const entries = useMemo(() => {
-    const pages = buildEntries(filterNavigation(role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav, capabilities))
+    const pages = buildEntries(role, filterNavigation(role === 'admin' ? adminNav : role === 'reseller' ? resellerNav : customerNav, capabilities), capabilities)
     const actions = [
       {
         type: 'action', section: 'Actions', label: theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
@@ -162,12 +157,10 @@ export function CommandPalette() {
                     onMouseMove={() => setSelected(idx)}
                     className={cn(
                       'flex w-full items-center gap-3 rounded-btn px-3 py-2 text-left text-sm transition-colors',
-                      idx === selected
-                        ? 'bg-accent-50 text-accent-700 dark:bg-accent-950/60 dark:text-accent-200'
-                        : 'text-foreground',
+                      idx === selected ? 'bg-accent-soft font-medium text-link' : 'text-foreground',
                     )}
                   >
-                    <Icon className={cn('h-4 w-4 shrink-0', idx === selected ? 'text-accent-600 dark:text-accent-300' : 'text-muted-foreground')} />
+                    <Icon className={cn('h-4 w-4 shrink-0', idx === selected ? 'text-link' : 'text-muted-foreground')} />
                     <span className="flex-1 truncate">{entry.label}</span>
                     {idx === selected && <CornerDownLeft className="h-3.5 w-3.5 shrink-0 opacity-60" />}
                   </button>

@@ -49,7 +49,8 @@ export function TemplatePreview({ content, title = 'Page preview', thumbnail = f
   }, [])
   return <div className={`template-preview ${thumbnail ? 'template-preview--thumbnail' : ''}`}>
     {!thumbnail && <div className="template-preview__toolbar"><strong>{title}</strong><div role="group" aria-label={`${title} viewport`}><Button variant="ghost" size="sm" aria-pressed={device === 'desktop'} onClick={() => setDevice('desktop')}><Monitor className="h-4 w-4" />Desktop</Button><Button variant="ghost" size="sm" aria-pressed={device === 'mobile'} onClick={() => setDevice('mobile')}><Smartphone className="h-4 w-4" />Mobile</Button></div></div>}
-    <div ref={container} className="template-preview__canvas"><div className="template-preview__viewport" style={{ width: viewportWidth * scale, height: viewportHeight * scale }}><iframe title={title} srcDoc={preview} sandbox="" referrerPolicy="no-referrer" tabIndex={thumbnail ? -1 : 0} aria-hidden={thumbnail || undefined} style={{ width: viewportWidth, height: viewportHeight, transform: `scale(${scale})` }} /></div></div>
+    {/* Remount on every document change: re-navigating a sandboxed srcdoc frame in place can leave it blank in Chromium. */}
+    <div ref={container} className="template-preview__canvas"><div className="template-preview__viewport" style={{ width: viewportWidth * scale, height: viewportHeight * scale }}><iframe key={preview} title={title} srcDoc={preview} sandbox="" referrerPolicy="no-referrer" tabIndex={thumbnail ? -1 : 0} aria-hidden={thumbnail || undefined} style={{ width: viewportWidth, height: viewportHeight, transform: `scale(${scale})` }} /></div></div>
     {!thumbnail && <p className="template-preview__note">Live draft preview · scripts, links and external content are disabled.</p>}
   </div>
 }

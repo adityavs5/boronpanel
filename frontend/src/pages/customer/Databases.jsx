@@ -1,4 +1,3 @@
-import '@/customer-polish.css'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Database, Trash2, MoreHorizontal, KeyRound, ExternalLink, Copy, Plus, Stethoscope } from 'lucide-react'
@@ -198,7 +197,7 @@ export default function Databases() {
   }
 
   const columns = [
-    { key: 'select', header: '', searchable: false, render: r => <Checkbox aria-label={`Select ${r.db_name}`} checked={selectedDatabases.has(r.db_name)} onCheckedChange={checked => setSelectedDatabases(current => { const next = new Set(current); checked ? next.add(r.db_name) : next.delete(r.db_name); return next })}/> },
+    { key: 'select', header: (() => { const all = (data?.databases || []).map(r => r.db_name); const count = all.filter(n => selectedDatabases.has(n)).length; return <Checkbox aria-label="Select all databases" checked={count && count === all.length ? true : count ? 'indeterminate' : false} onCheckedChange={checked => setSelectedDatabases(checked ? new Set(all) : new Set())} /> })(), searchable: false, render: r => <Checkbox aria-label={`Select ${r.db_name}`} checked={selectedDatabases.has(r.db_name)} onCheckedChange={checked => setSelectedDatabases(current => { const next = new Set(current); checked ? next.add(r.db_name) : next.delete(r.db_name); return next })}/> },
     {
       key: 'db_name',
       header: 'Database',
@@ -424,7 +423,7 @@ export default function Databases() {
 function CredRow({ label, value, onCopy }) {
   return (
     <div>
-      <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mb-1 text-[13px] font-medium text-muted-foreground">{label}</div>
       <div className="flex items-center gap-2">
         <code className="flex-1 truncate rounded-btn border border-border bg-muted px-3 py-2 font-mono text-sm text-foreground">{value}</code>
         <Button variant="outline" size="icon" aria-label={`Copy ${label.toLowerCase()}`} onClick={onCopy}>

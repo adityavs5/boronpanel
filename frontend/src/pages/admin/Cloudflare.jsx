@@ -150,7 +150,7 @@ function AccountsTab() {
             <Plus className="h-4 w-4" /> Connect account
           </Button>
         </CardHeader>
-        <CardContent>
+        <CardContent className="card-body-flush">
           <DataTable
             columns={columns}
             data={data?.accounts}
