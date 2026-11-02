@@ -1,6 +1,22 @@
 # Changelog
 
-## 3.3.6 — Stable
+## 3.3.7 — Stable
+
+### Fixed
+
+- Opening phpMyAdmin from a database answered "token not found, already
+  used, or expired" (403) every time. OpenLiteSpeed builds phpMyAdmin's
+  PHP namespace once and reuses it; one built before the panel added the
+  sign-on token folder to the policy never showed PHP that folder. The
+  panel now rebuilds that namespace when it is older than the policy.
+
+### Upgrade notes
+
+- No schema or configuration change. Servers already affected are repaired
+  the next time phpMyAdmin is published (saving its hostname), or by a
+  reboot.
+
+## 3.3.6
 
 ### New
 

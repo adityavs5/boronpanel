@@ -1196,6 +1196,36 @@ def bootstrap_pma() -> None:
     result = writer.apply(contents)
     if not result.ok:
         raise RuntimeError(f"OLS config transaction failed during bootstrap_pma: {result.summary()}")
+    if "namespace" in targets:
+        _retire_stale_namespace("www-data", Path(targets["namespace"]))
+
+
+def _retire_stale_namespace(user: str, policy: Path, lsns_root: str = "/var/lsns") -> bool:
+    """Make ``user``'s PHP pick up a namespace policy edit.
+
+    OLS builds a native namespace per UID once, persists it under
+    /var/lsns/<uid>/<n>, and reuses it across reloads and worker restarts.
+    One built before the phpMyAdmin token binding was added never shows PHP
+    the token directory, so every sign-on answered 403. Dismount a
+    generation older than the policy and stop the user's workers; OLS
+    rebuilds the namespace on the next request. lsnsctl refuses UIDs below
+    its minimum, which www-data is, so this uses unmount_ns.
+    """
+    try:
+        uid = pwd.getpwnam(user).pw_uid
+        generations = [entry for entry in Path(lsns_root, str(uid)).iterdir()
+                       if entry.is_dir() and entry.name.isdigit()]
+        policy_mtime = policy.stat().st_mtime
+    except (KeyError, OSError):
+        return False
+    if not generations or max(entry.stat().st_mtime for entry in generations) >= policy_mtime:
+        return False
+    result = run([f"{OLS_SERVER_BASE}/lsns/bin/unmount_ns", "-u", str(uid)], timeout=30)
+    if not result.ok:
+        logger.warning("could not dismount the namespace of %s: %s", user, result.stderr.strip() or result.stdout.strip())
+        return False
+    run(["pkill", "-TERM", "-u", user, "-x", "lsphp"], timeout=10)
+    return True
 
 
 def refresh_pma_vhost() -> None:
