@@ -466,13 +466,17 @@ def apply_schema_migrations(engine) -> dict:
             }]
 
         applied = {int(row["revision"]): row for row in applied_rows}
-        if max(applied) > CURRENT_SCHEMA_VERSION:
+        newer = {number: row for number, row in applied.items() if number > CURRENT_SCHEMA_VERSION}
+        if any(row["compatibility"] != "additive" for row in newer.values()):
             raise SchemaCompatibilityError(
                 f"database schema v{max(applied)} is newer than this panel supports "
                 f"(maximum v{CURRENT_SCHEMA_VERSION})"
             )
+        # A rollback leaves a newer release's additive revisions behind; this
+        # release ignores their tables and columns (schema-compat.json
+        # ignores_newer_additive).
         for revision_number, row in applied.items():
-            if revision_number == 0:
+            if revision_number == 0 or revision_number in newer:
                 continue
             expected = revisions.get(revision_number)
             if expected is None:
@@ -583,7 +587,7 @@ def load_schema_manifest(release_dir: str | Path) -> dict:
     if not path.is_file() or path.is_symlink():
         # Releases before the ledger are schema v0.  They can safely ignore
         # later additive tables/columns but never a breaking revision.
-        return {"minimum": 0, "maximum": 0, "legacy": True}
+        return {"minimum": 0, "maximum": 0, "legacy": True, "ignores_newer_additive": True}
     try:
         data = json.loads(path.read_text())
         minimum = int(data["minimum_supported_schema"])
@@ -592,13 +596,16 @@ def load_schema_manifest(release_dir: str | Path) -> dict:
         raise SchemaCompatibilityError(f"invalid schema compatibility manifest in {release_dir}") from exc
     if minimum < 0 or maximum < minimum:
         raise SchemaCompatibilityError(f"invalid schema compatibility range in {release_dir}")
-    return {"minimum": minimum, "maximum": maximum, "legacy": False}
+    # Releases up to 3.3.1 refuse to start on any newer revision, even an
+    # additive one; only manifests that say so ignore them.
+    ignores = data.get("ignores_newer_additive") is True
+    return {"minimum": minimum, "maximum": maximum, "legacy": False, "ignores_newer_additive": ignores}
 
 
 def rollback_compatibility(release_dir: str | Path, db_path: str) -> dict:
     manifest = load_schema_manifest(release_dir)
     state = schema_state_from_path(db_path)
-    current = int(state["schema_version"])
+    current = max([int(state["schema_version"])] + [int(row["revision"]) for row in state["revisions"]])
     if current < manifest["minimum"]:
         return {
             "compatible": False,
@@ -612,19 +619,26 @@ def rollback_compatibility(release_dir: str | Path, db_path: str) -> dict:
     if current <= manifest["maximum"]:
         return {"compatible": True, "reason": "schema is within the target release range", "schema_version": current, "target": manifest}
     newer = [row for row in state["revisions"] if int(row["revision"]) > manifest["maximum"]]
-    if newer and all(row["compatibility"] == "additive" for row in newer):
+    if newer and all(row["compatibility"] == "additive" for row in newer) and manifest["ignores_newer_additive"]:
         return {
             "compatible": True,
             "reason": "newer database revisions are additive and safe for the target to ignore",
             "schema_version": current,
             "target": manifest,
         }
-    return {
-        "compatible": False,
-        "reason": (
+    if newer and all(row["compatibility"] == "additive" for row in newer):
+        reason = (
+            f"the target release refuses database schema v{current} (it supports up to "
+            f"v{manifest['maximum']}); restore the pre-update database backup instead"
+        )
+    else:
+        reason = (
             f"database schema v{current} contains a breaking revision newer than "
             f"the target release maximum v{manifest['maximum']}"
-        ),
+        )
+    return {
+        "compatible": False,
+        "reason": reason,
         "schema_version": current,
         "target": manifest,
     }

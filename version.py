@@ -14,4 +14,4 @@ the line below with a plain regex — keep it a simple single-line string
 assignment.
 """
 
-BORON_VERSION = "3.3.2"
+BORON_VERSION = "3.3.3"

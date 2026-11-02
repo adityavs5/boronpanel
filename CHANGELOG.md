@@ -1,6 +1,30 @@
 # Changelog
 
-## 3.3.2 — Stable
+## 3.3.3 — Stable
+
+Replaces 3.3.2, which was withdrawn: its update failed while installing the
+outgoing port 25 restriction, and the automatic rollback then left the panel
+unable to start. 3.3.3 contains everything listed under 3.3.2 plus these
+fixes. Update from 3.3.1 directly.
+
+### Fixed
+
+- The outgoing port 25 restriction is accepted by the kernel. Its reject
+  rule now matches TCP only, as `tcp-reset` requires.
+- A failed update now rolls back to a working panel. When the previous
+  release cannot open the migrated database (3.3.1 and earlier refuse any
+  newer schema revision), the rollback restores the database copy taken
+  before the update and keeps the migrated one beside it as
+  `boron.db.after-failed-update`.
+- From this release on, the panel starts on a database that a newer release
+  extended with additive schema revisions, so later rollbacks keep the data
+  instead of restoring the copy.
+
+### Upgrade notes
+
+- The upgrade notes for 3.3.2 below all apply.
+
+## 3.3.2 — Withdrawn
 
 A large maintenance release. Every customer, reseller and administrator
 flow was tested on a live server, and the panel has a new design.

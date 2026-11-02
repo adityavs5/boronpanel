@@ -2,5 +2,6 @@
   "schema_version": 7,
   "minimum_supported_schema": 0,
   "maximum_supported_schema": 7,
-  "rollback_policy": "additive revisions may be ignored by older releases; breaking revisions require expand-contract"
+  "rollback_policy": "additive revisions may be ignored by older releases; breaking revisions require expand-contract",
+  "ignores_newer_additive": true
 }

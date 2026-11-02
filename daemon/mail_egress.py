@@ -54,7 +54,8 @@ def exempt_uids() -> list[int]:
 def render_chain(uids: list[int]) -> str:
     lines = ["*filter", f":{CHAIN} - [0:0]"]
     lines += [f"-A {CHAIN} -m owner --uid-owner {uid} -j RETURN" for uid in uids]
-    lines += [f"-A {CHAIN} -j REJECT --reject-with tcp-reset", "COMMIT", ""]
+    # tcp-reset is valid only on a rule that matches TCP.
+    lines += [f"-A {CHAIN} -p tcp -j REJECT --reject-with tcp-reset", "COMMIT", ""]
     return "\n".join(lines)
 
 

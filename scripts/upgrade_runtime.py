@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import re
 import base64
+import datetime
 import difflib
 import hashlib
 import json
@@ -281,6 +282,84 @@ def _write_private_atomic(path: Path, content: bytes, mode: int, uid: int, gid: 
             temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)
+
+
+def _sqlite_max_revision(connection) -> int:
+    row = connection.execute("SELECT max(revision) FROM schema_migrations").fetchone()
+    return int(row[0] or 0)
+
+
+def restore_database_for_previous_release(db_path: str | None = None,
+                                          backup_root: str | None = None,
+                                          release_parent: str = "/opt") -> str:
+    """Put back the pre-update database when the previous release cannot open this one.
+
+    Releases up to 3.3.1 refuse to start on any newer schema revision, even an
+    additive one, so a rollback that only swaps the code leaves the old
+    daemon crash-looping. The updater copies the database before migrating;
+    restore that copy, keep the migrated one beside it and carry this job's
+    progress over. Returns what was done.
+    """
+    import sqlite3
+    from shared.config import settings
+    from shared.migrations import load_schema_manifest, rollback_compatibility
+    from version import BORON_VERSION
+
+    db_path = db_path or settings.db_path
+    backup_root = Path(backup_root or settings.update_backup_dir).resolve()
+    live = sqlite3.connect(db_path, timeout=30)
+    try:
+        job = live.execute(
+            "SELECT id, from_version, steps, status, progress_message, error FROM update_jobs "
+            "WHERE kind = 'update' AND to_version = ? ORDER BY id DESC LIMIT 1",
+            (BORON_VERSION,),
+        ).fetchone()
+        if job is None:
+            return "no update job for this release"
+        job_id, from_version, steps_text, status, progress, error = job
+        if not re.fullmatch(r"[0-9A-Za-z.+-]{1,32}", str(from_version)):
+            raise RuntimeError("update job has an invalid source version")
+        old_dir = Path(release_parent) / f"boron-{from_version}"
+        if not old_dir.is_dir():
+            raise RuntimeError(f"previous release directory {old_dir} is missing")
+        if rollback_compatibility(old_dir, db_path)["compatible"]:
+            return "previous release can open the database"
+        steps = json.loads(steps_text or "[]")
+        backup_dir = next((Path(step["detail"]) for step in reversed(steps)
+                           if step.get("step") == "backup" and step.get("status") == "ok"), None)
+        if backup_dir is None:
+            raise RuntimeError("update job recorded no pre-update database backup")
+        backup = (backup_dir / "boron.db")
+        if backup.is_symlink() or not backup.is_file() or backup_root not in backup.resolve().parents:
+            raise RuntimeError(f"pre-update database backup {backup} is not usable")
+        maximum = load_schema_manifest(old_dir)["maximum"]
+        source = sqlite3.connect(f"file:{backup}?mode=ro", uri=True)
+        try:
+            if source.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise RuntimeError("pre-update database backup failed its integrity check")
+            if _sqlite_max_revision(source) > maximum:
+                raise RuntimeError("pre-update database backup is newer than the previous release")
+            kept = backup_dir / "boron.db.after-failed-update"
+            copy = sqlite3.connect(kept)
+            try:
+                live.backup(copy)
+            finally:
+                copy.close()
+            os.chmod(kept, 0o600)
+            source.backup(live)
+        finally:
+            source.close()
+        steps.append({"step": "database-rollback", "status": "ok",
+                      "detail": f"restored {backup}; the migrated database is kept as {kept}",
+                      "at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        live.execute(
+            "UPDATE update_jobs SET steps = ?, status = ?, progress_message = ?, error = ? WHERE id = ?",
+            (json.dumps(steps), status, progress, error, job_id),
+        )
+        live.commit()
+        return f"restored the pre-update database from {backup}"
+    finally:
+        live.close()
 
 
 def restore_runtime_backup() -> None:
@@ -868,7 +947,16 @@ def main(argv: list[str] | None = None) -> int:
     _ALLOWED_DATA_PLANE_RELOADS.clear()
     _ALLOWED_DATA_PLANE_RELOADS.update(policy["data_plane_reloads"])
     if args.rollback:
+        # The database comes first: without it the previous daemon cannot
+        # start at all, whatever happens to the host configuration.
+        database_error = None
+        try:
+            print(restore_database_for_previous_release())
+        except Exception as exc:  # noqa: BLE001 -- still restore the host configuration
+            database_error = exc
         restore_runtime_backup()
+        if database_error is not None:
+            raise database_error
         return 0
     if args.commit:
         commit_runtime_backup()

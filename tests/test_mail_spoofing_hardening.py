@@ -317,7 +317,7 @@ def test_egress_chain_allows_only_root_and_postfix(monkeypatch):
         ":BORON-SMTP-OUT - [0:0]",
         "-A BORON-SMTP-OUT -m owner --uid-owner 0 -j RETURN",
         "-A BORON-SMTP-OUT -m owner --uid-owner 107 -j RETURN",
-        "-A BORON-SMTP-OUT -j REJECT --reject-with tcp-reset",
+        "-A BORON-SMTP-OUT -p tcp -j REJECT --reject-with tcp-reset",
         "COMMIT",
     ]
     assert mail_egress.JUMP == ["-p", "tcp", "--dport", "25", "-j", "BORON-SMTP-OUT"]
