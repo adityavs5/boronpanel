@@ -62,13 +62,23 @@ def main() -> int:
     aliases = {d for d in non_wildcard_domains if d.startswith("www.") and d[4:] in non_wildcard_domains}
 
     exit_code = 0
+    applied = False
     for domain_name in non_wildcard_domains:
         if domain_name in aliases:
             continue
         try:
             _apply_for_domain(domain_name, is_wildcard=domain_name in wildcard_bases)
+            applied = True
         except Exception:
             logger.exception("failed to apply new certificate for %s", domain_name)
+            exit_code = 1
+    if applied:
+        # Renewed certificates keep their paths, so the vhost refresh above
+        # may have found nothing to change and skipped the reload.
+        try:
+            ols.reload_for_new_certificates()
+        except Exception:
+            logger.exception("could not reload OpenLiteSpeed for the new certificate")
             exit_code = 1
     return exit_code
 

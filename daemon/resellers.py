@@ -389,7 +389,12 @@ def delete_reseller(params: dict) -> dict:
                 f"reseller still owns {len(live)} account(s) ({shown}); move or terminate them, "
                 "or delete with release_accounts to return them to administrator ownership"
             )
-        released_ids = [link.account_id for link in links]
+        # Terminated accounts have no Linux user (their uid may already be
+        # reused), so only live accounts get their resource limits redone.
+        released_ids = [account_id for account_id in session.scalars(
+            select(Account.id).join(ResellerAccount, ResellerAccount.account_id == Account.id).where(
+                ResellerAccount.reseller_id == profile.id, Account.status != "terminated",
+            )).all()]
         for link in links:
             session.delete(link)
         user = session.get(PanelUser, profile.panel_user_id)
@@ -410,8 +415,14 @@ def delete_reseller(params: dict) -> dict:
                     session.delete(row)
         session.flush()
         session.delete(profile)
+    # The delete has committed: a resource refresh that fails now is logged
+    # and retried by the next limits change, not reported as a failed delete.
     for account_id in released_ids:
-        _reconcile_account(account_id)
+        try:
+            _reconcile_account(account_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("could not refresh resource limits of account %s after deleting reseller %s",
+                             account_id, profile_id)
     logger.info("deleted reseller %s (%s); %d account(s) returned to administrator ownership",
                 profile_id, reseller_username, len(live))
     return {"status": "deleted", "id": profile_id, "username": reseller_username, "released_accounts": list(live)}

@@ -26,6 +26,8 @@ def hook(monkeypatch):
     module = _load_hook_module()
     monkeypatch.setattr(module.ols, "refresh_vhost", lambda account: None)
     monkeypatch.setattr(module.ols, "refresh_webmail_vhost", lambda: None)
+    module.reloads = []
+    monkeypatch.setattr(module.ols, "reload_for_new_certificates", lambda: module.reloads.append(True))
     return module
 
 
@@ -146,3 +148,19 @@ def test_www_alias_on_the_sites_certificate_is_not_a_separate_site(hook, account
     assert "www.demo1.example' not found" not in caplog.text
     with write_session() as session:
         assert session.scalar(select(Domain).where(Domain.domain == "demo1.example")).ssl_status == "active"
+
+
+def test_renewal_reloads_the_web_server_even_when_the_vhost_is_unchanged(hook, account_with_domain, monkeypatch):
+    # A renewed certificate keeps its paths, so the vhost text does not change
+    # and only an explicit reload makes OpenLiteSpeed serve it.
+    monkeypatch.setenv("RENEWED_DOMAINS", "demo1.example www.demo1.example")
+    assert hook.main() == 0
+    assert hook.reloads == [True]
+
+
+def test_failed_reload_fails_the_hook(hook, account_with_domain, monkeypatch):
+    def refuse():
+        raise RuntimeError("openlitespeed -t failed")
+    monkeypatch.setattr(hook.ols, "reload_for_new_certificates", refuse)
+    monkeypatch.setenv("RENEWED_DOMAINS", "demo1.example")
+    assert hook.main() == 1

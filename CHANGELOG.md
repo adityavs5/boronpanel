@@ -1,6 +1,27 @@
 # Changelog
 
-## 3.3.3 — Stable
+## 3.3.4 — Stable
+
+### Fixed
+
+- Renewed and reissued certificates are served at once. A renewal keeps the
+  certificate's paths, so the web server configuration did not change and
+  OpenLiteSpeed kept serving the old certificate (for example without www)
+  until an unrelated change reloaded it. The deploy hook now always reloads
+  it after deploying a certificate, also for webmail and phpMyAdmin.
+- Issuing the webmail certificate no longer fails its pre-issue check: the
+  test file the panel places for the web server is readable by it. A failed
+  pre-issue check now says what to fix (400) instead of an internal error.
+- Deleting a reseller whose old accounts were terminated no longer reports
+  an internal error after the delete succeeded. Only live accounts get
+  their resource limits refreshed, and a refresh failure is logged.
+
+### Upgrade notes
+
+- No schema or configuration change. Certificates renewed under earlier
+  releases are loaded by the update's web server reload.
+
+## 3.3.3
 
 Replaces 3.3.2, which was withdrawn: its update failed while installing the
 outgoing port 25 restriction, and the automatic rollback then left the panel

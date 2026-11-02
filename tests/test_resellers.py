@@ -297,6 +297,26 @@ def test_delete_reseller_then_its_plan_and_name_are_free(isolated_db):
     make_profile(make_plan(name="Second")["id"], username="reseller1")  # login name reusable
 
 
+def test_delete_reseller_refreshes_only_live_accounts_and_survives_refresh_errors(isolated_db, monkeypatch):
+    plan = make_plan()
+    _, profile_id = make_profile(plan["id"])
+    terminated_id = make_owned_account(profile_id, "goneacct")
+    live_id = make_owned_account(profile_id, "liveacct")
+    with write_session() as session:
+        session.get(Account, terminated_id).status = "terminated"
+    refreshed = []
+
+    def refresh(account_id):
+        refreshed.append(account_id)
+        raise RuntimeError("cgroup refresh failed")
+    monkeypatch.setattr(resellers, "RESOURCE_HOOKS", [refresh])
+
+    result = resellers.delete_reseller({"reseller_id": profile_id, "release_accounts": True})
+
+    assert result["status"] == "deleted" and result["released_accounts"] == ["liveacct"]
+    assert refreshed == [live_id]
+
+
 def test_delete_reseller_can_release_accounts_to_administrator(isolated_db):
     plan = make_plan()
     _, profile_id = make_profile(plan["id"])

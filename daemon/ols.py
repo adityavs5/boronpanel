@@ -1932,6 +1932,20 @@ def update_abuse_settings(params: dict) -> dict:
 
 
 @_config_transaction
+def reload_for_new_certificates() -> None:
+    """Load certificates renewed or reissued in place.
+
+    A new certificate keeps its /etc/letsencrypt/live/<name>/ paths, so the
+    re-rendered vhost is byte-identical and ConfigWriterMulti skips its
+    reload as "unchanged"; lshttpd would keep serving the old certificate
+    until some unrelated change reloaded it.
+    """
+    with _CONFIG_LOCK:
+        result = _reload()
+    if not result.ok:
+        raise RuntimeError(f"OpenLiteSpeed reload after certificate deployment failed: {result.message}")
+
+
 def graceful_reload(params: dict) -> dict:
     if not bool(params.get("confirm")):
         raise ValidationError("OpenLiteSpeed reload requires confirm=true")
